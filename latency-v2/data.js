@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793657222926,
+  "lastUpdate": 1793657650610,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -54516,6 +54516,72 @@ window.BENCHMARK_DATA = {
             "range": "298.85",
             "unit": "us",
             "extra": "trials: 5\nmedian: 277.00\nmean: 405.80\nstdev: 298.85\ncv: 73.65%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3e81b94ef04fb13709eb8e1a5ab3b53fdbbfc34b",
+          "message": "feat(broker): record headers through a single broker and the Rust client (#1688) (#1788)\n\nPart of #1688. Record headers through a single broker and the Rust client: the third of four slices (storage format v8 in #1776, wire format in #1778, replication and Kafka next).\n\n## What changes\n- **Negotiation.** A client that offers `EXT_RECORD_HEADERS` in `auth` gets it back in `auth_ok` when the broker accepts headers. A client that offers nothing gets byte-identical `auth_ok` frames. `FLAG_EXTENDED` frames are accepted only on a connection that negotiated it and refused as before otherwise.\n- **Publish.** A durable stream stores each record's block in format v8 (a log enters v8 only with its first record that has headers). An in-memory stream delivers them without storing. Header names starting with `felix.` are reserved for Felix's listeners: an acked publish gets `invalid_request`, a fire-and-forget one is dropped and counted.\n- **Delivery.** `DeliveryEnvelope` carries one block per record and caches frames with headers apart from the plain ones, so each shape is still encoded once and a subscriber that did not negotiate headers gets exactly the frame it got before. Ring replay, disk replay and a restart report the same blocks as live delivery.\n- **Rust client.** `publish_with_headers`, `publish_batch_with_headers` (on `Client` and `Publisher`) and `Event::headers`. The client offers the extension unless `ClientConfig::record_headers` is off.\n- **Docs.** protocol.md (what the broker does with headers, negotiation answer, error codes), storage-format.md links to the wire block layout, rust.md, wire-protocol page, a \"Record headers\" status row, changelog fragments.\n\n## Design calls\n- Fleet feature `record_headers` is declared but not in `IMPLEMENTED`: replication does not ship headers yet, so no cluster may enable it. A lone broker always accepts them (a client opts in by sending headers).\n- A durable publish with headers while the gate is off is refused with `feature_not_enabled`, never stored without them. A forwarded publish carrying headers is refused the same way.\n- An idempotent retry is matched on payloads only, as before; headers are not part of the duplicate check.\n- Consumer groups keep delivering without headers (follow-up).\n- Kafka null header values will map to empty values (next slice).\n- `FELIX_RECORD_HEADERS` (default `true`) turns accepting headers off on a lone broker. It only refuses publishes that carry them (`feature_not_enabled`, `detail.reason` `record_headers`; fire-and-forget ones are dropped and counted); reads keep negotiating the extension, so a log that already holds headers still delivers them.\n- Replication holds a record with headers back instead of shipping it bare: the follower stays behind it, the leader logs the stall and counts `headers_unsupported`. Such a shard cannot rebuild, drain or move until headers replicate. The promotion catch-up fetch in `replica.rs` does not carry headers yet; both are fixed in the replication slice.\n- Header bytes count toward the replay ring, subscriber queue budgets and frame byte limits.\n\n## Tests\n- `tests/quic_publish/record_headers.rs`: switch off still delivers stored blocks and refuses new ones (revert-checked); mixed batch (block on record 0, none on record 1) delivered aligned to a subscriber that negotiated headers; byte-identical frames for one that did not; `FLAG_EXTENDED` refused on an un-negotiated session; `felix.` names refused; `auth_ok` byte-identical for a client that offered nothing; durable replay after reopen returns the blocks.\n- felix-broker: publish/read-back through the log, gate-off refusal, no-header publishes store records with no headers; `DeliveryEnvelope` shape caching and `skip_records` alignment.\n- felix-client: header encoding, `Unsupported` before sending, reserved names, subscribe pipeline decoding, a stub-broker cluster test.",
+          "timestamp": "2026-11-02T14:06:18-08:00",
+          "tree_id": "032fbfae94c69ccce35031cec1ad1c2980e47871",
+          "url": "https://github.com/GetFelix/felix/commit/3e81b94ef04fb13709eb8e1a5ab3b53fdbbfc34b"
+        },
+        "date": 1793657643185,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 152,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 152.00\nmean: 152.00\nstdev: 0.71\ncv: 0.47%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 216,
+            "range": "2.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 216.00\nmean: 216.40\nstdev: 2.07\ncv: 0.96%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 267,
+            "range": "19.93",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 267.00\nmean: 275.20\nstdev: 19.93\ncv: 7.24%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 200,
+            "range": "11.37",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 200.00\nmean: 203.80\nstdev: 11.37\ncv: 5.58%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 393,
+            "range": "302.01",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 393.00\nmean: 524.80\nstdev: 302.01\ncv: 57.55%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 537,
+            "range": "852.23",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 537.00\nmean: 918.20\nstdev: 852.23\ncv: 92.82%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
