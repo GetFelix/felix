@@ -327,8 +327,8 @@ to re-run the harness by hand:
   alternate between the two sides, one trial of each per round, and the side
   that goes first flips every round. A runner that speeds up or slows down
   during the job then affects both sides alike. Running all of one side first
-  would not: a 5% drift between the two halves shows up as a 5% regression. It is advisory
-  only and does not block merging. A row is a regression when it is worse by
+  would not: a 5% drift between the two halves shows up as a 5%
+  regression. It is advisory only and does not block merging. A row is a regression when it is worse by
   at least 3% with p < 0.05. A row worse by 10% or more that misses
   significance is marked inconclusive, not passed: at five trials a wide spread
   hides even a doubling, so rerun that cell with more trials before trusting

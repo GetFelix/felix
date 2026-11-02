@@ -65,7 +65,7 @@ jobs:
   perf-compare:
     # Both sides run in this one job, so the runner never skews the comparison.
     runs-on: ${{ vars.FELIX_LARGE_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - name: Checkout PR head
         uses: actions/checkout@v7
@@ -144,9 +144,9 @@ jobs:
         if: steps.build.outcome == 'success'
         continue-on-error: true
         env:
-          # One trial per side per round; matches `defaults.trials` in the
-          # ci_subset_*.yml files.
-          ROUNDS: "5"
+          # One trial per side per round. Even, so each side goes first equally
+          # often.
+          ROUNDS: "6"
         run: |
           set -euo pipefail
           mkdir -p /tmp/felix-perf-results
