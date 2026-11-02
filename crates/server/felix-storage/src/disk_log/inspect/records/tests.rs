@@ -202,6 +202,28 @@ async fn a_publisher_and_mark_are_reported() {
 }
 
 #[tokio::test]
+async fn a_headers_block_is_reported_by_size() {
+    let data = tempdir().expect("dir");
+    let dir = data.path().join("shard");
+    let log = DiskLog::open(dir.clone(), "shard".to_string(), one_segment()).expect("open");
+    log.append(&[
+        AppendRecord {
+            headers: Some(Box::new(Bytes::from_static(b"block"))),
+            ..record("hello".into())
+        },
+        record("plain".into()),
+    ])
+    .await
+    .expect("append");
+    log.shutdown().await.expect("shutdown");
+
+    let report = look(&dir, &query(0, 1)).expect("read");
+    assert_eq!(report.records[0].headers_len, Some(5));
+    assert_eq!(report.records[0].payload_len, 5);
+    assert_eq!(report.records[1].headers_len, None);
+}
+
+#[tokio::test]
 async fn around_is_capped() {
     let (_data, dir) = write_log(one_segment(), 1100).await;
 

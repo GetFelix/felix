@@ -148,6 +148,15 @@ pub const CACHE_INCARNATIONS: FleetFeature = FleetFeature::new("cache_incarnatio
 /// See `docs/durable-storage.md` ("Conditional head trim").
 pub const HEAD_TRIM: FleetFeature = FleetFeature::new("head_trim");
 
+/// A durable stream stores each record's headers and key. A record with them
+/// needs storage format v8, which an older build refuses to open.
+///
+/// Declared but not in [`IMPLEMENTED`]: replication does not ship headers yet,
+/// so a follower would lose them. No broker reports it, which keeps a cluster
+/// from finalizing it. Only a broker running alone accepts headers for now.
+/// See `docs/protocol.md` ("Extended frames and record headers").
+pub const RECORD_HEADERS: FleetFeature = FleetFeature::new("record_headers");
+
 /// Every change of a shard's replica set, and the next generation a leader
 /// opens for a replacement, is fenced jointly: a majority of the set being
 /// left and of the one replacing it must take the fence before the new set

@@ -258,7 +258,7 @@ async fn write(broker: &Arc<Broker>, round: usize) -> (u64, u64) {
     })
     .await
     .expect("write task");
-    broker.appended().notify_one();
+    mark_appended(broker);
     tails
 }
 
@@ -606,7 +606,7 @@ async fn a_counter_write_on_this_shard_cuts_a_waiting_pass_short() {
     })
     .await
     .expect("add task");
-    broker.appended().notify_one();
+    mark_appended(&broker);
     tokio::time::sleep(SOON).await;
     assert!(
         peers.sent_between("broker-c", landed, tokio::time::Instant::now()),

@@ -148,7 +148,7 @@ pub(super) async fn delete_tenant(store: &PostgresStore, tenant_id: &str) -> Sto
     .await?;
 
     let streams = sqlx::query_as::<_, DbStream>(
-        r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing, incarnation
+        r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, mount, routing, incarnation
                FROM streams WHERE tenant_id = $1
                ORDER BY namespace, stream FOR UPDATE"#,
     )
@@ -235,6 +235,7 @@ pub(super) async fn delete_tenant(store: &PostgresStore, tenant_id: &str) -> Sto
             delivery: parse_delivery(&stream.delivery)?,
             durable: stream.durable,
             region: stream.region,
+            mount: stream.mount,
             routing: parse_routing(stream.routing.as_deref())?,
             incarnation: stream.incarnation as u64,
         };

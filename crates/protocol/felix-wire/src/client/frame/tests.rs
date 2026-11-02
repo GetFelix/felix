@@ -85,20 +85,20 @@ fn frame_decode_error_cases() {
     assert!(result.is_err());
 }
 
+/// All sixteen flag bits are defined, so no header is refused for its flags
+/// alone; a body that cannot be parsed is the decoders' to refuse. The check
+/// stays in `FrameHeader::decode` for the day a flag word is widened.
 #[test]
-fn decode_rejects_unknown_flags() {
-    let undefined = !crate::KNOWN_FLAGS & (!crate::KNOWN_FLAGS).wrapping_neg();
-    assert_ne!(
-        undefined, 0,
-        "every flag bit is defined; pick another probe"
-    );
-    let mut buf = BytesMut::new();
-    FrameHeader::new(crate::FLAG_BINARY_PUBLISH_BATCH | undefined, 0).encode(&mut buf);
-    let bytes = buf.freeze();
-    let err = FrameHeader::decode(bytes.clone()).expect_err("unknown flag");
-    assert!(matches!(err, Error::UnknownFlags(flags) if flags & undefined != 0));
-    assert!(Frame::decode(bytes.clone()).is_err());
-    // The lenient form hands the bits back for the caller to refuse.
-    let header = FrameHeader::decode_allowing_unknown_flags(bytes).expect("lenient");
-    assert!(crate::has_unknown_flags(header.flags));
+fn every_flag_value_is_a_known_flag_or_the_extended_marker() {
+    assert_eq!(crate::KNOWN_FLAGS | crate::FLAG_EXTENDED, u16::MAX);
+    for flags in [crate::KNOWN_FLAGS, crate::FLAG_EXTENDED, u16::MAX] {
+        let mut buf = BytesMut::new();
+        FrameHeader::new(flags, 0).encode(&mut buf);
+        let bytes = buf.freeze();
+        assert_eq!(
+            FrameHeader::decode(bytes.clone()).expect("known").flags,
+            flags
+        );
+        assert!(Frame::decode(bytes).is_ok());
+    }
 }

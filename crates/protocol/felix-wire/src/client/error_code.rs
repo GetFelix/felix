@@ -360,5 +360,13 @@ pub mod trim_reason {
     pub const TIMED_OUT: &str = "trim_timed_out";
 }
 
+/// The `reason` values a `feature_not_enabled` error carries when the feature
+/// is not a head trim (see [`trim_reason::HEAD_TRIM`]).
+pub mod feature_reason {
+    /// The publish carries record headers and the broker does not accept them,
+    /// or it was forwarded to another broker, which cannot carry them yet.
+    pub const RECORD_HEADERS: &str = "record_headers";
+}
+
 #[cfg(test)]
 mod tests;

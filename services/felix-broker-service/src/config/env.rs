@@ -123,6 +123,22 @@ impl BrokerConfig {
             .ok()
             .map(|value| matches!(value.as_str(), "1" | "true" | "yes"))
             .unwrap_or(false);
+        // On unless turned off. A value that is not a boolean keeps it on, so a
+        // typo cannot silently change what the log's format can hold.
+        let record_headers = std::env::var("FELIX_RECORD_HEADERS")
+            .ok()
+            .and_then(|value| match value.trim().to_ascii_lowercase().as_str() {
+                "1" | "true" | "yes" | "on" => Some(true),
+                "0" | "false" | "no" | "off" => Some(false),
+                _ => {
+                    tracing::warn!(
+                        value = %value,
+                        "FELIX_RECORD_HEADERS is not a boolean; keeping the default (on)"
+                    );
+                    None
+                }
+            })
+            .unwrap_or(true);
         let max_frame_bytes = std::env::var("FELIX_MAX_FRAME_BYTES")
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
@@ -427,6 +443,7 @@ impl BrokerConfig {
             ack_on_commit,
             ack_durable_on_commit,
             record_publishers,
+            record_headers,
             max_frame_bytes,
             preauth_max_frame_bytes,
             preauth_max_streams_per_conn,

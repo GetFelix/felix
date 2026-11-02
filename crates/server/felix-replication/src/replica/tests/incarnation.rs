@@ -19,7 +19,7 @@ fn following_broker(dir: &std::path::Path) -> Arc<Broker> {
     broker
 }
 
-async fn register(broker: &Broker, incarnation: u64) {
+pub(super) async fn register(broker: &Broker, incarnation: u64) {
     broker.register_tenant(TENANT).await.expect("tenant");
     broker
         .register_namespace(TENANT, NAMESPACE)

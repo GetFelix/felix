@@ -91,10 +91,12 @@ the room opens a replacement. If the dead connection carried the broker's
 publish and cache workers, the broker's client is rebuilt the next time any
 role asks for that broker. Other brokers' clients are not touched.
 
-`Connection::connect` is different: it opens `publish_conn_pool`, `cache_conn_pool`
-and `event_conn_pool` connections up front, one pool per kind of traffic, each
-with its own transport tuning. A cluster client's shared connection takes the
-largest of those windows instead. See `docs/client-config.md`.
+`Connection::connect` is different: it keeps one pool per kind of traffic, each
+with its own transport tuning. The publish pool (`publish_conn_pool`) opens at
+connect, the event pool one connection per subscription up to `event_conn_pool`,
+and the cache pool (`cache_conn_pool`) on the first cache request. A cluster
+client's shared connection takes the largest of those windows instead. See
+"How many connections a `Connection` holds" in `docs/client-config.md`.
 
 ## Discovery
 

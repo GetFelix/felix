@@ -126,6 +126,7 @@ impl Broker {
                 &payloads[written as usize..],
                 Append::Marked(&marks),
                 None,
+                None,
             )
             .await?
             .expect("a marked append always claims");

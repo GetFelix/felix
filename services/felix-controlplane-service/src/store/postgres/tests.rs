@@ -93,6 +93,7 @@ fn stream_from_db_maps_fields() {
         delivery: "AtLeastOnce".to_string(),
         durable: true,
         region: None,
+        mount: None,
         routing: None,
         incarnation: 0,
     };

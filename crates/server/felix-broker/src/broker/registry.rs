@@ -220,6 +220,7 @@ impl Broker {
                 // on the leader while the catalog said a majority was required —
                 // until the broker restarted.
                 state.set_consistency(metadata.consistency);
+                self.mounts.set(&key, metadata.mount.as_deref());
                 streams.insert(key, metadata);
                 return Ok(());
             }
@@ -228,15 +229,18 @@ impl Broker {
                 .open_durable_log(&key.tenant_id, &key.namespace, &key.stream, 0, &metadata)
                 .await?;
             let handle_id = self.next_stream_handle.fetch_add(1, Ordering::Relaxed);
-            let state = Arc::new(StreamState::new(
-                handle_id,
-                self.topic_capacity,
-                self.subscriber_queue_policy,
-                self.subscriber_queue_bytes.clone(),
-                &self.ring_bytes,
-                durable,
-                metadata.consistency,
-            ));
+            let state = Arc::new(
+                StreamState::new(
+                    handle_id,
+                    self.topic_capacity,
+                    self.subscriber_queue_policy,
+                    self.subscriber_queue_bytes.clone(),
+                    &self.ring_bytes,
+                    durable,
+                    metadata.consistency,
+                )
+                .for_shard(&key.tenant_id, &key.namespace, &key.stream, 0),
+            );
             self.bind_reads(&state, &topic);
             self.hydrate_durable_stream(&state).await?;
 
@@ -256,6 +260,7 @@ impl Broker {
                 continue;
             }
             topics.insert(topic, state);
+            self.mounts.set(&key, metadata.mount.as_deref());
             streams.insert(key.clone(), metadata);
             return Ok(());
         }
@@ -312,7 +317,12 @@ impl Broker {
     /// Unregister `key` and end everything reading it, returning what was
     /// registered. Its logs and data are the caller's to close or delete.
     pub(super) async fn drop_stream(&self, key: &StreamKey) -> Option<StreamMetadata> {
-        let metadata = self.streams.write().await.remove(key)?;
+        let metadata = {
+            let mut streams = self.streams.write().await;
+            let metadata = streams.remove(key)?;
+            self.mounts.set(key, None);
+            metadata
+        };
         let mut topics = self.topics.write().await;
         // Every shard of the stream, not just the one registration opened:
         // a broker may have been asked to serve several.

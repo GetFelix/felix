@@ -1,5 +1,5 @@
 //! Streams and caches created together, all or none.
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::{Decide, InMemoryStore};
 use crate::model::{
@@ -43,6 +43,7 @@ pub(super) async fn create_resources(
             )));
         }
     }
+    check_mounts(&stream_map, &streams)?;
     let mut seen = HashSet::new();
     for cache in &caches {
         let key = cache_key(cache);
@@ -111,6 +112,22 @@ pub(super) async fn create_resources(
         metrics::gauge!("felix_caches_total").set(cache_map.len() as f64);
     }
     Ok((stored, stored_caches))
+}
+
+/// Every mount in the batch against the stored ones and against each other,
+/// so a refusal leaves nothing.
+fn check_mounts(stored: &HashMap<StreamKey, Stream>, batch: &[Stream]) -> StoreResult<()> {
+    let mut added: HashMap<StreamKey, Stream> = HashMap::new();
+    for stream in batch {
+        let Some(prefix) = &stream.mount else {
+            continue;
+        };
+        let key = stream_key(stream);
+        let combined = stored.iter().chain(added.iter());
+        super::streams::check_mount(combined, &key, prefix, stream.durable)?;
+        added.insert(key, stream.clone());
+    }
+    Ok(())
 }
 
 fn stream_key(stream: &Stream) -> StreamKey {

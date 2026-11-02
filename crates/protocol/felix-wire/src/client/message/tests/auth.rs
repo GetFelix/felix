@@ -20,6 +20,7 @@ fn an_auth_ok_without_features_reads_as_supporting_none() {
             server_flags: 7,
             server_features: None,
             server_features_hi: None,
+            server_flags_ext: None,
             listener_ports: None,
             publish_window: None,
         }
@@ -34,6 +35,7 @@ fn an_auth_ok_advertising_nothing_omits_the_field() {
         server_flags: 7,
         server_features: None,
         server_features_hi: None,
+        server_flags_ext: None,
         listener_ports: None,
         publish_window: None,
     }
@@ -59,6 +61,7 @@ fn a_single_listener_auth_ok_is_unchanged_on_the_wire() {
         server_flags: 7,
         server_features: Some(crate::FEATURE_TOPOLOGY),
         server_features_hi: None,
+        server_flags_ext: None,
         listener_ports: None,
         publish_window: None,
     }
@@ -74,6 +77,7 @@ fn an_auth_ok_carries_the_listener_ports_it_binds() {
         server_flags: felix_wire_flags(),
         server_features: Some(crate::FEATURE_TOPOLOGY),
         server_features_hi: None,
+        server_flags_ext: None,
         listener_ports: Some(vec![5000, 5001, 5002, 5003]),
         publish_window: None,
     };
@@ -87,6 +91,7 @@ fn an_auth_ok_carries_the_features_it_advertises() {
         server_flags: felix_wire_flags(),
         server_features: Some(crate::FEATURE_TOPOLOGY),
         server_features_hi: None,
+        server_flags_ext: None,
         listener_ports: None,
         publish_window: None,
     };
@@ -117,6 +122,7 @@ fn an_auth_without_features_reads_as_supporting_none() {
             client_flags: None,
             client_features: None,
             client_features_hi: None,
+            client_flags_ext: None,
         }
     );
 }
@@ -131,6 +137,7 @@ fn an_auth_advertising_nothing_omits_the_field() {
         client_flags: None,
         client_features: None,
         client_features_hi: None,
+        client_flags_ext: None,
     }
     .encode()
     .expect("encode");
@@ -148,6 +155,7 @@ fn an_auth_ok_without_a_publish_window_is_the_frame_old_clients_read() {
             server_flags: 7,
             server_features: Some(crate::FEATURE_TOPOLOGY),
             server_features_hi: None,
+            server_flags_ext: None,
             listener_ports: None,
             publish_window: None,
         }
@@ -166,6 +174,7 @@ fn an_auth_ok_carries_the_publish_window_it_grants() {
         server_flags: felix_wire_flags(),
         server_features: Some(crate::FEATURE_PUBLISH_PIPELINE),
         server_features_hi: None,
+        server_flags_ext: None,
         listener_ports: None,
         publish_window: Some(128),
     };
@@ -201,6 +210,7 @@ fn auth(features: u32, features_hi: u32) -> Message {
         client_flags: Some(25),
         client_features: Some(client_features),
         client_features_hi,
+        client_flags_ext: None,
     }
 }
 
@@ -211,6 +221,7 @@ fn auth_ok(features: u32, features_hi: u32, peer_features: u32) -> Message {
         server_flags: 25,
         server_features: Some(server_features),
         server_features_hi,
+        server_flags_ext: None,
         listener_ports: None,
         publish_window: None,
     }
@@ -339,4 +350,121 @@ fn an_extended_word_without_the_marker_is_ignored() {
     assert_eq!(crate::peer_features_hi(crate::FEATURE_TOPOLOGY, Some(1)), 0);
     assert_eq!(crate::peer_features_hi(crate::FEATURE_EXTENDED, Some(1)), 1);
     assert_eq!(crate::peer_features_hi(crate::FEATURE_EXTENDED, None), 0);
+}
+
+/// **A peer with no extension to offer sends the `Auth` it always did.**
+#[test]
+fn an_auth_without_a_flags_extension_is_the_frame_it_always_was() {
+    let (client_flags, client_flags_ext) = crate::offer_flags(crate::KNOWN_FLAGS, 0);
+    let text = json(Message::Auth {
+        tenant_id: "t1".to_string(),
+        token: "x".to_string(),
+        client_flags: Some(client_flags),
+        client_features: None,
+        client_features_hi: None,
+        client_flags_ext,
+    });
+    assert_eq!(
+        text,
+        format!(
+            r#"{{"type":"auth","tenant_id":"t1","token":"x","client_flags":{}}}"#,
+            crate::KNOWN_FLAGS
+        )
+    );
+}
+
+#[test]
+fn an_auth_ok_without_a_flags_extension_is_the_frame_it_always_was() {
+    let (server_flags, server_flags_ext) = crate::answer_flags(
+        crate::KNOWN_FLAGS,
+        crate::EXT_RECORD_HEADERS,
+        crate::KNOWN_FLAGS,
+    );
+    let text = json(Message::AuthOk {
+        server_flags,
+        server_features: None,
+        server_features_hi: None,
+        server_flags_ext,
+        listener_ports: None,
+        publish_window: None,
+    });
+    assert_eq!(
+        text,
+        format!(
+            r#"{{"type":"auth_ok","server_flags":{}}}"#,
+            crate::KNOWN_FLAGS
+        )
+    );
+}
+
+#[test]
+fn the_flags_extension_survives_the_round_trip_both_ways() {
+    let (client_flags, client_flags_ext) =
+        crate::offer_flags(crate::KNOWN_FLAGS, crate::KNOWN_EXT_FLAGS);
+    let auth = Message::Auth {
+        tenant_id: "t1".to_string(),
+        token: "x".to_string(),
+        client_flags: Some(client_flags),
+        client_features: None,
+        client_features_hi: None,
+        client_flags_ext,
+    };
+    assert!(json(auth.clone()).contains(r#""client_flags_ext":1"#));
+    assert_eq!(
+        Message::decode(auth.encode().expect("encode")).expect("decode"),
+        auth
+    );
+
+    let (server_flags, server_flags_ext) =
+        crate::answer_flags(crate::KNOWN_FLAGS, crate::EXT_RECORD_HEADERS, client_flags);
+    let auth_ok = Message::AuthOk {
+        server_flags,
+        server_features: None,
+        server_features_hi: None,
+        server_flags_ext,
+        listener_ports: None,
+        publish_window: None,
+    };
+    assert!(json(auth_ok.clone()).contains(r#""server_flags_ext":1"#));
+    assert_eq!(
+        Message::decode(auth_ok.encode().expect("encode")).expect("decode"),
+        auth_ok
+    );
+}
+
+/// An old peer ignores the extension fields, so the offer costs it nothing.
+#[test]
+fn a_peer_that_predates_the_flags_extension_reads_the_frames_it_always_did() {
+    let (client_flags, client_flags_ext) =
+        crate::offer_flags(crate::KNOWN_FLAGS, crate::KNOWN_EXT_FLAGS);
+    let old: OldPeer = serde_json::from_str(&json(Message::Auth {
+        tenant_id: "t1".to_string(),
+        token: "x".to_string(),
+        client_flags: Some(client_flags),
+        client_features: None,
+        client_features_hi: None,
+        client_flags_ext,
+    }))
+    .expect("an old peer reads the auth");
+    assert_eq!(
+        old,
+        OldPeer::Auth {
+            client_flags: Some(crate::KNOWN_FLAGS | crate::FLAG_EXTENDED),
+            client_features: None,
+        }
+    );
+}
+
+/// A JSON message is not a frame with an extension word.
+#[test]
+fn a_json_frame_with_the_extended_flag_is_refused() {
+    let frame = Frame::new(
+        crate::FLAG_EXTENDED,
+        Bytes::from_static(br#"{"type":"auth_ok","server_flags":7}"#),
+    )
+    .expect("frame");
+    assert!(matches!(
+        Message::decode(frame),
+        Err(crate::error::Error::UnknownFlags(_))
+    ));
 }

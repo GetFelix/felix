@@ -105,7 +105,8 @@ fn start_with_tls(
     tls: Option<Arc<rustls::ServerConfig>>,
     auth: Arc<dyn Authenticator>,
 ) -> Running {
-    let listener = MqttListener::bind(config, tls, auth).expect("bind");
+    let listener =
+        MqttListener::bind(config, tls, auth, Arc::new(felix_mqtt::NoMounts)).expect("bind");
     let addr = listener.local_addr().expect("addr");
     let ws_addr = listener.ws_local_addr().expect("ws addr");
     let shutdown = CancellationToken::new();
@@ -213,9 +214,14 @@ async fn binding_a_taken_port_is_an_error_not_a_panic() {
     let taken = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let mut taken_config = config(0);
     taken_config.listen = taken.local_addr().expect("addr");
-    let err = MqttListener::bind(&taken_config, None, Arc::new(Recorder::default()))
-        .err()
-        .expect("the port is taken");
+    let err = MqttListener::bind(
+        &taken_config,
+        None,
+        Arc::new(Recorder::default()),
+        Arc::new(felix_mqtt::NoMounts),
+    )
+    .err()
+    .expect("the port is taken");
     assert!(
         format!("{err:#}").contains("bind the MQTT listener"),
         "{err:#}"

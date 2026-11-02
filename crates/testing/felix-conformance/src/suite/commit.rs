@@ -35,6 +35,7 @@ pub(crate) async fn run_commit(
             client_flags: Some(felix_wire::KNOWN_FLAGS),
             client_features: Some(felix_wire::FEATURE_REDIRECT),
             client_features_hi: None,
+            client_flags_ext: None,
         },
     )
     .await?;
@@ -205,6 +206,7 @@ async fn old_peer_sees_a_plain_ok(
             client_flags: None,
             client_features: None,
             client_features_hi: None,
+            client_flags_ext: None,
         },
     )
     .await?;

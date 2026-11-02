@@ -124,6 +124,7 @@ impl Broker {
                 std::slice::from_ref(&headers),
                 Append::Trim { before, expected },
                 None,
+                None,
             )
             .await?
             .expect("a trim claims or is refused");

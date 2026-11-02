@@ -202,6 +202,9 @@ felix_broker_fleet_feature_enabled{feature} # 1 once an operator has finalized i
 felix_broker_replication_lag_records
 felix_broker_publish_quorum_wait_seconds    # a Quorum publish's wait for its majority; a tail near the replication tick is a missed wake
 felix_broker_replication_halted             # a count; GET /replication/halted says which
+felix_broker_replication_passes_waiting     # shards waiting for a pass slot; high for long means more busy shards than the broker ships at once
+felix_broker_replication_slot_wait_seconds  # by queue; how long each waited for its slot
+felix_broker_replication_scans_total        # by wake; its rate is the driver's scans per second
 felix_broker_replication_rebuilding         # halted followers the leader is rebuilding right now
 felix_broker_replication_rebuilds_total     # by outcome: started, completed, refused
 felix_broker_replication_drain_withheld_total # by log; a planned move waiting to hand over group state or counters
@@ -216,6 +219,8 @@ felix_broker_credential_refreshes_total     # by outcome: ok, unavailable
 felix_broker_credential_rotations_total     # by outcome: ok, rejected; a token file rewritten from outside
 felix_revocation_feed_last_success_seconds  # Unix time of the last good poll of principal revocations (start time until one succeeds)
 felix_revocation_feed_poll_errors_total     # failed polls of that feed
+felix_jwks_renew_errors_total               # failed background renewals of a tenant's signing keys
+felix_jwks_oldest_age_seconds               # age of the oldest tenant key set held; unused past 86400
 ```
 
 **Alert on `time() - felix_revocation_feed_last_success_seconds`** growing past
@@ -274,7 +279,9 @@ connections that never got to `CONNECT`; `auth_timeout`, `auth_required`,
 `auth_unavailable` means the control plane could not be asked and is worth an
 alert. `token_expired`, `revoked` and `keepalive_timeout` end a live connection.
 `publish_unsupported`, `subscribe_unsupported` and `will_unsupported` count what
-the listener cannot do yet. Reasons that start with `ws_` are WebSocket
+the listener cannot do yet. `unmounted` counts a `PUBLISH` to a topic that is
+under no stream's mount, and `invalid_topic_name` one whose topic name is not
+allowed (empty, a wildcard, a NUL, or too long). Reasons that start with `ws_` are WebSocket
 upgrades that were refused (`ws_origin`, `ws_header_too_large`,
 `ws_upgrade_timeout`, `ws_not_http`, `ws_bad_request`, `ws_not_upgrade`,
 `ws_version`, `ws_subprotocol`, `ws_bad_key`, `ws_upgrade_write`, and

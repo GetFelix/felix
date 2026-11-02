@@ -158,6 +158,7 @@ impl Cluster {
                 region: None,
                 routing: Default::default(),
                 incarnation: 0,
+                mount: None,
             })
             .await
             .expect("stream");

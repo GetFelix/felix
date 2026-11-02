@@ -73,7 +73,7 @@ impl Broker {
         payloads: &[Bytes],
     ) -> Result<usize> {
         Ok(self
-            .publish_batch_with_outcome(handle, payloads, None)
+            .publish_batch_with_outcome(handle, payloads, None, None)
             .await?
             .subscribers)
     }
@@ -92,8 +92,11 @@ impl Broker {
         handle: &StreamHandle,
         payloads: &[Bytes],
         publisher: Option<&Bytes>,
+        headers: Option<&[Option<Bytes>]>,
     ) -> Result<PublishOutcome> {
-        let claimed = self.claim_publish(handle, payloads, publisher).await?;
+        let claimed = self
+            .claim_publish(handle, payloads, publisher, headers)
+            .await?;
         self.complete_publish(claimed).await
     }
 
@@ -114,14 +117,21 @@ impl Broker {
     /// in-memory stream are told it; a durable stream stores it with each
     /// record only when [`Broker::records_publishers`] says so, and its
     /// subscribers are told only what was stored.
+    ///
+    /// `headers` is each record's key and headers block (see
+    /// `felix_wire::RecordHeaders`), one per payload, or `None` when no record
+    /// has one. A durable stream stores them and subscribers are told what was
+    /// stored; a broker that does not accept headers refuses the publish with
+    /// [`BrokerError::RecordHeadersNotEnabled`] rather than drop them.
     pub async fn claim_publish(
         &self,
         handle: &StreamHandle,
         payloads: &[Bytes],
         publisher: Option<&Bytes>,
+        headers: Option<&[Option<Bytes>]>,
     ) -> Result<ClaimedPublish> {
         Ok(self
-            .claim(handle, payloads, Append::Plain, publisher)
+            .claim(handle, payloads, Append::Plain, publisher, headers)
             .await?
             .expect("a plain append always claims"))
     }
@@ -147,7 +157,7 @@ impl Broker {
             return Err(BrokerError::EmptyConditionalPublish);
         }
         Ok(self
-            .claim(handle, payloads, Append::At(expected), publisher)
+            .claim(handle, payloads, Append::At(expected), publisher, None)
             .await?
             .expect("a conditional append claims or is refused"))
     }
@@ -175,9 +185,16 @@ impl Broker {
         payloads: &[Bytes],
         append: Append<'_>,
         publisher: Option<&Bytes>,
+        headers: Option<&[Option<Bytes>]>,
     ) -> Result<Option<ClaimedPublish>> {
         if !handle.state.active.load(Ordering::Acquire) {
             return Err(BrokerError::StreamHandleInactive(handle.id()));
+        }
+        let headers = usable_headers(payloads, headers)?;
+        // Refused, not dropped: the client would think they were kept. An
+        // in-memory stream stores nothing, so it has nothing to gate.
+        if headers.is_some() && handle.state.durable.is_some() && !self.records_headers() {
+            return Err(BrokerError::RecordHeadersNotEnabled);
         }
 
         // What subscribers are told is what replay will find: on a durable
@@ -191,6 +208,7 @@ impl Broker {
             handle: handle.clone(),
             payloads: payloads.to_vec(),
             publisher: publisher.cloned(),
+            record_headers: headers.map(Arc::from),
             timestamp_micros: None,
             commit: None,
             trim: None,
@@ -231,12 +249,19 @@ impl Broker {
             let (pending, turn) = match append {
                 Append::Plain => {
                     durable
-                        .begin_append(payloads, &publishers, timestamp_micros, order)
+                        .begin_append(payloads, &publishers, headers, timestamp_micros, order)
                         .await?
                 }
                 Append::Marked(marks) => {
                     durable
-                        .begin_append_marked(payloads, marks, &publishers, timestamp_micros, order)
+                        .begin_append_marked(
+                            payloads,
+                            marks,
+                            &publishers,
+                            headers,
+                            timestamp_micros,
+                            order,
+                        )
                         .await?
                 }
                 Append::At(expected) => durable
@@ -245,6 +270,7 @@ impl Broker {
                         payloads,
                         &[],
                         &publishers,
+                        headers,
                         timestamp_micros,
                         order,
                     )
@@ -259,6 +285,7 @@ impl Broker {
                             std::slice::from_ref(record),
                             &[RecordMark::Commit],
                             &publishers,
+                            None,
                             timestamp_micros,
                             order,
                         )
@@ -273,6 +300,7 @@ impl Broker {
                         std::slice::from_ref(record),
                         &[RecordMark::Commit],
                         &publishers,
+                        None,
                         timestamp_micros,
                         order,
                     )
@@ -300,6 +328,7 @@ impl Broker {
                         sequence,
                         payloads,
                         &publishers,
+                        headers,
                         timestamp_micros,
                         order,
                     )
@@ -330,6 +359,35 @@ impl Broker {
     /// finish on a detached task. See `publish/completion.rs`.
     pub async fn complete_publish(&self, claimed: ClaimedPublish) -> Result<PublishOutcome> {
         self.complete_claimed(claimed, None).await
+    }
+
+    /// [`Self::complete_publish`], telling `answer` the outcome as soon as
+    /// the batch is durable and in the replay ring, before it is handed to
+    /// subscribers.
+    ///
+    /// The publisher's answer then neither waits for nor queues behind the
+    /// work of waking every subscriber. Delivery order is unchanged: the batch
+    /// keeps its commit turn until its fanout is done, and a later batch
+    /// waits for that. The outcome `answer` is given counts no subscribers.
+    pub async fn complete_publish_answering(
+        &self,
+        claimed: ClaimedPublish,
+        answer: impl FnOnce(Result<PublishOutcome>),
+    ) {
+        let send_start = t_now_if(claimed.sample);
+        completion::Finisher::new(completion::Completion::new(
+            claimed,
+            None,
+            self.log_capacity,
+            Arc::clone(&self.appended),
+        ))
+        .run_answering(answer)
+        .await;
+        if let Some(start) = send_start {
+            let send_ns = start.elapsed().as_nanos() as u64;
+            timings::record_send_ns(send_ns);
+            t_histogram!("broker_publish_send_ns").record(send_ns as f64);
+        }
     }
 
     /// [`Self::complete_publish`], telling `trim_applied` once a trim's floor
@@ -403,7 +461,7 @@ impl Broker {
         reuse: SequenceReuse,
     ) -> Result<IdempotentOutcome> {
         let claimed = self
-            .claim_batch_idempotent(handle, producer_id, sequence, payloads, reuse, None)
+            .claim_batch_idempotent(handle, producer_id, sequence, payloads, reuse, None, None)
             .await?;
         self.complete_idempotent(claimed).await
     }
@@ -415,6 +473,8 @@ impl Broker {
     /// producer's next batch can be checked and claimed without waiting for
     /// this one's flush. [`Self::complete_idempotent`] does the rest, and the
     /// commit sequencer keeps its answer behind every earlier claim's.
+    // One parameter per part of a record, as `claim` has.
+    #[allow(clippy::too_many_arguments)]
     pub async fn claim_batch_idempotent(
         &self,
         handle: &StreamHandle,
@@ -423,6 +483,7 @@ impl Broker {
         payloads: &[Bytes],
         reuse: SequenceReuse,
         publisher: Option<&Bytes>,
+        headers: Option<&[Option<Bytes>]>,
     ) -> Result<IdempotentClaim> {
         let Some(log) = &handle.state.durable else {
             return self
@@ -433,10 +494,12 @@ impl Broker {
                     payloads,
                     reuse,
                     publisher,
+                    headers,
                 )
                 .await
                 .map(IdempotentClaim::Done);
         };
+        let headers = usable_headers(payloads, headers)?;
         // The turn serialises this producer's batches, so two re-sends of one
         // sequence cannot both find it unwritten. Held across the append for
         // that reason; the log sees the batch the moment it is written.
@@ -463,11 +526,11 @@ impl Broker {
                     let marks: Vec<RecordMark> =
                         RecordMark::for_batch(producer_id, sequence, payloads.len()).collect();
                     let claimed = self
-                        .claim(handle, payloads, Append::Marked(&marks), publisher)
+                        .claim(handle, payloads, Append::Marked(&marks), publisher, headers)
                         .await?
                         .expect("a marked append always claims");
                     return Ok(IdempotentClaim::Appended {
-                        claimed,
+                        claimed: Box::new(claimed),
                         offsets: None,
                     });
                 }
@@ -491,7 +554,13 @@ impl Broker {
                         sequence,
                     };
                     let Some(claimed) = self
-                        .claim(handle, &payloads[held as usize..], append, publisher)
+                        .claim(
+                            handle,
+                            &payloads[held as usize..],
+                            append,
+                            publisher,
+                            headers.map(|headers| &headers[held as usize..]),
+                        )
                         .await?
                     else {
                         // Something landed after it since it was classified,
@@ -499,7 +568,7 @@ impl Broker {
                         continue;
                     };
                     return Ok(IdempotentClaim::Appended {
-                        claimed,
+                        claimed: Box::new(claimed),
                         offsets: Some((first, first + u64::from(len) - 1)),
                     });
                 }
@@ -539,7 +608,7 @@ impl Broker {
                 })
             }
             IdempotentClaim::Appended { claimed, offsets } => {
-                let outcome = self.complete_publish(claimed).await?;
+                let outcome = self.complete_publish(*claimed).await?;
                 Ok(IdempotentOutcome {
                     outcome: PublishOutcome {
                         subscribers: outcome.subscribers,
@@ -553,6 +622,7 @@ impl Broker {
 
     /// The same contract for a stream with no log: the sequences are kept in
     /// memory, and last as long as this leader does.
+    #[allow(clippy::too_many_arguments)]
     async fn publish_idempotent_in_memory(
         &self,
         handle: &StreamHandle,
@@ -561,6 +631,7 @@ impl Broker {
         payloads: &[Bytes],
         reuse: SequenceReuse,
         publisher: Option<&Bytes>,
+        headers: Option<&[Option<Bytes>]>,
     ) -> Result<IdempotentOutcome> {
         let producers = &handle.state.producers;
         let turn = producers.turn(producer_id, sequence)?;
@@ -576,7 +647,7 @@ impl Broker {
             Sequenced::Append => {
                 let digest = PayloadDigest::of(payloads);
                 let outcome = self
-                    .publish_batch_with_outcome(handle, payloads, publisher)
+                    .publish_batch_with_outcome(handle, payloads, publisher, headers)
                     .await?;
                 producers.remember(producer_id, sequence, outcome, digest);
                 Ok(IdempotentOutcome {
@@ -586,6 +657,26 @@ impl Broker {
             }
         }
     }
+}
+
+/// `headers` if it holds a block, else `None`, so a batch where no record has
+/// headers is the plain batch. One entry per payload, or it is not a batch's
+/// headers at all.
+fn usable_headers<'a>(
+    payloads: &[Bytes],
+    headers: Option<&'a [Option<Bytes>]>,
+) -> Result<Option<&'a [Option<Bytes>]>> {
+    let Some(headers) = headers.filter(|headers| headers.iter().any(Option::is_some)) else {
+        return Ok(None);
+    };
+    if headers.len() != payloads.len() {
+        return Err(BrokerError::Storage(format!(
+            "{} header blocks for {} records",
+            headers.len(),
+            payloads.len()
+        )));
+    }
+    Ok(Some(headers))
 }
 
 /// How [`Broker::claim`] writes a batch to a durable log.
@@ -663,7 +754,7 @@ pub enum IdempotentClaim {
     /// Appended here; `offsets` overrides the claim's own when the batch
     /// finished one a stopped leader had started.
     Appended {
-        claimed: ClaimedPublish,
+        claimed: Box<ClaimedPublish>,
         offsets: Option<(u64, u64)>,
     },
 }
@@ -673,6 +764,9 @@ pub struct ClaimedPublish {
     payloads: Vec<Bytes>,
     /// Who published the batch, as its subscribers are told.
     publisher: Option<Bytes>,
+    /// Each record's headers block, as its subscribers are told, when any
+    /// record has one.
+    record_headers: Option<Arc<[Option<Bytes>]>>,
     /// When a durable batch was appended. `None` on an in-memory stream.
     timestamp_micros: Option<u64>,
     /// A commit's state updates; `payloads` is then its one event.

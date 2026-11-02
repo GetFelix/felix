@@ -151,11 +151,13 @@ async fn an_old_client_is_unaffected_and_sequences_follow_the_named_shard() -> R
         client_flags: Some(felix_wire::ORIGINAL_V1_FLAGS),
         client_features: Some(felix_wire::FEATURE_IDEMPOTENT_PRODUCER),
         client_features_hi: None,
+        client_flags_ext: None,
     })
     .await?
     {
         Some(Message::AuthOk {
             server_features_hi: None,
+            server_flags_ext: None,
             ..
         }) => {}
         other => anyhow::bail!("expected an AuthOk with no extended word, got {other:?}"),

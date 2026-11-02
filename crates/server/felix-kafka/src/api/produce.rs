@@ -236,7 +236,7 @@ async fn publish(
     } else {
         shared
             .broker
-            .publish_batch_with_outcome(handle, &batch.values, None)
+            .publish_batch_with_outcome(handle, &batch.values, None, None)
             .await
             .map(|outcome| (outcome, false))
     };
