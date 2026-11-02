@@ -3278,12 +3278,13 @@ append stream and the rest never shipped: their writes were never acknowledged
   the shards whose bit is set, plus any shard whose last pass left work: a mark
   below the tail, a follower behind, halted, rebuilding or not answering, an
   exchange still out, or a drain or route change in progress. A shard whose
-  last pass settled is skipped. Consumer-group acknowledgements and
-  dead-letter writes mark their shard the same way. Two shards that hash to the same bit both get a
-  pass, which costs a pass and nothing else.
+  last pass settled is skipped. A consumer-group acknowledgement that moves
+  the cursor, and a record being dead-lettered, mark their shard the same way.
+  Two shards that hash to the same bit both get a pass, which costs a pass and
+  nothing else.
 - **The tick and a route change pass every shard.** That refreshes each
-  shard's report and retries what nothing else wakes, such as a group seek or
-  a dead letter discarded by an operator.
+  shard's report and retries what nothing else wakes, such as a group seek, a
+  redrive, or a dead letter an operator discarded.
 - **A shard that cannot start waits in a queue, oldest first.** There are two:
   urgent (an append, a write waiting on the mark, a follower answer that moved
   a cursor) and refresh (the tick, or a follower to try again). Urgent shards
