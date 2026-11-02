@@ -134,8 +134,8 @@ fn stream_placement_is_unchanged_by_cache_placement() {
         ("payments", 0, "broker-c"),
         ("payments", 1, "broker-b"),
         ("payments", 2, "broker-a"),
-        ("payments", 3, "broker-c"),
-        ("payments", 4, "broker-b"),
+        ("payments", 3, "broker-b"),
+        ("payments", 4, "broker-c"),
     ];
 
     let streams = vec![stream("orders", 8), stream("payments", 5)];
@@ -151,7 +151,9 @@ fn stream_placement_is_unchanged_by_cache_placement() {
         "stream placement moved with no caches in play",
     );
 
-    // And placing caches alongside them moves nothing either.
+    // Cache leaders count toward the cluster's totals, so placing caches
+    // alongside may change which broker takes a stream's shard, but not how
+    // each stream's leaders spread.
     let alongside = placements_by_kind(&plan(
         &streams,
         &[cache("sessions", 6), cache("orders", 3)],
@@ -165,7 +167,22 @@ fn stream_placement_is_unchanged_by_cache_placement() {
         .map(|((_, name, shard), leader)| ((name, shard), leader))
         .collect();
 
-    assert_eq!(stream_placements, expected);
+    let spread = |placements: &BTreeMap<(String, u32), String>, name: &str| {
+        let mut counts = BTreeMap::new();
+        for ((stream, _), leader) in placements {
+            if stream == name {
+                *counts.entry(leader.clone()).or_insert(0) += 1;
+            }
+        }
+        counts
+    };
+    for name in ["orders", "payments"] {
+        assert_eq!(
+            spread(&stream_placements, name),
+            spread(&expected, name),
+            "{name}"
+        );
+    }
 }
 
 /// One pass over both, so a node's `max_shards` is a budget for everything it

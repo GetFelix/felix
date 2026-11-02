@@ -450,3 +450,57 @@ fn a_capped_broker_is_not_filled_past_its_cap() {
     assert_eq!(spread_on(&ids, &existing, None, Some("s")), vec![5, 5, 2]);
     assert_no_move_undone(&moved);
 }
+
+/// Streams created a batch per pass, as an orchestrator creating a stream per
+/// job does, take their leaders without moving anyone else's. Choosing among
+/// brokers under the ceiling of the cluster's share let a batch end the totals
+/// two apart, and the balancer then moved the first shard in key order off the
+/// broker leading most. That was the same few caches each time, and moving
+/// one holds its writes for the fence.
+#[test]
+fn creating_streams_in_batches_moves_no_existing_leader() {
+    let caches: Vec<Cache> = ["drains", "epochs", "leases"]
+        .iter()
+        .map(|name| quorum_cache(name, 1))
+        .collect();
+    let mut streams: Vec<Stream> = Vec::new();
+    let mut existing: Vec<ShardAssignment> = plan_with(
+        &streams,
+        &caches,
+        &live(&NODES),
+        &[],
+        &NothingCaughtUp,
+        MovePolicy::default(),
+    )
+    .to_place()
+    .map(|(key, leader, replicas)| assignment_for(key, leader, replicas.to_vec()))
+    .collect();
+    let mut moved = Vec::new();
+    for batch in 0..20 {
+        for job in 0..16 {
+            let id = batch * 16 + job;
+            streams.push(quorum(&format!("job.{id}.out"), 1));
+            streams.push(quorum(&format!("job.{id}.snap"), 1));
+        }
+        let plan = plan_with(
+            &streams,
+            &caches,
+            &live(&NODES),
+            &existing,
+            &Level::of(&existing),
+            MovePolicy::default(),
+        );
+        moved.extend(
+            plan.moves()
+                .map(|(key, step, _)| format!("{}: {step:?}", key.stream)),
+        );
+        let placed: Vec<ShardAssignment> = plan
+            .to_place()
+            .map(|(key, leader, replicas)| assignment_for(key, leader, replicas.to_vec()))
+            .collect();
+        assert_eq!(placed.len(), 32, "batch {batch} placed {placed:?}");
+        existing.extend(placed);
+        assert!(within_one(&spread(&existing, None, None)), "batch {batch}");
+    }
+    assert!(moved.is_empty(), "moved {moved:?}");
+}

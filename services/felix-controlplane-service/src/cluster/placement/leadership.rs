@@ -92,7 +92,8 @@ impl<'a> Leadership<'a> {
 /// The even shares one shard is placed against.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Shares {
-    /// Leaders per node cluster-wide, rounded up.
+    /// Leaders per node cluster-wide, rounded down and up.
+    pub(super) cluster_floor: u32,
     pub(super) cluster: u32,
     /// Leaders per node of this shard's stream, rounded down and up.
     pub(super) floor: u32,
@@ -100,10 +101,12 @@ pub(super) struct Shares {
 }
 
 impl Shares {
-    /// `shards` of one stream over `nodes` eligible nodes.
-    pub(super) fn new(cluster: u32, shards: u32, nodes: usize) -> Self {
+    /// `shards` of one stream over `nodes` eligible nodes, in a cluster whose
+    /// even share of leaders is `cluster_floor` to `cluster`.
+    pub(super) fn new(cluster_floor: u32, cluster: u32, shards: u32, nodes: usize) -> Self {
         if nodes == 0 {
             return Self {
+                cluster_floor,
                 cluster,
                 floor: 0,
                 ceil: u32::MAX,
@@ -111,6 +114,7 @@ impl Shares {
         }
         let nodes = nodes as u32;
         Self {
+            cluster_floor,
             cluster,
             floor: shards / nodes,
             ceil: shards.div_ceil(nodes).max(1),

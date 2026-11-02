@@ -46,17 +46,21 @@ pub(super) fn choose<'a>(
     // to the node count every node holds a role for every shard, so the role
     // cap says nothing about who leads -- and a cluster placed with every
     // leader on one node would be moved apart again by the next pass.
-    let under_leader_share = |node: &Node| leaders.total(&node.node_id) < shares.cluster;
+    // Each node gets its floor of the cluster's leaders before any gets its
+    // ceiling, so a batch of new shards leaves the totals no more than one
+    // apart. Up to the ceiling only, a batch could end two apart, and the
+    // balancer would then move an existing leader to even them out.
+    let under_led = |node: &Node, share: u32| leaders.total(&node.node_id) < share;
     // Each node gets its floor of the stream before any gets its ceiling, so
     // a stream ends no more than one apart wherever its shards land.
     let under_stream = |node: &Node, share: u32| leaders.of(key, &node.node_id) < share;
-    let best = |stream: Option<u32>, led: bool| {
+    let best = |stream: Option<u32>, led: Option<u32>| {
         eligible
             .iter()
             .filter(|node| has_capacity(node))
             .filter(|node| under_share(node))
             .filter(|node| stream.is_none_or(|share| under_stream(node, share)))
-            .filter(|node| !led || under_leader_share(node))
+            .filter(|node| led.is_none_or(|share| under_led(node, share)))
             .max_by(|a, b| {
                 score(key, &a.node_id)
                     .cmp(&score(key, &b.node_id))
@@ -78,12 +82,11 @@ pub(super) fn choose<'a>(
                     .then_with(|| a.node_id.cmp(&b.node_id))
             })
     };
-    best(Some(shares.floor), true)
-        .or_else(|| best(Some(shares.floor), false))
-        .or_else(|| best(Some(shares.ceil), true))
-        .or_else(|| best(Some(shares.ceil), false))
-        .or_else(|| best(None, true))
-        .or_else(|| best(None, false))
+    let led = [Some(shares.cluster_floor), Some(shares.cluster), None];
+    [Some(shares.floor), Some(shares.ceil), None]
+        .into_iter()
+        .flat_map(|stream| led.map(|led| (stream, led)))
+        .find_map(|(stream, led)| best(stream, led))
         .or_else(least_loaded)
         .map(|n| n.node_id.as_str())
 }
