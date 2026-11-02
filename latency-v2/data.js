@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793625482403,
+  "lastUpdate": 1793626132556,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -53526,6 +53526,72 @@ window.BENCHMARK_DATA = {
             "range": "777.01",
             "unit": "us",
             "extra": "trials: 5\nmedian: 464.00\nmean: 911.40\nstdev: 777.01\ncv: 85.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ed5423a8a14c076d4db4047a4e07e34beba9fde0",
+          "message": "ci: price the broker-wide byte budgets and document how to size them (#1338) (#1770)\n\nPart of #1338 (closes it).\n\nDecision: the broker-wide byte totals stay off by default. The cost is small, but no fixed number is right for every machine, so the docs now say how to size one and what it costs.\n\nWhat changed\n- `perf-env-ab.yml`: a manual workflow that builds one ref and runs the fast perf subsets (plus new 16 KiB and 64 KiB cells in `ci_subset_memory_totals.yml`) with env A and env B, alternating sides and flipping who goes first each round, then reports with the existing Welch comparison. Reusable for any setting.\n- `configuration.md`: sizing rule and measured cost for `subscriber_queue_max_bytes_total`; pointers in `building.md` and `benchmarks.md`; changelog entry.\n\nEvidence (run 41432787242, 20 rounds, from this branch with a temporary push trigger that is removed again; an earlier run 41428797508 double counted the 64 KiB fanout-10 cell, which the review caught, so its numbers are not used): B sets `FELIX_SUB_QUEUE_MAX_BYTES_TOTAL=4294967296`, `FELIX_REPLAY_RING_MAX_BYTES_TOTAL=4294967296`, `FELIX_CACHE_WATCH_MAX_BYTES_TOTAL=1073741824`; the raw JSONL confirms the env reached side B only. Median throughput, 20 trials per side, one cell per row:\n\n| fanout | batch | payload | A msg/s | B msg/s | change |\n|---|---|---|---|---|---|\n| 1 | 1 | 256 B | 10481 | 10495 | +0.1% |\n| 1 | 64 | 1 KiB | 503909 | 536156 | +6.4% (-4.3% in the earlier run: noise) |\n| 1 | 64 | 16 KiB | 54787 | 53737 | -1.9% |\n| 1 | 64 | 64 KiB | 14593 | 14418 | -1.2% |\n| 10 | 1 | 256 B | 7457 | 7474 | +0.2% |\n| 10 | 64 | 1 KiB | 122012 | 121275 | -0.6% |\n| 10 | 64 | 16 KiB | 7920 | 7966 | +0.6% |\n| 10 | 64 | 64 KiB | 2248 | 2252 | +0.2% |\n\nNo throughput regression is flagged. Latency is flagged on the two big fanout-10 cells: 64 KiB p50 38 ms to 340 ms, 16 KiB p99 about 2x (CV 60 to 100% on both sides). At 64 KiB x fanout 10 the 20,000 queued messages are about 12 GB across subscribers, more than a 4 GiB total, so publishers wait on the budget. That is queueing delay at the same throughput, in a batched run, which does not measure request latency, and the docs now say to size the total above the working set.\n\nDesign calls\n- Default stays 0. Throughput cost is nil in these cells, but the latency result shows a total near the working set adds delay, and a fixed number is wrong on some machine: a stalled subscriber holds `subscriber_queue_max_bytes` (128 MiB) plus its connection's share of `subscriber_egress_max_bytes` (256 MiB), about 384 MiB alone on a connection, so 4 GiB covers about 10 stalled subscribers before fast ones are affected. Deriving a default from the cgroup memory limit is a feature of its own.\n- Not done: a sharded budget (the shared counter did not show up in throughput), and a cluster run of stalled-versus-fast subscribers (documented behaviour with unit coverage in `connection_writer.rs`).\n- Review findings fixed: wrong 256 MiB queue default, a double counted cell, a job that would die on one failed trial, wording.",
+          "timestamp": "2026-11-02T05:15:38-08:00",
+          "tree_id": "d6e2264f0c4ac6eb58b5c24d39891df01f592aa0",
+          "url": "https://github.com/GetFelix/felix/commit/ed5423a8a14c076d4db4047a4e07e34beba9fde0"
+        },
+        "date": 1793626125964,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 151,
+            "range": "3.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 151.00\nmean: 152.40\nstdev: 3.71\ncv: 2.44%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 222,
+            "range": "91.08",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 222.00\nmean: 262.20\nstdev: 91.08\ncv: 34.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 285,
+            "range": "897.49",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 285.00\nmean: 685.60\nstdev: 897.49\ncv: 130.91%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 197,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 197.00\nmean: 197.60\nstdev: 0.89\ncv: 0.45%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 384,
+            "range": "5.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 384.00\nmean: 384.80\nstdev: 5.45\ncv: 1.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 544,
+            "range": "36.09",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 544.00\nmean: 527.40\nstdev: 36.09\ncv: 6.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
