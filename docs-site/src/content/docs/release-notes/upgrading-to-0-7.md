@@ -4,7 +4,7 @@ description: What an operator moving a cluster from 0.6.2 to the 0.7 line needs 
 ---
 
 :::caution[0.7 is not released]
-The 0.7 line is in development on `main` as `0.7.0-preview.1`. This page lists
+The 0.7 line is in preview; the newest is `0.7.0-preview.2`. This page lists
 what has changed since 0.6.2 and is reviewed and finalized when 0.7.0 is
 tagged. More will be added before then. Do not plan a production upgrade from
 it yet. The released versions are in the [release notes](/release-notes/).

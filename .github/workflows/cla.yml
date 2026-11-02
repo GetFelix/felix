@@ -6,6 +6,12 @@ on:
   pull_request_target:
     types: [opened, closed, synchronize]
 
+concurrency:
+  # Only a newer pull_request_target run cancels the PR's older one; a
+  # signature comment or `recheck` run is never cancelled.
+  group: cla-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request_target' }}
+
 permissions:
   actions: write
   contents: write

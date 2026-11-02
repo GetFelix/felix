@@ -121,10 +121,14 @@ jobs:
     needs: plan
     if: needs.plan.outputs.build == 'true'
     uses: ./.github/workflows/release.yml
+    # A called workflow gets no more than this grants, and GitHub checks every
+    # job in it before the run starts, even jobs a nightly skips. release.yml's
+    # docs redeploy needs actions: write; without it the run fails to start.
     permissions:
       contents: write
       packages: write
       id-token: write
+      actions: write
     with:
       tag: ${{ needs.plan.outputs.tag }}
       ref: ${{ needs.plan.outputs.sha }}

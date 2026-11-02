@@ -1,6 +1,6 @@
 {
   "name": "felix-client-win32-x64-msvc",
-  "version": "0.7.0-preview.2",
+  "version": "0.7.0-preview.3",
   "description": "The win32-x64-msvc binary for felix-client. Installed automatically; do not depend on it directly.",
   "main": "felix.win32-x64-msvc.node",
   "files": [
@@ -20,7 +20,7 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/GetFelix/felix.git",
+    "url": "git+https://github.com/GetFelix/felix.git",
     "directory": "crates/sdk/felix-typescript"
   },
   "homepage": "https://github.com/GetFelix/felix",

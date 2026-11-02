@@ -909,6 +909,9 @@ jobs:
           # clippy that rust-toolchain.toml lists, which a build does not need
           # and which failed with "detected conflict: 'bin/cargo-fmt'".
           RUSTUP_TOOLCHAIN: "1.99.1"
+          # No RUSTFLAGS here: setting it on the aarch64 leg made zig receive
+          # rustc's -Wl,--fix-cortex-a53-843419, which it rejects. zig's notice
+          # about ignoring -O1 is only a warning.
         run: napi build --platform --release --target ${{ matrix.target }} $ZIG
 
       - name: The addon needs no glibc newer than 2.28

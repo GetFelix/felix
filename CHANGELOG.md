@@ -11,6 +11,184 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+## [0.7.0-preview.2] - 2026-11-01
+
+0.7.0-preview.2 adds the conditional head trim: a client can now remove the
+oldest records of a stream, but only at the tail it expects, so a stale caller
+is refused instead of cutting data it has not seen. It works through `felixctl
+stream trim` and the Rust, C, C#, Python and TypeScript clients (`trim_before`),
+survives a leader change, and needs a broker and fleet that have turned on the
+`head_trim` feature. The Rust client's `Client` is now the cluster-aware client
+(a breaking rename for Rust callers; the migration steps are below), a client
+given several broker addresses tries the next one after 250 ms instead of
+waiting out a silent one, and a failed `publish_if` or `commit` now says whether
+it may have written. A just-promoted `Quorum` leader refuses reads and `Latest`
+subscribes with a retryable `not_ready` until a majority holds its first record
+(#1718). The replica-set change work for #1009 lands here switched off: its
+control-plane, replica and fencing pieces ship dormant until a fleet can
+finalize them.
+
+### Added
+- The control plane adopts a leader that a shard's replicas elected under
+  `replica_election` (#1009). A broker's replica report can name its election
+  (`elected`); on the set the control plane records the broker becomes the
+  leader at the elected generation, on any other set only the generation is
+  taken, and every later generation is above it. Promotion on the followers'
+  word waits `FELIX_SHARD_ELECTION_HOLD_MS` (10 s) under the feature. Nothing
+  changes until `replica_election` is finalized, which no broker supports
+  yet. Under Raft adoption takes metadata level 21.
+- Joint fences, dormant behind the `joint_fence` fleet feature, which no fleet can finalize yet: a leader whose replica set changed fences a majority of the set it leaves as well as of the new one before it serves, never counting a learner, and the generation right after one a broker serves is fenced too (#1009).
+- While a replica set change is pending, a leader acknowledges a record only when a majority of the new set and a majority of the set being left hold it, and reports its generation-start record as started so the control plane can take the new set (#1009). Dormant behind the `joint_fence` fleet feature, which no fleet can finalize yet.
+- The control plane keeps a cut-over's new replica set pending under
+  `replica_election` (#1009). The old set stays the control plane's until the
+  leader reports its generation's start record acknowledged on a majority of
+  both, and a failover, a cancel, a consistency change or
+  `FELIX_SHARD_PENDING_SET_TIMEOUT_MS` (ten minutes) drops it. Nothing changes until
+  `replica_election` is finalized, which no broker supports yet. Postgres
+  runs migration `0038`; under Raft it takes metadata level 21.
+- Replicas keep the replica set they answer at, refuse a fence or batch on an older set (`StaleSet`), refuse a candidate while they still hear their leader, and a leader that answers a newer fence stops counting. Dormant: only between brokers run with the test switch `FELIX_INTERNAL_ELECTION` (#1009). Internal frames that wrap a batch no longer copy its body.
+- The C ABI, C#, Python and TypeScript clients send the conditional head
+  trim, step 8 of #1662. `felix_client_trim_before` fills a
+  `FelixTrimOutcome` (a stale tail is an answer with `trimmed` false and the
+  tail); `FelixClient.TrimBeforeAsync` returns a `ConditionalTrim`; Python's
+  `trim_before` (sync and async) returns a `ConditionalTrim` and TypeScript's
+  `trimBefore` resolves to one. A broker without `FEATURE_HEAD_TRIM` is refused
+  locally: `FELIX_STATUS_UNSUPPORTED`, `FelixStatus.Unsupported`, Python's
+  `TrimError` and TypeScript's `TrimError`. A trim that timed out is
+  outcome unknown in every binding. `client-fixture` gains a `trimmer_token`
+  and a `trim_stream`, finalizes `head_trim`, and four `head_trim.*`
+  conformance scenarios cover the bindings. The bindings' cursor errors still
+  carry only the floor, not the trim's headers.
+  A publish refusal other than a stale tail, answered to a trim, is now a
+  `BrokerError` (`invalid_request`) instead of a `PublishRefused`.
+- The broker writes a conditional head trim in process, the third piece of
+  #1662. `Broker::trim_before_at` appends the trim record only at the tail
+  the caller expects, refuses a floor past the record, a stale no-op and a
+  stream holding atomic commits, and drops the replay ring's entries below
+  the floor in the record's turn. Every reader now starts at the readable
+  base, including group cursors and the Kafka listener's fetch and earliest
+  offset, and `CursorTooOld` carries the setting trim's headers.
+  `StreamLog::base_offset` is now `physical_base`, beside `readable_base`.
+  A trim is answered only once the ring has it, and a no-op on a `Quorum`
+  stream waits for the committed mark, and a trim's waits end in
+  `TrimTimedOut`. Nothing on the wire writes a trim yet.
+- The Rust client and `felixctl` send the conditional head trim, step 7
+  of #1662. `Client::trim_before` and `Connection::trim_before` take a
+  shard, the new floor, the expected next offset and optional headers. A stale
+  offset comes back as `ConditionalTrim::Refused { tail }` and is not retried;
+  a timed-out trim is a `BrokerError` with `OutcomeUnknown`; a broker without
+  `FEATURE_HEAD_TRIM` is refused locally with `TrimError::Unsupported`.
+  `SubscribeCursorError` gains `trim_headers`, so it is no longer `Copy`.
+  `felixctl stream trim` prints where the trim landed and where reads start.
+  A cluster test shows a trim and its floor surviving the leader.
+- Storage applies a trim record's floor, the second piece of the conditional
+  head trim (#1662). Once a trim is durable, and committed on a `Quorum` log,
+  `read_range` below its floor returns `Trimmed` with the trim's headers,
+  `DiskLog::readable_base` reports where reads start, and the sealed
+  segments below the floor are deleted in the background. The floor is
+  derived from the trim records and rebuilt at open, with a new `head` file
+  as a cache. `read_range` now returns a `ReadPage` whose `next` says where
+  to carry on, since a page can be empty below the tail when only trims
+  remain. Nothing above storage writes a trim yet. See
+  `docs/durable-storage.md`, "Conditional head trim".
+- Storage has a trim record, the first piece of the conditional head trim
+  (#1662). It is a new record kind that holds a floor and the caller's
+  headers, and it needs segment format v7. A normal read leaves trim records
+  out, and `read_range_with_trims` returns them. Nothing writes one yet, so
+  a log stays on v6 or older and its bytes are unchanged. See
+  `docs/storage-format.md`, "Trim records".
+- Replication ships head trims, the fourth piece of #1662. A trim record
+  travels with mark byte `5` and its floor, and a follower of a `Quorum`
+  stream applies the floor only once the leader's commit offset passes the
+  record. A promoted leader raises its log's commit offset before it
+  publishes the quorum mark, so a trim it inherited applies before its first
+  read. A new fleet feature, `head_trim`, gates trims in a cluster, and a
+  new peer capability, `HEAD_TRIM`, keeps a batch holding a trim from any
+  follower that did not offer it; shipping counts that as the
+  `trim_unsupported` outcome of `felix_broker_replication_shipped_total`, and
+  logs it at most once a minute. Trims now fail closed:
+  `Broker::allow_head_trims_when` replaces `set_replication_enabled`, and a
+  broker refuses every trim with `HeadTrimNotEnabled` (formerly
+  `TrimNotReplicatedYet`) until startup says it runs alone or its fleet has
+  finalized `head_trim`. A new cluster finalizes `head_trim` at its first
+  registration. `mark_to_wire` no longer fails, and `UnshippableMark` is gone.
+- Clients can send a conditional head trim, the fifth piece of #1662.
+  `trim_before` names a shard, the floor and the expected tail, and is
+  answered with `trim_ok` (where the record landed and the new floor) or
+  `publish_refused` with `offset_mismatch`. It is negotiated as
+  `FEATURE_HEAD_TRIM`, the fifth bit of the extended feature word. Two new
+  error codes, `feature_not_enabled` (number 18) and `stream_has_commits`
+  (19), and the reasons `trim_past_tail`, `not_durable` and `trim_timed_out`
+  name each refusal. `subscribe_cursor_error` carries `trim_headers` below a
+  trim's floor, only to a client that offered the bit. A new action,
+  `stream.trim`, allows it, and `stream.manage` grants it too; the control
+  plane mints `stream.trim` into broker tokens only once the fleet has
+  finalized `head_trim`. The first trim writes a `head-trimmed` marker in the
+  data directory, and a broker holding it refuses to join a fleet that has
+  not finalized `head_trim`.
+
+### Changed
+- A client given several broker addresses no longer waits out a silent one
+  before trying the next (#1232). `Connection::connect_any` and a
+  `Client`'s connect and reconnect start each next address 250 ms after
+  the one before it, or at once when that one fails. The first to connect wins
+  and the rest are dropped. The Python, TypeScript and C bindings inherit this.
+- **Breaking: in the Rust `felix-client` crate, `Client` is now the cluster-aware
+  client** (#1470). Applications should always use it: it sends each request to the
+  broker that owns the shard and reconnects when a broker fails. A plain
+  connection to a cluster forwards publishes for shards its broker does not lead,
+  which cut in-memory throughput 2.4x and durable quorum-acked throughput 4.4x in
+  the v0.6.0 three-node run. The old single-connection type is now `Connection`,
+  kept public for tools that address one named broker. The Python, TypeScript, C
+  and C# clients already exposed the cluster client under the name `Client`, so
+  only Rust callers change.
+
+  Migrating:
+  - Rename in this order, or the second rename undoes the first: first `Client`
+    to `Connection`, then `ClusterClient` to `Client`.
+  - After both, `use felix_client::{Client, Connection}` brings in the
+    cluster-aware client (was `ClusterClient`) and the single-connection type
+    (was `Client`). `Client::connect(&seeds, server_name, config)` and
+    `Client::connect_seeds` keep their arguments.
+  - Code that held one broker address should move to `Client` with that address
+    as the only seed; a single broker needs nothing else. Use
+    `Connection::connect(addr, server_name, config)` only for tools that
+    address one named broker.
+  - `ClusterSubscription`, `ClusterCacheWatch` and the other `Cluster*` types
+    keep their names.
+- A failed `publish_if` or `commit` now says whether it may have written. The
+  Rust client wraps any failure after the send, other than a coded refusal, in
+  `AckLost`, and
+  `felix_client::outcome_unknown` is true for that and for a broker error
+  classed `outcome_unknown`, false for a refusal, validation error or
+  `forbidden`. A multi-record `publish_if` on a `Quorum` stream is documented as
+  not all or nothing: after an unknown outcome any prefix may exist, so re-read
+  from the expected offset. Use `commit` for a batch that must be all or
+  nothing. The Python, TypeScript and C bindings already map `AckLost` to their
+  outcome-unknown error, so they inherit this. (#1630)
+- An RF 2 shard kept closed because the failover's fence ids name a copy
+  beside the set of two now says so (#1635). The crashed leader's copy logs a
+  warning naming the extra id (a staged or joining successor the failover left
+  out), counts
+  `felix_broker_fence_refused_ids_beyond_two_total`, and its refusal reaches
+  the promoted leader's `felixctl inspect shard` reason.
+  A fence refusal's detail now shows there in general. Replication itself is
+  unchanged.
+- A crashed leader takes a fence under the set-of-two exception only when the fence is at the failover's generation and comes from that set's leader (#1638).
+- Built with Rust 1.99.1; the minimum supported Rust version stays 1.97.
+
+### Fixed
+- A `Quorum` leader that was just promoted no longer answers a `stream_read` with an empty page, or starts a `Latest` subscribe at offset 0, before a majority holds a record of its generation. It refuses them as `not_ready`, which is retryable (#1718).
+
+### Documentation
+- The shard model now covers a staged destination that votes beside an RF 2
+  failover (#1635). A leader restarted cleanly counts the staged copy toward a
+  `Quorum` write, so the promoted leader's refusal of the crashed leader's
+  fence is what keeps that write. The model checks that today's fence ids keep
+  it and that leaving the staged copy out of them loses it.
+- docs.getfelix.dev now serves the newest stable release's docs at the root and
+  the upcoming release's docs (from `main`) under `/next/`.
+
 ## [0.7.0-preview.1] - 2026-10-29
 
 0.7.0-preview.1 is the first 0.7 release. Python and TypeScript now wrap the

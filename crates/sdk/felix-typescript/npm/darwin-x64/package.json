@@ -1,6 +1,6 @@
 {
   "name": "felix-client-darwin-x64",
-  "version": "0.7.0-preview.2",
+  "version": "0.7.0-preview.3",
   "description": "The darwin-x64 binary for felix-client. Installed automatically; do not depend on it directly.",
   "main": "felix.darwin-x64.node",
   "files": [
@@ -20,7 +20,7 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/GetFelix/felix.git",
+    "url": "git+https://github.com/GetFelix/felix.git",
     "directory": "crates/sdk/felix-typescript"
   },
   "homepage": "https://github.com/GetFelix/felix",
