@@ -574,7 +574,7 @@ fn only_a_trim_needs_a_v7_segment() {
 #[test]
 fn only_headers_need_a_v8_segment() {
     let keyed = AppendRecord {
-        headers: Some(Bytes::from_static(b"key and headers")),
+        headers: Some(Box::new(Bytes::from_static(b"key and headers"))),
         ..record("value")
     };
     let dir = tempdir().expect("dir");
@@ -609,7 +609,7 @@ fn only_headers_need_a_v8_segment() {
     batch.push(AppendRecord {
         mark: RecordMark::Commit,
         publisher: Some(Bytes::from_static(b"alice")),
-        headers: Some(Bytes::new()),
+        headers: Some(Box::new(Bytes::new())),
         ..record("c")
     });
     let projected = writer.projected_size(&batch);
@@ -638,7 +638,7 @@ fn headers_on_a_full_size_body_are_refused() {
         .expect("create");
     let full = AppendRecord {
         payload: Bytes::from(vec![0u8; MAX_PAYLOAD_BYTES as usize - 4]),
-        headers: Some(Bytes::new()),
+        headers: Some(Box::new(Bytes::new())),
         ..record("")
     };
     assert!(matches!(

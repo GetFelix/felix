@@ -503,22 +503,32 @@ pub fn encode_record(
         Some(publisher) => (publisher, &[publisher.len() as u8][..]),
         None => (&[], &[]),
     };
-    let headers_len = headers.map(|headers| (headers.len() as u32).to_be_bytes());
-    let headers_len = headers_len.as_ref().map_or(&[][..], |len| &len[..]);
-    let headers = headers.unwrap_or_default();
-    let checksum = crc32(&[
-        &out[start..start + 24],
-        tag,
-        headers_len,
-        headers,
-        payload,
-        publisher,
-        publisher_len,
-    ]);
+    // Two more checksum parts cost every record, so only a record with
+    // headers pays for them.
+    let checksum = match headers {
+        None => crc32(&[
+            &out[start..start + 24],
+            tag,
+            payload,
+            publisher,
+            publisher_len,
+        ]),
+        Some(headers) => crc32(&[
+            &out[start..start + 24],
+            tag,
+            &(headers.len() as u32).to_be_bytes(),
+            headers,
+            payload,
+            publisher,
+            publisher_len,
+        ]),
+    };
     out.extend_from_slice(&checksum.to_be_bytes());
     out.extend_from_slice(tag);
-    out.extend_from_slice(headers_len);
-    out.extend_from_slice(headers);
+    if let Some(headers) = headers {
+        out.extend_from_slice(&(headers.len() as u32).to_be_bytes());
+        out.extend_from_slice(headers);
+    }
     out.extend_from_slice(payload);
     out.extend_from_slice(publisher);
     out.extend_from_slice(publisher_len);

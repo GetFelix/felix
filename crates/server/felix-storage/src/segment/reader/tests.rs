@@ -307,7 +307,7 @@ fn headers_in_an_older_segment_are_refused_by_the_reader() {
     let records = read(&path, &outcome, 0, usize::MAX, TrimRecords::Skip).expect("read");
     let headers: Vec<_> = records
         .iter()
-        .map(|record| record.headers.clone())
+        .map(|record| record.headers.as_deref().cloned())
         .collect();
     assert_eq!(headers, vec![None, Some(Bytes::from_static(b"k"))]);
 
