@@ -962,7 +962,7 @@ impl ReplicaHandler {
                         "stored a replicated batch but could not advance the stream's tail",
                     );
                 }
-                self.admit_when_caught_up(&log).await;
+                self.admit_when_caught_up(&key, log_kind, &log).await;
                 metrics::record_replicated(metrics::OUTCOME_OK);
                 InternalMessage::ReplicateOk(ReplicateOk {
                     correlation_id,

@@ -421,20 +421,11 @@ async fn a_replaced_copy_refuses_a_fence_without_a_set() {
 /// the counter log keeps no set, so a learner's empty counter log would
 /// otherwise count, and counter increments a majority acknowledged before
 /// the wipe would be lost (`AnswerCounterFence` in
-/// `docs/formal/FelixShard.tla`). Once re-admitted, it answers.
+/// `docs/formal/FelixShard.tla`).
 #[tokio::test]
 async fn a_counter_fence_is_refused_while_the_cache_copy_is_a_learner() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let broker = super::fence::cache_broker(dir.path());
-    let handler = ReplicaHandler::new(Arc::clone(&broker), super::fence::cache_router(6))
-        .with_fleet(marks(true))
-        .with_local_storage(StorageId::from_bytes(OWN))
-        .with_stickiness(Duration::ZERO)
-        .with_confirmed_routes(ConfirmedAs::new(Confirmed::Assigned {
-            generation: 6,
-            leader: "broker-a".to_string(),
-        }) as _);
-    let on = |log, fence: Fence| Fence { log, ..fence };
+    let handler = cache_handler(dir.path());
     let counters = on(
         ReplicaLog::Counters,
         Fence {
@@ -450,9 +441,43 @@ async fn a_counter_fence_is_refused_while_the_cache_copy_is_a_learner() {
         )
         .await;
     assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
-    let answer = handler.fence(SENDER, counters.clone()).await;
+    let answer = handler.fence(SENDER, counters).await;
     assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized, "{answer:?}");
+}
 
+/// A handler for a cache shard with counters, as `handler` is for a stream.
+fn cache_handler(dir: &std::path::Path) -> ReplicaHandler {
+    let broker = super::fence::cache_broker(dir);
+    ReplicaHandler::new(broker, super::fence::cache_router(6))
+        .with_fleet(marks(true))
+        .with_local_storage(StorageId::from_bytes(OWN))
+        .with_stickiness(Duration::ZERO)
+        .with_confirmed_routes(ConfirmedAs::new(Confirmed::Assigned {
+            generation: 6,
+            leader: "broker-a".to_string(),
+        }) as _)
+}
+
+fn on(log: ReplicaLog, fence: Fence) -> Fence {
+    Fence { log, ..fence }
+}
+
+/// **A cache copy is re-admitted only once its counter log holds the start
+/// of the set's generation too.** Admitted on the cache log alone, it would
+/// answer the next counter fence with a counter log that lacks updates a
+/// majority acknowledged (`ReadmitChecksCounters` in
+/// `docs/formal/FelixShard.tla`).
+#[tokio::test]
+async fn a_copy_is_readmitted_only_once_its_counter_log_caught_up() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let handler = cache_handler(dir.path()).with_replaced_storage(true);
+    let counters = on(
+        ReplicaLog::Counters,
+        Fence {
+            election: None,
+            ..fence_with(6, named(6, None), None, false)
+        },
+    );
     let answer = handler
         .fence(
             SENDER,
@@ -460,9 +485,24 @@ async fn a_counter_fence_is_refused_while_the_cache_copy_is_a_learner() {
         )
         .await;
     assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
+
     let put = super::fence::cache_put("k", "v");
     let answer = handler
         .apply(SENDER, stamped(6, 0, &[&put]), felix_broker::LogKind::Cache)
+        .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    let answer = handler.fence(SENDER, counters.clone()).await;
+    assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized, "{answer:?}");
+
+    let unstamped = ReplicateRecords {
+        set_generation: None,
+        ..stamped(6, 0, &["d1"])
+    };
+    let answer = handler
+        .apply(SENDER, unstamped, felix_broker::LogKind::Counters)
         .await;
     assert!(
         matches!(answer, InternalMessage::ReplicateOk(_)),

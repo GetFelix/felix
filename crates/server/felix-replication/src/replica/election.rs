@@ -340,17 +340,38 @@ impl ReplicaHandler {
     /// copy, which refuses every fence while a learner. A learner takes
     /// batches only from the leader the control plane confirms at their
     /// generation, so the record is that leader's, and every record a
-    /// majority acknowledged precedes it. A newer set naming it again moves
-    /// the target, so a leader lost before the copy caught up does not
-    /// strand it. Run after a batch is stored.
-    pub(super) async fn admit_when_caught_up(&self, log: &felix_broker::StreamLog) {
-        if !self.is_learner(log) {
+    /// majority acknowledged precedes it. A cache's counter log must hold its
+    /// own record too: its fence is answered once the cache log is admitted
+    /// (`ReadmitChecksCounters`). A newer set naming it again moves the
+    /// target, so a leader lost before the copy caught up does not strand it.
+    /// Run after a batch is stored on any of the shard's logs.
+    pub(super) async fn admit_when_caught_up(
+        &self,
+        key: &felix_router::ShardKey,
+        log_kind: felix_broker::LogKind,
+        log: &felix_broker::StreamLog,
+    ) {
+        let opened;
+        let own = match super::own_kind(log_kind) {
+            None => log,
+            Some(kind) => {
+                opened = self
+                    .broker
+                    .shard_log(kind, &key.tenant_id, &key.namespace, &key.stream, key.shard)
+                    .await;
+                match &opened {
+                    Some(own) => own,
+                    None => return,
+                }
+            }
+        };
+        if !self.is_learner(own) {
             return;
         }
-        let Some(own) = self.local_storage else {
+        let Some(own_id) = self.local_storage else {
             return;
         };
-        let Some(set) = log.replica_set() else {
+        let Some(set) = own.replica_set() else {
             return;
         };
         let local = self.router.local_node_id();
@@ -358,21 +379,27 @@ impl ReplicaHandler {
             .current
             .members
             .iter()
-            .any(|member| member.node == local && member.storage == Some(own));
-        if !named {
+            .any(|member| member.node == local && member.storage == Some(own_id));
+        if !named || !holds_start(own, set.current.generation).await {
             return;
         }
-        let Ok(tail) = log.tail_offset().await else {
-            return;
-        };
-        let held = log
-            .generations()
-            .iter()
-            .any(|epoch| epoch.generation == set.current.generation && epoch.start_offset < tail);
-        if !held {
+        if key.kind == felix_router::ShardKind::Cache
+            && self.broker.counters().is_some()
+            && let Some(counters) = self
+                .broker
+                .shard_log(
+                    felix_broker::LogKind::Counters,
+                    &key.tenant_id,
+                    &key.namespace,
+                    &key.stream,
+                    key.shard,
+                )
+                .await
+            && !holds_start(&counters, set.current.generation).await
+        {
             return;
         }
-        match log.admit_member(local).await {
+        match own.admit_member(local).await {
             Ok(true) => tracing::info!(
                 generation = set.current.generation,
                 "re-admitted: caught up through the start of the set's generation",
@@ -461,6 +488,16 @@ fn undecided(correlation_id: u64, key: &felix_router::ShardKey) -> InternalMessa
         0,
         "this broker has not yet learned the fleet's features".to_string(),
     )
+}
+
+/// Whether `log` holds the generation-start record of `generation`.
+async fn holds_start(log: &felix_broker::StreamLog, generation: u64) -> bool {
+    let Ok(tail) = log.tail_offset().await else {
+        return false;
+    };
+    log.generations()
+        .iter()
+        .any(|epoch| epoch.generation == generation && epoch.start_offset < tail)
 }
 
 /// Refuse a set older than the one this log counts, naming the newer one.
