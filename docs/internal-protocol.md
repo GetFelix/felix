@@ -1092,6 +1092,14 @@ to tell a leader is alive. A queue that lasted
 answered before the next request is read, because every later request on the
 connection is checked against the identity it gives.
 
+A fence or pre-vote that finishes without waiting is answered straight from the
+read loop, with no task of its own. A leader's fence to confirm a cache read
+is one, so the fence behind every confirmed read skips a task spawn and a
+wake. This happens only while nothing else on the stream is running: a request that has
+to open a new shard's log from disk could otherwise hold up the stream behind
+it. It also does not happen where the read loop runs on the QUIC I/O runtime
+(the default on macOS), which runs no handler code.
+
 Nothing depends on the order of the control stream. A requester that needs
 one request to happen before another waits for the first answer before it
 sends the second:
@@ -1111,11 +1119,13 @@ sends the second:
 Every requester build matches answers by correlation id, so the change needs
 no capability bit: an older broker gets the same answers, sooner. A stream
 holds at most 1024 fences, tail fetches and pre-votes at once, the requester's
-default in-flight limit per peer (`FELIX_INTERNAL_MAX_INFLIGHT`; only a
-requester set higher can pass it). Past that, a request is answered `Overload`
-at once and nothing is applied, so the stream never stops reading and a ping
-never waits. Only 16 of the fetches run at a time, because each answer can
-hold 4 MiB; the rest wait off the stream. A ping needs no permit at all.
+default in-flight limit per peer (`FELIX_INTERNAL_MAX_INFLIGHT`), so a
+requester at its defaults rarely reaches it: only when requests it gave up on
+after its timeout are still running here, as in a long disk stall. Past that,
+a request is answered `Overload` at once and nothing is applied, so the stream
+never stops reading and a ping never waits behind a slow fence. Only 16 of the
+fetches run at a time, because each answer can hold 4 MiB; the rest wait off
+the stream. A ping needs no permit at all.
 
 Round-robin within a class does not reorder replication: the driver keeps at
 most one exchange outstanding per follower and log, and waits for its answer

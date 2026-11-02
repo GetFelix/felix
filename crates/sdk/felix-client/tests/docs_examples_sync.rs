@@ -157,6 +157,14 @@ const RUST_MD_EXAMPLES: &[Example] = &[
         },
     ),
     example(
+        "Keys and headers",
+        1,
+        Body {
+            params: "client: &Arc<Client>",
+            context: "",
+        },
+    ),
+    example(
         "Publisher API",
         1,
         Body {
@@ -237,9 +245,9 @@ const RUST_MD_EXAMPLES: &[Example] = &[
             // a field's name or type, or when either has a field the other lacks.
             context: "fn mirrors(real: felix_client::Event) -> Event {\n\
                       let felix_client::Event { tenant_id, namespace, stream, payload, offset, \
-                      skipped_before, publisher, timestamp_micros } = real;\n\
+                      skipped_before, publisher, timestamp_micros, headers } = real;\n\
                       Event { tenant_id, namespace, stream, payload, offset, skipped_before, \
-                      publisher, timestamp_micros }\n}",
+                      publisher, timestamp_micros, headers }\n}",
         },
     ),
     example(

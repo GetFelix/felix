@@ -44,6 +44,7 @@ async fn two_partition_broker() -> Result<(Arc<Broker>, (String, usize), (String
 /// A job for `stream` on the scheduler, as some other tenant would queue it.
 async fn filler(broker: &Broker, stream: &str) -> Result<PublishJob> {
     Ok(PublishJob {
+        headers: None,
         target: PublishTarget::Resolved {
             handle: broker
                 .resolve_stream_handle("t1", "default", stream, 0)

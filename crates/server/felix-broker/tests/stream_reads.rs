@@ -273,6 +273,7 @@ async fn a_record_not_yet_committed_is_never_returned() {
         .begin_append(
             &[Bytes::from_static(b"in flight")],
             &[],
+            None,
             felix_broker::append_time_now(),
             &order,
         )

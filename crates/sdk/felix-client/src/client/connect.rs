@@ -15,6 +15,7 @@ use tokio::sync::mpsc;
 use tracing::debug;
 
 use super::Connection;
+use super::cache::CacheWorkers;
 use super::discovery::ask_stream_routing;
 use crate::auth::{FETCH_TIMEOUT, TokenProvider};
 use crate::cache::{CacheWorker, run_cache_worker_with_limit};
@@ -287,7 +288,8 @@ impl Connection {
             Credentials::new(auth_tenant_id.clone(), client_config.tokens()?)
                 .with_ack_on_commit(client_config.ack_on_commit)
                 .with_publishers(client_config.publishers)
-                .with_timestamps(client_config.timestamps),
+                .with_timestamps(client_config.timestamps)
+                .with_record_headers(client_config.record_headers),
         );
         let publish_pool_size = client_config.publish_conn_pool;
         let publish_streams_per_conn = client_config.publish_streams_per_conn;
@@ -300,10 +302,11 @@ impl Connection {
             return Err(anyhow::anyhow!("cache pool misconfigured"));
         }
         let bind_addr: SocketAddr = "0.0.0.0:0".parse().expect("bind addr");
-        let limits = |role, ceiling, streams_per_conn| NodeLimits {
+        let limits = |role, ceiling, streams_per_conn, spread| NodeLimits {
             role,
             ceiling,
             streams_per_conn,
+            spread,
             max_frame_bytes: runtime_config.max_frame_bytes,
             event_router_max_pending: runtime_config.event_router_max_pending,
         };
@@ -331,12 +334,18 @@ impl Connection {
                     client_config.quinn.clone(),
                     event_transport_config(transport, &client_config),
                 )?;
+                // Each pool opens a connection only when a stream needs one,
+                // one stream per connection until the pool is full, so a
+                // client holds only the connections its traffic uses.
                 (
-                    node(publish, limits("publish", publish_pool_size, max_streams)),
-                    node(cache, limits("cache", cache_pool_size, max_streams)),
+                    node(
+                        publish,
+                        limits("publish", publish_pool_size, max_streams, true),
+                    ),
+                    node(cache, limits("cache", cache_pool_size, max_streams, true)),
                     node(
                         event,
-                        limits("event", client_config.event_conn_pool, max_streams),
+                        limits("event", client_config.event_conn_pool, max_streams, true),
                     ),
                 )
             }
@@ -352,6 +361,7 @@ impl Connection {
                         "shared",
                         client_config.cluster_conn_pool,
                         client_config.cluster_streams_per_conn,
+                        false,
                     ),
                 );
                 (Arc::clone(&shared), Arc::clone(&shared), shared)
@@ -396,9 +406,6 @@ impl Connection {
             &runtime_config,
             worker_settings,
         ));
-        if layout == Layout::Pooled {
-            publish_node.fill(publish_pool_size, false).await?;
-        }
         for _ in 1..publish_stream_count {
             let opened = publish_node.open().await?;
             debug!("client publish stream authenticated");
@@ -429,10 +436,9 @@ impl Connection {
 
         // Several streams per cache connection: a new connection per cache op
         // would pay a handshake each time, and one stream would head-of-line
-        // block independent ops behind each other.
-        if layout == Layout::Pooled {
-            cache_node.fill(cache_pool_size, false).await?;
-        }
+        // block independent ops behind each other. A pooled client opens them
+        // on its first cache request; a shared one has them on its one
+        // connection, where `is_usable` can judge them.
         let cache_slots = match layout {
             Layout::Pooled => cache_pool_size,
             Layout::Shared => client_config.cluster_conn_pool,
@@ -442,28 +448,29 @@ impl Connection {
                 .map(|_| AtomicUsize::new(0))
                 .collect(),
         );
-        let mut cache_workers = Vec::with_capacity(cache_pool_size * cache_streams_per_conn);
-        for _ in 0..cache_pool_size * cache_streams_per_conn {
-            cache_workers.push(
-                open_cache_worker(
-                    &cache_node,
-                    &credentials,
-                    &cache_conn_counts,
-                    &mut worker_connections,
-                    runtime_config.max_frame_bytes,
-                )
-                .await?,
-            );
-        }
-
-        // Event connections may sit idle until the first subscribe, and a
-        // broker closes a connection that has authenticated nothing within its
-        // auth timeout, so they announce themselves.
-        let event_slots = match layout {
-            Layout::Pooled => {
-                event_node.fill(client_config.event_conn_pool, true).await?;
-                client_config.event_conn_pool
+        let cache_worker_count = cache_pool_size * cache_streams_per_conn;
+        let cache_workers = match layout {
+            Layout::Pooled => CacheWorkers::on_demand(cache_worker_count),
+            Layout::Shared => {
+                let mut workers = Vec::with_capacity(cache_worker_count);
+                for _ in 0..cache_worker_count {
+                    workers.push(
+                        open_cache_worker(
+                            &cache_node,
+                            &credentials,
+                            &cache_conn_counts,
+                            &mut worker_connections,
+                            runtime_config.max_frame_bytes,
+                        )
+                        .await?,
+                    );
+                }
+                CacheWorkers::opened(workers)
             }
+        };
+
+        let event_slots = match layout {
+            Layout::Pooled => client_config.event_conn_pool,
             Layout::Shared => client_config.cluster_conn_pool,
         };
         let event_conn_counts = Arc::new(
@@ -759,6 +766,7 @@ pub(super) fn spawn_publish_worker(
             negotiated.server_features_hi,
             felix_wire::FEATURE_EXPLICIT_SHARD,
         ),
+        takes_record_headers: negotiated.server_flags_ext & felix_wire::EXT_RECORD_HEADERS != 0,
     }
 }
 

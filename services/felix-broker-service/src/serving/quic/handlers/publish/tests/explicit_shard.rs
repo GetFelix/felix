@@ -115,6 +115,7 @@ async fn an_acked_publish_out_of_range_is_answered_and_not_written() {
         "stream".to_string(),
         vec![Bytes::from_static(b"payload")],
         None,
+        None,
         Some(1),
         Some(7),
         Some(felix_wire::AckMode::PerBatch),

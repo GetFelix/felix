@@ -1,5 +1,5 @@
-//! How many connections a [`Client`] holds to each broker, counted
-//! from the brokers' side.
+//! How many connections a [`Client`] or a [`Connection`] holds to each
+//! broker, counted from the brokers' side.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -9,9 +9,9 @@ use felix_wire::binary::PublishOwner;
 use felix_wire::{AckMode, Message};
 
 use super::stub_broker::StubBroker;
-use crate::ClientConfig;
 use crate::cluster::{Client, ReconnectPolicy};
 use crate::test_support::{build_server_config, quinn_client_config};
+use crate::{ClientConfig, Connection};
 
 pub(super) fn policy() -> ReconnectPolicy {
     ReconnectPolicy {
@@ -241,5 +241,50 @@ async fn a_dead_broker_connection_is_rebuilt_without_touching_another() -> Resul
             AckMode::PerMessage,
         )
         .await?;
+    Ok(())
+}
+
+/// **A [`Connection`] opens a pool's connections only as its traffic needs
+/// them.** Connected, it holds the publish pool. Each subscription adds an
+/// event connection until that pool is full, and the first cache request opens
+/// the cache pool. A client that only subscribes holds the publish pool and one
+/// connection per subscription, not every pool at once.
+#[tokio::test]
+async fn a_connection_opens_only_the_connections_its_traffic_uses() -> Result<()> {
+    let (server_config, cert) = build_server_config()?;
+    let stub = StubBroker::start_with(server_config, |_| Message::Subscribed {
+        subscription_id: 0,
+        start_offset: None,
+        live_offset: None,
+        queue_capacity: None,
+    })?;
+    let config = default_config(cert)?;
+    let publish = config.publish_conn_pool;
+    let cache = config.cache_conn_pool;
+    let client = Connection::connect(stub.addr, "localhost", config).await?;
+    assert_eq!(stub.live_connections(), publish, "the publish pool");
+
+    let first = client.subscribe("t1", "default", "orders").await?;
+    assert_eq!(stub.live_connections(), publish + 1, "one per subscription");
+    let second = client.subscribe("t1", "default", "orders").await?;
+    assert_eq!(stub.live_connections(), publish + 2);
+
+    client
+        .cache_put(
+            "t1",
+            "default",
+            "c",
+            "k",
+            bytes::Bytes::from_static(b"v"),
+            None,
+        )
+        .await?;
+    assert_eq!(
+        stub.live_connections(),
+        publish + 2 + cache,
+        "the cache pool"
+    );
+    assert_eq!(client.connection_count(), stub.live_connections());
+    drop((first, second));
     Ok(())
 }

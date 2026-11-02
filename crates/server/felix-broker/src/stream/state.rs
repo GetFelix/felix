@@ -286,13 +286,17 @@ impl StreamState {
                 continue;
             }
             let record = crate::commit::client_record(record);
-            if !state.log.admit(record.payload.len()) {
+            if !state
+                .log
+                .admit(record.payload.len() + record.headers.as_deref().map_or(0, Bytes::len))
+            {
                 continue;
             }
             state.log.push_back(LogEntry {
                 seq: record.offset,
                 payload: record.payload,
                 publisher: record.publisher,
+                headers: record.headers,
                 timestamp_micros: Some(record.timestamp_micros),
             });
         }
@@ -405,6 +409,7 @@ impl StreamState {
         commit: Option<&[StateOp]>,
         publisher: Option<&Bytes>,
         timestamp_micros: Option<u64>,
+        headers: Option<&[Option<Bytes>]>,
     ) -> Option<(Arc<Vec<SubscriberEntry>>, u64)> {
         if payloads.is_empty() {
             return Some((self.subscribers_snapshot.load_full(), 0));
@@ -435,13 +440,19 @@ impl StreamState {
             _ => 0,
         };
         let mut seq = first_seq.unwrap_or(state.next_seq);
-        let bytes = payloads.iter().map(Bytes::len).sum();
+        let bytes = payloads.iter().map(Bytes::len).sum::<usize>()
+            + headers.map_or(0, |headers| {
+                headers.iter().flatten().map(Bytes::len).sum::<usize>()
+            });
         if state.log.admit(bytes) {
-            for payload in payloads {
+            for (index, payload) in payloads.iter().enumerate() {
                 state.log.push_back(LogEntry {
                     seq,
                     payload: payload.clone(),
                     publisher: publisher.cloned(),
+                    headers: headers
+                        .and_then(|headers| headers[index].clone())
+                        .map(Box::new),
                     timestamp_micros,
                 });
                 seq = seq.checked_add(1).expect("log sequence overflow");
@@ -556,7 +567,7 @@ impl StreamState {
     /// exercise the ring without a log behind it.
     #[cfg(test)]
     pub(crate) fn append_batch(&self, payloads: &[Bytes], log_capacity: usize) {
-        self.append_batch_at(payloads, None, None, log_capacity, None, None, None);
+        self.append_batch_at(payloads, None, None, log_capacity, None, None, None, None);
     }
 
     pub(crate) fn register_subscriber(&self) -> (u64, SubscriptionReceiver) {
@@ -678,6 +689,7 @@ impl StreamState {
                 offset: entry.seq,
                 payload: entry.payload.clone(),
                 publisher: entry.publisher.clone(),
+                headers: entry.headers.as_deref().cloned(),
                 timestamp_micros: entry.timestamp_micros,
             })
             .collect();

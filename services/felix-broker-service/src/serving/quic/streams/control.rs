@@ -114,6 +114,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
     let mut session = Session {
         auth_ctx: None,
         peer_flags: felix_wire::ORIGINAL_V1_FLAGS,
+        peer_flags_ext: 0,
         peer_features: 0,
         peer_features_hi: 0,
         commit_ack: false,
@@ -194,7 +195,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
         // on the next frame boundary and stays parseable. Answering and continuing
         // means the peer actually receives the diagnostic — tearing the stream down
         // here would race the writer task and usually deliver EOF instead.
-        if crate::serving::quic::codec::refuses_flags(frame.header.flags) {
+        if crate::serving::quic::codec::refuses_flags(frame.header.flags, session.peer_flags_ext) {
             send_control_error(
                 &out_ack_tx,
                 &out_ack_depth,
@@ -338,8 +339,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 client_flags,
                 client_features,
                 client_features_hi,
-                // No flag extension is served yet, so the offer is not read.
-                client_flags_ext: _,
+                client_flags_ext,
             } => {
                 session::authenticate(
                     &cx,
@@ -347,6 +347,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                     tenant_id,
                     token,
                     client_flags,
+                    client_flags_ext,
                     client_features,
                     client_features_hi,
                 )
@@ -1248,6 +1249,10 @@ struct Session {
     /// Frame-flag bits the client understands. Narrowed to the pre-negotiation
     /// set until an `Auth` says otherwise.
     peer_flags: u16,
+    /// The extension bits both sides agreed on in `Auth` and `AuthOk`. None
+    /// until an `Auth` says otherwise; a frame with `FLAG_EXTENDED` before that
+    /// is refused.
+    peer_flags_ext: u32,
     /// Optional messages this client understands. Nothing until an `Auth` says
     /// otherwise.
     peer_features: u32,

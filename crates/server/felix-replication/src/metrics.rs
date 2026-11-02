@@ -31,6 +31,9 @@ pub const OUTCOME_READ_FAILED: &str = "read_failed";
 /// The batch held a head trim and the follower does not offer `head_trim`,
 /// so nothing was sent. The follower waits there until it is upgraded.
 pub const OUTCOME_TRIM_UNSUPPORTED: &str = "trim_unsupported";
+/// The batch held a record with headers, which replication does not carry
+/// yet, so it was not sent. The follower stays behind that record.
+pub const OUTCOME_HEADERS_UNSUPPORTED: &str = "headers_unsupported";
 pub const OUTCOME_UNREACHABLE: &str = "unreachable";
 pub const OUTCOME_TIMEOUT: &str = "timeout";
 pub const OUTCOME_DISCONNECTED: &str = "disconnected";

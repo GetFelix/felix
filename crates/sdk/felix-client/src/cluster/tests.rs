@@ -14,6 +14,7 @@ mod not_leader_retry;
 mod offsets;
 mod policy_bounds;
 mod reconnect;
+mod record_headers;
 mod reresolve;
 mod sharded_deleted;
 mod sharded_lag;

@@ -5,6 +5,7 @@ fn entry(seq: u64, len: usize) -> LogEntry {
         seq,
         payload: Bytes::from(vec![0u8; len]),
         publisher: None,
+        headers: None,
         timestamp_micros: None,
     }
 }

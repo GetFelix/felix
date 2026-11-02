@@ -63,6 +63,7 @@ async fn lane_fanout_preserves_order_for_multiple_subscribers() -> Result<()> {
                 felix_wire::ORIGINAL_V1_FLAGS,
                 0,
                 0,
+                0,
                 None,
             )
             .await?;

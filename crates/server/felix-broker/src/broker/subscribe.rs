@@ -544,6 +544,8 @@ pub struct RingRecord {
     pub payload: Bytes,
     /// The principal that published it, when one was recorded.
     pub publisher: Option<Bytes>,
+    /// Its key and headers block, when it has one.
+    pub headers: Option<Bytes>,
     /// When it was appended, in microseconds since the Unix epoch. `None` on
     /// an in-memory stream.
     pub timestamp_micros: Option<u64>,

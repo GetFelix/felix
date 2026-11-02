@@ -332,8 +332,8 @@ pub(crate) fn route_went_stale(error: &anyhow::Error) -> bool {
 /// codes, and replacing the client is what this wrapper has always done then.
 pub(crate) fn wants_reconnect(error: &anyhow::Error) -> bool {
     // The broker is fine; a new connection would call the token source again
-    // and fail the same way.
-    if error.is::<crate::AuthError>() {
+    // and fail the same way. Headers it did not accept are no different.
+    if error.is::<crate::AuthError>() || error.is::<crate::RecordHeadersError>() {
         return false;
     }
     match error.downcast_ref::<BrokerError>() {
@@ -365,6 +365,7 @@ pub(crate) fn is_terminal(error: &anyhow::Error) -> bool {
     error.is::<crate::SubscribeCursorError>()
         || error.is::<crate::PublishRefused>()
         || error.is::<crate::AuthError>()
+        || error.is::<crate::RecordHeadersError>()
 }
 
 /// A uniform fraction in `[0, 1)`, without taking an RNG dependency.

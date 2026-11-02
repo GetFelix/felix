@@ -23,7 +23,7 @@ pub mod internal;
 pub mod routing;
 
 pub use client::error_code::{
-    ErrorCode, ErrorDetail, RetryClass, shard_unavailable_reason, trim_reason,
+    ErrorCode, ErrorDetail, RetryClass, feature_reason, shard_unavailable_reason, trim_reason,
 };
 pub use client::features::{
     FEATURE_ACK_ON_COMMIT, FEATURE_ATOMIC_COMMIT, FEATURE_CACHE_CONDITIONAL, FEATURE_CACHE_DELETE,
@@ -55,6 +55,6 @@ pub use client::message::{
     PublishRefusalReason, ShardInspection, ShardKind, ShardOwner, StartPosition, StateChange,
     StreamRecord, SubscriptionCursor, SubscriptionFilter, UnknownRequest,
 };
-pub use client::record_headers::RecordHeaders;
+pub use client::record_headers::{RESERVED_HEADER_PREFIX, RecordHeaders};
 pub use client::{binary, text};
 pub use error::{Error, Result};

@@ -171,7 +171,7 @@ How a broker joins the cluster, holds its lease and follows shard assignments.
 | `felix_broker_shard_watch_snapshots_total` | counter | - | Assignment snapshots taken. Rises at start and on every forced resync. |
 | `felix_broker_shard_watch_resyncs_total` | counter | `reason` | Forced resyncs: `gap_in_history` or `sequence_reset`. |
 | `felix_broker_shard_watch_failures_total` | counter | - | Watch polls that failed outright. |
-| `felix_broker_shard_confirmed_reads_total` | counter | `outcome` | Confirmed assignment reads for a copy with no election promise: `assigned`, `unassigned`, `not_served` or `unavailable`. `not_served` means the control plane cannot confirm a read and the routing view decides alone. |
+| `felix_broker_shard_confirmed_reads_total` | counter | `outcome` | Confirmed assignment reads for a copy with no election promise: `assigned`, `unassigned`, `not_served` or `unavailable`. `not_served` means the control plane cannot confirm a read and the routing view decides alone. A broker reads in the background, one read per shard at a time, never while a peer request waits. |
 | `felix_broker_shard_changes_applied_total` | counter | - | Assignment changes applied. |
 | `felix_broker_shard_changes_stale_total` | counter | - | Changes ignored for carrying a generation at or below the one held. Routine in small numbers; it is what makes duplicate delivery harmless. |
 | `felix_broker_shard_stale_events_total` | counter | - | Events ignored for naming a generation at or below the one already acted on. |
@@ -202,7 +202,7 @@ Replication from a shard's leader to its followers, and the `Quorum` publish pat
 
 | Metric | Type | Labels | Measures |
 | --- | --- | --- | --- |
-| `felix_broker_replication_shipped_total` | counter | `outcome` | Replication batches shipped as a leader. `trim_unsupported` is a batch holding a head trim that was not sent because the follower does not offer `head_trim`; that follower stays behind until it is upgraded. |
+| `felix_broker_replication_shipped_total` | counter | `outcome` | Replication batches shipped as a leader. `trim_unsupported` is a batch holding a head trim that was not sent because the follower does not offer `head_trim`; that follower stays behind until it is upgraded. `headers_unsupported` is a batch holding a record with headers, which replication does not carry yet, so it was not sent and the follower stays behind that record. |
 | `felix_broker_replication_lag_records` | gauge | - | How far the slowest follower is behind, in records, across every shard this broker leads. This is the loss window for `Leader` consistency. |
 | `felix_broker_replication_halted` | gauge | - | Followers replication has stopped for because their log diverged or this broker was superseded. Any non-zero value needs attention. |
 | `felix_broker_replication_rebuilding` | gauge | - | Followers being rebuilt right now. |

@@ -1383,7 +1383,9 @@ dependencies = [
 name = "felix-replication"
 version = "0.7.0-preview.3"
 dependencies = [
+ "ahash",
  "anyhow",
+ "arc-swap",
  "async-trait",
  "axum",
  "bytes",

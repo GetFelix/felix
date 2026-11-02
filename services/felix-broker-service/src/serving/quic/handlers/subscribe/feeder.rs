@@ -23,6 +23,7 @@ fn encode_batch(
     skipped_before: u64,
     publisher: Option<&Bytes>,
     timestamps: Option<&[u64]>,
+    headers: Option<&[Option<Bytes>]>,
 ) -> felix_wire::Result<Bytes> {
     let base_offset = base_offset.filter(|_| config.offsets_enabled);
     let meta = felix_wire::binary::EventBatchMeta {
@@ -36,7 +37,7 @@ fn encode_batch(
             .filter(|_| config.publisher_enabled)
             .map(Bytes::as_ref),
         timestamps: timestamps.filter(|_| config.timestamps_enabled),
-        record_headers: None,
+        record_headers: headers.filter(|_| config.headers_enabled),
     };
     felix_wire::binary::encode_shared_event_batch_bytes_with_meta(batch, meta)
 }
@@ -99,7 +100,7 @@ pub(super) async fn run_lane_feeder(
         // holds up nobody else. Its broker queue fills and sheds meanwhile.
         let mut held = tokio::select! {
             biased;
-            held = share.hold(envelope.payload_bytes()) => held,
+            held = share.hold(envelope.record_bytes()) => held,
             () = &mut revoked => {
                 revoked_frame = revoke(&config, revocation.take());
                 break;
@@ -117,8 +118,14 @@ pub(super) async fn run_lane_feeder(
 
         if envelope.len() > 1 || config.single_event_mode {
             let payloads = envelope.payloads();
-            let payload_bytes: usize = payloads.iter().map(Bytes::len).sum();
-            if payloads.len() <= max_events && payload_bytes <= max_bytes {
+            let payload_bytes = envelope.payload_bytes();
+            // Blocks count against the frame limit only when the frame has them.
+            let frame_bytes = if config.headers_enabled {
+                envelope.record_bytes()
+            } else {
+                payload_bytes
+            };
+            if payloads.len() <= max_events && frame_bytes <= max_bytes {
                 let prefix_start = t_now_if(t_should_sample());
                 let frame = match envelope.shared_event_frame_as(config.shape()) {
                     Ok(frame) => frame,
@@ -158,9 +165,11 @@ pub(super) async fn run_lane_feeder(
                 let mut bytes = 0usize;
                 while end < payloads.len()
                     && end - start < max_events
-                    && (end == start || bytes.saturating_add(payloads[end].len()) <= max_bytes)
+                    && (end == start
+                        || bytes.saturating_add(frame_len(&envelope, end, config.headers_enabled))
+                            <= max_bytes)
                 {
-                    bytes = bytes.saturating_add(payloads[end].len());
+                    bytes = bytes.saturating_add(frame_len(&envelope, end, config.headers_enabled));
                     end += 1;
                 }
                 let batch = &payloads[start..end];
@@ -182,6 +191,9 @@ pub(super) async fn run_lane_feeder(
                     skipped,
                     envelope.publisher(),
                     times.as_deref(),
+                    envelope
+                        .record_headers()
+                        .map(|headers| &headers[start..end]),
                 );
                 match encoded {
                     Ok(frame) => {
@@ -215,7 +227,7 @@ pub(super) async fn run_lane_feeder(
         let first = envelope.payloads()[0].clone();
 
         let mut batch = Vec::with_capacity(max_events);
-        let mut batch_bytes = first.len();
+        let mut batch_bytes = frame_len(&envelope, 0, config.headers_enabled);
         batch.push(first);
         // Coalescing merges *separate* publishes into one frame, and their
         // offsets are only contiguous if nothing landed between them. One
@@ -234,6 +246,15 @@ pub(super) async fn run_lane_feeder(
                 times.push(time);
                 times
             });
+        // Kept only for a subscriber that negotiated headers; each coalesced
+        // publish is one record and brings its own block, or none. Built on
+        // the first block, so a frame of header-less records allocates nothing.
+        let mut batch_headers: Option<Vec<Option<Bytes>>> = None;
+        if let Some(block) = block_of(&envelope, 0).filter(|_| config.headers_enabled) {
+            let mut headers = Vec::with_capacity(max_events);
+            headers.push(Some(block));
+            batch_headers = Some(headers);
+        }
         let mut expected_next = batch_base.map(|base| base + envelope.len() as u64);
         // Wait for more only while the previous batch found events already
         // queued behind its first, i.e. arrivals outpace this feeder. Otherwise a
@@ -268,7 +289,8 @@ pub(super) async fn run_lane_feeder(
             let Some((envelope, mut next_held)) = next else {
                 break;
             };
-            let payload_len = envelope.payloads().first().map_or(0, Bytes::len);
+            let payload_len = frame_len(&envelope, 0, config.headers_enabled);
+            let held_len = envelope.record_bytes();
             let ends_batch = envelope.len() != 1
                 // Numbering this into the current frame would misreport it.
                 || (config.offsets_enabled && envelope.base_offset() != expected_next)
@@ -281,7 +303,7 @@ pub(super) async fn run_lane_feeder(
                 break;
             }
             // A full share ends the frame rather than waiting with it unsent.
-            let Some(more) = share.try_hold(payload_len) else {
+            let Some(more) = share.try_hold(held_len) else {
                 pending = Some((envelope, next_held));
                 break;
             };
@@ -289,7 +311,22 @@ pub(super) async fn run_lane_feeder(
             held.absorb(more);
             subscriber.absorb(next_held.take_subscriber());
             held.carry(next_held);
-            batch_bytes += payload.len();
+            batch_bytes += payload_len;
+            if config.headers_enabled {
+                match (block_of(&envelope, 0), batch_headers.as_mut()) {
+                    (Some(block), Some(headers)) => {
+                        headers.resize(batch.len(), None);
+                        headers.push(Some(block));
+                    }
+                    (Some(block), None) => {
+                        let mut headers = Vec::with_capacity(max_events);
+                        headers.resize(batch.len(), None);
+                        headers.push(Some(block));
+                        batch_headers = Some(headers);
+                    }
+                    (None, _) => {}
+                }
+            }
             batch.push(payload);
             if let (Some(times), Some(time)) = (batch_times.as_mut(), envelope.timestamp_micros()) {
                 times.push(time);
@@ -297,6 +334,9 @@ pub(super) async fn run_lane_feeder(
             expected_next = expected_next.map(|next| next + 1);
         }
         busy = found_queued;
+        if let Some(headers) = batch_headers.as_mut() {
+            headers.resize(batch.len(), None);
+        }
 
         let sample = t_should_sample();
         let enqueue_start = t_now_if(sample);
@@ -313,6 +353,7 @@ pub(super) async fn run_lane_feeder(
                 batch_skipped,
                 batch_publisher.as_ref(),
                 batch_times.as_deref(),
+                batch_headers.as_deref(),
             )
         };
         let frame = match encoded {
@@ -392,6 +433,25 @@ pub(super) async fn run_lane_feeder(
         }
     }
     subscriptions.release();
+}
+
+/// The headers block of record `index`, if it has one.
+fn block_of(envelope: &DeliveryEnvelope, index: usize) -> Option<Bytes> {
+    envelope.record_headers()?[index].clone()
+}
+
+/// What record `index` adds to a frame: its payload, and its block when the
+/// subscriber negotiated headers.
+fn frame_len(envelope: &DeliveryEnvelope, index: usize, headers: bool) -> usize {
+    let block = if headers {
+        envelope
+            .record_headers()
+            .and_then(|headers| headers[index].as_ref())
+            .map_or(0, Bytes::len)
+    } else {
+        0
+    };
+    envelope.payloads()[index].len() + block
 }
 
 pub(super) async fn enqueue_lane_frame(
