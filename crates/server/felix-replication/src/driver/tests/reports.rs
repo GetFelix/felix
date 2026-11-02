@@ -886,13 +886,9 @@ fn refused(generation: u64) -> RefusedGeneration {
     }
 }
 
-/// **A shard this broker refused to open is reported as refused, and not
-/// shipped.** The control plane still names this broker at the generation it
-/// promised away, and hears nothing else from it: without the report it waits
-/// on silence.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_refused_shard_reports_the_refusal_and_does_not_ship() {
-    let (broker, _dir) = leader_with(3).await;
+/// Scan once as the leader of a shard whose open at generation 4 was refused,
+/// and return the first report the control plane got.
+async fn refusal_reported(broker: &Arc<Broker>) -> ShardReplicaStatus {
     let router = router(LOCAL, &["broker-b"], 4);
     let follower = AcceptingFollower::default();
     let marks = QuorumMarks::new();
@@ -905,7 +901,7 @@ async fn a_refused_shard_reports_the_refusal_and_does_not_ship() {
     let fence = RefusedAt(refused(4));
     let mut shards = Shards::new(Context {
         requester: &follower,
-        broker: &broker,
+        broker,
         router: &router,
         fence: &fence,
         gate: &crate::promotion::NoGate,
@@ -920,14 +916,40 @@ async fn a_refused_shard_reports_the_refusal_and_does_not_ship() {
     shards.scan(WakeKind::Tick);
 
     assert!(shards.passes.is_empty(), "a refused shard still shipped");
+    assert!(follower.batches().is_empty());
     let report = first_report(&received, Duration::from_secs(5))
         .await
         .expect("no report of the refusal");
+    shutdown.cancel();
+    report
+}
+
+/// **A shard this broker refused to open is reported as refused, and not
+/// shipped.** The control plane still names this broker at the generation it
+/// promised away, and hears nothing else from it: without the report it waits
+/// on silence.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_shard_reports_the_refusal_and_does_not_ship() {
+    let (broker, _dir) = leader_with(3).await;
+
+    let report = refusal_reported(&broker).await;
+
     assert_eq!(report.generation, 4);
     assert_eq!(report.refused, Some(refused(4)));
     assert_eq!(report.leader_offset, None, "a refusal measures no tail");
-    assert!(follower.batches().is_empty());
-    shutdown.cancel();
+}
+
+/// **A refusal names the stream's incarnation.** The control plane answers a
+/// report of another incarnation than the assignment's as stale, so one sent
+/// at 0 for a stream created since incarnations would never be acted on.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refusal_names_the_streams_incarnation() {
+    let (broker, _dir) = incarnated_leader(5, 3).await;
+
+    let report = refusal_reported(&broker).await;
+
+    assert_eq!(report.refused, Some(refused(4)));
+    assert_eq!(report.stream_incarnation, 5);
 }
 
 /// A refusal of an older generation than the route's says nothing about it:
@@ -959,4 +981,86 @@ async fn a_refusal_of_an_older_generation_does_not_hold_the_shard_back() {
     shards.scan(WakeKind::Tick);
 
     assert_eq!(shards.passes.len(), 1, "the shard was held back");
+}
+
+/// Offers the fence's capabilities and answers every fence that it promised
+/// the generation to broker-d.
+struct PromisedAwayFollowers;
+
+impl PeerRequester for PromisedAwayFollowers {
+    async fn request(
+        &self,
+        _node_id: &str,
+        _addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, PeerError> {
+        match message {
+            InternalMessage::Fence(fence) => Ok(InternalMessage::ReplicateError(
+                felix_wire::internal::ReplicateError {
+                    correlation_id: fence.correlation_id,
+                    code: felix_wire::internal::ErrorCode::FencedEpoch,
+                    expected_offset: 0,
+                    detail: crate::replica::promised_detail(fence.shard.generation, "broker-d"),
+                },
+            )),
+            other => panic!("unexpected {:?}", other.kind()),
+        }
+    }
+
+    async fn capabilities(
+        &self,
+        _node_id: &str,
+        _addr: SocketAddr,
+    ) -> std::result::Result<felix_wire::internal::PeerCapabilities, PeerError> {
+        Ok(crate::promotion::REQUIRED)
+    }
+}
+
+/// Promoted at generation 4 and never opened.
+struct FencingAtFour;
+
+#[async_trait::async_trait]
+impl crate::promotion::PromotionGate for FencingAtFour {
+    fn awaiting(&self, _key: &crate::ShardKey) -> Option<u64> {
+        Some(4)
+    }
+
+    async fn open(&self, _key: &crate::ShardKey, _generation: u64) -> bool {
+        false
+    }
+}
+
+/// **A leader whose fence a majority answered with a promise to another node
+/// reports the refusal.** It opened its own copy, since it persisted its
+/// ballot before the elected node's fence reached it, so its open was not
+/// refused; every fence it sends is. Without the report the control plane,
+/// which recorded that node's election and still names this broker, waits
+/// on silence.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fence_promised_away_by_a_majority_reports_the_refusal() {
+    let (broker, _dir) = leader_with(3).await;
+    let (control_plane, received) = recording_control_plane().await;
+    let shutdown = CancellationToken::new();
+    let driver = spawn(
+        Arc::new(PromisedAwayFollowers),
+        broker,
+        router(LOCAL, &["broker-b", "broker-c"], 4),
+        Arc::new(Unfenced),
+        Arc::new(FencingAtFour),
+        published(),
+        Some(control_plane.reporter(shutdown.clone())),
+        Duration::from_millis(50),
+        Arc::default(),
+        RebuildPolicy::default(),
+        MoveThrottle::unlimited(),
+        shutdown.clone(),
+    );
+
+    let report = first_report(&received, Duration::from_secs(5)).await;
+    shutdown.cancel();
+    driver.stop().await;
+    let report = report.expect("no report of the refused fence");
+    assert_eq!(report.generation, 4);
+    assert_eq!(report.refused, Some(refused(4)));
+    assert_eq!(report.leader_offset, None, "a refusal measures no tail");
 }

@@ -126,6 +126,9 @@ pub(super) struct FenceAttempt {
     /// did: the attempt stops listening then.
     took: Option<Vec<String>>,
     why: Option<String>,
+    /// So many replicas promised the generation to another node that no
+    /// majority was left to take it.
+    refused: Option<RefusedGeneration>,
 }
 
 /// An exchange handed back by a pass, ended.
@@ -201,6 +204,9 @@ struct ShardState {
     /// Fence attempts in a row that left the shard closed, and the generation
     /// they were at: a new promotion starts from [`FENCE_RETRY`] again.
     fence_failures: (u64, u32),
+    /// The last fence attempt found the generation promised to another node
+    /// by too many replicas to open. Reported each tick, as a refused open is.
+    fence_refused: Option<RefusedGeneration>,
     /// What its last pass left.
     last: Option<LastPass>,
 }
@@ -281,12 +287,17 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
     fn leads(&self, key: &ShardKey, route: &felix_router::Route) -> bool {
         route.leader.node_id == self.cx.router.local_node_id()
             && !self.cx.fence.withheld(&watch_key(key), route.generation)
-            && self.refusal(key, route).is_none()
+            && self.refused_open(key, route).is_none()
     }
 
-    /// The refusal that keeps this broker from leading `route`'s generation,
-    /// if it refused that one. An older refusal says nothing about it.
-    fn refusal(&self, key: &ShardKey, route: &felix_router::Route) -> Option<RefusedGeneration> {
+    /// The refused open that keeps this broker from leading `route`'s
+    /// generation, if it refused that one. An older refusal says nothing
+    /// about it.
+    fn refused_open(
+        &self,
+        key: &ShardKey,
+        route: &felix_router::Route,
+    ) -> Option<RefusedGeneration> {
         if route.leader.node_id != self.cx.router.local_node_id() {
             return None;
         }
@@ -294,6 +305,23 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             .fence
             .refused_at(&watch_key(key))
             .filter(|refused| refused.generation == route.generation)
+    }
+
+    /// What to report as refused at `route`'s generation: an open refused
+    /// there, or a fence a majority answered with a promise to another node.
+    /// The shard still fences again after the second, in case the set has
+    /// changed since.
+    fn refusal(&self, key: &ShardKey, route: &felix_router::Route) -> Option<RefusedGeneration> {
+        self.refused_open(key, route).or_else(|| {
+            self.states
+                .get(key)?
+                .fence_refused
+                .clone()
+                .filter(|refused| {
+                    refused.generation == route.generation
+                        && route.leader.node_id == self.cx.router.local_node_id()
+                })
+        })
     }
 
     /// Give every shard led here a pass, and forget the ones that are not.
@@ -472,8 +500,17 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                 let (key, generation, outcome) =
                     fence_one(cx.requester, cx.broker, cx.router, key, route, cx.marks).await;
                 let (took, why) = match &outcome {
-                    Outcome::Pending { why, took } => (Some(took.clone()), Some(why.clone())),
+                    Outcome::Pending { why, took } | Outcome::Refused { why, took, .. } => {
+                        (Some(took.clone()), Some(why.clone()))
+                    }
                     Outcome::Fenced { .. } | Outcome::Lease { .. } => (None, None),
+                };
+                let refused = match &outcome {
+                    Outcome::Refused { promised_to, .. } => Some(RefusedGeneration {
+                        generation,
+                        promised_to: promised_to.clone(),
+                    }),
+                    _ => None,
                 };
                 let opened = open_fenced(cx.gate, &key, generation, outcome).await;
                 let why = why.or_else(|| {
@@ -486,6 +523,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                     replicas,
                     took,
                     why,
+                    refused,
                 }
             }));
             return;
@@ -633,7 +671,8 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             return;
         }
         self.probed.insert(key.clone(), now);
-        reporter.submit(crate::reclaim::refusal_report(&key, refused));
+        let incarnation = crate::incarnation::of(self.cx.broker, &key);
+        reporter.submit(crate::reclaim::refusal_report(&key, refused).at_incarnation(incarnation));
     }
 
     /// Keep a shard's reported tail, so the next report does not go back.
@@ -821,11 +860,13 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             replicas,
             took,
             why,
+            refused,
         } = attempt;
         let scan = self.scan;
         let Some(state) = self.states.get_mut(&key) else {
             return;
         };
+        state.fence_refused = refused.clone();
         if let Some(next) = state.running.take() {
             state.held.append(&mut next.answered.lock());
         }
@@ -866,6 +907,9 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         );
         if opened || std::mem::take(&mut state.again) {
             self.start(&key, false);
+        }
+        if let Some(refused) = refused {
+            self.report_refusal(key, refused);
         }
     }
 

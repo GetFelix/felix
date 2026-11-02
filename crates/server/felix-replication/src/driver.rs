@@ -666,6 +666,19 @@ async fn open_fenced(
             );
             false
         }
+        Outcome::Refused {
+            promised_to, why, ..
+        } => {
+            tracing::warn!(
+                stream = %key.stream,
+                shard = key.shard,
+                generation,
+                promised_to = %promised_to,
+                why = %why,
+                "a majority promised the generation to another node; reporting the refusal",
+            );
+            false
+        }
     }
 }
 
