@@ -345,10 +345,11 @@ fn plan_once(
     // longest ago goes first, so two that keep failing take turns. Stable, so
     // key order breaks the remaining ties.
     //
-    // Among shards that only move for balance, streams go before caches. The
-    // first over-share shard planned is the one that moves, and caches sort
-    // before most stream names, so they would be moved first. Every client of
-    // a cache waits while it is fenced.
+    // Among shards with nothing to repair, streams go before caches. The
+    // first over-share shard planned is the one that moves for the totals,
+    // and by name that is often a cache, which every client of it waits on
+    // while it is fenced. A cache's own spread, zone and trim moves also
+    // wait behind the streams' for a slot; none of them is urgent.
     keys.sort_by_cached_key(|key| {
         let class = class(key);
         let retried = current

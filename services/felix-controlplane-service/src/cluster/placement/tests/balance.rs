@@ -562,3 +562,27 @@ fn a_drain_on_five_brokers_leaves_the_caches_in_place() {
     assert!(within_one(&totals[..4]), "{totals:?} {moved:?}");
     assert_no_cache_moved(&moved);
 }
+
+/// Streams first is a preference, not a rule: when no stream shard on the
+/// broker over its share can go, a cache does, and the totals still even out.
+#[test]
+fn a_cache_moves_for_the_totals_when_no_stream_shard_can() {
+    let caches: Vec<Cache> = ["drains", "epochs"]
+        .iter()
+        .map(|name| quorum_cache(name, 1))
+        .collect();
+    let streams = vec![quorum("s", 3)];
+    // `s` is already 1/1/1, so its shard on broker-0 has nowhere to go
+    // without widening the stream. Totals 3/1/1.
+    let mut existing = [
+        single_shards(&NODES, 3, ShardKind::Cache, &[("drains", 0), ("epochs", 0)]),
+        led(ShardKind::Stream, "s", [1, 1, 1]),
+    ]
+    .concat();
+
+    let moved = converge(&streams, &caches, &mut existing, 100);
+
+    assert!(within_one(&spread(&existing, None, None)), "{moved:?}");
+    assert_eq!(moved.len(), 1, "{moved:?}");
+    assert_eq!(moved[0].0.kind, ShardKind::Cache, "{moved:?}");
+}
