@@ -771,6 +771,7 @@ async fn shard_renewal_waits_for_every_member() {
                     incarnation: 0,
                     fence_storage_ids: Default::default(),
                     member_storage_ids: Default::default(),
+                    learners: Default::default(),
                     pending_set: None,
                 })
                 .await
@@ -856,6 +857,7 @@ async fn deletes_take_shard_state_only_once_every_member_does() {
                     incarnation: 0,
                     fence_storage_ids: Default::default(),
                     member_storage_ids: Default::default(),
+                    learners: Default::default(),
                     pending_set: None,
                 })
                 .await
@@ -881,6 +883,7 @@ async fn deletes_take_shard_state_only_once_every_member_does() {
                         node_incarnations: Default::default(),
                         follower_storage: Default::default(),
                         joint_start_acked: None,
+                        holds_start: Default::default(),
                     },
                     "broker-x",
                 )
@@ -1051,6 +1054,7 @@ async fn halted_copies_wait_for_every_member_and_the_report_does_not() {
             incarnation: 0,
             fence_storage_ids: Default::default(),
             member_storage_ids: Default::default(),
+            learners: Default::default(),
             pending_set: None,
         })
         .await
@@ -1082,6 +1086,7 @@ async fn halted_copies_wait_for_every_member_and_the_report_does_not() {
         node_incarnations: Default::default(),
         follower_storage: Default::default(),
         joint_start_acked: None,
+        holds_start: Default::default(),
     };
     let held = || async {
         store
@@ -1162,6 +1167,7 @@ async fn fence_storage_ids_wait_for_every_member() {
         incarnation: 0,
         fence_storage_ids: [("broker-y".to_string(), "b".repeat(32))].into(),
         member_storage_ids: Default::default(),
+        learners: Default::default(),
         pending_set: None,
     };
 
@@ -1238,6 +1244,7 @@ async fn by_round_waits_for_every_member_and_the_rest_of_the_report_does_not() {
             incarnation: 0,
             fence_storage_ids: Default::default(),
             member_storage_ids: Default::default(),
+            learners: Default::default(),
             pending_set: None,
         })
         .await
@@ -1269,6 +1276,7 @@ async fn by_round_waits_for_every_member_and_the_rest_of_the_report_does_not() {
         node_incarnations: Default::default(),
         follower_storage: Default::default(),
         joint_start_acked: None,
+        holds_start: Default::default(),
     };
     let held = || async {
         store
@@ -1363,6 +1371,7 @@ async fn pending_sets_wait_for_every_member() {
             incarnation: 0,
             fence_storage_ids: Default::default(),
             member_storage_ids: Default::default(),
+            learners: Default::default(),
             pending_set: None,
         })
         .await
@@ -1402,6 +1411,7 @@ async fn pending_sets_wait_for_every_member() {
         given_up: false,
         inherited_storage: Default::default(),
         joint_start_acked: Some(assigned.generation),
+        holds_start: Default::default(),
     };
     let held = || async {
         store
@@ -1528,6 +1538,7 @@ async fn inherited_storage_waits_for_every_member() {
             incarnation: 0,
             fence_storage_ids: Default::default(),
             member_storage_ids: Default::default(),
+            learners: Default::default(),
             pending_set: None,
         })
         .await
@@ -1551,6 +1562,7 @@ async fn inherited_storage_waits_for_every_member() {
         node_incarnations: Default::default(),
         follower_storage: [("broker-y".to_string(), id.clone())].into(),
         joint_start_acked: None,
+        holds_start: Default::default(),
     };
     let held = || async {
         store
@@ -1593,6 +1605,151 @@ async fn inherited_storage_waits_for_every_member() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert_eq!(held().await.inherited_storage, report.inherited_storage);
+}
+
+/// A member before level 23 would drop an assignment's learners and a
+/// report's start holders, and its placement would read the shard differently
+/// from the rest. So until every member has the level both are dropped on
+/// every member and the rest of the write is kept, and `joint_fence` cannot be
+/// finalized.
+#[tokio::test]
+async fn learners_wait_for_every_member() {
+    use crate::model::{ReplicaReport, ShardAssignment, ShardKey, ShardKind, ShardState};
+    let id = "0123456789abcdef0123456789abcdef".to_string();
+    let joint = felix_common::fleet::JOINT_FENCE.name();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), 22).await;
+    store
+        .create_stream(routed_stream("orders", Default::default()))
+        .await
+        .expect("stream");
+    for (node_id, port) in [("broker-x", 7101), ("broker-y", 7102)] {
+        store
+            .register_node(crate::store::contract::nodes::with_features(
+                crate::store::contract::nodes::node(node_id, port),
+                &[joint],
+            ))
+            .await
+            .expect("register");
+    }
+    let key = ShardKey {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "orders".to_string(),
+        shard: 0,
+        kind: ShardKind::Stream,
+    };
+    let learning = ShardAssignment {
+        key: key.clone(),
+        leader: "broker-x".to_string(),
+        replicas: vec!["broker-y".to_string()],
+        generation: 0,
+        state: ShardState::Active,
+        successor: None,
+        joining: None,
+        move_started_at_millis: None,
+        move_reason: None,
+        incarnation: 0,
+        fence_storage_ids: Default::default(),
+        member_storage_ids: [("broker-y".to_string(), id.clone())].into(),
+        learners: ["broker-y".to_string()].into(),
+        pending_set: None,
+    };
+    let assigned = store
+        .put_shard_assignment(learning.clone())
+        .await
+        .expect("assign");
+    assert!(
+        assigned.learners.is_empty(),
+        "a learner was proposed past a member that would drop it"
+    );
+    assert_eq!(assigned.member_storage_ids, learning.member_storage_ids);
+
+    let report = ReplicaReport {
+        inherited_storage: Default::default(),
+        given_up: false,
+        counter_offsets: Default::default(),
+        stream_incarnation: None,
+        by_round: false,
+        leader_incarnation: None,
+        key: key.clone(),
+        generation: assigned.generation,
+        caught_up: ["broker-y".to_string()].into(),
+        offsets: [("broker-y".to_string(), 3)].into(),
+        reported_at_millis: 1,
+        drained: false,
+        leader_offset: Some(3),
+        halted: Default::default(),
+        leader: None,
+        node_incarnations: Default::default(),
+        follower_storage: [("broker-y".to_string(), id.clone())].into(),
+        joint_start_acked: None,
+        holds_start: ["broker-y".to_string()].into(),
+    };
+    let held = || async {
+        store
+            .list_replica_reports()
+            .await
+            .expect("reports")
+            .into_iter()
+            .find(|held| held.key == key)
+            .expect("the report was recorded")
+    };
+    store
+        .record_replica_report(report.clone(), "broker-x")
+        .await
+        .expect("recorded without the start holders");
+    let first = held().await;
+    assert!(first.holds_start.is_empty());
+    assert_eq!(first.follower_storage, report.follower_storage);
+    let refused = store.finalize_fleet_feature(joint).await;
+    assert!(
+        matches!(&refused, Err(StoreError::Conflict(_))),
+        "joint_fence was finalized past a member below level 23: {refused:?}"
+    );
+
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let written = store
+            .put_shard_assignment(ShardAssignment {
+                generation: 0,
+                ..learning.clone()
+            })
+            .await
+            .expect("assign");
+        if !written.learners.is_empty() {
+            assert_eq!(written.learners, learning.learners);
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "learners still dropped after every member reported the level"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let current = store.get_shard_assignment(&key).await.expect("get");
+    store
+        .record_replica_report(
+            ReplicaReport {
+                generation: current.generation,
+                ..report.clone()
+            },
+            "broker-x",
+        )
+        .await
+        .expect("record");
+    assert_eq!(held().await.holds_start, report.holds_start);
+    assert!(
+        store
+            .finalize_fleet_feature(joint)
+            .await
+            .expect("finalize")
+            .contains(joint)
+    );
 }
 
 /// A member before level 12 would drop a node's storage identity and a
@@ -1655,6 +1812,7 @@ async fn storage_ids_wait_for_every_member() {
             incarnation: 0,
             fence_storage_ids: Default::default(),
             member_storage_ids: Default::default(),
+            learners: Default::default(),
             pending_set: None,
         })
         .await
@@ -1678,6 +1836,7 @@ async fn storage_ids_wait_for_every_member() {
         node_incarnations: [("broker-y".to_string(), 1)].into(),
         follower_storage: [("broker-y".to_string(), id.clone())].into(),
         joint_start_acked: None,
+        holds_start: Default::default(),
     };
     let held = || async {
         store
@@ -1976,6 +2135,7 @@ async fn confirmed_shard_assignments_are_read_on_the_leader() {
             incarnation: 0,
             fence_storage_ids: Default::default(),
             member_storage_ids: Default::default(),
+            learners: Default::default(),
             pending_set: None,
         })
         .await
@@ -2845,6 +3005,7 @@ async fn adoption_waits_for_every_member() {
             incarnation: 0,
             fence_storage_ids: Default::default(),
             member_storage_ids: Default::default(),
+            learners: Default::default(),
             pending_set: None,
         })
         .await

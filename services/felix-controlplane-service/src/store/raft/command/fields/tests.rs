@@ -184,6 +184,7 @@ fn assignment() -> ShardAssignment {
         incarnation: 7,
         fence_storage_ids: any_map(s("0123456789abcdef0123456789abcdef")),
         member_storage_ids: any_map(s("0123456789abcdef0123456789abcdef")),
+        learners: BTreeSet::from([s("c")]),
         pending_set: Some(crate::model::PendingSet {
             replicas: vec![s("d")],
             generation: 1,
@@ -215,6 +216,7 @@ fn report() -> ReplicaReport {
         follower_storage: any_map(s("0123456789abcdef0123456789abcdef")),
         inherited_storage: any_map(s("0123456789abcdef0123456789abcdef")),
         joint_start_acked: Some(1),
+        holds_start: BTreeSet::from([s("c")]),
     }
 }
 

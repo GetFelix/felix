@@ -284,8 +284,20 @@ pub(super) async fn sets<R: PeerRequester>(
     if counted != old_voters[0] {
         old_voters.push(counted);
     }
+    // A member kept under another storage id is another copy: the old set's
+    // majority must count only the copy it named, so the same node list is
+    // still a change to fence across (#1737).
+    let replaced = set.members.iter().any(|member| {
+        before.members.iter().any(|old| {
+            old.node == member.node_id
+                && matches!(
+                    (old.storage, member.storage_id),
+                    (Some(was), Some(now)) if was != StorageId::from_bytes(now)
+                )
+        })
+    });
     // An empty set being left is no change to fence across, as in the model.
-    if before.members.is_empty() || old_voters.iter().all(|old| *old == new_voters) {
+    if before.members.is_empty() || (!replaced && old_voters.iter().all(|old| *old == new_voters)) {
         return Ok(Fenced {
             before,
             joint: None,

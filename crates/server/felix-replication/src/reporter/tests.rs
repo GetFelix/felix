@@ -77,6 +77,7 @@ fn report(stream: &str) -> ShardReport {
         given_up: false,
         inherited_storage: Vec::new(),
         joint_start_acked: None,
+        holds_start: Default::default(),
     }
 }
 
@@ -521,4 +522,39 @@ async fn a_report_names_the_pending_set_it_started() {
     assert_eq!(shards[0]["joint_start_acked"], 5, "{shards}");
     assert!(shards[1].get("joint_start_acked").is_none(), "{shards}");
     server.abort();
+}
+
+/// A follower holds the generation's start once its confirmed position is
+/// past it, and a cache's follower only when its counter log is past the
+/// counter log's start too. One that gave no storage identity, or a
+/// generation with no start record, lists nobody.
+#[test]
+fn the_followers_holding_the_start_are_those_past_it_on_every_log() {
+    let addr: std::net::SocketAddr = "10.0.0.1:7000".parse().expect("addr");
+    let cursor = |node: &str, confirmed: u64, identified: bool| {
+        let mut cursor = FollowerCursor::new(node, addr, confirmed);
+        cursor.confirmed = confirmed;
+        cursor.storage_id = identified.then(|| StorageId::from_bytes([1; 16]));
+        cursor
+    };
+    let followers = [
+        cursor("broker-b", 6, true),
+        cursor("broker-c", 5, true),
+        cursor("broker-d", 9, false),
+    ];
+
+    let names = |start, counters| holders_of_start(&followers, start, counters);
+    assert_eq!(names(5, None), vec!["broker-b".to_string()]);
+    assert!(names(u64::MAX, None).is_empty());
+
+    let counters = [cursor("broker-b", 2, true), cursor("broker-c", 9, true)];
+    assert_eq!(
+        names(4, Some((&counters, Some(1)))),
+        vec!["broker-b".to_string(), "broker-c".to_string()]
+    );
+    assert_eq!(
+        names(4, Some((&counters, Some(2)))),
+        vec!["broker-c".to_string()]
+    );
+    assert!(names(4, Some((&counters, None))).is_empty());
 }

@@ -524,6 +524,7 @@ async fn a_shard_write_holds_its_cache_until_it_lands() {
                     incarnation: 0,
                     fence_storage_ids: Default::default(),
                     member_storage_ids: Default::default(),
+                    learners: Default::default(),
                     pending_set: None,
                 })
                 .await

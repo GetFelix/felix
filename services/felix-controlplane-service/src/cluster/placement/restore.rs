@@ -147,6 +147,7 @@ pub(super) fn restore<'a>(
             move_reason: Some(MoveReason::Restore),
             fence_storage_ids: Default::default(),
             member_storage_ids: Default::default(),
+            learners: Default::default(),
             ..existing.clone()
         },
     ))

@@ -52,6 +52,7 @@ pub(crate) fn assignment(shard: u32, leader: &str) -> ShardAssignment {
         incarnation: 0,
         fence_storage_ids: Default::default(),
         member_storage_ids: Default::default(),
+        learners: Default::default(),
         pending_set: None,
     }
 }
@@ -165,12 +166,14 @@ pub(crate) async fn run_shard_contract(store: Arc<dyn ControlPlaneStore>) {
     replica_reports::a_give_up_is_kept(store).await;
     replica_reports::inherited_storage_is_kept(store).await;
     replica_reports::a_joint_start_is_kept(store).await;
+    replica_reports::start_holders_are_kept(store).await;
     a_conditional_write_lands_only_at_the_expected_generation(store).await;
     a_fence_planned_before_a_cut_over_is_refused_after_it(store).await;
     a_consistency_change_fences_placement(store).await;
     why_a_move_started_is_persisted(store).await;
     fence_storage_ids_are_persisted_until_the_next_write(store).await;
     member_storage_ids_are_persisted_until_the_next_write(store).await;
+    learners_are_persisted_until_the_next_write(store).await;
     a_pending_set_is_persisted_until_the_next_write(store).await;
     pausing_moves_is_persisted(store).await;
     super::adoption::run(store).await;
@@ -200,6 +203,7 @@ fn cache_assignment(shard: u32, leader: &str) -> ShardAssignment {
         incarnation: 0,
         fence_storage_ids: Default::default(),
         member_storage_ids: Default::default(),
+        learners: Default::default(),
         pending_set: None,
     }
 }
@@ -315,6 +319,7 @@ pub(crate) async fn an_assignment_racing_a_recreate_names_the_stream_it_landed_o
         incarnation: 0,
         fence_storage_ids: Default::default(),
         member_storage_ids: Default::default(),
+        learners: Default::default(),
         pending_set: None,
     };
     store.create_stream(stream(1)).await.expect("create");
@@ -755,6 +760,30 @@ async fn member_storage_ids_are_persisted_until_the_next_write(store: &dyn Contr
     assert!(next.member_storage_ids.is_empty());
     let read = store.get_shard_assignment(&key(0)).await.expect("get");
     assert!(read.member_storage_ids.is_empty());
+}
+
+/// The members held as learners are read back with the assignment, and the
+/// next write that carries none leaves none behind.
+async fn learners_are_persisted_until_the_next_write(store: &dyn ControlPlaneStore) {
+    clear(store).await;
+    let learners: std::collections::BTreeSet<String> = ["broker-y".to_string()].into();
+    let mut placed = assignment(0, "broker-x");
+    placed.replicas = vec!["broker-y".to_string()];
+    placed.learners = learners.clone();
+    let written = store.put_shard_assignment(placed).await.expect("place");
+    assert_eq!(written.learners, learners);
+    let read = store.get_shard_assignment(&key(0)).await.expect("get");
+    assert_eq!(read.learners, learners);
+    let listed = store.list_shard_assignments().await.expect("list");
+    assert_eq!(listed[0].learners, learners);
+
+    let next = store
+        .put_shard_assignment(assignment(0, "broker-x"))
+        .await
+        .expect("next write");
+    assert!(next.learners.is_empty());
+    let read = store.get_shard_assignment(&key(0)).await.expect("get");
+    assert!(read.learners.is_empty());
 }
 
 /// The identities a promotion's assignment names are read back with it, and
@@ -1486,6 +1515,7 @@ async fn deleting_a_stream_or_cache_takes_its_shard_assignments_with_it(
         incarnation: 0,
         fence_storage_ids: Default::default(),
         member_storage_ids: Default::default(),
+        learners: Default::default(),
         pending_set: None,
     };
     for shard in 0..2 {
@@ -1531,6 +1561,7 @@ async fn deleting_a_stream_or_cache_takes_its_shard_assignments_with_it(
         node_incarnations: Default::default(),
         follower_storage: Default::default(),
         joint_start_acked: None,
+        holds_start: Default::default(),
     };
     store
         .record_replica_report(doomed_report.clone(), "broker-x")
@@ -1672,6 +1703,7 @@ async fn a_cascading_delete_takes_shard_assignments_and_reports(store: &dyn Cont
                         node_incarnations: Default::default(),
                         follower_storage: Default::default(),
                         joint_start_acked: None,
+                        holds_start: Default::default(),
                     },
                     "broker-x",
                 )
@@ -1765,6 +1797,7 @@ pub(crate) async fn an_assignment_names_the_incarnation_it_was_written_for(
         incarnation: 99,
         fence_storage_ids: Default::default(),
         member_storage_ids: Default::default(),
+        learners: Default::default(),
         pending_set: None,
     };
     let key = StreamKey {
@@ -1878,6 +1911,7 @@ pub(crate) async fn a_recreated_stream_never_repeats_a_generation(store: &dyn Co
         incarnation: 0,
         fence_storage_ids: Default::default(),
         member_storage_ids: Default::default(),
+        learners: Default::default(),
         pending_set: None,
     };
     let key = StreamKey {
