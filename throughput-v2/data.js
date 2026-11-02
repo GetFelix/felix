@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793595399602,
+  "lastUpdate": 1793596092275,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -41600,6 +41600,58 @@ window.BENCHMARK_DATA = {
             "range": "5687.76",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 826163.76\nmean: 826573.12\nstdev: 5687.76\ncv: 0.69%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9317eb2b1cc45f99fdbe7761a35f7ee5527b2a11",
+          "message": "ci: check a changed TLA+ configuration over 30 minutes in a job of its own (#1735)\n\nA pull request that changed a registered TLA+ configuration of over 30 minutes skipped it (\"it runs on main or by dispatch\"), so a heavy configuration a PR broke only failed after merge. Now each such configuration gets a job of its own on the pull request.\n\n- `scripts/check_tla.sh --plan-heavy` prints the changed registered configurations over 30 minutes as a JSON matrix, each with a timeout of twice its weight plus 15 minutes (capped at 360).\n- `ci.yml`: `formal-heavy-plan` runs it on pull requests; `formal-heavy` checks each configuration on a 4-core `ubuntu-latest` runner. Both feed `CI ok`. The quick tier now says it left the configuration to its own job instead of skipping it.\n- A coverage dispatch (`tla_coverage`) uploads TLC's whole output as an artifact, so the per-expression counts can be read after the run.\n- Docs: `docs/formal/README.md` (\"Which configurations run where\") and the CI table in `development/building.md`.\n\nThe branch carries a temporary comment in `FelixShardFencedAckMoveShort.cfg` (31 min) so this PR's own run exercises `formal-heavy`; it is removed before merge.\n\nDesign calls\n- One job per heavy configuration rather than bin-packing several into one job. Every registered configuration is under 45 minutes, so each fits one free runner's job well inside its limit, and they run in parallel.\n- A changed `.tla` still does not pull its heavy configurations in: that is most of them, and they run on main.\n- Free runners only. `formal-heavy` stays on `ubuntu-latest` even when `FELIX_LARGE_RUNNER` is set, since the weights are measured there.",
+          "timestamp": "2026-11-01T20:41:11-08:00",
+          "tree_id": "4b7155309d33c12348d2250c519c774edea94b68",
+          "url": "https://github.com/GetFelix/felix/commit/9317eb2b1cc45f99fdbe7761a35f7ee5527b2a11"
+        },
+        "date": 1793596091715,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 359567.61,
+            "range": "15900.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 359567.61\nmean: 354577.02\nstdev: 15900.46\ncv: 4.48%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 359567.61,
+            "range": "15900.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 359567.61\nmean: 354577.02\nstdev: 15900.46\ncv: 4.48%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82182.73,
+            "range": "314.74",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82182.73\nmean: 82169.00\nstdev: 314.74\ncv: 0.38%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 821827.28,
+            "range": "3147.36",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 821827.28\nmean: 821689.96\nstdev: 3147.36\ncv: 0.38%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
