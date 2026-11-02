@@ -1354,7 +1354,7 @@ dependencies = [
 
 [[package]]
 name = "felix-mqtt-wire"
-version = "0.7.0-preview.2"
+version = "0.7.0-preview.3"
 dependencies = [
  "bytes",
  "thiserror 2.0.21",
