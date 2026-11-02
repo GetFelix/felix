@@ -3,7 +3,7 @@
 //!
 //! Every test here starts real broker processes; see `docs/cluster-harness.md`.
 //! Run with `cargo test -p felix-cluster --test scale`. The nightly size is
-//! ignored by default; `.github/workflows/scale-nightly.yml` runs it with
-//! `-- --ignored`.
+//! ignored by default; `.github/workflows/scale-nightly.yml` runs it by name
+//! with `-- --include-ignored`.
 
 mod lease_starvation;

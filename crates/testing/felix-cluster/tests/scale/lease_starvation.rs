@@ -10,7 +10,7 @@
 //! fences (#1796). `docs/cluster-harness.md` ("Shard starvation") says how to
 //! read a failure.
 //!
-//! Run with `cargo test -p felix-cluster --test scale lease_starvation::`.
+//! Run with `cargo test -p felix-cluster --test scale lease_starvation:: -- --include-ignored`.
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -45,13 +45,16 @@ const FEATURES: [&str; 4] = [
 ];
 
 /// The loaded p99 may be this many times the quiet one before the test fails.
-/// Starvation shows up as whole seconds against a few milliseconds idle, so
-/// the margin is wide on purpose: a loaded 4-vCPU runner is slower without
-/// being starved.
+/// Idle p99s are a few milliseconds, so on a healthy runner the floor below
+/// sets the bound; the multiple only takes over when the runner is slow even
+/// at rest.
 const BASELINE_MULTIPLE: u32 = 20;
-/// The least the bound is, however fast the quiet baseline was. Below this the
-/// multiple measures the runner's CPU, not the broker's scheduling.
-const BOUND_FLOOR: Duration = Duration::from_millis(1_500);
+/// The least the bound is. Measured on 4-vCPU GitHub runners, per-PR size
+/// (debug): without the #1760 fixes the loaded p99 was 5.0 s (renewals) and
+/// 6.0 s (reads); with them, 0.81 s and 0.64 s. 2 s sits about 2.5 times
+/// from each, so runner noise on either side does not flip the result. The
+/// nightly size (release) has more room: 5 to 6 s without, under 0.2 s with.
+const BOUND_FLOOR: Duration = Duration::from_secs(2);
 
 /// How much load a run applies.
 #[derive(Clone, Copy, Debug)]
@@ -61,7 +64,9 @@ struct Load {
     /// driver's 16 pass slots.
     streams: usize,
     /// How many of those take an append every [`APPEND_EVERY`] from the
-    /// moment they exist.
+    /// moment they exist. Starvation needs more shards with work on a leader
+    /// than its 16 pass slots, so this must be well over 48: at 32 the
+    /// canary stays on time even without the #1794 fix.
     appended: usize,
     /// How long the appends go on after the last stream is created.
     hold: Duration,
@@ -92,6 +97,7 @@ impl Load {
 /// **Renewals stay on time while every broker leads hundreds of busy shards.**
 /// Sized for the per-PR cluster job.
 #[serial]
+#[ignore = "fails until #1799, #1800 and #1801 are all on main (#1760)"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_lease_cache_renews_on_time_while_shards_are_created_in_bulk() {
     run(Load::from_env(Load {

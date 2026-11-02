@@ -633,22 +633,38 @@ It fails when:
   the read after it found the key gone. A renewal has 4 s (TTL minus the
   interval) to be applied.
 - **The loaded p99 is too far from the idle one,** for renewals or for reads:
-  more than 20 times the idle p99, and at least 1.5 s. Starvation shows as
-  seconds against a few milliseconds idle. The floor keeps a slow runner's CPU
-  contention from counting as starvation.
+  more than 20 times the idle p99, and at least 2 s. Idle p99s are a few
+  milliseconds, so the 2 s floor is what usually applies. On GitHub's 4-vCPU
+  runners at the per-PR size, the loaded p99 was 5 to 6 s without the fixes
+  and under 0.85 s with them, so 2 s leaves room for a slow runner either way.
+  At the nightly size it was 5 to 6 s without and under 0.2 s with.
 
 | Variant | Streams | Appended | Hold | Build | Where |
 | --- | --- | --- | --- | --- | --- |
-| `a_lease_cache_renews_on_time_while_shards_are_created_in_bulk` | 300 | 32 | 20 s | debug | every PR, in the cluster job's `rest` suite |
+| `a_lease_cache_renews_on_time_while_shards_are_created_in_bulk` | 600 | 96 | 30 s | debug | every PR, in the cluster job's `rest` suite (see below) |
 | `a_lease_cache_renews_on_time_at_felixd_scale` (`#[ignore]`) | 1500 | 96 | 60 s | release | nightly, `.github/workflows/scale-nightly.yml` |
+
+The per-PR variant is `#[ignore]` until the three fixes (#1799, #1800, #1801)
+are all on main, because it fails without them. Until then
+`scale-nightly.yml` runs it on dispatch with `variant=per-pr`.
+
+The appended count matters more than the stream count. Starvation needs more
+shards with work on one leader than the replication driver's 16 pass slots.
+Both variants append to 96 streams, about 32 per leader, twice the slots. At 32
+appended (about 11 per leader) a broker without the #1794 fix still passed.
 
 Run them locally with:
 
 ```bash
+# The per-PR size, on a debug build.
 cargo build -p felix-broker-service --bin felix-broker
-cargo test -p felix-cluster --test scale -- --nocapture
+cargo test -p felix-cluster --test scale -- --include-ignored --nocapture \
+  --exact lease_starvation::a_lease_cache_renews_on_time_while_shards_are_created_in_bulk
+
+# The nightly size, on a release build.
 cargo build --release -p felix-broker-service --bin felix-broker
-cargo test --release -p felix-cluster --test scale -- --ignored --nocapture
+cargo test --release -p felix-cluster --test scale -- --include-ignored --nocapture \
+  --exact lease_starvation::a_lease_cache_renews_on_time_at_felixd_scale
 ```
 
 `FELIX_SCALE_STREAMS`, `FELIX_SCALE_APPENDED` and `FELIX_SCALE_HOLD_SECS`
@@ -657,11 +673,15 @@ as dispatch inputs, plus `variant` (`nightly` or `per-pr`).
 
 ### Reading a failure
 
-Every run prints one line, pass or fail:
+Every run prints one line, pass or fail. This one is the per-PR size on a
+broker without the fixes:
 
 ```text
-EXAMPLE_LINE
+lease canary: Load { streams: 600, appended: 96, hold: 30s }: created in 424.6ms; appends 2987 ok, 7670 failed; renewals idle [n=20 p50=6.3ms p99=7.6ms max=7.6ms] loaded [n=32 p50=605.2ms p99=5.0s max=5.0s] bound 2.0s; reads idle [n=20 p50=5.2ms p99=6.8ms max=6.8ms] loaded [n=32 p50=40.9ms p99=6.0s max=6.0s] bound 2.0s; 0 lapse(s)
 ```
+
+Renewals and reads are timed out at the TTL, so a p99 of 5 to 6 s means
+requests that waited about as long as a lease lives.
 
 `idle` is the baseline and `loaded` everything sent after the first create. A
 failure adds the problems and each broker's `quorum wait timed out` warnings.

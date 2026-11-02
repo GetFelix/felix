@@ -2,17 +2,14 @@ name: Shard starvation (nightly)
 
 # The lease-canary test (crates/testing/felix-cluster/tests/scale) at felixd's
 # scale: about 1500 replicated shards created in bulk on three brokers, with
-# steady appends, while a small lease cache renews every two seconds. The PR
-# cluster job runs a 300-stream version of the same test; this one is where a
-# scheduling fault that only shows at size turns up. docs/cluster-harness.md
-# ("Shard starvation") says how to read a failure.
+# steady appends, while a small lease cache renews every two seconds. The
+# per-pr variant is the 600-stream version on a debug build.
+# docs/cluster-harness.md ("Shard starvation") says how to read a failure.
 #
 # A failed scheduled run opens an issue labelled `scale-nightly`, or comments on
 # the open one; a green one closes it.
 
 on:
-  push:
-    branches: [test/starvation-guard-1760]
   schedule:
     # Every night at 05:23 UTC, clear of the history (03:17), power-loss
     # (04:07) and release-build (04:41) runs.
@@ -20,7 +17,7 @@ on:
   workflow_dispatch:
     inputs:
       variant:
-        description: "nightly (release build, 1500 streams) or per-pr (debug build, 300 streams)"
+        description: "nightly (release build, 1500 streams) or per-pr (debug build, 600 streams)"
         required: false
         type: choice
         options:
@@ -61,7 +58,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: ${{ fromJSON(github.event_name == 'push' && '["per-pr"]' || format('["{0}"]', inputs.variant || 'nightly')) }}
+        variant: ["${{ inputs.variant || 'nightly' }}"]
     permissions:
       contents: read
       issues: write
@@ -90,9 +87,9 @@ jobs:
         run: |
           case "$VARIANT" in
             nightly) echo "profile=--release" >> "$GITHUB_OUTPUT"
-                     echo "args=--ignored" >> "$GITHUB_OUTPUT" ;;
+                     echo "test=a_lease_cache_renews_on_time_at_felixd_scale" >> "$GITHUB_OUTPUT" ;;
             per-pr) echo "profile=" >> "$GITHUB_OUTPUT"
-                    echo "args=" >> "$GITHUB_OUTPUT" ;;
+                    echo "test=a_lease_cache_renews_on_time_while_shards_are_created_in_bulk" >> "$GITHUB_OUTPUT" ;;
             *) echo "unknown variant: $VARIANT"; exit 1 ;;
           esac
           for pair in "FELIX_SCALE_STREAMS=$STREAMS" "FELIX_SCALE_APPENDED=$APPENDED" "FELIX_SCALE_HOLD_SECS=$HOLD_SECS"; do
@@ -113,7 +110,9 @@ jobs:
         run: |
           set -o pipefail
           cargo test ${{ steps.variant.outputs.profile }} -p felix-cluster --test scale \
-            -- --nocapture ${{ steps.variant.outputs.args }} 2>&1 | tee "$RUNNER_TEMP/scale-output.txt"
+            -- --nocapture --include-ignored --exact "lease_starvation::${{ steps.variant.outputs.test }}" 2>&1 | tee "$RUNNER_TEMP/scale-output.txt"
+          # A renamed test would otherwise match nothing and pass.
+          grep -q '^running 1 test' "$RUNNER_TEMP/scale-output.txt" || { echo "the canary test did not run"; exit 1; }
 
       - name: Summary
         if: always()
