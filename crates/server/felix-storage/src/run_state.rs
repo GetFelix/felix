@@ -21,6 +21,10 @@
 //! first trim record, whether it leads the shard or replicates it, and never
 //! removes it, so a broker can refuse to join a fleet that has not finalized
 //! `head_trim` without opening every log. See [`record_head_trimmed`].
+//!
+//! `<durable root>/replaced-storage` says the control plane once registered
+//! this node under another storage id, so this directory may lack copies the
+//! node held. See [`record_replaced`].
 
 mod boot;
 
@@ -279,6 +283,25 @@ pub fn record_head_trimmed(root: &Path) -> Result<()> {
 /// counts: it is renamed into place whole, and it is never removed.
 pub fn head_trimmed(root: &Path) -> Result<bool> {
     root.join(HEAD_TRIMMED_FILE_NAME)
+        .try_exists()
+        .map_err(StorageError::Io)
+}
+
+/// The replaced-storage marker's name under the durable root.
+pub const REPLACED_FILE_NAME: &str = "replaced-storage";
+
+/// Record, durably, that the control plane last registered this node under
+/// another storage id. Call before the node registers the new one, after
+/// which the registration no longer says so. Never removed,
+/// since a copy with no replica set on this directory may be one the node
+/// held under the old id, however many restarts later.
+pub fn record_replaced(root: &Path) -> Result<()> {
+    write_atomically(root, REPLACED_FILE_NAME, b"replaced\n", true)
+}
+
+/// Whether [`record_replaced`] ran on `root`.
+pub fn replaced(root: &Path) -> Result<bool> {
+    root.join(REPLACED_FILE_NAME)
         .try_exists()
         .map_err(StorageError::Io)
 }

@@ -115,6 +115,7 @@ fn group_replicas(size: usize, capabilities: PeerCapabilities) -> Replicas {
                 storage: Some(storage_of(id)),
                 group_storage: None,
                 refuses: None,
+                recorded: true,
                 _dir: dir,
             },
         );

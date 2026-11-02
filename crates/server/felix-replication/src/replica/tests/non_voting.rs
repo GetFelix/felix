@@ -338,6 +338,79 @@ async fn a_replaced_storage_id_is_a_learner() {
     assert_eq!(log.member_is_learner(LOCAL), Some(false));
 }
 
+/// **A replaced copy refuses a fence that carries no set**, as a leader
+/// sends one to a replica whose capabilities it has not learned. Answered,
+/// it would count with an empty log toward a majority the acknowledged
+/// records need (`SetlessFences` in `docs/formal/FelixShard.tla`).
+#[tokio::test]
+async fn a_replaced_copy_refuses_a_fence_without_a_set() {
+    let (broker, _dir) = broker_with_storage().await;
+    let handler = handler(&broker, 6, OWN).with_replaced_storage(true);
+    let plain = Fence {
+        election: None,
+        ..fence_with(6, named(6, None), None, false)
+    };
+
+    let answer = handler.fence(SENDER, plain).await;
+    assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized, "{answer:?}");
+    assert_eq!(log_of(&broker).await.accepted_generation(), 0);
+}
+
+/// **A cache's counter fence asks the cache log whether this copy votes**:
+/// the counter log keeps no set, so a learner's empty counter log would
+/// otherwise count, and counter increments a majority acknowledged before
+/// the wipe would be lost (`AnswerCounterFence` in
+/// `docs/formal/FelixShard.tla`). Once re-admitted, it answers.
+#[tokio::test]
+async fn a_counter_fence_is_refused_while_the_cache_copy_is_a_learner() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let broker = super::fence::cache_broker(dir.path());
+    let handler = ReplicaHandler::new(Arc::clone(&broker), super::fence::cache_router(6))
+        .with_fleet(marks(true))
+        .with_local_storage(StorageId::from_bytes(OWN))
+        .with_stickiness(Duration::ZERO)
+        .with_confirmed_routes(ConfirmedAs::new(Confirmed::Assigned {
+            generation: 6,
+            leader: "broker-a".to_string(),
+        }) as _);
+    let on = |log, fence: Fence| Fence { log, ..fence };
+    let counters = on(
+        ReplicaLog::Counters,
+        Fence {
+            election: None,
+            ..fence_with(6, named(6, None), None, false)
+        },
+    );
+
+    let answer = handler
+        .fence(
+            SENDER,
+            on(ReplicaLog::Cache, fence_with(6, set(5, OLD), None, false)),
+        )
+        .await;
+    assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
+    let answer = handler.fence(SENDER, counters.clone()).await;
+    assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized, "{answer:?}");
+
+    let answer = handler
+        .fence(
+            SENDER,
+            on(ReplicaLog::Cache, fence_with(6, set(6, OWN), None, false)),
+        )
+        .await;
+    assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
+    let put = super::fence::cache_put("k", "v");
+    let answer = handler
+        .apply(SENDER, stamped(6, 0, &[&put]), felix_broker::LogKind::Cache)
+        .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    let answer = handler.fence(SENDER, counters).await;
+    assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
+}
+
 /// A shard's creation is a set at generation 1, which no copy held before:
 /// a replaced storage id votes in it.
 #[tokio::test]

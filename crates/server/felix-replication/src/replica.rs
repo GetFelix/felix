@@ -1119,7 +1119,7 @@ impl ReplicaHandler {
             }
         }
         if let Some(refusal) = self
-            .refuse_non_voter_fence(correlation_id, &key, &log, &request)
+            .refuse_non_voter_fence(correlation_id, &key, log_kind, &log, &request)
             .await
         {
             return refusal;

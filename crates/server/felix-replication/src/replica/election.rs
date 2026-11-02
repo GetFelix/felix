@@ -6,8 +6,9 @@
 //! to disk before it answers at it. `SetCurrent`, `LearnSet`, `AnswerFence`
 //! and `RefuseStaleSet` in `docs/formal/FelixShard.tla`.
 //!
-//! A fence or batch without a set skips all of this, so a broker that never
-//! offered `ELECTION` behaves as it did.
+//! A fence or batch without a set skips the set checks, so a broker that
+//! never offered `ELECTION` behaves as it did. Under `joint_fence` a learner
+//! still refuses such a fence.
 
 use std::time::Instant;
 
@@ -254,20 +255,45 @@ impl ReplicaHandler {
     /// carries. It promises nothing: its answer would count toward a
     /// majority it may hold none of the acknowledged records for. That
     /// includes the fence of the set change that re-admits it, so no leader
-    /// counts it before it catches up. `AnswerFence`'s `NonVoter` guard and
-    /// `WipedLearnSet`.
+    /// counts it before it catches up, and a fence with no set, which a
+    /// leader sends a replica whose capabilities it has not learned.
+    /// `AnswerFence`'s `NonVoter` guard and `WipedLearnSet`.
+    ///
+    /// A group or counter log keeps no set: the shard's own log decides, as
+    /// `AnswerCounterFence`'s guard does.
     pub(super) async fn refuse_non_voter_fence(
         &self,
         correlation_id: u64,
         key: &felix_router::ShardKey,
+        log_kind: felix_broker::LogKind,
         log: &felix_broker::StreamLog,
         request: &Fence,
     ) -> Option<InternalMessage> {
-        let learner = self.is_learner(log);
-        let evidence = request
-            .election
-            .as_ref()
-            .is_some_and(|election| self.names_other_in_view(log, &election.set));
+        let opened;
+        let own = match super::own_kind(log_kind) {
+            None => log,
+            Some(kind) => {
+                opened = self
+                    .broker
+                    .shard_log_for(
+                        kind,
+                        &key.tenant_id,
+                        &key.namespace,
+                        &key.stream,
+                        key.shard,
+                        None,
+                        self.expected_incarnation(key, request.shard.incarnation),
+                    )
+                    .await;
+                // With no log of its own, `refuse_unbacked` refuses it.
+                opened.as_ref().unwrap_or(log)
+            }
+        };
+        let learner = self.is_learner(own);
+        let evidence = match &request.election {
+            Some(election) => self.names_other_in_view(own, &election.set),
+            None => self.replaced_copy_of(own, request.shard.generation),
+        };
         match self.joint_gate() {
             _ if !learner && !evidence => return None,
             None if !learner => return Some(undecided(correlation_id, key)),

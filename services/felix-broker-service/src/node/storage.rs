@@ -172,20 +172,30 @@ pub(crate) fn open(
 
 /// Start a run on `root` and say what it started under: the storage id,
 /// whether it was rotated, and whether the control plane last registered
-/// this node under another id. That last is the evidence of a wipe a copy
-/// cannot find in a set written since (#1331): what the node held under the
-/// old id is gone or set aside. A node the control plane never registered,
-/// or one registered before storage ids, held nothing under another id, so
-/// a new broker's copies vote however new its directory is.
+/// this node under another id, now or at any start on this directory since.
+/// That is the evidence of a wipe a copy cannot find in a set written since
+/// (#1331): what the node held under the old id is gone or set aside. It is
+/// kept on disk before the new id registers, so a restart after that still
+/// knows. A node the control plane never registered, or one registered before
+/// storage ids, held nothing under another id, so a new broker's copies vote
+/// however new its directory is.
 fn start_run(
     root: &Path,
     log: &felix_storage::log::LogConfig,
     registered: Option<&Registered>,
 ) -> Result<(StorageId, bool, bool)> {
     let begun = begin_run(root, log, registered.map(|r| r.incarnation))?;
-    let replaced = registered
+    let replaced_now = registered
         .and_then(|r| r.storage_id.as_deref())
         .is_some_and(|prior| prior != begun.id.to_hex());
+    if replaced_now {
+        felix_storage::run_state::record_replaced(root)
+            .with_context(|| format!("record a replaced storage id under {}", root.display()))?;
+    }
+    let replaced = replaced_now
+        || felix_storage::run_state::replaced(root).with_context(|| {
+            format!("read the replaced-storage marker under {}", root.display())
+        })?;
     Ok((begun.id, begun.rotated, replaced))
 }
 

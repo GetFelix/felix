@@ -357,35 +357,46 @@ async fn fence_log<R: PeerRequester>(
     let mut refusals: Vec<String> = Vec::new();
     let mut asks = futures::stream::FuturesUnordered::new();
     for replica in replicas {
-        // Only to a replica that offered `ELECTION`; any other is sent the
-        // fence it always was. A joint fence asks only replicas that did.
-        let election = match joint {
-            Some(joint) => set.map(|set| FenceElection {
-                candidate: false,
-                set: set.clone(),
-                leaving: Some(joint.leaving.clone()),
-            }),
-            None => set
-                .filter(|_| {
-                    requester
-                        .recorded_capabilities(&replica.node_id)
-                        .is_some_and(|offered| offered.contains(PeerCapabilities::ELECTION))
-                })
-                .map(|set| FenceElection {
+        let (node_id, addr) = (replica.node_id.clone(), replica.advertise_addr);
+        let shard = shard.clone();
+        asks.push(async move {
+            // Only to a replica that offered `ELECTION`; any other is sent the
+            // fence it always was. A joint fence asks only replicas that did.
+            // One whose capabilities are not yet recorded is asked, as
+            // `joint::sets` does, inside its own ask so a peer that is down
+            // holds up only its own answer.
+            let election = match (joint, set) {
+                (Some(joint), Some(set)) => Some(FenceElection {
                     candidate: false,
                     set: set.clone(),
-                    leaving: None,
+                    leaving: Some(joint.leaving.clone()),
                 }),
-        };
-        asks.push(ask_fence(
-            requester,
-            replica.node_id.clone(),
-            replica.advertise_addr,
-            shard.clone(),
-            crate::ship::replica_log(kind),
-            reported_ids.is_some() || joint.is_some_and(JointSets::names_copies),
-            election,
-        ));
+                (None, Some(set)) => {
+                    let offered = match requester.recorded_capabilities(&node_id) {
+                        Some(offered) => Some(offered),
+                        None => requester.capabilities(&node_id, addr).await.ok(),
+                    };
+                    offered
+                        .is_some_and(|offered| offered.contains(PeerCapabilities::ELECTION))
+                        .then(|| FenceElection {
+                            candidate: false,
+                            set: set.clone(),
+                            leaving: None,
+                        })
+                }
+                (_, None) => None,
+            };
+            ask_fence(
+                requester,
+                node_id,
+                addr,
+                shard,
+                crate::ship::replica_log(kind),
+                reported_ids.is_some() || joint.is_some_and(JointSets::names_copies),
+                election,
+            )
+            .await
+        });
     }
     while !settled(&answered) {
         let Some((node_id, addr, answer, identity)) = asks.next().await else {
