@@ -690,7 +690,7 @@ for overlapping prefixes cannot both succeed:
 - **Memory and Raft** check inside the apply, under the store's lock, so every
   member refuses the same entry.
 - **Postgres** checks in the same transaction as the write, under the streams
-  feed lock every stream write takes. Migration `0040_stream_mount.sql` adds the
+  feed lock every stream write takes. Migration `0041_stream_mount.sql` adds the
   nullable `streams.mount` column, and a unique index on `(tenant_id, mount)`
   backs the check up for two streams with the same prefix.
 - **Batches** (`POST .../resources`) check every mount against the stored ones
