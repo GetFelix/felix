@@ -13,13 +13,16 @@ use super::telemetry;
 /// True if the broker refuses a frame for its flags.
 ///
 /// `FLAG_EXTENDED` is accepted only once the connection negotiated an
-/// extension (`negotiated_ext` is the bits `Auth` and `AuthOk` agreed on).
-/// Before that it is refused as it was before the bit was defined, so a client
-/// that skipped the offer learns it from the error. Every reader of client
-/// frames checks this before the body.
+/// extension (`negotiated_ext` is the bits `Auth` and `AuthOk` agreed on), and
+/// only on a binary publish batch, the one client frame that carries an
+/// extension today. Otherwise it is refused as it was before the bit was
+/// defined, so a client that skipped the offer learns it from the error and a
+/// JSON frame cannot reach a decoder that would close the stream over it.
+/// Every reader of client frames checks this before the body.
 pub(crate) fn refuses_flags(flags: u16, negotiated_ext: u32) -> bool {
     felix_wire::has_unknown_flags(flags)
-        || (flags & felix_wire::FLAG_EXTENDED != 0 && negotiated_ext == 0)
+        || (flags & felix_wire::FLAG_EXTENDED != 0
+            && (negotiated_ext == 0 || flags & felix_wire::FLAG_BINARY_PUBLISH_BATCH == 0))
 }
 
 /// The extension bits a client's `Auth` offered that this broker serves.
