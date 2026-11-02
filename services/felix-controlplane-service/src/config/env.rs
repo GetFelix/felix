@@ -233,6 +233,7 @@ fn shard_moves_from_env() -> crate::cluster::placement::MovePolicy {
         paused: false,
         replica_election: false,
         fenced_caches: false,
+        joint_fence: false,
         regions: defaults.regions,
     }
 }

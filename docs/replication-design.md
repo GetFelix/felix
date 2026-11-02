@@ -834,12 +834,13 @@ once it has caught up with a leader that was chosen without it. This is the
 rule [#1331](https://github.com/GetFelix/felix/issues/1331) adopted, and what
 Raft does with a new member. Without `joint_fence` brokers answer as before.
 
-The rule is built but switched off in brokers until the control plane can
-re-admit a learner and keep placement off one
-([#1737](https://github.com/GetFelix/felix/issues/1737)). The control plane
-refuses to finalize `joint_fence` until then, but a fleet that finalized it
-on an earlier release has it on already, so brokers check their own switch
-too (`NON_VOTING_READY` in `crates/server/felix-replication/src/quorum.rs`).
+The rule is built but still switched off. The control plane now re-admits a
+learner and keeps placement off one ([#1737](https://github.com/GetFelix/felix/issues/1737);
+see "How the control plane re-admits a copy" below). What is missing is an
+end-to-end cluster test of the whole sequence. Until it lands the control
+plane refuses to finalize `joint_fence`, and brokers check their own switch
+too, for a fleet that finalized it on an earlier release
+(`NON_VOTING_READY` in `crates/server/felix-replication/src/quorum.rs`).
 
 ```mermaid
 sequenceDiagram
@@ -893,7 +894,8 @@ holds no set. Such a copy is admitted once it catches up, as a staged
 destination is, so the only change that waits on it is one that needs a
 copy on a replaced broker to vote before that generation's leader has
 opened, such as a swap of two members onto replaced brokers. The control
-plane knows which assignments named the old id, and #1737 ends that wait.
+plane knows which assignments named the old id, and its re-admission write
+(below) ends that wait.
 
 A broker the control plane has never registered held nothing, however new
 its directory, so its copies vote. That is what lets a new broker join a set,
@@ -965,6 +967,29 @@ that generation, it never promises that generation, or an older one, to
 anyone else. A copy re-admitted without that ballot elects two leaders at one
 generation (`FelixShardElectWipeNonVoterNoCatchUp.cfg`).
 
+**How the control plane re-admits a copy.** The control plane does the
+naming, because only it knows a copy was replaced. With `joint_fence`
+finalized, placement does three things (`docs/control-plane.md`,
+"Re-admitting a replaced copy"):
+
+1. It holds a replaced member as a learner. A member is replaced when the
+   assignment names it under one storage id and it is registered under
+   another. Placement leaves it out of every failover and every count of how
+   many copies hold the log, the old set's majority of a move included.
+2. It writes the re-admission. When the leader's report shows the replaced
+   member caught up under its new id, placement writes the same set at the
+   next generation. That write names the new id and lists the member in the
+   assignment's `learners`.
+3. It lets the member count again once the leader's report at that
+   generation lists it in `holds_start`: the followers the leader saw holding
+   that generation's start record (and, for a cache shard, its counter log's).
+   That is the same evidence the copy uses for itself above.
+
+The broker side needs two things from this. A leader reports `holds_start`,
+and a joint fence treats a member kept under another storage id as a change
+of set even when the node list is the same, so the old set's majority counts
+only the copy it named.
+
 **Before the gate is known.** Whether a set naming another id makes a copy a
 learner depends on the `joint_fence` gate, which the broker learns only when
 it registers, after its peer listener is up. Until then such a request is
@@ -974,12 +999,9 @@ A mark already on disk holds whatever the gate says.
 
 Not covered yet, and needed before elections (#1009 S9):
 
-- The control plane does not re-admit a learner by itself, and placement
-  does not leave a learner out of failover. Only an ordinary placement write
-  names the new id, so a learner whose assignment does not change stays one,
-  and a move that needs it waits. Both are
-  [#1737](https://github.com/GetFelix/felix/issues/1737), which must land
-  before elections do.
+- An end-to-end cluster test of the sequence above, and the switch
+  `NON_VOTING_READY`, which stays off until it passes. The full list is
+  "Turning on joint fences" in `docs/control-plane.md`.
 - The model's group logs (`GroupLogs`) stand in the counter log's place:
   one log beside the records, not the dead-letter and cursor pair, and the
   model waits for a majority where the code, short of answers, takes the
@@ -1040,8 +1062,17 @@ Evidence (`replica/tests/non_voting.rs`):
 (`promotion/tests/joint.rs`), `a_wiped_leaders_own_group_logs_do_not_count`,
 `a_wiped_leader_keeps_its_mark_through_a_failed_group_take` and
 `a_wiped_leader_with_no_group_answer_stays_pending`
-(`promotion/tests/groups.rs`); and `a_newer_set_keeps_the_wiped_mark` in
-`crates/server/felix-storage/src/disk_log/tests/replica_set.rs`.
+(`promotion/tests/groups.rs`); `a_newer_set_keeps_the_wiped_mark` in
+`crates/server/felix-storage/src/disk_log/tests/replica_set.rs`;
+`a_member_named_under_another_storage_id_is_a_set_change`
+(`promotion/tests/joint.rs`) and
+`a_report_lists_the_followers_holding_the_generations_start`
+(`driver/tests/joint_acks.rs`) in `crates/server/felix-replication/src`; and,
+for the control plane's side in
+`services/felix-controlplane-service/src/cluster/placement/tests/readmit.rs`,
+`failover_skips_a_replaced_member_until_its_leader_shows_it_holding_the_start`,
+`a_trim_does_not_count_a_learner_toward_the_rest_holding_the_tail` and
+`a_wiped_member_is_readmitted_then_counts_once_it_holds_the_start`.
 
 ### Every change of leader
 
@@ -3791,8 +3822,9 @@ production broker sends or reads a set yet. With it on:
   its own set and fences with it.
 
 The control plane's finalize gates are in place too: `joint_fence` is refused
-while a serving broker does not report that it offers the `ELECTION` peer
-capability, and `replica_election` is refused until `joint_fence` and its
+before `generation_start` and while a serving broker does not report that it
+offers the `ELECTION` peer capability or names start holders in its reports
+(`start_holders`), and `replica_election` is refused until `joint_fence` and its
 other prerequisites are finalized, every serving broker offers `ELECTION`,
 and the control plane has the metadata level for the pending replica set and
 adoption (level 21 under Raft, which every member must report). No broker
@@ -3830,8 +3862,10 @@ Once it is finalized on a broker that offers `ELECTION`:
   promised it refuses this broker. Writes are held through the fence, as at
   a promotion.
 - A leader fences both its route's set and the set it is leaving when their
-  voters differ, carrying the new set with the old one, and opens only on a
-  majority of each. That covers a move's cut-over, a replacement's join and
+  voters differ, or when a member is named under another storage id than the
+  set being left names it (a replaced copy, with the same node list),
+  carrying the new set with the old one, and opens only on a majority of
+  each. That covers a move's cut-over, a replacement's join and
   seat, a top-up and a grow. The set being left is the control plane's set
   at the generation right before the route's, as the model's `Swap` takes it.
   The broker learns it from the assignment its watch saw at that generation,

@@ -47,6 +47,7 @@ fn populate(dir: &TempDir, count: usize) -> Offset {
             timestamp_micros: 1,
             mark: Default::default(),
             publisher: None,
+            headers: None,
         }])
         .expect("append");
     }

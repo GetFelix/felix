@@ -129,6 +129,10 @@ pub struct MovePolicy {
     /// `fenced_caches` is finalized, so `Quorum` cache shards elect too. Read
     /// from the store, as `replica_election` is.
     pub fenced_caches: bool,
+    /// `joint_fence` is finalized, so a member whose storage was replaced is
+    /// held as a learner and re-admitted (#1737). Read from the store, as
+    /// `replica_election` is.
+    pub joint_fence: bool,
     /// Where a stream with a home region may have copies: that region, and
     /// any region the allowlist bridges it to (`FELIX_REGION_BRIDGES`). A
     /// stream without one is placed anywhere.
@@ -151,6 +155,7 @@ impl Default for MovePolicy {
             paused: false,
             replica_election: false,
             fenced_caches: false,
+            joint_fence: false,
             regions: Arc::new(RegionRouter::new(String::new())),
         }
     }
@@ -413,6 +418,7 @@ pub(super) fn move_step<'a>(
                     generation: 0,
                     fence_storage_ids: Default::default(),
                     member_storage_ids: Default::default(),
+                    learners: Default::default(),
                     ..existing.clone()
                 },
             )
@@ -437,6 +443,7 @@ pub(super) fn move_step<'a>(
                 generation: 0,
                 fence_storage_ids: Default::default(),
                 member_storage_ids: Default::default(),
+                learners: Default::default(),
                 ..existing.clone()
             },
         );
@@ -489,6 +496,7 @@ pub(super) fn move_step<'a>(
                         generation: 0,
                         fence_storage_ids: Default::default(),
                         member_storage_ids: Default::default(),
+                        learners: Default::default(),
                         ..existing.clone()
                     },
                 );
@@ -565,6 +573,7 @@ pub(super) fn move_step<'a>(
             incarnation: 0,
             fence_storage_ids: Default::default(),
             member_storage_ids: Default::default(),
+            learners: Default::default(),
             pending_set: None,
         };
         return Decision::Move(
@@ -597,6 +606,7 @@ pub(super) fn move_step<'a>(
                     generation: 0,
                     fence_storage_ids: Default::default(),
                     member_storage_ids: Default::default(),
+                    learners: Default::default(),
                     ..existing.clone()
                 },
             );
@@ -609,6 +619,7 @@ pub(super) fn move_step<'a>(
                     generation: 0,
                     fence_storage_ids: Default::default(),
                     member_storage_ids: Default::default(),
+                    learners: Default::default(),
                     ..existing.clone()
                 },
             );
@@ -855,6 +866,7 @@ pub(super) fn start(
         incarnation: 0,
         fence_storage_ids: Default::default(),
         member_storage_ids: Default::default(),
+        learners: Default::default(),
         pending_set: None,
     };
     if already_a_replica && moves.ready_to_fence(caught_up, &existing.key, destination) {
@@ -890,6 +902,7 @@ pub(super) fn retake(existing: &ShardAssignment, replication_factor: u32) -> Sha
         move_reason: None,
         fence_storage_ids: Default::default(),
         member_storage_ids: Default::default(),
+        learners: Default::default(),
         ..existing.clone()
     }
 }
@@ -913,6 +926,7 @@ pub(super) fn undo_staged(
         generation: 0,
         fence_storage_ids: Default::default(),
         member_storage_ids: Default::default(),
+        learners: Default::default(),
         ..existing.clone()
     }
 }
@@ -970,6 +984,7 @@ pub(super) fn undo_fenced(existing: &ShardAssignment) -> ShardAssignment {
         generation: 0,
         fence_storage_ids: Default::default(),
         member_storage_ids: Default::default(),
+        learners: Default::default(),
         ..existing.clone()
     }
 }
@@ -986,6 +1001,7 @@ pub(super) fn undo_replacement(existing: &ShardAssignment, joining: &str) -> Sha
         move_reason: None,
         fence_storage_ids: Default::default(),
         member_storage_ids: Default::default(),
+        learners: Default::default(),
         ..existing.clone()
     }
 }
@@ -1054,6 +1070,7 @@ fn reseat<'a>(
             move_reason: Some(MoveReason::Replace),
             fence_storage_ids: Default::default(),
             member_storage_ids: Default::default(),
+            learners: Default::default(),
             ..existing.clone()
         },
     )
@@ -1156,6 +1173,7 @@ pub(super) fn seat_or_fence(
                 generation: 0,
                 fence_storage_ids: Default::default(),
                 member_storage_ids: Default::default(),
+                learners: Default::default(),
                 ..existing.clone()
             },
         );
@@ -1181,6 +1199,7 @@ fn seated(existing: &ShardAssignment, from: Option<&str>) -> ShardAssignment {
         move_reason: None,
         fence_storage_ids: Default::default(),
         member_storage_ids: Default::default(),
+        learners: Default::default(),
         ..existing.clone()
     }
 }
@@ -1299,6 +1318,7 @@ fn seat_after_fence(
                 generation: 0,
                 fence_storage_ids: Default::default(),
                 member_storage_ids: Default::default(),
+                learners: Default::default(),
                 ..existing.clone()
             }),
         );
@@ -1392,6 +1412,7 @@ fn trim_fence(
             generation: 0,
             fence_storage_ids: Default::default(),
             member_storage_ids: Default::default(),
+            learners: Default::default(),
             ..existing.clone()
         },
     )

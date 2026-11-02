@@ -1,5 +1,5 @@
 //! Applying a plan to the store, on a timer or when woken.
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::time::Instant;
 
 use super::metrics::MoveClock;
@@ -128,12 +128,26 @@ pub(super) struct PlannedPass {
     /// The storage identity each node had registered when the pass read,
     /// named on every assignment it writes (#1009 S8).
     registered: BTreeMap<String, String>,
+    /// With `joint_fence`, each assignment the pass read and which of its
+    /// learners a report had shown holding the generation's start, so a
+    /// write can say who stays a learner (#1737). `None` without it.
+    learning: Option<HashMap<ShardKey, (ShardAssignment, BTreeSet<String>)>>,
     /// No node has registered, so there is nothing to place onto yet. The
     /// development stack runs this way: its broker serves its own shards.
     no_nodes: bool,
 }
 
 impl PlannedPass {
+    /// Name `assignment`'s members by the identities they are registered
+    /// with, and hold its learners.
+    fn name_members(&self, assignment: &mut ShardAssignment) {
+        let learning = self.learning.as_ref().and_then(|learning| {
+            let (previous, admitted) = learning.get(&assignment.key)?;
+            Some(crate::model::Learning { previous, admitted })
+        });
+        assignment.name_members(&self.registered, learning);
+    }
+
     #[cfg(test)]
     pub(super) fn plan(&self) -> &Plan {
         &self.plan
@@ -230,7 +244,8 @@ impl PlacementRead {
             .collect();
         let positions = ReplicaPositions::new(reports, liveness, now_millis)
             .with_suspicions(suspicions, incarnations, liveness, &enabled)
-            .with_nodes(&nodes, &existing);
+            .with_nodes(&nodes, &existing)
+            .with_joint_fence(enabled.contains(felix_common::fleet::JOINT_FENCE.name()));
         let nodes = fence_departed(nodes, liveness, now_millis);
         let paused = store.moves_paused().await?;
         Ok(Self {
@@ -254,6 +269,9 @@ impl PlacementRead {
             fenced_caches: self
                 .enabled
                 .contains(felix_common::fleet::FENCED_CACHES.name()),
+            joint_fence: self
+                .enabled
+                .contains(felix_common::fleet::JOINT_FENCE.name()),
             ..policy
         }
     }
@@ -321,8 +339,32 @@ pub(super) async fn plan_pass(
     progress.note_give_ups(&plan, read.positions.as_of_millis());
     let no_nodes = read.nodes.is_empty();
     let registered = registered_storage(&read.nodes);
+    let joint_fence = read
+        .enabled
+        .contains(felix_common::fleet::JOINT_FENCE.name());
     let existing = read.existing;
     let positions = read.positions;
+    let learning = joint_fence.then(|| {
+        existing
+            .iter()
+            .map(|assignment| {
+                let admitted = assignment
+                    .learners
+                    .iter()
+                    .filter(|node| {
+                        positions.holds_start(
+                            &assignment.key,
+                            assignment.generation,
+                            &assignment.leader,
+                            node,
+                        )
+                    })
+                    .cloned()
+                    .collect();
+                (assignment.key.clone(), (assignment.clone(), admitted))
+            })
+            .collect()
+    });
     let read = existing
         .iter()
         .map(|assignment| (assignment.key.clone(), assignment.generation))
@@ -376,6 +418,7 @@ pub(super) async fn plan_pass(
         unseeded,
         fence_storage,
         registered,
+        learning,
         no_nodes,
     })
 }
@@ -405,7 +448,7 @@ pub(super) async fn apply_pass(
     // from the old state must not undo a newer one.
     for (key, step, assignment) in plan.moves() {
         let mut assignment = assignment.clone();
-        assignment.name_member_storage(&pass.registered);
+        pass.name_members(&mut assignment);
         match store
             .put_shard_assignment_if(assignment, pass.read.get(key).copied(), fence)
             .await
@@ -442,6 +485,16 @@ pub(super) async fn apply_pass(
                         destination = %successor,
                         reason = %reason,
                         "a shard move's destination halted; placing the copy elsewhere",
+                    );
+                }
+                if let super::MoveStep::Readmit { node } = step {
+                    tracing::info!(
+                        kind = %key.kind,
+                        name = %key.stream,
+                        shard = key.shard,
+                        member = %node,
+                        generation = written.generation,
+                        "a replaced copy is caught up; its new storage id is named and it stays a learner until it holds the generation's start",
                     );
                 }
                 if let super::MoveStep::TimedOut { successor } = step {
@@ -550,7 +603,7 @@ pub(super) async fn apply_pass(
         if let Some(ids) = pass.fence_storage.get(key) {
             placed.fence_storage_ids = ids.clone();
         }
-        placed.name_member_storage(&pass.registered);
+        pass.name_members(&mut placed);
         match store
             .put_shard_assignment_if(placed, pass.read.get(key).copied(), fence)
             .await

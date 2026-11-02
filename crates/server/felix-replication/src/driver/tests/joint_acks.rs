@@ -207,3 +207,78 @@ async fn a_stream_not_acknowledging_at_quorum_reports_no_joint_start() {
     assert!(!pass.reports.is_empty());
     assert!(pass.reports.iter().all(|r| r.joint_start_acked.is_none()));
 }
+
+/// [`Answers`], for peers that give a storage identity in their handshake.
+struct Identified(Answers);
+
+impl PeerRequester for Identified {
+    async fn request(
+        &self,
+        node_id: &str,
+        addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, PeerError> {
+        self.0.request(node_id, addr, message).await
+    }
+
+    async fn identity(
+        &self,
+        _node_id: &str,
+        _addr: SocketAddr,
+    ) -> std::result::Result<crate::peer::PeerIdentity, PeerError> {
+        Ok(crate::peer::PeerIdentity::storage(
+            felix_storage::StorageId::from_bytes([9; 16]),
+        ))
+    }
+
+    fn recorded_capabilities(&self, node_id: &str) -> Option<PeerCapabilities> {
+        self.0.recorded_capabilities(node_id)
+    }
+
+    fn offers_election(&self) -> bool {
+        true
+    }
+}
+
+/// **A leader reports the followers that hold its generation's start
+/// record.** `c` answered the three records, past the start; `d` is down and
+/// holds none. A follower that gave no storage identity is not listed
+/// whatever its position, since nobody can say which copy it describes.
+#[tokio::test]
+async fn a_report_lists_the_followers_holding_the_generations_start() {
+    let router = route(&["broker-c", "broker-d"], None);
+    let marks = marks(true);
+
+    for (identified, expected) in [(true, vec!["broker-c".to_string()]), (false, Vec::new())] {
+        let (broker, _dir) = quorum_leader(3, 4).await;
+        let pass = if identified {
+            replicate_once(
+                &Identified(Answers { ok: &["broker-c"] }),
+                &broker,
+                &router,
+                &marks,
+                None,
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+            )
+            .await
+        } else {
+            replicate_once(
+                &Answers { ok: &["broker-c"] },
+                &broker,
+                &router,
+                &marks,
+                None,
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+            )
+            .await
+        };
+        let report = pass.reports.first().expect("a report");
+        assert_eq!(report.holds_start, expected, "identified: {identified}");
+    }
+}

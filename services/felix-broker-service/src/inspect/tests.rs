@@ -28,6 +28,7 @@ async fn write_shard(data: &Path, count: usize) -> PathBuf {
             timestamp_micros: 1,
             mark: Default::default(),
             publisher: None,
+            headers: None,
         }])
         .await
         .expect("append");

@@ -627,6 +627,27 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     // On every shard: besides the mark, a drain hands the shard to a
     // successor it judges level by this count.
     let view = |followers: &[FollowerCursor]| checked_only(followers, &checked.lock());
+    // The followers that hold this generation's start record, for the
+    // control plane to re-admit a replaced copy on. A cache needs its counter
+    // log's start too.
+    let holders = |followers: &[FollowerCursor], counters: &[FollowerCursor]| {
+        let counters = counter_log.as_ref().map(|counter_log| {
+            let start = counter_log
+                .generations()
+                .iter()
+                .rev()
+                .find(|epoch| epoch.generation == route.generation)
+                .map(|epoch| epoch.start_offset);
+            (view(counters), start)
+        });
+        crate::reporter::holders_of_start(
+            followers,
+            inherited,
+            counters
+                .as_ref()
+                .map(|(cursors, start)| (&cursors[..], *start)),
+        )
+    };
     let counter_mark = counter_log.clone().filter(|_| acks_at_quorum);
     let counters_of = |followers: &[FollowerCursor]| {
         let counter_mark = counter_mark.clone();
@@ -983,7 +1004,8 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                     )
                     .at_incarnation(incarnation)
                     .serving_by_round(by_round)
-                    .with_joint_start(joint_start(tail, &counted)),
+                    .with_joint_start(joint_start(tail, &counted))
+                    .with_holds_start(holders(&counted, &aux.counters.followers)),
                     &aux.counters.followers,
                 ),
                 offset,
@@ -1129,7 +1151,8 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                     )
                     .at_incarnation(incarnation)
                     .serving_by_round(by_round)
-                    .with_joint_start(joint_start(tail, &counted)),
+                    .with_joint_start(joint_start(tail, &counted))
+                    .with_holds_start(holders(&counted, &aux.counters.followers)),
                     &aux.counters.followers,
                 ),
                 offset,
@@ -1328,7 +1351,8 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         )
         .at_incarnation(incarnation)
         .serving_by_round(by_round)
-        .with_joint_start(joint_start(tail, &counted)),
+        .with_joint_start(joint_start(tail, &counted))
+        .with_holds_start(holders(&counted, &aux.counters.followers)),
         &aux.counters.followers,
     );
     // A follower missing some of that state would lose it if it led, so it is

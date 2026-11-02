@@ -12,6 +12,7 @@ fn record(offset: u64, value: &'static str) -> LogRecord {
         payload: Bytes::from_static(value.as_bytes()),
         mark: RecordMark::None,
         publisher: None,
+        headers: None,
     }
 }
 

@@ -89,6 +89,7 @@ fn build_segment(rng: &mut Rng, count: usize, max_payload: usize) -> Vec<u8> {
             offset as u64 * 7,
             &payload,
             None,
+            None,
             &Default::default(),
         );
     }
@@ -160,6 +161,8 @@ fn every_encoded_record_round_trips() {
         let payload = rng.bytes_below(512);
         let offset = rng.next_u64();
         let timestamp = rng.next_u64();
+        // Every other record carries a key-and-headers block, empty or not.
+        let headers = (iteration % 2 == 1).then(|| rng.bytes_below(64));
 
         let mut bytes = Vec::new();
         let written = encode_record(
@@ -167,6 +170,7 @@ fn every_encoded_record_round_trips() {
             offset,
             timestamp,
             &payload,
+            headers.as_deref(),
             None,
             &Default::default(),
         );
@@ -177,6 +181,7 @@ fn every_encoded_record_round_trips() {
         assert_eq!(decoded.header.offset, offset);
         assert_eq!(decoded.header.timestamp_micros, timestamp);
         assert_eq!(decoded.payload.as_ref(), payload.as_slice());
+        assert_eq!(decoded.headers.as_deref(), headers.as_deref());
     }
 }
 
@@ -192,6 +197,7 @@ fn a_single_flipped_bit_is_always_detected() {
             rng.next_u64(),
             rng.next_u64(),
             &payload,
+            None,
             None,
             &Default::default(),
         );

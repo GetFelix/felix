@@ -205,6 +205,7 @@ impl HeldTurn {
                         timestamp_micros: 0,
                         mark: Default::default(),
                         publisher: None,
+                        headers: None,
                     }],
                     &shard.sequencer,
                 )

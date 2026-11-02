@@ -21,6 +21,7 @@ fn assignment() -> ShardAssignment {
         incarnation: 0,
         fence_storage_ids: Default::default(),
         member_storage_ids: Default::default(),
+        learners: Default::default(),
         pending_set: None,
     }
 }
@@ -257,6 +258,7 @@ fn report_at(generation: u64, at: u64) -> ReplicaReport {
         node_incarnations: Default::default(),
         follower_storage: Default::default(),
         joint_start_acked: None,
+        holds_start: Default::default(),
     }
 }
 
@@ -348,6 +350,84 @@ fn a_halt_that_clears_is_not_carried() {
 fn a_report_with_nothing_halted_omits_the_field() {
     let json = serde_json::to_string(&report_at(3, 100)).expect("write");
     assert!(!json.contains("halted"), "{json}");
+}
+
+/// An assignment and a report with no learners and no start holders are
+/// written the way they always were.
+#[test]
+fn learners_and_start_holders_serialize_only_when_present() {
+    let json = serde_json::to_string(&assignment()).expect("write");
+    assert!(!json.contains("learners"), "{json}");
+    let json = serde_json::to_string(&report_at(3, 100)).expect("write");
+    assert!(!json.contains("holds_start"), "{json}");
+
+    let held = ShardAssignment {
+        learners: ["broker-c".to_string()].into(),
+        ..assignment()
+    };
+    let json = serde_json::to_string(&held).expect("write");
+    assert_eq!(
+        serde_json::from_str::<ShardAssignment>(&json).expect("read"),
+        held
+    );
+}
+
+fn ids(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+    pairs
+        .iter()
+        .map(|(node, id)| (node.to_string(), id.to_string()))
+        .collect()
+}
+
+/// A write holds as learners the members named under another storage id than
+/// the one registered now, and the ones it held that no report has admitted.
+/// The leader never is one, and without joint fences none is.
+#[test]
+fn a_write_holds_a_replaced_member_as_a_learner_until_admitted() {
+    let previous = ShardAssignment {
+        member_storage_ids: ids(&[("broker-a", "1"), ("broker-b", "2"), ("broker-c", "3")]),
+        ..assignment()
+    };
+    let now = ids(&[("broker-a", "1"), ("broker-b", "22"), ("broker-c", "3")]);
+    let written = |previous: &ShardAssignment, admitted: &[&str], learning: bool| {
+        let mut next = assignment();
+        let admitted = admitted.iter().map(|node| node.to_string()).collect();
+        next.name_members(
+            &now,
+            learning.then_some(Learning {
+                previous,
+                admitted: &admitted,
+            }),
+        );
+        next
+    };
+
+    let next = written(&previous, &[], true);
+    assert_eq!(next.member_storage_ids, now);
+    assert_eq!(next.learners, ["broker-b".to_string()].into());
+
+    // Still held by the next write, and let go once admitted.
+    let held = ShardAssignment {
+        learners: next.learners.clone(),
+        ..next.clone()
+    };
+    assert_eq!(written(&held, &[], true).learners, next.learners);
+    assert!(written(&held, &["broker-b"], true).learners.is_empty());
+
+    // The leader's own replaced copy is `leader_replaced`'s, not a learner's.
+    let mut leader_wiped = now.clone();
+    leader_wiped.insert("broker-a".to_string(), "11".to_string());
+    let mut next = assignment();
+    next.name_members(
+        &leader_wiped,
+        Some(Learning {
+            previous: &previous,
+            admitted: &Default::default(),
+        }),
+    );
+    assert_eq!(next.learners, ["broker-b".to_string()].into());
+
+    assert!(written(&previous, &[], false).learners.is_empty());
 }
 
 /// A pending set is a different set under the same leader, written at a
