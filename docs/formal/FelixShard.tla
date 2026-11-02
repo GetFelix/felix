@@ -1952,8 +1952,10 @@ AckedByTwo(b, f) ==
 
 ShortCopyRefuses(b, f) == RefuseShortCopy /\ ShortCopy(f) /\ ~AckedByTwo(b, f)
 
-\* Whether `b` fences as the leader a flip named (`CpFlipNamed`): named at the
-\* control plane's generation, on a set written at it, with no change pending.
+\* Whether `b` fences as a leader the control plane named at its generation,
+\* on a set written at it, with no change pending: the flip's leader
+\* (`CpFlipNamed`), and a promotion that keeps the set, which the flip
+\* configurations never reach (no lease lapses).
 FlipFence(b) == ~Candidate(b) /\ setGen[b] = bgen[b] /\ oldSet[b] = {} /\ cpNext = {}
 
 \* One replica answers the fence, and the leader takes its log if it is ahead.
@@ -2727,32 +2729,45 @@ CpFlip ==
 \* taken that generation already, fencing both sets without the leader, so
 \* two fences meet at one generation; the ballot keeps them apart, as it
 \* does for any two leaders (`NamedFenceSkipsBallot` drops it for the named
-\* one). A report the leader sent before an election deposed it is not
-\* modelled: the deposed leader promised the generation away and does not
-\* lead it (`a_generation_promised_to_another_node_is_not_led`).
+\* one).
+\*
+\* The control plane flips on the report alone, which may be stale: the
+\* leader may have promised the next generation to a candidate since it
+\* sent it. Then the control plane still flips, and the leader refuses the
+\* generation and stays as it is
+\* (`a_generation_promised_to_another_node_is_not_led`).
+FlipReported ==
+    /\ \E i \in 1..hwm[leader] : i <= Len(log[leader]) /\ log[leader][i] = Start(gen)
+    /\ \/ /\ bgen[leader] = gen /\ ~fencing[leader]
+          /\ mine[leader] = cpNext /\ setGen[leader] = cpNextGen /\ oldSet[leader] /= {}
+       \* Sent before the leader promised the next generation away: its joint
+       \* open happened.
+       \/ /\ ~MayPromise(leader, leader, gen + 1)
+          /\ <<cpNextGen, cpNext, CpSet>> \in installed
+
 CpFlipNamed ==
     /\ FlipNewGeneration
     /\ cpNext /= {}
-    /\ bgen[leader] = gen /\ ~fencing[leader]
-    /\ mine[leader] = cpNext /\ setGen[leader] = cpNextGen /\ oldSet[leader] /= {}
-    /\ \E i \in 1..hwm[leader] : i <= Len(log[leader]) /\ log[leader][i] = Start(gen)
-    /\ MayPromise(leader, leader, gen + 1)
+    /\ FlipReported
     /\ out' = (out \cup CpSet) \ cpNext
     /\ cpNext' = {} /\ cpNextGen' = 0 /\ UNCHANGED cutOver
     /\ ver' = ver + 1
     /\ gen' = gen + 1
     /\ cpExpiry' = now + L
     /\ report' = NoReport
-    /\ bgen' = [bgen EXCEPT ![leader] = gen + 1]
-    /\ bexpiry' = [bexpiry EXCEPT ![leader] = clock[leader] + L]
-    /\ queued' = [queued EXCEPT ![leader] = 0]
-    /\ pending' = [pending EXCEPT ![leader] = 0]
-    /\ Promise(leader, leader, gen + 1)
-    /\ fencing' = [fencing EXCEPT ![leader] = TRUE]
-    /\ answered' = [answered EXCEPT ![leader] = {}]
-    /\ confirmed' = [confirmed EXCEPT ![leader] = [m \in Brokers |-> 0]]
-    /\ setGen' = [setGen EXCEPT ![leader] = gen + 1]
-    /\ oldSet' = [oldSet EXCEPT ![leader] = {}]
+    /\ IF bgen[leader] = gen /\ ~fencing[leader] /\ MayPromise(leader, leader, gen + 1)
+       THEN /\ bgen' = [bgen EXCEPT ![leader] = gen + 1]
+            /\ bexpiry' = [bexpiry EXCEPT ![leader] = clock[leader] + L]
+            /\ queued' = [queued EXCEPT ![leader] = 0]
+            /\ pending' = [pending EXCEPT ![leader] = 0]
+            /\ Promise(leader, leader, gen + 1)
+            /\ fencing' = [fencing EXCEPT ![leader] = TRUE]
+            /\ answered' = [answered EXCEPT ![leader] = {}]
+            /\ confirmed' = [confirmed EXCEPT ![leader] = [m \in Brokers |-> 0]]
+            /\ setGen' = [setGen EXCEPT ![leader] = gen + 1]
+            /\ oldSet' = [oldSet EXCEPT ![leader] = {}]
+       ELSE UNCHANGED << bgen, bexpiry, queued, pending, promised, ballot, fencing, answered,
+                         confirmed, setGen, oldSet >>
     /\ UNCHANGED << now, clock, leader, inflight, hbOut, hbAt, log, hwm, halted, acked, writes,
                     staleCommit, draining, successor, stopped, moves, cpView, staged, mine,
                     joining, leaving, joinedAt, opened, installed, ackGen >>
