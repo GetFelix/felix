@@ -461,7 +461,7 @@ where
     // Its own token, so a stopping broker can stop taking forwarded writes
     // while it still ships to followers over the pool.
     let peer_listener_shutdown = peer_shutdown.child_token();
-    let peer_task = cluster::bind_peer_listener(
+    let peer_listener = cluster::bind_peer_listener(
         &config,
         &cluster,
         &broker,
@@ -495,6 +495,7 @@ where
         incarnation: &incarnation,
         storage_id: durable_storage.as_ref().map(|_| storage_id),
         unclean: &unclean,
+        prefetch: peer_listener.prefetch,
         sync_shutdown: &sync_shutdown,
     });
 
@@ -512,7 +513,7 @@ where
         accept_shutdown,
         connections,
         peers,
-        peer_task,
+        peer_task: peer_listener.task,
         peer_shutdown,
         peer_listener_shutdown,
         accept_tasks,

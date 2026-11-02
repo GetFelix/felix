@@ -834,6 +834,22 @@ A failed read or an unassigned shard
 clears the answer and is not retried on its own: the next request starts
 another read.
 
+After a refusal the task keeps the answer fresh until the leader's retry
+comes. A leader retries a copy that refused it on its driver tick, the
+control-plane sync interval (`FELIX_CONTROLPLANE_SYNC_INTERVAL_MS`), so
+the answer is kept for twice that interval, and at least 5 s. Kept any
+shorter, a retry would find a stale answer, be refused again and start
+another read, every time, and a move onto the copy would never finish.
+
+Most refusals never happen. When this broker's assignments first name it
+a follower of a shard, as a move's destination or a follower just added,
+the routing feed starts the read before the leader asks, so the leader's
+first request finds the answer. The feed does this as it applies the
+change, so a request pays nothing for it. It starts at most 64 such reads
+per change, skips the assignments a broker starts with (those copies
+mostly hold promises already) and a shard's creation (that copy skips the
+read). Every other copy is read on its first request.
+
 How fresh an answer must be depends on elections. Without them an answer
 is used for 10 s, and its age is not what makes it safe. Answers live in
 memory, so every one was read after the restart, after any wipe, and names
@@ -857,8 +873,13 @@ Evidence (`replica/tests/fence.rs`):
 `a_new_shards_first_fence_needs_no_confirmed_read`,
 `a_later_set_or_another_storage_id_still_needs_the_read`,
 `confirmed_reads_for_new_shards_do_not_hold_up_the_lane`,
-`one_confirmed_read_answers_every_request_for_a_shard`; and
-`a_shorter_freshness_wakes_the_refresh` (`confirmed/tests.rs`).
+`one_confirmed_read_answers_every_request_for_a_shard`;
+`a_shorter_freshness_wakes_the_refresh`,
+`a_retry_a_driver_tick_later_is_answered`,
+`a_prefetched_copy_answers_the_first_request` and
+`early_reads_are_bounded_per_change` (`confirmed/tests.rs`); and
+`only_newly_named_followers_are_read_early`
+(`services/felix-broker-service/src/shards/routing/tests.rs`).
 
 A control plane
 that does not serve the read (404, or 501 while its Raft leader predates

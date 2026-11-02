@@ -155,6 +155,28 @@ impl ReplicaHandler {
         self
     }
 
+    /// Keep a refused copy's confirmed answer fresh for a leader that
+    /// retries it up to `retry` apart: the driver's tick, which is the
+    /// control-plane sync interval. Without it the retry is waited for up to
+    /// 5 s. Call before [`Self::confirmed_prefetch`].
+    pub fn with_leader_retry(mut self, retry: Duration) -> Self {
+        self.confirmed_reads = Arc::new(crate::confirmed::ConfirmedReads::new(retry));
+        self
+    }
+
+    /// What starts a copy's confirmed read when the routing view first names
+    /// it, so the leader's first request finds the answer. `None` without
+    /// [`Self::with_confirmed_routes`].
+    pub fn confirmed_prefetch(&self) -> Option<crate::confirmed::Prefetch> {
+        self.confirmed.as_ref().map(|routes| {
+            crate::confirmed::Prefetch::new(
+                Arc::clone(&self.confirmed_reads),
+                Arc::clone(routes),
+                self.fleet.clone(),
+            )
+        })
+    }
+
     /// Read fleet features from `marks`: under `joint_fence` a voter of the
     /// set a joint fence leaves answers it once no route names it.
     pub fn with_fleet(mut self, marks: Arc<crate::quorum::QuorumMarks>) -> Self {
@@ -1707,15 +1729,7 @@ impl ReplicaHandler {
             return elections.then(|| unbacked(correlation_id, key, generation));
         };
         // Never awaited here: the lane answers one request at a time.
-        // Generations only rise within an incarnation. Without one, a
-        // delete and re-create at generation 1 would look the same here; the
-        // control plane refuses that re-create, but the copy does not lean on
-        // it, so such an answer is held no longer than under elections.
-        let fresh = if elections || sent.unwrap_or(0) == 0 {
-            crate::confirmed::FRESH_UNDER_ELECTIONS
-        } else {
-            crate::confirmed::FRESH
-        };
+        let fresh = crate::confirmed::freshness(elections, sent.unwrap_or(0));
         let decided =
             self.confirmed_reads
                 .decide(confirmed, key, sent.unwrap_or(0), fresh, |answer| {
@@ -1796,20 +1810,14 @@ impl ReplicaHandler {
     /// [`Self::joint_gate`] for marking a wiped copy a learner, which also
     /// needs this build to allow it ([`QuorumMarks::non_voting_ready`]).
     fn non_voting_gate(&self) -> Option<bool> {
-        match &self.fleet {
-            Some(marks) if marks.non_voting_ready() => self.joint_gate(),
-            _ => Some(false),
-        }
+        non_voting_gate(self.fleet.as_deref())
     }
 
     /// Whether the fleet has `joint_fence`, or `None` while this broker has
     /// not yet taken a registration's answer. The peer listener is bound
     /// before registration, so the gate can be unread while requests arrive.
     fn joint_gate(&self) -> Option<bool> {
-        match &self.fleet {
-            Some(marks) => marks.fleet_decides(felix_common::fleet::JOINT_FENCE),
-            None => Some(false),
-        }
+        joint_gate(self.fleet.as_deref())
     }
 
     /// Whether `request` is a joint fence whose set being left lists this
@@ -1876,6 +1884,22 @@ impl ReplicaHandler {
 }
 
 /// The log a group or counter log keeps its promise in: the shard's own.
+/// See [`ReplicaHandler::non_voting_gate`].
+pub(crate) fn non_voting_gate(fleet: Option<&crate::quorum::QuorumMarks>) -> Option<bool> {
+    match fleet {
+        Some(marks) if marks.non_voting_ready() => joint_gate(Some(marks)),
+        _ => Some(false),
+    }
+}
+
+/// See [`ReplicaHandler::joint_gate`].
+fn joint_gate(fleet: Option<&crate::quorum::QuorumMarks>) -> Option<bool> {
+    match fleet {
+        Some(marks) => marks.fleet_decides(felix_common::fleet::JOINT_FENCE),
+        None => Some(false),
+    }
+}
+
 fn own_kind(log_kind: felix_broker::LogKind) -> Option<felix_broker::LogKind> {
     match log_kind {
         felix_broker::LogKind::Stream | felix_broker::LogKind::Cache => None,

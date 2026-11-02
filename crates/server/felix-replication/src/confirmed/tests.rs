@@ -75,3 +75,81 @@ async fn a_shorter_freshness_wakes_the_refresh() {
     );
     assert_eq!(counted.reads.load(Ordering::SeqCst), 2);
 }
+
+fn shard(index: u32) -> ShardKey {
+    ShardKey {
+        shard: index,
+        ..key()
+    }
+}
+
+fn counted() -> (Arc<Counted>, Arc<dyn ConfirmedRoutes>) {
+    let counted = Arc::new(Counted {
+        reads: AtomicUsize::new(0),
+    });
+    let routes: Arc<dyn ConfirmedRoutes> = Arc::clone(&counted) as _;
+    (counted, routes)
+}
+
+/// **A leader that retries on its driver tick finds the answer its first
+/// request started (#1791).** A copy with no incarnation uses an answer for
+/// 500 ms, so the reader has to keep it fresh until the retry comes. Kept
+/// for only 5 s, a retry 10 s later was refused and started another read,
+/// every time, and a move onto the copy never finished.
+#[tokio::test(start_paused = true)]
+async fn a_retry_a_driver_tick_later_is_answered() {
+    let (_, routes) = counted();
+    let tick = Duration::from_secs(10);
+    let reads = Arc::new(ConfirmedReads::new(tick));
+    assert!(
+        reads
+            .decide(&routes, &key(), 0, FRESH_UNDER_ELECTIONS, |_| ())
+            .is_none(),
+        "nothing read yet"
+    );
+    tokio::time::sleep(tick).await;
+    assert!(
+        reads
+            .decide(&routes, &key(), 0, FRESH_UNDER_ELECTIONS, |_| ())
+            .is_some(),
+        "the retry was refused again"
+    );
+}
+
+/// **A copy the routing view names before the leader asks answers the
+/// leader's first request (#1791).** Without the early read that request is
+/// refused, and the leader is back only on its next tick.
+#[tokio::test(start_paused = true)]
+async fn a_prefetched_copy_answers_the_first_request() {
+    let (_, routes) = counted();
+    let reads = Arc::new(ConfirmedReads::new(Duration::from_secs(10)));
+    let prefetch = Prefetch::new(Arc::clone(&reads), Arc::clone(&routes), None);
+    prefetch.named([(key(), 0)]);
+    // The leader learns of the copy and connects a moment later.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert!(
+        reads
+            .decide(&routes, &key(), 0, FRESH_UNDER_ELECTIONS, |_| ())
+            .is_some(),
+        "the first request was refused"
+    );
+}
+
+/// **A placement naming hundreds of copies at once starts a bounded number
+/// of early reads**, and naming one again starts no second read.
+#[tokio::test(start_paused = true)]
+async fn early_reads_are_bounded_per_change() {
+    let (counted, routes) = counted();
+    let reads = Arc::new(ConfirmedReads::new(Duration::from_secs(2)));
+    let prefetch = Prefetch::new(Arc::clone(&reads), Arc::clone(&routes), None);
+    prefetch.named((0..500).map(|index| (shard(index), 7)));
+    assert_eq!(reads.slots.load().len(), PREFETCH_PER_CHANGE);
+    prefetch.named([(shard(0), 7)]);
+    // Long enough for every read to finish, well short of a refresh.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        counted.reads.load(Ordering::SeqCst),
+        PREFETCH_PER_CHANGE,
+        "one read per shard"
+    );
+}

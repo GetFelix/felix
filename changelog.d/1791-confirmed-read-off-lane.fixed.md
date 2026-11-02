@@ -6,4 +6,7 @@
   view holds the creation of the shard's incarnation naming its storage id. Any other copy
   with no promise reads in the background, one read per shard at a time,
   refuses retryably until an answer arrives, and keeps the answer fresh
-  while the leader keeps asking.
+  while the leader keeps asking, for up to twice the control-plane sync
+  interval after a refusal. A move's destination or a newly added follower
+  starts the read as soon as its assignments name it, so the leader's first
+  request is answered.

@@ -13,9 +13,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use arc_swap::{ArcSwap, ArcSwapOption};
+// Tokio's clock, so paused-time tests drive the refresh; outside them it is
+// the std clock.
+use tokio::time::Instant;
 
 use felix_router::ShardKey;
 
@@ -59,10 +62,15 @@ pub(crate) const FRESH_UNDER_ELECTIONS: Duration = Duration::from_millis(500);
 pub(crate) const FRESH: Duration = Duration::from_secs(10);
 
 /// How long after a refused request its shard's answer is kept fresh for
-/// the retry. Longer than a leader's longest wait between fence attempts
-/// (`FENCE_RETRY_MAX`, 2 s), so a retry spaced out by backoff finds a fresh
-/// answer instead of being refused again.
+/// the retry, at least. Longer than a leader's longest wait between fence
+/// attempts (`FENCE_RETRY_MAX`, 2 s), so a retry spaced out by backoff finds
+/// a fresh answer instead of being refused again. A leader that retries on
+/// its driver tick waits longer; see [`ConfirmedReads::new`].
 const WANTED_FOR: Duration = Duration::from_secs(5);
+
+/// Reads a routing change can start before any request, so a bulk placement
+/// does not start hundreds. Past it, a shard is read on its first request.
+const PREFETCH_PER_CHANGE: usize = 64;
 
 /// Reads in flight at once across all shards, so a bulk create does not
 /// send the control plane hundreds at the same moment.
@@ -85,15 +93,13 @@ pub(crate) struct ConfirmedReads {
     permits: Arc<tokio::sync::Semaphore>,
     /// What the slots' timestamps count from.
     epoch: Instant,
+    /// How long a refused request's retry is waited for, in nanoseconds.
+    owed_for: u64,
 }
 
 impl Default for ConfirmedReads {
     fn default() -> Self {
-        Self {
-            slots: ArcSwap::from_pointee(HashMap::default()),
-            permits: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_READS)),
-            epoch: Instant::now(),
-        }
+        Self::new(Duration::ZERO)
     }
 }
 
@@ -131,6 +137,20 @@ struct Answer {
 }
 
 impl ConfirmedReads {
+    /// Reads for a broker whose leaders retry a refused copy up to `retry`
+    /// apart: the driver's tick, which is the control-plane sync interval.
+    /// A refused shard's answer is kept fresh for two of those, so the retry
+    /// finds it instead of being refused and starting another read, every
+    /// time (#1791).
+    pub(crate) fn new(retry: Duration) -> Self {
+        Self {
+            slots: ArcSwap::from_pointee(HashMap::default()),
+            permits: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_READS)),
+            epoch: Instant::now(),
+            owed_for: nanos(WANTED_FOR.max(retry.saturating_mul(2))),
+        }
+    }
+
     /// Decide from the answer for `key` at `incarnation` if one arrived
     /// within `fresh`, starting a read if none is under way. Never waits on
     /// the control plane: `None` means there is no fresh answer yet.
@@ -143,7 +163,7 @@ impl ConfirmedReads {
         decide: impl FnOnce(&Confirmed) -> R,
     ) -> Option<R> {
         let now = self.now();
-        let fresh = u64::try_from(fresh.as_nanos()).unwrap_or(u64::MAX);
+        let fresh = nanos(fresh);
         let slots = self.slots.load();
         let slot = match slots
             .get(key)
@@ -156,17 +176,7 @@ impl ConfirmedReads {
                 return None;
             }
         };
-        slot.wanted.store(now, Ordering::Relaxed);
-        if slot.fresh.load(Ordering::Relaxed) != fresh {
-            slot.fresh.store(fresh, Ordering::Relaxed);
-        }
-        // A plain load first: while a task reads, a request writes nothing
-        // shared but `wanted`.
-        let spawned =
-            !slot.reading.load(Ordering::Acquire) && !slot.reading.swap(true, Ordering::AcqRel);
-        if spawned {
-            self.spawn_read(routes, key, slot);
-        }
+        let spawned = self.want(routes, key, slot, now, fresh);
         let answer = slot.answer.load();
         let decided = answer
             .as_ref()
@@ -180,6 +190,61 @@ impl ConfirmedReads {
             slot.stale.notify_one();
         }
         decided
+    }
+
+    /// Start reading `key` at `incarnation` before any request for it, and
+    /// keep the answer within `fresh` until the first request comes, for as
+    /// long as a refused one's retry is waited for.
+    pub(crate) fn prefetch(
+        self: &Arc<Self>,
+        routes: &Arc<dyn ConfirmedRoutes>,
+        key: &ShardKey,
+        incarnation: u64,
+        fresh: Duration,
+    ) {
+        let now = self.now();
+        let fresh = nanos(fresh);
+        let slots = self.slots.load();
+        match slots
+            .get(key)
+            .filter(|slot| slot.incarnation == incarnation)
+        {
+            Some(slot) => {
+                slot.owed.store(true, Ordering::Relaxed);
+                if !self.want(routes, key, slot, now, fresh) {
+                    // The reader recomputes its wait for this freshness.
+                    slot.stale.notify_one();
+                }
+            }
+            None => {
+                drop(slots);
+                self.add(routes, key, incarnation, now, fresh);
+            }
+        }
+    }
+
+    /// Mark `slot` asked about at `now` needing `fresh`, and start its
+    /// reader if none runs. Returns whether this started it.
+    fn want(
+        self: &Arc<Self>,
+        routes: &Arc<dyn ConfirmedRoutes>,
+        key: &ShardKey,
+        slot: &Arc<Slot>,
+        now: u64,
+        fresh: u64,
+    ) -> bool {
+        slot.wanted.store(now, Ordering::Relaxed);
+        if slot.fresh.load(Ordering::Relaxed) != fresh {
+            slot.fresh.store(fresh, Ordering::Relaxed);
+        }
+        // A plain load first: while a task reads, a request writes nothing
+        // shared but `wanted`.
+        let spawned =
+            !slot.reading.load(Ordering::Acquire) && !slot.reading.swap(true, Ordering::AcqRel);
+        if spawned {
+            self.spawn_read(routes, key, slot);
+        }
+        spawned
     }
 
     /// The first request for a shard incarnation: add its slot and start
@@ -202,7 +267,7 @@ impl ConfirmedReads {
             owed: AtomicBool::new(true),
             stale: tokio::sync::Notify::new(),
         });
-        let stale = u64::try_from(FRESH.as_nanos()).unwrap_or(u64::MAX);
+        let stale = nanos(FRESH);
         let before = self.slots.rcu(|current| {
             if current
                 .get(key)
@@ -255,7 +320,6 @@ impl ConfirmedReads {
             slot: &slot,
             ended: false,
         };
-        let nanos = |d: Duration| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX);
         loop {
             let started = self.now();
             let answer = {
@@ -280,9 +344,8 @@ impl ConfirmedReads {
                     // of reads widens the margin instead of letting answers
                     // lapse. Only while the shard is still asked about: a
                     // request since the last half of the answer's life, or a
-                    // refused one whose retry has not come yet. A leader
-                    // backs off up to `FENCE_RETRY_MAX` between fences, so
-                    // the retry is waited for up to `WANTED_FOR`.
+                    // refused one whose retry has not come yet, waited for
+                    // up to `owed_for`.
                     // A request needing a shorter freshness (elections
                     // turned on) wakes the wait to recompute it.
                     loop {
@@ -303,7 +366,7 @@ impl ConfirmedReads {
                     }
                     let fresh = slot.fresh.load(Ordering::Relaxed);
                     let asked_within = if slot.owed.load(Ordering::Relaxed) {
-                        nanos(WANTED_FOR).max(fresh / 2)
+                        self.owed_for.max(fresh / 2)
                     } else {
                         fresh / 2
                     };
@@ -327,6 +390,10 @@ impl ConfirmedReads {
     }
 }
 
+fn nanos(duration: Duration) -> u64 {
+    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
+}
+
 /// Clears a slot's reading flag if its task panics or is dropped, so the
 /// next request starts another.
 struct Reading<'a> {
@@ -340,6 +407,69 @@ impl Drop for Reading<'_> {
         if !self.ended {
             self.slot.reading.store(false, Ordering::Release);
         }
+    }
+}
+
+/// Starts a copy's confirmed read when this broker's routing view first
+/// names it a follower, a move's destination included, so the answer is
+/// there when the leader first asks. Without it that request is refused
+/// while the read runs, and the leader comes back on its next tick.
+///
+/// Costs nothing per request: the routing feed calls it as it applies a
+/// change. Reads are deduplicated per shard like a request's, and bounded
+/// by [`MAX_CONCURRENT_READS`].
+#[derive(Clone)]
+pub struct Prefetch {
+    reads: Arc<ConfirmedReads>,
+    routes: Arc<dyn ConfirmedRoutes>,
+    fleet: Option<Arc<crate::quorum::QuorumMarks>>,
+}
+
+impl Prefetch {
+    pub(crate) fn new(
+        reads: Arc<ConfirmedReads>,
+        routes: Arc<dyn ConfirmedRoutes>,
+        fleet: Option<Arc<crate::quorum::QuorumMarks>>,
+    ) -> Self {
+        Self {
+            reads,
+            routes,
+            fleet,
+        }
+    }
+
+    /// Start reads for the shards, by key and incarnation, that the routing
+    /// view now names this broker a follower of and did not before. Takes
+    /// at most 64; a shard past that is read on its first request.
+    pub fn named(&self, shards: impl IntoIterator<Item = (ShardKey, u64)>) {
+        let elections = crate::replica::non_voting_gate(self.fleet.as_deref()) != Some(false);
+        for (key, incarnation) in shards.into_iter().take(PREFETCH_PER_CHANGE) {
+            self.reads.prefetch(
+                &self.routes,
+                &key,
+                incarnation,
+                freshness(elections, incarnation),
+            );
+        }
+    }
+}
+
+impl std::fmt::Debug for Prefetch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Prefetch").finish_non_exhaustive()
+    }
+}
+
+/// How long an answer is used for a request at `incarnation`. Generations
+/// only rise within an incarnation. Without one, a delete and re-create at
+/// generation 1 would look the same; the control plane refuses that
+/// re-create, but the copy does not lean on it, so such an answer is held
+/// no longer than under elections.
+pub(crate) fn freshness(elections: bool, incarnation: u64) -> Duration {
+    if elections || incarnation == 0 {
+        FRESH_UNDER_ELECTIONS
+    } else {
+        FRESH
     }
 }
 

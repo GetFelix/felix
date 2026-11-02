@@ -657,6 +657,41 @@ pub fn routing_table_from(
     )
 }
 
+/// The shards `after` names `local` a follower of, by key and incarnation,
+/// that `before`, the assignments the feed last applied, did not. Nothing
+/// while `before` is empty: that is the first view after a start, whose
+/// copies mostly hold promises already and would each start a read for
+/// nothing. A shard's creation naming `local` is left out too, since that
+/// copy skips the read (`ReplicaHandler::created_here`).
+fn newly_named<'a>(
+    before: &'a std::collections::HashMap<ShardKey, crate::shards::watch::ShardAssignment>,
+    after: &'a std::collections::HashMap<ShardKey, crate::shards::watch::ShardAssignment>,
+    local: &'a str,
+) -> impl Iterator<Item = (felix_router::ShardKey, u64)> + 'a {
+    let follows = move |assignment: &crate::shards::watch::ShardAssignment| {
+        assignment.leader != local
+            && (assignment.successor.as_deref() == Some(local)
+                || assignment.replicas.iter().any(|node| node == local)
+                || assignment
+                    .pending_set
+                    .as_ref()
+                    .is_some_and(|pending| pending.replicas.iter().any(|node| node == local)))
+    };
+    after
+        .values()
+        .filter(move |assignment| {
+            !before.is_empty()
+                && follows(assignment)
+                && !(assignment.generation == 1
+                    && assignment.incarnation != 0
+                    && assignment.member_storage_ids.contains_key(local))
+                && !before
+                    .get(&assignment.key)
+                    .is_some_and(|was| was.incarnation == assignment.incarnation && follows(was))
+        })
+        .map(|assignment| (to_router_key(&assignment.key), assignment.incarnation))
+}
+
 /// The cluster state one task keeps in step. Grouped because they are only ever
 /// used together, and only in the order this feed applies them.
 pub struct FeedState {
@@ -677,6 +712,10 @@ pub struct FeedState {
     /// Priors are read only once `joint_fence` is finalized here, so they are
     /// built only then.
     pub joint_fence: Option<Arc<felix_common::fleet::FleetGate>>,
+    /// Starts a copy's confirmed read as soon as the assignments name it a
+    /// follower, before the routes are even published, so it races the
+    /// leader's first request with a head start.
+    pub prefetch: Option<felix_replication::confirmed::Prefetch>,
 }
 
 /// What the feed needs to read the node catalog.
@@ -716,11 +755,14 @@ pub fn spawn_feed(
         assignments_changed,
         routes_changed,
         joint_fence,
+        prefetch,
     } = state;
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(interval);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut catalog = HashMap::new();
+        // The assignments the last pass applied, to tell which are new.
+        let mut applied = HashMap::new();
         loop {
             let woken = tokio::select! {
                 _ = shutdown.cancelled() => return,
@@ -743,6 +785,9 @@ pub fn spawn_feed(
                     },
                 )
             };
+            if let Some(prefetch) = &prefetch {
+                prefetch.named(newly_named(&applied, &assignments, ingress.local_node_id()));
+            }
 
             // Read on every refresh rather than once, so a refreshed token is
             // in use from the next poll.
@@ -799,6 +844,7 @@ pub fn spawn_feed(
             if woken {
                 routes_changed.notify_one();
             }
+            applied = assignments;
         }
     })
 }
