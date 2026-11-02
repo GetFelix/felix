@@ -79,6 +79,10 @@ pub struct AppendRecord {
     /// [`crate::segment::format::MAX_PUBLISHER_BYTES`]; a record with one
     /// needs storage format v6, so a log moves onto it only when it writes one.
     pub publisher: Option<Bytes>,
+    /// The record's key and headers, already encoded. Storage keeps the bytes
+    /// as given. A record with them needs storage format v8, so a log moves
+    /// onto it only when it writes one.
+    pub headers: Option<Bytes>,
 }
 
 /// Which idempotent producer's batch a record belongs to, if any.
@@ -240,6 +244,8 @@ pub struct LogRecord {
     pub mark: RecordMark,
     /// The principal that published the record, when it was stored with one.
     pub publisher: Option<Bytes>,
+    /// The record's encoded key and headers, when it was stored with them.
+    pub headers: Option<Bytes>,
 }
 
 /// One leadership generation, and the offset its first record took.

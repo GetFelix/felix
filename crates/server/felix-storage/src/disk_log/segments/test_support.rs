@@ -13,6 +13,7 @@ pub(super) fn record(payload: &str) -> AppendRecord {
         timestamp_micros: 7,
         mark: Default::default(),
         publisher: None,
+        headers: None,
     }
 }
 

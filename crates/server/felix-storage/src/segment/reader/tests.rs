@@ -163,17 +163,18 @@ fn write_with_trim(path: &std::path::Path, version: u16) -> crate::segment::Scan
     use crate::log::RecordMark;
     use crate::segment::format::{SegmentHeader, encode_record};
     let mut bytes = SegmentHeader::at_version(0, 1, version).encode().to_vec();
-    encode_record(&mut bytes, 0, 100, b"a", None, &RecordMark::None);
-    encode_record(&mut bytes, 1, 101, b"b", None, &RecordMark::None);
+    encode_record(&mut bytes, 0, 100, b"a", None, None, &RecordMark::None);
+    encode_record(&mut bytes, 1, 101, b"b", None, None, &RecordMark::None);
     encode_record(
         &mut bytes,
         2,
         102,
         b"headers",
         None,
+        None,
         &RecordMark::Trim { floor: 1 },
     );
-    encode_record(&mut bytes, 3, 103, b"d", None, &RecordMark::None);
+    encode_record(&mut bytes, 3, 103, b"d", None, None, &RecordMark::None);
     std::fs::write(path, &bytes).expect("write");
     // The scan would refuse a trim in an older segment, so take the
     // outcome from a v7 copy: the reader is what is under test.
@@ -276,4 +277,60 @@ fn a_trim_in_an_older_segment_is_refused_by_the_reader() {
             .len(),
         2
     );
+}
+
+/// The same holds for headers in a sealed segment older than v8: the reader
+/// judges them as an older build did, as an impossible length, and reads
+/// them back from a v8 segment.
+#[test]
+fn headers_in_an_older_segment_are_refused_by_the_reader() {
+    use crate::log::RecordMark;
+    use crate::segment::format::{HEADERS_VERSION, SegmentHeader, encode_record};
+    let dir = tempdir().expect("dir");
+    let write = |path: &std::path::Path, version: u16| {
+        let mut bytes = SegmentHeader::at_version(0, 1, version).encode().to_vec();
+        encode_record(&mut bytes, 0, 100, b"a", None, None, &RecordMark::None);
+        encode_record(
+            &mut bytes,
+            1,
+            101,
+            b"b",
+            Some(b"k"),
+            None,
+            &RecordMark::None,
+        );
+        std::fs::write(path, &bytes).expect("write");
+    };
+    let path = dir.path().join("a.log");
+    write(&path, HEADERS_VERSION);
+    let outcome = scan_segment(&path, 0, "t/ns/s/0", 4096, ScanStart::Full, false).expect("scan");
+    let records = read(&path, &outcome, 0, usize::MAX, TrimRecords::Skip).expect("read");
+    let headers: Vec<_> = records
+        .iter()
+        .map(|record| record.headers.clone())
+        .collect();
+    assert_eq!(headers, vec![None, Some(Bytes::from_static(b"k"))]);
+
+    write(&path, 7);
+    let reader = SegmentReader::open(&path, 0, 0).expect("open");
+    for start in [0, 1] {
+        let mut out = Vec::new();
+        let err = reader
+            .read_from(
+                &outcome.index,
+                start,
+                outcome.valid_bytes,
+                &mut ReadBudget::unbounded(),
+                "t/ns/s/0",
+                &mut out,
+            )
+            .expect_err("v7");
+        let crate::StorageError::Corruption(corruption) = err else {
+            panic!("expected corruption, got {err:?}");
+        };
+        assert!(matches!(
+            corruption.kind,
+            crate::CorruptionKind::RecordTooLarge { .. }
+        ));
+    }
 }

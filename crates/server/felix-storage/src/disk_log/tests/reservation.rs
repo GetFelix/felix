@@ -28,6 +28,7 @@ fn big(i: usize) -> AppendRecord {
         timestamp_micros: 1_700_000_000,
         mark: Default::default(),
         publisher: None,
+        headers: None,
     }
 }
 

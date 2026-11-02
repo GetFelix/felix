@@ -1,4 +1,4 @@
-# Felix Durable Segment Format (v7)
+# Felix Durable Segment Format (v8)
 
 This document defines the on-disk representation of a durable Felix stream. It is
 the source of truth for anyone reading, writing, repairing, or replicating
@@ -174,7 +174,7 @@ file:
 | Offset | Size | Field | Value |
 | --- | --- | --- | --- |
 | 0 | 4 | `magic` | `0x464C5347` (`"FLSG"`) |
-| 4 | 2 | `version` | `3` when written, `4` for a segment that holds a generation-start record, `5` for one that holds a commit record, `6` for one that holds a record with its publisher, or `7` for one that holds a trim record; `2` is still read |
+| 4 | 2 | `version` | `3` when written, `4` for a segment that holds a generation-start record, `5` for one that holds a commit record, `6` for one that holds a record with its publisher, `7` for one that holds a trim record, or `8` for one that holds a record with a key and headers; `2` is still read |
 | 6 | 2 | `flags` | `0`; any other value is rejected |
 | 8 | 8 | `base_offset` | logical offset of this segment's first record |
 | 16 | 8 | `created_at_micros` | wall clock at creation, informational |
@@ -192,13 +192,13 @@ segment, so damage here is never a torn write. It is always an error.
 
 | Offset | Size | Field | Notes |
 | --- | --- | --- | --- |
-| 0 | 4 | `payload_len` | the body's length, ≤ `MAX_PAYLOAD_BYTES` (64 MiB); bits 28 to 31: the record's kind, bit 27: the body ends with a publisher. Both below |
+| 0 | 4 | `payload_len` | the body's length, ≤ `MAX_PAYLOAD_BYTES` (64 MiB); bits 28 to 31: the record's kind, bit 27: the body ends with a publisher, bit 26: the body starts with a key and headers. All below |
 | 4 | 8 | `offset` | logical offset; ascends by exactly 1 within a segment |
 | 12 | 8 | `timestamp_micros` | publish time |
 | 20 | 4 | `header_crc` | CRC-32 over bytes `0..20` |
 | 24 | 4 | `checksum` | CRC-32 over bytes `0..24`, **followed by** the tag and the body |
 | 28 | 20 or 8 | `tag` | 20 bytes when bit 31 is set: `producer_id u64`, `sequence u64`, `len u32`. 8 bytes on a trim record: `floor u64` |
-| 28, 36 or 48 | n | body | the payload, opaque bytes; with bit 27, followed by the publisher and its `u8` length |
+| 28, 36 or 48 | n | body | the payload, opaque bytes; with bit 26, preceded by the key and headers and their `u32` length; with bit 27, followed by the publisher and its `u8` length |
 
 The diagram shows a record without a tag, which is every record not written by
 an idempotent producer.
@@ -355,6 +355,40 @@ roll happens before the record is written, so a crash or a failed append in
 between leaves an empty v7 active segment. An older build then refuses the
 log even though it holds no trim.
 
+### Keys and headers
+
+**Bit 26** of `payload_len` says the record carries a key and headers, the
+optional parts a Kafka record has and an MQTT message needs. Like the
+publisher bit, it is not a kind and combines with any of them. The key and
+headers sit at the front of the body as one block, after its length:
+
+```text
+u32    k
+u8[k]  key and headers
+u8[n]  payload
+       publisher and its u8 length, with bit 27
+```
+
+Storage keeps the block as it is given and does not look inside it. Its
+layout is the broker's, the way a commit record's payload is.
+
+A record stored without the block has no bit 26, so it is byte for byte what
+v7 wrote. A block length that claims more than the body
+holds is `RecordHeaders` corruption: the checksum held, so the record was
+written that way. The payload digest a producer batch is checked against
+covers the payload only.
+
+Bit 26 is also the top bit of the largest body, 2^26 bytes, which every
+older build could write. So bit 26 over a zero length is that body, in any
+version, and never a record with headers. A body with headers stops one
+byte short of the limit, so the two never meet. Before v8, bit 26 over a
+non-zero length is `RecordTooLarge`, exactly as an older build judged it.
+
+Only a v8 segment may hold such a record, for the reason only a v6 one may
+hold a publisher. A segment is written at v8 only to hold one, so a log that
+never stores a key or headers stays on v7 or older, and an older build reads
+it.
+
 ## Index file
 
 Index files accelerate reads and are **never trusted**. Every entry is used only
@@ -409,7 +443,8 @@ the file is read up to the last whole entry.
 | Bad record header CRC | `RecordHeaderChecksum`: the length cannot be trusted |
 | Bad record CRC | `RecordChecksum` |
 | More than one kind bit set, other than bits 29 and 28 together in a v7 segment | `RecordFlags` |
-| `payload_len` over the limit | `RecordTooLarge`, raised *before* any allocation |
+| `payload_len` over the limit | `RecordTooLarge`, raised *before* any allocation. In a v8 segment bit 26 is a flag, so every length fits |
+| A publisher or a key-and-headers block that does not fit its body | `RecordPublisher`, `RecordHeaders` |
 | Offset gap within a segment | `OffsetOutOfOrder` |
 
 Every error carries a `CorruptionSite` naming the shard, segment id and byte
@@ -498,7 +533,7 @@ The full rules live in `is_repairable_tail` and `is_zero_filled_tail` in
 
 `format.rs` pins exact bytes for a segment header and a record. Changing either
 is a format change: bump `FORMAT_VERSION`, update this document, and state the
-migration path. It also pins the header CRC of every version from 2 to 7 and
+migration path. It also pins the header CRC of every version from 2 to 8 and
 every older record kind, and `writer.rs` pins the checksums of a segment and
 its index at each of v3 to v6 holding every kind that version allows, so a
 new kind cannot change what an older one writes.
@@ -531,7 +566,15 @@ encode_record(offset = 7, timestamp = 9, payload = "hi", publisher = "al"):
   51 5E 81 63
   68 69  61 6C  02
 
-encode_record(offset = 7, timestamp = 9, headers = "hi", trim floor = 5):
+encode_record(offset = 7, timestamp = 9, payload = "hi", key and headers = "k"):
+  04 00 00 07
+  00 00 00 00 00 00 00 07
+  00 00 00 00 00 00 00 09
+  7C 17 D9 F2
+  7B A6 A5 A2
+  00 00 00 01  6B  68 69
+
+encode_record(offset = 7, timestamp = 9, trim's headers = "hi", trim floor = 5):
   30 00 00 02
   00 00 00 00 00 00 00 07
   00 00 00 00 00 00 00 09
@@ -552,6 +595,7 @@ encode_record(offset = 7, timestamp = 9, headers = "hi", trim floor = 5):
 | 5 | Commit records: a fourth flag bit. Written only to hold one, once `atomic_commit` is finalized. |
 | 6 | Publishers: bit 27 and a trailer on the body. Written only to hold a record with one, once publishers are enabled; every older segment is read unchanged, and a record without a publisher is byte for byte a v5 record. |
 | 7 | Trim records: bits 29 and 28 together, and an 8-byte floor tag. Written only to hold one; every older segment is read unchanged, and every other record is byte for byte what v6 wrote. |
+| 8 | Keys and headers: bit 26 and a length-prefixed block at the front of the body. Written only to hold a record with one; every older segment is read unchanged, and a record without a key or headers is byte for byte what v7 wrote. |
 
 A v1 segment is rejected on open with `CorruptionKind::SegmentVersion`, naming
 the version found. v1 was only ever written by unreleased builds, so the
@@ -577,6 +621,7 @@ would misparse every field after the length.
 | --- | --- | --- |
 | `MAX_PAYLOAD_BYTES` | 64 MiB | Bounds the allocation a corrupt length field can request |
 | `MAX_PUBLISHER_BYTES` | 255 | The publisher's length is one byte; it is a principal id, never a token |
+| Body of a record with a key and headers | `MAX_PAYLOAD_BYTES` − 1 | Bit 26 over a zero length is the legacy 2^26-byte body, so a body with headers never reaches it |
 | Max records per segment | `u64` offsets, so effectively unbounded | Rollover is driven by size, not count |
 | Oversized records | A record larger than `segment_size_bytes` is written to an otherwise-empty segment of its own | Splitting a record across segments would break the "offsets are contiguous within a segment" invariant that recovery depends on |
 

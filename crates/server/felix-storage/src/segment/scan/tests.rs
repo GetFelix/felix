@@ -43,8 +43,24 @@ fn truncation_at_every_byte_of_the_tail_record_is_repairable() {
     let full = write_segment(&path, 0, 3);
 
     let mut prefix = SegmentHeader::new(0, 1).encode().to_vec();
-    encode_record(&mut prefix, 0, 100, b"payload-0", None, &Default::default());
-    encode_record(&mut prefix, 1, 101, b"payload-1", None, &Default::default());
+    encode_record(
+        &mut prefix,
+        0,
+        100,
+        b"payload-0",
+        None,
+        None,
+        &Default::default(),
+    );
+    encode_record(
+        &mut prefix,
+        1,
+        101,
+        b"payload-1",
+        None,
+        None,
+        &Default::default(),
+    );
     let third_start = prefix.len() as u64;
 
     // Start one byte in: cutting exactly at the boundary leaves a healthy
@@ -100,9 +116,9 @@ fn an_offset_gap_in_committed_data_is_a_hard_error() {
     let dir = tempdir().expect("dir");
     let path = dir.path().join("a.log");
     let mut bytes = SegmentHeader::new(0, 1).encode().to_vec();
-    encode_record(&mut bytes, 0, 1, b"a", None, &Default::default());
-    encode_record(&mut bytes, 5, 2, b"b", None, &Default::default());
-    encode_record(&mut bytes, 6, 3, b"c", None, &Default::default());
+    encode_record(&mut bytes, 0, 1, b"a", None, None, &Default::default());
+    encode_record(&mut bytes, 5, 2, b"b", None, None, &Default::default());
+    encode_record(&mut bytes, 6, 3, b"c", None, None, &Default::default());
     std::fs::write(&path, &bytes).expect("write");
 
     let err = scan(&path).expect_err("offset gap");
@@ -234,8 +250,8 @@ fn scan_reads_records_larger_than_the_read_ahead_window() {
     let path = dir.path().join("a.log");
     let big = vec![7u8; READ_CHUNK_BYTES * 2 + 11];
     let mut bytes = SegmentHeader::new(0, 1).encode().to_vec();
-    encode_record(&mut bytes, 0, 1, &big, None, &Default::default());
-    encode_record(&mut bytes, 1, 2, b"small", None, &Default::default());
+    encode_record(&mut bytes, 0, 1, &big, None, None, &Default::default());
+    encode_record(&mut bytes, 1, 2, b"small", None, None, &Default::default());
     std::fs::write(&path, &bytes).expect("write");
 
     let outcome = scan(&path).expect("scan");
@@ -330,7 +346,15 @@ fn a_record_zeroed_from_a_sector_boundary_is_torn() {
     let path = dir.path().join("a.log");
     let mut bytes = write_segment(&path, 0, 2);
     let valid = bytes.len();
-    encode_record(&mut bytes, 2, 102, &[0xAB; 1500], None, &Default::default());
+    encode_record(
+        &mut bytes,
+        2,
+        102,
+        &[0xAB; 1500],
+        None,
+        None,
+        &Default::default(),
+    );
     let lost_from = valid.next_multiple_of(512) + 512;
     assert!(lost_from < bytes.len());
     bytes[lost_from..].fill(0);
@@ -354,10 +378,10 @@ fn zeros_followed_by_a_valid_record_are_a_hard_error() {
     let path = dir.path().join("a.log");
     let mut bytes = write_segment(&path, 0, 2);
     let damaged = bytes.len();
-    encode_record(&mut bytes, 2, 102, b"lost", None, &Default::default());
-    encode_record(&mut bytes, 3, 103, b"kept", None, &Default::default());
+    encode_record(&mut bytes, 2, 102, b"lost", None, None, &Default::default());
+    encode_record(&mut bytes, 3, 103, b"kept", None, None, &Default::default());
     let second = bytes.len();
-    encode_record(&mut bytes, 4, 104, b"last", None, &Default::default());
+    encode_record(&mut bytes, 4, 104, b"last", None, None, &Default::default());
     bytes[damaged..second].fill(0);
     std::fs::write(&path, &bytes).expect("write");
 
@@ -386,14 +410,31 @@ fn zeros_starting_mid_sector_in_the_last_record_are_not_a_torn_tail() {
 /// `after` plain records. Returns the bytes and where the trim starts.
 fn write_trim_segment(path: &std::path::Path, version: u16, after: u64) -> (Vec<u8>, u64) {
     let mut bytes = SegmentHeader::at_version(0, 1, version).encode().to_vec();
-    encode_record(&mut bytes, 0, 100, b"payload-0", None, &Default::default());
-    encode_record(&mut bytes, 1, 101, b"payload-1", None, &Default::default());
+    encode_record(
+        &mut bytes,
+        0,
+        100,
+        b"payload-0",
+        None,
+        None,
+        &Default::default(),
+    );
+    encode_record(
+        &mut bytes,
+        1,
+        101,
+        b"payload-1",
+        None,
+        None,
+        &Default::default(),
+    );
     let trim_at = bytes.len() as u64;
     encode_record(
         &mut bytes,
         2,
         102,
         b"headers",
+        None,
         None,
         &RecordMark::Trim { floor: 1 },
     );
@@ -403,6 +444,7 @@ fn write_trim_segment(path: &std::path::Path, version: u16, after: u64) -> (Vec<
             3 + i,
             103 + i,
             b"payload",
+            None,
             None,
             &Default::default(),
         );
