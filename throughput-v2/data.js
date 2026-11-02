@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793616444683,
+  "lastUpdate": 1793618100040,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -41912,6 +41912,58 @@ window.BENCHMARK_DATA = {
             "range": "8224.89",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 925182.09\nmean: 923552.08\nstdev: 8224.89\ncv: 0.89%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b6538436e9b0f08bc8170e7bc0aa8acbfcc0db66",
+          "message": "feat(controlplane): an opt-in Scalar API reference page (#1361) (#1764)\n\nCloses #1361.\n\nThe control plane can serve an API reference page. It is off by default.\n\n- `FELIX_CONTROLPLANE_API_UI` = `off` (default) or `scalar`; config file key `api_ui`. An unknown value stops startup.\n- `FELIX_CONTROLPLANE_API_UI_PATH` (default `/api`); config key `api_ui_path`. Validated only when the page is on: must be a plain path, not `/`, not under `/v1` or `/internal/`.\n- The page is a short HTML file (no new crate) that loads `@scalar/api-reference@1.75.1` from jsDelivr with a SHA-384 Subresource Integrity hash and `crossorigin=\"anonymous\"`, and reads the same-origin `/v1/openapi.json`.\n- The response carries a Content-Security-Policy: scripts only from the pinned URL, `connect-src 'self'`, no frames, no base URI.\n- No auth on the page, like `/v1/openapi.json`.\n\nDocs: control-plane-api.md (\"Viewing the API document\": built-in page first, external viewer second; the CDN/offline caveat; the endpoint table), environment-variables reference, changelog fragment.\n\nTests: off gives 404 and scalar gives 200 through `run` (reverting the router merge in `server.rs` fails it with 404 vs 200); the page references `/v1/openapi.json`, the pinned version and the SRI; the CSP; config validation rejects unknown values and shadowing paths, for both env and YAML.\n\nAlso checked by hand in headless Edge: with this exact page and CSP the Scalar UI renders a spec from the same origin, and no CSP violation is logged.\n\nDesign calls:\n- The router is merged in `server.rs` rather than inside `build_router`, so `AppState` and its many test constructors are untouched. The page does not go through the in-flight counter or the trace layer.\n- `style-src 'unsafe-inline'` is allowed because Scalar injects styles; `worker-src blob:` because it starts a worker. Scripts stay locked to the pinned URL.\n- Default fonts are turned off (`withDefaultFonts:false`) so no third host is contacted.\n- Version 1.75.1 is pinned; the comment in `api_ui.rs` says how to recompute the hash.",
+          "timestamp": "2026-11-02T02:59:47-08:00",
+          "tree_id": "ba5ece50d3a6280e68fcb6aea7e7c9da5791fea9",
+          "url": "https://github.com/GetFelix/felix/commit/b6538436e9b0f08bc8170e7bc0aa8acbfcc0db66"
+        },
+        "date": 1793618099318,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 349691.87,
+            "range": "6111.86",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 349691.87\nmean: 349278.82\nstdev: 6111.86\ncv: 1.75%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 349691.87,
+            "range": "6111.86",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 349691.87\nmean: 349278.82\nstdev: 6111.86\ncv: 1.75%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80282.6,
+            "range": "2488.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80282.60\nmean: 79183.98\nstdev: 2488.89\ncv: 3.14%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 802825.99,
+            "range": "24888.86",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 802825.99\nmean: 791839.75\nstdev: 24888.86\ncv: 3.14%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
