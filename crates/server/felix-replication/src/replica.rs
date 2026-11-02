@@ -1678,7 +1678,8 @@ impl ReplicaHandler {
     ///
     /// The read is made off the peer lane, and a request that has no fresh
     /// answer yet is refused retryably (see
-    /// [`crate::confirmed::ConfirmedReads`]).
+    /// [`crate::confirmed::ConfirmedReads`]). A shard created after this
+    /// copy's storage id registered skips it ([`Self::created_here`]).
     fn refuse_unconfirmed(
         &self,
         correlation_id: u64,
@@ -1688,7 +1689,11 @@ impl ReplicaHandler {
         sender: Option<&str>,
         sent: Option<u64>,
     ) -> Option<InternalMessage> {
-        if crate::unclean::held(log) && !self.is_learner(log) {
+        let learner = self.is_learner(log);
+        if crate::unclean::held(log) && !learner {
+            return None;
+        }
+        if !learner && self.created_here(key, generation, sender, sent) {
             return None;
         }
         // Under `joint_fence` a candidate's generation is in no assignment,
@@ -1713,6 +1718,35 @@ impl ReplicaHandler {
                     confirmed_refusal(correlation_id, key, generation, sender, elections, answer)
                 });
         decided.unwrap_or_else(|| Some(reading_confirmed(correlation_id, key, generation)))
+    }
+
+    /// Whether the request is the named leader's at the shard's creation, and
+    /// the view's creation set names this copy under the storage id it holds
+    /// now. That set was written after this id registered, so after any wipe
+    /// of this broker: no earlier copy here held the shard, and this one lost
+    /// no promise for the confirmed read to stand in for. Its empty ballot is
+    /// a true one, as on any new follower. The same test as the creation case
+    /// of `is_wiped_learner` in `promotion/joint.rs`.
+    fn created_here(
+        &self,
+        key: &felix_router::ShardKey,
+        generation: u64,
+        sender: Option<&str>,
+        sent: Option<u64>,
+    ) -> bool {
+        let Some(own) = self.local_storage else {
+            return false;
+        };
+        if generation != 1 {
+            return false;
+        }
+        let snapshot = self.router.snapshot();
+        snapshot.get(key).is_some_and(|route| {
+            route.generation == 1
+                && sent.unwrap_or(0) == route.incarnation
+                && sender == Some(route.leader.node_id.as_str())
+                && crate::replica_set::names_storage(route, self.router.local_node_id(), own)
+        })
     }
 
     /// Refuse a request for a shard at an incarnation this broker does

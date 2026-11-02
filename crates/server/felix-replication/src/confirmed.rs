@@ -46,12 +46,16 @@ pub trait ConfirmedRoutes: Send + Sync {
 /// a generation.
 pub(crate) const FRESH_UNDER_ELECTIONS: Duration = Duration::from_millis(500);
 
-/// How long an answer is used without elections. Any read taken since this
-/// process started is at least as new as every promise a wipe could have
-/// cost the copy, so using an older one refuses no less than `Forget` under
-/// `PromiseFromRoutes` in `docs/formal/FelixShard.tla`. The bound matters
-/// for `NotServed`: a control plane upgraded to serve the read is asked
-/// again within 10 s.
+/// How long an answer is used without elections. Here age is not what makes
+/// an answer safe: answers live in memory, so every one was read after this
+/// process started, after any wipe, and names the newest generation the copy
+/// lost a promise for or a later one. That is all `Forget` under
+/// `PromiseFromRoutes` in `docs/formal/FelixShard.tla` assumes. The model
+/// seeds that view at the wipe and never refreshes it, so it already takes a
+/// leader deposed after the answer was read; for a learner that is
+/// `CatchUpFromDeposed`. TLC finds neither unsafe. The bound is for
+/// liveness: a `NotServed` answer is asked again within 10 s once the
+/// control plane is upgraded.
 pub(crate) const FRESH: Duration = Duration::from_secs(10);
 
 /// How long after the last request for a shard an answer shorter-lived than
@@ -73,11 +77,9 @@ const PRUNE_ABOVE: usize = 1024;
 ///
 /// A request costs a lock-free map load, a few atomics and an `ArcSwap`
 /// load: no lock, no allocation, nothing awaited. Only the first request
-/// for a shard takes a lock, to add it to the map.
+/// for a shard allocates, copying the map to add it.
 pub(crate) struct ConfirmedReads {
     slots: ArcSwap<HashMap<Arc<ShardKey>, Arc<Slot>>>,
-    /// Serializes adding and pruning slots; never taken by a lookup.
-    adding: parking_lot::Mutex<()>,
     permits: Arc<tokio::sync::Semaphore>,
     /// What the slots' timestamps count from.
     epoch: Instant,
@@ -87,7 +89,6 @@ impl Default for ConfirmedReads {
     fn default() -> Self {
         Self {
             slots: ArcSwap::from_pointee(HashMap::new()),
-            adding: parking_lot::Mutex::new(()),
             permits: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_READS)),
             epoch: Instant::now(),
         }
@@ -160,7 +161,8 @@ impl ConfirmedReads {
     }
 
     /// The first request for a shard incarnation: add its slot and start
-    /// its read.
+    /// its read. Copy-on-write: a lookup never waits on an add, and two
+    /// racing adds for one shard start one read.
     fn add(
         self: &Arc<Self>,
         routes: &Arc<dyn ConfirmedRoutes>,
@@ -169,24 +171,6 @@ impl ConfirmedReads {
         now: u64,
         fresh: u64,
     ) {
-        let _adding = self.adding.lock();
-        let current = self.slots.load_full();
-        if let Some(slot) = current
-            .get(key)
-            .filter(|slot| slot.incarnation == incarnation)
-        {
-            // Another request added it meanwhile.
-            slot.wanted.store(now, Ordering::Relaxed);
-            return;
-        }
-        let mut slots = HashMap::clone(&current);
-        if slots.len() > PRUNE_ABOVE {
-            let stale = u64::try_from(FRESH.as_nanos()).unwrap_or(u64::MAX);
-            slots.retain(|_, slot| {
-                slot.reading.load(Ordering::Acquire)
-                    || now.saturating_sub(slot.wanted.load(Ordering::Relaxed)) < stale
-            });
-        }
         let slot = Arc::new(Slot {
             incarnation,
             answer: ArcSwapOption::empty(),
@@ -194,9 +178,32 @@ impl ConfirmedReads {
             wanted: AtomicU64::new(now),
             fresh: AtomicU64::new(fresh),
         });
-        slots.insert(Arc::new(key.clone()), Arc::clone(&slot));
-        self.slots.store(Arc::new(slots));
-        self.spawn_read(routes, key, &slot);
+        let stale = u64::try_from(FRESH.as_nanos()).unwrap_or(u64::MAX);
+        let before = self.slots.rcu(|current| {
+            if current
+                .get(key)
+                .is_some_and(|slot| slot.incarnation == incarnation)
+            {
+                return Arc::clone(current);
+            }
+            let mut slots = HashMap::clone(current);
+            if slots.len() > PRUNE_ABOVE {
+                slots.retain(|_, slot| {
+                    slot.reading.load(Ordering::Acquire)
+                        || now.saturating_sub(slot.wanted.load(Ordering::Relaxed)) < stale
+                });
+            }
+            slots.insert(Arc::new(key.clone()), Arc::clone(&slot));
+            Arc::new(slots)
+        });
+        match before
+            .get(key)
+            .filter(|slot| slot.incarnation == incarnation)
+        {
+            // Another request added it meanwhile.
+            Some(added) => added.wanted.store(now, Ordering::Relaxed),
+            None => self.spawn_read(routes, key, &slot),
+        }
     }
 
     fn spawn_read(

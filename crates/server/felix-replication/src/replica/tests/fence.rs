@@ -1585,6 +1585,96 @@ async fn confirmed_reads_for_new_shards_do_not_hold_up_the_lane() {
     );
 }
 
+/// A router in which broker-a leads the shard at `generation` with `LOCAL`
+/// as its follower, the set naming `LOCAL` under `local_id`.
+fn router_naming(generation: u64, local_id: [u8; 16]) -> Arc<ShardRouter> {
+    let router = Arc::new(ShardRouter::new(
+        LOCAL,
+        "us-west-2",
+        RegionRouter::new("us-west-2".to_string()),
+    ));
+    let nodes: HashMap<String, NodeRef> = ["broker-a", LOCAL]
+        .into_iter()
+        .zip(7001..)
+        .map(|(id, port)| (id.to_string(), node(id, port)))
+        .collect();
+    let table = RoutingTable::build_with(
+        [felix_router::Placed {
+            key: key(),
+            leader: "broker-a".to_string(),
+            replicas: vec![LOCAL.to_string()],
+            generation,
+            draining: false,
+            successor: None,
+            routing: Default::default(),
+            incarnation: 0,
+            fence_storage_ids: Default::default(),
+            member_storage_ids: [
+                (
+                    "broker-a".to_string(),
+                    felix_storage::StorageId::from_bytes([1; 16]).to_hex(),
+                ),
+                (
+                    LOCAL.to_string(),
+                    felix_storage::StorageId::from_bytes(local_id).to_hex(),
+                ),
+            ]
+            .into(),
+            pending: None,
+        }],
+        &nodes,
+    );
+    router.publish(table, &nodes);
+    router
+}
+
+/// **A new shard's first fence is taken without a confirmed read (#1791).**
+/// Its creation set names this copy's current storage id, so no earlier copy
+/// here held the shard and there is no lost promise to check for. The
+/// control plane here never answers; the fence is taken anyway.
+#[tokio::test]
+async fn a_new_shards_first_fence_needs_no_confirmed_read() {
+    const OWN: [u8; 16] = [2; 16];
+    let (broker, _dir) = broker_with_storage().await;
+    let control_plane = Arc::new(GatedConfirmed {
+        open: tokio::sync::Semaphore::new(0),
+        asked: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_naming(1, OWN))
+        .with_local_storage(felix_storage::StorageId::from_bytes(OWN))
+        .with_confirmed_routes(Arc::clone(&control_plane) as _);
+    // Without the creation set, a first fence is refused while the read runs.
+    taken(&handler.fence(SENDER, fence(1)).await);
+    assert_eq!(
+        control_plane
+            .asked
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
+}
+
+/// Only the creation set is evidence. One naming this copy at a later
+/// generation, or naming another storage id, still needs the read.
+#[tokio::test]
+async fn a_later_set_or_another_storage_id_still_needs_the_read() {
+    const OWN: [u8; 16] = [2; 16];
+    for (generation, named) in [(5, OWN), (1, [3; 16])] {
+        let (broker, _dir) = broker_with_storage().await;
+        let control_plane = Arc::new(GatedConfirmed {
+            open: tokio::sync::Semaphore::new(0),
+            asked: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let handler = ReplicaHandler::new(Arc::clone(&broker), router_naming(generation, named))
+            .with_local_storage(felix_storage::StorageId::from_bytes(OWN))
+            .with_confirmed_routes(Arc::clone(&control_plane) as _);
+        let answer = handler.fence(SENDER, fence(generation)).await;
+        assert!(
+            !matches!(answer, InternalMessage::FenceOk(_)),
+            "generation {generation}: {answer:?}"
+        );
+    }
+}
+
 /// Requests that arrive while a shard's read is under way wait on it rather
 /// than start their own, and the answer is reused for the shard's next ones.
 #[tokio::test]
