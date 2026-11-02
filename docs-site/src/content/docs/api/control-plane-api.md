@@ -790,7 +790,8 @@ FELIX_CONTROLPLANE_API_UI=scalar felix-controlplane
 ```
 
 Use `FELIX_CONTROLPLANE_API_UI_PATH` to serve it somewhere else. The value must
-be a plain path such as `/reference`, and it cannot be under `/v1`. In the
+be a plain path such as `/reference`, with no trailing slash, and it cannot be
+under `/v1`. In the
 config file the keys are `api_ui` and `api_ui_path`. The default is `off`, and
 an unknown value stops startup rather than quietly leaving the page off.
 
@@ -803,11 +804,13 @@ What to know before you turn it on:
   Subresource Integrity hash, so the browser refuses a script that differs.
   Upgrading Felix is what changes the version.
 - **A Content-Security-Policy limits the page.** Scripts may only come from the
-  pinned URL, and the page may only make requests to the control plane itself.
-  That is why no CORS headers are needed.
+  pinned URL, and the page may only make requests to the control plane itself,
+  so "Try it" cannot reach any other host. The page and the API share an origin,
+  which is why no CORS headers are needed.
 - **The page needs no sign-in**, like `/v1/openapi.json`. It holds no cluster
-  data. To use "Try it", paste a token into the page; requests go from your
-  browser to the control plane with that token.
+  data. To use "Try it" on a route that needs a token, add an
+  `Authorization: Bearer <token>` header in the request builder; the request
+  goes from your browser to the control plane.
 
 ### An external viewer
 

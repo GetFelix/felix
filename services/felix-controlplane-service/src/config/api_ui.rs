@@ -28,11 +28,12 @@ impl FromStr for ApiUi {
 }
 
 /// `FELIX_CONTROLPLANE_API_UI`. An unknown value is an error: someone who
-/// typed `scaler` expects a page, and "off" would hide the typo.
+/// typed `scaler` expects a page, and "off" would hide the typo. Empty is
+/// unset, as templated deployments often pass `${VAR:-}`.
 pub(super) fn api_ui_from_env() -> Result<ApiUi> {
     match std::env::var("FELIX_CONTROLPLANE_API_UI") {
-        Ok(value) => value.parse(),
-        Err(_) => Ok(ApiUi::Off),
+        Ok(value) if !value.trim().is_empty() => value.parse(),
+        _ => Ok(ApiUi::Off),
     }
 }
 

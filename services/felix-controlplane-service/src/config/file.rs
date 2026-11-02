@@ -188,7 +188,7 @@ impl ControlPlaneConfig {
             config.api_ui = value.parse()?;
         }
         if let Some(value) = override_cfg.api_ui_path {
-            config.api_ui_path = value;
+            config.api_ui_path = value.trim().to_string();
         }
         if let Some(tls) = override_cfg.tls {
             config.api_tls = Some(tls);

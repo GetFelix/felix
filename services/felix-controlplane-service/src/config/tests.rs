@@ -233,6 +233,15 @@ fn api_ui_is_off_unless_asked_for_and_rejects_unknown_values() {
     }
     let err = ControlPlaneConfig::from_env().expect_err("typo");
     assert!(err.to_string().contains("off, scalar"), "{err}");
+
+    // Empty is unset: templated deployments pass `${VAR:-}`.
+    unsafe {
+        env::set_var("FELIX_CONTROLPLANE_API_UI", "");
+    }
+    assert_eq!(
+        ControlPlaneConfig::from_env().expect("empty").api_ui,
+        ApiUi::Off
+    );
 }
 
 #[serial]
@@ -804,6 +813,29 @@ postgres:
         assert_eq!(config.api_ui, ApiUi::Scalar);
         assert_eq!(config.api_ui_path, "/reference");
         assert!(config.apply(parse("api_ui: swagger")).is_err());
+    }
+
+    /// The file wins over the environment, and a bad path from the file is
+    /// refused by the same validation.
+    #[serial]
+    #[test]
+    fn the_file_overrides_the_environment_for_the_api_ui() {
+        let (_config, _restore) = base();
+        unsafe {
+            env::set_var("FELIX_CONTROLPLANE_API_UI", "scalar");
+            env::set_var("FELIX_CONTROLPLANE_API_UI_PATH", "/from-env");
+        }
+        let mut config = ControlPlaneConfig::from_env().expect("env");
+        config
+            .apply(parse("api_ui: off\napi_ui_path: /from-file"))
+            .expect("apply");
+        assert_eq!(config.api_ui, ApiUi::Off);
+        assert_eq!(config.api_ui_path, "/from-file");
+
+        config
+            .apply(parse("api_ui: scalar\napi_ui_path: /v1/x"))
+            .expect("apply");
+        assert!(config.validate().is_err(), "a path under /v1 was accepted");
     }
 
     /// An address that does not parse fails the load and names the key, so

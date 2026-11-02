@@ -34,6 +34,14 @@ async fn scalar_serves_a_pinned_page_with_a_locked_down_policy() {
         "{csp}"
     );
     assert!(csp.contains("connect-src 'self'"), "{csp}");
+    for directive in [
+        "default-src 'none'",
+        "style-src 'unsafe-inline'",
+        "base-uri 'none'",
+        "frame-ancestors 'none'",
+    ] {
+        assert!(csp.contains(directive), "{directive} missing from {csp}");
+    }
     assert!(!csp.contains("unsafe-eval"), "{csp}");
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
@@ -49,6 +57,7 @@ async fn scalar_serves_a_pinned_page_with_a_locked_down_policy() {
         "{page}"
     );
     assert!(page.contains(r#"crossorigin="anonymous""#), "{page}");
+    assert!(page.contains(r#""telemetry":false"#), "{page}");
 
     let elsewhere = get(router, "/docs").await;
     assert_eq!(elsewhere.status(), StatusCode::NOT_FOUND);
@@ -64,14 +73,18 @@ async fn the_page_moves_with_the_configured_path() {
     assert_eq!(get(router, "/api").await.status(), StatusCode::NOT_FOUND);
 }
 
-/// The pin is only worth something if the version in the URL is the one the
-/// hash was taken from.
+/// The hash is only checked against a real download when the version changes
+/// (see the comment on `SCALAR_SCRIPT`); this holds the URL to an exact version.
 #[test]
 fn the_script_is_pinned_to_an_exact_version() {
+    let version = SCALAR_SCRIPT
+        .split("@scalar/api-reference@")
+        .nth(1)
+        .and_then(|rest| rest.split('/').next())
+        .expect("a version in the URL");
     assert!(
-        SCALAR_SCRIPT.contains("@scalar/api-reference@1."),
-        "{SCALAR_SCRIPT}"
+        version.split('.').count() == 3 && version.split('.').all(|n| n.parse::<u32>().is_ok()),
+        "{version} is not an exact x.y.z version"
     );
-    assert!(!SCALAR_SCRIPT.contains("@latest"));
     assert!(SCALAR_SRI.starts_with("sha384-"));
 }

@@ -18,8 +18,8 @@ const SCALAR_SCRIPT: &str =
 const SCALAR_SRI: &str = "sha384-G+2Q2i9l3PPfmYkk0b4BAIUrs7xb/DNaTL1wCYYab4c9dIKlCyiqzC0Qx3eq9Wf6";
 
 /// The page. The `script` with an id is data for Scalar's loader, not code, so
-/// the CSP needs no inline-script allowance. Fonts are turned off because the
-/// default ones come from a third host.
+/// the CSP needs no inline-script allowance. Fonts and telemetry are turned off so
+/// the page contacts no third host, whatever the CSP says.
 fn scalar_page() -> String {
     format!(
         r#"<!doctype html>
@@ -30,7 +30,7 @@ fn scalar_page() -> String {
 <title>Felix control plane API</title>
 </head>
 <body>
-<script id="api-reference" data-url="/v1/openapi.json" data-configuration='{{"withDefaultFonts":false}}'></script>
+<script id="api-reference" data-url="/v1/openapi.json" data-configuration='{{"withDefaultFonts":false,"telemetry":false}}'></script>
 <script src="{SCALAR_SCRIPT}" integrity="{SCALAR_SRI}" crossorigin="anonymous"></script>
 </body>
 </html>
