@@ -54,10 +54,19 @@ jobs:
       - name: Instructions (callgrind)
         run: |
           set -euo pipefail
-          echo "| side | Ir (whole test, 40k records) |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
-          for side in base head; do
-            AB_TOTAL=40000 valgrind --tool=callgrind --callgrind-out-file=/tmp/cg-$side /tmp/bin-$side --ignored --test-threads 1 2>&1 | grep -E "Collected" | tee /tmp/ir-$side
-            echo "| $side | $(awk '{print $NF}' /tmp/ir-$side) |" >> "$GITHUB_STEP_SUMMARY"
-            callgrind_annotate /tmp/cg-$side 2>/dev/null | grep -E "felix_storage" | head -15 || true
+          echo "| side | run | Ir (whole test, 40k records) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          for run in 1 2; do
+            for side in base head; do
+              AB_TOTAL=40000 valgrind --tool=callgrind --callgrind-out-file=/tmp/cg-$side-$run /tmp/bin-$side --ignored --test-threads 1 2>&1 | grep -E "Collected" | tee /tmp/ir-$side
+              echo "| $side | $run | $(awk '{print $NF}' /tmp/ir-$side) |" >> "$GITHUB_STEP_SUMMARY"
+            done
           done
+          for side in base head; do
+            echo "=== TOP $side"
+            callgrind_annotate --inclusive=no /tmp/cg-$side-1 2>/dev/null | sed -n '1,60p' | cut -c1-220 | grep -E "^ *[0-9,]+ " | sed -E 's/\[\/tmp\/bin-(base|head)\]//' | head -45
+          done
+      - uses: actions/upload-artifact@v7
+        with:
+          name: callgrind
+          path: /tmp/cg-*
