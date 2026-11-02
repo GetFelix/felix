@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793606447008,
+  "lastUpdate": 1793616444683,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -41860,6 +41860,58 @@ window.BENCHMARK_DATA = {
             "range": "20663.31",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 785810.82\nmean: 777854.30\nstdev: 20663.31\ncv: 2.66%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c8d7934904c39eb92b74dcf772478cfe46f3e043",
+          "message": "feat(mqtt): the listener skeleton behind FELIX_MQTT_LISTEN (#1689) (#1757)\n\nCloses #1689. Part of #1685; design in `docs/mqtt-design.md`. Stacked on #1755 (the codec): base is its branch until it merges, then I retarget to main.\n\n## What it does\n\nWith `FELIX_MQTT_LISTEN` set, a broker accepts MQTT 3.1.1 and 5.0 connections. A device authenticates with the tenant id and a Felix token (`CONNECT` username and password, optionally bound to its client certificate), can ping and disconnect, and is closed when it goes silent, when its token expires or when it is revoked. Every `PUBLISH` and `SUBSCRIBE` is refused. With the variable unset nothing is bound and no runtime is built.\n\n- `crates/server/felix-mqtt`: the connection layer (`MqttService`, `Authenticator`, `Principal`, `Settings`). No broker dependency.\n- `serving/mqtt.rs`: bind, accept loop, TLS, caps, the broker's `Authenticator`. The listener owns a tokio runtime of `FELIX_MQTT_WORKER_THREADS` threads, so a handshake storm spends those and not QUIC's.\n- Limits: connections per broker and per source address, accept rate (token bucket, the rest waits in the kernel backlog of 4096), 64 KiB cap before `CONNECT`, auth timeout, packet/topic/subscription bounds, keepalive cap.\n- Metrics `felix_mqtt_connections`, `_connections_total`, `_refused_total{reason}`.\n- Docs: `docs/mqtt-compatibility.md`, docs-site MQTT page, env reference, observability, status row, changelog fragment.\n\n## Proof it costs QUIC nothing when off or idle\n\n- Off: no code path is touched. The only shared-code change is a `tls.rs` method and nothing on publish, subscribe, ship or ack.\n- `instructions_per_message` gains a `b64_mqtt_idle` cell (same load, listener on and idle, own cluster). `scripts/perf/ipm_gate.py` holds it to `b64` from the same run within the tolerance, so it needs no baseline of its own. I could not run valgrind here; the first CI run is its first measurement. The job now starts two clusters, so it runs longer.\n- `tests/mqtt_isolation.rs`: 48 tasks flood the MQTT listener with CONNECTs carrying bad tokens while a QUIC client publishes 200 acked messages; every publish is acknowledged within 2 s.\n- Binary size (release, `felix-broker`): 23,635,936 bytes before, 23,894,480 after: +258,544 bytes (+1.1%).\n\nPerf A/B against the last tag is not run locally; the change adds nothing to the publish path and the new CI cell is the evidence for the idle case. Say if you want the full A/B dispatched.\n\n## Revert checks (done locally)\n\n- Pre-`CONNECT` packet cap raised to 4 MiB: `oversized_packet_before_connect_closes_the_connection` fails.\n- Keepalive grace 100x: `silence_past_one_and_a_half_keepalives_closes_the_connection` fails (the test was passing vacuously under paused time; fixed to require an immediate close).\n- Accept loop spawned on the caller's runtime: `connections_are_served_on_the_listeners_own_threads` fails.\n\n## Design calls\n\n- No cargo feature (D17); the size delta is reported above.\n- Persistent sessions are not offered yet: a clean-session flag of 0 is accepted as a clean session (`session present` 0), and a 5.0 session expiry is answered with 0.\n- A `CONNECT` with a will is refused (not authorized), since a will is a deferred publish and publishing does not exist. Accepting it would drop it silently.\n- 5.0 publishes at QoS 1 and 2 get a `PUBACK` or `PUBREC` with reason 0x87 and the connection stays open; QoS 0 and all of 3.1.1 close the connection, because those cannot say no per message.\n- Keepalive 0 or above `FELIX_MQTT_KEEPALIVE_MAX_SECS` is replaced by the maximum for both versions (5.0 is told via `Server Keep Alive`), so an idle connection cannot hold a slot forever.\n- A wrong token is not downgraded to anonymous when `FELIX_MQTT_ANONYMOUS_TENANT` is set; only a `CONNECT` without credentials is.\n- Revocation and expiry are enforced by waiting on the broker's revocation watch and a timer on the connection, not by polling. 5.0 `AUTH` refresh is not supported yet (AUTH is a protocol error).\n- A control plane that cannot be asked answers `CONNACK` 0x88/0x03 (retry) rather than \"bad credentials\".\n- A 5.0 client whose auth check outlasts the timeout gets `CONNACK` 0x88, never a `DISCONNECT` before a `CONNACK`. The TLS handshake and the auth check both end on shutdown, so unauthenticated peers cannot hold the drain.\n- `serving/auth.rs` gains a typed `CredentialRefused` (same message as before) so the listener can tell wrong credentials (0x86) from an unreachable control plane (0x88). QUIC and Kafka behave as before.\n- Settings that later slices own (inflight, queues, session cache, retained, publish timeout) are not in the env registry yet, because the registry check fails on a variable nothing reads.\n\n\nThe opus review's findings (bind-failure panic, credential classification, anonymous downgrade with a password, DISCONNECT before CONNACK, drain, log level, docs) are fixed in 76652fdc7 with tests. `felix-mqtt` is classified AGPL-3.0-only and unpublished in LICENSING.md and `check_publish_metadata.py`. The commit carries the `Spec-Unaffected` trailer.",
+          "timestamp": "2026-11-02T02:40:18-08:00",
+          "tree_id": "7695f5a49d1272bcb545bdb62de7857f68ca1960",
+          "url": "https://github.com/GetFelix/felix/commit/c8d7934904c39eb92b74dcf772478cfe46f3e043"
+        },
+        "date": 1793616443785,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 416938.35,
+            "range": "19776.79",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 416938.35\nmean: 416992.94\nstdev: 19776.79\ncv: 4.74%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 416938.35,
+            "range": "19776.79",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 416938.35\nmean: 416992.94\nstdev: 19776.79\ncv: 4.74%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 92518.21,
+            "range": "822.49",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 92518.21\nmean: 92355.21\nstdev: 822.49\ncv: 0.89%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 925182.09,
+            "range": "8224.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 925182.09\nmean: 923552.08\nstdev: 8224.89\ncv: 0.89%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
