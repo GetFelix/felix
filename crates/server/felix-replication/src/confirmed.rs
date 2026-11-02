@@ -132,8 +132,10 @@ struct Slot {
     /// Whether the last request found no fresh answer, so its retry is
     /// owed one.
     owed: AtomicBool,
-    /// Nanoseconds between the longest-spaced pair of refused requests in a
-    /// row, so a retry that came late once is waited for longer next time.
+    /// The longest gap seen between a request found owed and the request
+    /// before it, in nanoseconds, so a retry that came late once is waited
+    /// for longer next time. Kept across answers: it only lengthens the wait
+    /// while a retry is owed.
     late: AtomicU64,
     /// Whether a routing change asked for the read and no request has come
     /// yet. Such a slot is kept fresh only for [`WANTED_FOR`], so reads for
@@ -208,12 +210,13 @@ impl ConfirmedReads {
         }
         if owed != decided.is_none() {
             slot.owed.store(decided.is_none(), Ordering::Relaxed);
-            if decided.is_some() {
-                slot.late.store(0, Ordering::Relaxed);
-            }
-        } else if owed && since_refused > slot.late.load(Ordering::Relaxed) {
+        } else if owed
+            && since_refused <= nanos(MAX_OWED_FOR)
+            && since_refused > slot.late.load(Ordering::Relaxed)
+        {
             // Refused again: this retry came `since_refused` after the last
-            // refusal, too late for the window it had.
+            // request, too late for the window it had. A gap no window can
+            // cover would only add reads.
             slot.late.store(since_refused, Ordering::Relaxed);
         }
         if decided.is_none() && !spawned {

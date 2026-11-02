@@ -842,8 +842,9 @@ shorter, a retry would find a stale answer, be refused again and start
 another read, every time, and a move onto the copy would never finish.
 A retry can still come later than that, for example when the leader's
 fences queue behind others during a bulk failover. If a refused retry is
-refused again, the next wait grows to twice the time between the two
-refusals, up to 60 s, so the retry after it finds the answer.
+refused again, later waits for that shard grow to twice the longest such
+gap, up to 60 s, so the next retry finds the answer. A retry more than
+60 s after the last request is still refused.
 
 Usually there is no refusal at all. When this broker's assignments first
 name it a follower of a shard, as a move's destination or a follower just added,

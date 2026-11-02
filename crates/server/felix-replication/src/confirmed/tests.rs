@@ -138,6 +138,15 @@ async fn a_retry_that_came_late_is_waited_for_longer() {
         !refused(&reads),
         "a retry as late as the last one was refused again"
     );
+    // The leader went quiet long enough for the answer to lapse. Its next
+    // refused request is still waited for as long.
+    tokio::time::sleep(Duration::from_secs(8)).await;
+    assert!(refused(&reads), "the answer outlived its window");
+    tokio::time::sleep(Duration::from_secs(8)).await;
+    assert!(
+        !refused(&reads),
+        "the longer wait was lost once a request was answered"
+    );
 }
 
 /// **A routing change naming a copy keeps a refused retry's longer
