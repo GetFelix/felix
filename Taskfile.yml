@@ -550,6 +550,14 @@ tasks:
           mkdir -p corpus/{{.ITEM}} &&
           cargo +nightly fuzz run {{.ITEM}} corpus/{{.ITEM}} seeds/{{.ITEM}}
           -- -max_total_time={{.SECONDS}}
+      # MQTT over WebSockets: the upgrade request and frames from anything that
+      # can reach the WebSocket port.
+      - for: ["ws_frames"]
+        cmd: >
+          cd crates/server/felix-mqtt/fuzz &&
+          mkdir -p corpus/{{.ITEM}} &&
+          cargo +nightly fuzz run {{.ITEM}} corpus/{{.ITEM}} seeds/{{.ITEM}}
+          -- -max_total_time={{.SECONDS}}
       # The Kafka listener's record-batch decoder: bytes from any Kafka client.
       - for: ["kafka_records", "kafka_request"]
         cmd: >

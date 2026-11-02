@@ -89,6 +89,7 @@ async fn a_connection_flood_does_not_slow_quic_publishes() -> Result<()> {
             max_connections_per_ip: 0,
             connect_rate: 0,
             settings: Settings::default(),
+            ws: None,
         },
         None,
         Arc::new(BrokerMqttAuth::new(Arc::clone(&demo.auth))),

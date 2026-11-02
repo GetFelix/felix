@@ -9,6 +9,7 @@ fn commit(payload: &'static str) -> AppendRecord {
         timestamp_micros: 1,
         mark: RecordMark::Commit,
         publisher: None,
+        headers: None,
     }
 }
 
@@ -25,6 +26,7 @@ async fn a_commit_is_never_written_into_a_v4_segment() {
         timestamp_micros: 1,
         mark: RecordMark::GenerationStart,
         publisher: None,
+        headers: None,
     }])
     .await
     .expect("append");

@@ -335,6 +335,7 @@ pub fn cancel_move(catalog: &Catalog<'_>, key: &ShardKey) -> Result<OperatorStep
                 generation: 0,
                 fence_storage_ids: Default::default(),
                 member_storage_ids: Default::default(),
+                learners: Default::default(),
                 ..existing.clone()
             },
             expected_generation: existing.generation,
@@ -621,9 +622,30 @@ pub(super) async fn write_operator_step(
     let decided = &fenced.step;
     let key = &decided.assignment.key;
     let mut assignment = decided.assignment.clone();
-    assignment.name_member_storage(&super::reconciler::registered_storage(
-        &store.list_nodes().await?,
-    ));
+    // No report is read here, so a learner stays one until a placement write
+    // sees its leader's report admit it.
+    let previous = match store
+        .enabled_fleet_features()
+        .await?
+        .contains(felix_common::fleet::JOINT_FENCE.name())
+    {
+        // A failed read must not stand in for "no shard yet": naming members
+        // without the previous set would drop its learners.
+        true => match store.get_shard_assignment(key).await {
+            Ok(previous) => Some(previous),
+            Err(crate::store::StoreError::NotFound(_)) => None,
+            Err(err) => return Err(err),
+        },
+        false => None,
+    };
+    let admitted = std::collections::BTreeSet::new();
+    assignment.name_members(
+        &super::reconciler::registered_storage(&store.list_nodes().await?),
+        previous.as_ref().map(|previous| crate::model::Learning {
+            previous,
+            admitted: &admitted,
+        }),
+    );
     match store
         .put_shard_assignment_if(assignment, Some(decided.expected_generation), fenced.fence)
         .await?

@@ -14,6 +14,7 @@ fn trim(floor: Offset, headers: &'static str) -> AppendRecord {
         timestamp_micros: 1,
         mark: RecordMark::Trim { floor },
         publisher: None,
+        headers: None,
     }
 }
 

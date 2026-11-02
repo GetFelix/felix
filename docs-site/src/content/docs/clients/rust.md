@@ -777,7 +777,7 @@ A broker without error codes gets the old handling: only a credential failure
 is final, and everything else is retried. The full table is under "Retries" in
 [the multi-node client guide](https://github.com/GetFelix/felix/blob/main/docs/multi-node-client.md#retries).
 
-`SubscribeCursorError` carries more than the other clients get:
+`SubscribeCursorError` says where a refused reader can resume:
 
 ```rust
 use felix_client::{StartPosition, SubscribeCursorError};

@@ -218,6 +218,7 @@ impl LogCache {
                             timestamp_micros: now_millis() * 1000,
                             mark: Default::default(),
                             publisher: None,
+                            headers: None,
                         }],
                         &shard.sequencer,
                     )
@@ -515,6 +516,7 @@ impl LogCache {
                             timestamp_micros: now_millis() * 1000,
                             mark: Default::default(),
                             publisher: None,
+                            headers: None,
                         }],
                         &shard.sequencer,
                     )

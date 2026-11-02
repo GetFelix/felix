@@ -133,3 +133,33 @@ test("a trim the client would not send is a TrimError", () => {
   assert.equal(err.kind, "FELIX_TRIM");
   assert.equal(err.retryable, false);
 });
+
+test("a cursor error carries where to resume and the trim's headers", () => {
+  const trimmed = errors.typed(
+    native(
+      'FELIX_CURSOR {"available":"18446744073709551615","requested":"3","reason":"too_old","trim_headers":"77686f"}\noffset 3 is no longer retained',
+    ),
+  );
+  assert.ok(trimmed instanceof errors.CursorError);
+  assert.equal(trimmed.reason, "too_old");
+  assert.equal(trimmed.requested, 3n);
+  assert.equal(trimmed.available, 2n ** 64n - 1n);
+  assert.deepEqual(trimmed.trimHeaders, Buffer.from("who"));
+  assert.equal(trimmed.retryable, false);
+
+  // A floor retention set carries no headers, and an empty trim header is not absent.
+  const retained = errors.typed(
+    native('FELIX_CURSOR {"available":"9","requested":"20","reason":"in_future"}\nx'),
+  );
+  assert.equal(retained.reason, "in_future");
+  assert.equal(retained.trimHeaders, undefined);
+  const empty = errors.typed(
+    native('FELIX_CURSOR {"available":"9","requested":"1","reason":"too_old","trim_headers":""}\nx'),
+  );
+  assert.equal(empty.trimHeaders.length, 0);
+
+  // An older native layer sends the bare prefix; the class still holds.
+  const bare = errors.typed(native("FELIX_CURSOR: offset trimmed"));
+  assert.ok(bare instanceof errors.CursorError);
+  assert.equal(bare.available, undefined);
+});

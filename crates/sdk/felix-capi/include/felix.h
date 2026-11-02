@@ -7,6 +7,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
+// The offset was discarded by retention or a head trim.
+#define FELIX_CURSOR_TOO_OLD 0
+
+// The offset is past the end of the stream.
+#define FELIX_CURSOR_IN_FUTURE 1
+
 // A live cache watch, single or sharded.
 //
 // One read may be pending at a time. It must not be freed while another
@@ -316,6 +322,27 @@ typedef void (*FelixStateCallback)(void *user_data,
                                    FelixStatus status,
                                    const char *message,
                                    const struct FelixStateValue *state);
+
+// Why a subscription start was refused, for the thread that sees
+// `FELIX_STATUS_CURSOR`. See `felix_last_cursor_error`.
+typedef struct FelixCursorError {
+  // `FELIX_CURSOR_TOO_OLD` or `FELIX_CURSOR_IN_FUTURE`.
+  uint32_t reason;
+  // The offset that was asked for.
+  uint64_t requested;
+  // The nearest offset that would have worked: the oldest retained for
+  // `FELIX_CURSOR_TOO_OLD`, the tail for `FELIX_CURSOR_IN_FUTURE`.
+  uint64_t available;
+  // Whether the floor is a head trim's, so `trim_headers` is meaningful. A
+  // trim written with no headers has this set and a zero length.
+  bool has_trim_headers;
+  // The headers the head trim was written with, `trim_headers_len` bytes.
+  // Null when `has_trim_headers` is false. Owned by the library, valid as
+  // long as the message from `felix_last_error_message` is: until the next
+  // Felix call on the thread, or until the callback returns.
+  const uint8_t *trim_headers;
+  size_t trim_headers_len;
+} FelixCursorError;
 
 // One record handed to a consumer by `felix_client_group_poll`.
 typedef struct FelixGroupRecord {
@@ -1359,6 +1386,21 @@ FelixStatus felix_client_state_get_on_shard(const struct FelixClient *client,
                                             const struct FelixCancelToken *cancel,
                                             FelixStateCallback callback,
                                             void *user_data);
+
+// Fill `out` with why the last call on this thread failed with
+// `FELIX_STATUS_CURSOR`, and return true. Returns false, leaving `out`
+// untouched, when the last call did not fail that way.
+//
+// Call it where the status is seen: right after a call that returned
+// `FELIX_STATUS_CURSOR`, or inside the callback that received it. Anywhere
+// else, such as another thread, there is nothing to read. `out`'s
+// `trim_headers` is valid until the next Felix call on the thread, or until
+// the callback returns; copy it to keep it.
+//
+// # Safety
+//
+// `out` is null or valid for a write of a `FelixCursorError`.
+bool felix_last_cursor_error(struct FelixCursorError *out);
 
 // The message for the last call on this thread that did not return
 // `FELIX_STATUS_OK`, or null if that call succeeded.

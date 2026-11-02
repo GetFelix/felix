@@ -290,10 +290,12 @@ fn plan_once(
     // Fair share of leadership, cluster-wide; each stream's own share is
     // worked out per shard below. Leaders only: that is the load a client
     // feels.
-    let leader_share = if eligible.is_empty() {
-        u32::MAX
+    let (leader_floor, leader_share) = if eligible.is_empty() {
+        (u32::MAX, u32::MAX)
     } else {
-        (keys.len() as u32).div_ceil(eligible.len() as u32).max(1)
+        let nodes = eligible.len() as u32;
+        let shards = keys.len() as u32;
+        (shards / nodes, shards.div_ceil(nodes).max(1))
     };
 
     // Brokers started together register moments apart, and a shard placed
@@ -317,6 +319,7 @@ fn plan_once(
         .collect();
     let unpaced_max = policy.fence_max_lag_records;
     let (replica_election, fenced_caches) = (policy.replica_election, policy.fenced_caches);
+    let joint_fence = policy.joint_fence;
     let election_hold = policy.election_hold_millis;
     let mut moves = Moves::counting(existing, policy, &|assignment| {
         let replication_factor = placeable_of
@@ -344,13 +347,20 @@ fn plan_once(
     // Among shards whose last move was given up, the one that last had a slot
     // longest ago goes first, so two that keep failing take turns. Stable, so
     // key order breaks the remaining ties.
+    //
+    // Among shards with nothing to repair, streams go before caches. The
+    // first over-share shard planned is the one that moves for the totals,
+    // and by name that is often a cache, which every client of it waits on
+    // while it is fenced. A cache's own spread, zone and trim moves also
+    // wait behind the streams' for a slot; none of them is urgent.
     keys.sort_by_cached_key(|key| {
         let class = class(key);
         let retried = current
             .get(key)
             .filter(|_| class >= RETRIED)
             .and_then(|existing| existing.move_started_at_millis);
-        (class, retried)
+        let cache_last = class == BALANCE && key.kind == ShardKind::Cache;
+        (class, retried, cache_last)
     });
 
     let is_empty_cluster = eligible.is_empty();
@@ -385,6 +395,7 @@ fn plan_once(
         let is_live = |id: &str| is_live(id) && allowed(id);
         let is_draining = |id: &str| is_draining(id) || (!allowed(id) && is_serving(id));
         let shares = Shares::new(
+            leader_floor,
             leader_share,
             placeable.map_or(1, |p| p.shards),
             eligible.len(),
@@ -430,6 +441,10 @@ fn plan_once(
             && !deposed
             && !replaced
         {
+            if let Some(decision) = readmit(existing, joint_fence, &is_live, caught_up) {
+                shards.push(ShardPlan { key, decision });
+                continue;
+            }
             let is_lost = |id: &str| is_lost(id) || is_halted_lost(existing, id);
             let decision = move_step(
                 &key,
@@ -637,6 +652,51 @@ fn plan_once(
     )
 }
 
+/// Re-admit a member whose storage was replaced, once its leader reports it
+/// caught up under its new identity: the same set is written at the next
+/// generation, which names the new identity and holds the member as a
+/// learner until it shows that generation's start record. Only for a shard
+/// with a live leader and nothing else in progress, and one member per pass.
+fn readmit(
+    existing: &ShardAssignment,
+    joint_fence: bool,
+    is_live: &dyn Fn(&str) -> bool,
+    caught_up: &dyn CaughtUp,
+) -> Option<Decision> {
+    if !joint_fence
+        || existing.state == ShardState::Draining
+        || existing.successor.is_some()
+        || existing.joining.is_some()
+        || existing.pending_set.is_some()
+        || !is_live(&existing.leader)
+    {
+        return None;
+    }
+    let node = caught_up.readmittable(&existing.key, existing.generation, &existing.leader)?;
+    // The new generation serves once a majority of the set takes it, and the
+    // learner is not one of them: without a live majority of the rest, a
+    // shard still serving at this generation would stop. Members already in
+    // `learners` are counted too, though they do not ack. That can only start
+    // a re-admission the brokers then wait on; the fence, not this count,
+    // decides whether the new generation serves.
+    let set: Vec<&String> = existing.nodes().collect();
+    let live_rest = set
+        .iter()
+        .filter(|member| ***member != node && is_live(member))
+        .count();
+    if live_rest < set.len() / 2 + 1 {
+        return None;
+    }
+    Some(Decision::Move(
+        MoveStep::Readmit { node },
+        ShardAssignment {
+            generation: 0,
+            fence_storage_ids: Default::default(),
+            ..existing.clone()
+        },
+    ))
+}
+
 /// Who leads `assignment` once the move in flight completes: a live staged
 /// successor, else the leader.
 fn will_lead<'a>(assignment: &'a ShardAssignment, is_live: &dyn Fn(&str) -> bool) -> &'a str {
@@ -692,6 +752,7 @@ pub fn assignment_for(key: &ShardKey, leader: &str, replicas: Vec<String>) -> Sh
         incarnation: 0,
         fence_storage_ids: Default::default(),
         member_storage_ids: Default::default(),
+        learners: Default::default(),
         pending_set: None,
     }
 }
@@ -830,6 +891,10 @@ fn left_unconfirmed<'a>(
         .collect()
 }
 
+/// The class in [`start_order`] of a shard with nothing to repair, which
+/// moves only for balance.
+const BALANCE: u8 = 2;
+
 /// Added to a shard's class in [`start_order`] while its last move's start
 /// is still recorded: one that was given up.
 const RETRIED: u8 = 3;
@@ -863,7 +928,7 @@ fn start_order(
     {
         1
     } else {
-        2
+        BALANCE
     };
     if existing.move_started_at_millis.is_some() {
         class + RETRIED

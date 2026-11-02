@@ -1431,8 +1431,11 @@ one. A broker the restore skipped starts with an empty data directory.
 
 `felix-broker inspect segments <data-dir>` reports, read-only, without starting a broker, every shard's
 segments, whether their records and indexes verify, and what startup would do
-with each one. See "A broker will not start" in the docs site's
-`deployment/diagnosing.md`.
+with each one. `felix-broker inspect records <data-dir> <tenant/namespace/name/shard> --offset N`
+decodes the records around one offset: read-only, seeking with the sparse index (checked, not
+trusted), and stopping at the first record that does not verify. It runs the same recovery plan
+to tell a torn tail from damage and to leave out a rollover's leftover segments. See "A broker
+will not start" in the docs site's `deployment/diagnosing.md`.
 
 ```sh
 # Write, then verify what survived.
@@ -1569,9 +1572,8 @@ Storage stores trim records, applies their floor, deletes below it and
 rebuilds it at open. The broker's call, `Broker::trim_before_at`, puts every
 reader on the readable base (see [The broker](#the-broker)), replication
 ships the record, and a client sends it as `trim_before` behind the
-`stream.trim` grant (see [The call](#the-call)). The Rust client
-(`Client::trim_before`) and `felixctl stream trim` send it; the other client
-libraries do not yet.
+`stream.trim` grant (see [The call](#the-call)). The Rust, Python,
+TypeScript, C and C# clients (`trim_before`) and `felixctl stream trim` send it.
 
 The trim is a log record (`RecordMark::Trim`) that carries the exact `before`
 the client asked for and the caller's headers. The broker is to append it

@@ -215,6 +215,7 @@ fn given_up_report(
         // Every follower answered the probe, so each is named by its answer.
         inherited_storage: Vec::new(),
         joint_start_acked: None,
+        holds_start: Vec::new(),
     }
 }
 

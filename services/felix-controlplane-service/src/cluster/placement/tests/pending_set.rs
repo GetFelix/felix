@@ -119,6 +119,7 @@ pub(super) async fn report(
                 given_up: false,
                 inherited_storage: Default::default(),
                 joint_start_acked,
+                holds_start: Default::default(),
             },
             &assignment.leader,
         )

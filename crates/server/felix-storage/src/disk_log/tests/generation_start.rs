@@ -9,6 +9,7 @@ fn generation_start(generation: u64) -> AppendRecord {
         timestamp_micros: 1,
         mark: RecordMark::GenerationStart,
         publisher: None,
+        headers: None,
     }
 }
 

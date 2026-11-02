@@ -33,13 +33,14 @@ placement pass would do with each shard and why it is waiting.
 `felix-broker inspect segments` reads a broker's data directory from disk,
 without starting a broker: every shard's segments, whether their records and indexes
 verify, and what startup would do with each shard. It is the tool for a broker
-that will not start.
+that will not start. `felix-broker inspect records` then decodes the records
+around one offset of one shard, so you can see what sits at the position
+`inspect segments` named. Both are read-only.
 
 More `felixctl inspect` commands are coming
 ([#1077](https://github.com/GetFelix/felix/issues/1077)): `inspect conns` for
 connections, `inspect decisions` for the control plane's placement decisions,
-`inspect records` for the records of a data directory decoded offline, and
-`inspect record` for which replicas hold one offset.
+and `inspect record` for which replicas hold one offset.
 
 ## A shard is not serving, or refuses writes
 
@@ -576,6 +577,77 @@ A checksum failure on the very last record of the newest segment counts as
 damage, not a torn tail, unless `FELIX_DURABLE_REPAIR_CHECKSUM_TAIL` is `true`.
 The header verified, so the record is complete and may have been acknowledged.
 That setting is defensible with `FsyncMode::None` and not with `OnCommit`.
+
+**Looking at the records around the damage.** `inspect segments` says where a
+segment stops verifying, as a segment and a byte. `felix-broker inspect records`
+decodes the records near an offset of one shard, so you can see which records
+are readable, what they hold, and where the first bad one sits. Reach the data
+directory the same ways as above, and give it the directory, the shard as
+`TENANT/NAMESPACE/NAME/SHARD`, and either an offset to look at or `--damage`,
+which reads the shard from its start and centres the window on the first record
+that fails:
+
+```bash
+felix-broker inspect records /var/lib/felix/data acme/default/orders/3 --damage --around 3
+```
+
+```
+   OFFSET  TIME                         KIND   PAYLOAD BYTES  SEGMENT  BYTE  CHECKSUM
+   57      2026-11-02T10:40:10.303560Z  plain  64             1        1228  ok
+   58      2026-11-02T10:40:10.303567Z  plain  64             1        1320  ok
+   59      2026-11-02T10:40:10.303576Z  plain  64             1        1412  ok
+*  60      -                            -      -              1        1504  FAIL: record checksum mismatch (expected 0x327fca07, found 0xae7bc095)
+```
+
+The failing row is in the segment and at the byte `inspect segments` printed
+(`segment 1 at byte 1504`), and it names the offset the record should have. The
+notes below the table (on stderr) say that startup would refuse the shard and
+repeat where the read stopped. Once you know the offset, `--offset 60` looks
+at the same place without reading the whole shard first. On a shard where every
+record verifies, `--damage` prints nothing on stdout, says "every record in the
+shard verifies" on stderr, and exits 0.
+
+The command seeks with the segment's sparse index and then decodes forward, up
+to `--around` records on each side (10 by default, at most 1000, or at most 100
+with `--payload`). Each row is one record: its offset, the time the record
+carries, its kind, its payload size in bytes, and where it sits on disk. The
+kind is `plain` for an ordinary record, or `producer-batch-start`,
+`producer-batch-continue`, `generation-start`, `commit` or `trim (floor N)`. The
+row for the offset you asked for is starred. The payload is not shown unless
+you add `--payload`, which prints each as a hex dump with text beside it, cut at
+64 KiB. `--json` prints one line per record, with `payload_hex` and
+`payload_utf8` fields under `--payload`. Add `--kind` and `--incarnation` for a
+shard that is not a stream, or not at incarnation 0, as for `inspect segments`.
+
+A record that fails to verify ends the read, with the rows before it kept.
+Whether it is a torn tail or damage is startup's verdict, so it agrees with
+`inspect segments`: pass the same `--repair-checksum-tail`, `--index-spacing`
+and `--verify-all-on-open`. Segments startup would remove, such as the empty
+leftovers of an interrupted rollover, are not read. Records before the window
+are only walked by their headers. A read that starts after a record whose
+payload failed its checksum therefore gets past it, but a record whose header
+is damaged stops any read that has to cross it, because the header says how far
+to step to the next record.
+
+The exit status is 0 when the offset was read, 7 when a record in the range is
+damaged or an offset inside the log has no record, 6 when the read ended at a
+torn tail startup would cut, 5 when the offset is below the oldest segment on
+disk or past the end of the log (the message says where the log starts and
+ends) or the shard is not there, 2 for bad arguments and 1 for an I/O error.
+The status describes the range you asked for. When startup would refuse or
+repair the shard somewhere else, a note says so, and the status stays 0 if the
+range itself reads cleanly; `inspect segments` has the whole verdict.
+
+`inspect records` never writes. It opens every file read-only, creates no
+directory, and does not rebuild an index on disk or cut a torn tail. It does not
+trust an index file either: the record an index entry points at is checked
+before it is used, so a missing or stale one only makes the read slower (the
+active segment's index is often short, and a seek into it walks from the last
+entry it has). It is safe to run on the live volume. Next to a running broker,
+the last record of the active segment can be an append that has not finished.
+It shows as a torn tail, which is why the message says so, and retention can
+delete a segment while the command reads. It reads again once, and if the file
+is still gone it says so and asks you to run it again. Run it again, or on a copy, before reading much into it.
 
 **Likely causes.**
 

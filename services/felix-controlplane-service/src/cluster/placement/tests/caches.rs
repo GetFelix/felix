@@ -112,7 +112,8 @@ fn a_cache_does_not_score_identically_to_the_stream_it_shares_a_name_with() {
     );
 }
 
-/// Stream placement is pinned to what it was before caches were placed at all.
+/// Stream placement with no caches is pinned verbatim, and caches placed
+/// alongside leave each stream's spread as it was.
 ///
 /// These leaders were produced by the algorithm with each stream's leaders
 /// spread (3/2/3 and 1/2/2) and are asserted verbatim: the whole reason `score` leaves a stream's hash
@@ -121,7 +122,7 @@ fn a_cache_does_not_score_identically_to_the_stream_it_shares_a_name_with() {
 /// that -- both sides would move together -- so the expected values are
 /// written down. Hash the kind unconditionally in `score` and this fails.
 #[test]
-fn stream_placement_is_unchanged_by_cache_placement() {
+fn stream_placement_is_pinned_and_keeps_its_spread_beside_caches() {
     const GOLDEN: &[(&str, u32, &str)] = &[
         ("orders", 0, "broker-a"),
         ("orders", 1, "broker-b"),
@@ -134,8 +135,8 @@ fn stream_placement_is_unchanged_by_cache_placement() {
         ("payments", 0, "broker-c"),
         ("payments", 1, "broker-b"),
         ("payments", 2, "broker-a"),
-        ("payments", 3, "broker-c"),
-        ("payments", 4, "broker-b"),
+        ("payments", 3, "broker-b"),
+        ("payments", 4, "broker-c"),
     ];
 
     let streams = vec![stream("orders", 8), stream("payments", 5)];
@@ -151,7 +152,9 @@ fn stream_placement_is_unchanged_by_cache_placement() {
         "stream placement moved with no caches in play",
     );
 
-    // And placing caches alongside them moves nothing either.
+    // Cache leaders count toward the cluster's totals, so placing caches
+    // alongside may change which broker takes a stream's shard, but not how
+    // each stream's leaders spread.
     let alongside = placements_by_kind(&plan(
         &streams,
         &[cache("sessions", 6), cache("orders", 3)],
@@ -165,7 +168,22 @@ fn stream_placement_is_unchanged_by_cache_placement() {
         .map(|((_, name, shard), leader)| ((name, shard), leader))
         .collect();
 
-    assert_eq!(stream_placements, expected);
+    let spread = |placements: &BTreeMap<(String, u32), String>, name: &str| {
+        let mut counts = BTreeMap::new();
+        for ((stream, _), leader) in placements {
+            if stream == name {
+                *counts.entry(leader.clone()).or_insert(0) += 1;
+            }
+        }
+        counts
+    };
+    for name in ["orders", "payments"] {
+        assert_eq!(
+            spread(&stream_placements, name),
+            spread(&expected, name),
+            "{name}"
+        );
+    }
 }
 
 /// One pass over both, so a node's `max_shards` is a budget for everything it

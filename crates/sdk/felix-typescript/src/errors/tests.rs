@@ -192,3 +192,22 @@ fn a_trim_the_client_would_not_send_is_its_own_kind() {
         encode(&err)
     );
 }
+
+#[test]
+fn a_cursor_error_carries_where_to_resume() {
+    let err = anyhow::Error::new(felix_client::SubscribeCursorError {
+        reason: felix_wire::CursorErrorReason::TooOld,
+        requested: 3,
+        available: u64::MAX,
+        trim_headers: Some(bytes::Bytes::from_static(b"who")),
+    })
+    .context("subscribe to orders");
+    let encoded = encode(&err);
+    assert!(
+        encoded.starts_with(
+            r#"FELIX_CURSOR {"available":"18446744073709551615","reason":"too_old","requested":"3","trim_headers":"77686f"}"#
+        ),
+        "{encoded}"
+    );
+    assert!(encoded.contains("\nsubscribe to orders"), "{encoded}");
+}

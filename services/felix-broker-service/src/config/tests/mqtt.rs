@@ -90,3 +90,115 @@ fn a_bad_value_names_its_variable() {
         assert!(format!("{err:#}").contains(name), "{name}: {err:#}");
     }
 }
+
+#[test]
+fn the_websocket_listener_is_off_unless_its_address_is_set() {
+    let config = parse(&[("FELIX_MQTT_LISTEN", "127.0.0.1:8883")])
+        .expect("parse")
+        .expect("on");
+    assert_eq!(config.ws, None);
+}
+
+#[test]
+fn the_websocket_listener_has_defaults_and_takes_overrides() {
+    use felix_mqtt::ws::AllowedOrigins;
+
+    let config = parse(&[
+        ("FELIX_MQTT_LISTEN", "127.0.0.1:8883"),
+        ("FELIX_MQTT_WS_LISTEN", "127.0.0.1:8884"),
+    ])
+    .expect("parse")
+    .expect("on")
+    .ws
+    .expect("websocket on");
+    assert_eq!(config.listen.to_string(), "127.0.0.1:8884");
+    assert_eq!(config.settings.allowed_origins, AllowedOrigins::None);
+    assert_eq!(config.settings.max_header_bytes, 8 * 1024);
+    assert_eq!(config.settings.upgrade_timeout, Duration::from_secs(10));
+
+    let config = |origins: &str| {
+        parse(&[
+            ("FELIX_MQTT_LISTEN", "127.0.0.1:8883"),
+            ("FELIX_MQTT_WS_LISTEN", "127.0.0.1:8884"),
+            ("FELIX_MQTT_WS_ALLOWED_ORIGINS", origins),
+            ("FELIX_MQTT_WS_MAX_HEADER_BYTES", "2048"),
+            ("FELIX_MQTT_WS_UPGRADE_TIMEOUT_MS", "500"),
+        ])
+        .expect("parse")
+        .expect("on")
+        .ws
+        .expect("websocket on")
+    };
+    let listed = config("https://a.example, https://b.example ,");
+    assert_eq!(
+        listed.settings.allowed_origins,
+        AllowedOrigins::Only(vec!["https://a.example".into(), "https://b.example".into()])
+    );
+    assert_eq!(listed.settings.max_header_bytes, 2048);
+    assert_eq!(listed.settings.upgrade_timeout, Duration::from_millis(500));
+    assert_eq!(config("*").settings.allowed_origins, AllowedOrigins::Any);
+}
+
+#[test]
+fn allowed_origins_are_normalised_or_refused() {
+    use felix_mqtt::ws::AllowedOrigins;
+
+    let parse_origins = |origins: &str| {
+        parse(&[
+            ("FELIX_MQTT_LISTEN", "127.0.0.1:8883"),
+            ("FELIX_MQTT_WS_LISTEN", "127.0.0.1:8884"),
+            ("FELIX_MQTT_WS_ALLOWED_ORIGINS", origins),
+        ])
+    };
+    // What a browser sends has no default port, so these match it.
+    let config =
+        parse_origins("HTTPS://App.Example.com:443, http://dev.example:80, https://x.example:8443")
+            .expect("parse")
+            .expect("on")
+            .ws
+            .expect("websocket on");
+    assert_eq!(
+        config.settings.allowed_origins,
+        AllowedOrigins::Only(vec![
+            "https://app.example.com".into(),
+            "http://dev.example".into(),
+            "https://x.example:8443".into(),
+        ])
+    );
+    for bad in [
+        "app.example.com",
+        "https://app.example.com/",
+        "https://app.example.com/x",
+        "://x",
+        "https://",
+    ] {
+        let err = parse_origins(bad).unwrap_err();
+        assert!(
+            err.to_string().contains("FELIX_MQTT_WS_ALLOWED_ORIGINS"),
+            "{bad}: {err}"
+        );
+    }
+}
+
+#[test]
+fn the_websocket_listener_needs_the_mqtt_listener() {
+    let err = parse(&[("FELIX_MQTT_WS_LISTEN", "127.0.0.1:8884")]).unwrap_err();
+    assert!(err.to_string().contains("FELIX_MQTT_LISTEN"), "{err}");
+}
+
+#[test]
+fn bad_websocket_settings_name_the_variable() {
+    for (name, value) in [
+        ("FELIX_MQTT_WS_LISTEN", "nope"),
+        ("FELIX_MQTT_WS_MAX_HEADER_BYTES", "10"),
+        ("FELIX_MQTT_WS_UPGRADE_TIMEOUT_MS", "0"),
+    ] {
+        let vars = [
+            ("FELIX_MQTT_LISTEN", "127.0.0.1:8883"),
+            ("FELIX_MQTT_WS_LISTEN", "127.0.0.1:8884"),
+            (name, value),
+        ];
+        let err = parse(&vars).unwrap_err();
+        assert!(err.to_string().contains(name), "{name}: {err}");
+    }
+}

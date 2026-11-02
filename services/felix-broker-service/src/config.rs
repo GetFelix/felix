@@ -23,7 +23,7 @@ pub(crate) use env::quorum_reads_by_lease;
 pub use kafka::KafkaListenerConfig;
 pub use limits::{LimitsConfig, TenantQuota};
 pub use membership::MembershipConfig;
-pub use mqtt::MqttListenerConfig;
+pub use mqtt::{MqttListenerConfig, MqttWsConfig};
 pub use subscriber::{SubStreamMode, SubscriberLaneShard};
 pub use tls::{ClientTlsConfig, ClientTlsFiles};
 

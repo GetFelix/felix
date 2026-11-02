@@ -25,6 +25,7 @@ fn batch(prefix: &str, count: usize) -> Vec<AppendRecord> {
             timestamp_micros: 1,
             mark: Default::default(),
             publisher: None,
+            headers: None,
         })
         .collect()
 }

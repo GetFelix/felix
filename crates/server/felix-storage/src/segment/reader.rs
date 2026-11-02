@@ -9,7 +9,8 @@ use crate::io::read_at;
 use crate::log::{LogRecord, Offset, SegmentId};
 use crate::segment::cursor::SegmentCursor;
 use crate::segment::format::{
-    RECORD_HEADER_LEN, RecordHeader, RecordKind, SEGMENT_HEADER_LEN, SegmentHeader, decode_record,
+    RECORD_HEADER_LEN, RecordHeader, RecordKind, SEGMENT_HEADER_LEN, SegmentHeader,
+    decode_record_after,
 };
 use crate::segment::index::SparseIndex;
 use crate::{Corruption, Result, StorageError};
@@ -114,8 +115,10 @@ impl SegmentReader {
             // Records before the requested start, and trims the caller does
             // not want, are skipped by arithmetic alone: their payloads are
             // never even read.
+            if record_header.kind == RecordKind::Trim || record_header.has_headers {
+                self.check_version(&record_header, position, shard_label)?;
+            }
             if record_header.kind == RecordKind::Trim {
-                self.check_trim(&record_header, position, shard_label)?;
                 if budget.trims == TrimRecords::Skip {
                     position += total_len;
                     continue;
@@ -136,7 +139,7 @@ impl SegmentReader {
             }
 
             let record_slice = cursor.slice_at(position, total_len as usize)?;
-            let (decoded, _) = decode_record(record_slice).map_err(|err| {
+            let (decoded, _) = decode_record_after(record_header, record_slice).map_err(|err| {
                 StorageError::Corruption(err.in_segment(shard_label, self.id).at_position(position))
             })?;
 
@@ -148,6 +151,7 @@ impl SegmentReader {
                 payload: decoded.payload,
                 mark: decoded.mark,
                 publisher: decoded.publisher,
+                headers: decoded.headers.map(Box::new),
             });
             position += total_len;
         }
@@ -174,8 +178,8 @@ impl SegmentReader {
             let record_header = RecordHeader::decode(header_slice).map_err(|err| {
                 StorageError::Corruption(err.in_segment(shard_label, self.id).at_position(position))
             })?;
-            if record_header.kind == RecordKind::Trim {
-                self.check_trim(&record_header, position, shard_label)?;
+            if record_header.kind == RecordKind::Trim || record_header.has_headers {
+                self.check_version(&record_header, position, shard_label)?;
             }
             if record_header.offset >= offset {
                 return Ok(position);
@@ -185,12 +189,12 @@ impl SegmentReader {
         Ok(valid_bytes)
     }
 
-    /// Refuse a trim record in a segment older than v7, which no build
-    /// wrote. Recovery scans only the active segment, so a sealed one can
-    /// reach here unchecked.
+    /// Refuse a trim record in a segment older than v7, or headers in one
+    /// older than v8, which no build wrote. Recovery scans only the active
+    /// segment, so a sealed one can reach here unchecked.
     #[cold]
     #[inline(never)]
-    fn check_trim(&self, header: &RecordHeader, position: u64, shard_label: &str) -> Result<()> {
+    fn check_version(&self, header: &RecordHeader, position: u64, shard_label: &str) -> Result<()> {
         let annotate = |err: Corruption, at: u64| {
             StorageError::Corruption(err.in_segment(shard_label, self.id).at_position(at))
         };
