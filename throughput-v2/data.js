@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793624621567,
+  "lastUpdate": 1793625485229,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -42120,6 +42120,58 @@ window.BENCHMARK_DATA = {
             "range": "1785.84",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 824692.36\nmean: 824077.91\nstdev: 1785.84\ncv: 0.22%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "86e5e7c5247d473eeda6a41483a65bd2a6af2559",
+          "message": "feat(sdk): cursor errors carry the floor and the trim's headers in every binding (#1684) (#1765)\n\nCloses #1684.\n\nA reader refused with a cursor error now learns where to resume and, below a head trim's floor, what the trim said. The Rust client already did; the C ABI, C#, Python and TypeScript bindings did not.\n\n- C ABI: `felix_last_cursor_error(FelixCursorError *out) -> bool`. The status stays `FELIX_STATUS_CURSOR`. The details are the calling thread's, readable inside the callback that received the status or right after a sync call that returned it, and cleared after. No existing callback signature changes. `felix.h` regenerated.\n- C#: `FelixException.Cursor` (`CursorDetails`: `Reason`, `Requested`, `Available`, `TrimHeaders`), read from the native slot where the exception is built.\n- Python: `CursorError.reason`, `.requested`, `.available`, `.trim_headers` (class-level `None` defaults, stubs updated).\n- TypeScript: `CursorError.reason`, `.requested`/`.available` (bigint), `.trimHeaders` (Buffer).\n- No wire change: the frames already carried the fields; only the bindings dropped them.\n\nTests: Rust unit tests per binding (C ABI sync and callback paths, Python classify, TS encode, TS errors.js decoding), plus the existing `head_trim.*` conformance scenarios in Python, TypeScript, C# and C now assert reason, requested, available and the trim headers on a read or subscribe below the floor (these run in the conformance CI jobs, not locally). Reverting the C ABI extraction fails both new C ABI tests. `felix-capi` doc examples (compiled C block), header check, `check_csharp_bindings`, and the docs checks pass; the Felix.Client library compiles. The C# test project could not restore NuGet here, so its test run is left to CI.\n\nDocs: the four client pages (an explanation with a compiled/checked example each), the status codes table, durable-storage.md (it said the other clients cannot trim), and the head trim status row moves from Partial to Today, since the only gap it named was this one. Changelog fragment.\n\nDesign calls:\n- Out-of-band thread-local accessor for C rather than a new callback parameter, so every existing callback and every binding stays source and ABI compatible.\n- TypeScript offsets travel as strings and trim headers as hex in the internal error prefix, as publish refusals already do for offsets; `errors.js` turns them into bigints and a Buffer.\n- `trim_headers` distinguishes absent (retention floor) from empty (a trim written with no headers): `has_trim_headers` in C, `None`/`undefined`/null elsewhere.",
+          "timestamp": "2026-11-02T04:56:16-08:00",
+          "tree_id": "7766c501de4ed79f1238a2cb3c23811e895af23d",
+          "url": "https://github.com/GetFelix/felix/commit/86e5e7c5247d473eeda6a41483a65bd2a6af2559"
+        },
+        "date": 1793625484630,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 364483.28,
+            "range": "12897.19",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 364483.28\nmean: 364116.11\nstdev: 12897.19\ncv: 3.54%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 364483.28,
+            "range": "12897.19",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 364483.28\nmean: 364116.11\nstdev: 12897.19\ncv: 3.54%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 85186.04,
+            "range": "423.54",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 85186.04\nmean: 84942.62\nstdev: 423.54\ncv: 0.50%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 851860.45,
+            "range": "4235.39",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 851860.45\nmean: 849426.18\nstdev: 4235.39\ncv: 0.50%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
