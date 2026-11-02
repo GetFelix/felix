@@ -533,6 +533,34 @@ async fn a_replaced_storage_id_votes_at_creation() {
     assert_eq!(log.member_is_learner(LOCAL), Some(false));
 }
 
+/// **A replaced copy is a learner in a generation-1 set that names no ids.**
+/// A shard created before sets named member ids keeps such a set until a
+/// placement writes another, so the set says nothing of when the shard was
+/// created: the copy may have held it under its old id. From a fence and
+/// from a batch alike (`Forget` marks whatever the generation in
+/// `docs/formal/FelixShard.tla`).
+#[tokio::test]
+async fn a_replaced_copy_is_a_learner_in_an_idless_creation_set() {
+    let (broker, _dir) = broker_with_storage().await;
+    let fenced = handler(&broker, 1, OWN).with_replaced_storage(true);
+    let answer = fenced
+        .fence(SENDER, fence_with(1, named(1, None), None, false))
+        .await;
+    assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized, "{answer:?}");
+    assert_eq!(log_of(&broker).await.member_is_learner(LOCAL), Some(true));
+
+    let (broker, _dir) = broker_with_storage().await;
+    let shipped = handler(&broker, 1, OWN).with_replaced_storage(true);
+    let answer = shipped
+        .apply(SENDER, stamped(1, 0, &["a"]), felix_broker::LogKind::Stream)
+        .await;
+    assert!(
+        !matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    assert_eq!(log_of(&broker).await.member_is_learner(LOCAL), Some(true));
+}
+
 /// **A broker new to the control plane votes.** Its storage id is as new as
 /// a wiped one's, but it held nothing under another id: a set past
 /// generation 1 naming it, as a swap that adds it writes, is answered.
@@ -834,11 +862,60 @@ async fn a_copy_with_no_promise_refuses_a_generation_newer_than_the_control_plan
     let answer = on.fence(SENDER, plain.clone()).await;
     assert_eq!(refusal(&answer).code, ErrorCode::StaleRoute);
 
+    let unready = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 6))
+        .with_fleet(Arc::new(build_marks(true)))
+        .with_confirmed_routes(Arc::clone(&confirmed) as _);
+    let answer = unready.fence(SENDER, plain.clone()).await;
+    assert!(
+        matches!(answer, InternalMessage::FenceOk(_)),
+        "a build that does not mark wiped copies answers as before: {answer:?}"
+    );
+
+    let (broker, _dir) = broker_with_storage().await;
     let off = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 6))
         .with_fleet(marks(false))
         .with_confirmed_routes(confirmed as _);
     let answer = off.fence(SENDER, plain).await;
     assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
+}
+
+/// The control plane answering what a test last set.
+struct Moving(parking_lot::Mutex<Confirmed>);
+
+#[async_trait::async_trait]
+impl crate::confirmed::ConfirmedRoutes for Moving {
+    async fn confirmed(&self, _key: &felix_router::ShardKey) -> Confirmed {
+        self.0.lock().clone()
+    }
+}
+
+/// **A build that does not mark wiped copies reads the control plane live**,
+/// as it did before the confirmed cache: a leader deposed a moment ago is
+/// refused, though a read at its generation named it.
+#[tokio::test]
+async fn before_the_build_allows_it_confirmed_reads_are_not_cached() {
+    let (broker, _dir) = broker_with_storage().await;
+    let confirmed = Arc::new(Moving(parking_lot::Mutex::new(Confirmed::Assigned {
+        generation: 6,
+        leader: "broker-a".to_string(),
+    })));
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5))
+        .with_fleet(Arc::new(build_marks(true)))
+        .with_confirmed_routes(Arc::clone(&confirmed) as _);
+    let plain = Fence {
+        election: None,
+        ..fence_with(6, set(5, OWN), None, false)
+    };
+    let answer = handler.fence(Some("broker-z"), plain.clone()).await;
+    assert_eq!(refusal(&answer).code, ErrorCode::FencedEpoch, "{answer:?}");
+
+    *confirmed.0.lock() = Confirmed::Assigned {
+        generation: 7,
+        leader: "broker-c".to_string(),
+    };
+    let answer = handler.fence(SENDER, plain).await;
+    assert_eq!(refusal(&answer).code, ErrorCode::FencedEpoch, "{answer:?}");
+    assert_eq!(log_of(&broker).await.accepted_generation(), 0);
 }
 
 /// A routing view behind the fence's generation is usual for a fence, so

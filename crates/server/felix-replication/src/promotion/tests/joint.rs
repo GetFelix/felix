@@ -302,6 +302,55 @@ async fn a_copy_marked_on_the_replaced_marker_does_not_lead() {
     assert!(replicas.sent(Kind::ElectionFence).is_empty(), "fenced");
 }
 
+/// **A copy with no set on a replaced directory leads generation 1 only when
+/// the route names its storage id**: then the shard was created after the
+/// wipe. A route naming no ids may be a shard older than member ids, which
+/// this copy may have held and lost.
+#[tokio::test]
+async fn a_setless_replaced_copy_leads_creation_only_under_its_own_id() {
+    let replicas = replicas_with(&["broker-x", "broker-z"]);
+    let own = StorageId::from_bytes([7; 16]);
+    let addr_of = addr_of;
+    let joint = Joint::new(&addr_of, None)
+        .with_local_storage(Some(own))
+        .with_replaced_storage(true);
+    let created = |ids: Option<&[(&str, StorageId)]>| Route {
+        generation: 1,
+        member_storage_ids: ids.map(|ids| {
+            Arc::new(
+                ids.iter()
+                    .map(|(node, id)| (node.to_string(), id.to_hex()))
+                    .collect(),
+            )
+        }),
+        ..swapped()
+    };
+    let dir = tempfile::tempdir().expect("tempdir");
+    let leader = broker_on(dir.path());
+    let fence_at = |route: Route| {
+        let (replicas, leader, joint) = (&replicas, &leader, &joint);
+        async move { fence_shard(replicas, leader, LEADER, &key(), &route, false, Some(joint)).await }
+    };
+
+    let outcome = fence_at(created(None)).await;
+    let Outcome::Pending { why, .. } = &outcome else {
+        panic!("a copy with no set led an id-less creation: {outcome:?}");
+    };
+    assert!(why.contains("learner"), "{why}");
+    assert!(replicas.sent(Kind::ElectionFence).is_empty(), "fenced");
+
+    let ids = [
+        (LEADER, own),
+        ("broker-x", storage_of("broker-x")),
+        ("broker-z", storage_of("broker-z")),
+    ];
+    let outcome = fence_at(created(Some(&ids))).await;
+    assert!(
+        !matches!(&outcome, Outcome::Pending { why, .. } if why.contains("learner")),
+        "{outcome:?}"
+    );
+}
+
 /// **Without `joint_fence` the fence is the one it always was**, set change
 /// or not: the new set's majority opens it, and nothing it sends names the
 /// set being left.

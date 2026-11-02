@@ -225,9 +225,7 @@ pub async fn fence_shard<R: PeerRequester>(
             // what it held; a staged destination is a learner too, and may lead. Leading
             // would also replace that set with the route's and clear the mark.
             if set.is_some()
-                && joint.is_some_and(|joint| {
-                    joint.is_wiped_learner(&log, local_node_id, route.generation)
-                })
+                && joint.is_some_and(|joint| joint.is_wiped_learner(&log, local_node_id, route))
             {
                 return Err(Outcome::pending(
                     format!(
@@ -544,7 +542,8 @@ struct GroupRound {
 ///
 /// Without `own_counts` this broker's copy is marked wiped, and its group
 /// logs may lack what a majority acknowledged, so they do not count toward
-/// the majority; short of one, the furthest answer still beats them.
+/// the majority; short of one, the furthest answer still beats them, and
+/// with no answer at all the shard stays pending rather than serve them.
 async fn fence_groups<R: PeerRequester>(
     requester: &R,
     broker: &Arc<Broker>,
@@ -645,6 +644,12 @@ async fn fence_groups<R: PeerRequester>(
                 "a replica did not take the group logs' fence",
             ),
         }
+    }
+    if !own_counts && answered.is_empty() && !replicas.is_empty() {
+        return Err(Outcome::pending(
+            "this broker's copy is marked wiped and no replica took the group logs' fence",
+            Vec::new(),
+        ));
     }
     if answered.len() < needed && (own_counts || answered.is_empty()) {
         tracing::warn!(

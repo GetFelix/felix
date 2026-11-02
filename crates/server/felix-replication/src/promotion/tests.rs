@@ -162,6 +162,8 @@ struct Replica {
     reachable: bool,
     /// Logs whose fence never reaches this replica.
     unreachable_logs: Vec<ReplicaLog>,
+    /// Logs a fetch from this replica fails on, though their fence is answered.
+    unfetchable_logs: Vec<ReplicaLog>,
     /// The storage identity its handshake gives.
     storage: Option<StorageId>,
     /// The identity its handshake gives on the group logs' fences, when it
@@ -185,6 +187,7 @@ impl Replica {
             capabilities: REQUIRED,
             reachable: true,
             unreachable_logs: Vec::new(),
+            unfetchable_logs: Vec::new(),
             storage: Some(storage_of(node_id)),
             group_storage: None,
             refuses: None,
@@ -279,8 +282,13 @@ impl PeerRequester for Replicas {
             InternalMessage::Fence(fence) => Some(fence.log),
             _ => None,
         };
+        let fetched_log = match &message {
+            InternalMessage::ReplicateFetch(fetch) => Some(fetch.log),
+            _ => None,
+        };
         if !replica.reachable
             || fenced_log.is_some_and(|log| replica.unreachable_logs.contains(&log))
+            || fetched_log.is_some_and(|log| replica.unfetchable_logs.contains(&log))
         {
             return Err(PeerError::Unavailable {
                 node_id: node_id.to_string(),

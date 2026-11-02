@@ -1678,8 +1678,9 @@ impl ReplicaHandler {
         // so a copy with no promise, or one not yet re-admitted, cannot take
         // an unconfirmed leader on the strength of an assignment it has not
         // seen (#1331).
-        // Unread, the gate may be on: refuse as if it were.
-        let elections = self.joint_gate() != Some(false);
+        // Unread, the gate may be on: refuse as if it were. Off, or on a
+        // build that does not mark wiped copies, the read answers as before.
+        let elections = self.non_voting_gate() != Some(false);
         let learner = self.is_learner(log);
         if crate::unclean::held(log) && !learner {
             return None;
@@ -1687,7 +1688,10 @@ impl ReplicaHandler {
         let Some(confirmed) = self.confirmed.as_ref() else {
             return elections.then(|| unbacked(correlation_id, key, generation));
         };
-        if let Some(leader) = self.confirmed_cache.lookup(key, generation) {
+        // The cache saves a learner's catch-up a read per batch. Off the
+        // gate every read is live, as before, so a deposed leader is refused
+        // at once.
+        if elections && let Some(leader) = self.confirmed_cache.lookup(key, generation) {
             return match sender {
                 Some(sender) if sender != leader => Some(promised_elsewhere(
                     correlation_id,
@@ -1700,10 +1704,11 @@ impl ReplicaHandler {
             };
         }
         let answer = confirmed.confirmed(key).await;
-        if let Confirmed::Assigned {
-            generation: assigned,
-            leader,
-        } = &answer
+        if elections
+            && let Confirmed::Assigned {
+                generation: assigned,
+                leader,
+            } = &answer
             && *assigned == generation
         {
             self.confirmed_cache.keep(key, generation, leader);

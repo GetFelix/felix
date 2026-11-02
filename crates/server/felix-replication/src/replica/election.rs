@@ -200,33 +200,56 @@ impl ReplicaHandler {
         members.any(|(node, storage)| node == local && storage.is_some_and(|named| named != own))
     }
 
+    /// Whether `set` names this broker under the storage id it holds now.
+    fn names_own_copy<'a>(
+        &self,
+        mut members: impl Iterator<Item = (&'a str, Option<felix_storage::StorageId>)>,
+    ) -> bool {
+        let local = self.router.local_node_id();
+        let Some(own) = self.local_storage else {
+            return false;
+        };
+        members.any(|(node, storage)| node == local && storage == Some(own))
+    }
+
     /// A copy whose log holds no set yet, on a broker the control plane last
     /// registered under another storage id, may have held this shard under
     /// that id: nothing it learns can say, since a set written after the new
-    /// id registered names it. A set at generation 1 is the shard's creation,
-    /// which no copy held before. A broker new to the control plane holds no
-    /// such evidence, so its copies vote.
-    fn replaced_copy_of(&self, log: &felix_broker::StreamLog, generation: u64) -> bool {
-        self.replaced_storage && generation > 1 && log.replica_set().is_none()
+    /// id registered names it. A set at generation 1 naming the new id
+    /// (`names_own`) is the shard's creation after the wipe, which no copy
+    /// held before; one naming no ids may be a shard older than member ids.
+    /// A broker new to the control plane holds no such evidence, so its
+    /// copies vote.
+    fn replaced_copy_of(
+        &self,
+        log: &felix_broker::StreamLog,
+        generation: u64,
+        names_own: bool,
+    ) -> bool {
+        self.replaced_storage && !(generation == 1 && names_own) && log.replica_set().is_none()
     }
 
     fn names_other_in(&self, log: &felix_broker::StreamLog, set: &Membership) -> bool {
-        self.replaced_copy_of(log, set.generation)
-            || self.names_other_copy(
-                set.members
-                    .iter()
-                    .map(|member| (member.node.as_str(), member.storage)),
-            )
+        let members = || {
+            set.members
+                .iter()
+                .map(|member| (member.node.as_str(), member.storage))
+        };
+        self.replaced_copy_of(log, set.generation, self.names_own_copy(members()))
+            || self.names_other_copy(members())
     }
 
     fn names_other_in_view(&self, log: &felix_broker::StreamLog, set: &ReplicaSetView) -> bool {
-        self.replaced_copy_of(log, set.generation)
-            || self.names_other_copy(set.members.iter().map(|member| {
+        let members = || {
+            set.members.iter().map(|member| {
                 (
                     member.node_id.as_str(),
                     member.storage_id.map(felix_storage::StorageId::from_bytes),
                 )
-            }))
+            })
+        };
+        self.replaced_copy_of(log, set.generation, self.names_own_copy(members()))
+            || self.names_other_copy(members())
     }
 
     /// The set as this copy keeps it: a learner stays one, and under
@@ -309,7 +332,7 @@ impl ReplicaHandler {
         let learner = self.is_learner(own) || (group && self.is_wiped(own));
         let evidence = match &request.election {
             Some(election) => self.names_other_in_view(own, &election.set),
-            None => self.replaced_copy_of(own, request.shard.generation),
+            None => self.replaced_copy_of(own, request.shard.generation, false),
         };
         match self.non_voting_gate() {
             _ if !learner && !evidence => return None,

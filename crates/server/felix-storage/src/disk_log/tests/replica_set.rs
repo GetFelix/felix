@@ -191,3 +191,26 @@ async fn a_wiped_mark_is_kept_until_settled() {
     assert!(!log.member_is_wiped("b"));
     assert_eq!(log.replica_set(), Some(set_at(4)));
 }
+
+/// A newer set keeps a member's wiped mark whatever it says: a leader that
+/// writes its route's set must not end it before the copy has settled.
+#[tokio::test]
+async fn a_newer_set_keeps_the_wiped_mark() {
+    let dir = tempdir().expect("tempdir");
+    let log = open(&dir, FsyncMode::OnCommit);
+    let mut set = set_at(4);
+    set.current.members[1].wiped = true;
+    log.accept_set(set).await.expect("accept");
+    assert_eq!(
+        log.accept_set(set_at(5)).await.expect("accept"),
+        SetCheck::Raised
+    );
+    assert!(log.member_is_wiped("b"));
+    assert!(!log.member_is_wiped("a"));
+    assert!(log.admit_member("b", true).await.expect("settle"));
+    log.accept_set(set_at(6)).await.expect("accept");
+    assert!(
+        !log.member_is_wiped("b"),
+        "settled, so a later set is clean"
+    );
+}

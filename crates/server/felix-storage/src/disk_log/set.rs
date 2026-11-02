@@ -162,13 +162,15 @@ impl DiskLog {
     }
 
     /// Count `set` from here on if it is newer than the set already kept,
-    /// persisting it first.
+    /// persisting it first. A member the kept set marks wiped stays marked
+    /// in the new one: only [`Self::admit_member`] ends the mark, whoever
+    /// writes the newer set.
     ///
     /// Returns once a raised set is on disk, so a caller that answers at it
     /// afterwards has made a promise that survives a restart. A caller that
     /// also accepts a generation persists the ballot first: the open treats a
     /// set ahead of the ballot as a write that order rules out.
-    pub async fn accept_set(&self, set: ReplicaSet) -> Result<SetCheck> {
+    pub async fn accept_set(&self, mut set: ReplicaSet) -> Result<SetCheck> {
         if let Some(found) = check_set(self.set_generation(), set.current.generation) {
             return Ok(found);
         }
@@ -180,6 +182,15 @@ impl DiskLog {
             let known = inner.set_generation.load(Ordering::Acquire);
             if let Some(found) = check_set(known, set.current.generation) {
                 return Ok(found);
+            }
+            if let Some(kept) = inner.replica_set.read().as_ref() {
+                for member in &mut set.current.members {
+                    member.wiped |= kept
+                        .current
+                        .members
+                        .iter()
+                        .any(|old| old.node == member.node && old.wiped);
+                }
             }
             store(&inner.dir, &set)?;
             let generation = set.current.generation;
