@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793644402701,
+  "lastUpdate": 1793645660303,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -42536,6 +42536,58 @@ window.BENCHMARK_DATA = {
             "range": "5315.48",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 827128.31\nmean: 825411.12\nstdev: 5315.48\ncv: 0.64%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2c40c4e8fae1f80f05eadd7a8241ff6550f4a38d",
+          "message": "perf(broker): answer a publish before its fanout, and trim per-subscriber work (#1771) (#1773)\n\nCloses #1771 (partly: see \"What is left\").\n\n## What was on the publisher's path\n\n- **The ack waited for the fanout.** `complete_publish` ran the subscriber loop (one `try_reserve`, byte hold, depth update and wake per subscriber) before returning, and the worker answered only after it. The answer then queued for a worker thread behind every feeder, lane and connection-writer task that loop had just woken.\n- **Shared counters touched once per subscriber.** Every enqueue did a `fetch_add` on the stream's `queued_items`, an f64 CAS on the `felix_sub_queue_len` gauge, a counter add, and a registry lookup for `felix_sub_shared_batch_handles_total`. The feeders decrement the same lines from other threads.\n- **A lone record was encoded per subscriber.** The feeder used the envelope's shared frame only for multi-record batches; a single-record publish (the latency case) was re-encoded by each of its subscribers.\n- **Labelled metric lookups per delivery.** `WriterLaneManager::enqueue` built a `String` and looked up the labelled `felix_sub_lane_queue_len` gauge on every delivery, and the lane did it again; `ensure_connection_writer` write-locked a DashMap shard on every delivery.\n\n## Changes\n\n- `Broker::complete_publish_answering` answers once the batch is durable and in the replay ring, then fans out. The worker uses it for durable and in-memory publishes that are not `Quorum`. Under the `Block` queue policy it still answers after the fanout (that policy promises the publisher waits for every queue). The batch keeps its commit turn, the fences and (in-memory) the lane until the fanout is done, so delivery order, drains and shard moves see the same thing as before.\n- Fanout reserves queue depth for all subscribers in one step and settles it after the pass.\n- The feeder sends a lone record in the shared frame.\n- Lane gauges and the connection-writer histogram are resolved once; the writer map is read-locked on the hot path.\n- New perf cell `scripts/perf/ci_subset_fanout.yml` in `perf-pr.yml`: one acked publisher, fanout 1 and 100, one connection per subscriber. Timeout raised to 50 min for it.\n\n## Measurements\n\nperf-pr run [41457977946](https://github.com/GetFelix/felix/actions/runs/41457977946) on 883d36368 (4-vCPU runner, five alternating trials per side). Fanout cell, one acked publisher, 256 B, one connection per subscriber:\n\n| Profile | Fanout | Acked pub/s base -> PR | First sub p50 base -> PR | p99 base -> PR |\n| --- | ---: | --- | --- | --- |\n| drop_new | 1 | 6,512 -> 6,545 (+0.5%) | 153.5 -> 154.0 us | 227 -> 222 us |\n| drop_new | 100 | 1,190 -> 1,191 (+0.1%) | 1,120.5 -> 1,111.5 us | 2,893 -> 2,962 us |\n| balanced (Block) | 100 | 1,181 -> 1,188 (+0.6%) | 1,142.5 -> 1,115.5 us | 3,079 -> 3,049 us |\n\nNone of these is significant. Read plainly: **on this runner the change is neutral.** At fanout 100 the publisher still pays about 7 us per subscriber (840 us per publish against 153 us alone) on both sides. Broker and all 101 clients share four vCPUs in that cell, so it is CPU-bound and the order of the answer cannot move the rate. The docs and changelog now say this instead of claiming subscribers are off the round trip.\n\nRest of the matrix: no significant regression. Two \"inconclusive\" flags on `P8_hash fanout=1 batch=64 1 KiB` p99/p999 (+16%/+19%, CV 25%/47%, p 0.79/0.87; same cell's p50 is -38% with the same noise). That is a batched throughput profile and says nothing about request latency.\n\n## Design calls\n\n- `Quorum` publishes keep the old order (fanout, then quorum wait, then answer). Their batches are normally held and fanned out on release, so nothing per subscriber sits in front of the ack there anyway.\n- Fences are dropped after the fanout, not at the answer, so a drained report still waits for the fanout as the fence comment says.\n- Review (opus) found no code defects; it flagged the `Block` semantics (fixed: Block keeps the old order), docs scope and a broken sentence (fixed). Its two test asks (durable turn held after the answer, resume after a drop mid-fanout) do not apply now: outside `Block` nothing awaits between the answer and the end of the fanout, so the turn is held across a synchronous pass and there is no cancellation point in it.\n- No `yield_now` between the answer and the fanout: the answer's writer is woken first and runs ahead of the feeders without it, and a yield would put the fanout behind unrelated work.\n- The lane hop (feeder -> lane -> connection writer) is left alone. Removing it is a bigger change to how register/unregister are ordered.\n\n## What is left\n\nEach subscriber still costs a feeder, a lane, a connection writer and a QUIC send on the broker's runtime. On a 2-vCPU host that work competes with everything else, so other subscribers' delivery still grows with N.",
+          "timestamp": "2026-11-02T10:37:15-08:00",
+          "tree_id": "136da17fbe6824f9ccc7db39dc472bdcabe8fb74",
+          "url": "https://github.com/GetFelix/felix/commit/2c40c4e8fae1f80f05eadd7a8241ff6550f4a38d"
+        },
+        "date": 1793645658653,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 547498.27,
+            "range": "33491.42",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 547498.27\nmean: 537648.05\nstdev: 33491.42\ncv: 6.23%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 547498.27,
+            "range": "33491.42",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 547498.27\nmean: 537648.05\nstdev: 33491.42\ncv: 6.23%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 117150.81,
+            "range": "743.35",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 117150.81\nmean: 117198.98\nstdev: 743.35\ncv: 0.63%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1171508.08,
+            "range": "7433.52",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1171508.08\nmean: 1171989.75\nstdev: 7433.52\ncv: 0.63%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
