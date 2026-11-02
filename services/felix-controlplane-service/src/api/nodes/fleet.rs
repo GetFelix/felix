@@ -110,6 +110,7 @@ pub(crate) async fn finalize_fleet_feature(
         &nodes,
         &feature,
         crate::cluster::fleet::ELECTION_METADATA_LEVEL_READY,
+        crate::cluster::fleet::JOINT_FENCE_READY,
     );
 
     if query.dry_run {

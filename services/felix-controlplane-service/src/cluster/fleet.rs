@@ -167,7 +167,8 @@ pub(crate) fn check_prerequisites(
 /// broker offers the `ELECTION` capability (reported as
 /// [`felix_common::fleet::PEER_ELECTION`]), and, for `replica_election`,
 /// `metadata_level_ready` says the control plane keeps the pending replica set
-/// and adopts elected leaders.
+/// and adopts elected leaders, and `joint_fence_ready` says `joint_fence` may be
+/// finalized at all.
 /// Any other feature passes. Under Raft the finalize also needs every member
 /// at metadata level 21, which the store checks as it proposes.
 ///
@@ -179,13 +180,15 @@ pub(crate) fn check_election<'a, I>(
     nodes: I,
     feature: &str,
     metadata_level_ready: bool,
+    joint_fence_ready: bool,
 ) -> Result<(), StoreError>
 where
     I: IntoIterator<Item = &'a Node>,
 {
     use felix_common::fleet::{JOINT_FENCE, PEER_ELECTION, REPLICA_ELECTION};
     let needs_level = feature == REPLICA_ELECTION.name();
-    if !needs_level && feature != JOINT_FENCE.name() {
+    let is_joint_fence = feature == JOINT_FENCE.name();
+    if !needs_level && !is_joint_fence {
         return Ok(());
     }
     let lacking = lacking(nodes, PEER_ELECTION.name());
@@ -194,6 +197,12 @@ where
             "cannot finalize {feature}: serving broker(s) {} do not offer the ELECTION \
              peer capability; upgrade them first",
             lacking.join(", "),
+        )));
+    }
+    if is_joint_fence && !joint_fence_ready {
+        return Err(StoreError::Conflict(format!(
+            "cannot finalize {feature}: the control plane cannot yet re-admit a learner or \
+             keep placement off one, which joint fences need",
         )));
     }
     if needs_level && !metadata_level_ready {
@@ -210,6 +219,11 @@ where
 /// S9) flips this only once joint fences (S5), two-majority acks (S6b) and
 /// the wiped-voter guard (S8) are in too.
 pub(crate) const ELECTION_METADATA_LEVEL_READY: bool = false;
+
+/// Whether `joint_fence` may be finalized. A finalize is irreversible, and a
+/// joint fence needs the control plane to re-admit learners and placement to
+/// skip them (#1737). Stays false until both merge.
+pub(crate) const JOINT_FENCE_READY: bool = false;
 
 /// The features a cluster created on this release starts with. A finalize
 /// is one-way so that an upgraded fleet can still roll back before it, and a

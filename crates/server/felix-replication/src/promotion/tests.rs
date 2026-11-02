@@ -162,6 +162,8 @@ struct Replica {
     reachable: bool,
     /// Logs whose fence never reaches this replica.
     unreachable_logs: Vec<ReplicaLog>,
+    /// Logs a fetch from this replica fails on, though their fence is answered.
+    unfetchable_logs: Vec<ReplicaLog>,
     /// The storage identity its handshake gives.
     storage: Option<StorageId>,
     /// The identity its handshake gives on the group logs' fences, when it
@@ -169,6 +171,9 @@ struct Replica {
     group_storage: Option<StorageId>,
     /// Refuses every fence with this detail.
     refuses: Option<&'static str>,
+    /// Whether the pool has recorded its capabilities, as it has once
+    /// connected; otherwise they are learned by asking.
+    recorded: bool,
     _dir: TempDir,
 }
 
@@ -182,9 +187,11 @@ impl Replica {
             capabilities: REQUIRED,
             reachable: true,
             unreachable_logs: Vec::new(),
+            unfetchable_logs: Vec::new(),
             storage: Some(storage_of(node_id)),
             group_storage: None,
             refuses: None,
+            recorded: true,
             _dir: dir,
         }
     }
@@ -275,8 +282,13 @@ impl PeerRequester for Replicas {
             InternalMessage::Fence(fence) => Some(fence.log),
             _ => None,
         };
+        let fetched_log = match &message {
+            InternalMessage::ReplicateFetch(fetch) => Some(fetch.log),
+            _ => None,
+        };
         if !replica.reachable
             || fenced_log.is_some_and(|log| replica.unreachable_logs.contains(&log))
+            || fetched_log.is_some_and(|log| replica.unfetchable_logs.contains(&log))
         {
             return Err(PeerError::Unavailable {
                 node_id: node_id.to_string(),
@@ -313,8 +325,24 @@ impl PeerRequester for Replicas {
         }
     }
 
+    async fn capabilities(
+        &self,
+        node_id: &str,
+        _addr: SocketAddr,
+    ) -> Result<PeerCapabilities, PeerError> {
+        let replica = self.get(node_id);
+        if !replica.reachable {
+            return Err(PeerError::Unavailable {
+                node_id: node_id.to_string(),
+                detail: "unreachable".to_string(),
+            });
+        }
+        Ok(replica.capabilities)
+    }
+
     fn recorded_capabilities(&self, node_id: &str) -> Option<PeerCapabilities> {
-        Some(self.get(node_id).capabilities)
+        let replica = self.get(node_id);
+        replica.recorded.then_some(replica.capabilities)
     }
 
     fn offers_election(&self) -> bool {
@@ -883,6 +911,39 @@ async fn a_promotion_fence_carries_the_set_only_to_replicas_that_check_sets() {
             assert!(leader_log.accepted_generation() < PROMOTED);
         }
     }
+}
+
+/// **A replica whose capabilities the pool has not recorded is asked**, and
+/// gets the set: sent without one, a copy that lost its storage could not
+/// tell from the fence that it does not vote, and would count (#1331).
+#[tokio::test]
+async fn a_promotion_fence_asks_a_replica_it_has_not_heard_from_whether_it_checks_sets() {
+    let electing = PeerCapabilities::from_bits(REQUIRED.bits()).union(PeerCapabilities::ELECTION);
+    let mut replicas = Replicas::new();
+    replicas.electing = true;
+    replicas.get_mut("broker-c").reachable = false;
+    let b = replicas.get_mut("broker-b");
+    b.capabilities = electing;
+    b.recorded = false;
+    replicas
+        .get("broker-b")
+        .holds("broker-b", 4, 0, &["a"])
+        .await;
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route(), false, None).await;
+
+    assert_eq!(
+        outcome,
+        Outcome::Fenced {
+            caught_up_from: None
+        }
+    );
+    assert_eq!(replicas.sent(Kind::ElectionFence), vec!["broker-b"]);
+    assert_eq!(
+        set_generation(&replicas.get("broker-b").broker).await,
+        PROMOTED
+    );
 }
 
 /// **A successor that was already a voting replica still votes in the

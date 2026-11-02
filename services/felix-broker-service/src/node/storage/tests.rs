@@ -128,3 +128,47 @@ fn a_directory_older_than_the_last_registration_rotates_the_storage_id() {
     assert_ne!(restored.id, first);
     assert_eq!(storage_id(Some(root.path())).expect("load"), restored.id);
 }
+
+fn registered_as(id: Option<StorageId>) -> Registered {
+    Registered {
+        incarnation: 0,
+        storage_id: id.map(|id| id.to_hex()),
+    }
+}
+
+/// **A broker new to the control plane is not a replaced one (#1331)**,
+/// however new its directory: it held no copy under another id, so its
+/// copies vote in the sets that add it. Nor is one the control plane knows
+/// only from before storage ids.
+#[test]
+fn a_new_node_does_not_start_replaced() {
+    let log = felix_storage::log::LogConfig::default();
+    let root = tempfile::tempdir().expect("tempdir");
+    let (_, _, replaced) = start_run(root.path(), &log, None).expect("new node");
+    assert!(!replaced);
+    let root = tempfile::tempdir().expect("tempdir");
+    let (_, _, replaced) =
+        start_run(root.path(), &log, Some(&registered_as(None))).expect("older registration");
+    assert!(!replaced);
+}
+
+/// **A node the control plane last registered under another storage id
+/// starts replaced**, which makes its copies learners of the shards it may
+/// have held (#1331). So does every later start on that directory, after the
+/// new id has registered: a copy it has not heard of since is still one it
+/// may have held.
+#[test]
+fn a_node_registered_under_another_id_starts_replaced() {
+    let log = felix_storage::log::LogConfig::default();
+    let root = tempfile::tempdir().expect("tempdir");
+    let other = StorageId::from_bytes([9; 16]);
+    let (id, _, replaced) =
+        start_run(root.path(), &log, Some(&registered_as(Some(other)))).expect("wiped");
+    assert!(replaced);
+    assert_ne!(id, other);
+    mark_clean_stop(root.path(), id).expect("clean stop");
+    let (again, _, replaced) =
+        start_run(root.path(), &log, Some(&registered_as(Some(id)))).expect("restart");
+    assert_eq!(again, id);
+    assert!(replaced, "the registration of the new id ends nothing");
+}

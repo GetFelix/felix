@@ -248,14 +248,30 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardElectWipeOracle.cfg` | `FelixShardElectWipeWaitsFloor.cfg` at generation 3, waiting for a bound no broker can know, the newest generation the replica had promised (`WipeBoundOracle`) | pass, the same invariants (5.45M distinct states, depth 30, 1 min 45 s on eight workers) |
 | `FelixShardElectWipeOracleBatches.cfg` | the same taking batches from an unadopted leader while it waits (`WipedTakesBatches`) | violate `AckedHeldByLeader` |
 | `FelixShardElectWipeOracleLearnsSet.cfg` | `FelixShardElectWipeOracle.cfg` with pre-vote and stickiness, and the waiting replica learning a candidate's set without answering it (`WipedLearnsSet`) | pass, the same invariants (83K distinct states, 2 s) |
-| `FelixShardElectWipeNonVoter.cfg` | `FelixShardElectWipe.cfg` with one write, generation 3, and the adopted rule (`WipedNonVoter`): the wipe empties the log, the replica is a non-voter until a re-admission whose joint fence counts the old set's majority without it, and votes again only once it holds the leader's log through the start record there; one follower wiped once, no time | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm`, `AdoptedMatchesOpened`, `SetChangesJoint` (14.3M distinct states, depth 35, 6 min on seven workers) |
-| `FelixShardElectWipeNonVoterNoCatchUp.cfg` | the same, re-admitted as soon as the leader opens (`ReadmitBeforeCatchUp`) | violate `AckedHeldByLeader`: the re-admitted replica votes with an empty log for a leader without write 1 |
+| `FelixShardElectWipeNonVoter.cfg` | `FelixShardElectWipe.cfg` with one write, generation 3, and the adopted rule (`WipedNonVoter`): the wipe empties the log, the replica is a non-voter until a re-admission whose joint fence counts the old set's majority without it, and votes again only once it holds the leader's log through the start record there; one follower wiped once, no time | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm`, `AdoptedMatchesOpened`, `SetChangesJoint` (20.4M distinct states, depth 33, 15 min on four workers) |
+| `FelixShardElectWipeNonVoterNoCatchUp.cfg` | the same, re-admitted as soon as the confirmed leader is open at its set's generation or a later one (`ReadmitBeforeCatchUp`) | violate `OneLeaderPerGeneration`: the re-admitted replica took no ballot from that leader, and promises its generation, which it had promised before the wipe, to a second one |
 | `FelixShardElectWipeNonVoterCountsWiped.cfg` | the same, no write, with the re-admission counting the wiped replica (`ReadmitCountsWiped`) | violate `OneLeaderPerGeneration` |
 | `FelixShardElectWipeNonVoterWipesLeader.cfg` | `FelixShardElectWipeNonVoter.cfg` where a leader or candidate can be wiped (`WipeLeads`) | pass, the same invariants (19.3M distinct states, depth 35, 8 min on seven workers; runs nightly, not per PR, see below) |
 | `FelixShardElectWipeNonVoterTwice.cfg` | `FelixShardElectWipeNonVoter.cfg` with two wipes (`Forgets`), of the same replica again or of a second once the first is re-admitted; `OneNonVoter` keeps at most one non-voter at a time, since two distinct wiped brokers exceed what three replicas tolerate | pass, the same invariants (29.8M distinct states, depth 38, 12 min on eight workers; runs nightly, not per PR, see below) |
 | `FelixShardElectWipeNonVoterFailover.cfg` | `FelixShardElectWipeNonVoter.cfg` with a one-tick lease and time to 1, so control-plane failover is reachable, and adoption up to generation 2 (at 3 it passed 136M distinct states unfinished); failover never names a non-voter | pass, the same invariants (46.9M distinct states, depth 37, 10 min on twelve workers; runs nightly, not per PR, see below) |
 | `FelixShardElectWipeNonVoterFailoverWipesLeader.cfg` | the same where a leader or candidate can be wiped (`WipeLeads`) | pass, the same invariants (53.2M distinct states, depth 37, 11 min on twelve workers; runs nightly, not per PR, see below) |
 | `FelixShardElectWipeNonVoterPromotes.cfg` | `FelixShardElectWipeNonVoterFailover.cfg` with failover free to name a non-voter (`PromoteNonVoter`) | violate `OneLeaderPerGeneration`: the non-voter forgot its promise to a candidate and is promoted at that generation |
+| `FelixShardElectWipeNonVoterCreates.cfg` | `FelixShardElectWipeNonVoter.cfg` starting as the shard is created (`Creates`): the first leader fences at generation 1, no follower holds a promise or a set, and a follower not wiped votes with an empty log; adoption up to generation 3, with no broker promising 3 before the re-admission (`ThreeOnceReadmitted`; unbounded at 3 it passed 137M distinct states unfinished in two hours) | pass, the same invariants (1.83M distinct states, depth 34, 2 min on four workers) |
+| `FelixShardElectWipeNonVoterCreatesLearnerAcks.cfg` | the same, the leader counting a non-voter's catch-up answers (`LearnerAcksCount`, on by default only without elections, as the code runs) | violate `AckedHeldByLeader`: c promises candidate b generation 2, is wiped, catches up from a at 1, and a acknowledges on {a, c}; b opens on {b, c} without the write. Before elections ship the leader must leave a learner out |
+| `FelixShardElectWipeNonVoterCreateCountsEmpty.cfg` | the same, where a copy with no set file votes, wiped or not (`CreateCountsEmpty`) | violate `OneLeaderPerGeneration`: the wiped copy forgot its promise of generation 2 and gives it to a second leader |
+| `FelixShardElectWipeNonVoterCreatesOpens.cfg` | `FelixShardElectWipeNonVoterCreates.cfg` with no write, checking a witness | violate `NoCreationBesideNonVoter`: the new shard opens while a copy wiped before it answered is a non-voter |
+| `FelixShardElectWipeNonVoterEvidenceOnly.cfg` | `FelixShardElectWipeNonVoterFailover.cfg` with only the evidence the code sees in a set (`ReplacedIdLearner` off): a copy is a learner once a set names its old storage id | violate `OneLeaderPerGeneration`: a follower promises 2 to a candidate and is wiped before it hears a set naming its old id; it answers the fence of a failover at 2 that names its new one, with no promise and an empty log |
+| `FelixShardElectWipeNonVoterSetless.cfg` | the rule as the code runs it before elections: only the control plane names leaders (`Elections = 0`), with a one-tick lease and time to 1 so it fails over and re-admits, a cache shard whose counter log the wipe takes too (`Counters`), and fences without a set from the control plane's leader (`SetlessFences`) | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm`, `AdoptedMatchesOpened`, `SetChangesJoint`, `CountersHeldByLeader`, `CountersOnMajority` (over 41M distinct states unfinished after 15 min on eight workers; runs nightly, not per PR, see below) |
+| `FelixShardElectWipeNonVoterSetlessUnmarked.cfg` | the same, a fence without a set refused only on a mark kept in a set file (`SetlessSeesMarker` off) | violate `AckedHeldByLeader`: the write is acknowledged by {b, c}, c is wiped, the failover's fence reaches c without a set, and c answers with an empty log |
+| `FelixShardElectWipeNonVoterCountersCountLearner.cfg` | the same, the counter fence answered by a non-voter (`CounterFenceSeesLearner` off) | violate `CountersHeldByLeader`: the failover's counter fence counts the wiped copy's empty counter log |
+| `FelixShardElectWipeNonVoterCountersUnchecked.cfg` | the same, re-admitted once the cache log holds the start record, the counter log not checked (`ReadmitChecksCounters` off) | violate `CountersHeldByLeader` (`CountersOnMajority` left out, as it breaks at the re-admission itself) |
+| `FelixShardElectWipeNonVoterGroups.cfg` | `FelixShardElectWipeNonVoterSetless.cfg` without fences that carry no set, the counter log standing for a stream's group logs (`GroupLogs`): re-admission does not wait for them, and the copy stays marked wiped until its group log holds a record of its set's generation, refusing group fences and, as a leader, not counting its own | pass, the same invariants (no violation through 33.6M distinct states, depth 24, 17 min on six workers, unfinished; runs nightly, not per PR, see below) |
+| `FelixShardElectWipeNonVoterGroupsKeepDropsMark.cfg` | the same, the promoted leader's set write dropping its own mark (`KeepSetDropsMark`), as `keep_own_set` did | violate `CountersHeldByLeader`: a group record acknowledged on {a, c}; c wiped and re-admitted with its group log behind, promoted, drops its mark keeping its set, and opens on its own group log and b's, which lags |
+| `FelixShardElectWipeNonVoterIdlessCreation.cfg` | the same rule on a stream shard without counters, its creation set naming no storage ids (`IdlessCreation`), as a shard created before sets named member ids keeps | pass, the same invariants (4.68M distinct states, depth 35, 2 min on six workers) |
+| `FelixShardElectWipeNonVoterIdlessCreationExempt.cfg` | the same, a copy that holds no set taking any generation-1 set as a voter (`GenOneExempt`), as `replaced_copy_of` did | violate `AckedHeldByLeader`: c is wiped at generation 1, learns the id-less creation set as a voter, and a failover's lagging leader opens on {b, c} |
+| `FelixShardElectWipeNonVoterNoCatchUpFailover.cfg` | `FelixShardElectWipeNonVoterNoCatchUp.cfg`'s fault with `Elections = 0`, no counters and no fence without a set | violate `AckedHeldByLeader`: re-admitted with an empty log, the copy answers the next failover's fence |
+| `FelixShardElectWipeNonVoterEvidenceOnlyFailover.cfg` | `FelixShardElectWipeNonVoterEvidenceOnly.cfg`'s fault with `Elections = 0`, no counters and no fence without a set | violate `AckedHeldByLeader`: wiped before it heard any set, the copy answers a failover's fence that names its new id |
+| `FelixShardElectWipeNonVoterCreatesReadmits.cfg` | `FelixShardElectWipeNonVoterCreates.cfg` at the same bound, checking a witness | violate `NoFailoverAfterReadmit`: the wiped copy is re-admitted, the write is acknowledged at the re-admission's generation, and a leader opens above it |
 | `FelixShardElectWipeNonVoterElects.cfg` | `FelixShardElectWipeNonVoter.cfg`, checking a witness | violate `NoLeaderBesideNonVoter`: a leader at a generation taken after the wipe opens without the non-voter |
 | `FelixShardElectWipeNonVoterReadmits.cfg` | the same | violate `NeverReadmitted`: the re-admission completes after the catch-up |
 | `FelixShardElectWipeNonVoterFailsOver.cfg` | `FelixShardElectWipeNonVoterFailover.cfg`, checking a witness | violate `NoFailoverBesideNonVoter`: the control plane fails over while a wiped replica is a non-voter |
@@ -1010,8 +1026,9 @@ jointly, counting the old set's majority without the wiped replica. The
 re-admission completes only once the replica holds that leader's log through
 the start record at the re-admission's generation (`Readmitted`), as a Raft
 learner is caught up before it is promoted. Until then it may learn a set,
-say yes to a pre-vote and copy a leader's log (`CatchUp`), none of which
-counts. Control-plane failover never promotes a non-voter.
+say yes to a pre-vote and copy the confirmed leader's log (`CatchUp`),
+taking that leader's ballot as any batch does; none of it counts.
+Control-plane failover never promotes a non-voter.
 
 Each configuration is `FelixShardElectWipe.cfg`'s shard with one write,
 elections, and adoption up to generation 3, where every bound the control
@@ -1026,10 +1043,13 @@ plane holds failed:
   adopting an elected one) and `FelixShardElectWipeNonVoterTwice.cfg` (two
   wipes, `Forgets`: the same replica again while its re-admission is
   pending, or a second one).
-- Without the catch-up the rule loses a write
-  (`FelixShardElectWipeNonVoterNoCatchUp.cfg`). Write 1 is acknowledged on
-  {a, b}; b is wiped; a re-admits b at 2 with only c answering; b votes with
-  an empty log; c stands at 3, b answers, and c opens without write 1.
+- Without the catch-up the rule finds two leaders at one generation
+  (`FelixShardElectWipeNonVoterNoCatchUp.cfg`). c promises 3 to candidate b,
+  which opens; c is wiped and forgets it; the control plane re-admits c at 2
+  through a, which then stands at 3, and adopts b at 3. Re-admitted once b
+  is open, without a batch from it, c holds no ballot for 3, answers a, and a
+  opens at 3 too. The catch-up brings the leader's records and its ballot;
+  either one missing is unsafe.
 - Counting the wiped replica in the re-admission's old majority finds two
   leaders at one generation (`FelixShardElectWipeNonVoterCountsWiped.cfg`).
 - Failover that may promote a non-voter finds two leaders at one
@@ -1037,11 +1057,84 @@ plane holds failed:
   candidate b, is wiped and forgets it, and the control plane, which has not
   heard of 2, promotes c at 2 beside b. The lost promise is as much the
   reason as the lost log.
+- A new shard (`Creates`, `FelixShardElectWipeNonVoterCreates.cfg`) starts
+  with its first leader fencing at generation 1 and no follower holding a
+  promise or a set. A follower that was not wiped answers with an empty log
+  and counts, and that passes: it holds every acknowledged record, which is
+  none. Treating a missing set file as a new shard instead
+  (`FelixShardElectWipeNonVoterCreateCountsEmpty.cfg`, `CreateCountsEmpty`)
+  finds two leaders at one generation: b opens at 2 on {b, c}, c is wiped
+  and loses its promise with its set file, and the creating leader a stands at
+  2 and opens on {a, c}. Only evidence of the wipe tells a new copy from a wiped one; the broker
+  uses the storage id the control plane recorded for the copy. A witness
+  shows a new shard opening beside a copy wiped before it answered
+  (`FelixShardElectWipeNonVoterCreatesOpens.cfg`).
+- The non-voter is the copy that keeps the learner mark, as the broker
+  does, not a ghost of every wipe. Every control-plane write names each
+  member's registered storage id, so a set written before the wipe names the
+  old one (`NamesOther`), and learning it marks the copy. That alone is not
+  enough (`FelixShardElectWipeNonVoterEvidenceOnly.cfg`): a promises 2 to
+  candidate b and is wiped before it hears any set, the control plane fails
+  over to c at 2 naming a's new id, and a answers c's fence with no promise
+  and an empty log, so b and c both open at 2. So a broker the control plane
+  last registered under another storage id is a learner for every shard it
+  held (`ReplacedIdLearner`). A broker it never registered held nothing and
+  votes.
+  Any later set naming the new id re-admits it once it holds that set's
+  generation-start record from the confirmed leader.
+- The learner mark has to stop fences that carry no set as well. A leader
+  sends one to a replica whose capabilities it could not learn, and it is
+  checked against no set, so the copy's own mark is all that can refuse it.
+  A copy wiped before it heard any set keeps no mark in a set file, only the
+  replaced-storage marker under its data root (`SetlessSeesMarker`). Without
+  it the copy answers with an empty log and a failover loses a write
+  (`FelixShardElectWipeNonVoterSetlessUnmarked.cfg`).
+- A cache's counter log keeps no set, so its fence is judged on the cache
+  log's mark (`CounterFenceSeesLearner`); judged on its own, a non-voter's
+  empty counter log counts and an acknowledged counter update is lost
+  (`FelixShardElectWipeNonVoterCountersCountLearner.cfg`). The leader ships
+  the two logs apart (`CatchUp`, `CatchUpCounters`), so re-admission waits
+  for both to hold the start record (`ReadmitChecksCounters`;
+  `FelixShardElectWipeNonVoterCountersUnchecked.cfg` re-admits on the cache
+  log alone).
+- The leader counts a non-voter's answers to its catch-up batches, as the
+  code's leader does (`LearnerAcksCount`), and without elections a non-voter
+  also takes them from a leader the control plane named at that leader's
+  generation after it moved on (`CatchUpFromDeposed`), as the code's
+  confirmed read, cached for 500 ms, lets it. That cache is in memory, so
+  its reads came after the wipe: the deposed leader's generation is at least
+  the one at the wipe. Both are on in every configuration without
+  elections; with elections counting a learner loses a write
+  (`FelixShardElectWipeNonVoterCreatesLearnerAcks.cfg`), so the leader must
+  leave it out before they ship (#1762).
+- A stream's group logs carry no start record, so re-admission does not
+  wait for them. The copy keeps a wiped mark (`marked`) past re-admission
+  until its group log holds a record of its set's generation
+  (`GroupsCaughtUp`): until then it refuses group fences, and as a leader its
+  own group log does not count toward the group majority. The mark is kept
+  in the set file, so whatever writes a newer set must carry it: with the
+  promoted leader's own set write dropping it (`KeepSetDropsMark`), a group
+  take retried after a failure counts the leader's empty group log
+  (`FelixShardElectWipeNonVoterGroupsKeepDropsMark.cfg`).
+- A shard created before sets named member ids keeps a creation set that
+  names none (`IdlessCreation`), which is no evidence of a wipe. A copy
+  wiped while the shard is still at generation 1 is marked by the
+  replaced-storage marker alone; exempting generation 1 from it
+  (`GenOneExempt`) lets that copy vote with an empty log
+  (`FelixShardElectWipeNonVoterIdlessCreationExempt.cfg`).
+- Without elections (`Elections = 0`), the two older faults still lose a
+  write: re-admitted before it caught up
+  (`FelixShardElectWipeNonVoterNoCatchUpFailover.cfg`), or with only the
+  evidence a set carries (`FelixShardElectWipeNonVoterEvidenceOnlyFailover.cfg`).
+  Those are the faults the code could have before elections ship; the
+  elections twins above find them as two leaders at one generation.
 - Witnesses show the checked paths are reached: a leader at a generation
   taken after the wipe opens without the non-voter
   (`FelixShardElectWipeNonVoterElects.cfg`), the re-admission completes
   (`FelixShardElectWipeNonVoterReadmits.cfg`), and the control plane fails
-  over beside a non-voter (`FelixShardElectWipeNonVoterFailsOver.cfg`).
+  over beside a non-voter (`FelixShardElectWipeNonVoterFailsOver.cfg`). At the creation bound the re-admission, a
+  write after it and a later leader are all reached
+  (`FelixShardElectWipeNonVoterCreatesReadmits.cfg`).
 
 Two invariants count a non-voter differently. A real wipe loses records,
 so a write acknowledged on {a, b} is on a alone once b is wiped, and
@@ -1088,11 +1181,29 @@ What is not checked:
   (`NonVoterCredit`). A second wipe of the same broker is one failure; two
   distinct brokers wiped, including `WipeLeads` with `Forgets = 2`, exceed
   what three replicas tolerate and are not checked.
-- #1009 S8. In the code, the caught-up report that ends non-voting must be
-  tied to the copy's current storage id. Otherwise a report sent before a
-  second wipe could re-admit an empty copy; the model reads the logs directly
-  and cannot show this.
-- Cache shards. The counter log is left out (`Counters = FALSE`).
+- Control-plane re-admission (#1737). When the control plane re-admits from
+  a caught-up report, the report must be tied to the copy's current storage
+  id. Otherwise a report sent before a second wipe could re-admit an empty
+  copy; the model reads the logs directly and cannot show this.
+- Three brokers. The set that re-admits a copy is fenced by both other
+  copies, so its generation is at least any the copy promised before its
+  wipe, including a candidate's above the control plane's. With five, a
+  fence needs three of them, and that no longer follows; it is not checked.
+- The creation configurations reach generation 3 only after the re-admission
+  (`ThreeOnceReadmitted`), and wipe once (`Forgets = 1`). So they do not
+  check a re-admission, a write, a failover and then a second wipe. A wipe
+  beside an election at 3 is checked in `FelixShardElectWipeNonVoter.cfg`,
+  and a second wipe after a re-admission in
+  `FelixShardElectWipeNonVoterTwice.cfg`, both of which start past creation.
+- Cache shards. The counter log is checked only without elections
+  (`FelixShardElectWipeNonVoterSetless.cfg`), since `Elections > 0` leaves
+  counters out. A stream's group logs are checked the same way, with the
+  counter log standing for them (`GroupLogs`): one log, not the dead-letter
+  and cursor pair, and the leader waits for a group majority where the code,
+  short of answers once every replica has replied, takes the furthest one.
+- Only the control plane's leader sends a fence without a set, as in the
+  code, where a candidate's fence always carries its set. Such fences are
+  checked only in the configurations without elections.
 
 ### The round that makes a read linearizable
 

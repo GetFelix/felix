@@ -202,8 +202,10 @@ No build reports either yet, so a finalize of either is refused
 (`the_election_features_cannot_be_finalized_yet`), and a new cluster does not
 start with them. A broker that offers the `ELECTION` peer capability reports
 it as `peer_election`, which no build does yet. Finalizing `joint_fence` is
-refused while a serving broker lacks it; `replica_election` is also refused
-before `joint_fence` and its other prerequisites, and until the control plane
+refused while a serving broker lacks it, and even when none does until the
+control plane re-admits learners and placement skips them (#1737);
+`replica_election` is also refused before `joint_fence` and its other
+prerequisites, and until the control plane
 has the metadata level for the pending replica set (see
 [Moving a shard](#moving-a-shard)) and adoption (see [Adopting an elected
 leader](#adopting-an-elected-leader)), 21 under Raft on every member. The
@@ -758,6 +760,16 @@ for each replica, by node id. The promoted leader's fence counts a replica only
 from that copy (`docs/replication-design.md`, "Fencing a promotion"). Every
 other write leaves it out. Postgres keeps it only for the generation that wrote
 it, and the Raft store writes it only at metadata level 16.
+
+Every placement write, including creation, moves and operator steps, also
+carries `member_storage_ids`: the storage id each member of the set has
+registered, by node id. A member that registered none is left out. A broker
+uses it to tell that it lost its storage: if the set names a different id
+for it, it stops voting until it has caught up (`docs/replication-design.md`,
+"A copy that lost its storage does not vote"). The promotion fence never
+reads it, because a registered id is not the id a report vouched for.
+Postgres keeps it only for the generation that wrote it (migration 0039), and
+the Raft store writes it only at metadata level 22.
 
 States are `assigning` (placement decided, the leader has not confirmed),
 `active` (the leader is serving), and `draining` (the leader has been told to

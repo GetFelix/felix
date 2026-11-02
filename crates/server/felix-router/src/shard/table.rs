@@ -51,6 +51,7 @@ impl RoutingTable {
                     routing: ShardRouting::Modulo,
                     incarnation: 0,
                     fence_storage_ids: BTreeMap::new(),
+                    member_storage_ids: BTreeMap::new(),
                     pending: None,
                 }),
             nodes,
@@ -74,6 +75,7 @@ impl RoutingTable {
             routing,
             incarnation,
             fence_storage_ids,
+            member_storage_ids,
             pending,
         } in assignments
         {
@@ -119,6 +121,8 @@ impl RoutingTable {
                     incarnation,
                     fence_storage_ids: (!fence_storage_ids.is_empty())
                         .then(|| Arc::new(fence_storage_ids)),
+                    member_storage_ids: (!member_storage_ids.is_empty())
+                        .then(|| Arc::new(member_storage_ids)),
                     pending: pending.map(Arc::new),
                 },
             );
@@ -276,6 +280,12 @@ pub struct Route {
     /// assignment counts a replica's fence answer only from that copy. `None`
     /// on every other assignment, and from a control plane that sends none.
     pub fence_storage_ids: Option<Arc<BTreeMap<String, String>>>,
+    /// The storage identity each member of the set registered with, by node
+    /// id, as of the assignment's write. Unlike `fence_storage_ids` it is on
+    /// every assignment a current control plane writes, so a copy can tell
+    /// from the set it learns whether it is the copy that set names. `None`
+    /// from a control plane that sends none.
+    pub member_storage_ids: Option<Arc<BTreeMap<String, String>>>,
     /// A set change the control plane has recorded and not yet taken. While
     /// it is pending, `replicas` are the pending set's followers and this
     /// names the set being left.
@@ -313,6 +323,8 @@ pub struct PlacedSet {
     pub successor: Option<String>,
     /// See [`Route::fence_storage_ids`]; empty for none.
     pub storage_ids: BTreeMap<String, String>,
+    /// See [`Route::member_storage_ids`]; empty for none.
+    pub member_storage_ids: BTreeMap<String, String>,
 }
 
 /// One assignment as the table takes it.
@@ -330,6 +342,8 @@ pub struct Placed {
     pub incarnation: u64,
     /// See [`Route::fence_storage_ids`]; empty for none.
     pub fence_storage_ids: BTreeMap<String, String>,
+    /// See [`Route::member_storage_ids`]; empty for none.
+    pub member_storage_ids: BTreeMap<String, String>,
     /// See [`Route::pending`].
     pub pending: Option<PendingChange>,
 }
