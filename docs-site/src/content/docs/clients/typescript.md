@@ -727,16 +727,17 @@ A `CursorError` says where you can resume instead of leaving you to guess:
 ```ts
 import { CursorError } from "felix-client";
 
-const start = 7n; // for example, a checkpoint plus one
+let start = 7n; // for example, a checkpoint plus one
 try {
-  await client.subscribe("t1", "default", "orders", start);
+  await using events = await client.subscribe("t1", "default", "orders", start);
+  // ... read from events
 } catch (err) {
   if (!(err instanceof CursorError)) throw err;
   console.warn(
     `offset ${err.requested} is ${err.reason}; resuming at ${err.available}`,
     err.trimHeaders?.toString("utf8"),
   );
-  await client.subscribe("t1", "default", "orders", err.available);
+  if (err.available !== undefined) start = err.available; // accept the gap, then subscribe again
 }
 ```
 

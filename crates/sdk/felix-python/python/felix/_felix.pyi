@@ -27,13 +27,15 @@ class ConnectionError(FelixError): ...
 class AuthError(FelixError): ...
 class NotFoundError(FelixError): ...
 class CursorError(FelixError):
-    """The requested start offset is not available. Nothing was read."""
+    """The requested start offset is not available. Nothing was read.
 
-    reason: Literal["too_old", "in_future"]
+    The fields are ``None`` only for a cursor error that arrived as text, with no details."""
+
+    reason: Literal["too_old", "in_future"] | None
     """``too_old``: retention or a head trim discarded it. ``in_future``: it is past the tail."""
-    requested: int
+    requested: int | None
     """The offset that was asked for."""
-    available: int
+    available: int | None
     """The nearest offset that would have worked: the oldest retained for
     ``too_old``, the tail for ``in_future``. Resume here to accept the gap."""
     trim_headers: bytes | None

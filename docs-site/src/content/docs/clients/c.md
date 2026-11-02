@@ -1189,16 +1189,17 @@ resume. It fills a `FelixCursorError`:
   offset) or `FELIX_CURSOR_IN_FUTURE` (it is past the tail).
 - `requested` is the offset you asked for.
 - `available` is the nearest offset that would have worked: the oldest retained
-  for too old, the tail for in the future. Resume from it to accept the gap.
+  after `FELIX_CURSOR_TOO_OLD`, the tail after `FELIX_CURSOR_IN_FUTURE`. Resume
+  from it to accept the gap.
 - `has_trim_headers`, `trim_headers` and `trim_headers_len` hold the headers a
   [head trim](#trimming-a-shards-head) was written with, so a reader can tell
   who trimmed past it. They are empty when retention set the floor.
 
-Read it where you see the status: inside the callback, or right after a call
-that returned `FELIX_STATUS_CURSOR`. The details belong to the calling thread
+Read it inside the callback that receives `FELIX_STATUS_CURSOR`. The details
+belong to the calling thread
 and `trim_headers` is valid only until the callback returns, so copy what you
-keep. On any other thread, or after any other Felix call, the function returns
-false.
+keep. On any other thread the function returns false, and so it does for the
+rare cursor error that arrives as text with no details.
 
 ```c
 void on_subscribed(void *user_data, FelixStatus status, const char *message,
@@ -1208,7 +1209,7 @@ void on_subscribed(void *user_data, FelixStatus status, const char *message,
   if (status == FELIX_STATUS_CURSOR) {
     FelixCursorError why;
     if (felix_last_cursor_error(&why)) {
-      printf("offset %" PRIu64 " is %s; resuming from %" PRIu64 "\n", why.requested,
+      printf("offset %" PRIu64 " is %s; resume from %" PRIu64 "\n", why.requested,
              why.reason == FELIX_CURSOR_TOO_OLD ? "gone" : "not written yet",
              why.available);
     }

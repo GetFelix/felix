@@ -745,13 +745,14 @@ A `CursorError` says where you can resume instead of leaving you to guess:
 ```python
 start = 7  # for example, a checkpoint plus one
 try:
-    events = client.subscribe("t1", "default", "orders", start=start)
+    with client.subscribe("t1", "default", "orders", start=start) as events:
+        ...
 except felix.CursorError as refused:
     log.warning(
         "offset %s is %s; resuming at %s (trim headers: %r)",
         refused.requested, refused.reason, refused.available, refused.trim_headers,
     )
-    events = client.subscribe("t1", "default", "orders", start=refused.available)
+    start = refused.available  # accept the gap, then subscribe again from here
 ```
 
 Never match on the message. It is prose and it will be reworded; match on the

@@ -178,18 +178,19 @@ export declare class AuthError extends FelixError {}
 export declare class NotFoundError extends FelixError {}
 /**
  * The requested start offset is not available: retention or a head trim
- * discarded it, or it is past the tail.
+ * discarded it, or it is past the tail. The fields are `undefined` only for an
+ * error that arrived as text, with no details.
  */
 export declare class CursorError extends FelixError {
   /** `too_old` (discarded) or `in_future` (past the tail). */
-  readonly reason: "too_old" | "in_future";
+  readonly reason?: "too_old" | "in_future";
   /** The offset that was asked for. */
-  readonly requested: bigint;
+  readonly requested?: bigint;
   /**
    * The nearest offset that would have worked: the oldest retained for
    * `too_old`, the tail for `in_future`. Resume from here to accept the gap.
    */
-  readonly available: bigint;
+  readonly available?: bigint;
   /**
    * For `too_old` below a head trim's floor, the headers the trim was written
    * with, so a reader can tell who trimmed past it. `undefined` for a floor

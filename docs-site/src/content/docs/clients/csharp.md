@@ -637,13 +637,13 @@ it is idempotent. Cancellation is an `OperationCanceledException`, not a
 
 A subscribe or read that starts at an offset the stream cannot serve fails with
 `Status == FelixStatus.Cursor`, and `FelixException.Cursor` says where to resume. It is
-null for every other status.
+null for every other status, and for the rare cursor error that arrives as text with no details.
 
 - `Reason` is `CursorReason.TooOld` (retention or a head trim discarded the offset) or
   `CursorReason.InFuture` (it is past the tail).
 - `Requested` is the offset you asked for.
-- `Available` is the nearest offset that would have worked: the oldest retained for
-  `TooOld`, the tail for `InFuture`. Resuming from it takes the smallest gap.
+- `Available` is the nearest offset that would have worked: the oldest retained after
+  `TooOld`, the tail after `InFuture`. Resuming from it takes the smallest gap.
 - `TrimHeaders` holds what a [head trim](#trimming-a-shards-head) was written with, so a
   reader can tell who trimmed past it. It is null when retention set the floor.
 

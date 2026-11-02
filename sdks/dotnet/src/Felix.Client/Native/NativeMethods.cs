@@ -959,13 +959,19 @@ internal static unsafe partial class NativeMethods
             return null;
         }
 
-        ReadOnlyMemory<byte>? headers = native.HasTrimHeaders == 0
-            ? null
-            : new ReadOnlySpan<byte>(native.TrimHeaders, checked((int)native.TrimHeadersLen)).ToArray();
+        // Absent (a floor retention set) is null, which is not the same as an empty header.
+        ReadOnlyMemory<byte>? headers = null;
+        if (native.HasTrimHeaders != 0)
+        {
+            headers = new ReadOnlySpan<byte>(native.TrimHeaders, checked((int)native.TrimHeadersLen)).ToArray();
+        }
+
+        // Unchecked, as every offset here is: an offset past long.MaxValue must not turn the
+        // refusal into an OverflowException.
         return new CursorDetails(
             native.Reason == 0 ? CursorReason.TooOld : CursorReason.InFuture,
-            checked((long)native.Requested),
-            checked((long)native.Available),
+            unchecked((long)native.Requested),
+            unchecked((long)native.Available),
             headers);
     }
 

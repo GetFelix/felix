@@ -8,7 +8,9 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use felix_client::SubscribeCursorError;
 
 use crate::error::{CursorDetail, clear_last_error, set_last_cursor, set_last_error};
-use crate::status::{FELIX_STATUS_INVALID_ARGUMENT, FELIX_STATUS_PANIC, FelixStatus, classify};
+use crate::status::{
+    FELIX_STATUS_CURSOR, FELIX_STATUS_INVALID_ARGUMENT, FELIX_STATUS_PANIC, FelixStatus, classify,
+};
 
 /// Why a call failed: the status to return and the message to record, and
 /// for a refused cursor where the reader can resume.
@@ -31,13 +33,20 @@ impl Failure {
 
 impl From<anyhow::Error> for Failure {
     fn from(err: anyhow::Error) -> Self {
+        let status = classify(&err);
+        // Only when the status says so: a coded broker error wins over a
+        // cursor error elsewhere in the chain.
+        let cursor = (status == FELIX_STATUS_CURSOR)
+            .then(|| {
+                err.chain()
+                    .find_map(|e| e.downcast_ref::<SubscribeCursorError>())
+                    .map(CursorDetail::from)
+            })
+            .flatten();
         Self {
-            status: classify(&err),
+            status,
             message: format!("{err:#}"),
-            cursor: err
-                .chain()
-                .find_map(|e| e.downcast_ref::<SubscribeCursorError>())
-                .map(CursorDetail::from),
+            cursor,
         }
     }
 }
