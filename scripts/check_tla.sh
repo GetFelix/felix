@@ -274,6 +274,7 @@ expectations=(
   "FelixShardElectWipeNonVoterNoCatchUp violates OneLeaderPerGeneration"
   "FelixShardElectWipeNonVoterFailsOver violates NoFailoverBesideNonVoter"
   "FelixShardElectWipeNonVoterPromotes violates OneLeaderPerGeneration"
+  "FelixShardElectWipeNonVoterDropsLearners violates PlacementKnowsLearners"
   "FelixShardElectWipeNonVoterCreates pass"
   "FelixShardElectWipeNonVoterCreatesLearnerAcks violates AckedHeldByLeader"
   "FelixShardElectWipeNonVoterCreateCountsEmpty violates OneLeaderPerGeneration"
