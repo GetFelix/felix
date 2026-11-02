@@ -1,8 +1,10 @@
 # MQTT ingress: design
 
 Status: accepted in #1685 on 2026-10-31, with the decisions listed at the end.
-The packet codec, `felix-mqtt-wire`, is built (#1687). The listener and the rest
-are not; the work is tracked as slices #1688 to #1698.
+The packet codec, `felix-mqtt-wire`, is built (#1687), and so is the listener
+skeleton, which authenticates connections and refuses every publish and
+subscribe (#1689, `docs/mqtt-compatibility.md`). The rest is not; the work is
+tracked as slices #1688 and #1690 to #1698.
 
 Devices speak MQTT, and a Felix broker cannot accept an MQTT connection today.
 This page designs a native MQTT listener, built the way the Kafka listener is

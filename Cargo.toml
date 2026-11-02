@@ -16,6 +16,7 @@ members = [
   "crates/server/felix-storage",
   "crates/server/felix-broker",
   "crates/server/felix-kafka",
+  "crates/server/felix-mqtt",
   "crates/server/felix-replication",
   # What applications link.
   "crates/sdk/felix-client",

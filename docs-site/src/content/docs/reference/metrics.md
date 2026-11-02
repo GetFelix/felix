@@ -280,6 +280,16 @@ Served by the Kafka-compatible listener. See [Kafka compatibility](/features/kaf
 | `felix_kafka_fetch_waits_total` | counter | `outcome` | Fetches that waited for data, by how the wait ended. |
 | `felix_kafka_fetch_wait_seconds` | histogram | - | How long fetches waited for data. |
 
+## MQTT listener
+
+Served by the MQTT listener, when `FELIX_MQTT_LISTEN` is set. See [MQTT](/features/mqtt/).
+
+| Metric | Type | Labels | Measures |
+| --- | --- | --- | --- |
+| `felix_mqtt_connections` | gauge | - | Open MQTT connections. |
+| `felix_mqtt_connections_total` | counter | - | MQTT connections that reached the connection loop. |
+| `felix_mqtt_refused_total` | counter | `reason` | Connections or requests the listener turned away, by `reason`. The reasons are listed in [observability](/features/observability/). |
+
 ## Control plane: placement
 
 Shard placement and moves, run by the instance holding the placement lease.

@@ -44,6 +44,11 @@ const IDLE_WINDOW: Duration = Duration::from_secs(10);
 /// (cell name, publish batch size, measured messages).
 const CELLS: [(&str, usize, usize); 2] = [("b1", 1, 20_000), ("b64", 64, 80_000)];
 
+/// The same load as `b64` on a broker whose MQTT listener is on and idle. The
+/// gate holds it to `b64` from the same run: a listener nobody uses must cost
+/// the QUIC path nothing.
+const MQTT_IDLE_CELLS: [(&str, usize, usize); 1] = [("b64_mqtt_idle", 64, 80_000)];
+
 fn env_usize(name: &str, default: usize) -> usize {
     std::env::var(name)
         .ok()
@@ -186,26 +191,23 @@ fn median(values: &mut [f64]) -> f64 {
     values[values.len() / 2]
 }
 
-#[tokio::test(flavor = "multi_thread")]
-#[serial]
-#[ignore = "needs valgrind; run by the Instructions per message workflow"]
-async fn broker_instructions_per_message() {
-    let out = std::env::var("FELIX_IPM_OUT").expect("set FELIX_IPM_OUT to the result file");
-    let reps = env_usize("FELIX_IPM_REPS", 5);
-    assert!(reps > 0, "FELIX_IPM_REPS must be at least 1");
-    let commit =
-        std::env::var("FELIX_IPM_COMMIT").expect("set FELIX_IPM_COMMIT to the measured commit");
-    let toolchain =
-        std::env::var("FELIX_IPM_TOOLCHAIN").expect("set FELIX_IPM_TOOLCHAIN to `rustc --version`");
-    let dir = PathBuf::from(
-        std::env::var("FELIX_IPM_DIR")
-            .expect("set FELIX_IPM_DIR to the callgrind output directory"),
-    );
+/// Start a one-node cluster with `env` added to the broker's, measure `cells`
+/// on it, and stop it.
+async fn measure_cells(
+    dir: &Path,
+    reps: usize,
+    env: Vec<(String, String)>,
+    cells: &'static [(&'static str, usize, usize)],
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut broker_env = vec![
+        // A blank directory is how the broker is told to keep nothing on disk.
+        ("FELIX_DURABLE_STORAGE_DIR".to_string(), " ".to_string()),
+    ];
+    broker_env.extend(env);
     let cluster = Cluster::start(ClusterConfig {
         nodes: 1,
         streams: vec![StreamSpec::new(STREAM, SHARDS).in_memory()],
-        // A blank directory is how the broker is told to keep nothing on disk.
-        broker_env: vec![("FELIX_DURABLE_STORAGE_DIR".into(), " ".into())],
+        broker_env,
         // The broker polls the control plane on this timer. Under callgrind
         // the work it does scales with wall time, not messages, so a slow
         // tick keeps it out of the per-message figure.
@@ -215,12 +217,14 @@ async fn broker_instructions_per_message() {
     .await
     .expect("start cluster");
     let pid = cluster.nodes[0].pid().expect("broker pid");
+    let dir = dir.to_path_buf();
 
     // The loadgen and callgrind calls block, and the in-process control plane has
     // to keep serving heartbeats meanwhile.
-    let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value> {
-        let mut cells = serde_json::Map::new();
-        for (name, batch, total) in CELLS {
+    tokio::task::spawn_blocking(move || -> Result<serde_json::Map<String, serde_json::Value>> {
+        let dir = dir.as_path();
+        let mut result = serde_json::Map::new();
+        for &(name, batch, total) in cells {
             let warm_total = total * WARMUP_FACTOR;
             let warm = run_ingest(&cluster, batch, warm_total, false)?;
             if (warm as usize) < warm_total * 99 / 100 {
@@ -229,7 +233,7 @@ async fn broker_instructions_per_message() {
             // What the idle broker spends per second (timers, polling), so it can
             // be taken off each repetition in proportion to the time it ran.
             let idle_start = Instant::now();
-            let (idle_ir, _) = count_instructions(&dir, pid, || {
+            let (idle_ir, _) = count_instructions(dir, pid, || {
                 std::thread::sleep(IDLE_WINDOW);
                 Ok(0)
             })?;
@@ -238,7 +242,7 @@ async fn broker_instructions_per_message() {
             for rep in 0..reps {
                 let started = Instant::now();
                 let (u, acked) =
-                    count_instructions(&dir, pid, || run_ingest(&cluster, batch, total, true))?;
+                    count_instructions(dir, pid, || run_ingest(&cluster, batch, total, true))?;
                 if acked != total as u64 {
                     bail!("cell {name} rep {rep}: acked {acked} of {total}");
                 }
@@ -260,7 +264,7 @@ async fn broker_instructions_per_message() {
                     .fold((f64::MAX, 0f64), |(lo, hi), x| (lo.min(*x), hi.max(*x)));
                 (hi - lo) / lo * 100.0
             };
-            cells.insert(
+            result.insert(
                 name.to_string(),
                 serde_json::json!({
                     "batch": batch,
@@ -277,15 +281,51 @@ async fn broker_instructions_per_message() {
                 }),
             );
         }
-        Ok(serde_json::json!({
-            "arch": std::env::consts::ARCH,
-            "commit": commit,
-            "toolchain": toolchain,
-            "cells": cells,
-        }))
+        Ok(result)
     })
     .await
     .expect("join")
-    .expect("measurement");
+    .expect("measurement")
+}
+
+/// A TCP port nothing is listening on right now.
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("bind")
+        .local_addr()
+        .expect("addr")
+        .port()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+#[ignore = "needs valgrind; run by the Instructions per message workflow"]
+async fn broker_instructions_per_message() {
+    let out = std::env::var("FELIX_IPM_OUT").expect("set FELIX_IPM_OUT to the result file");
+    let reps = env_usize("FELIX_IPM_REPS", 5);
+    assert!(reps > 0, "FELIX_IPM_REPS must be at least 1");
+    let commit =
+        std::env::var("FELIX_IPM_COMMIT").expect("set FELIX_IPM_COMMIT to the measured commit");
+    let toolchain =
+        std::env::var("FELIX_IPM_TOOLCHAIN").expect("set FELIX_IPM_TOOLCHAIN to `rustc --version`");
+    let dir = PathBuf::from(
+        std::env::var("FELIX_IPM_DIR")
+            .expect("set FELIX_IPM_DIR to the callgrind output directory"),
+    );
+    let mut cells = measure_cells(&dir, reps, Vec::new(), &CELLS).await;
+    let mqtt_env = vec![
+        (
+            "FELIX_MQTT_LISTEN".to_string(),
+            format!("127.0.0.1:{}", free_port()),
+        ),
+        ("FELIX_MQTT_TLS".to_string(), "false".to_string()),
+    ];
+    cells.extend(measure_cells(&dir, reps, mqtt_env, &MQTT_IDLE_CELLS).await);
+    let result = serde_json::json!({
+        "arch": std::env::consts::ARCH,
+        "commit": commit,
+        "toolchain": toolchain,
+        "cells": cells,
+    });
     std::fs::write(&out, serde_json::to_string_pretty(&result).unwrap()).expect("write result");
 }

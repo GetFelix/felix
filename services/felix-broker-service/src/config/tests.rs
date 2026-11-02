@@ -8,6 +8,7 @@ mod kafka;
 mod limits;
 mod listeners;
 mod membership;
+mod mqtt;
 mod peer_transport;
 mod printing;
 mod tls;

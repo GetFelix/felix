@@ -69,6 +69,7 @@ felix-common = { path = "../../crates/server/felix-common", version = "0.7.0-pre
 felix-client = { path = "../../crates/sdk/felix-client", version = "0.7.0-preview.3" }
 felix-authz = { path = "../../crates/server/felix-authz", version = "0.7.0-preview.3" }
 felix-kafka = { path = "../../crates/server/felix-kafka", version = "0.7.0-preview.3" }
+felix-mqtt = { path = "../../crates/server/felix-mqtt", version = "0.7.0-preview.3" }
 felix-transport = { path = "../../crates/protocol/felix-transport", version = "0.7.0-preview.3" }
 felix-wire = { path = "../../crates/protocol/felix-wire", version = "0.7.0-preview.3" }
 felix-storage = { path = "../../crates/server/felix-storage", version = "0.7.0-preview.3" }
@@ -117,6 +118,8 @@ libc = { workspace = true }
 tempfile = { workspace = true }
 
 [dev-dependencies]
+# The MQTT tests speak to the listener with the real codec.
+felix-mqtt-wire = { path = "../../crates/protocol/felix-mqtt-wire", version = "0.7.0-preview.3" }
 tempfile = { workspace = true }
 # The Kafka tests run kcat in a container.
 tokio = { workspace = true, features = ["process", "test-util"] }
