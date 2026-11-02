@@ -13,8 +13,9 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   A_SHA: f8f023bded359963b9b61c3990492c10ea1cd00c
-  ROUNDS: "6"
-  STORAGE_RUNS: "3"
+  ROUNDS: "8"
+  BENCH_STEADY_SECS: "40"
+  STORAGE_RUNS: "0"
 
 jobs:
   ab:
@@ -98,7 +99,7 @@ jobs:
             FELIX_BROKER_WRAPPER=$p/wrap-$side.sh BENCH_SIDE=$side BENCH_ROUND=$round \
               timeout 1500 $p/bin/replicated_bench --ignored --nocapture --test-threads=1 2>&1 \
               | tee $p/out/cluster-$round-$side.log || echo "::warning::round $round side $side failed"
-            grep -h '^BENCH_JSON ' $p/out/cluster-$round-$side.log | sed 's/^BENCH_JSON //' >> $p/out/cluster.jsonl || true
+            grep -h 'BENCH_JSON ' $p/out/cluster-$round-$side.log | sed 's/^.*BENCH_JSON //' >> $p/out/cluster.jsonl || true
             echo "::endgroup::"
           }
           for round in $(seq 1 "$ROUNDS"); do

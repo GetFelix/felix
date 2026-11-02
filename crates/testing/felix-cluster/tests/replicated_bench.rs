@@ -296,7 +296,8 @@ async fn first_ack(
     stream: String,
     created_at: Instant,
 ) -> Option<u64> {
-    let deadline = created_at + Duration::from_secs(180);
+    let deadline = created_at + Duration::from_secs(env_usize("BENCH_FIRST_ACK_SECS", 60) as u64);
+    let mut last = String::new();
     while Instant::now() < deadline {
         let outcome = tokio::time::timeout(
             Duration::from_secs(10),
@@ -309,13 +310,20 @@ async fn first_ack(
             ),
         )
         .await;
-        if matches!(outcome, Ok(Ok(_))) {
-            return Some(created_at.elapsed().as_micros() as u64);
+        match outcome {
+            Ok(Ok(_)) => return Some(created_at.elapsed().as_micros() as u64),
+            Ok(Err(err)) => last = format!("{err:?}"),
+            Err(_) => last = "timed out after 10 s".to_string(),
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    if FIRST_ERRORS.fetch_add(1, Ordering::Relaxed) < 5 {
+        println!("first ack {stream}: gave up; last: {last}");
+    }
     None
 }
+
+static FIRST_ERRORS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 #[serial]
 #[ignore = "measurement, not an assertion; see the module docs"]
