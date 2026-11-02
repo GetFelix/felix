@@ -781,36 +781,75 @@ that fails or finds no assignment refuses with `StaleRoute`, retryably,
 writing nothing. The check only adds refusals to the view's, so it cannot
 make a copy take anything it would have refused before.
 
-No peer request waits on this read
+A new shard's copy skips the read. When the view holds the shard's
+creation, generation 1, naming this copy under the storage id it holds now,
+and the request is from the leader it names, the copy answers from its
+ballot alone. That set was written after this storage id registered, so
+after any wipe of this broker: no earlier copy here ever held the shard,
+and this one lost no promise for the read to stand in for. Its empty
+ballot is true, as on any new follower, under elections too. This is the
+same test `is_wiped_learner` uses for the shard's creation. A set at a
+later generation, an older control plane's set with no storage ids, or one
+naming another id is no such evidence, and the read decides.
+
+No peer request waits on the read
 ([#1791](https://github.com/GetFelix/felix/issues/1791)). A peer lane
 answers one request at a time, so a control-plane round trip there would
-hold up every other shard's fence or batch queued behind it, and a bulk
-create puts one in front of each new shard's first fence. Instead a
-background task reads for the shard, one per shard at a time, and the copy
-decides from the last answer it holds. With no fresh answer it refuses with
-`StaleRoute`, retryably, and the leader's retry finds the answer
-(`ConfirmedReads` in `crates/server/felix-replication/src/confirmed.rs`).
-Looking the answer up costs a lock-free map load and a few atomics, with
-no lock and no allocation; a copy that holds a promise skips it entirely.
-At most 16 reads run at once across all shards, so a bulk create does not
-hit the control plane with hundreds at the same moment.
+hold up every other shard's fence or batch queued behind it. Instead a
+background task reads for the shard, and the copy decides from the last
+answer it holds. With no fresh answer it refuses with `StaleRoute`,
+retryably, and the leader's retry finds the answer (`ConfirmedReads` in
+`crates/server/felix-replication/src/confirmed.rs`).
+
+```mermaid
+flowchart TD
+    R[Fence, batch, bootstrap or rebuild<br/>for a copy] --> H{Promise on disk<br/>and not a learner?}
+    H -- yes --> B[The ballot answers]
+    H -- no --> C{View holds the creation<br/>naming this storage id?}
+    C -- yes --> B
+    C -- no --> F{Fresh confirmed<br/>answer held?}
+    F -- yes --> D[Decide from the answer]
+    F -- no --> S[Refuse with StaleRoute<br/>and start one background read]
+    S -. leader retries .-> R
+```
+
+Each step is cheap. A copy that holds a promise checks its ballot and
+nothing else, as before. The creation test is a routing-view lookup.
+Looking up a held answer is a lock-free map load and a few atomics, with no
+lock and no allocation. Only the first request for a shard copies the map
+to add it. A shard has at most one read in flight, and at most 16 run at
+once across all shards, so a bulk create does not hit the control plane
+with hundreds at the same moment.
 
 The task refreshes the answer halfway through its life, and only while
-the shard is still being asked about, so a new shard's copy costs one
-read. A failed read or an unassigned shard clears the answer and is not
-retried on its own: the next request starts another read, so a shard
-nobody can answer costs one read per request, as before.
+the shard is still being asked about. A failed read or an unassigned shard
+clears the answer and is not retried on its own: the next request starts
+another read.
 
 How fresh an answer must be depends on elections. Without them an answer
-is used for 10 s. That is safe because the answers live in memory: every
-one was read after the restart, so it is at least as new as any promise
-the wipe could have cost, which is all the check needs. A read that names
-generation `g` refuses every older generation and every other leader at
-`g`, and the control plane never names a second leader at a generation, so
-an old answer never refuses the current leader. Under elections an answer
-is used for 500 ms, the bound the learner's cache already had, and the
-only thing an answer can let through there is the leader it names at its
-own generation. A control plane
+is used for 10 s, and its age is not what makes it safe. Answers live in
+memory, so every one was read after the restart, after any wipe, and names
+the newest generation the copy lost a promise for or a later one. That is
+all the check needs: the model (`Forget` under `PromiseFromRoutes` in
+`docs/formal/FelixShard.tla`) seeds the view at the wipe and never
+refreshes it, which is older than any answer here, and finds nothing. An
+old answer can let through a leader deposed after it was read, at the
+generation it names. So does the model's view, and for a learner that is
+`CatchUpFromDeposed`, which the model also explores. An old answer never
+refuses the current leader: it refuses older generations and other leaders
+at its own, and the control plane never names two leaders at one
+generation. The 10 s bound is for liveness, so a control plane upgraded to
+serve the read is asked again soon. Under elections an answer is used for
+500 ms, the bound the learner's cache already had, since a promise to a
+candidate is in no read.
+
+Evidence (`replica/tests/fence.rs`):
+`a_new_shards_first_fence_needs_no_confirmed_read`,
+`a_later_set_or_another_storage_id_still_needs_the_read`,
+`confirmed_reads_for_new_shards_do_not_hold_up_the_lane`,
+`one_confirmed_read_answers_every_request_for_a_shard`.
+
+A control plane
 that does not serve the read (404, or 501 while its Raft leader predates
 it) leaves the view to answer alone, as before, so a mixed-version cluster
 behaves as it did until every control-plane member has the route. A
@@ -824,10 +863,9 @@ re-admitted; see [A copy that lost its storage does not
 vote](#a-copy-that-lost-its-storage-does-not-vote).
 
 The cost is a fence round trip or a few while a follower's watch catches up
-or its confirmed read comes back (a new shard opens one fence retry, about
-200 ms, later than with a read on the lane), and about one control-plane
-read per copy with no promise: a wiped one, or a new shard's first
-fence. With one replica of a
+or its confirmed read comes back, and about one control-plane read per
+wiped copy. A new shard's copy costs neither once its view has the
+shard. With one replica of a
 set of three wiped the other two make the majority anyway. With a majority
 wiped at once their votes wait for their views; once they have them they
 answer, so the shard is not stuck, but what it acknowledged was on those

@@ -1192,3 +1192,42 @@ async fn a_stale_learner_flag_in_the_set_being_left_does_not_demote_the_copy() {
             .await;
     assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
 }
+
+/// What a learner's batch costs, the one copy with no promise that takes
+/// batches, for the pull request's numbers: `cargo test -p felix-replication
+/// --release --lib learner_batch_cost -- --ignored --nocapture`.
+#[tokio::test]
+#[ignore = "a timing report, not a check"]
+async fn learner_batch_cost() {
+    const BATCHES: u64 = 2_000;
+    let (broker, _dir) = broker_with_storage().await;
+    let reads = Arc::new(CountingConfirmed::default());
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 6))
+        .with_fleet(marks(true))
+        .with_local_storage(StorageId::from_bytes([9; 16]))
+        .with_confirmed_routes(Arc::clone(&reads) as _);
+    wiped_at_5(&handler).await;
+    let answer =
+        settled(|| handler.apply(SENDER, stamped(6, 0, &["a"]), felix_broker::LogKind::Stream))
+            .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    let started = std::time::Instant::now();
+    for batch_no in 1..=BATCHES {
+        let answer = handler
+            .apply(
+                SENDER,
+                stamped(6, batch_no, &["a"]),
+                felix_broker::LogKind::Stream,
+            )
+            .await;
+        assert!(
+            matches!(answer, InternalMessage::ReplicateOk(_)),
+            "{answer:?}"
+        );
+    }
+    let apply = started.elapsed() / BATCHES as u32;
+    eprintln!("learner batch apply (no promise, 1 record) {apply:?}");
+}
