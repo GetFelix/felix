@@ -157,9 +157,12 @@ impl ForwardingHandler {
         };
         let published = self
             .broker
-            // A forward carries no headers: the ingress broker refuses to send one
-            // that has them.
-            .publish_batch_with_outcome(&handle, &publish.payloads, publisher.as_ref(), None)
+            .publish_batch_with_outcome(
+                &handle,
+                &publish.payloads,
+                publisher.as_ref(),
+                publish.headers.as_deref(),
+            )
             .await;
         drop(fenced);
         match published {

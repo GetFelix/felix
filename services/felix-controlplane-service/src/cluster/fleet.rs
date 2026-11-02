@@ -267,7 +267,7 @@ pub(crate) const JOINT_FENCE_READY: bool = false;
 /// operator's: it grows every record by its publisher's id and keeps
 /// principal ids in the log, an opt-in a lone broker also leaves off unless
 /// `FELIX_RECORD_PUBLISHERS` asks for it.
-pub(crate) const NEW_CLUSTER: [felix_common::fleet::FleetFeature; 10] = [
+pub(crate) const NEW_CLUSTER: [felix_common::fleet::FleetFeature; 11] = [
     felix_common::fleet::GENERATION_START,
     felix_common::fleet::MAJORITY_ACK,
     felix_common::fleet::LEASE_FREE_READS,
@@ -278,6 +278,7 @@ pub(crate) const NEW_CLUSTER: [felix_common::fleet::FleetFeature; 10] = [
     felix_common::fleet::STREAM_INCARNATIONS,
     felix_common::fleet::CACHE_INCARNATIONS,
     felix_common::fleet::HEAD_TRIM,
+    felix_common::fleet::RECORD_HEADERS,
 ];
 
 /// Whether `store` is a cluster created on this release, so far untouched: no

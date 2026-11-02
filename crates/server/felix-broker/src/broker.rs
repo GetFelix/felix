@@ -275,10 +275,9 @@ impl Broker {
     /// Accept record headers on publishes whenever `gate` says so.
     ///
     /// Asked on every durable publish. A durable record with headers is
-    /// storage format v8, which an older build refuses to open, and
-    /// replication does not ship headers, so a cluster member says yes only
-    /// when its fleet has finalized `record_headers`. Only the first call
-    /// counts.
+    /// storage format v8, which an older build refuses to open, so a cluster
+    /// member says yes only when its fleet has finalized `record_headers`.
+    /// Only the first call counts.
     pub fn record_headers_when(&self, gate: impl Fn() -> bool + Send + Sync + 'static) {
         let _ = self.record_headers.set(NodeGate(Arc::new(gate)));
     }

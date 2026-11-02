@@ -91,6 +91,16 @@ fn this_build_reports_what_it_implements() {
 }
 
 #[test]
+fn record_headers_is_implemented() {
+    assert!(IMPLEMENTED.contains(&RECORD_HEADERS));
+    assert!(
+        FleetGate::for_this_build()
+            .reported()
+            .contains("record_headers")
+    );
+}
+
+#[test]
 fn feature_names_are_snake_case() {
     for feature in IMPLEMENTED {
         assert!(

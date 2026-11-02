@@ -1993,6 +1993,40 @@ Reconciling that needs the two sides to agree on where their histories diverge,
 which is what the generation of each record establishes; see
 [Divergence and truncation](#divergence-and-truncation) (#406).
 
+**What a batch carries.** Every field a stream's log keeps for a record travels
+with it: the payload, the producer mark, the publisher, the time the leader
+stored it, the generation that wrote it, and the key-and-headers block a client
+sent (`ReplicateRecords.headers`, kind `ReplicateHeaderedRecords`). The follower
+stores them at the leader's offset, so a record read back from either log is the
+same record, and a promoted follower delivers the headers the old leader did.
+The promotion catch-up fetch asks for the blocks too (`ReplicateHeaderedFetch`),
+and a replica refuses a fetch that did not ask when its page holds one, because
+the new leader would otherwise take those records bare.
+
+The batch checksum covers the blocks, so a block altered in transit is refused
+as corrupt, and a follower whose stored record differs from the leader's only in
+its block answers `LogConflict` on a resend, like any other disagreement. Only
+a stream's log has blocks: a follower refuses a headered batch for a cache, a
+counter or a group log as `Malformed`.
+
+A follower that did not offer `RECORD_HEADERS` is an older build and cannot read
+a block. The leader ships it what precedes the first record with one and then
+holds there, counting `headers_unsupported`, because sending the record bare
+would let the follower acknowledge a record unlike the leader's. The shard
+cannot rebuild, drain or move that follower past the record until it is
+upgraded. A cluster accepts headers only once its fleet has finalized
+`record_headers`, which needs every broker to report it, so in a finalized
+fleet no follower is held this way.
+
+> `a_follower_that_reads_headers_is_sent_them`,
+> `a_follower_without_the_headers_offer_is_still_held`,
+> `a_follower_on_legacy_frames_is_held_at_a_record_with_headers`,
+> `a_follower_stores_the_leaders_header_blocks`,
+> `a_tail_taken_from_a_replica_keeps_its_header_blocks`,
+> `a_fetch_that_did_not_ask_for_blocks_is_refused_a_page_that_has_one`,
+> `header_blocks_are_stored_as_shipped_and_compared_on_a_resend`,
+> `the_checksum_changes_when_only_a_header_differs`
+
 **Replication never waits behind a forwarded publish.** A leader that was sent
 a forwarded `Quorum` publish answers it only once its replication reaches a
 majority. If that replication could queue behind forwards on a peer stream

@@ -881,6 +881,7 @@ async fn a_broker_without_election_refuses_the_election_kinds() {
         generations: None,
         times: None,
         set_generation: Some(3),
+        headers: None,
     });
     let pre_vote = InternalMessage::PreVote(PreVote {
         correlation_id: 3,
@@ -940,4 +941,20 @@ fn election_is_offered_only_when_switched_on_with_the_fence() {
             .capabilities()
             .contains(PeerCapabilities::ELECTION)
     );
+}
+
+/// A broker offers `RECORD_HEADERS` with what a headered batch rides on, with
+/// the fence on or off: the timed layout needs the labels and the times.
+#[test]
+fn record_headers_are_offered_with_the_labels_and_times_they_ride_on() {
+    for fence in [true, false] {
+        let offered = PeerTransportConfig {
+            fence,
+            ..PeerTransportConfig::default()
+        }
+        .capabilities();
+        assert!(offered.contains(PeerCapabilities::RECORD_HEADERS));
+        assert!(offered.contains(PeerCapabilities::GENERATION_LABELS));
+        assert!(offered.contains(PeerCapabilities::RECORD_TIMES));
+    }
 }

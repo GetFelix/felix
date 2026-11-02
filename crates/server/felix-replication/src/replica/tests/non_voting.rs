@@ -313,6 +313,7 @@ async fn a_readmitted_copy_keeps_the_ballot_its_catch_up_took() {
 /// storage ids, and the copy would wait for a set that names its own.
 fn catch_up_to_7() -> ReplicateRecords {
     ReplicateRecords {
+        headers: None,
         set_generation: None,
         generations: Some(vec![
             GenerationStart {
@@ -496,6 +497,7 @@ async fn a_copy_is_readmitted_only_once_its_counter_log_caught_up() {
     assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized, "{answer:?}");
 
     let unstamped = ReplicateRecords {
+        headers: None,
         set_generation: None,
         ..stamped(6, 0, &["d1"])
     };

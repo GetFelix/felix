@@ -255,7 +255,8 @@ while let Some(event) = orders.next_event().await? {
   `RecordHeadersError::ReservedName` before anything is sent.
 - **Older brokers.** A publish with headers against a broker that does not
   accept them (an older one, a single broker run with
-  `FELIX_RECORD_HEADERS=false`, or for now any broker in a cluster) fails with
+  `FELIX_RECORD_HEADERS=false`, or a broker in a cluster whose fleet has not
+  finalized `record_headers`) fails with
   `RecordHeadersError::Unsupported` and sends nothing, so headers are never
   dropped quietly. A publish with no headers works
   everywhere. On the read side `event.headers` is `None` there.

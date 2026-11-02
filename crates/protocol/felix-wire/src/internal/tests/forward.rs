@@ -109,6 +109,7 @@ fn an_over_long_credential_is_refused_on_encode() {
         ack: AckMode::None,
         payloads: Vec::new(),
         credential: "x".repeat(MAX_CREDENTIAL_BYTES + 1),
+        headers: None,
     });
     assert!(matches!(message.encode(), Err(Error::FrameTooLarge)));
 }
@@ -355,4 +356,59 @@ fn an_envelope_around_a_forward_answer_is_refused() {
             answer.kind(),
         );
     }
+}
+
+fn headered_forward(headers: Option<Vec<Option<Bytes>>>) -> InternalMessage {
+    let InternalMessage::ForwardPublish(base) = authorized_forward() else {
+        panic!("a forward");
+    };
+    InternalMessage::ForwardPublish(ForwardPublish {
+        payloads: vec![Bytes::from_static(b"a"), Bytes::from_static(b"b")],
+        headers,
+        ..base
+    })
+}
+
+/// A forward with a block is its own authorized kind and round-trips; one
+/// with none keeps the kind it always had.
+#[test]
+fn a_forward_with_a_block_is_its_own_kind_and_round_trips() {
+    let message = headered_forward(Some(vec![Some(Bytes::from_static(b"block")), None]));
+    assert_eq!(message.kind(), Kind::HeaderedForwardPublish);
+    assert_eq!(
+        message.required_capability(),
+        Some(PeerCapabilities::RECORD_HEADERS)
+    );
+    let bytes = message.encode().expect("encode");
+    assert_eq!(InternalMessage::decode(bytes).expect("decode"), message);
+
+    let plain = headered_forward(None);
+    let none = headered_forward(Some(vec![None, None]));
+    assert_eq!(none.kind(), Kind::AuthorizedForwardPublish);
+    assert_eq!(
+        none.encode().expect("encode"),
+        plain.encode().expect("encode")
+    );
+}
+
+/// The headers count must match the payloads, on the way out and on the way
+/// in.
+#[test]
+fn forwarded_headers_that_differ_in_count_are_refused() {
+    let short = headered_forward(Some(vec![Some(Bytes::from_static(b"block"))]));
+    assert!(matches!(
+        short.encode(),
+        Err(Error::InvalidRecordHeaders(_))
+    ));
+
+    let good = headered_forward(Some(vec![Some(Bytes::from_static(b"block")), None]))
+        .encode()
+        .expect("encode");
+    let mut forged = good.to_vec();
+    let count_at = forged.len() - (4 + 10 + 1);
+    forged[count_at..count_at + 4].copy_from_slice(&3u32.to_be_bytes());
+    assert!(matches!(
+        InternalMessage::decode(Bytes::from(forged)),
+        Err(Error::InvalidRecordHeaders(_))
+    ));
 }

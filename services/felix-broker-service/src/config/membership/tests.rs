@@ -45,3 +45,12 @@ fn a_broker_reports_that_it_names_start_holders() {
         assert!(features_for(fences, by_lease).contains(start_holders));
     }
 }
+
+/// **A broker reports `record_headers`**, with or without the fence: replication
+/// and forwarding carry the blocks, so a fleet of these can finalize it.
+#[test]
+fn a_broker_reports_record_headers() {
+    let headers = felix_common::fleet::RECORD_HEADERS.name();
+    assert!(features_for(true, false).contains(headers));
+    assert!(features_for(false, true).contains(headers));
+}

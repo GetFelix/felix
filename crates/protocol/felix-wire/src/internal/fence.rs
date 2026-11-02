@@ -105,6 +105,16 @@ impl PeerCapabilities {
     ///
     /// [`ReplicateOk::learner`]: super::ReplicateOk::learner
     pub const LEARNER_ACKS: Self = Self(1 << 15);
+    /// Reads batches that carry each record's key-and-headers block
+    /// ([`ReplicateRecords::headers`]) and stores the blocks with the
+    /// records, answers a headered [`ReplicateFetch`] with them, and reads a
+    /// forwarded publish that carries them ([`ForwardPublish::headers`]). A
+    /// peer that offers it also offers `GENERATION_LABELS` and
+    /// `RECORD_TIMES`: a headered batch travels on the timed layout.
+    ///
+    /// [`ReplicateRecords::headers`]: super::ReplicateRecords::headers
+    /// [`ForwardPublish::headers`]: super::ForwardPublish::headers
+    pub const RECORD_HEADERS: Self = Self(1 << 16);
 
     pub fn from_bits(bits: u64) -> Self {
         Self(bits)
@@ -189,6 +199,10 @@ pub struct ReplicateFetch {
     /// can ask: it travels as `ReplicateTimedFetch`, sent only to a peer that
     /// advertised [`PeerCapabilities::RECORD_TIMES`].
     pub timed: bool,
+    /// Answer with the records' key-and-headers blocks as well. Only a timed
+    /// fetch can ask: it travels as `ReplicateHeaderedFetch`, sent only to a
+    /// peer that advertised [`PeerCapabilities::RECORD_HEADERS`].
+    pub headers: bool,
 }
 
 /// A follower checking that the leader of a shard it follows is reachable.

@@ -188,21 +188,6 @@ impl LaneWork {
                 self.work
                     .spawn(async move { this.publish_idempotent(job, held, lane).await });
             }
-            // Forwarding does not carry headers yet, and a forward that left
-            // them off would tell the client they were kept.
-            PublishTarget::Forward { .. } if job.headers.is_some() => {
-                drop(lane);
-                let refused = ClientError::from_broker(
-                    &felix_broker::BrokerError::RecordHeadersNotEnabled,
-                    "record headers cannot be forwarded to the shard's owner; publish to the owner",
-                );
-                settle(
-                    job.response,
-                    job.acked_on_enqueue,
-                    None,
-                    Err(refused.into()),
-                );
-            }
             // Held for the whole round trip. A forward can be retried or
             // redirected, so a later batch sent before this one is answered
             // could land ahead of it. Only this shard's later publishes wait.
@@ -761,6 +746,26 @@ async fn forward(
     else {
         unreachable!("only forwards are forwarded")
     };
+    // An owner that cannot read the blocks is refused here rather than sent
+    // the batch without them, which would tell the client they were kept.
+    if job.headers.is_some()
+        && felix_replication::peer::PeerRequester::capabilities(
+            pool,
+            &target.node_id,
+            target.advertise_addr,
+        )
+        .await
+        .is_ok_and(|offered| {
+            !offered.contains(felix_wire::internal::PeerCapabilities::RECORD_HEADERS)
+        })
+    {
+        return Err(ClientError::from_broker(
+            &felix_broker::BrokerError::RecordHeadersNotEnabled,
+            "record headers cannot be forwarded to a shard owner that predates them; \
+             publish to the owner",
+        )
+        .into());
+    }
     crate::serving::forward::forward_publish(
         pool,
         target,
@@ -768,6 +773,7 @@ async fn forward(
         *ack,
         credential,
         job.payloads.clone(),
+        job.headers.clone(),
         budget,
     )
     .await

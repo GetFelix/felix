@@ -33,7 +33,7 @@ async fn quorum_follower() -> (Arc<Broker>, TempDir) {
 fn trim(generation: u64, first_offset: u64, floor: u64, commit: u64) -> ReplicateRecords {
     let mut batch = batch(generation, first_offset, &["tag"]);
     batch.marks = vec![ProducerMark::Trim { floor }];
-    batch.checksum = batch_checksum(&batch.payloads, &batch.marks, &[]);
+    batch.checksum = batch_checksum(&batch.payloads, &batch.marks, &[], &[]);
     batch.commit_offset = Some(commit);
     batch
 }

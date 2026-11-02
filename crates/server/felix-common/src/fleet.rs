@@ -70,6 +70,7 @@ pub const IMPLEMENTED: &[FleetFeature] = &[
     GROUP_CURSOR_DEPENDENCIES,
     CACHE_INCARNATIONS,
     HEAD_TRIM,
+    RECORD_HEADERS,
 ];
 
 /// A leader writes a generation-start record whenever it starts leading a
@@ -148,13 +149,12 @@ pub const CACHE_INCARNATIONS: FleetFeature = FleetFeature::new("cache_incarnatio
 /// See `docs/durable-storage.md` ("Conditional head trim").
 pub const HEAD_TRIM: FleetFeature = FleetFeature::new("head_trim");
 
-/// A durable stream stores each record's headers and key. A record with them
-/// needs storage format v8, which an older build refuses to open.
-///
-/// Declared but not in [`IMPLEMENTED`]: replication does not ship headers yet,
-/// so a follower would lose them. No broker reports it, which keeps a cluster
-/// from finalizing it. Only a broker running alone accepts headers for now.
-/// See `docs/protocol.md` ("Extended frames and record headers").
+/// A durable stream stores each record's headers and key, and replication and
+/// forwarding carry them. A record with them needs storage format v8, which an
+/// older build refuses to open, so a cluster accepts headers only once the
+/// whole fleet has finalized this. A lone broker has no fleet and accepts
+/// them from the start. See `docs/protocol.md` ("Extended frames and record
+/// headers").
 pub const RECORD_HEADERS: FleetFeature = FleetFeature::new("record_headers");
 
 /// Every change of a shard's replica set, and the next generation a leader

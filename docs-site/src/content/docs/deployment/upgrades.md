@@ -553,6 +553,30 @@ has no request that trims.
   floor are then refused as too old, with the trim's headers for a client
   that offered `FEATURE_HEAD_TRIM`.
 
+#### `record_headers`
+
+Once finalized, a durable stream in a cluster accepts record keys and headers
+from clients that send them, stores them with the record, and replication and
+forwarding carry them. Until then a broker in a cluster does not offer
+`EXT_RECORD_HEADERS`, so a client never sends any, and a publish that does is
+refused with `feature_not_enabled` and `detail.reason` `record_headers`.
+
+- **It is the one-way step.** A record with headers is storage format v8,
+  which an older broker refuses to open. A log moves onto v8 only at the first
+  record that has headers, so a cluster whose clients never send any stays
+  readable by older builds. Take a backup first.
+- **Replication carries it.** A batch holding a block goes only to a follower
+  that offered `RECORD_HEADERS` in its handshake. A follower that did not is
+  held at the first such record rather than sent it bare, counted as
+  `headers_unsupported` in `felix_broker_replication_shipped_total`. The
+  finalize needs every broker to report the feature, so no follower is held
+  once it is done.
+- **A single broker** accepts headers from the start, unless
+  `FELIX_RECORD_HEADERS=false`.
+- **A new cluster** starts with it finalized.
+- **What clients see.** Nothing changes for a client that never sends headers.
+  One that does learns at connect time whether the cluster accepts them.
+
 A control plane older than fleet features sends none, so brokers keep them
 all off. Under the Raft backend a broker's features are kept, and a feature
 can be finalized, only once every control-plane member is at metadata
