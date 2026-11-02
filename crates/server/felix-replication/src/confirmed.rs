@@ -68,6 +68,13 @@ pub(crate) const FRESH: Duration = Duration::from_secs(10);
 /// its driver tick waits longer; see [`ConfirmedReads::new`].
 const WANTED_FOR: Duration = Duration::from_secs(5);
 
+/// The longest a refused request's retry is waited for when retries keep
+/// coming later than expected. A leader's queued fences can put a retry
+/// several ticks after its refusal; the wait grows to twice the gap between
+/// refusals, up to this, so such a retry is answered instead of refused
+/// forever.
+const MAX_OWED_FOR: Duration = Duration::from_secs(60);
+
 /// Reads a routing change can start before any request, so a bulk placement
 /// does not start hundreds. Past it, a shard is read on its first request.
 const PREFETCH_PER_CHANGE: usize = 64;
@@ -125,6 +132,9 @@ struct Slot {
     /// Whether the last request found no fresh answer, so its retry is
     /// owed one.
     owed: AtomicBool,
+    /// Nanoseconds between the longest-spaced pair of refused requests in a
+    /// row, so a retry that came late once is waited for longer next time.
+    late: AtomicU64,
     /// Whether a routing change asked for the read and no request has come
     /// yet. Such a slot is kept fresh only for [`WANTED_FOR`], so reads for
     /// copies nobody asks about do not crowd out the ones leaders wait on.
@@ -180,6 +190,12 @@ impl ConfirmedReads {
                 return None;
             }
         };
+        let owed = slot.owed.load(Ordering::Relaxed);
+        let since_refused = if owed {
+            now.saturating_sub(slot.wanted.load(Ordering::Relaxed))
+        } else {
+            0
+        };
         let spawned = self.want(routes, key, slot, now, fresh);
         let answer = slot.answer.load();
         let decided = answer
@@ -190,8 +206,15 @@ impl ConfirmedReads {
         if slot.early.load(Ordering::Relaxed) {
             slot.early.store(false, Ordering::Relaxed);
         }
-        if slot.owed.load(Ordering::Relaxed) != decided.is_none() {
+        if owed != decided.is_none() {
             slot.owed.store(decided.is_none(), Ordering::Relaxed);
+            if decided.is_some() {
+                slot.late.store(0, Ordering::Relaxed);
+            }
+        } else if owed && since_refused > slot.late.load(Ordering::Relaxed) {
+            // Refused again: this retry came `since_refused` after the last
+            // refusal, too late for the window it had.
+            slot.late.store(since_refused, Ordering::Relaxed);
         }
         if decided.is_none() && !spawned {
             slot.stale.notify_one();
@@ -218,8 +241,9 @@ impl ConfirmedReads {
         {
             Some(slot) => {
                 // A reader waiting out a refused request's retry keeps its
-                // longer window. An owed slot with no reader is one whose
-                // retry never came.
+                // longer window. An owed slot with no reader either outwaited
+                // its retry or got no answer; the early window is no worse
+                // for either.
                 if !(slot.owed.load(Ordering::Relaxed) && slot.reading.load(Ordering::Acquire)) {
                     slot.early.store(true, Ordering::Relaxed);
                 }
@@ -279,6 +303,7 @@ impl ConfirmedReads {
             wanted: AtomicU64::new(now),
             fresh: AtomicU64::new(fresh),
             owed: AtomicBool::new(true),
+            late: AtomicU64::new(0),
             early: AtomicBool::new(early),
             stale: tokio::sync::Notify::new(),
         });
@@ -366,7 +391,7 @@ impl ConfirmedReads {
                     // lapse. Only while the shard is still asked about: a
                     // request since the last half of the answer's life, or a
                     // refused one whose retry has not come yet, waited for
-                    // up to `owed_for`.
+                    // up to `owed_for`, or longer once a retry came late.
                     // A request needing a shorter freshness (elections
                     // turned on) wakes the wait to recompute it.
                     loop {
@@ -389,7 +414,10 @@ impl ConfirmedReads {
                     let asked_within = if slot.early.load(Ordering::Relaxed) {
                         nanos(WANTED_FOR).max(fresh / 2)
                     } else if slot.owed.load(Ordering::Relaxed) {
-                        self.owed_for.max(fresh / 2)
+                        let late = slot.late.load(Ordering::Relaxed).saturating_mul(2);
+                        self.owed_for
+                            .max(late.min(nanos(MAX_OWED_FOR)))
+                            .max(fresh / 2)
                     } else {
                         fresh / 2
                     };

@@ -116,6 +116,55 @@ async fn a_retry_a_driver_tick_later_is_answered() {
     );
 }
 
+/// **A retry that came after its window is waited for longer the next
+/// time (#1791).** A leader's fence can queue behind others for several
+/// ticks; with a fixed window every such retry is refused and starts
+/// another read.
+#[tokio::test(start_paused = true)]
+async fn a_retry_that_came_late_is_waited_for_longer() {
+    let (_, routes) = counted();
+    let reads = Arc::new(ConfirmedReads::new(Duration::from_secs(2)));
+    let refused = |reads: &Arc<ConfirmedReads>| {
+        reads
+            .decide(&routes, &key(), 0, FRESH_UNDER_ELECTIONS, |_| ())
+            .is_none()
+    };
+    assert!(refused(&reads), "nothing read yet");
+    // Past the 5 s window: refused again.
+    tokio::time::sleep(Duration::from_secs(8)).await;
+    assert!(refused(&reads), "the answer outlived its window");
+    tokio::time::sleep(Duration::from_secs(8)).await;
+    assert!(
+        !refused(&reads),
+        "a retry as late as the last one was refused again"
+    );
+}
+
+/// **A routing change naming a copy keeps a refused retry's longer
+/// window (#1791).** When the leader asks before this broker's feed names
+/// the copy, the early read's 5 s window must not replace the one the
+/// retry is due in.
+#[tokio::test(start_paused = true)]
+async fn a_prefetch_keeps_a_refused_retrys_window() {
+    let (_, routes) = counted();
+    let tick = Duration::from_secs(10);
+    let reads = Arc::new(ConfirmedReads::new(tick));
+    assert!(
+        reads
+            .decide(&routes, &key(), 0, FRESH_UNDER_ELECTIONS, |_| ())
+            .is_none(),
+        "nothing read yet"
+    );
+    reads.prefetch(&routes, &key(), 0, FRESH_UNDER_ELECTIONS);
+    tokio::time::sleep(tick + tick / 2).await;
+    assert!(
+        reads
+            .decide(&routes, &key(), 0, FRESH_UNDER_ELECTIONS, |_| ())
+            .is_some(),
+        "the retry was refused again"
+    );
+}
+
 /// **A copy the routing view names before the leader asks answers the
 /// leader's first request (#1791).** Without the early read that request is
 /// refused, and the leader is back only on its next tick.

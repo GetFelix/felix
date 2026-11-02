@@ -840,13 +840,18 @@ control-plane sync interval (`FELIX_CONTROLPLANE_SYNC_INTERVAL_MS`), so
 the answer is kept for twice that interval, and at least 5 s. Kept any
 shorter, a retry would find a stale answer, be refused again and start
 another read, every time, and a move onto the copy would never finish.
+A retry can still come later than that, for example when the leader's
+fences queue behind others during a bulk failover. If a refused retry is
+refused again, the next wait grows to twice the time between the two
+refusals, up to 60 s, so the retry after it finds the answer.
 
 Usually there is no refusal at all. When this broker's assignments first
 name it a follower of a shard, as a move's destination or a follower just added,
 the routing feed starts the read before the leader asks, so the leader's
 first request usually finds the answer. The feed does this as it applies the
 change, so a request pays nothing for it. It starts at most 64 such reads
-per change and keeps each answer fresh for 5 s if no request comes. It
+per change and keeps each answer fresh for at least 5 s if no request
+comes. It
 skips any change that follows an empty view, such as the one a broker
 starts with (those copies mostly hold promises already), and a shard's
 creation (that copy skips the read). Every other copy is read on its first
@@ -878,6 +883,8 @@ Evidence (`replica/tests/fence.rs`):
 `one_confirmed_read_answers_every_request_for_a_shard`;
 `a_shorter_freshness_wakes_the_refresh`,
 `a_retry_a_driver_tick_later_is_answered`,
+`a_retry_that_came_late_is_waited_for_longer`,
+`a_prefetch_keeps_a_refused_retrys_window`,
 `a_prefetched_copy_answers_the_first_request`,
 `early_reads_are_bounded_per_change`, `an_unasked_early_read_stops` and
 `a_copy_named_again_reads_again` (`confirmed/tests.rs`); and
