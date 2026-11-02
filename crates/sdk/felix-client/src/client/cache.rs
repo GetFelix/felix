@@ -11,6 +11,7 @@ use felix_wire::Message;
 use tokio::sync::oneshot;
 
 use super::Connection;
+use super::connect::open_cache_worker;
 use crate::cache::{CacheConditionResult, CacheRequest, CacheWorker, LeaseWrite, VersionedValue};
 use felix_wire::CacheCondition;
 
@@ -48,7 +49,7 @@ impl Connection {
             ttl_ms,
         };
         let (response_tx, response_rx) = oneshot::channel();
-        let (worker, conn_index) = self.cache_worker();
+        let (worker, conn_index) = self.cache_worker().await?;
         worker
             .tx
             .send(CacheRequest::Put {
@@ -91,7 +92,7 @@ impl Connection {
             request_id: Some(request_id),
         };
         let (response_tx, response_rx) = oneshot::channel();
-        let (worker, conn_index) = self.cache_worker();
+        let (worker, conn_index) = self.cache_worker().await?;
         worker
             .tx
             .send(CacheRequest::Get {
@@ -144,7 +145,7 @@ impl Connection {
             request_id: Some(request_id),
         };
         let (response_tx, response_rx) = oneshot::channel();
-        let (worker, conn_index) = self.cache_worker();
+        let (worker, conn_index) = self.cache_worker().await?;
         worker
             .tx
             .send(CacheRequest::Get {
@@ -347,7 +348,7 @@ impl Connection {
 
     /// Hand a request to a cache worker and count it as in flight.
     async fn enqueue_cache(&self, request: CacheRequest) -> Result<()> {
-        let (worker, conn_index) = self.cache_worker();
+        let (worker, conn_index) = self.cache_worker().await?;
         worker
             .tx
             .send(request)
@@ -428,7 +429,7 @@ impl Connection {
 
     async fn counter_round_trip(&self, message: Message, request_id: u64) -> Result<Option<i64>> {
         let (response_tx, response_rx) = oneshot::channel();
-        let (worker, conn_index) = self.cache_worker();
+        let (worker, conn_index) = self.cache_worker().await?;
         worker
             .tx
             .send(CacheRequest::Counter {
@@ -451,13 +452,66 @@ impl Connection {
             .map_err(|_| anyhow::anyhow!("counter response dropped"))?
     }
 
-    fn cache_worker(&self) -> (&CacheWorker, usize) {
+    async fn cache_worker(&self) -> Result<(&CacheWorker, usize)> {
+        let workers = self
+            .cache_workers
+            .opened
+            .get_or_try_init(|| self.open_cache_workers())
+            .await?;
         // Round-robin pick only.
         //
         // IMPORTANT: do not mutate metrics/counters here.
         // We only consider an op "in-flight" once it is successfully enqueued.
-        let index = self.cache_worker_rr.fetch_add(1, Ordering::Relaxed) % self.cache_workers.len();
-        let worker = &self.cache_workers[index];
-        (worker, worker.conn_index)
+        let index = self.cache_worker_rr.fetch_add(1, Ordering::Relaxed) % workers.len();
+        let worker = &workers[index];
+        Ok((worker, worker.conn_index))
+    }
+
+    async fn open_cache_workers(&self) -> Result<Vec<CacheWorker>> {
+        // Not tracked for `is_usable`, which only judges clients that open
+        // their workers up front.
+        let mut connections = Vec::new();
+        let mut workers = Vec::with_capacity(self.cache_workers.on_demand);
+        for _ in 0..self.cache_workers.on_demand {
+            workers.push(
+                open_cache_worker(
+                    &self.cache_node,
+                    &self.credentials,
+                    &self.cache_conn_counts,
+                    &mut connections,
+                    self.runtime_config.max_frame_bytes,
+                )
+                .await?,
+            );
+        }
+        Ok(workers)
+    }
+}
+
+/// A client's cache workers: opened at connect, or on its first cache
+/// request, so a client that never uses the cache holds no cache connections.
+pub(super) struct CacheWorkers {
+    opened: tokio::sync::OnceCell<Vec<CacheWorker>>,
+    /// How many to open on first use, when none were opened up front.
+    on_demand: usize,
+}
+
+impl CacheWorkers {
+    pub(super) fn opened(workers: Vec<CacheWorker>) -> Self {
+        Self {
+            opened: tokio::sync::OnceCell::new_with(Some(workers)),
+            on_demand: 0,
+        }
+    }
+
+    pub(super) fn on_demand(count: usize) -> Self {
+        Self {
+            opened: tokio::sync::OnceCell::new(),
+            on_demand: count.max(1),
+        }
+    }
+
+    pub(super) fn opens_on_demand(&self) -> bool {
+        self.on_demand > 0
     }
 }

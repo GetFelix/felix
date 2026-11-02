@@ -1103,7 +1103,7 @@ While this reference covers broker configuration, clients also have tunable para
 
 **Default**: `8`
 
-**Description**: Number of QUIC connections in the event pool.
+**Description**: Most QUIC connections in the event pool. Each new subscription opens one until the pool is full.
 
 ### Cluster Client Connections
 
@@ -1119,7 +1119,7 @@ While this reference covers broker configuration, clients also have tunable para
 
 **Default**: `8`
 
-**Description**: Number of QUIC connections for cache operations.
+**Description**: Most QUIC connections a `Connection` uses for cache operations, all opened on its first cache request.
 
 ### Cache Streams Per Connection
 

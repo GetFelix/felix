@@ -239,6 +239,14 @@ follower. If both followers are `stalled` or `halted`, or listed as
 times out. A `committed` mark well below `tail` that does not move is the same
 thing seen from the mark.
 
+If the followers are level and idle but the mark still lags, the shard may be
+waiting for a pass slot. The leader ships at most 16 shards at a time, and
+shards with new writes take turns at the slots. Check
+`felix_broker_replication_passes_waiting` and
+`felix_broker_replication_slot_wait_seconds` on the leader: a wait that is a
+large part of the quorum timeout means the broker leads more busy shards than it
+ships at once, and moving some shards to another broker helps.
+
 **What to do.** Restore a majority: start the followers' brokers or fix the
 peer network between them. Placement restores a follower whose broker has been
 gone for `FELIX_SHARD_RESTORE_AFTER_MS` by copying the shard to another broker.
