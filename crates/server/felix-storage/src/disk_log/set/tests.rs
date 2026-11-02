@@ -9,6 +9,7 @@ fn member(node: &str, storage: Option<u8>) -> Member {
         node: node.to_string(),
         storage: storage.map(|byte| StorageId::from_bytes([byte; 16])),
         learner: false,
+        wiped: false,
     }
 }
 
@@ -183,7 +184,7 @@ fn a_checksummed_but_malformed_body_does_not_decode() {
     missing[6..8].copy_from_slice(&FLAG_LEAVING.to_be_bytes());
     assert_eq!(ReplicaSet::decode(&sealed(missing)), None);
 
-    // A storage flag that is neither 0 nor 1.
+    // A member flag no build defines.
     let mut flag = ReplicaSet {
         current: Membership {
             generation: 1,
@@ -194,7 +195,7 @@ fn a_checksummed_but_malformed_body_does_not_decode() {
     .encode()
     .unwrap();
     let at = flag.len() - 5;
-    flag[at] = 4;
+    flag[at] = 8;
     flag.truncate(flag.len() - 4);
     assert_eq!(ReplicaSet::decode(&sealed(flag)), None);
 }

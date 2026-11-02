@@ -59,6 +59,17 @@ async fn kept_naming(
     learners: &[&str],
     copies: &[(&str, StorageId)],
 ) {
+    kept_marked(leader, members, learners, copies, &[]).await;
+}
+
+/// [`kept_naming`], with the members in `wiped` marked wiped.
+async fn kept_marked(
+    leader: &Broker,
+    members: &[&str],
+    learners: &[&str],
+    copies: &[(&str, StorageId)],
+    wiped: &[&str],
+) {
     let log = leader
         .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
         .await
@@ -77,6 +88,7 @@ async fn kept_naming(
                     .find(|(named, _)| named == node)
                     .map(|(_, copy)| *copy),
                 learner: learners.contains(node),
+                wiped: wiped.contains(node),
             })
             .collect(),
     };
@@ -247,6 +259,47 @@ async fn a_learner_named_leader_refuses_and_keeps_its_mark() {
     kept_naming(&staged, &members, &[LEADER], &[(LEADER, own)]).await;
     let outcome = fence_holding(&replicas, &staged, own).await;
     assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
+}
+
+/// **A copy marked wiped does not lead, though its kept set names its own
+/// storage id** as a staged destination's does: a replaced directory's copy
+/// learns its first set under the new id. Nor does a copy with no set past
+/// creation on a replaced directory (`~PromoteNonVoter` in
+/// `docs/formal/FelixShard.tla`).
+#[tokio::test]
+async fn a_copy_marked_on_the_replaced_marker_does_not_lead() {
+    let replicas = replicas_with(&["broker-x", "broker-z"]);
+    let own = StorageId::from_bytes([7; 16]);
+    let members = ["broker-x", "broker-z", LEADER];
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+    kept_marked(&leader, &members, &[LEADER], &[(LEADER, own)], &[LEADER]).await;
+    let outcome = fence_holding(&replicas, &leader, own).await;
+    let Outcome::Pending { why, .. } = &outcome else {
+        panic!("a wiped learner opened as leader: {outcome:?}");
+    };
+    assert!(why.contains("learner"), "{why}");
+    assert!(replicas.sent(Kind::ElectionFence).is_empty(), "fenced");
+
+    let (setless, _dir) = leader_holding(4, &["a"]).await;
+    let addr_of = addr_of;
+    let joint = Joint::new(&addr_of, None)
+        .with_local_storage(Some(own))
+        .with_replaced_storage(true);
+    let outcome = fence_shard(
+        &replicas,
+        &setless,
+        LEADER,
+        &key(),
+        &swapped(),
+        false,
+        Some(&joint),
+    )
+    .await;
+    let Outcome::Pending { why, .. } = &outcome else {
+        panic!("a copy with no set on a replaced directory led: {outcome:?}");
+    };
+    assert!(why.contains("learner"), "{why}");
+    assert!(replicas.sent(Kind::ElectionFence).is_empty(), "fenced");
 }
 
 /// **Without `joint_fence` the fence is the one it always was**, set change

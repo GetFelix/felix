@@ -1797,6 +1797,15 @@ impl ReplicaHandler {
         self.joint_gate() == Some(true)
     }
 
+    /// [`Self::joint_gate`] for marking a wiped copy a learner, which also
+    /// needs this build to allow it ([`QuorumMarks::non_voting_ready`]).
+    fn non_voting_gate(&self) -> Option<bool> {
+        match &self.fleet {
+            Some(marks) if marks.non_voting_ready() => self.joint_gate(),
+            _ => Some(false),
+        }
+    }
+
     /// Whether the fleet has `joint_fence`, or `None` while this broker has
     /// not yet taken a registration's answer. The peer listener is bound
     /// before registration, so the gate can be unread while requests arrive.

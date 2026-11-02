@@ -36,9 +36,11 @@ const VERSION: u16 = 1;
 pub(super) const HEADER_LEN: usize = 8;
 /// The flags bit for a set being left.
 const FLAG_LEAVING: u16 = 1;
-/// Member flags: a storage id follows; the member does not vote.
+/// Member flags: a storage id follows; the member does not vote; this copy
+/// found it lost what it held.
 const MEMBER_STORAGE: u8 = 1;
 const MEMBER_LEARNER: u8 = 2;
+const MEMBER_WIPED: u8 = 4;
 /// Only bounds what a damaged count can claim.
 pub(super) const MAX_MEMBERS: usize = 64;
 /// Node ids are short; this only bounds what a damaged length can claim.
@@ -61,6 +63,10 @@ pub struct Member {
     pub storage: Option<StorageId>,
     /// Listed but not counted: re-admitted and not yet caught up.
     pub learner: bool,
+    /// Set by a copy on its own entry when it finds it lost what it held
+    /// (a wipe), as against a learner placement staged. Ends only at
+    /// re-admission, so a promotion can tell the two apart.
+    pub wiped: bool,
 }
 
 /// One assignment's replicas.
@@ -201,13 +207,25 @@ impl DiskLog {
             .map(|member| member.learner)
     }
 
+    /// Whether the kept set marks `node` wiped: it found it lost what it
+    /// held, and has not settled since. False with no set or no such member.
+    pub fn member_is_wiped(&self, node: &str) -> bool {
+        self.inner
+            .replica_set
+            .read()
+            .as_ref()
+            .and_then(|set| set.current.members.iter().find(|m| m.node == node))
+            .is_some_and(|member| member.wiped)
+    }
+
     /// Count `node` as a voter in the set already kept, at the same
-    /// generation, persisting first. `false` when it was not a learner there.
+    /// generation, persisting first, and with `settled` drop its wiped mark
+    /// too. `false` when there was nothing to change.
     ///
-    /// The one way a learner mark ends: a replica re-admitted by a set
-    /// change stays out of every majority until it has caught up, and only
-    /// the caller knows when.
-    pub async fn admit_member(&self, node: &str) -> Result<bool> {
+    /// The one way either mark ends: a replica re-admitted by a set change
+    /// stays out of every majority until it has caught up, and only the
+    /// caller knows when.
+    pub async fn admit_member(&self, node: &str, settled: bool) -> Result<bool> {
         let inner = Arc::clone(&self.inner);
         let node = node.to_string();
         tokio::task::spawn_blocking(move || {
@@ -215,15 +233,13 @@ impl DiskLog {
             let Some(mut set) = inner.replica_set.read().clone() else {
                 return Ok(false);
             };
-            let Some(member) = set
-                .current
-                .members
-                .iter_mut()
-                .find(|member| member.node == node && member.learner)
-            else {
+            let Some(member) = set.current.members.iter_mut().find(|member| {
+                member.node == node && (member.learner || (settled && member.wiped))
+            }) else {
                 return Ok(false);
             };
             member.learner = false;
+            member.wiped &= !settled;
             store(&inner.dir, &set)?;
             *inner.replica_set.write() = Some(set);
             Ok(true)
@@ -284,7 +300,8 @@ impl Membership {
             out.extend_from_slice(&(member.node.len() as u16).to_be_bytes());
             out.extend_from_slice(member.node.as_bytes());
             let flags = (u8::from(member.storage.is_some()) * MEMBER_STORAGE)
-                | (u8::from(member.learner) * MEMBER_LEARNER);
+                | (u8::from(member.learner) * MEMBER_LEARNER)
+                | (u8::from(member.wiped) * MEMBER_WIPED);
             out.push(flags);
             if let Some(id) = &member.storage {
                 out.extend_from_slice(&id.to_bytes());
@@ -306,7 +323,7 @@ impl Membership {
             }
             let node = String::from_utf8(take(rest, len)?.to_vec()).ok()?;
             let flags = take(rest, 1)?[0];
-            if flags & !(MEMBER_STORAGE | MEMBER_LEARNER) != 0 {
+            if flags & !(MEMBER_STORAGE | MEMBER_LEARNER | MEMBER_WIPED) != 0 {
                 return None;
             }
             let storage = if flags & MEMBER_STORAGE != 0 {
@@ -318,6 +335,7 @@ impl Membership {
                 node,
                 storage,
                 learner: flags & MEMBER_LEARNER != 0,
+                wiped: flags & MEMBER_WIPED != 0,
             });
         }
         Some(Self {

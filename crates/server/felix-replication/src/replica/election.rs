@@ -177,6 +177,13 @@ impl ReplicaHandler {
         log.member_is_learner(self.router.local_node_id()) == Some(true)
     }
 
+    /// Whether this copy's log marks it wiped: it learned it lost what it
+    /// held. Outlives the learner mark until the group logs catch up too
+    /// ([`Self::admit_when_caught_up`]).
+    fn is_wiped(&self, log: &felix_broker::StreamLog) -> bool {
+        log.member_is_wiped(self.router.local_node_id())
+    }
+
     /// Whether `set` names this broker with a storage id other than its own:
     /// the evidence of a wipe (#1331). A set naming none, or no set at all, is
     /// no evidence, so a new shard's copies and copies written before sets
@@ -224,13 +231,17 @@ impl ReplicaHandler {
 
     /// The set as this copy keeps it: a learner stays one, and under
     /// `joint_fence` a set naming another storage id for this copy makes it
-    /// one. Only [`Self::admit_when_caught_up`] ends the mark.
+    /// a learner marked wiped, apart from a learner placement staged. Only
+    /// [`Self::admit_when_caught_up`] ends either mark.
     fn mark_local(&self, log: &felix_broker::StreamLog, mut set: ReplicaSet) -> ReplicaSet {
         let local = self.router.local_node_id();
-        let learner = self.is_learner(log)
-            || (self.joint_gate() == Some(true) && self.names_other_in(log, &set.current));
+        let evidence =
+            self.non_voting_gate() == Some(true) && self.names_other_in(log, &set.current);
+        let learner = self.is_learner(log) || evidence;
+        let wiped = self.is_wiped(log) || evidence;
         for member in set.current.members.iter_mut().filter(|m| m.node == local) {
             member.learner |= learner;
+            member.wiped |= wiped;
         }
         set
     }
@@ -247,7 +258,7 @@ impl ReplicaHandler {
         log: &felix_broker::StreamLog,
         set: &Membership,
     ) -> Option<InternalMessage> {
-        (self.joint_gate().is_none() && !self.is_learner(log) && self.names_other_in(log, set))
+        (self.non_voting_gate().is_none() && !self.is_learner(log) && self.names_other_in(log, set))
             .then(|| undecided(correlation_id, key))
     }
 
@@ -260,7 +271,9 @@ impl ReplicaHandler {
     /// `AnswerFence`'s `NonVoter` guard and `WipedLearnSet`.
     ///
     /// A group or counter log keeps no set: the shard's own log decides, as
-    /// `AnswerCounterFence`'s guard does.
+    /// `AnswerCounterFence`'s guard does. A group log's fence is refused
+    /// for as long as the copy is marked wiped, past its re-admission: the
+    /// group logs carry no generation-start record to admit them by.
     pub(super) async fn refuse_non_voter_fence(
         &self,
         correlation_id: u64,
@@ -289,12 +302,16 @@ impl ReplicaHandler {
                 opened.as_ref().unwrap_or(log)
             }
         };
-        let learner = self.is_learner(own);
+        let group = matches!(
+            log_kind,
+            felix_broker::LogKind::GroupCursors | felix_broker::LogKind::GroupDeadLetters
+        );
+        let learner = self.is_learner(own) || (group && self.is_wiped(own));
         let evidence = match &request.election {
             Some(election) => self.names_other_in_view(own, &election.set),
             None => self.replaced_copy_of(own, request.shard.generation),
         };
-        match self.joint_gate() {
+        match self.non_voting_gate() {
             _ if !learner && !evidence => return None,
             None if !learner => return Some(undecided(correlation_id, key)),
             Some(false) if !learner => return None,
@@ -344,7 +361,13 @@ impl ReplicaHandler {
     /// own record too: its fence is answered once the cache log is admitted
     /// (`ReadmitChecksCounters`). A newer set naming it again moves the
     /// target, so a leader lost before the copy caught up does not strand it.
-    /// Run after a batch is stored on any of the shard's logs.
+    ///
+    /// The wiped mark ends once each group log also holds a record written at
+    /// that generation or later, which follows everything the leader that
+    /// wrote it took when it opened (it took no group answer from this copy
+    /// while marked). Until then its group fences are refused, and as a
+    /// leader its own group logs do not count. Run after a batch is stored on
+    /// any of the shard's logs.
     pub(super) async fn admit_when_caught_up(
         &self,
         key: &felix_router::ShardKey,
@@ -365,7 +388,8 @@ impl ReplicaHandler {
                 }
             }
         };
-        if !self.is_learner(own) {
+        let learner = self.is_learner(own);
+        if !learner && !self.is_wiped(own) {
             return;
         }
         let Some(own_id) = self.local_storage else {
@@ -375,38 +399,80 @@ impl ReplicaHandler {
             return;
         };
         let local = self.router.local_node_id();
+        let generation = set.current.generation;
         let named = set
             .current
             .members
             .iter()
             .any(|member| member.node == local && member.storage == Some(own_id));
-        if !named || !holds_start(own, set.current.generation).await {
+        if !named {
             return;
         }
-        if key.kind == felix_router::ShardKind::Cache
-            && self.broker.counters().is_some()
-            && let Some(counters) = self
-                .broker
-                .shard_log(
-                    felix_broker::LogKind::Counters,
-                    &key.tenant_id,
-                    &key.namespace,
-                    &key.stream,
-                    key.shard,
-                )
-                .await
-            && !holds_start(&counters, set.current.generation).await
+        if learner
+            && !(holds_start(own, generation).await
+                && self.counters_caught_up(key, generation).await)
         {
             return;
         }
-        match own.admit_member(local).await {
+        let settled = self.groups_caught_up(key, generation).await;
+        if !learner && !settled {
+            return;
+        }
+        match own.admit_member(local, settled).await {
             Ok(true) => tracing::info!(
-                generation = set.current.generation,
+                generation,
+                settled,
                 "re-admitted: caught up through the start of the set's generation",
             ),
             Ok(false) => {}
             Err(err) => tracing::warn!(error = %err, "could not record this copy's re-admission"),
         }
+    }
+
+    /// Whether a cache shard's counter log holds the start record of
+    /// `generation`. A counter log that cannot be opened has not.
+    async fn counters_caught_up(&self, key: &felix_router::ShardKey, generation: u64) -> bool {
+        if key.kind != felix_router::ShardKind::Cache || self.broker.counters().is_none() {
+            return true;
+        }
+        match self
+            .broker
+            .shard_log(
+                felix_broker::LogKind::Counters,
+                &key.tenant_id,
+                &key.namespace,
+                &key.stream,
+                key.shard,
+            )
+            .await
+        {
+            Some(counters) => holds_start(&counters, generation).await,
+            None => false,
+        }
+    }
+
+    /// Whether a stream shard's group logs each hold a record written at
+    /// `generation` or later. A group log that cannot be opened has not.
+    async fn groups_caught_up(&self, key: &felix_router::ShardKey, generation: u64) -> bool {
+        if key.kind != felix_router::ShardKind::Stream || self.broker.group_reader().is_none() {
+            return true;
+        }
+        for kind in [
+            felix_broker::LogKind::GroupDeadLetters,
+            felix_broker::LogKind::GroupCursors,
+        ] {
+            let Some(group) = self
+                .broker
+                .shard_log(kind, &key.tenant_id, &key.namespace, &key.stream, key.shard)
+                .await
+            else {
+                return false;
+            };
+            if !holds_from(&group, generation).await {
+                return false;
+            }
+        }
+        true
     }
 
     /// Answer a pre-vote. Writes nothing, so it is safe for a copy that does
@@ -488,6 +554,16 @@ fn undecided(correlation_id: u64, key: &felix_router::ShardKey) -> InternalMessa
         0,
         "this broker has not yet learned the fleet's features".to_string(),
     )
+}
+
+/// Whether `log` holds a record written at `generation` or later.
+async fn holds_from(log: &felix_broker::StreamLog, generation: u64) -> bool {
+    let Ok(tail) = log.tail_offset().await else {
+        return false;
+    };
+    log.generations()
+        .iter()
+        .any(|epoch| epoch.generation >= generation && epoch.start_offset < tail)
 }
 
 /// Whether `log` holds the generation-start record of `generation`.

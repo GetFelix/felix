@@ -15,6 +15,7 @@ fn set_at(generation: u64) -> ReplicaSet {
                     node: (*node).to_string(),
                     storage: Some(StorageId::from_bytes([i as u8 + 1; 16])),
                     learner: false,
+                    wiped: false,
                 })
                 .collect(),
         },
@@ -153,14 +154,40 @@ async fn admitting_a_learner_is_durable_and_touches_only_it() {
         log.accept_set(set.clone()).await.expect("accept");
         assert_eq!(log.member_is_learner("b"), Some(true));
         assert!(
-            !log.admit_member("a").await.expect("admit"),
+            !log.admit_member("a", false).await.expect("admit"),
             "a is no learner"
         );
-        assert!(log.admit_member("b").await.expect("admit"));
-        assert!(!log.admit_member("b").await.expect("admit"), "once");
-        assert!(!log.admit_member("z").await.expect("admit"), "not a member");
+        assert!(log.admit_member("b", false).await.expect("admit"));
+        assert!(!log.admit_member("b", false).await.expect("admit"), "once");
+        assert!(
+            !log.admit_member("z", false).await.expect("admit"),
+            "not a member"
+        );
     }
     let log = open(&dir, FsyncMode::OnCommit);
     assert_eq!(log.replica_set(), Some(set_at(4)));
     assert_eq!(log.set_generation(), 4);
+}
+
+/// A wiped mark is kept apart from the learner flag, survives a restart, and
+/// outlives an admission that is not settled.
+#[tokio::test]
+async fn a_wiped_mark_is_kept_until_settled() {
+    let dir = tempdir().expect("tempdir");
+    let mut set = set_at(4);
+    set.current.members[1].learner = true;
+    set.current.members[1].wiped = true;
+    {
+        let log = open(&dir, FsyncMode::OnCommit);
+        log.accept_set(set).await.expect("accept");
+        assert!(log.admit_member("b", false).await.expect("admit"));
+    }
+    let log = open(&dir, FsyncMode::OnCommit);
+    assert_eq!(log.member_is_learner("b"), Some(false));
+    assert!(log.member_is_wiped("b"), "an unsettled admission keeps it");
+    assert!(log.admit_member("b", true).await.expect("settle"));
+    drop(log);
+    let log = open(&dir, FsyncMode::OnCommit);
+    assert!(!log.member_is_wiped("b"));
+    assert_eq!(log.replica_set(), Some(set_at(4)));
 }

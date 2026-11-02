@@ -726,13 +726,20 @@ Each set is:
                        2  node_len   u16  at most 1024
                        n  node       utf-8 node id
                        1  flags     u8   bit 0: a storage id follows;
-                                     bit 1: learner; other bits must be 0
+                                     bit 1: learner; bit 2: wiped;
+                                     other bits must be 0
                       16  storage    the storage id the fence counts the member
                                      under, only when flags bit 0 is set
 ```
 
 A learner is listed but not counted: it is re-admitted to the set and not yet
 caught up, so it does not vote and no majority includes it.
+
+Only a copy sets the wiped bit, on its own entry, when it finds it lost what it
+held. It tells a wiped learner from a staged one, and outlasts the learner bit
+until the copy's group logs have caught up too. A build that predates the bit
+refuses the file, as it would any unknown flag; brokers set it only once
+`joint_fence` is finalized and the build allows it.
 
 A set is refused, on write and on read, when it lists a node id twice or a
 storage id twice, or when the set being left is not older than the current one.

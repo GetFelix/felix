@@ -790,9 +790,18 @@ impl StreamLog {
         self.log.member_is_learner(node)
     }
 
-    /// Count `node` as a voter in the kept set. See `DiskLog::admit_member`.
-    pub async fn admit_member(&self, node: &str) -> Result<bool> {
-        self.log.admit_member(node).await.map_err(BrokerError::from)
+    /// Whether the kept set marks `node` wiped. See `DiskLog::member_is_wiped`.
+    pub fn member_is_wiped(&self, node: &str) -> bool {
+        self.log.member_is_wiped(node)
+    }
+
+    /// Count `node` as a voter in the kept set, and with `settled` drop its
+    /// wiped mark. See `DiskLog::admit_member`.
+    pub async fn admit_member(&self, node: &str, settled: bool) -> Result<bool> {
+        self.log
+            .admit_member(node, settled)
+            .await
+            .map_err(BrokerError::from)
     }
 
     /// Whether the accepted generation was given up. See `DiskLog::gave_up`.

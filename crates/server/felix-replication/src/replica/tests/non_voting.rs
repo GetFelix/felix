@@ -21,9 +21,15 @@ const OLD: [u8; 16] = [3; 16];
 
 /// The gate as a registration's answer left it.
 fn marks(joint: bool) -> Arc<QuorumMarks> {
+    Arc::new(build_marks(joint).allow_non_voting())
+}
+
+/// The gate as a registration's answer left it, on a build that does not
+/// yet mark wiped copies.
+fn build_marks(joint: bool) -> QuorumMarks {
     let fleet = FleetGate::new([JOINT_FENCE.name()]);
     fleet.restart(joint.then_some(JOINT_FENCE.name()));
-    Arc::new(QuorumMarks::with_fleet(Arc::new(fleet)))
+    QuorumMarks::with_fleet(Arc::new(fleet))
 }
 
 /// A handler on `broker` under `joint_fence`, whose copy holds `own`, with the
@@ -640,7 +646,9 @@ async fn a_wiped_copy_refuses_before_the_gate_is_adopted() {
     let (broker, _dir) = broker_with_storage().await;
     let fleet = Arc::new(FleetGate::new([JOINT_FENCE.name()]));
     let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 6))
-        .with_fleet(Arc::new(QuorumMarks::with_fleet(Arc::clone(&fleet))))
+        .with_fleet(Arc::new(
+            QuorumMarks::with_fleet(Arc::clone(&fleet)).allow_non_voting(),
+        ))
         .with_local_storage(StorageId::from_bytes(OWN))
         .with_stickiness(Duration::ZERO)
         .with_confirmed_routes(ConfirmedAs::new(Confirmed::Assigned {
@@ -877,4 +885,129 @@ async fn with_the_gate_off_a_copy_with_no_set_answers_as_before() {
     assert_eq!(log.member_is_learner(LOCAL), Some(false));
     let answer = handler.pre_vote(pre_vote(7)).await;
     assert!(matches!(answer, InternalMessage::PreVoteAnswer(_)));
+}
+
+/// **A copy re-admitted on its stream log answers no group fence until its
+/// group logs hold a record of the re-admitting generation.** They carry no
+/// start record, so the stream log's says nothing of them; empty, they would
+/// count toward a majority that lacks a cursor commit a majority took.
+#[tokio::test]
+async fn a_readmitted_copy_answers_group_fences_once_its_group_logs_caught_up() {
+    use super::groups::{group_broker, put, records};
+    let dir = tempfile::tempdir().expect("tempdir");
+    let broker = group_broker(dir.path());
+    let handler = handler(&broker, 6, OWN).with_replaced_storage(true);
+    let answer = handler
+        .fence(SENDER, fence_with(6, set(6, OWN), None, false))
+        .await;
+    assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
+    let log = log_of(&broker).await;
+    assert!(log.member_is_wiped(LOCAL), "the marker's evidence marks it");
+
+    let answer = handler
+        .apply(SENDER, stamped(6, 0, &["a"]), felix_broker::LogKind::Stream)
+        .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    assert_eq!(log.member_is_learner(LOCAL), Some(false), "not re-admitted");
+    assert!(log.member_is_wiped(LOCAL));
+    let group_fence = |log| Fence {
+        election: None,
+        ..on(log, fence_with(6, named(6, None), None, false))
+    };
+    let answer = handler
+        .fence(SENDER, group_fence(ReplicaLog::GroupCursors))
+        .await;
+    assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized, "{answer:?}");
+
+    let mut cursor = vec![2];
+    for field in [2u64, 1, 4, 0] {
+        cursor.extend_from_slice(&field.to_be_bytes());
+    }
+    for (kind, payload) in [
+        (
+            felix_broker::LogKind::GroupDeadLetters,
+            put("workers\u{1f}1", b""),
+        ),
+        (felix_broker::LogKind::GroupCursors, put("workers", &cursor)),
+    ] {
+        let answer = handler.apply(SENDER, records(6, &[payload]), kind).await;
+        assert!(
+            matches!(answer, InternalMessage::ReplicateOk(_)),
+            "{answer:?}"
+        );
+    }
+    assert!(!log.member_is_wiped(LOCAL), "settled");
+    for kind in [ReplicaLog::GroupDeadLetters, ReplicaLog::GroupCursors] {
+        let answer = handler.fence(SENDER, group_fence(kind)).await;
+        assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
+    }
+}
+
+/// **A cache copy whose counter log cannot be opened is not re-admitted.**
+/// Its counter log may lack updates a majority acknowledged, and nothing
+/// says otherwise.
+#[tokio::test]
+async fn a_copy_whose_counter_log_cannot_open_stays_a_learner() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let handler = cache_handler(dir.path()).with_replaced_storage(true);
+    // Nothing can be created under the counter store's root now.
+    std::fs::remove_dir_all(dir.path().join("counters")).expect("remove");
+    std::fs::write(dir.path().join("counters"), b"").expect("block");
+    let answer = handler
+        .fence(
+            SENDER,
+            on(ReplicaLog::Cache, fence_with(6, set(6, OWN), None, false)),
+        )
+        .await;
+    assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
+
+    let put = super::fence::cache_put("k", "v");
+    let answer = handler
+        .apply(SENDER, stamped(6, 0, &[&put]), felix_broker::LogKind::Cache)
+        .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    assert!(
+        handler
+            .broker
+            .shard_log(
+                felix_broker::LogKind::Counters,
+                TENANT,
+                NAMESPACE,
+                STREAM,
+                0
+            )
+            .await
+            .is_none(),
+        "the counter log opened"
+    );
+    let cache = handler
+        .broker
+        .shard_log(felix_broker::LogKind::Cache, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("cache log");
+    assert_eq!(cache.member_is_learner(LOCAL), Some(true), "admitted");
+}
+
+/// **A build that does not yet mark wiped copies leaves a fleet that
+/// finalized `joint_fence` as it was**: a set naming another storage id for
+/// this copy is kept as it came, and the fence is answered.
+#[tokio::test]
+async fn before_the_build_allows_it_a_wiped_copy_is_not_marked() {
+    let (broker, _dir) = broker_with_storage().await;
+    let handler = handler(&broker, 6, OWN)
+        .with_fleet(Arc::new(build_marks(true)))
+        .with_replaced_storage(true);
+    let answer = handler
+        .fence(SENDER, fence_with(6, set(5, OLD), None, false))
+        .await;
+    assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
+    let log = log_of(&broker).await;
+    assert_eq!(log.member_is_learner(LOCAL), Some(false));
+    assert!(!log.member_is_wiped(LOCAL));
 }

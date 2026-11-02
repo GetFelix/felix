@@ -834,6 +834,13 @@ once it has caught up with a leader that was chosen without it. This is the
 rule [#1331](https://github.com/GetFelix/felix/issues/1331) adopted, and what
 Raft does with a new member. Without `joint_fence` brokers answer as before.
 
+The rule is built but switched off in brokers until the control plane can
+re-admit a learner and keep placement off one
+([#1737](https://github.com/GetFelix/felix/issues/1737)). The control plane
+refuses to finalize `joint_fence` until then, but a fleet that finalized it
+on an earlier release has it on already, so brokers check their own switch
+too (`NON_VOTING_READY` in `crates/server/felix-replication/src/quorum.rs`).
+
 ```mermaid
 sequenceDiagram
     participant C as Copy c (wiped)
@@ -853,8 +860,10 @@ looks for evidence. Every placement write names each member's registered
 storage id (`member_storage_ids`, see `docs/control-plane.md`). A set written
 before the wipe names the old id. A copy that learns a set naming another id
 for itself, from a fence or from the route a batch is stamped with, marks
-itself a learner. The mark is kept in the log's `replica-set` file, so a
-restart keeps it, and a later set does not clear it.
+itself a learner and marks itself *wiped*. Both are kept in the log's
+`replica-set` file, so a restart keeps them, and a later set does not clear
+them. The wiped mark is what tells a wiped learner from a move's staged
+destination, which is a learner too but lost nothing.
 
 That evidence alone is not enough. A copy wiped before it heard any set
 could first hear a failover's set that already names its new id, and answer
@@ -865,10 +874,20 @@ startup it asks the control plane which storage id the node last registered
 with. If that is another id, the node held copies under it. The broker then
 writes a `replaced-storage` marker under its data root, before it registers
 the new id, and from then on any shard copy on that directory that holds no
-set yet is a learner for every generation above 1. The marker is never
-removed, so a restart after the new id registered still knows. Once a copy
-holds a set, the mark in its `replica-set` file decides. A shard created
-after the wipe has generation 1 and nothing to lose, so its copies vote.
+set yet is a learner for every generation above 1, and is marked wiped when
+it learns its first set. Once a copy holds a set, the marks in its
+`replica-set` file decide. A shard created after the wipe has generation 1
+and nothing to lose, so its copies vote.
+
+The marker is not removed. It stands for the copies the node held under the
+old id, and the wipe took the list of them, so no one copy's re-admission
+says the others are safe: removing it then would let another shard's copy
+that holds no set yet vote with an empty log. It only affects a copy that
+holds no set. Such a copy is admitted once it catches up, as a staged
+destination is, so the only change that waits on it is one that needs a
+copy on a replaced broker to vote before that generation's leader has
+opened, such as a swap of two members onto replaced brokers. The control
+plane knows which assignments named the old id, and #1737 ends that wait.
 
 A broker the control plane has never registered held nothing, however new
 its directory, so its copies vote. That is what lets a new broker join a set,
@@ -890,15 +909,19 @@ from a broker that predates storage ids is evidence.
   fences are judged on the shard's own log. Judged on the counter log, a
   learner's empty counter log counted, and counter updates a majority
   acknowledged were lost
-  (`FelixShardElectWipeNonVoterCountersCountLearner.cfg`).
+  (`FelixShardElectWipeNonVoterCountersCountLearner.cfg`). A group log's
+  fence is refused for as long as the copy is marked wiped, which outlasts
+  its re-admission (below).
 - It takes records only from the leader the control plane confirms at that
   generation. The confirmed leader is reused for 500 ms at the same
   generation rather than read for every batch. Taking a batch records that
   leader's ballot, as it does for any follower.
-- It is never promoted. A broker whose kept set marks it a learner under
-  another storage id refuses to open as leader, before it fences or writes
-  anything, so the mark survives. A move's staged destination is also a
-  learner, under its own id, and still opens.
+- It is never promoted. A broker whose kept set marks it a wiped learner,
+  or a learner under another storage id, refuses to open as leader before it
+  fences or writes anything, so the mark survives. So does a copy that holds
+  no set past creation on a directory with the `replaced-storage` marker. A
+  move's staged destination is a learner under its own id, not marked wiped,
+  and still opens.
 
 **How it votes again.** A learner becomes a voter once its kept set names it
 under the storage id it has now and its log holds the generation-start
@@ -912,6 +935,17 @@ a copy admitted on its cache log alone would answer the next counter fence
 with a counter log that lacks acknowledged updates
 (`FelixShardElectWipeNonVoterCountersUnchecked.cfg`).
 
+A stream's cursor and dead-letter logs carry no generation-start record, so
+re-admission on the stream log says nothing about them. The copy keeps its
+wiped mark until each group log holds a record written at the set's
+generation or later. Until then it refuses group fences, and as a leader it
+does not count its own group logs toward the group majority. A leader at
+that generation took its group logs from copies other than this one, and
+ships them in order, so a record it wrote follows everything it took. A
+quiet consumer group writes nothing, so the mark can last; that only leaves
+group fences to the other copies, and a group log never keeps a shard
+closed. Writing a start record into the group logs instead would have meant
+every group-log reader and every older peer learning to skip it.
 The ballot matters as much as the records. Before its wipe the copy may have
 promised any generation up to the one it caught up at, to a candidate it no
 longer knows of. Because its catch-up took the confirmed leader's ballot at
@@ -934,12 +968,13 @@ Not covered yet, and needed before elections (#1009 S9):
   and a move that needs it waits. Both are
   [#1737](https://github.com/GetFelix/felix/issues/1737), which must land
   before elections do.
-- A stream's group logs are not checked at re-admission, so a copy's
-  cursor and dead-letter logs may still be behind when it votes again. The
-  model has no group logs.
-- The leader still counts a learner's acknowledgements. That is safe while
-  only the control plane names leaders. With elections the leader must leave
-  them out.
+- The model has no group logs; the argument above is the case for them.
+- The leader still counts a learner's acknowledgements, and a learner takes
+  a batch from a leader the control plane confirmed at that generation even
+  after it moved on (the 500 ms cache, or a read just before a failover).
+  The model explores both without elections (`LearnerAcksCount`,
+  `CatchUpFromDeposed`). With elections the leader must leave learners'
+  acknowledgements out.
 - A candidate's generation can be above anything the control plane has
   written, and a copy wiped after promising one cannot know it. With three
   copies that is safe: the set that re-admits it was fenced by both other
@@ -971,13 +1006,18 @@ Evidence (`replica/tests/non_voting.rs`):
 `a_new_brokers_copy_votes_past_creation`,
 `a_readmitted_copy_keeps_the_ballot_its_catch_up_took`,
 `a_learner_named_leader_refuses_and_keeps_its_mark`,
+`a_readmitted_copy_answers_group_fences_once_its_group_logs_caught_up`,
+`a_copy_whose_counter_log_cannot_open_stays_a_learner`,
+`before_the_build_allows_it_a_wiped_copy_is_not_marked`,
 `a_wiped_copy_refuses_records_from_an_unconfirmed_leader`, and
 `with_the_gate_off_a_copy_with_no_set_answers_as_before`; and in
 `services/felix-broker-service/src/node/storage/tests.rs`,
 `a_node_registered_under_another_id_starts_replaced` and
 `a_new_node_does_not_start_replaced`; and in
 `crates/server/felix-replication/src/promotion/tests.rs`,
-`a_promotion_fence_asks_a_replica_it_has_not_heard_from_whether_it_checks_sets`.
+`a_promotion_fence_asks_a_replica_it_has_not_heard_from_whether_it_checks_sets`,
+`a_copy_marked_on_the_replaced_marker_does_not_lead` (`promotion/tests/joint.rs`)
+and `a_wiped_leaders_own_group_logs_do_not_count` (`promotion/tests/groups.rs`).
 
 ### Every change of leader
 

@@ -610,3 +610,13 @@ async fn a_replica_without_consumer_groups_counts_as_empty() {
     );
     assert_eq!(replicas.sent(Kind::Fence).len(), 3);
 }
+
+/// **A leader whose copy is marked wiped does not count its own group logs**
+/// toward the group majority: re-admitted on its stream log, they may still
+/// lack a cursor commit a majority took. Of three it waits for both others.
+#[test]
+fn a_wiped_leaders_own_group_logs_do_not_count() {
+    assert_eq!(super::super::group_answers_needed(2, true), 1);
+    assert_eq!(super::super::group_answers_needed(2, false), 2);
+    assert_eq!(super::super::group_answers_needed(4, false), 3);
+}

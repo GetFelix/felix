@@ -225,7 +225,9 @@ pub async fn fence_shard<R: PeerRequester>(
             // what it held; a staged destination is a learner too, and may lead. Leading
             // would also replace that set with the route's and clear the mark.
             if set.is_some()
-                && joint.is_some_and(|joint| joint.is_wiped_learner(&log, local_node_id))
+                && joint.is_some_and(|joint| {
+                    joint.is_wiped_learner(&log, local_node_id, route.generation)
+                })
             {
                 return Err(Outcome::pending(
                     format!(
@@ -290,9 +292,28 @@ pub async fn fence_shard<R: PeerRequester>(
     // fence lands first.
     let (own, groups) = match key.kind {
         ShardKind::Stream => {
+            // Read before this broker keeps the route's set, which drops the mark.
+            let own_counts = !broker
+                .shard_log(
+                    LogKind::Stream,
+                    &key.tenant_id,
+                    &key.namespace,
+                    &key.stream,
+                    key.shard,
+                )
+                .await
+                .is_some_and(|log| log.member_is_wiped(local_node_id));
             futures::join!(
                 own_logs,
-                fence_groups(requester, broker, key, &shard, &replicas, reported_ids)
+                fence_groups(
+                    requester,
+                    broker,
+                    key,
+                    &shard,
+                    &replicas,
+                    reported_ids,
+                    own_counts,
+                )
             )
         }
         ShardKind::Cache => (own_logs.await, Ok(None)),
@@ -520,6 +541,10 @@ struct GroupRound {
 /// pass them, so serving it may redeliver but never skips a record; and the
 /// records' fence already refuses the old leader on both logs. So no group
 /// log can keep a shard closed, except a newer leader's answer.
+///
+/// Without `own_counts` this broker's copy is marked wiped, and its group
+/// logs may lack what a majority acknowledged, so they do not count toward
+/// the majority; short of one, the furthest answer still beats them.
 async fn fence_groups<R: PeerRequester>(
     requester: &R,
     broker: &Arc<Broker>,
@@ -527,6 +552,7 @@ async fn fence_groups<R: PeerRequester>(
     shard: &ShardRef,
     replicas: &[&felix_router::NodeRef],
     reported_ids: Option<&BTreeMap<String, String>>,
+    own_counts: bool,
 ) -> Result<Option<GroupRound>, Outcome> {
     if broker.group_reader().is_none() {
         return Ok(None);
@@ -552,7 +578,7 @@ async fn fence_groups<R: PeerRequester>(
             Vec::new(),
         ));
     };
-    let needed = crate::quorum::majority_of(replicas.len());
+    let needed = group_answers_needed(replicas.len(), own_counts);
     let mut asks = futures::stream::FuturesUnordered::new();
     for replica in replicas {
         let (node_id, addr) = (replica.node_id.clone(), replica.advertise_addr);
@@ -587,7 +613,7 @@ async fn fence_groups<R: PeerRequester>(
     let took = |answered: &[(String, std::net::SocketAddr, FenceOk, FenceOk)]| {
         answered.iter().map(|(node, ..)| node.clone()).collect()
     };
-    while answered.len() + 1 < needed {
+    while answered.len() < needed {
         let Some((node_id, addr, dead, cursor, copy)) = asks.next().await else {
             break;
         };
@@ -620,12 +646,12 @@ async fn fence_groups<R: PeerRequester>(
             ),
         }
     }
-    if answered.len() + 1 < needed {
+    if answered.len() < needed && (own_counts || answered.is_empty()) {
         tracing::warn!(
             stream = %key.stream,
             shard = key.shard,
             took = answered.len(),
-            needed = needed - 1,
+            needed,
             "too few replicas took the group logs' fence; serving this broker's own",
         );
         return Ok(None);
@@ -635,6 +661,12 @@ async fn fence_groups<R: PeerRequester>(
         cursors,
         answered,
     }))
+}
+
+/// How many of `replicas`, this broker aside, must take the group fences for
+/// a majority: one fewer when this broker's own group logs count.
+fn group_answers_needed(replicas: usize, own_counts: bool) -> usize {
+    crate::quorum::majority_of(replicas) - usize::from(own_counts)
 }
 
 /// What a fence answer from a replica that took a newer leader says.

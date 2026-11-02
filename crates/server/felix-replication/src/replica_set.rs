@@ -53,6 +53,7 @@ pub(crate) fn membership(view: &ReplicaSetView) -> Membership {
                 node: member.node_id.clone(),
                 storage: member.storage_id.map(StorageId::from_bytes),
                 learner: member.learner,
+                wiped: false,
             })
             .collect(),
     }
@@ -94,6 +95,7 @@ pub(crate) fn placed(set: &felix_router::PlacedSet, generation: u64) -> Membersh
                     .and_then(|hex| from_hex(hex))
                     .map(StorageId::from_bytes),
                 learner: set.successor.as_ref() == Some(node) && *node != set.leader,
+                wiped: false,
             })
             .collect(),
     }
