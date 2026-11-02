@@ -3,7 +3,7 @@
     "trials": 5
   },
   "workload": {
-    "_comment": "One acked publisher and N subscribers, each on its own connection: what each subscriber adds to the publisher's round trip and to delivery. p50/p99 are the first subscriber's; throughput is the publisher's acked rate.",
+    "_comment": "One acked publisher and N subscribers, each on its own connection (the per-address and total connection caps are lifted for it): what each subscriber adds to the publisher's round trip and to delivery. p50/p99 are the first subscriber's; throughput is the publisher's acked rate.",
     "fanout": [1, 100],
     "batch": [1],
     "payload_bytes": [256],
@@ -15,7 +15,9 @@
     "balanced": {
       "env": {
         "FELIX_EVENT_BATCH_MAX_DELAY_US": "250",
-        "FELIX_PUBLISH_CHUNK_BYTES": "16384"
+        "FELIX_PUBLISH_CHUNK_BYTES": "16384",
+        "FELIX_MAX_CONNECTIONS_PER_IP": "0",
+        "FELIX_MAX_CLIENT_CONNECTIONS": "100000"
       }
     },
     "drop_new": {
@@ -23,6 +25,8 @@
       "env": {
         "FELIX_EVENT_BATCH_MAX_DELAY_US": "250",
         "FELIX_PUBLISH_CHUNK_BYTES": "16384",
+        "FELIX_MAX_CONNECTIONS_PER_IP": "0",
+        "FELIX_MAX_CLIENT_CONNECTIONS": "100000",
         "FELIX_SUB_QUEUE_POLICY": "drop_new"
       }
     }
@@ -31,7 +35,7 @@
     "P1_conn_per_sub": {
       "args": [
         "--pub-conns", "1", "--pub-streams-per-conn", "1", "--pub-sharding", "hash_stream",
-        "--sub-conns", "100", "--idle-ms", "10000"
+        "--sub-conns", "100", "--idle-ms", "30000"
       ]
     }
   },
