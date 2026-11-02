@@ -307,6 +307,15 @@ fn list_segments(dir: &Path, label: &str, actions: &[Action]) -> Result<Vec<Segm
     Ok(segments)
 }
 
+/// Whether startup cuts a retired segment at `position` and keeps the segment
+/// after it.
+fn retired_cut_continues(actions: &[Action], id: SegmentId, position: u64) -> bool {
+    actions.iter().any(|action| {
+        matches!(action, Action::CutRetired { segment, valid_bytes, drops_next: None }
+            if *segment == id && *valid_bytes == position)
+    })
+}
+
 /// Whether startup cuts segment `id` at `position`: a torn tail of the active
 /// segment, or an unsealed retired segment back to its last intact record.
 fn startup_cuts(actions: &[Action], id: SegmentId, position: u64) -> bool {
@@ -408,7 +417,6 @@ impl<'a> Walk<'a> {
         }
         // A segment that holds records must pick up where the last one ended.
         if let Some(previous) = self.expected
-            && file_len > SEGMENT_HEADER_LEN
             && previous != header.base_offset
         {
             return self.fail(
@@ -520,7 +528,8 @@ impl<'a> Walk<'a> {
         }
     }
 
-    /// End the read at the record at `position`. Whether that is a torn tail
+    /// End the read at the record at `position`, unless startup cuts it and
+    /// goes on. Whether that is a torn tail
     /// is startup's call, made by the plan, so it cannot disagree with
     /// `inspect segments`. A record cut short at the end of the newest
     /// segment counts as one too: startup would cut it, and it can have
@@ -532,6 +541,12 @@ impl<'a> Walk<'a> {
         expected: Offset,
         cause: CorruptionKind,
     ) -> Result<()> {
+        // Startup cuts a retired segment's torn bytes and carries on into the
+        // segment after it, so the read does the same.
+        if retired_cut_continues(self.actions, id, position) {
+            self.expected = Some(expected);
+            return Ok(());
+        }
         let unfinished = id == self.newest && matches!(cause, CorruptionKind::Truncated { .. });
         self.stop = Some(Stop {
             segment: id,

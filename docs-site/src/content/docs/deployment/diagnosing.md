@@ -603,7 +603,9 @@ The failing row is in the segment and at the byte `inspect segments` printed
 (`segment 1 at byte 1504`), and it names the offset the record should have. The
 notes below the table (on stderr) say that startup would refuse the shard and
 repeat where the read stopped. Once you know the offset, `--offset 60` looks
-at the same place without reading the whole shard first.
+at the same place without reading the whole shard first. On a shard where every
+record verifies, `--damage` prints nothing on stdout, says "every record in the
+shard verifies" on stderr, and exits 0.
 
 The command seeks with the segment's sparse index and then decodes forward, up
 to `--around` records on each side (10 by default, at most 1000, or at most 100
@@ -628,10 +630,13 @@ is damaged stops any read that has to cross it, because the header says how far
 to step to the next record.
 
 The exit status is 0 when the offset was read, 7 when a record in the range is
-damaged, 6 when the read ended at a torn tail startup would cut, 5 when the
-offset is below the oldest segment on disk or past the end of the log (the
-message says where the log starts and ends) or the shard is not there, and 2 for
-bad arguments.
+damaged or an offset inside the log has no record, 6 when the read ended at a
+torn tail startup would cut, 5 when the offset is below the oldest segment on
+disk or past the end of the log (the message says where the log starts and
+ends) or the shard is not there, 2 for bad arguments and 1 for an I/O error.
+The status describes the range you asked for. When startup would refuse or
+repair the shard somewhere else, a note says so, and the status stays 0 if the
+range itself reads cleanly; `inspect segments` has the whole verdict.
 
 `inspect records` never writes. It opens every file read-only, creates no
 directory, and does not rebuild an index on disk or cut a torn tail. It does not
@@ -641,8 +646,8 @@ active segment's index is often short, and a seek into it walks from the last
 entry it has). It is safe to run on the live volume. Next to a running broker,
 the last record of the active segment can be an append that has not finished.
 It shows as a torn tail, which is why the message says so, and retention can
-delete a segment while the command reads, which it reports and asks you to run
-again. Run it again, or on a copy, before reading much into it.
+delete a segment while the command reads. It reads again once, and if the file
+is still gone it says so and asks you to run it again. Run it again, or on a copy, before reading much into it.
 
 **Likely causes.**
 

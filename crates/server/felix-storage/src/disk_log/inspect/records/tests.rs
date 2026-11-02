@@ -8,6 +8,7 @@ use super::super::super::durable_mark::{self, DurableMark};
 use super::*;
 use crate::DiskLog;
 use crate::log::{AppendOnlyLog, AppendRecord, FsyncMode, LogConfig};
+use crate::segment::format::encode_record;
 use crate::segment::{BASELINE_VERSION, IndexEntry, RECORD_HEADER_LEN};
 
 /// Bytes a record with a nine-byte payload takes.
@@ -655,4 +656,134 @@ async fn payloads_shrink_the_window_cap() {
 
     assert_eq!(report.records.len() as u64, 2 * MAX_AROUND_WITH_PAYLOAD + 1);
     assert_eq!(report.records[0].offset, 200 - MAX_AROUND_WITH_PAYLOAD);
+}
+
+#[tokio::test]
+async fn an_empty_segment_in_the_middle_with_the_wrong_base_is_a_gap() {
+    let (_data, dir) = write_log(small_segments(), 10).await;
+    // An empty segment based at 15, then a real one at 15: the log skips 10..15.
+    let header = SegmentHeader::at_version(15, 1, BASELINE_VERSION).encode();
+    let empty = add_segment(&dir, &header);
+    let mut next = header.to_vec();
+    encode_record(&mut next, 15, 1, b"after-gap", None, &RecordMark::None);
+    add_segment(&dir, &next);
+
+    let stop = first_damage(&dir, &LogConfig::default())
+        .expect("scan")
+        .expect("a gap is damage");
+    assert_eq!((stop.segment, stop.expected_offset), (empty, 10));
+    assert!(!stop.tail);
+    assert!(matches!(
+        stop.cause,
+        CorruptionKind::OffsetOutOfOrder {
+            expected: 10,
+            found: 15
+        }
+    ));
+    let report = look(&dir, &query(9, 20)).expect("read");
+    assert!(report.stop.is_some());
+    assert!(matches!(report.startup, Startup::Refuse(_)));
+}
+
+#[tokio::test]
+async fn a_torn_retired_segment_is_cut_and_the_read_goes_on_into_the_next() {
+    let (_data, dir) = write_log(small_segments(), 12).await;
+    let ids = segment_ids(&dir);
+    std::fs::remove_file(dir.join(durable_mark::mark_file_name())).expect("remove");
+    // A partial record after the retired segment's last whole one, which
+    // loses nothing: the segment after it still starts where it ends.
+    let retired = dir.join(segment_file_name(ids[ids.len() - 2]));
+    let mut bytes = std::fs::read(&retired).expect("read");
+    bytes.extend_from_slice(&[0x11; 13]);
+    std::fs::write(&retired, &bytes).expect("write");
+
+    let report = look(&dir, &query(11, 3)).expect("read");
+
+    assert!(report.stop.is_none(), "{:?}", report.stop);
+    assert_eq!(offsets(&report), [8, 9, 10, 11]);
+    assert_eq!(report.offset, OffsetStatus::Found);
+    assert_eq!(report.startup, Startup::Repair);
+    assert!(report.actions.iter().any(|action| matches!(
+        action,
+        Action::CutRetired {
+            drops_next: None,
+            ..
+        }
+    )));
+}
+
+#[tokio::test]
+async fn damage_reports_a_damaged_header() {
+    let (_data, dir) = write_log(small_segments(), 12).await;
+    let ids = segment_ids(&dir);
+    flip(&dir.join(segment_file_name(ids[2])), 1);
+
+    let stop = first_damage(&dir, &LogConfig::default())
+        .expect("scan")
+        .expect("damage");
+
+    assert_eq!((stop.segment, stop.position), (ids[2], 0));
+    assert!(!stop.tail);
+}
+
+#[tokio::test]
+async fn damage_reports_a_torn_tail_as_the_first_damage() {
+    let (_data, dir) = write_log(small_segments(), 12).await;
+    let path = active_path(&dir);
+    let mut bytes = std::fs::read(&path).expect("read");
+    bytes.extend_from_slice(&[0x11; 13]);
+    std::fs::write(&path, &bytes).expect("write");
+
+    let stop = first_damage(&dir, &LogConfig::default())
+        .expect("scan")
+        .expect("damage");
+
+    assert_eq!(stop.expected_offset, 12);
+    assert!(stop.tail);
+}
+
+#[tokio::test]
+async fn damage_does_not_count_a_rollover_leftover() {
+    let (_data, dir) = write_log(small_segments(), 12).await;
+    add_segment(&dir, &[0u8; 10]);
+    assert_eq!(
+        first_damage(&dir, &LogConfig::default()).expect("scan"),
+        None
+    );
+}
+
+#[test]
+fn a_vanished_file_is_read_again_once_and_only_once() {
+    let dir = tempdir().expect("dir");
+    let gone = || -> Result<u8> {
+        Err(StorageError::Io(std::io::Error::from(
+            std::io::ErrorKind::NotFound,
+        )))
+    };
+
+    let attempts = std::cell::Cell::new(0);
+    let read = retrying(dir.path(), || {
+        attempts.set(attempts.get() + 1);
+        if attempts.get() == 1 { gone() } else { Ok(7) }
+    });
+    assert_eq!(read.expect("second attempt"), 7);
+    assert_eq!(attempts.get(), 2);
+
+    let attempts = std::cell::Cell::new(0);
+    let read = retrying(dir.path(), || {
+        attempts.set(attempts.get() + 1);
+        gone()
+    });
+    assert!(read.is_err());
+    assert_eq!(attempts.get(), 2, "one retry, not a loop");
+
+    // Without the directory nothing can reappear, so there is no second read.
+    let attempts = std::cell::Cell::new(0);
+    let missing = dir.path().join("nothing-here");
+    let read = retrying(&missing, || {
+        attempts.set(attempts.get() + 1);
+        gone()
+    });
+    assert!(read.is_err());
+    assert_eq!(attempts.get(), 1);
 }

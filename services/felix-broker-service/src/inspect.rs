@@ -75,10 +75,12 @@ rows before it are kept. Whether that is a torn tail or damage is startup's
 verdict for the three settings above, the same as `segments` gives. Segments
 startup would remove, such as a rollover's leftovers, are not read.
 
-It exits 0 when it read the offset, 7 when a record in the range is damaged,
-6 when the read ended at a torn tail startup would cut, 5 when the offset is
-below the oldest segment or past the end of the log or the shard is not there,
-and 2 for bad arguments. It is strictly read-only and does not trust an index:
+It exits 0 when it read the offset, 7 when a record in the range is damaged
+or an offset inside the log has no record, 6 when the read ended at a torn
+tail startup would cut, 5 when the offset is below the oldest segment or past
+the end of the log or the shard is not there, 2 for bad arguments and 1 for an
+I/O error. The status describes the range; a note says when startup would
+refuse or repair the shard elsewhere. It is strictly read-only and does not trust an index:
 a missing or stale one only makes the read slower. Next to a running broker
 the active segment's last record may be an append in flight, which shows as a
 torn tail.";
