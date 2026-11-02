@@ -323,6 +323,7 @@ impl ReplicaHandler {
         InternalMessage::ReplicateOk(ReplicateOk {
             correlation_id,
             durable_offset: request.base_offset,
+            learner: false,
         })
     }
 
@@ -400,6 +401,7 @@ impl ReplicaHandler {
         InternalMessage::ReplicateOk(ReplicateOk {
             correlation_id,
             durable_offset: from,
+            learner: false,
         })
     }
 
@@ -591,6 +593,7 @@ impl ReplicaHandler {
         InternalMessage::ReplicateOk(ReplicateOk {
             correlation_id,
             durable_offset: tail,
+            learner: false,
         })
     }
 
@@ -995,11 +998,12 @@ impl ReplicaHandler {
                         "stored a replicated batch but could not advance the stream's tail",
                     );
                 }
-                self.admit_when_caught_up(&key, log_kind, &log).await;
+                let learner = self.admit_when_caught_up(&key, log_kind, &log).await;
                 metrics::record_replicated(metrics::OUTCOME_OK);
                 InternalMessage::ReplicateOk(ReplicateOk {
                     correlation_id,
                     durable_offset: applied.durable_offset,
+                    learner,
                 })
             }
             Ok(Err(divergence)) => {

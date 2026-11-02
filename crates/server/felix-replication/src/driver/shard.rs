@@ -730,7 +730,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         if !quorum_shard || !leading || learner.as_deref() == Some(node) {
             return false;
         }
-        if !mine.is_some_and(|cursor| cursor.confirmed > mark && cursor.halted.is_none()) {
+        if !mine.is_some_and(|cursor| cursor.confirmed > mark && cursor.counts()) {
             return false;
         }
         let hopeful: Vec<FollowerCursor> = followers
@@ -1458,7 +1458,9 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         || entry.followers.iter().any(|cursor| {
             absorbed.contains(&cursor.node_id)
                 && cursor.halted.is_none()
-                && ((checked.lock().contains(&cursor.node_id) && cursor.confirmed > mark)
+                && ((!cursor.learner
+                    && checked.lock().contains(&cursor.node_id)
+                    && cursor.confirmed > mark)
                     || (!cursor.stalled && cursor.next_offset < tail))
         });
 
@@ -1555,7 +1557,7 @@ pub(super) async fn group_level(
             .iter()
             .find(|cursor| cursor.node_id == node)
             .map_or(Some(0), |cursor| {
-                cursor.halted.is_none().then(|| cursor.confirmed.min(tail))
+                cursor.counts().then(|| cursor.confirmed.min(tail))
             })
     };
     // Each follower's pair, `None` for one halted on either log. A move's

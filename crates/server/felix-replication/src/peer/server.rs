@@ -384,6 +384,8 @@ async fn serve_connection(
     // Whether the peer replaces a stream it gets no answer on, from its
     // `Hello`. Until it says so, a stream is never dropped under it.
     let renews = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // Whether the peer reads a learner's answer, from its `Hello`.
+    let learner_acks = Arc::new(std::sync::atomic::AtomicBool::new(false));
     loop {
         let stream = tokio::select! {
             _ = shutdown.cancelled() => break,
@@ -405,6 +407,7 @@ async fn serve_connection(
         let offered = offered.clone();
         let identity = Arc::clone(&identity);
         let renews = Arc::clone(&renews);
+        let learner_acks = Arc::clone(&learner_acks);
         connection.spawn_pump(async move {
             let connection = stream_connection;
             let (send, mut recv) = stream;
@@ -491,6 +494,12 @@ async fn serve_connection(
                             hello
                                 .capabilities
                                 .is_some_and(|c| c.contains(PeerCapabilities::LANE_RENEWAL)),
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
+                        learner_acks.store(
+                            hello
+                                .capabilities
+                                .is_some_and(|c| c.contains(PeerCapabilities::LEARNER_ACKS)),
                             std::sync::atomic::Ordering::Relaxed,
                         );
                         // A plain `Hello` is a peer that predates the bits, so
@@ -661,7 +670,10 @@ async fn serve_connection(
                         };
                         let handled = tokio::time::timeout(bound, handling).await.ok();
                         match handled.and_then(|joined| joined.ok()).ok_or(()) {
-                            Ok(response) => response,
+                            Ok(response) => for_caller(
+                                response,
+                                learner_acks.load(std::sync::atomic::Ordering::Relaxed),
+                            ),
                             // A handler that panicked may have applied the
                             // write, so no answer here is safe to retry on.
                             // Drop the stream, as the panic did when it ran
@@ -696,6 +708,21 @@ async fn serve_connection(
             }
             let _ = send.lock().await.finish();
         });
+    }
+}
+
+/// `response` as the caller reads it: a learner's answer to a caller that
+/// did not offer [`PeerCapabilities::LEARNER_ACKS`] goes as the original
+/// kind, which such a caller counts as it always has.
+fn for_caller(response: InternalMessage, learner_acks: bool) -> InternalMessage {
+    match response {
+        InternalMessage::ReplicateOk(ok) if ok.learner && !learner_acks => {
+            InternalMessage::ReplicateOk(felix_wire::internal::ReplicateOk {
+                learner: false,
+                ..ok
+            })
+        }
+        response => response,
     }
 }
 

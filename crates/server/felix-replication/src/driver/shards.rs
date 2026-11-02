@@ -927,7 +927,8 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             .followers
             .iter()
             .map(|cursor| {
-                let learner = cursors.learner.as_deref() == Some(cursor.node_id.as_str());
+                let learner =
+                    cursor.learner || cursors.learner.as_deref() == Some(cursor.node_id.as_str());
                 let busy = unanswered(&cursor.node_id);
                 FollowerStatus {
                     busy,
@@ -1234,8 +1235,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             .streams
             .get(&key)
             .is_some_and(|e| (e.generation, e.incarnation) == (generation, incarnation));
-        let counts_for_more =
-            current && checked && cursor.halted.is_none() && cursor.confirmed > mark;
+        let counts_for_more = current && checked && cursor.counts() && cursor.confirmed > mark;
         let owed = current
             && cursor.halted.is_none()
             && !cursor.stalled

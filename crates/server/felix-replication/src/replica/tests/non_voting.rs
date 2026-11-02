@@ -509,6 +509,44 @@ async fn a_copy_is_readmitted_only_once_its_counter_log_caught_up() {
     assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
 }
 
+/// **A learner says so in every answer until it is re-admitted**, so the
+/// leader leaves it out of its marks (#1762). The cache log alone does not
+/// re-admit the copy, so that answer is a learner's; the counter batch that
+/// completes the catch-up is answered as a voter's.
+#[tokio::test]
+async fn a_learner_says_so_in_its_answers_until_it_is_readmitted() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let handler = cache_handler(dir.path()).with_replaced_storage(true);
+    let answer = settled(|| {
+        handler.fence(
+            SENDER,
+            on(ReplicaLog::Cache, fence_with(6, set(6, OWN), None, false)),
+        )
+    })
+    .await;
+    assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
+
+    let put = super::fence::cache_put("k", "v");
+    let answer =
+        settled(|| handler.apply(SENDER, stamped(6, 0, &[&put]), felix_broker::LogKind::Cache))
+            .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(ref ok) if ok.learner),
+        "a learner's answer must say so: {answer:?}"
+    );
+
+    let unstamped = ReplicateRecords {
+        set_generation: None,
+        ..stamped(6, 0, &["d1"])
+    };
+    let answer =
+        settled(|| handler.apply(SENDER, unstamped.clone(), felix_broker::LogKind::Counters)).await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(ref ok) if !ok.learner),
+        "re-admitted, it answers as a voter: {answer:?}"
+    );
+}
+
 /// A shard's creation is a set at generation 1, which no copy held before:
 /// a replaced storage id votes in it.
 #[tokio::test]

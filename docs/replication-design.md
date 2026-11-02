@@ -1042,6 +1042,14 @@ from a broker that predates storage ids is evidence.
   coming, and after a refused request for up to 5 s, so a retry spaced out
   by backoff finds it.
   Taking a batch records that leader's ballot, as it does for any follower.
+- Its answers to those batches say it is a learner (`ReplicateLearnerOk` in
+  `docs/internal-protocol.md`), and the leader leaves it out of its commit
+  and counter marks until an answer does not. Counting it loses a write once
+  elections run: the copy promised a candidate a newer generation before the
+  wipe, catches up from the old leader, which acknowledges a write on itself
+  and the copy, and the candidate opens on the copy's pre-wipe answer without
+  that write (`FelixShardElectWipeNonVoterCreatesLearnerAcks.cfg`,
+  [#1762](https://github.com/GetFelix/felix/issues/1762)).
 - It is never promoted. A broker whose kept set marks it a wiped learner,
   or a learner under another storage id, refuses to open as leader before it
   fences or writes anything, so the mark survives. So does a copy that holds
