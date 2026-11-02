@@ -552,9 +552,9 @@ runner (`felix-runner-x64`: 8 cores, 32 GB, up to 40 at once). When it is set,
 `test` and `coverage` (wherever they run GitHub-hosted), the seven TLA+
 shards and `perf-pr.yml` use it instead of the 4-core `ubuntu-latest`. TLC
 runs a worker per core, so the shards gain as much as `test` does.
-`perf-pr.yml` benchmarks the merge-base and the PR head in one job, so its
-comparison holds on any runner. `perf-publish.yml` stays on `ubuntu-latest`:
-it adds to a stored history, and a change of machine would show up there as a
+`perf-pr.yml` benchmarks the merge-base and the PR head in one job,
+alternating their trials, so its comparison holds on any runner.
+`perf-publish.yml` stays on `ubuntu-latest`: it adds to a stored history, and a change of machine would show up there as a
 regression or a speedup.
 
 Larger runners are billed per minute even on a public repository, up to the

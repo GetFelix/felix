@@ -3,7 +3,7 @@ name: Performance Data Publish
 # Runs the same fast benchmark subset used by perf-pr.yml, but once (not
 # back-to-back), on every push to main, and publishes the results as a
 # historical time series via github-action-benchmark. This is the "baseline"
-# humans can browse over time; perf-pr.yml's back-to-back comparison is the
+# humans can browse over time; perf-pr.yml's alternating comparison is the
 # noise-controlled per-PR signal and does not read from this data.
 
 on:
