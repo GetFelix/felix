@@ -39,7 +39,7 @@ jobs:
           for i in 1 2 3 4 5 6 7 8; do
             if [ $((i % 2)) = 1 ]; then order="base head"; else order="head base"; fi
             for side in $order; do
-              AB_TAG=$side /tmp/bin-$side --ignored --nocapture --test-threads 1 | grep '^AB ' | sed 's/^AB //' >> results.jsonl
+              AB_TAG=$side /tmp/bin-$side --ignored --nocapture --test-threads 1 | grep -o 'AB {.*}' | sed 's/^AB //' >> results.jsonl
             done
           done
           python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
