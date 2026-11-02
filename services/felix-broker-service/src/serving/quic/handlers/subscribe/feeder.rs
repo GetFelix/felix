@@ -23,6 +23,7 @@ fn encode_batch(
     skipped_before: u64,
     publisher: Option<&Bytes>,
     timestamps: Option<&[u64]>,
+    headers: Option<&[Option<Bytes>]>,
 ) -> felix_wire::Result<Bytes> {
     let base_offset = base_offset.filter(|_| config.offsets_enabled);
     let meta = felix_wire::binary::EventBatchMeta {
@@ -36,7 +37,7 @@ fn encode_batch(
             .filter(|_| config.publisher_enabled)
             .map(Bytes::as_ref),
         timestamps: timestamps.filter(|_| config.timestamps_enabled),
-        record_headers: None,
+        record_headers: headers.filter(|_| config.headers_enabled),
     };
     felix_wire::binary::encode_shared_event_batch_bytes_with_meta(batch, meta)
 }
@@ -182,6 +183,9 @@ pub(super) async fn run_lane_feeder(
                     skipped,
                     envelope.publisher(),
                     times.as_deref(),
+                    envelope
+                        .record_headers()
+                        .map(|headers| &headers[start..end]),
                 );
                 match encoded {
                     Ok(frame) => {
@@ -234,6 +238,17 @@ pub(super) async fn run_lane_feeder(
                 times.push(time);
                 times
             });
+        // Kept only for a subscriber that negotiated headers; each coalesced
+        // publish is one record and brings its own block, or none.
+        let mut batch_headers = config.headers_enabled.then(|| {
+            let mut headers = Vec::with_capacity(max_events);
+            headers.push(
+                envelope
+                    .record_headers()
+                    .and_then(|headers| headers[0].clone()),
+            );
+            headers
+        });
         let mut expected_next = batch_base.map(|base| base + envelope.len() as u64);
         // Wait for more only while the previous batch found events already
         // queued behind its first, i.e. arrivals outpace this feeder. Otherwise a
@@ -291,6 +306,13 @@ pub(super) async fn run_lane_feeder(
             held.carry(next_held);
             batch_bytes += payload.len();
             batch.push(payload);
+            if let Some(headers) = batch_headers.as_mut() {
+                headers.push(
+                    envelope
+                        .record_headers()
+                        .and_then(|headers| headers[0].clone()),
+                );
+            }
             if let (Some(times), Some(time)) = (batch_times.as_mut(), envelope.timestamp_micros()) {
                 times.push(time);
             }
@@ -308,6 +330,7 @@ pub(super) async fn run_lane_feeder(
             batch_skipped,
             batch_publisher.as_ref(),
             batch_times.as_deref(),
+            batch_headers.as_deref(),
         );
         let frame = match encoded {
             Ok(frame) => frame,

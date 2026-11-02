@@ -197,3 +197,43 @@ fn a_key_length_past_the_end_is_refused() {
         Err(Error::Incomplete)
     ));
 }
+
+#[test]
+fn a_name_prefix_is_found_without_decoding() {
+    // `a` and `bc`, plus a key that looks like a reserved name.
+    assert!(RecordHeaders::any_name_starts_with(WITH_KEY, "b").unwrap());
+    assert!(RecordHeaders::any_name_starts_with(WITH_KEY, "bc").unwrap());
+    assert!(RecordHeaders::any_name_starts_with(WITH_KEY, "a").unwrap());
+    assert!(!RecordHeaders::any_name_starts_with(WITH_KEY, "c").unwrap());
+    // Case matters, and the key is not a header name.
+    assert!(!RecordHeaders::any_name_starts_with(WITH_KEY, "B").unwrap());
+    assert!(!RecordHeaders::any_name_starts_with(WITH_KEY, "k").unwrap());
+    assert!(!RecordHeaders::any_name_starts_with(NO_KEY, "felix.").unwrap());
+}
+
+#[test]
+fn the_reserved_prefix_matches_felix_names_only() {
+    let block = RecordHeaders {
+        key: None,
+        headers: vec![
+            ("trace".to_owned(), Bytes::from_static(b"1")),
+            ("felix.mqtt.topic".to_owned(), Bytes::new()),
+        ],
+    }
+    .encode()
+    .unwrap();
+    assert!(RecordHeaders::any_name_starts_with(&block, crate::RESERVED_HEADER_PREFIX).unwrap());
+    let plain = RecordHeaders {
+        key: None,
+        headers: vec![("felixa".to_owned(), Bytes::new())],
+    }
+    .encode()
+    .unwrap();
+    assert!(!RecordHeaders::any_name_starts_with(&plain, crate::RESERVED_HEADER_PREFIX).unwrap());
+}
+
+#[test]
+fn a_prefix_search_refuses_a_block_that_does_not_parse() {
+    assert!(RecordHeaders::any_name_starts_with(&[1u8, 0xFF, 0xFF, 0xFF, 0xFF], "a").is_err());
+    assert!(RecordHeaders::any_name_starts_with(&[0u8, 0, 0, 0, 0, 7], "a").is_err());
+}

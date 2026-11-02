@@ -191,6 +191,7 @@ async fn ending_subscribers_drains_then_closes_each_one() {
             None,
             None,
             None,
+            None,
         )
         .expect("no turn to supersede");
     for entry in snapshot.iter() {

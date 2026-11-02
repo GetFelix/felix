@@ -152,6 +152,7 @@ async fn publish_batch(h: &Harness, io: &Io) {
         ],
         None,
         None,
+        None,
         Some(9),
         Some(felix_wire::AckMode::PerBatch),
         false,

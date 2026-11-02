@@ -55,6 +55,6 @@ pub use client::message::{
     PublishRefusalReason, ShardInspection, ShardKind, ShardOwner, StartPosition, StateChange,
     StreamRecord, SubscriptionCursor, SubscriptionFilter, UnknownRequest,
 };
-pub use client::record_headers::RecordHeaders;
+pub use client::record_headers::{RESERVED_HEADER_PREFIX, RecordHeaders};
 pub use client::{binary, text};
 pub use error::{Error, Result};

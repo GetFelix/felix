@@ -177,6 +177,9 @@ pub(crate) struct LogEntry {
     pub(crate) seq: u64,
     pub(crate) payload: Bytes,
     pub(crate) publisher: Option<Bytes>,
+    /// The record's headers block. Boxed: almost no record has one, and the
+    /// ring holds many.
+    pub(crate) headers: Option<Box<Bytes>>,
     pub(crate) timestamp_micros: Option<u64>,
 }
 

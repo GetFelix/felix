@@ -153,6 +153,7 @@ async fn an_acked_batch_routed_by_a_stale_width_is_told_stale_width() {
         "ns".to_string(),
         "stream".to_string(),
         vec![Bytes::from_static(b"payload")],
+        None,
         Some(Bytes::from_static(b"customer-7")),
         None,
         Some(9),

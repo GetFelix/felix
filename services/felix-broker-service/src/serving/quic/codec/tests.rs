@@ -227,14 +227,26 @@ fn leftover_bytes_are_not_read_as_another_stream() {
     assert!(scratch.bind(b).is_ok(), "an empty scratch can move streams");
 }
 
-/// The broker serves no flag extension yet, so a frame that sets the bit is
-/// refused exactly as it was before the bit was defined.
+/// A frame that sets the bit before an extension is negotiated is refused
+/// exactly as it was before the bit was defined.
 #[test]
-fn the_extended_flag_is_refused_until_an_extension_is_served() {
-    assert!(refuses_flags(felix_wire::FLAG_EXTENDED));
+fn the_extended_flag_is_refused_until_an_extension_is_negotiated() {
+    assert!(refuses_flags(felix_wire::FLAG_EXTENDED, 0));
     assert!(refuses_flags(
-        felix_wire::FLAG_EXTENDED | felix_wire::FLAG_BINARY_PUBLISH_BATCH
+        felix_wire::FLAG_EXTENDED | felix_wire::FLAG_BINARY_PUBLISH_BATCH,
+        0
     ));
-    assert!(!refuses_flags(felix_wire::KNOWN_FLAGS));
-    assert!(!refuses_flags(0));
+    assert!(!refuses_flags(felix_wire::KNOWN_FLAGS, 0));
+    assert!(!refuses_flags(0, 0));
+}
+
+/// Once record headers are negotiated the bit passes.
+#[test]
+fn the_extended_flag_passes_on_a_negotiated_connection() {
+    let negotiated = felix_wire::EXT_RECORD_HEADERS;
+    assert!(!refuses_flags(felix_wire::FLAG_EXTENDED, negotiated));
+    assert!(!refuses_flags(
+        felix_wire::FLAG_EXTENDED | felix_wire::FLAG_BINARY_PUBLISH_BATCH,
+        negotiated
+    ));
 }

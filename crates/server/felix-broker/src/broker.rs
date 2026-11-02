@@ -172,6 +172,9 @@ pub struct Broker {
     /// Whether a durable stream stores each record's publisher, once the
     /// node says. Unset stores none.
     record_publishers: std::sync::OnceLock<NodeGate>,
+    /// Whether publishes may carry record headers, once the node says.
+    /// Unset refuses them.
+    record_headers: std::sync::OnceLock<NodeGate>,
 }
 
 /// A yes or no the node decides at startup and may change its answer to
@@ -239,6 +242,7 @@ impl Broker {
             producer_ids: ahash::RandomState::new(),
             producer_id_counter: std::sync::atomic::AtomicU64::new(0),
             record_publishers: std::sync::OnceLock::new(),
+            record_headers: std::sync::OnceLock::new(),
         }
     }
 
@@ -255,6 +259,22 @@ impl Broker {
     /// Whether a durable publish now stores its publisher.
     pub fn records_publishers(&self) -> bool {
         self.record_publishers.get().is_some_and(|gate| (gate.0)())
+    }
+
+    /// Accept record headers on publishes whenever `gate` says so.
+    ///
+    /// Asked at each client's auth, to decide what to offer, and on every
+    /// durable publish. A durable record with headers is storage format v8,
+    /// which an older build refuses to open, and replication does not ship
+    /// headers, so a cluster member says yes only when its fleet has finalized
+    /// `record_headers`. Only the first call counts.
+    pub fn record_headers_when(&self, gate: impl Fn() -> bool + Send + Sync + 'static) {
+        let _ = self.record_headers.set(NodeGate(Arc::new(gate)));
+    }
+
+    /// Whether publishes may now carry record headers.
+    pub fn records_headers(&self) -> bool {
+        self.record_headers.get().is_some_and(|gate| (gate.0)())
     }
 
     /// Per-subscriber queue capacity. Zero is rejected.

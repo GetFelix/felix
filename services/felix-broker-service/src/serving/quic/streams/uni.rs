@@ -51,6 +51,10 @@ pub(super) async fn run_uni_loop<S: FrameSource + ?Sized>(
         peer_certs,
     } = args;
     let mut auth_ctx: Option<AuthContext> = None;
+    // The extension bits this stream's `Auth` offered and the broker serves.
+    // There is no `AuthOk` here, so a client that offers on a uni stream must
+    // already know the broker accepts them, from its control stream.
+    let mut peer_flags_ext = 0u32;
     // Held until this stream authenticates; see `preauth`.
     let mut preauth_permit = Some(publish_ctx.preauth.admit_stream().await);
     // Set once the stream authenticates, as on the control stream.
@@ -73,7 +77,7 @@ pub(super) async fn run_uni_loop<S: FrameSource + ?Sized>(
         };
         // Flags select the body's layout, and a uni stream has no way to
         // answer, so a bit this version does not know ends the stream.
-        if crate::serving::quic::codec::refuses_flags(frame.header.flags) {
+        if crate::serving::quic::codec::refuses_flags(frame.header.flags, peer_flags_ext) {
             anyhow::bail!("unsupported frame flags {:#06x}", frame.header.flags);
         }
 
@@ -115,10 +119,11 @@ pub(super) async fn run_uni_loop<S: FrameSource + ?Sized>(
                 token,
                 // One-directional: there is no reply channel to advertise on,
                 // and nothing here would ever send an optional message back.
-                client_flags: _,
+                // Only the flags matter, for what this stream may send.
+                client_flags,
                 client_features: _,
                 client_features_hi: _,
-                client_flags_ext: _,
+                client_flags_ext,
             } => {
                 if auth_ctx.is_some() {
                     tracing::debug!("closing uni stream after duplicate auth");
@@ -129,6 +134,11 @@ pub(super) async fn run_uni_loop<S: FrameSource + ?Sized>(
                     .await
                 {
                     Ok(ctx) => {
+                        peer_flags_ext = crate::serving::quic::codec::negotiated_ext(
+                            &broker,
+                            client_flags,
+                            client_flags_ext,
+                        );
                         publish_ctx.bind_identity(&ctx);
                         auth_ctx = Some(ctx);
                         preauth_permit.take();

@@ -133,6 +133,7 @@ async fn feed_with(
         max_bytes_per_write: 256 * 1024,
         publisher_enabled: false,
         timestamps_enabled: false,
+        headers_enabled: false,
     };
     adjust(&mut config);
     let feeder = tokio::spawn(run_lane_feeder(
@@ -346,7 +347,12 @@ async fn subscriber_queue_bytes_go_back_once_the_frame_is_handed_on() -> Result<
         .await?;
     let publisher = Bytes::from(vec![b'p'; 300]);
     broker
-        .publish_batch_with_outcome(&handle, &[Bytes::from(vec![7u8; 60])], Some(&publisher))
+        .publish_batch_with_outcome(
+            &handle,
+            &[Bytes::from(vec![7u8; 60])],
+            Some(&publisher),
+            None,
+        )
         .await?;
     settle().await;
     assert!(lane_rx.try_recv().is_err(), "the encode failed");
@@ -628,6 +634,7 @@ async fn feed_until_unregistered(
         max_bytes_per_write: 256 * 1024,
         publisher_enabled: false,
         timestamps_enabled: false,
+        headers_enabled: false,
     };
     let feeder = tokio::spawn(run_lane_feeder(
         event_rx,

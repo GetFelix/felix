@@ -12,11 +12,34 @@ use super::telemetry;
 
 /// True if the broker refuses a frame for its flags.
 ///
-/// `FLAG_EXTENDED` is a flag this version of the wire crate understands but the
-/// broker serves no extension behind, so it is refused as it was before the
-/// bit was defined. Every reader of client frames checks this before the body.
-pub(crate) fn refuses_flags(flags: u16) -> bool {
-    felix_wire::has_unknown_flags(flags) || flags & felix_wire::FLAG_EXTENDED != 0
+/// `FLAG_EXTENDED` is accepted only once the connection negotiated an
+/// extension (`negotiated_ext` is the bits `Auth` and `AuthOk` agreed on).
+/// Before that it is refused as it was before the bit was defined, so a client
+/// that skipped the offer learns it from the error. Every reader of client
+/// frames checks this before the body.
+pub(crate) fn refuses_flags(flags: u16, negotiated_ext: u32) -> bool {
+    felix_wire::has_unknown_flags(flags)
+        || (flags & felix_wire::FLAG_EXTENDED != 0 && negotiated_ext == 0)
+}
+
+/// The extension bits a client's `Auth` offered that this broker serves.
+///
+/// Today that is record headers, and only while the broker accepts them.
+pub(crate) fn negotiated_ext(
+    broker: &felix_broker::Broker,
+    client_flags: Option<u16>,
+    client_flags_ext: Option<u32>,
+) -> u32 {
+    let served = if broker.records_headers() {
+        felix_wire::EXT_RECORD_HEADERS
+    } else {
+        0
+    };
+    let offered = felix_wire::peer_flags_ext(
+        client_flags.unwrap_or(felix_wire::ORIGINAL_V1_FLAGS),
+        client_flags_ext,
+    );
+    offered & served
 }
 
 // Helper for tests and small control flows with an explicit frame cap.
@@ -29,7 +52,8 @@ pub async fn read_message_limited(
         Some(frame) => frame,
         None => return Ok(None),
     };
-    if refuses_flags(frame.header.flags) {
+    // No `Auth` has been read here, so no extension is negotiated.
+    if refuses_flags(frame.header.flags, 0) {
         return Err(anyhow!(
             "unsupported frame flags {:#06x}",
             frame.header.flags

@@ -188,6 +188,21 @@ impl LaneWork {
                 self.work
                     .spawn(async move { this.publish_idempotent(job, held, lane).await });
             }
+            // Forwarding does not carry headers yet, and a forward that left
+            // them off would tell the client they were kept.
+            PublishTarget::Forward { .. } if job.headers.is_some() => {
+                drop(lane);
+                let refused = ClientError::from_broker(
+                    &felix_broker::BrokerError::RecordHeadersNotEnabled,
+                    "record headers cannot be forwarded to the shard's owner; publish to the owner",
+                );
+                settle(
+                    job.response,
+                    job.acked_on_enqueue,
+                    None,
+                    Err(refused.into()),
+                );
+            }
             // Held for the whole round trip. A forward can be retried or
             // redirected, so a later batch sent before this one is answered
             // could land ahead of it. Only this shard's later publishes wait.
@@ -258,6 +273,7 @@ impl LaneWork {
         let PublishJob {
             target,
             mut payloads,
+            headers,
             publisher,
             response,
             acked_on_enqueue,
@@ -304,8 +320,10 @@ impl LaneWork {
         };
         // Released with the first job's, when this returns.
         let mut permits = Vec::new();
-        // An empty publish claims no offsets, so there is nothing to share.
-        if !payloads.is_empty() {
+        // An empty publish claims no offsets, so there is nothing to share. A
+        // publish with headers is claimed alone, so the claim's headers stay
+        // one per payload without merging two jobs' lists.
+        if !payloads.is_empty() && headers.is_none() {
             self.take_queued(
                 &handle,
                 &shard,
@@ -321,7 +339,7 @@ impl LaneWork {
         // claims return in is the order records land on disk.
         let claimed = self
             .broker
-            .claim_publish(&handle, &payloads, publisher.as_ref())
+            .claim_publish(&handle, &payloads, publisher.as_ref(), headers.as_deref())
             .await;
         drop(lane);
         let claimed = match claimed {
@@ -378,6 +396,7 @@ impl LaneWork {
         let records_publishers = self.broker.records_publishers();
         let taken = lane.take_more(CLAIM_MAX_JOBS - 1, |next, _| {
             let joins = (!records_publishers || next.publisher.as_ref() == publisher)
+                && next.headers.is_none()
                 && matches!(
                 &next.target,
                 PublishTarget::Resolved { handle: next_handle, .. } if next_handle.id() == handle.id()
@@ -451,7 +470,12 @@ impl LaneWork {
             Ok(fenced) => {
                 let published = self
                     .broker
-                    .publish_batch_with_outcome(handle, &job.payloads, job.publisher.as_ref())
+                    .publish_batch_with_outcome(
+                        handle,
+                        &job.payloads,
+                        job.publisher.as_ref(),
+                        job.headers.as_deref(),
+                    )
                     .await;
                 drop(fenced);
                 published.map_err(anyhow::Error::from)
@@ -532,6 +556,7 @@ impl LaneWork {
                         &job.payloads,
                         *reuse,
                         job.publisher.as_ref(),
+                        job.headers.as_deref(),
                     )
                     .await;
                 drop(lane);

@@ -7,6 +7,7 @@
 //! cancelled `recv` calls.
 
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
@@ -24,19 +25,26 @@ pub struct DeliveryEnvelope {
 impl DeliveryEnvelope {
     #[cfg(test)]
     pub(crate) fn with_base_offset(payloads: &[Bytes], base_offset: Option<u64>) -> Self {
-        Self::published(payloads, base_offset, 0, None, None)
+        Self::published(payloads, base_offset, 0, None, None, None)
     }
 
     /// A batch published by `publisher` and appended at `timestamp_micros`,
     /// whose first record follows `skipped_before` offsets that hold no event
-    /// (see [`Self::skipped_before`]).
+    /// (see [`Self::skipped_before`]). `record_headers` is one block per
+    /// record, or `None` when no record has one.
     pub(crate) fn published(
         payloads: &[Bytes],
         base_offset: Option<u64>,
         skipped_before: u64,
         publisher: Option<Bytes>,
         timestamp_micros: Option<u64>,
+        record_headers: Option<Arc<[Option<Bytes>]>>,
     ) -> Self {
+        debug_assert!(
+            record_headers
+                .as_ref()
+                .is_none_or(|h| h.len() == payloads.len())
+        );
         Self {
             inner: Arc::new(DeliveryBatch {
                 payload_bytes: payloads.iter().map(Bytes::len).sum(),
@@ -45,21 +53,31 @@ impl DeliveryEnvelope {
                 skipped_before,
                 publisher,
                 timestamp_micros,
+                record_headers,
                 enqueued_at: Instant::now(),
                 encoded: Default::default(),
+                encoded_headers: OnceLock::new(),
             }),
         }
     }
 
-    /// The same records from `index` on, keeping their offsets, publisher
-    /// and time.
+    /// The same records from `index` on, keeping their offsets, publisher,
+    /// time and headers.
     pub(crate) fn skip_records(&self, index: usize) -> Self {
+        let record_headers = self
+            .inner
+            .record_headers
+            .as_deref()
+            .map(|headers| &headers[index..])
+            .filter(|headers| headers.iter().any(Option::is_some))
+            .map(Arc::from);
         Self::published(
             &self.inner.payloads[index..],
             self.inner.base_offset.map(|base| base + index as u64),
             0,
             self.inner.publisher.clone(),
             self.inner.timestamp_micros,
+            record_headers,
         )
     }
 
@@ -100,6 +118,11 @@ impl DeliveryEnvelope {
     /// batch is one publish, so one principal covers all of it.
     pub fn publisher(&self) -> Option<&Bytes> {
         self.inner.publisher.as_ref()
+    }
+
+    /// Each record's headers block, one per payload, when any record has one.
+    pub fn record_headers(&self) -> Option<&[Option<Bytes>]> {
+        self.inner.record_headers.as_deref()
     }
 
     /// When the batch was appended, in microseconds since the Unix epoch.
@@ -144,7 +167,9 @@ impl DeliveryEnvelope {
     /// A field the batch has nothing for is left off, so the frame is the
     /// plainer one other subscribers share: an in-memory batch has no
     /// offsets or times, most batches follow no skip, and a batch with no
-    /// recorded publisher carries none. Each distinct frame is encoded once.
+    /// recorded publisher carries none, and a batch no record of which has
+    /// headers is the same frame whatever the shape asked. Each distinct frame
+    /// is encoded once.
     pub fn shared_event_frame_as(&self, shape: FrameShape) -> felix_wire::Result<Bytes> {
         let batch = &self.inner;
         let base_offset = batch.base_offset.filter(|_| shape.offsets);
@@ -160,11 +185,18 @@ impl DeliveryEnvelope {
             (Some(_), _) => 2,
         } + if publisher.is_some() { 3 } else { 0 }
             + if timestamp.is_some() { 6 } else { 0 };
-        let mut cached = batch.encoded[slot].lock();
+        let headers = batch.record_headers.as_deref().filter(|_| shape.headers);
+        // Frames with headers are cached apart, so the batches without any pay
+        // for no second set.
+        let encoded = match headers {
+            Some(_) => batch.encoded_headers.get_or_init(Default::default),
+            None => &batch.encoded,
+        };
+        let mut cached = encoded[slot].lock();
         if let Some(frame) = cached.as_ref() {
             return Ok(frame.clone());
         }
-        let frame = if slot == 0 {
+        let frame = if slot == 0 && headers.is_none() {
             felix_wire::binary::encode_shared_event_batch_bytes(&batch.payloads)?
         } else {
             let timestamps = timestamp.map(|time| vec![time; batch.payloads.len()]);
@@ -175,7 +207,7 @@ impl DeliveryEnvelope {
                     skipped_before,
                     publisher,
                     timestamps: timestamps.as_deref(),
-                    record_headers: None,
+                    record_headers: headers,
                 },
             )?
         };
@@ -198,6 +230,8 @@ pub struct FrameShape {
     pub skips: bool,
     /// `FLAG_EVENT_BATCH_PUBLISHER`.
     pub publisher: bool,
+    /// `EXT_RECORD_HEADERS`.
+    pub headers: bool,
     /// `FLAG_EVENT_BATCH_TIMESTAMPS`.
     pub timestamps: bool,
 }
@@ -222,6 +256,9 @@ struct DeliveryBatch {
     publisher: Option<Bytes>,
     /// See [`DeliveryEnvelope::timestamp_micros`].
     timestamp_micros: Option<u64>,
+    /// See [`DeliveryEnvelope::record_headers`]. Shared with the publish that
+    /// made it, so a batch with headers copies none of them.
+    record_headers: Option<Arc<[Option<Bytes>]>>,
     enqueued_at: Instant,
     /// The batch's encodings, one per frame shape a subscriber of it
     /// negotiated: plain, with offsets, with offsets and a skip, each of
@@ -230,6 +267,9 @@ struct DeliveryBatch {
     /// the frame it agreed to; at most twelve encodings per batch however
     /// many subscribers there are, and only the shapes someone asked for.
     encoded: [Mutex<Option<Bytes>>; 12],
+    /// The same twelve for subscribers that negotiated headers, made on first
+    /// use and only for a batch that has some.
+    encoded_headers: OnceLock<Box<[Mutex<Option<Bytes>>; 12]>>,
 }
 
 #[derive(Debug)]

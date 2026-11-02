@@ -350,7 +350,7 @@ async fn a_trim_racing_a_publish_lands_in_one_order() {
                 let handle = handle(&broker).await;
                 let payload = [Bytes::from(format!("p{round}"))];
                 broker
-                    .publish_batch_with_outcome(&handle, &payload, None)
+                    .publish_batch_with_outcome(&handle, &payload, None, None)
                     .await
             })
         };

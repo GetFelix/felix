@@ -350,6 +350,8 @@ impl GroupReader {
                             (tracker.attempts(offset), tracker.skipped_before(offset))
                         };
                         bytes += record.payload.len();
+                        // Group records are JSON and carry no headers: a block
+                        // stays in the log and is not delivered.
                         claimed.push(Claimed {
                             offset,
                             payload: record.payload,

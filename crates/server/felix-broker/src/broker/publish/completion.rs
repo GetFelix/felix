@@ -42,6 +42,7 @@ pub(super) struct Completion {
     handle: StreamHandle,
     payloads: Vec<Bytes>,
     publisher: Option<Bytes>,
+    record_headers: Option<Arc<[Option<Bytes>]>>,
     timestamp_micros: Option<u64>,
     commit: Option<Arc<[StateOp]>>,
     /// A trim record's floor. Its one record is applied to the ring in its
@@ -88,6 +89,7 @@ impl Completion {
             handle,
             payloads,
             publisher,
+            record_headers,
             timestamp_micros,
             commit,
             trim,
@@ -98,6 +100,7 @@ impl Completion {
             handle,
             payloads,
             publisher,
+            record_headers,
             timestamp_micros,
             commit,
             trim,
@@ -118,6 +121,7 @@ impl Completion {
             handle,
             payloads: batch.payloads,
             publisher: batch.publisher,
+            record_headers: batch.record_headers,
             timestamp_micros: batch.timestamp_micros,
             commit: batch.commit,
             trim: batch.trim,
@@ -179,6 +183,7 @@ impl Completion {
         let batch = HeldBatch {
             payloads: std::mem::take(&mut self.payloads),
             publisher: self.publisher.take(),
+            record_headers: self.record_headers.take(),
             timestamp_micros: self.timestamp_micros,
             first_offset,
             commit: self.commit.take(),
@@ -301,6 +306,7 @@ impl Completion {
                 self.commit.as_deref(),
                 self.publisher.as_ref(),
                 self.timestamp_micros,
+                self.record_headers.as_deref(),
             )
             .ok_or(BrokerError::PublishSuperseded {
                 first_offset: first_offset.unwrap_or_default(),
@@ -320,6 +326,7 @@ impl Completion {
                 skipped_before,
                 self.publisher.clone(),
                 self.timestamp_micros,
+                self.record_headers.clone(),
             ),
             first_offset,
             next: 0,

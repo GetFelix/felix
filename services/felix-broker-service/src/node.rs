@@ -245,6 +245,15 @@ where
     } else if config.record_publishers {
         broker.record_publishers_when(|| true);
     }
+    // A record with headers is storage format v8, and replication does not
+    // ship headers yet, so a cluster member never enables them. A lone broker
+    // has no follower to lose them, and a client opts in by sending them.
+    if config.membership.is_some() {
+        let fleet = Arc::clone(&fleet);
+        broker.record_headers_when(move || fleet.supports(felix_common::fleet::RECORD_HEADERS));
+    } else {
+        broker.record_headers_when(|| true);
+    }
     // Once this broker has seen streams carry incarnations, a stream's logs
     // open only once the catalog has registered it, at the incarnation it
     // names. Read from its own data, before any shard task or peer can open

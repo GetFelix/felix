@@ -15,6 +15,7 @@ mod byte_bound;
 mod conditional;
 mod idempotent;
 mod publisher;
+mod record_headers;
 
 #[tokio::test]
 async fn publish_delivers_to_subscriber() {

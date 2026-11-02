@@ -25,6 +25,12 @@ use crate::error::{Error, Result};
 
 const FLAG_KEY: u8 = 0x01;
 const KNOWN_BLOCK_FLAGS: u8 = FLAG_KEY;
+
+/// Header names that start with this belong to Felix's own listeners (the MQTT
+/// listener uses `felix.mqtt.*`), so a client publish that carries one is
+/// refused and a reader can trust it came from the broker.
+pub const RESERVED_HEADER_PREFIX: &str = "felix.";
+
 // u16 name length + u32 value length: the least a header can take, since a
 // name may not be empty but a value may.
 const MIN_HEADER_LEN: usize = 6;
@@ -112,6 +118,29 @@ impl RecordHeaders {
         }
         cursor.finish()?;
         Ok(Self { key, headers })
+    }
+
+    /// Whether any header name in `block` starts with `prefix`, without
+    /// allocating. Names are compared as bytes, so the match is case-sensitive.
+    /// A block that does not parse is an error, as for [`validate`](Self::validate).
+    pub fn any_name_starts_with(block: &[u8], prefix: &str) -> Result<bool> {
+        let mut cursor = Cursor::new(block);
+        let flags = cursor.flags()?;
+        if flags & FLAG_KEY != 0 {
+            let len = cursor.u32()? as usize;
+            cursor.take(len)?;
+        }
+        let count = cursor.count()?;
+        let mut found = false;
+        for _ in 0..count {
+            let name_len = cursor.u16()? as usize;
+            let name_at = cursor.take(name_len)?;
+            found |= block[name_at].starts_with(prefix.as_bytes());
+            let value_len = cursor.u32()? as usize;
+            cursor.take(value_len)?;
+        }
+        cursor.finish()?;
+        Ok(found)
     }
 
     /// Check that `block` parses, without keeping any of it.
