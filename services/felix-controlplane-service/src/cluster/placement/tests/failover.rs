@@ -612,6 +612,7 @@ fn last_report() -> crate::model::ReplicaReport {
         ]),
         joint_start_acked: None,
         refused: None,
+        holds_start: Default::default(),
     }
 }
 

@@ -183,7 +183,13 @@ fn the_election_features_cannot_be_finalized_yet() {
         matches!(&refused, Err(StoreError::Conflict(message)) if message.contains("majority_ack")),
         "{refused:?}"
     );
-    assert!(check_prerequisites(&set(&[]), "joint_fence").is_ok());
+    // A learner holds the start record only where leaders write one.
+    let refused = check_prerequisites(&set(&[]), "joint_fence");
+    assert!(
+        matches!(&refused, Err(StoreError::Conflict(message)) if message.contains("generation_start")),
+        "{refused:?}"
+    );
+    assert!(check_prerequisites(&set(&["generation_start"]), "joint_fence").is_ok());
     assert!(
         check_prerequisites(
             &set(&[
@@ -198,9 +204,10 @@ fn the_election_features_cannot_be_finalized_yet() {
     );
 }
 
+/// A broker of this build: it offers `ELECTION` and names start holders.
 fn offering_election(id: &str, features: &[&str]) -> Node {
     let mut reported = features.to_vec();
-    reported.push("peer_election");
+    reported.extend(["peer_election", "start_holders"]);
     at(id, NodeLifecycle::Live, &reported)
 }
 
@@ -225,6 +232,24 @@ fn joint_fence_is_refused_while_a_serving_broker_lacks_election() {
         "{message}"
     );
     assert!(check_election(&nodes[..1], "joint_fence", false, true).is_ok());
+}
+
+/// A broker that never names start holders would keep a replaced copy a
+/// learner for good, so joint fences wait for every serving broker to.
+#[test]
+fn joint_fence_is_refused_while_a_serving_broker_names_no_start_holders() {
+    let nodes = [
+        offering_election("a", &["joint_fence"]),
+        at("b", NodeLifecycle::Live, &["joint_fence", "peer_election"]),
+    ];
+    let message = conflict(check_election(&nodes, "joint_fence", false, true));
+    assert!(
+        message.contains("broker(s) b do not report which followers hold"),
+        "{message}"
+    );
+    assert!(check_election(&nodes[..1], "joint_fence", false, true).is_ok());
+    // Election itself does not ask for them.
+    assert!(check_election(&nodes, "replica_election", true, true).is_ok());
 }
 
 #[test]

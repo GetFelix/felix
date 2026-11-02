@@ -542,6 +542,64 @@ async fn a_joint_fence_counts_the_old_set_only_from_the_copies_it_names() {
     }
 }
 
+/// **The same node list under another storage id is a set change.**
+/// {broker-a, broker-x, broker-z} is kept with broker-x's old copy; the new
+/// set names the copy broker-x answers as. With broker-z down, broker-x's
+/// answer is a majority of the new set, but it is not the copy the old set
+/// named, so the old set has only the leader and the fence stays closed. Once
+/// broker-z answers it opens. Without the check the same node lists were no
+/// change and broker-x alone opened the fence (#1737).
+#[tokio::test]
+async fn a_member_named_under_another_storage_id_is_a_set_change() {
+    let mut replicas = replicas_with(&["broker-x", "broker-z"]);
+    replicas.get_mut("broker-z").reachable = false;
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+    kept_naming(
+        &leader,
+        &[LEADER, "broker-x", "broker-z"],
+        &[],
+        &[("broker-x", storage_of("broker-x-before-the-wipe"))],
+    )
+    .await;
+    let route = Route {
+        member_storage_ids: Some(Arc::new(
+            [("broker-x".to_string(), storage_of("broker-x").to_hex())].into(),
+        )),
+        ..swapped()
+    };
+    let addr_of = addr_of;
+    let joint = Joint::new(&addr_of, None);
+
+    let outcome = fence_shard(
+        &replicas,
+        &leader,
+        LEADER,
+        &key(),
+        &route,
+        false,
+        Some(&joint),
+    )
+    .await;
+
+    let Outcome::Pending { why, .. } = &outcome else {
+        panic!("a wiped member's answer opened the old set: {outcome:?}");
+    };
+    assert!(why.contains("1 of 3 voters of the set being left"), "{why}");
+
+    replicas.get_mut("broker-z").reachable = true;
+    let outcome = fence_shard(
+        &replicas,
+        &leader,
+        LEADER,
+        &key(),
+        &route,
+        false,
+        Some(&joint),
+    )
+    .await;
+    assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
+}
+
 /// **A voter of the set being left answers a joint fence even once its
 /// routing view no longer names it.** broker-b has already seen the new
 /// route, which leaves it out; it still takes the fence, so the old set's

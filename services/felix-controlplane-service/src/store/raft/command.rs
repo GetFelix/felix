@@ -56,7 +56,7 @@ pub const COMMAND_VERSION: u16 = 1;
 /// it the next level and raises this, so nothing proposes it until every
 /// member runs that release. New fields get their level in `fields.txt`.
 /// Never lower it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 22;
+pub const METADATA_VERSION: u16 = 24;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -496,6 +496,13 @@ impl MetaCommand {
                 if feature == felix_common::fleet::REPLICA_ELECTION.name() =>
             {
                 21
+            }
+            // Finalizing joint fences lets placement write learners and read
+            // start holders, which members before level 23 would drop.
+            Self::FinalizeFleetFeature { feature }
+                if feature == felix_common::fleet::JOINT_FENCE.name() =>
+            {
+                23
             }
             Self::RegisterNodeInFleet { .. } | Self::FinalizeFleetFeature { .. } => 2,
             // Writes a generation the store did not pick, which a member

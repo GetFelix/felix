@@ -8,7 +8,7 @@
 //! The `openapi` feature adds `ToSchema` so the control plane can keep
 //! publishing them, without making every consumer take a utoipa dependency.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -177,6 +177,12 @@ pub struct ShardReplicaStatus {
     /// brokers that predate it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub joint_start_acked: Option<u64>,
+    /// The followers this leader saw holding the start record of its own
+    /// generation (and, for a cache, of its counter log), as node ids. Only a follower whose storage identity `replica_storage_ids` names is
+    /// listed. The control plane re-admits a replaced copy on it. Omitted
+    /// when empty, and by brokers that predate it.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub holds_start: BTreeSet<String>,
     /// Set by a leader that elected itself rather than being named by the
     /// control plane: the generation it opened at and the set it fenced.
     /// `generation` is then that generation too. The control plane adopts it

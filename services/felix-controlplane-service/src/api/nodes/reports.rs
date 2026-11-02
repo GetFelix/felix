@@ -405,6 +405,7 @@ async fn record_one(
             .collect(),
         joint_start_acked: shard.joint_start_acked,
         refused: shard.refused.clone(),
+        holds_start: shard.holds_start.clone(),
     };
     // The store checks leadership again as it writes: the checks above read
     // an assignment a promotion may have replaced since.

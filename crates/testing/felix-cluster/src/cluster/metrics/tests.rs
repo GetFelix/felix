@@ -37,6 +37,7 @@ fn report(leader_offset: u64, caught_up: &[&str], offsets: &[(&str, u64)]) -> Re
         follower_storage: Default::default(),
         joint_start_acked: None,
         refused: None,
+        holds_start: Default::default(),
     }
 }
 

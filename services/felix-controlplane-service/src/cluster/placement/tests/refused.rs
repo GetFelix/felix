@@ -44,6 +44,7 @@ async fn refuses(store: &InMemoryStore, assignment: &ShardAssignment, refused: u
                 given_up: false,
                 inherited_storage: Default::default(),
                 joint_start_acked: None,
+                holds_start: Default::default(),
                 refused: Some(RefusedGeneration {
                     generation: refused,
                     promised_to: "broker-d".to_string(),

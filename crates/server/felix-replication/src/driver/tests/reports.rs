@@ -512,6 +512,7 @@ fn a_report_body_is_the_shape_the_control_plane_parses() {
             inherited_storage_ids: Default::default(),
             joint_start_acked: None,
             refused: None,
+            holds_start: Default::default(),
             elected: None,
         }],
     };

@@ -237,6 +237,14 @@ pub struct ShardAssignment {
     /// the set names (#1009 S8). Under Raft it needs metadata level 22.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub member_storage_ids: BTreeMap<String, String>,
+    /// Members the control plane holds as learners after their storage was
+    /// replaced, by node id. Placement never names one the leader and never
+    /// counts it in a majority until the leader's report at this generation
+    /// shows it holding the generation's start record. Empty unless the
+    /// fleet has finalized `joint_fence`; under Raft it needs metadata level
+    /// 23 (#1737).
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub learners: BTreeSet<String>,
     /// The set a cut-over is moving the shard to, while the change is
     /// pending. `leader` and `replicas` stay the control plane's own set until
     /// the leader reports its generation's start record acknowledged on a
@@ -336,6 +344,14 @@ impl std::fmt::Display for MoveReason {
     }
 }
 
+/// What a write needs to hold learners: the assignment it replaces, and the
+/// learners of that one a report has since shown holding its generation's
+/// start record.
+pub(crate) struct Learning<'a> {
+    pub(crate) previous: &'a ShardAssignment,
+    pub(crate) admitted: &'a BTreeSet<String>,
+}
+
 impl ShardAssignment {
     /// Names each member's registered storage identity, from `registered`
     /// (node id to storage id). A member with none registered is left out.
@@ -347,6 +363,38 @@ impl ShardAssignment {
             .filter_map(|node| Some((node.clone(), registered.get(node)?.clone())))
             .collect();
         self.member_storage_ids = named;
+    }
+
+    /// [`Self::name_member_storage`], and the learners this write holds.
+    ///
+    /// With `learning` (the fleet has `joint_fence`) a member is a learner
+    /// when `learning.previous` named it under another storage id than
+    /// `registered` gives now (its storage was replaced), or when it was one
+    /// and `learning.admitted` does not list it yet. The leader never is.
+    /// Without it the learners are empty, so a write is what it was before.
+    pub(crate) fn name_members(
+        &mut self,
+        registered: &BTreeMap<String, String>,
+        learning: Option<Learning<'_>>,
+    ) {
+        self.name_member_storage(registered);
+        self.learners = match learning {
+            None => BTreeSet::new(),
+            Some(Learning { previous, admitted }) => self
+                .named_nodes()
+                .chain(self.joining.iter())
+                .chain(self.successor.iter())
+                .filter(|node| **node != self.leader)
+                .filter(|node| {
+                    let replaced = matches!(
+                        (previous.member_storage_ids.get(*node), self.member_storage_ids.get(*node)),
+                        (Some(was), Some(now)) if was != now
+                    );
+                    replaced || (previous.learners.contains(*node) && !admitted.contains(*node))
+                })
+                .cloned()
+                .collect(),
+        };
     }
 
     /// Check node identities and replica-set shape.
@@ -669,6 +717,13 @@ pub struct ReplicaReport {
     /// then waits as before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refused: Option<felix_common::membership::RefusedGeneration>,
+    /// The followers the leader saw holding the start record of its own
+    /// generation (and, for a cache, of its counter log). Placement
+    /// re-admits a replaced member on it. Empty from brokers that predate it
+    /// and, under Raft, until every member can apply it; a learner then
+    /// stays one.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub holds_start: BTreeSet<String>,
 }
 
 /// A copy of a shard its leader has stopped shipping to.

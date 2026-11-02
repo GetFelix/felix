@@ -428,14 +428,14 @@ pub(super) async fn a_joint_start_is_kept(store: &dyn ControlPlaneStore) {
 /// A leader's refusal rides its report, and a later report without it clears
 /// it.
 pub(super) async fn a_refusal_is_kept(store: &dyn ControlPlaneStore) {
-    // Follows `a_joint_start_is_kept` on the same shard.
+    // Follows `start_holders_are_kept` on the same shard.
     let shard = 3;
     let at = generation(store, shard).await;
     let refused = felix_common::membership::RefusedGeneration {
         generation: at,
         promised_to: "broker-z".to_string(),
     };
-    let mut sent = report(shard, at, &[], 20_800);
+    let mut sent = report(shard, at, &[], 21_000);
     sent.refused = Some(refused.clone());
     sent.leader_offset = None;
     assert_eq!(
@@ -447,7 +447,7 @@ pub(super) async fn a_refusal_is_kept(store: &dyn ControlPlaneStore) {
     );
     assert_eq!(stored(store, shard).await.refused, Some(refused));
 
-    let without = report(shard, at, &["broker-y"], 20_900);
+    let without = report(shard, at, &["broker-y"], 21_100);
     assert_eq!(
         store
             .record_replica_report(without, LEADER)
@@ -456,6 +456,34 @@ pub(super) async fn a_refusal_is_kept(store: &dyn ControlPlaneStore) {
         ReportWrite::Stored
     );
     assert_eq!(stored(store, shard).await.refused, None);
+}
+
+/// The followers a leader saw holding its generation's start ride its report,
+/// and a later report without them clears them.
+pub(super) async fn start_holders_are_kept(store: &dyn ControlPlaneStore) {
+    // Follows `a_joint_start_is_kept` on the same shard.
+    let shard = 3;
+    let at = generation(store, shard).await;
+    let mut sent = report(shard, at, &["broker-y"], 20_800);
+    sent.holds_start = ["broker-y".to_string()].into();
+    assert_eq!(
+        store
+            .record_replica_report(sent.clone(), LEADER)
+            .await
+            .expect("record"),
+        ReportWrite::Stored
+    );
+    assert_eq!(stored(store, shard).await.holds_start, sent.holds_start);
+
+    let without = report(shard, at, &["broker-y"], 20_900);
+    assert_eq!(
+        store
+            .record_replica_report(without, LEADER)
+            .await
+            .expect("record"),
+        ReportWrite::Stored
+    );
+    assert!(stored(store, shard).await.holds_start.is_empty());
 }
 
 /// A leader's give-up rides its report, and a later report without it
@@ -519,6 +547,7 @@ fn report(shard: u32, generation: u64, caught_up: &[&str], at: u64) -> ReplicaRe
         inherited_storage: Default::default(),
         joint_start_acked: None,
         refused: None,
+        holds_start: Default::default(),
     }
 }
 

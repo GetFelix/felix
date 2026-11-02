@@ -144,6 +144,23 @@ pub struct ReplicaPositions {
     nodes: HashMap<String, NodeView>,
     /// Each shard's assignment: its generation and leader.
     assignments: HashMap<ShardKey, (u64, String)>,
+    /// What each assignment names its members by, for telling a replaced
+    /// copy from the one it names.
+    members: HashMap<ShardKey, NamedMembers>,
+    /// The fleet has finalized `joint_fence`, so a member whose storage was
+    /// replaced is a learner until its leader reports it holding the start
+    /// of the generation that names it.
+    joint_fence: bool,
+}
+
+/// One assignment as far as learners go.
+struct NamedMembers {
+    generation: u64,
+    leader: String,
+    replicas: Vec<String>,
+    /// Storage id by node, as the assignment named them.
+    named: BTreeMap<String, String>,
+    learners: BTreeSet<String>,
 }
 
 /// What reading a report needs of a node.
@@ -186,7 +203,16 @@ impl ReplicaPositions {
             give_ups: HashMap::new(),
             nodes: HashMap::new(),
             assignments: HashMap::new(),
+            members: HashMap::new(),
+            joint_fence: false,
         }
+    }
+
+    /// With whether the fleet has finalized `joint_fence`. Without it no
+    /// member is a learner and every position counts as it did before.
+    pub fn with_joint_fence(mut self, joint_fence: bool) -> Self {
+        self.joint_fence = joint_fence;
+        self
     }
 
     /// With the nodes and assignments from the same read.
@@ -215,6 +241,21 @@ impl ReplicaPositions {
                 (
                     assignment.key.clone(),
                     (assignment.generation, assignment.leader.clone()),
+                )
+            })
+            .collect();
+        self.members = assignments
+            .iter()
+            .map(|assignment| {
+                (
+                    assignment.key.clone(),
+                    NamedMembers {
+                        generation: assignment.generation,
+                        leader: assignment.leader.clone(),
+                        replicas: assignment.replicas.clone(),
+                        named: assignment.member_storage_ids.clone(),
+                        learners: assignment.learners.clone(),
+                    },
                 )
             })
             .collect();
@@ -420,6 +461,30 @@ impl ReplicaPositions {
             && report.caught_up.contains(node_id)
     }
 
+    /// Whether `leader`'s report for `key` at `generation` lists `node_id` as
+    /// holding that generation's start record, and its identity is the one
+    /// the node is registered with. Not held to freshness: a start record
+    /// once held stays held.
+    fn start_held(&self, key: &ShardKey, generation: u64, leader: &str, node_id: &str) -> bool {
+        self.reports.get(key).is_some_and(|report| {
+            report.generation == generation
+                && report.leader.as_deref() == Some(leader)
+                && report.holds_start.contains(node_id)
+                && self.identity(report, node_id) == Identity::Match
+        })
+    }
+
+    /// Whether the assignment names `node_id` under another storage id than
+    /// the one it is registered with: its storage was replaced since the
+    /// write.
+    fn replaced_since_named(&self, view: &NamedMembers, node_id: &str) -> bool {
+        let registered = self
+            .nodes
+            .get(node_id)
+            .and_then(|node| node.storage_id.as_ref());
+        matches!((view.named.get(node_id), registered), (Some(named), Some(now)) if named != now)
+    }
+
     /// The report for `key`, if it may say anything about `node_id`.
     ///
     /// A matching identity is believed as long as the report is, a mismatched one never, and an
@@ -428,6 +493,9 @@ impl ReplicaPositions {
     /// only evidence the follower may have lost its log, and a report held
     /// past its TTL could vouch for one that has.
     fn counted(&self, key: &ShardKey, node_id: &str) -> Option<&ReplicaReport> {
+        if self.is_learner(key, node_id) {
+            return None;
+        }
         let report = self.reports.get(key)?;
         match self.identity(report, node_id) {
             Identity::Match => self.believed(key),
@@ -553,6 +621,9 @@ impl CaughtUp for ReplicaPositions {
         let Some(report) = self.reports.get(key) else {
             return false;
         };
+        if self.is_learner(key, node_id) {
+            return false;
+        }
         if report.given_up {
             return self.probed(key, node_id);
         }
@@ -646,6 +717,48 @@ impl CaughtUp for ReplicaPositions {
                 report.generation == generation && report.leader.as_deref() == Some(leader)
             })
             .and_then(|report| report.joint_start_acked)
+    }
+
+    fn is_learner(&self, key: &ShardKey, node_id: &str) -> bool {
+        if !self.joint_fence {
+            return false;
+        }
+        let Some(view) = self.members.get(key) else {
+            return false;
+        };
+        // The leader's own copy is judged by `leader_replaced`, not here.
+        if view.leader == node_id {
+            return false;
+        }
+        self.replaced_since_named(view, node_id)
+            || (view.learners.contains(node_id)
+                && !self.start_held(key, view.generation, &view.leader, node_id))
+    }
+
+    fn holds_start(&self, key: &ShardKey, generation: u64, leader: &str, node: &str) -> bool {
+        self.start_held(key, generation, leader, node)
+    }
+
+    fn readmittable(&self, key: &ShardKey, generation: u64, leader: &str) -> Option<String> {
+        let view = self.members.get(key)?;
+        if !self.joint_fence || view.generation != generation || view.leader != leader {
+            return None;
+        }
+        let report = self.fresh(key)?;
+        if report.generation != generation || report.leader.as_deref() != Some(leader) {
+            return None;
+        }
+        view.replicas
+            .iter()
+            .filter(|node| **node != view.leader)
+            .filter(|node| self.replaced_since_named(view, node))
+            .find(|node| {
+                self.identity(report, node) == Identity::Match
+                    && self.same_incarnation(report, node)
+                    && report.caught_up.contains(*node)
+                    && !report.halted.contains_key(*node)
+            })
+            .cloned()
     }
 
     fn is_drained(&self, key: &ShardKey, generation: u64) -> bool {

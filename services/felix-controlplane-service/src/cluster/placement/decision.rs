@@ -112,6 +112,11 @@ pub enum MoveStep {
     PendingSetDropped,
     /// An operator cancelled the pending change.
     PendingSetCancelled,
+    /// A member whose storage was replaced is caught up under its new
+    /// identity: the set is written again at a new generation, naming it by
+    /// that identity and holding it as a learner until it shows the
+    /// generation's start record.
+    Readmit { node: String },
 }
 
 impl MoveStep {
@@ -140,6 +145,7 @@ impl MoveStep {
             Self::ElectionRefused => "election_refused",
             Self::PendingSetDropped => "pending_set_dropped",
             Self::PendingSetCancelled => "pending_set_cancelled",
+            Self::Readmit { .. } => "readmit",
         }
     }
 }

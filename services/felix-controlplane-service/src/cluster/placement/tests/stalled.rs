@@ -351,6 +351,7 @@ fn a_restore_copying_only_counters_is_moving() {
         follower_storage: Default::default(),
         joint_start_acked: None,
         refused: None,
+        holds_start: Default::default(),
     };
 
     let mut progress = super::super::progress::CopyProgress::default();

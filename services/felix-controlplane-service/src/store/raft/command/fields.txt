@@ -390,6 +390,7 @@
 20 import_state.state.replica_reports[].inherited_storage
 20 import_state.state.replica_reports[].inherited_storage.*
 21 import_state.state.replica_reports[].joint_start_acked
+23 import_state.state.replica_reports[].holds_start
 3 import_state.state.replica_reports[].key
 3 import_state.state.replica_reports[].key.kind
 3 import_state.state.replica_reports[].key.namespace
@@ -403,9 +404,9 @@
 13 import_state.state.replica_reports[].node_incarnations.*
 3 import_state.state.replica_reports[].offsets
 3 import_state.state.replica_reports[].offsets.*
-22 import_state.state.replica_reports[].refused
-22 import_state.state.replica_reports[].refused.generation
-22 import_state.state.replica_reports[].refused.promised_to
+24 import_state.state.replica_reports[].refused
+24 import_state.state.replica_reports[].refused.generation
+24 import_state.state.replica_reports[].refused.promised_to
 3 import_state.state.replica_reports[].reported_at_millis
 10 import_state.state.replica_reports[].stream_incarnation
 0 import_state.state.shard_changes
@@ -415,6 +416,7 @@
 22 import_state.state.shard_changes.items[].assignment.member_storage_ids
 16 import_state.state.shard_changes.items[].assignment.fence_storage_ids.*
 22 import_state.state.shard_changes.items[].assignment.member_storage_ids.*
+23 import_state.state.shard_changes.items[].assignment.learners
 21 import_state.state.shard_changes.items[].assignment.pending_set
 21 import_state.state.shard_changes.items[].assignment.pending_set.generation
 21 import_state.state.shard_changes.items[].assignment.pending_set.replicas
@@ -446,6 +448,7 @@
 22 import_state.state.shards[][].member_storage_ids
 16 import_state.state.shards[][].fence_storage_ids.*
 22 import_state.state.shards[][].member_storage_ids.*
+23 import_state.state.shards[][].learners
 21 import_state.state.shards[][].pending_set
 21 import_state.state.shards[][].pending_set.generation
 21 import_state.state.shards[][].pending_set.replicas
@@ -593,6 +596,7 @@
 22 put_shard_assignment.assignment.member_storage_ids
 16 put_shard_assignment.assignment.fence_storage_ids.*
 22 put_shard_assignment.assignment.member_storage_ids.*
+23 put_shard_assignment.assignment.learners
 21 put_shard_assignment.assignment.pending_set
 21 put_shard_assignment.assignment.pending_set.generation
 21 put_shard_assignment.assignment.pending_set.replicas
@@ -617,6 +621,7 @@
 22 put_shard_assignment_fenced.assignment.member_storage_ids
 16 put_shard_assignment_fenced.assignment.fence_storage_ids.*
 22 put_shard_assignment_fenced.assignment.member_storage_ids.*
+23 put_shard_assignment_fenced.assignment.learners
 21 put_shard_assignment_fenced.assignment.pending_set
 21 put_shard_assignment_fenced.assignment.pending_set.generation
 21 put_shard_assignment_fenced.assignment.pending_set.replicas
@@ -643,6 +648,7 @@
 22 put_shard_assignment_if.assignment.member_storage_ids
 16 put_shard_assignment_if.assignment.fence_storage_ids.*
 22 put_shard_assignment_if.assignment.member_storage_ids.*
+23 put_shard_assignment_if.assignment.learners
 21 put_shard_assignment_if.assignment.pending_set
 21 put_shard_assignment_if.assignment.pending_set.generation
 21 put_shard_assignment_if.assignment.pending_set.replicas
@@ -686,6 +692,7 @@
 20 record_replica_report.report.inherited_storage
 20 record_replica_report.report.inherited_storage.*
 21 record_replica_report.report.joint_start_acked
+23 record_replica_report.report.holds_start
 0 record_replica_report.report.key
 0 record_replica_report.report.key.kind
 0 record_replica_report.report.key.namespace
@@ -699,9 +706,9 @@
 13 record_replica_report.report.node_incarnations.*
 0 record_replica_report.report.offsets
 0 record_replica_report.report.offsets.*
-22 record_replica_report.report.refused
-22 record_replica_report.report.refused.generation
-22 record_replica_report.report.refused.promised_to
+24 record_replica_report.report.refused
+24 record_replica_report.report.refused.generation
+24 record_replica_report.report.refused.promised_to
 0 record_replica_report.report.reported_at_millis
 10 record_replica_report.report.stream_incarnation
 0 register_node
@@ -996,6 +1003,7 @@
 20 snapshot.state.replica_reports[].inherited_storage
 20 snapshot.state.replica_reports[].inherited_storage.*
 21 snapshot.state.replica_reports[].joint_start_acked
+23 snapshot.state.replica_reports[].holds_start
 3 snapshot.state.replica_reports[].key
 3 snapshot.state.replica_reports[].key.kind
 3 snapshot.state.replica_reports[].key.namespace
@@ -1009,9 +1017,9 @@
 13 snapshot.state.replica_reports[].node_incarnations.*
 3 snapshot.state.replica_reports[].offsets
 3 snapshot.state.replica_reports[].offsets.*
-22 snapshot.state.replica_reports[].refused
-22 snapshot.state.replica_reports[].refused.generation
-22 snapshot.state.replica_reports[].refused.promised_to
+24 snapshot.state.replica_reports[].refused
+24 snapshot.state.replica_reports[].refused.generation
+24 snapshot.state.replica_reports[].refused.promised_to
 3 snapshot.state.replica_reports[].reported_at_millis
 10 snapshot.state.replica_reports[].stream_incarnation
 0 snapshot.state.shard_changes
@@ -1021,6 +1029,7 @@
 22 snapshot.state.shard_changes.items[].assignment.member_storage_ids
 16 snapshot.state.shard_changes.items[].assignment.fence_storage_ids.*
 22 snapshot.state.shard_changes.items[].assignment.member_storage_ids.*
+23 snapshot.state.shard_changes.items[].assignment.learners
 21 snapshot.state.shard_changes.items[].assignment.pending_set
 21 snapshot.state.shard_changes.items[].assignment.pending_set.generation
 21 snapshot.state.shard_changes.items[].assignment.pending_set.replicas
@@ -1052,6 +1061,7 @@
 22 snapshot.state.shards[][].member_storage_ids
 16 snapshot.state.shards[][].fence_storage_ids.*
 22 snapshot.state.shards[][].member_storage_ids.*
+23 snapshot.state.shards[][].learners
 21 snapshot.state.shards[][].pending_set
 21 snapshot.state.shards[][].pending_set.generation
 21 snapshot.state.shards[][].pending_set.replicas

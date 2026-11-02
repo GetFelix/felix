@@ -84,10 +84,17 @@ const INHERITED_STORAGE_LEVEL: u16 = 20;
 const PENDING_SET_LEVEL: u16 = 21;
 
 /// The metadata level whose members store the storage identity each member of
-/// a shard's set registered with, on the assignment (#1009 S8), and the
-/// refusal a leader reports when it promised its generation to another node
-/// (#1730).
+/// a shard's set registered with, on the assignment (#1009 S8).
 const MEMBER_STORAGE_LEVEL: u16 = 22;
+
+/// The metadata level whose members store an assignment's learners and the
+/// start holders a report names, and finalize `joint_fence` (#1737).
+const LEARNER_LEVEL: u16 = 23;
+
+/// The metadata level whose members store the refusal a leader reports when
+/// its generation was promised to another node (#1730).
+const REFUSED_LEVEL: u16 = 24;
+
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
     MetaCommand, MetaError, MetaResponse, decode_result, encode_command,
@@ -154,6 +161,11 @@ impl RaftStore {
             && self.group_level().await < MEMBER_STORAGE_LEVEL
         {
             assignment.member_storage_ids.clear();
+        }
+        // Dropped the same way: placement then reads the shard as it did
+        // before learners, and a wiped copy still refuses to lead itself.
+        if !assignment.learners.is_empty() && self.group_level().await < LEARNER_LEVEL {
+            assignment.learners.clear();
         }
     }
 
@@ -981,9 +993,13 @@ impl ControlPlaneStore for RaftStore {
         if report.joint_start_acked.is_some() && self.group_level().await < PENDING_SET_LEVEL {
             report.joint_start_acked = None;
         }
+        // Without it a replaced copy is never re-admitted, which is the safe
+        // side. Dropped first.
+        if !report.holds_start.is_empty() && self.group_level().await < LEARNER_LEVEL {
+            report.holds_start.clear();
+        }
         // Without it the shard waits on the leader's silence, as before.
-        // Dropped first.
-        if report.refused.is_some() && self.group_level().await < MEMBER_STORAGE_LEVEL {
+        if report.refused.is_some() && self.group_level().await < REFUSED_LEVEL {
             report.refused = None;
         }
         // The API's own check still stands for a group that cannot apply

@@ -34,6 +34,8 @@ struct DbShardAssignment {
     pending_set_generation: Option<i64>,
     member_storage_ids: Option<serde_json::Value>,
     member_storage_generation: Option<i64>,
+    learners: Option<serde_json::Value>,
+    learners_generation: Option<i64>,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -77,6 +79,8 @@ struct DbReplicaReport {
     inherited_storage_at: Option<i64>,
     joint_start_acked: Option<i64>,
     joint_start_acked_at: Option<i64>,
+    holds_start: Option<serde_json::Value>,
+    holds_start_at: Option<i64>,
     refused_generation: Option<i64>,
     refused_to: Option<String>,
     refused_at: Option<i64>,
@@ -222,7 +226,7 @@ async fn write_shard_assignment(
     let existing = sqlx::query_as::<_, DbShardAssignment>(
         r#"SELECT tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor,
                       joining, move_started_at_millis, move_reason, incarnation,
-                      fence_storage_ids, fence_storage_generation, pending_set, pending_set_generation, member_storage_ids, member_storage_generation
+                      fence_storage_ids, fence_storage_generation, pending_set, pending_set_generation, member_storage_ids, member_storage_generation, learners, learners_generation
                FROM shard_assignments
                WHERE tenant_id = $1 AND namespace = $2 AND stream = $3 AND shard = $4 AND kind = $5
                FOR UPDATE"#,
@@ -312,16 +316,21 @@ async fn write_shard_assignment(
         .then(|| serde_json::to_value(&stored.member_storage_ids))
         .transpose()?;
     let member_storage_generation = member_storage.as_ref().map(|_| stored.generation as i64);
+    // And for the learners (0040).
+    let learners = (!stored.learners.is_empty())
+        .then(|| serde_json::to_value(&stored.learners))
+        .transpose()?;
+    let learners_generation = learners.as_ref().map(|_| stored.generation as i64);
 
     // A write that expects no assignment must not replace one another writer
     // inserted since the read above.
     let insert = if expected == Some(None) {
-        r#"INSERT INTO shard_assignments (tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor, joining, move_started_at_millis, move_reason, incarnation, fence_storage_ids, fence_storage_generation, pending_set, pending_set_generation, member_storage_ids, member_storage_generation)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+        r#"INSERT INTO shard_assignments (tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor, joining, move_started_at_millis, move_reason, incarnation, fence_storage_ids, fence_storage_generation, pending_set, pending_set_generation, member_storage_ids, member_storage_generation, learners, learners_generation)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
                ON CONFLICT (tenant_id, namespace, kind, stream, shard) DO NOTHING"#
     } else {
-        r#"INSERT INTO shard_assignments (tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor, joining, move_started_at_millis, move_reason, incarnation, fence_storage_ids, fence_storage_generation, pending_set, pending_set_generation, member_storage_ids, member_storage_generation)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+        r#"INSERT INTO shard_assignments (tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor, joining, move_started_at_millis, move_reason, incarnation, fence_storage_ids, fence_storage_generation, pending_set, pending_set_generation, member_storage_ids, member_storage_generation, learners, learners_generation)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
                ON CONFLICT (tenant_id, namespace, kind, stream, shard) DO UPDATE SET
                  leader = EXCLUDED.leader,
                  replicas = EXCLUDED.replicas,
@@ -338,6 +347,8 @@ async fn write_shard_assignment(
                  pending_set_generation = EXCLUDED.pending_set_generation,
                  member_storage_ids = EXCLUDED.member_storage_ids,
                  member_storage_generation = EXCLUDED.member_storage_generation,
+                 learners = EXCLUDED.learners,
+                 learners_generation = EXCLUDED.learners_generation,
                  updated_at = now()"#
     };
     let written = sqlx::query(insert)
@@ -361,6 +372,8 @@ async fn write_shard_assignment(
         .bind(pending_set_generation)
         .bind(member_storage)
         .bind(member_storage_generation)
+        .bind(learners)
+        .bind(learners_generation)
         .execute(&mut *tx)
         .await?
         .rows_affected();
@@ -393,7 +406,7 @@ pub(super) async fn get_shard_assignment(
     sqlx::query_as::<_, DbShardAssignment>(
         r#"SELECT tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor,
                       joining, move_started_at_millis, move_reason, incarnation,
-                      fence_storage_ids, fence_storage_generation, pending_set, pending_set_generation, member_storage_ids, member_storage_generation
+                      fence_storage_ids, fence_storage_generation, pending_set, pending_set_generation, member_storage_ids, member_storage_generation, learners, learners_generation
                FROM shard_assignments
                WHERE tenant_id = $1 AND namespace = $2 AND stream = $3 AND shard = $4 AND kind = $5"#,
     )
@@ -415,7 +428,7 @@ pub(super) async fn list_shard_assignments(
     let rows = sqlx::query_as::<_, DbShardAssignment>(
         r#"SELECT tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor,
                       joining, move_started_at_millis, move_reason, incarnation,
-                      fence_storage_ids, fence_storage_generation, pending_set, pending_set_generation, member_storage_ids, member_storage_generation
+                      fence_storage_ids, fence_storage_generation, pending_set, pending_set_generation, member_storage_ids, member_storage_generation, learners, learners_generation
                FROM shard_assignments ORDER BY tenant_id, namespace, stream, shard, kind"#,
     )
     .fetch_all(&store.pool)
@@ -435,7 +448,7 @@ pub(super) async fn list_shard_assignments_page(
         None => sqlx::query_as::<_, DbShardAssignment>(
             r#"SELECT tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor,
                       joining, move_started_at_millis, move_reason, incarnation,
-                      fence_storage_ids, fence_storage_generation, pending_set, pending_set_generation, member_storage_ids, member_storage_generation
+                      fence_storage_ids, fence_storage_generation, pending_set, pending_set_generation, member_storage_ids, member_storage_generation, learners, learners_generation
                FROM shard_assignments WHERE ($1::text IS NULL OR leader = $1)
                ORDER BY tenant_id, namespace, kind, stream, shard LIMIT $2"#,
         )
@@ -444,7 +457,7 @@ pub(super) async fn list_shard_assignments_page(
         Some(after) => sqlx::query_as::<_, DbShardAssignment>(
             r#"SELECT tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor,
                       joining, move_started_at_millis, move_reason, incarnation,
-                      fence_storage_ids, fence_storage_generation, pending_set, pending_set_generation, member_storage_ids, member_storage_generation
+                      fence_storage_ids, fence_storage_generation, pending_set, pending_set_generation, member_storage_ids, member_storage_generation, learners, learners_generation
                FROM shard_assignments WHERE ($1::text IS NULL OR leader = $1)
                  AND (tenant_id, namespace, kind, stream, shard) > ($2, $3, $4, $5, $6)
                ORDER BY tenant_id, namespace, kind, stream, shard LIMIT $7"#,
@@ -475,7 +488,7 @@ pub(super) async fn list_shard_assignments_for_node(
     let rows = sqlx::query_as::<_, DbShardAssignment>(
         r#"SELECT tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor,
                       joining, move_started_at_millis, move_reason, incarnation,
-                      fence_storage_ids, fence_storage_generation, pending_set, pending_set_generation, member_storage_ids, member_storage_generation
+                      fence_storage_ids, fence_storage_generation, pending_set, pending_set_generation, member_storage_ids, member_storage_generation, learners, learners_generation
                FROM shard_assignments WHERE leader = $1
                ORDER BY tenant_id, namespace, stream, shard, kind"#,
     )
@@ -522,7 +535,7 @@ pub(super) async fn shard_assignment_snapshot(
     let rows = sqlx::query_as::<_, DbShardAssignment>(
         r#"SELECT tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor,
                       joining, move_started_at_millis, move_reason, incarnation,
-                      fence_storage_ids, fence_storage_generation, pending_set, pending_set_generation, member_storage_ids, member_storage_generation
+                      fence_storage_ids, fence_storage_generation, pending_set, pending_set_generation, member_storage_ids, member_storage_generation, learners, learners_generation
                FROM shard_assignments ORDER BY tenant_id, namespace, stream, shard, kind"#,
     )
     .fetch_all(&mut *tx)
@@ -648,10 +661,11 @@ pub(super) async fn record_replica_report(
                     follower_storage, follower_storage_at,
                     leader, node_incarnations, stamped_at, given_up, given_up_at,
                     inherited_storage, inherited_storage_at,
-                    joint_start_acked, joint_start_acked_at,
+                    joint_start_acked, joint_start_acked_at, holds_start, holds_start_at,
                     refused_generation, refused_to, refused_at)
                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $9,
-                       $16, $9, $17, $18, $9, $19, $9, $20, $9, $21, $9, $22, $23, $9)
+                       $16, $9, $17, $18, $9, $19, $9, $20, $9, $21, $9, $22, $9,
+                       $23, $24, $9)
                ON CONFLICT (tenant_id, namespace, kind, stream, shard) DO UPDATE
                SET generation = EXCLUDED.generation,
                    caught_up = EXCLUDED.caught_up,
@@ -675,6 +689,8 @@ pub(super) async fn record_replica_report(
                    inherited_storage_at = EXCLUDED.inherited_storage_at,
                    joint_start_acked = EXCLUDED.joint_start_acked,
                    joint_start_acked_at = EXCLUDED.joint_start_acked_at,
+                   holds_start = EXCLUDED.holds_start,
+                   holds_start_at = EXCLUDED.holds_start_at,
                    refused_generation = EXCLUDED.refused_generation,
                    refused_to = EXCLUDED.refused_to,
                    refused_at = EXCLUDED.refused_at
@@ -709,6 +725,7 @@ pub(super) async fn record_replica_report(
     .bind(report.given_up)
     .bind(serde_json::to_value(&report.inherited_storage).expect("a map of strings serializes"))
     .bind(report.joint_start_acked.map(|generation| generation as i64))
+    .bind(serde_json::to_value(&report.holds_start).expect("a set of strings serializes"))
     .bind(
         report
             .refused
@@ -744,7 +761,7 @@ pub(super) async fn list_replica_reports(store: &PostgresStore) -> StoreResult<V
                       follower_storage, follower_storage_at,
                       leader, node_incarnations, stamped_at, given_up, given_up_at,
                       inherited_storage, inherited_storage_at,
-                      joint_start_acked, joint_start_acked_at,
+                      joint_start_acked, joint_start_acked_at, holds_start, holds_start_at,
                       refused_generation, refused_to, refused_at
                FROM replica_reports
                ORDER BY tenant_id, namespace, kind, stream, shard"#,
@@ -791,6 +808,12 @@ fn shard_from_db(row: DbShardAssignment) -> StoreResult<ShardAssignment> {
         member_storage_ids: match row.member_storage_ids {
             Some(ids) if row.member_storage_generation == Some(row.generation) => {
                 serde_json::from_value(ids)?
+            }
+            _ => Default::default(),
+        },
+        learners: match row.learners {
+            Some(held) if row.learners_generation == Some(row.generation) => {
+                serde_json::from_value(held)?
             }
             _ => Default::default(),
         },
@@ -875,7 +898,16 @@ fn replica_report_from_db(row: DbReplicaReport) -> StoreResult<ReplicaReport> {
             .joint_start_acked
             .filter(|_| row.joint_start_acked_at == Some(row.reported_at_millis))
             .map(|generation| generation as u64),
-        // And for the refusal (0040).
+        // And for who holds the generation's start (0040).
+        holds_start: match row.holds_start {
+            Some(held) if row.holds_start_at == Some(row.reported_at_millis) => {
+                serde_json::from_value::<Option<_>>(held)
+                    .map_err(|err| StoreError::Unexpected(anyhow!("decode holds_start: {err}")))?
+                    .unwrap_or_default()
+            }
+            _ => Default::default(),
+        },
+        // And for the refusal (0041).
         refused: match (row.refused_generation, row.refused_to) {
             (Some(generation), Some(promised_to))
                 if row.refused_at == Some(row.reported_at_millis) =>

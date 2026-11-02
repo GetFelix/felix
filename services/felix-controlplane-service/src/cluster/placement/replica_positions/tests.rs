@@ -59,6 +59,7 @@ fn report(stream: &str, caught_up: &[&str], reported_at_millis: u64) -> ReplicaR
         follower_storage: Default::default(),
         joint_start_acked: None,
         refused: None,
+        holds_start: Default::default(),
     }
 }
 
@@ -259,6 +260,7 @@ async fn load_reads_the_store_on_the_stores_clock() {
                 follower_storage: Default::default(),
                 joint_start_acked: None,
                 refused: None,
+                holds_start: Default::default(),
             },
             "broker-x",
         )
@@ -575,6 +577,7 @@ fn led_by_a(generation: u64) -> ShardAssignment {
         incarnation: 0,
         fence_storage_ids: Default::default(),
         member_storage_ids: Default::default(),
+        learners: Default::default(),
         pending_set: None,
     }
 }

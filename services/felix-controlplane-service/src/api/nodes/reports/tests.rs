@@ -25,6 +25,7 @@ fn assignment(state: ShardState, successor: Option<&str>) -> ShardAssignment {
         incarnation: 0,
         fence_storage_ids: Default::default(),
         member_storage_ids: Default::default(),
+        learners: Default::default(),
         pending_set: None,
     }
 }
@@ -41,6 +42,7 @@ fn status(
         inherited_storage_ids: Default::default(),
         joint_start_acked: None,
         refused: None,
+        holds_start: Default::default(),
         elected: None,
         given_up: false,
         replica_counter_offsets: Vec::new(),
@@ -152,6 +154,7 @@ async fn a_drained_report_cuts_over_without_waiting_for_the_interval() {
             incarnation: 0,
             fence_storage_ids: Default::default(),
             member_storage_ids: Default::default(),
+            learners: Default::default(),
             pending_set: None,
         })
         .await
@@ -283,6 +286,7 @@ async fn led_by_x(store: &crate::store::memory::InMemoryStore, generation_bumps:
         incarnation: 0,
         fence_storage_ids: Default::default(),
         member_storage_ids: Default::default(),
+        learners: Default::default(),
         pending_set: None,
     };
     for _ in 0..=generation_bumps {
@@ -727,6 +731,7 @@ async fn an_elected_leaders_report_is_adopted_once_replica_election_is_finalized
             incarnation: 0,
             fence_storage_ids: Default::default(),
             member_storage_ids: Default::default(),
+            learners: Default::default(),
             pending_set: None,
         })
         .await

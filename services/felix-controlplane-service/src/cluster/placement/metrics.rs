@@ -128,7 +128,8 @@ impl MoveClock {
             | MoveStep::ElectionRefused
             | MoveStep::PendingSetTimedOut
             | MoveStep::PendingSetDropped
-            | MoveStep::PendingSetCancelled => None,
+            | MoveStep::PendingSetCancelled
+            | MoveStep::Readmit { .. } => None,
         }
     }
 }

@@ -1,5 +1,5 @@
--- The generation a report's leader refused to open because it had promised it
--- to another node, and that node (#1730). Placement then names the leader
+-- The generation a report's leader could not serve because it, or a majority of
+-- its set, had promised it to another node, and that node (#1730). Placement then names the leader
 -- again at a generation above the refused one. NULL is what every row held
 -- before this said, and is read as none.
 --
