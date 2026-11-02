@@ -92,8 +92,9 @@ impl<'a> Leadership<'a> {
 /// The even shares one shard is placed against.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Shares {
-    /// Leaders per node cluster-wide, rounded down and up.
+    /// Leaders per node cluster-wide, rounded down.
     pub(super) cluster_floor: u32,
+    /// Leaders per node cluster-wide, rounded up.
     pub(super) cluster: u32,
     /// Leaders per node of this shard's stream, rounded down and up.
     pub(super) floor: u32,

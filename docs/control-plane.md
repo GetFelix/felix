@@ -895,8 +895,8 @@ which keeps a small cluster even where plain rendezvous would not. Roles
 (leaders and followers) are capped at `ceil(roles / live nodes)`, and
 leaders twice: per stream or cache first, then across the cluster. A new
 shard goes to the best-scoring node still under its stream's floor
-(`floor(shards / nodes)`), then under its stream's ceiling. Each time it
-prefers a node under the cluster-wide floor (`floor(all shards / nodes)`),
+(`floor(shards / nodes)`), then under its stream's ceiling. Within each of
+those it prefers a node under the cluster-wide floor (`floor(all shards / nodes)`),
 then one under the cluster-wide ceiling (`ceil(all shards / nodes)`).
 A 12-shard stream on three brokers is placed 4/4/4 whatever the other streams
 already lead, and the cluster-wide count is evened out afterwards by moving
@@ -907,10 +907,12 @@ from an application that creates a stream per job. With only the ceiling as
 the bound, the best-scoring brokers could fill to it before the last one
 reached the floor, which left the totals two apart. The balancer then moved an
 existing leader to even them out. It takes the first shard in key order, so it
-moved the same few shards over and over, often an application's busiest
-caches, and each move holds that shard's writes while it is fenced. Filling
-every broker to the floor first keeps a batch of new shards within one of
-even, so creating streams moves nothing that already exists.
+moved the same few shards over and over, often an application's own caches,
+and each move holds that shard's writes while it is fenced. Filling every
+broker to the floor first keeps a batch of single-shard streams within one of
+even, so creating them moves nothing that already exists. A stream's own
+spread still comes first, so a multi-shard stream can still leave the totals
+for the balancer to even out.
 
 The placement *plan* is deterministic: the same rows give the same decision,
 whatever order streams, nodes, or existing assignments arrive in. Its input is

@@ -112,7 +112,8 @@ fn a_cache_does_not_score_identically_to_the_stream_it_shares_a_name_with() {
     );
 }
 
-/// Stream placement is pinned to what it was before caches were placed at all.
+/// Stream placement with no caches is pinned verbatim, and caches placed
+/// alongside leave each stream's spread as it was.
 ///
 /// These leaders were produced by the algorithm with each stream's leaders
 /// spread (3/2/3 and 1/2/2) and are asserted verbatim: the whole reason `score` leaves a stream's hash
@@ -121,7 +122,7 @@ fn a_cache_does_not_score_identically_to_the_stream_it_shares_a_name_with() {
 /// that -- both sides would move together -- so the expected values are
 /// written down. Hash the kind unconditionally in `score` and this fails.
 #[test]
-fn stream_placement_is_unchanged_by_cache_placement() {
+fn stream_placement_is_pinned_and_keeps_its_spread_beside_caches() {
     const GOLDEN: &[(&str, u32, &str)] = &[
         ("orders", 0, "broker-a"),
         ("orders", 1, "broker-b"),
