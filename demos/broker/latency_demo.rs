@@ -734,11 +734,17 @@ async fn run_case(config: DemoConfig) -> Result<(DemoResult, Option<TimingSummar
         .log_capacity
         .unwrap_or_else(|| total_events.saturating_add(1));
     let mut broker_config = felix_broker_service::config::BrokerConfig::from_env()?;
+    // Block is the demo's default so a burst is never shed; FELIX_SUB_QUEUE_POLICY
+    // overrides it to measure a publish the way production answers it.
+    let sub_queue_policy = match std::env::var("FELIX_SUB_QUEUE_POLICY") {
+        Ok(_) => broker_config.subscriber_queue_policy,
+        Err(_) => felix_broker::SubQueuePolicy::Block,
+    };
     let broker = Arc::new(
         Broker::new(EphemeralCache::new().into())
             .with_topic_capacity(total_events.saturating_add(1))?
             .with_log_capacity(log_capacity)?
-            .with_subscriber_queue_policy(felix_broker::SubQueuePolicy::Block)
+            .with_subscriber_queue_policy(sub_queue_policy)
             .with_subscriber_queue_max_bytes(broker_config.subscriber_queue_max_bytes)
             .with_subscriber_queue_max_bytes_total(broker_config.subscriber_queue_max_bytes_total)
             .with_replay_ring_max_bytes(
@@ -780,7 +786,7 @@ async fn run_case(config: DemoConfig) -> Result<(DemoResult, Option<TimingSummar
         // or scheduling delay drop warmup messages, which made the dedicated
         // subscriber's exact-count warmup detection hang until idle_timeout and error
         // out ("dedicated subscriber warmup channel closed") instead of completing.
-        broker_config.subscriber_queue_policy = felix_broker::SubQueuePolicy::Block;
+        broker_config.subscriber_queue_policy = sub_queue_policy;
         broker_config.subscriber_queue_capacity = 4096;
         broker_config.subscriber_lane_queue_policy = felix_broker::SubQueuePolicy::Block;
         broker_config.subscriber_flush_max_items = 1;
@@ -792,7 +798,7 @@ async fn run_case(config: DemoConfig) -> Result<(DemoResult, Option<TimingSummar
         // backpressure (Block queues + ingress wait) paces the publisher to the
         // pipeline's real capacity instead of measuring what survived shedding.
         // Production keeps DropNew defaults for overload visibility.
-        broker_config.subscriber_queue_policy = felix_broker::SubQueuePolicy::Block;
+        broker_config.subscriber_queue_policy = sub_queue_policy;
         broker_config.subscriber_queue_capacity = 4096;
         broker_config.subscriber_lane_queue_policy = felix_broker::SubQueuePolicy::Block;
         broker_config.subscriber_lane_queue_depth = 1024;
