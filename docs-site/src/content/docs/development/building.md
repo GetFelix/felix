@@ -166,6 +166,8 @@ Other workflows:
 - `soak.yml`: a weekly soak and resource-leak run.
 - `perf-pr.yml`, `perf-publish.yml`, `perf-comprehensive.yml`: benchmarks. The
   PR run is advisory and never fails a check.
+- `perf-env-ab.yml`: manual. Runs the fast subsets against one build twice,
+  once per environment setting, to price a configuration default.
 - `release.yml`: builds and publishes a tagged release. See
   [Releases](#releases).
 - `nightly.yml`: builds main through `release.yml` every night and publishes

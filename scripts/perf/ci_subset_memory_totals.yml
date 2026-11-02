@@ -1,0 +1,49 @@
+{
+  "_comment": "The 16 and 64 KiB batches at fanout 1 and 10, which reach the subscriber byte bounds. Run by perf-env-ab.yml in place of ci_subset_large_payload.yml, which it supersedes there: same 8-stream workload, so no cell is counted twice.",
+  "defaults": {
+    "trials": 5
+  },
+  "workload": {
+    "fanout": [1, 10],
+    "batch": [64],
+    "payload_bytes": [16384, 65536],
+    "warmup": 2000,
+    "total": 20000,
+    "binary": true,
+    "min_run_bytes": 268435456,
+    "max_total": 500000
+  },
+  "profiles": {
+    "balanced": {
+      "env": {
+        "FELIX_EVENT_CONN_POOL": "8",
+        "FELIX_EVENT_CONN_RECV_WINDOW": "268435456",
+        "FELIX_EVENT_STREAM_RECV_WINDOW": "67108864",
+        "FELIX_EVENT_SEND_WINDOW": "268435456",
+        "FELIX_EVENT_BATCH_MAX_DELAY_US": "250",
+        "FELIX_PUBLISH_CHUNK_BYTES": "16384",
+        "FELIX_CACHE_CONN_POOL": "8",
+        "FELIX_CACHE_STREAMS_PER_CONN": "4"
+      }
+    }
+  },
+  "presets": {
+    "P8_hash": {
+      "args": [
+        "--pub-conns",
+        "4",
+        "--pub-streams-per-conn",
+        "2",
+        "--pub-stream-count",
+        "8",
+        "--pub-sharding",
+        "hash_stream",
+        "--idle-ms",
+        "10000"
+      ]
+    }
+  },
+  "preset_order": [
+    "P8_hash"
+  ]
+}
