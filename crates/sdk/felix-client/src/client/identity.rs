@@ -8,6 +8,7 @@ use felix_transport::QuicConnection;
 use tracing::debug;
 
 use super::Connection;
+use super::cache::CacheWorkers;
 use super::connect::{
     WorkerSettings, note_connection, open_cache_worker, shard_streams, spawn_publish_worker,
     stream_widths,
@@ -60,14 +61,22 @@ impl Connection {
         note_connection(&mut worker_connections, opened.lease.connection());
         let publish_worker = spawn_publish_worker(opened, &self.runtime_config, settings);
 
-        let cache_worker = open_cache_worker(
-            &self.cache_node,
-            &credentials,
-            &self.cache_conn_counts,
-            &mut worker_connections,
-            self.runtime_config.max_frame_bytes,
-        )
-        .await?;
+        // Lazy when the parent's are: an identity's cache worker opens on its
+        // own first cache request, so an identity dials nothing up front.
+        let cache_workers = if self.cache_workers.opens_on_demand() {
+            CacheWorkers::on_demand(1)
+        } else {
+            CacheWorkers::opened(vec![
+                open_cache_worker(
+                    &self.cache_node,
+                    &credentials,
+                    &self.cache_conn_counts,
+                    &mut worker_connections,
+                    self.runtime_config.max_frame_bytes,
+                )
+                .await?,
+            ])
+        };
 
         let publish_shard_streams = shard_streams(
             &self.publish_node,
@@ -98,7 +107,7 @@ impl Connection {
             publish_stream_hasher: ahash::RandomState::new(),
             publish_shard_streams,
             publish_widths,
-            cache_workers: vec![cache_worker],
+            cache_workers,
             cache_request_counter,
             cache_worker_rr: AtomicUsize::new(0),
             cache_conn_counts: Arc::clone(&self.cache_conn_counts),
