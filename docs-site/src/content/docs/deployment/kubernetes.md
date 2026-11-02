@@ -46,7 +46,7 @@ signature names the workflow that produced the image. Verify before you pin:
 ```bash
 cosign verify ghcr.io/getfelix/felix-broker:0.7.0-preview.2 \
   --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
-  --certificate-identity-regexp='^https://github.com/gabloe/felix/\.github/workflows/release\.yml@refs/tags/v'
+  --certificate-identity-regexp='^https://github.com/GetFelix/felix/\.github/workflows/release\.yml@refs/tags/v'
 ```
 
 ## What the chart decides for you
