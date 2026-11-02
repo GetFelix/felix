@@ -703,6 +703,117 @@ async fn a_read_round_fence_and_a_ping_do_not_wait_behind_promotion_fences() {
     listener.stop().await;
 }
 
+/// **Past its limit a stream's control request is refused, and the stream
+/// reads on** (#1796). The listener holds at most
+/// [`server::MAX_CONTROLS_PER_STREAM`] fences, fetches and pre-votes per
+/// stream; the next one is answered `Overload` at once instead of parking the
+/// read loop, so a ping behind it is still answered.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_control_request_past_the_limit_is_refused_and_the_stream_reads_on() {
+    use felix_wire::internal::{Ping, Pong, ReplicateError};
+
+    let bound = Duration::from_secs(5);
+    let answer = async |recv: &mut quinn::RecvStream, waited_for: &str| match tokio::time::timeout(
+        bound,
+        read_frame(recv),
+    )
+    .await
+    {
+        Ok(Ok(Incoming::Message(answer))) => answer,
+        Ok(_) => panic!("the stream ended or sent an unknown kind"),
+        Err(_) => panic!("{waited_for}"),
+    };
+
+    let handler = Arc::new(SlowPromotions {
+        release: tokio::sync::Semaphore::new(0),
+    });
+    let listener = Listener::start_on(PEER, Arc::clone(&handler) as _, config()).await;
+    let client = QuicClient::bind(
+        "127.0.0.1:0".parse().expect("addr"),
+        crate::peer::tls::client_config(None).expect("client config"),
+        TransportConfig::default(),
+    )
+    .expect("bind");
+    let connection = client
+        .connect(listener.addr, crate::peer::tls::INTERNAL_SERVER_NAME)
+        .await
+        .expect("connect");
+    let (mut send, mut recv) = connection.open_bi().await.expect("open");
+
+    let limit = server::MAX_CONTROLS_PER_STREAM as u64;
+    for id in 1..=limit {
+        let mut held = fence_for(PROMOTING, id as u32);
+        if let InternalMessage::Fence(fence) = &mut held {
+            fence.correlation_id = id;
+        }
+        write_frame(&mut send, &held).await.expect("write");
+    }
+    let mut refused = fence_for("other", 0);
+    if let InternalMessage::Fence(fence) = &mut refused {
+        fence.correlation_id = limit + 1;
+    }
+    write_frame(&mut send, &refused).await.expect("write");
+    write_frame(
+        &mut send,
+        &InternalMessage::Ping(Ping {
+            correlation_id: limit + 2,
+        }),
+    )
+    .await
+    .expect("write");
+
+    // Nothing is answered before both, since every fence is held.
+    let mut answered = Vec::new();
+    for _ in 0..2 {
+        answered.push(answer(&mut recv, "the stream stopped reading at the limit").await);
+    }
+    answered.sort_by_key(InternalMessage::correlation_id);
+    let InternalMessage::ReplicateError(ReplicateError {
+        correlation_id,
+        code: ErrorCode::Overload,
+        ..
+    }) = &answered[0]
+    else {
+        panic!("expected an Overload refusal, got {:?}", answered[0]);
+    };
+    assert_eq!(*correlation_id, limit + 1);
+    assert!(
+        matches!(answered[1], InternalMessage::Pong(Pong { correlation_id }) if correlation_id == limit + 2),
+        "{:?}",
+        answered[1]
+    );
+
+    // The held fences each get their answer, and free their places.
+    handler.release.add_permits(server::MAX_CONTROLS_PER_STREAM);
+    let mut ids = std::collections::BTreeSet::new();
+    for _ in 0..limit {
+        let InternalMessage::FenceOk(ok) =
+            answer(&mut recv, "a held fence was never answered").await
+        else {
+            panic!("a held fence was not answered FenceOk");
+        };
+        assert_eq!(
+            ok.log_end, ok.correlation_id,
+            "an answer went to the wrong fence"
+        );
+        ids.insert(ok.correlation_id);
+    }
+    assert_eq!(ids, (1..=limit).collect());
+    let mut after = fence_for("other", 0);
+    if let InternalMessage::Fence(fence) = &mut after {
+        fence.correlation_id = limit + 3;
+    }
+    write_frame(&mut send, &after).await.expect("write");
+    let freed = answer(&mut recv, "no answer once the places were free").await;
+    assert!(
+        matches!(freed, InternalMessage::FenceOk(ref ok) if ok.correlation_id == limit + 3),
+        "{freed:?}"
+    );
+
+    connection.close(0u32.into(), b"done");
+    listener.stop().await;
+}
+
 /// **A current broker answers a ping; one that predates pings is not
 /// pinged.** The older broker is not counted as silent either, which would
 /// let a rolling upgrade read as a dead leader.
