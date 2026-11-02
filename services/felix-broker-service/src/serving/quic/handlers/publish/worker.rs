@@ -497,7 +497,12 @@ impl LaneWork {
                 };
                 match self
                     .broker
-                    .claim_publish(handle, &job.payloads, job.publisher.as_ref())
+                    .claim_publish(
+                        handle,
+                        &job.payloads,
+                        job.publisher.as_ref(),
+                        job.headers.as_deref(),
+                    )
                     .await
                 {
                     Ok(claimed) => {
