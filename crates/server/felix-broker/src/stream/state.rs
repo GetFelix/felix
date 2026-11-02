@@ -270,7 +270,10 @@ impl StreamState {
                 continue;
             }
             let record = crate::commit::client_record(record);
-            if !state.log.admit(record.payload.len()) {
+            if !state
+                .log
+                .admit(record.payload.len() + record.headers.as_deref().map_or(0, Bytes::len))
+            {
                 continue;
             }
             state.log.push_back(LogEntry {
@@ -421,7 +424,10 @@ impl StreamState {
             _ => 0,
         };
         let mut seq = first_seq.unwrap_or(state.next_seq);
-        let bytes = payloads.iter().map(Bytes::len).sum();
+        let bytes = payloads.iter().map(Bytes::len).sum::<usize>()
+            + headers.map_or(0, |headers| {
+                headers.iter().flatten().map(Bytes::len).sum::<usize>()
+            });
         if state.log.admit(bytes) {
             for (index, payload) in payloads.iter().enumerate() {
                 state.log.push_back(LogEntry {

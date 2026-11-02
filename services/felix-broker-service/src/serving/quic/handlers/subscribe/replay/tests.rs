@@ -61,6 +61,20 @@ impl Recorder {
         self.frames.len()
     }
 
+    /// Every record's headers block delivered, in order.
+    fn blocks(&self) -> Vec<Option<Bytes>> {
+        let mut blocks = Vec::new();
+        for frame in &self.frames {
+            let frame = felix_wire::Frame::decode(frame.clone()).expect("decode the frame");
+            let batch = felix_wire::binary::decode_event_batch(&frame).expect("decode the batch");
+            match batch.record_headers {
+                Some(headers) => blocks.extend(headers),
+                None => blocks.extend(batch.payloads.iter().map(|_| None)),
+            }
+        }
+        blocks
+    }
+
     /// `(base_offset, skipped_before)` of every batch that reported a skip.
     fn skips(&self) -> Vec<(u64, u64)> {
         self.frames
@@ -865,4 +879,127 @@ async fn a_lag_after_catch_up_ends_where_the_replay_did() {
         .expect("the drop ends the subscription");
     assert!(end.is_none());
     assert_eq!(live.lag_ended(), Some(5));
+}
+
+/// A batch that queued on the live subscription while replay ran is delivered
+/// with its headers blocks, aligned with its records.
+#[tokio::test]
+async fn a_queued_batch_is_delivered_with_its_blocks() {
+    let (broker, _dir) = durable_broker_with(|broker| {
+        broker.record_headers_when(|| true);
+        broker
+    })
+    .await;
+    publish(&broker, &["a", "b"]).await;
+    let mut subscription = broker
+        .subscribe(TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("subscribe");
+
+    let (first, last) = (block("first"), block("last"));
+    let handle = broker
+        .resolve_stream_handle(TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("handle");
+    broker
+        .publish_batch_with_outcome(
+            &handle,
+            &[payload("c"), payload("d"), payload("e")],
+            None,
+            Some(&[Some(first.clone()), None, Some(last.clone())]),
+        )
+        .await
+        .expect("publish");
+
+    let mut sink = Recorder::default();
+    replay_as(
+        &mut sink,
+        &broker,
+        Some(HistoryRange {
+            from_offset: 0,
+            until_offset: 2,
+        }),
+        Vec::new(),
+        2,
+        &mut subscription,
+        64,
+        EventFormat {
+            headers: true,
+            ..SKIPS
+        },
+    )
+    .await
+    .expect("replay");
+
+    assert_eq!(sink.offsets(), vec![0, 1, 2, 3, 4]);
+    assert_eq!(
+        sink.blocks(),
+        vec![None, None, Some(first), None, Some(last)]
+    );
+}
+
+/// A subscriber that did not negotiate headers gets none of them.
+#[tokio::test]
+async fn a_queued_batch_loses_its_blocks_without_the_extension() {
+    let (broker, _dir) = durable_broker_with(|broker| {
+        broker.record_headers_when(|| true);
+        broker
+    })
+    .await;
+    publish(&broker, &["a"]).await;
+    let mut subscription = broker
+        .subscribe(TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("subscribe");
+    let handle = broker
+        .resolve_stream_handle(TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("handle");
+    broker
+        .publish_batch_with_outcome(&handle, &[payload("b")], None, Some(&[Some(block("k"))]))
+        .await
+        .expect("publish");
+
+    let mut sink = Recorder::default();
+    replay(
+        &mut sink,
+        &broker,
+        Some(HistoryRange {
+            from_offset: 0,
+            until_offset: 1,
+        }),
+        Vec::new(),
+        1,
+        &mut subscription,
+        64,
+    )
+    .await
+    .expect("replay");
+
+    assert_eq!(sink.blocks(), vec![None, None]);
+}
+
+fn block(key: &str) -> Bytes {
+    felix_wire::RecordHeaders {
+        key: Some(payload(key)),
+        headers: Vec::new(),
+    }
+    .encode()
+    .expect("block")
+}
+
+/// A block counts toward a replay batch's byte limit like the payload.
+#[test]
+fn a_block_counts_toward_a_replay_batchs_byte_limit() {
+    let mut batch = ReplayBatch::new(64, 20);
+    let key = block("k");
+    assert!(
+        batch
+            .push(0, payload("aaaaa"), 0, None, None, Some(key.clone()))
+            .is_none()
+    );
+    let closed = batch
+        .push(1, payload("bbbbb"), 0, None, None, Some(key))
+        .expect("15 bytes each: the second is over 20");
+    assert_eq!(closed.payloads.len(), 1);
 }

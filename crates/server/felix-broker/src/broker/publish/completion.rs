@@ -347,7 +347,7 @@ impl Completion {
         let stream_state = &self.handle.state;
         let delivery = self.delivery.as_mut().expect("appended before fanout");
         let item_count = delivery.envelope.len();
-        let bytes = delivery.envelope.payload_bytes();
+        let bytes = delivery.envelope.record_bytes();
         while let Some(subscriber) = delivery.senders.get(delivery.next) {
             match stream_state.subscriber_queue_policy {
                 SubQueuePolicy::Block => match subscriber.sender.try_reserve() {
@@ -413,7 +413,7 @@ impl Completion {
 async fn wait_for_full(stream_state: &StreamState, delivery: &mut Delivery) {
     let senders = Arc::clone(&delivery.senders);
     let item_count = delivery.envelope.len();
-    let bytes = delivery.envelope.payload_bytes();
+    let bytes = delivery.envelope.record_bytes();
     let mut waits: Vec<_> = delivery
         .full
         .iter()

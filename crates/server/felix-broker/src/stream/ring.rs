@@ -1,7 +1,7 @@
 //! The replay ring: the newest records of a stream shard, kept in memory for
 //! cursor replay.
 //!
-//! Bounded by entries and by payload bytes. The byte bound is per ring, and
+//! Bounded by entries and by bytes (payloads and header blocks). The byte bound is per ring, and
 //! an optional budget is shared by every ring on the broker. Either way the
 //! oldest entries go first, so what is left is always the tail.
 //!
@@ -20,7 +20,7 @@ use bytes::Bytes;
 use super::budget::{ByteBudget, PooledBytes};
 
 /// The ring's oldest entries go first once it holds more than `per_ring`
-/// payload bytes, or once the broker-wide budget is full.
+/// bytes of payload and headers, or once the broker-wide budget is full.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RingBytes {
     /// Zero for no per-ring bound.
@@ -79,7 +79,7 @@ impl Ring {
         self.entries.is_empty()
     }
 
-    /// Payload bytes the ring holds.
+    /// Payload and headers bytes the ring holds.
     #[cfg(test)]
     pub(crate) fn bytes(&self) -> usize {
         self.held.bytes()
@@ -98,8 +98,8 @@ impl Ring {
             }
             match self.entries.pop_front() {
                 Some(entry) => {
-                    self.unreported -= entry.payload.len() as isize;
-                    self.held.shrink(entry.payload.len());
+                    self.unreported -= entry.bytes() as isize;
+                    self.held.shrink(entry.bytes());
                 }
                 None => break self.held.overdraw(bytes),
             }
@@ -129,8 +129,9 @@ impl Ring {
             let Some(entry) = self.entries.pop_front() else {
                 break;
             };
-            bytes -= entry.payload.len();
-            freed += entry.payload.len();
+            let len = entry.bytes();
+            bytes -= len;
+            freed += len;
         }
         self.release(freed);
     }
@@ -140,7 +141,7 @@ impl Ring {
         let mut freed = 0;
         while self.entries.front().is_some_and(|entry| entry.seq < seq) {
             if let Some(entry) = self.entries.pop_front() {
-                freed += entry.payload.len();
+                freed += entry.bytes();
             }
         }
         self.release(freed);
@@ -181,6 +182,14 @@ pub(crate) struct LogEntry {
     /// ring holds many.
     pub(crate) headers: Option<Box<Bytes>>,
     pub(crate) timestamp_micros: Option<u64>,
+}
+
+impl LogEntry {
+    /// What the entry counts against the ring's byte bounds: the payload and
+    /// its headers block.
+    pub(crate) fn bytes(&self) -> usize {
+        self.payload.len() + self.headers.as_deref().map_or(0, Bytes::len)
+    }
 }
 
 #[cfg(test)]

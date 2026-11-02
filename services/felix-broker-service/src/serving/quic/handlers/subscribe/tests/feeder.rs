@@ -71,11 +71,36 @@ async fn spawn_feeder_on(
     flush_delay: Duration,
     max_bytes: usize,
 ) -> Result<Harness> {
+    spawn_feeder_on_with(broker, flush_delay, max_bytes, |_| {}).await
+}
+
+/// [`spawn_feeder_capped`] with the writer config adjusted by `adjust`.
+async fn spawn_feeder_with(
+    flush_delay: Duration,
+    max_bytes: usize,
+    adjust: impl FnOnce(&mut EventWriterConfig),
+) -> Result<Harness> {
+    spawn_feeder_on_with(
+        Broker::new(EphemeralCache::new().into()),
+        flush_delay,
+        max_bytes,
+        adjust,
+    )
+    .await
+}
+
+async fn spawn_feeder_on_with(
+    broker: Broker,
+    flush_delay: Duration,
+    max_bytes: usize,
+    adjust: impl FnOnce(&mut EventWriterConfig),
+) -> Result<Harness> {
     let broker = Arc::new(broker);
     broker.register_tenant("t1").await?;
     broker.register_namespace("t1", "default").await?;
     let (manager, lane_rx) = capture_lane();
-    let (feeder, guard) = feed(&broker, "orders", &manager, flush_delay, max_bytes).await?;
+    let (feeder, guard) =
+        feed_with(&broker, "orders", &manager, flush_delay, max_bytes, adjust).await?;
     Ok(Harness {
         broker,
         lane_rx,
@@ -477,6 +502,218 @@ async fn lane_feeder_carries_the_event_past_the_byte_cap_into_the_next_frame() -
     feeder.abort();
 
     assert_eq!(frames, vec![2, 2, 1]);
+    Ok(())
+}
+
+/// A headers block with just a key: `key.len() + 9` bytes.
+fn block(key: &str) -> Bytes {
+    felix_wire::RecordHeaders {
+        key: Some(Bytes::copy_from_slice(key.as_bytes())),
+        headers: Vec::new(),
+    }
+    .encode()
+    .expect("block")
+}
+
+/// Publish `payloads` as one batch, with `blocks` aligned to them.
+async fn publish_with_blocks(
+    broker: &Broker,
+    payloads: &[Bytes],
+    blocks: &[Option<Bytes>],
+) -> Result<()> {
+    let handle = broker
+        .resolve_stream_handle("t1", "default", "orders", 0)
+        .await?;
+    broker
+        .publish_batch_with_outcome(&handle, payloads, None, Some(blocks))
+        .await?;
+    Ok(())
+}
+
+/// What a delivery put on the wire: the payloads, and the blocks if the frame
+/// carries any.
+fn frame_contents(command: LaneCommand) -> Contents {
+    let LaneCommand::Delivery { frame, .. } = command else {
+        panic!("expected a delivery, got {command:?}");
+    };
+    let frame = felix_wire::Frame::decode(frame).expect("decode the frame");
+    if frame.header.flags & felix_wire::FLAG_BINARY_EVENT_BATCH_SHARED != 0 {
+        let batch = felix_wire::binary::decode_shared_event_batch(&frame).expect("decode");
+        (batch.payloads, batch.record_headers)
+    } else {
+        let batch = felix_wire::binary::decode_event_batch(&frame).expect("decode");
+        (batch.payloads, batch.record_headers)
+    }
+}
+
+type Contents = (Vec<Bytes>, Option<Vec<Option<Bytes>>>);
+
+/// Frames from `lane_rx` until `records` records have arrived.
+async fn frames_until(lane_rx: &mut mpsc::Receiver<LaneCommand>, records: usize) -> Vec<Contents> {
+    let mut frames: Vec<Contents> = Vec::new();
+    while frames
+        .iter()
+        .map(|(payloads, _)| payloads.len())
+        .sum::<usize>()
+        < records
+    {
+        frames.push(frame_contents(lane_rx.recv().await.expect("lane closed")));
+    }
+    frames
+}
+
+/// Single-record publishes with and without blocks coalesce into one frame
+/// whose blocks line up with its records.
+#[tokio::test(start_paused = true)]
+async fn lane_feeder_coalesces_mixed_blocks_into_one_frame() -> Result<()> {
+    let Harness {
+        broker,
+        mut lane_rx,
+        feeder,
+        _manager,
+        _guard,
+    } = spawn_feeder_with(Duration::from_millis(50), 64 * 1024, |config| {
+        config.headers_enabled = true;
+    })
+    .await?;
+    let (b1, b4) = (block("one"), block("four"));
+    let layout = [None, Some(b1.clone()), None, None, Some(b4.clone())];
+    for (index, block) in layout.iter().enumerate() {
+        publish_with_blocks(
+            &broker,
+            &[Bytes::from(vec![index as u8; 5])],
+            std::slice::from_ref(block),
+        )
+        .await?;
+    }
+
+    let frames = frames_until(&mut lane_rx, 5).await;
+    feeder.abort();
+
+    assert_eq!(frames.len(), 1, "queued publishes coalesce");
+    assert_eq!(frames[0].0.len(), 5);
+    assert_eq!(frames[0].1.as_deref(), Some(&layout[..]));
+    Ok(())
+}
+
+/// A first record with a block, and a frame of records with none, both come
+/// out right: the blocks are built on the first block seen.
+#[tokio::test(start_paused = true)]
+async fn lane_feeder_builds_blocks_lazily() -> Result<()> {
+    let Harness {
+        broker,
+        mut lane_rx,
+        feeder,
+        _manager,
+        _guard,
+    } = spawn_feeder_with(Duration::from_millis(50), 64 * 1024, |config| {
+        config.headers_enabled = true;
+    })
+    .await?;
+    let first = block("first");
+    publish_with_blocks(&broker, &[make_payload(b"a")], &[Some(first.clone())]).await?;
+    publish_with_blocks(&broker, &[make_payload(b"b")], &[None]).await?;
+    let frames = frames_until(&mut lane_rx, 2).await;
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0].1, Some(vec![Some(first), None]));
+
+    publish_with_blocks(&broker, &[make_payload(b"c")], &[None]).await?;
+    publish_with_blocks(&broker, &[make_payload(b"d")], &[None]).await?;
+    let frames = frames_until(&mut lane_rx, 2).await;
+    feeder.abort();
+    assert_eq!(frames[0].1, None, "no block, no headers section");
+    Ok(())
+}
+
+/// Coalescing counts a record's block toward the frame's byte limit, so a
+/// frame never grows past it because of headers.
+#[tokio::test(start_paused = true)]
+async fn lane_feeder_counts_blocks_against_the_byte_cap() -> Result<()> {
+    // Five-byte payloads fit three to a frame under 20 bytes, but each one's
+    // block makes it 15.
+    let Harness {
+        broker,
+        mut lane_rx,
+        feeder,
+        _manager,
+        _guard,
+    } = spawn_feeder_with(Duration::from_millis(50), 20, |config| {
+        config.headers_enabled = true;
+    })
+    .await?;
+    let key = block("k");
+    assert_eq!(key.len(), 10);
+    for _ in 0..4 {
+        publish_with_blocks(&broker, &[make_payload(b"event")], &[Some(key.clone())]).await?;
+    }
+
+    let frames = frames_until(&mut lane_rx, 4).await;
+    feeder.abort();
+
+    for (payloads, blocks) in &frames {
+        let blocks = blocks.as_ref().expect("blocks");
+        let bytes: usize = payloads.iter().map(Bytes::len).sum::<usize>()
+            + blocks.iter().flatten().map(Bytes::len).sum::<usize>();
+        assert!(payloads.len() == 1 || bytes <= 20, "frame of {bytes} bytes");
+    }
+    assert_eq!(frames.len(), 4);
+    Ok(())
+}
+
+/// A batch too big for one frame is cut by count, and each piece keeps its own
+/// records' blocks.
+#[tokio::test(start_paused = true)]
+async fn a_split_batch_keeps_each_pieces_blocks() -> Result<()> {
+    let Harness {
+        broker,
+        mut lane_rx,
+        feeder,
+        _manager,
+        _guard,
+    } = spawn_feeder_with(Duration::from_millis(50), 64 * 1024, |config| {
+        config.headers_enabled = true;
+        config.max_events = 2;
+    })
+    .await?;
+    let (b0, b2, b3) = (block("zero"), block("two"), block("three"));
+    let blocks = [Some(b0.clone()), None, Some(b2.clone()), Some(b3.clone())];
+    let payloads: Vec<_> = (0..4u8).map(|i| Bytes::from(vec![i; 5])).collect();
+    publish_with_blocks(&broker, &payloads, &blocks).await?;
+
+    let frames = frames_until(&mut lane_rx, 4).await;
+    feeder.abort();
+
+    assert_eq!(frames.len(), 2);
+    assert_eq!(frames[0].1, Some(vec![Some(b0), None]));
+    assert_eq!(frames[1].1, Some(vec![Some(b2), Some(b3)]));
+    Ok(())
+}
+
+/// The same cut by bytes: the blocks count toward the limit, on the shared
+/// path and on the split path.
+#[tokio::test(start_paused = true)]
+async fn a_batch_is_cut_by_payload_and_block_bytes() -> Result<()> {
+    // Each record is 5 + 10 bytes; two fit under 35, three do not.
+    let Harness {
+        broker,
+        mut lane_rx,
+        feeder,
+        _manager,
+        _guard,
+    } = spawn_feeder_with(Duration::from_millis(50), 35, |config| {
+        config.headers_enabled = true;
+    })
+    .await?;
+    let key = block("k");
+    let payloads: Vec<_> = (0..5u8).map(|i| Bytes::from(vec![i; 5])).collect();
+    let blocks = vec![Some(key); 5];
+    publish_with_blocks(&broker, &payloads, &blocks).await?;
+
+    let frames = frames_until(&mut lane_rx, 5).await;
+    feeder.abort();
+
+    let sizes: Vec<_> = frames.iter().map(|(payloads, _)| payloads.len()).collect();
+    assert_eq!(sizes, vec![2, 2, 1]);
     Ok(())
 }
 

@@ -45,9 +45,13 @@ impl DeliveryEnvelope {
                 .as_ref()
                 .is_none_or(|h| h.len() == payloads.len())
         );
+        let headers_bytes = record_headers.as_ref().map_or(0, |headers| {
+            headers.iter().flatten().map(Bytes::len).sum::<usize>()
+        });
         Self {
             inner: Arc::new(DeliveryBatch {
                 payload_bytes: payloads.iter().map(Bytes::len).sum(),
+                headers_bytes,
                 payloads: Arc::from(payloads),
                 base_offset,
                 skipped_before,
@@ -91,10 +95,20 @@ impl DeliveryEnvelope {
         self.inner.payloads.len()
     }
 
-    /// The records' payload bytes, summed. What a queued batch counts
-    /// against a subscriber's byte bound.
+    /// The records' payload and headers bytes, summed. What a queued batch
+    /// counts against a subscriber's byte bound.
+    pub fn record_bytes(&self) -> usize {
+        self.inner.payload_bytes + self.inner.headers_bytes
+    }
+
+    /// The records' payload bytes alone.
     pub fn payload_bytes(&self) -> usize {
         self.inner.payload_bytes
+    }
+
+    /// The headers blocks' bytes, summed.
+    pub fn headers_bytes(&self) -> usize {
+        self.inner.headers_bytes
     }
 
     /// Whether the batch holds no records.
@@ -240,6 +254,7 @@ pub struct FrameShape {
 struct DeliveryBatch {
     payloads: Arc<[Bytes]>,
     payload_bytes: usize,
+    headers_bytes: usize,
     /// Offset of `payloads[0]` for a durable stream; `None` for an in-memory
     /// one, which has no durable position to report.
     ///

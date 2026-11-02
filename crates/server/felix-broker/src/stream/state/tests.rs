@@ -288,3 +288,71 @@ fn a_batch_the_ring_cannot_hold_still_moves_the_tail() {
     assert_eq!(stream.oldest_seq(), 2);
     assert_eq!(stream.tail_seq(), 3);
 }
+
+fn ring_stream(per_ring: usize, broker: usize) -> StreamState {
+    StreamState::new(
+        1,
+        8,
+        SubQueuePolicy::DropNew,
+        Default::default(),
+        &crate::stream::RingBytes::new(per_ring, broker),
+        None,
+        Default::default(),
+    )
+}
+
+fn append_with_block(stream: &StreamState, payload: &'static [u8], block: Option<Bytes>) {
+    stream.append_batch_at(
+        &[Bytes::from_static(payload)],
+        None,
+        None,
+        16,
+        None,
+        None,
+        None,
+        Some(&[block]),
+    );
+}
+
+/// A headers block is held in the ring with its payload, so it counts toward
+/// the budget a batch is admitted under.
+#[test]
+fn a_batch_whose_blocks_exceed_the_budget_is_not_kept() {
+    let stream = ring_stream(0, 20);
+    append_with_block(&stream, b"ab", Some(Bytes::from(vec![1u8; 30])));
+    assert_eq!(stream.tail_seq(), 1);
+    assert_eq!(stream.oldest_seq(), 1, "the block did not fit");
+
+    append_with_block(&stream, b"cd", Some(Bytes::from(vec![1u8; 10])));
+    assert_eq!(stream.oldest_seq(), 1);
+    assert_eq!(stream.tail_seq(), 2);
+}
+
+#[test]
+fn blocks_count_toward_the_per_ring_bound() {
+    let stream = ring_stream(40, 0);
+    for _ in 0..4 {
+        append_with_block(&stream, b"ab", Some(Bytes::from(vec![1u8; 18])));
+    }
+    // 20 bytes a record under a 40 byte bound: two stay.
+    assert_eq!(stream.tail_seq(), 4);
+    assert_eq!(stream.oldest_seq(), 2);
+}
+
+#[test]
+fn recovered_blocks_count_toward_the_budget() {
+    let stream = ring_stream(0, 20);
+    let record = |offset| felix_storage::log::LogRecord {
+        offset,
+        timestamp_micros: 0,
+        checksum: 0,
+        payload: Bytes::from_static(b"ab"),
+        mark: Default::default(),
+        publisher: None,
+        headers: Some(Box::new(Bytes::from(vec![1u8; 18]))),
+    };
+    stream.hydrate(vec![record(0), record(1), record(2)], 3, 16);
+    // 20 bytes a record under a 20 byte budget: only the newest stays.
+    assert_eq!(stream.oldest_seq(), 2);
+    assert_eq!(stream.tail_seq(), 3);
+}

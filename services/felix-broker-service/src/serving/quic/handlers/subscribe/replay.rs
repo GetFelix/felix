@@ -375,7 +375,8 @@ impl ReplayBatch {
         timestamp_micros: Option<u64>,
         headers: Option<bytes::Bytes>,
     ) -> Option<ReadyBatch> {
-        let len = payload.len();
+        // `headers` is already empty unless the subscriber negotiated them.
+        let len = payload.len() + headers.as_ref().map_or(0, bytes::Bytes::len);
         let breaks_run = !self.payloads.is_empty()
             && (offset != self.next_offset
                 || skipped_before > 0
