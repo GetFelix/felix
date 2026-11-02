@@ -395,3 +395,14 @@ fn a_malformed_offset_is_refused() {
     .expect("frame");
     assert!(binary::decode_publish_ack(&frame).is_err());
 }
+
+#[test]
+fn an_extended_ack_is_refused() {
+    let ok = binary::encode_publish_ack_bytes(1, None).expect("encode");
+    let mut frame = Frame::decode(ok).expect("frame");
+    frame.header.flags |= crate::FLAG_EXTENDED;
+    assert!(matches!(
+        binary::decode_publish_ack(&frame),
+        Err(Error::UnknownFlags(flags)) if flags & crate::FLAG_EXTENDED != 0
+    ));
+}

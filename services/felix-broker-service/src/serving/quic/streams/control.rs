@@ -194,7 +194,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
         // on the next frame boundary and stays parseable. Answering and continuing
         // means the peer actually receives the diagnostic — tearing the stream down
         // here would race the writer task and usually deliver EOF instead.
-        if felix_wire::has_unknown_flags(frame.header.flags) {
+        if crate::serving::quic::codec::refuses_flags(frame.header.flags) {
             send_control_error(
                 &out_ack_tx,
                 &out_ack_depth,
@@ -338,6 +338,8 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 client_flags,
                 client_features,
                 client_features_hi,
+                // No flag extension is served yet, so the offer is not read.
+                client_flags_ext: _,
             } => {
                 session::authenticate(
                     &cx,

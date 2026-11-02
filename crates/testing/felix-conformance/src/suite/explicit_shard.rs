@@ -32,6 +32,7 @@ pub(crate) async fn run_explicit_shard(
             client_flags: Some(felix_wire::KNOWN_FLAGS),
             client_features: Some(features),
             client_features_hi: features_hi,
+            client_flags_ext: None,
         },
     )
     .await?;
@@ -39,6 +40,7 @@ pub(crate) async fn run_explicit_shard(
     match quic::read_message_limited(&mut recv, MAX_TEST_FRAME_BYTES, &mut scratch).await? {
         Some(Message::AuthOk {
             server_features_hi: Some(hi),
+            server_flags_ext: None,
             ..
         }) if felix_wire::supports_feature(hi, felix_wire::FEATURE_EXPLICIT_SHARD) => {}
         other => bail!("auth_ok did not advertise FEATURE_EXPLICIT_SHARD: {other:?}"),

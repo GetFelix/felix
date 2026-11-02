@@ -155,16 +155,50 @@ pub const FLAG_EVENT_BATCH_PUBLISHER: u16 = 0x2000;
 /// advertised it in `Auth.client_flags`.
 pub const FLAG_EVENT_BATCH_TIMESTAMPS: u16 = 0x4000;
 
-/// Every flag bit this version understands.
+/// The payload starts with a big-endian `u32` extension word, before every other
+/// prefix (the acked prefix, the routing key, the subscription id).
 ///
-/// Frames carrying bits outside this mask are rejected rather than parsed with
-/// the unknown bits ignored. That distinction matters: flag bits here change how
-/// the *payload* is laid out, so silently ignoring one means confidently
-/// misparsing the body. `FLAG_BINARY_PUBLISH_ACKED` is exactly that case — an
-/// older broker that masked it off would read the new `request_id` prefix as a
-/// `tenant_len` and produce garbage instead of an error. Rejecting unknown bits
-/// cannot help those older brokers, but it means the next extension fails loudly
-/// on this version instead of repeating the same trap.
+/// The last free flag bit, so it opens a second word instead of taking another
+/// layout bit: each bit of the extension word, from [`KNOWN_EXT_FLAGS`], changes
+/// the payload the way a flag does. Valid only on a binary publish batch, an
+/// acked publish batch or an event batch (per-subscriber or shared); a word of
+/// zero, or one with a bit this version does not know, is rejected.
+///
+/// Not in [`KNOWN_FLAGS`], so a peer that has no extension to offer advertises
+/// what it always did, and not in [`ORIGINAL_V1_FLAGS`]. Set on a frame only
+/// for a peer that offered it in `Auth.client_flags` (or answered in
+/// `AuthOk.server_flags`) together with the extension bit in
+/// `client_flags_ext` / `server_flags_ext`: see [`offer_flags`].
+pub const FLAG_EXTENDED: u16 = 0x8000;
+
+/// Extension bit: every record in the batch is preceded by a length-prefixed
+/// block holding the record's key and headers. The key does not route: a
+/// batch's shard still comes from its batch key (`FLAG_BINARY_PUBLISH_KEYED`).
+///
+/// A publish batch entry becomes `u32 block_len, block, u32 payload_len,
+/// payload`, and an event batch entry `[u64 timestamp], u32 block_len, block,
+/// u32 payload_len, payload`. A `block_len` of zero means that record has none.
+/// The block's layout is [`RecordHeaders`](crate::RecordHeaders).
+pub const EXT_RECORD_HEADERS: u32 = 0x0000_0001;
+
+/// Every extension bit this version implements.
+pub const KNOWN_EXT_FLAGS: u32 = EXT_RECORD_HEADERS;
+
+/// Every flag bit this version understands, apart from [`FLAG_EXTENDED`].
+///
+/// Frames carrying a bit that is neither in this mask nor `FLAG_EXTENDED` are
+/// rejected rather than parsed with the unknown bits ignored. That distinction
+/// matters: flag bits here change how the *payload* is laid out, so silently
+/// ignoring one means confidently misparsing the body.
+/// `FLAG_BINARY_PUBLISH_ACKED` is exactly that case — an older broker that
+/// masked it off would read the new `request_id` prefix as a `tenant_len` and
+/// produce garbage instead of an error. Rejecting unknown bits cannot help those
+/// older brokers, but it means the next extension fails loudly on this version
+/// instead of repeating the same trap.
+///
+/// `FLAG_EXTENDED` is left out on purpose, so a peer that advertises this mask
+/// offers no extension. It passes the header check; the body decoders read its
+/// extension word and refuse it on a frame kind that has none.
 pub const KNOWN_FLAGS: u16 = FLAG_BINARY_PUBLISH_BATCH
     | FLAG_BINARY_EVENT_BATCH
     | FLAG_BINARY_EVENT_BATCH_SHARED
@@ -192,8 +226,50 @@ pub const ORIGINAL_V1_FLAGS: u16 =
     FLAG_BINARY_PUBLISH_BATCH | FLAG_BINARY_EVENT_BATCH | FLAG_BINARY_EVENT_BATCH_SHARED;
 
 /// True if `flags` contains any bit this version does not define.
+///
+/// [`FLAG_EXTENDED`] is defined but not in [`KNOWN_FLAGS`], so it passes here;
+/// the decoders check its extension word. With all sixteen bits defined nothing
+/// is unknown today; the check stays so a wider flag word is refused the same way.
+#[allow(clippy::bad_bit_mask)]
 pub fn has_unknown_flags(flags: u16) -> bool {
-    flags & !KNOWN_FLAGS != 0
+    flags & !(KNOWN_FLAGS | FLAG_EXTENDED) != 0
+}
+
+/// What a client puts in `client_flags` and `client_flags_ext` to offer `flags`
+/// and the extension bits `ext`.
+///
+/// The extension word and its marker are sent only when there is something in
+/// it, so a client that knows no extension sends the frame it always did.
+pub fn offer_flags(flags: u16, ext: u32) -> (u16, Option<u32>) {
+    match ext {
+        0 => (flags & !FLAG_EXTENDED, None),
+        ext => (flags | FLAG_EXTENDED, Some(ext)),
+    }
+}
+
+/// What a broker puts in `server_flags` and `server_flags_ext`, given what it
+/// serves and the `client_flags` the client offered.
+///
+/// The extension word goes only to a client that offered [`FLAG_EXTENDED`]. Any
+/// other client could not read it, and gets the frame it always got.
+pub fn answer_flags(flags: u16, ext: u32, peer_flags: u16) -> (u16, Option<u32>) {
+    if supports(peer_flags, FLAG_EXTENDED) {
+        offer_flags(flags, ext)
+    } else {
+        (flags & !FLAG_EXTENDED, None)
+    }
+}
+
+/// The extension word a peer sent, read alongside its flags.
+///
+/// Counted only when the flags carry [`FLAG_EXTENDED`]; absent means none, as
+/// it does for the flags.
+pub fn peer_flags_ext(flags: u16, ext: Option<u32>) -> u32 {
+    if supports(flags, FLAG_EXTENDED) {
+        ext.unwrap_or(0)
+    } else {
+        0
+    }
 }
 
 /// True if `peer_flags` advertises support for every bit in `required`.

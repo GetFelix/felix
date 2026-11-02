@@ -36,6 +36,7 @@ fn encode_batch(
             .filter(|_| config.publisher_enabled)
             .map(Bytes::as_ref),
         timestamps: timestamps.filter(|_| config.timestamps_enabled),
+        record_headers: None,
     };
     felix_wire::binary::encode_shared_event_batch_bytes_with_meta(batch, meta)
 }

@@ -85,6 +85,14 @@ pub enum Message {
         /// [`offer_features`](crate::offer_features).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         client_features_hi: Option<u32>,
+        /// Extension bits of the frame flags, from `KNOWN_EXT_FLAGS`: the
+        /// second word of `client_flags`.
+        ///
+        /// Sent with `FLAG_EXTENDED` set in `client_flags`, and only when
+        /// non-zero: see [`offer_flags`](crate::offer_flags). A client that
+        /// offers none sends the frame it always did.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client_flags_ext: Option<u32>,
     },
     /// Successful auth, carrying the broker's supported frame-flag bits.
     ///
@@ -114,6 +122,14 @@ pub enum Message {
         /// [`answer_features`](crate::answer_features).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         server_features_hi: Option<u32>,
+        /// Extension bits of the frame flags this broker serves, the mirror of
+        /// `Auth.client_flags_ext`.
+        ///
+        /// Sent only to a client that set `FLAG_EXTENDED`, and only when
+        /// non-zero, so any other client's `AuthOk` is unchanged: see
+        /// [`answer_flags`](crate::answer_flags).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        server_flags_ext: Option<u32>,
         /// Every port this broker's client-facing listeners are bound to,
         /// when it has more than one.
         ///
@@ -1362,6 +1378,9 @@ impl Message {
 
     /// Decode a frame's JSON payload.
     pub fn decode(frame: Frame) -> Result<Self> {
+        // A JSON body has no extension word; reading it as JSON would fail
+        // anyway, but with a message about the JSON.
+        crate::client::binary::reject_extension(frame.header.flags)?;
         serde_json::from_slice(&frame.payload).map_err(Error::Deserialize)
     }
 

@@ -95,6 +95,7 @@ async fn auth_answer(
             client_flags,
             client_features,
             client_features_hi: None,
+            client_flags_ext: None,
         },
     )
     .await?;
@@ -214,6 +215,7 @@ async fn a_pipelining_stream_is_answered_in_request_order() -> Result<()> {
             client_flags: Some(felix_wire::KNOWN_FLAGS),
             client_features: Some(felix_wire::FEATURE_PUBLISH_PIPELINE),
             client_features_hi: None,
+            client_flags_ext: None,
         },
     )
     .await?;
