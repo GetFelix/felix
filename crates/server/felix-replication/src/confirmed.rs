@@ -216,16 +216,19 @@ impl ConfirmedReads {
             .get(key)
             .filter(|slot| slot.incarnation == incarnation)
         {
-            Some(slot) if !slot.owed.load(Ordering::Relaxed) => {
-                slot.early.store(true, Ordering::Relaxed);
+            Some(slot) => {
+                // A reader waiting out a refused request's retry keeps its
+                // longer window. An owed slot with no reader is one whose
+                // retry never came.
+                if !(slot.owed.load(Ordering::Relaxed) && slot.reading.load(Ordering::Acquire)) {
+                    slot.early.store(true, Ordering::Relaxed);
+                }
                 slot.owed.store(true, Ordering::Relaxed);
                 if !self.want(routes, key, slot, now, fresh) {
                     // The reader recomputes its wait for this freshness.
                     slot.stale.notify_one();
                 }
             }
-            // A refused request's retry is owed already, for longer.
-            Some(_) => {}
             None => {
                 drop(slots);
                 self.add(routes, key, incarnation, now, fresh, true);
@@ -301,8 +304,14 @@ impl ConfirmedReads {
             .get(key)
             .filter(|slot| slot.incarnation == incarnation)
         {
-            // Another request added it meanwhile.
-            Some(added) => added.wanted.store(now, Ordering::Relaxed),
+            // Another request added it meanwhile. A request racing an early
+            // read was refused, so its retry gets the longer window.
+            Some(added) => {
+                added.wanted.store(now, Ordering::Relaxed);
+                if !early {
+                    added.early.store(false, Ordering::Relaxed);
+                }
+            }
             None => self.spawn_read(routes, key, &slot),
         }
     }

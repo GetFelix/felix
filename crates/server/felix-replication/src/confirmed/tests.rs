@@ -169,3 +169,22 @@ async fn an_unasked_early_read_stops() {
     assert_eq!(counted.reads.load(Ordering::SeqCst), stopped);
     assert!(!reads.slots.load()[&key()].reading.load(Ordering::SeqCst));
 }
+
+/// **A copy named again after its early read stopped reads again**, as for
+/// a move cancelled and then re-issued to the same broker.
+#[tokio::test(start_paused = true)]
+async fn a_copy_named_again_reads_again() {
+    let (_, routes) = counted();
+    let reads = Arc::new(ConfirmedReads::new(Duration::from_secs(10)));
+    let prefetch = Prefetch::new(Arc::clone(&reads), Arc::clone(&routes), None);
+    prefetch.named([(key(), 0)]);
+    tokio::time::sleep(WANTED_FOR * 2).await;
+    prefetch.named([(key(), 0)]);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(
+        reads
+            .decide(&routes, &key(), 0, FRESH_UNDER_ELECTIONS, |_| ())
+            .is_some(),
+        "the second naming started no read"
+    );
+}

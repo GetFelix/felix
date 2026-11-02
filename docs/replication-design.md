@@ -879,7 +879,8 @@ Evidence (`replica/tests/fence.rs`):
 `a_shorter_freshness_wakes_the_refresh`,
 `a_retry_a_driver_tick_later_is_answered`,
 `a_prefetched_copy_answers_the_first_request`,
-`early_reads_are_bounded_per_change` and `an_unasked_early_read_stops` (`confirmed/tests.rs`); and
+`early_reads_are_bounded_per_change`, `an_unasked_early_read_stops` and
+`a_copy_named_again_reads_again` (`confirmed/tests.rs`); and
 `only_newly_named_followers_are_read_early`
 (`services/felix-broker-service/src/shards/routing/tests.rs`).
 
