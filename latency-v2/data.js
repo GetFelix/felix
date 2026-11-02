@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793651682983,
+  "lastUpdate": 1793652515949,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -54318,6 +54318,72 @@ window.BENCHMARK_DATA = {
             "range": "579.12",
             "unit": "us",
             "extra": "trials: 5\nmedian: 524.00\nmean: 781.60\nstdev: 579.12\ncv: 74.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9aeb656cbd8fb8dff77d48883e767bc69a04a0d3",
+          "message": "perf(client): open a Connection's pools only as its traffic needs them (#1779) (#1784)\n\n* perf(client): open a Connection's pools only as its traffic needs them (#1779)\n\nA Connection opened its publish, cache and event pools up front: 20\nbroker connections by default, 17 for the latency demo's subscribers,\nso about 30 clients on one host hit the broker's 512 per-address cap.\n\nThe pools now spread: a connection opens only when a stream needs one,\none stream per connection until the pool is full. The publish pool still\nopens at connect, an event connection opens per subscription, and the\ncache workers open on the first cache request. A default subscriber\nholds 5 connections. Clients using every pool hold what they did.\n\nSpec-Unaffected: client-side connection placement only; no broker or\nmodelled protocol change.\n\n* fix(client): a refused or concurrent stream does not cost a connection (#1779)\n\nReview of the spreading pools found two ways a Connection could hold\nmore connections than its streams need:\n\n- A refused stream on a connection dialled for it left that connection\n  idle until the broker's auth timeout. The token is now fetched before\n  placing, and a spreading set closes a connection whose only stream was\n  refused. The shared-identity expiry test is back on the default pool.\n- Concurrent placers could all take one fresh connection. A stream is\n  now counted before its open, and below the ceiling a spreading set\n  claims only an idle connection; a placer that loses it grows instead.\n\nAlso regenerates the rust.md example index and corrects the connection\ncounts docs for keyed publishers and the cluster client.\n\nSpec-Unaffected: client-side connection placement only.\n\n* perf: lower the instructions-per-message baseline for the lazy pools (#1779)\n\nEach measured rep starts a fresh felix-loadgen, and its Connection used to\nopen 20 connections (TLS handshakes, 32 cache stream auths, 8 event\nannounces), all counted in the broker. It now opens 4. The drop is a fixed\n~150-165M instructions per run on both architectures (b1: 20,000 messages,\nb64: 80,000), so it is setup the count included, not a per-message gain.\nValues from Instructions per message run 41486941563.",
+          "timestamp": "2026-11-02T12:44:58-08:00",
+          "tree_id": "afde6cc511bc314cb74b904222118055ffd61b02",
+          "url": "https://github.com/GetFelix/felix/commit/9aeb656cbd8fb8dff77d48883e767bc69a04a0d3"
+        },
+        "date": 1793652509525,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 63,
+            "range": "1.73",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 63.00\nmean: 64.00\nstdev: 1.73\ncv: 2.71%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 89,
+            "range": "4.76",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 89.00\nmean: 90.20\nstdev: 4.76\ncv: 5.28%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 115,
+            "range": "367.70",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 115.00\nmean: 336.60\nstdev: 367.70\ncv: 109.24%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 84,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 84.00\nmean: 83.60\nstdev: 0.89\ncv: 1.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 177,
+            "range": "4.87",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 177.00\nmean: 176.20\nstdev: 4.87\ncv: 2.76%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 271,
+            "range": "35.13",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 271.00\nmean: 286.40\nstdev: 35.13\ncv: 12.27%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
