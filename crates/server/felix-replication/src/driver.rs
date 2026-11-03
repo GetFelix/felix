@@ -322,6 +322,13 @@ pub trait WriteFence: Send + Sync {
     /// up at, found none ahead of this broker's copy (`reclaimable`), or
     /// found one ahead.
     fn probed(&self, _key: &crate::ShardKey, _generation: u64, _reclaimable: bool) {}
+
+    /// Whether this process has opened `key` to serve at `generation` or a
+    /// later one. A route naming this broker at a generation it has not
+    /// opened since it started may be one it led only before a restart.
+    fn opened_since(&self, _key: &crate::ShardKey, _generation: u64) -> bool {
+        true
+    }
 }
 
 /// A fence that holds nothing back: every shard is quiet.

@@ -481,6 +481,14 @@ async fn adopt_if_elected(
                 "an elected leader reported; the control plane took its generation",
             );
             state.placement_wakes.request_pass();
+            // Taken as a generation only (below level 26, or an elected set
+            // naming a node the catalog lacks), it now names another leader at
+            // the elected one: move past that at once rather than on the next
+            // report, so a failover planned meanwhile does not leave the
+            // elected set unfenced.
+            if !adopted && written.generation == elected.generation {
+                return reissue_past_collision(state, node_id, key, elected, written).await;
+            }
             Ok(written)
         }
         Ok(_) => Ok(assignment),
