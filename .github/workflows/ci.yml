@@ -1007,7 +1007,7 @@ jobs:
         run: python3 scripts/check_spec_pairing.py --base HEAD^1
 
   # A pull request checks the configurations of ten minutes or less
-  # (TLA_QUICK), plus the ones it changes (`formal-heavy` takes those over 30
+  # (TLA_QUICK) and FelixShard, plus the ones it changes (`formal-heavy` takes those over 30
   # minutes); a push to main or a manual run checks all of them, so a slow
   # configuration that breaks shows up on main rather than holding up every
   # spec change for an hour.
