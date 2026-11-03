@@ -4161,9 +4161,9 @@ Once it is finalized on a broker that offers `ELECTION`:
   route, and it is authoritative: the broker takes it from there, the same
   set the leader acknowledges on. Its watch, its log or what it kept beside
   its set only fill in each member's copy and learner mark, and only when
-  they name the same members. With none of them, each member counts only
-  from the copy the route names for it, or by node id when it names none;
-  such a fence does not stay pending. For other changes the broker learns
+  they name the same members. When none of them names those members, each
+  member counts only from the copy the route names for it, or by node id
+  when it names none; such a fence does not stay pending. For other changes the broker learns
   the set from the assignment its watch saw at that generation,
   from the set the leader before shipped with at it, or from what this
   leader kept beside its own set. When none of those knows it (the watch
@@ -4177,10 +4177,15 @@ Once it is finalized on a broker that offers `ELECTION`:
   control plane records an election without taking the elected leader's
   set, its own set and the one the elected leader shipped with can differ,
   and a majority of either may hold acknowledged records. So when the set
-  the promoted broker's log keeps from before the route names other members
-  than the set found above, the fence needs a majority of that set too, as
-  the model's `Promote` fences the promoted broker's own set. A member that
-  votes only in the log's set is sent that set as the one being left.
+  the promoted broker's log keeps from before the route differs from the set
+  found above (other members, other voters, or another copy of a member),
+  the fence needs a majority of that set too, as the model's `Promote`
+  fences the promoted broker's own set. Each set counts an answer only from
+  the copy it names. A member that votes only in the log's set is sent that
+  set as the one being left. Only the set found above is kept beside the
+  leader's, so a fence tried again at that generation after the log took the
+  new set fences that set alone. That is safe: the replicas that took the
+  first fence keep their promise, and the leader already caught up from them.
 - Each member of the set being left is counted as a voter and, where it was
   a move's staged destination, also not: replicas may keep the set either
   way, and the fence needs a majority of each reading.

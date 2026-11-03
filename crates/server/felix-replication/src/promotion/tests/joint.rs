@@ -853,3 +853,39 @@ fn a_log_set_differing_only_in_learners_is_fenced_beside_the_one_before() {
 
     assert_eq!(besides, Some(stored.current));
 }
+
+/// **A log set naming another copy of a member is fenced beside the set
+/// before, and each counts only the copy it names.** The watch saw
+/// {broker-x, broker-b, broker-c} with broker-b's current copy, while
+/// broker-a's log keeps the same names with an older copy of broker-b, which
+/// may have acknowledged with broker-c. With broker-c down, broker-x and
+/// broker-b's current copy are a majority of the set before but hold none of
+/// the log set's records, so the fence stays closed until broker-c answers.
+#[tokio::test]
+async fn a_log_set_naming_another_copy_is_fenced_beside_the_one_before() {
+    let mut replicas = replicas_with(&["broker-x", "broker-z"]);
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+    kept_naming(
+        &leader,
+        &["broker-x", "broker-b", "broker-c"],
+        &[],
+        &[("broker-b", storage_of("broker-old"))],
+    )
+    .await;
+    let mut prior = prior_xbc();
+    if let Some(before) = prior.before.as_mut() {
+        Arc::make_mut(before).member_storage_ids =
+            [("broker-b".to_string(), storage_of("broker-b").to_hex())].into();
+    }
+
+    replicas.get_mut("broker-c").reachable = false;
+    let outcome = fence_after(&replicas, &leader, true, Some(prior.clone())).await;
+    let Outcome::Pending { why, .. } = &outcome else {
+        panic!("opened without a voter majority of the log's copies: {outcome:?}");
+    };
+    assert!(why.contains("2 of 3 and 1 of 3 voters"), "{why}");
+
+    replicas.get_mut("broker-c").reachable = true;
+    let outcome = fence_after(&replicas, &leader, true, Some(prior)).await;
+    assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
+}
