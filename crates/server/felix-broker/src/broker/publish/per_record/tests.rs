@@ -84,7 +84,11 @@ async fn ship(
         .iter()
         .map(|r| crate::replication::mark_to_wire(r.mark))
         .collect();
-    let checksum = felix_wire::internal::batch_checksum(&payloads, &marks, &[], &[]);
+    let blocks: Vec<Option<Bytes>> = records
+        .iter()
+        .map(|r| r.headers.as_deref().cloned())
+        .collect();
+    let checksum = felix_wire::internal::batch_checksum(&payloads, &marks, &[], &blocks);
     let applied = crate::replication::apply(
         log(follower),
         from,
@@ -93,7 +97,7 @@ async fn ship(
         &marks,
         &[],
         &[],
-        None,
+        blocks.iter().any(Option::is_some).then_some(&blocks[..]),
     )
     .await
     .expect("apply")
@@ -326,8 +330,8 @@ async fn record_blocks_follow_their_records_through_a_partial_batch() {
     assert!(!finished.duplicate);
     assert_eq!(
         stored_headers(&on_follower).await,
-        vec![None, None, Some(block("k2"))],
-        "the shipped record keeps what it was shipped with; the rest take theirs"
+        blocks.to_vec(),
+        "the shipped record keeps its block; the rest take theirs"
     );
 }
 

@@ -14,9 +14,10 @@
 //! stream's consistency, which is a majority of the replica set on a `Quorum`
 //! stream and nothing more on a `Leader` one. `0` writes and answers nothing.
 //!
-//! A record's key and headers are stored with it when the broker accepts
-//! record headers, and dropped (and counted) when it does not, so a fleet that
-//! has not finalized them still takes Kafka produces. Producer timestamps are
+//! A record's key and headers are stored with it when the listener opts in
+//! (`FELIX_KAFKA_RECORD_HEADERS`) and the broker accepts record headers, and
+//! dropped (and counted) otherwise, so a fleet that has not finalized them
+//! still takes Kafka produces. Producer timestamps are
 //! always dropped: a Felix record's time is the broker's append time.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -175,7 +176,7 @@ async fn write(
     throttled: &mut Duration,
 ) -> Result<Written, Failure> {
     let located = resolve_write(shared, principal, topic, partition).await?;
-    let keep_headers = shared.broker.records_headers();
+    let keep_headers = shared.settings.record_headers && shared.broker.records_headers();
     let batches = decode::decode(records, keep_headers)?;
     // A kept block is charged with its payload; both are bytes the broker stores.
     let (count, bytes) = batches.iter().fold((0u64, 0u64), |(count, bytes), batch| {
@@ -231,8 +232,8 @@ async fn publish(
     handle: &StreamHandle,
     batch: &Batch,
 ) -> Result<PublishOutcome, Failure> {
-    // Blocks are built only when the broker accepts them, and any key or
-    // header makes one, so none means these were not kept.
+    // Blocks are built only when the listener opted in and the broker accepts
+    // them, and any key or header makes one, so none means these were not kept.
     if batch.blocks.is_none() {
         crate::metrics::dropped(batch.keyed, batch.with_headers);
     }

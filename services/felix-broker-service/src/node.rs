@@ -251,7 +251,9 @@ where
     // `record_headers`. A lone broker has no older peer, and a client opts in
     // by sending them. An operator who must keep the log readable by older
     // builds turns publishing them off, but reads stay on so a log that holds
-    // headers still delivers them.
+    // headers still delivers them. The Kafka listener adds its own opt-in
+    // (`FELIX_KAFKA_RECORD_HEADERS`), since nearly every Kafka producer sends
+    // keys and this gate alone would move a lone broker to v8 for them.
     if config.membership.is_some() {
         let fleet = Arc::clone(&fleet);
         broker.record_headers_when(move || fleet.supports(felix_common::fleet::RECORD_HEADERS));

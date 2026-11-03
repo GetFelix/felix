@@ -300,6 +300,7 @@ impl KafkaListener {
                 default_namespace: config.default_namespace.clone(),
                 cluster_id,
                 auth_timeout: Duration::from_millis(config.auth_timeout_ms),
+                record_headers: config.record_headers,
             },
         );
         Ok(Self {

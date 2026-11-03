@@ -310,22 +310,26 @@ producer.flush()
 
 That is a sketch; kcat is what is tested. Three things to know on the way in:
 
-- **The key and headers are stored with the record.** The client hashes the key
-  to choose a partition, which is a shard, so records with the same key land on
-  the same shard in order. The key and the headers are then kept, and a consumer
-  reads them back, in order. Two rules come from Felix's records. A null header
-  value is stored as an empty value, since Felix values are not nullable. A
-  header name that starts with `felix.` is reserved for Felix's own listeners,
-  so the produce is refused with `INVALID_RECORD` and a message naming the
-  prefix. A name that repeats in one record comes back once, with its last
-  value.
-- **A broker that does not accept headers drops them.** A broker outside a
-  cluster accepts them unless `FELIX_RECORD_HEADERS=false`; a clustered one does
-  once its fleet has finalized `record_headers` (see
-  [Upgrades](/deployment/upgrades/)). Until then keys and headers are dropped,
-  not refused, so producers that add tracing headers without being asked keep
-  working through an upgrade. They are counted in
-  `felix_kafka_produce_dropped_total{field}`.
+- **The key and headers are dropped unless you turn on
+  `FELIX_KAFKA_RECORD_HEADERS`.** The client hashes the key to choose a
+  partition, which is a shard, so records with the same key land on the same
+  shard in order either way. With the variable set to `true`, the key and the
+  headers are also stored with the record, and a consumer reads them back, in
+  order. It is off by default because the first stored one moves the logs to a
+  storage format an older build refuses to open (see
+  [Upgrades](/deployment/upgrades/#record_headers)), and nearly every producer
+  sends keys. Three rules come from Felix's records. A null header value is
+  stored as an empty value, since Felix values are not nullable. A header name
+  that starts with `felix.` is reserved for Felix's own listeners, so the
+  produce is refused with `INVALID_RECORD`; Produce v8 and later clients see a
+  message naming the prefix, older ones the code alone. A name that repeats in
+  one record comes back once, with its last value.
+- **Without the opt-in, or on a broker that does not accept headers, they are
+  dropped.** A broker outside a cluster accepts headers unless
+  `FELIX_RECORD_HEADERS=false`; a clustered one does once its fleet has
+  finalized `record_headers`. Dropped keys and headers are not refused, so
+  producers that add tracing headers without being asked keep working. They are
+  counted in `felix_kafka_produce_dropped_total{field}`.
 - **The timestamp is the broker's.** A Felix record's timestamp is when the
   broker appended it. The producer's timestamp is not kept, and the produce
   answer says so by carrying the append time, which librdkafka then reports as
@@ -508,6 +512,7 @@ leader has no Kafka listener is reported as having no leader.
 | `FELIX_KAFKA_DEFAULT_NAMESPACE` | unset | Namespace used for a topic name without a dot, so `created` can mean `orders.created`. |
 | `FELIX_KAFKA_MAX_CONNECTIONS` | `1024` | Connections served at once. Extra ones are closed as they arrive. |
 | `FELIX_KAFKA_MAX_CONNECTIONS_PER_IP` | `128` | Connections one source IP may hold, checked before the total. `0` is unlimited. |
+| `FELIX_KAFKA_RECORD_HEADERS` | `false` | Store a produced record's key and headers instead of dropping them. The first stored one moves the logs to storage format v8, which an older build refuses to open. Also needs the broker to accept record headers. |
 | `FELIX_KAFKA_AUTH_TIMEOUT_MS` | `10000` | How long a connection has to finish SASL before it is closed. Until then each request is capped at 64 KiB. |
 
 The listener's metrics are on the [Observability](/features/observability/)
@@ -581,14 +586,14 @@ without losing anything.
 producer's `batch.size` or `linger.ms`.
 
 **Records arrive without keys or headers.** The record was stored without
-them, or the broker that took the produce does not accept record headers yet
-and dropped them. `felix_kafka_produce_dropped_total` says whether that
-happened. See [Feeding Felix from Kafka producers you already
+them, `FELIX_KAFKA_RECORD_HEADERS` is not `true`, or the broker that took the
+produce does not accept record headers yet, so the key and headers were
+dropped. `felix_kafka_produce_dropped_total` says whether that happened. See [Feeding Felix from Kafka producers you already
 have](#feeding-felix-from-kafka-producers-you-already-have).
 
 **A produce is refused with `INVALID_RECORD`.** A header name starts with
-`felix.`, which Felix reserves, or is empty. The error message says which.
-Rename the header.
+`felix.`, which Felix reserves, or is empty. Produce v8 and later clients get a
+message saying which; older ones get the code alone. Rename the header.
 
 **SSL handshake failed.** Either the client does not trust the broker's
 certificate (point `ssl.ca.location` at the CA that issued `FELIX_TLS_CERT`,
@@ -636,7 +641,8 @@ them, this is not the tool for that part of it.
 - Null header values, which are stored and returned as empty values, and a
   header name that repeats in one record, which comes back once with its last
   value.
-- Keys and headers, while the broker does not accept record headers (see
+- Keys and headers, unless `FELIX_KAFKA_RECORD_HEADERS` is on and the broker
+  accepts record headers (see
   [Feeding Felix from Kafka producers you already
   have](#feeding-felix-from-kafka-producers-you-already-have)). They are counted
   in `felix_kafka_produce_dropped_total`, so you can see whether a producer

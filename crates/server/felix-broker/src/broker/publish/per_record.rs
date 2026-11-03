@@ -46,8 +46,9 @@ impl Broker {
     /// too old to say where it landed is [`BrokerError::SequenceExpired`].
     ///
     /// `headers` is each record's key and headers block, as for
-    /// [`Broker::claim_publish`]; a broker that does not accept headers
-    /// refuses a batch that carries any.
+    /// [`Broker::claim_publish`]. A broker that does not accept headers
+    /// refuses a batch that needs to write any, but a batch already fully in
+    /// the log is answered as a duplicate without checking the gate.
     ///
     /// Needs a durable stream, whose log is what remembers the sequences. Any
     /// other is refused with [`BrokerError::StreamNotDurable`], without names,

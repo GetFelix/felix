@@ -91,10 +91,12 @@ leader alone on a `Leader` stream. Use a `Quorum` stream when a write must
 survive losing the leader. Idempotent producers work, including across a
 failover, because their sequences are stored in the log and replicated.
 
-Three things are not carried over on the way in. The record key picks the
-partition and is then dropped, headers are dropped, and the producer's timestamp
-is replaced by the broker's append time. A consumer that reads meaning from the
-key needs it in the value instead. Topics cannot be created from Kafka tools;
+Three things are not carried over on the way in by default. The record key
+picks the partition and is then dropped, headers are dropped, and the
+producer's timestamp is replaced by the broker's append time. Set
+`FELIX_KAFKA_RECORD_HEADERS=true` to store the key and headers; it is a one-way
+step for the data directory (see [Upgrades](/deployment/upgrades/#record_headers)).
+A consumer that reads meaning from the key needs it stored or in the value. Topics cannot be created from Kafka tools;
 create the stream through the control plane or felixctl.
 
 ## Example
@@ -161,9 +163,12 @@ Felix. Keep those stages on Kafka, or replace them: a Felix consumer group throu
 a Felix client covers work split between workers. Mirroring a topic into Felix is a
 producer you write.
 
-**Keys, headers and producer timestamps are not kept.** The record key picks the
-partition and is then dropped, headers are dropped, and the timestamp is the
-broker's append time. Put anything a consumer needs into the value.
+**Producer timestamps are not kept, and keys and headers only on request.** The
+timestamp is the broker's append time. The record key picks the partition and
+is then dropped, and headers are dropped, unless you set
+`FELIX_KAFKA_RECORD_HEADERS=true` (see
+[Kafka compatibility](/features/kafka/#configuration)). Otherwise put anything a
+consumer needs into the value.
 
 **Streams, not topics.** Only durable streams are visible. Create the stream
 through the control plane or `felixctl`, because topics cannot be created from

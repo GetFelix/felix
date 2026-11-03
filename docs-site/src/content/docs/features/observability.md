@@ -248,7 +248,7 @@ felix_kafka_produce_records_total           # records Kafka producers wrote
 felix_kafka_produce_bytes_total             # their payload bytes
 felix_kafka_produce_duplicate_records_total # re-sent idempotent records answered without writing
 felix_kafka_produce_errors_total            # refused partitions, by error
-felix_kafka_produce_dropped_total           # records whose key or headers were dropped (broker not accepting record headers), by field
+felix_kafka_produce_dropped_total           # records whose key or headers were dropped (`FELIX_KAFKA_RECORD_HEADERS` off, or the broker not accepting record headers), by field
 ```
 
 `felix_kafka_produce_duplicate_records_total` rising is idempotence doing its
