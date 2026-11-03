@@ -619,7 +619,7 @@ To use them:
 3. Claim the lease with a conditional put that asks for a token, publish with
    the token, and renew at the version you hold before the TTL runs out. Each
    renewal returns a fresh token. See
-   [Leases and lease tokens](/clients/rust/#leases-and-lease-tokens) for the
+   [Leases and lease tokens](/clients/rust/cache/#leases-and-lease-tokens) for the
    Rust code.
 
 ```mermaid

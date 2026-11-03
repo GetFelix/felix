@@ -610,7 +610,7 @@ The test starts three brokers with the fleet features felixd finalizes and a
 one-shard `Quorum` cache with three replicas, `leases`. A canary renews four
 keys in it the way felixd renews a lease: a conditional put on the version it
 last wrote, with a 6 s TTL, every 2 s, then a read back. For 12 s the cluster is
-otherwise idle, which sets the baseline. Then the test creates single-shard
+otherwise idle, for comparison. Then the test creates single-shard
 `Quorum` streams with three replicas through the control plane's API, 16 at a
 time, and appends to the first 96 every 50 ms from the moment each exists.
 After the last create the appends go on for a while longer.
@@ -624,11 +624,11 @@ sequenceDiagram
     loop every 2 s, throughout
         C->>B: put_if(version, TTL 6 s), then read
     end
-    Note over T,B: 12 s idle: baseline
+    Note over T,B: 12 s idle, for comparison
     T->>B: create N streams, 16 in flight
     T->>B: append every 50 ms to the first M
     Note over T,B: hold, appends continue
-    T->>T: compare loaded latencies with the baseline
+    T->>T: check loaded latencies against the bounds
 ```
 
 It fails when:
@@ -636,14 +636,21 @@ It fails when:
 - **A lease lapsed.** A renewal was refused because the entry had expired, or
   the read after it found the key gone. A renewal has 4 s (TTL minus the
   interval) to be applied.
-- **The loaded p99 is too far from the idle one,** for renewals or for reads:
-  over 20 times the idle p99 and over 2 s. Idle p99s are a few
-  milliseconds, so the 2 s floor is what usually applies. On GitHub's 4-vCPU
-  runners at the per-PR size, the loaded p99 was 5 to 6 s without the fixes
-  and under 0.85 s with them, so 2 s leaves room for a slow runner either way.
-  At the nightly size it was 5 to 6 s without and under 0.2 s with. A run takes
-  about 60 loaded samples of each at the per-PR size, so its p99 is the worst
-  one: a single 2 s stall fails it.
+- **A renewal under load took over 4 s.** That is the lease's slack, TTL
+  minus the interval: a renewal that takes longer lands after the lease ran
+  out, so felixd would have lost it even if the cache did not say so.
+- **A read under load took over 2 s.**
+
+The two bounds differ because the per-PR variant runs debug brokers, which
+keep a 4-vCPU GitHub runner's CPU 90% busy or more through the load phase. That
+slows every quorum write, so healthy renewals there take 0.5 to 2.2 s. Reads
+stay under 0.4 s. Starvation looks different: the canary's renewals and reads
+time out at 5 to 6 s, several rounds in a row. Without the fixes, reads queued
+behind other shards' fences took 2.5 to 6 s. The nightly variant runs
+release brokers with CPU to spare, and stays under 0.35 s for both.
+
+The idle samples are printed next to the loaded ones for comparison but are
+not judged: one slow idle sample on a busy runner used to move the bound.
 - **The load never applied.** Fewer than half the appended streams took an
   append, so the canary was not tested under load.
 
@@ -680,17 +687,18 @@ as dispatch inputs, plus `variant` (`nightly` or `per-pr`).
 
 ### Reading a failure
 
-Every run prints one line, pass or fail. This one is the per-PR size on a
-broker without the fixes:
+Every run prints one line, pass or fail, and a failure adds a second. These are
+the per-PR size on a broker without the #1794 fix:
 
 ```text
-lease canary: Load { streams: 600, appended: 96, hold: 30s }: created in 424.6ms; appends 2987 ok, 7670 failed; renewals idle [n=20 p50=6.3ms p99=7.6ms max=7.6ms] loaded [n=32 p50=605.2ms p99=5.0s max=5.0s] bound 2.0s; reads idle [n=20 p50=5.2ms p99=6.8ms max=6.8ms] loaded [n=32 p50=40.9ms p99=6.0s max=6.0s] bound 2.0s; 0 lapse(s)
+lease canary: Load { streams: 600, appended: 96, hold: 30s }: created in 371.4ms; appends 2503 ok, 6661 failed; renewals idle [n=21 p50=6.8ms p99=29.3ms max=29.3ms] loaded [n=31 p50=63.9ms p99=5.2s max=5.2s] bound 4.0s; reads idle [n=21 p50=4.5ms p99=6.1ms max=6.1ms] loaded [n=31 p50=17.6ms p99=6.0s max=6.0s] bound 2.0s; 4 lapse(s)
+the lease canary failed: 4 lease(s) lapsed: lease-0 renewal 14 (gone on the read after it), lease-3 renewal 14 (gone on the read after it), lease-2 renewal 14 (gone on the read after it), lease-1 renewal 14 (gone on the read after it); 8 of 31 renewals under load took over 4.0s, the slowest 5.2s; 8 of 31 reads under load took over 2.0s, the slowest 6.0s
 ```
 
-Renewals and reads are timed out at the TTL, so a p99 of 5 to 6 s means
+Requests give up after 5 to 6 s, so a slowest sample of 5 to 6 s means
 requests that waited about as long as a lease lives.
 
-`idle` is the baseline and `loaded` everything sent after the first create. A
+`idle` is the quiet phase and `loaded` everything sent after the first create. A
 failure adds the problems and each broker's `quorum wait timed out` warnings.
 Those name the shard that waited and two counters: `driver_scan` is how many
 times the leader's replication driver has scanned its shards, and
