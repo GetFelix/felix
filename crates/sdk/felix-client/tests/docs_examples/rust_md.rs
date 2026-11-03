@@ -13,7 +13,7 @@ mod prelude {
     pub(crate) use std::time::Duration;
 }
 
-/// rust.md line 67: "Basic Publish/Subscribe", block 1.
+/// rust.md line 43: "Basic Publish/Subscribe", block 1.
 mod basic_publish_subscribe_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use std::net::SocketAddr;
@@ -50,7 +50,7 @@ mod basic_publish_subscribe_1 {
     }
 }
 
-/// rust.md line 108: "Basic Cache Operations", block 1.
+/// rust.md line 84: "Basic Cache Operations", block 1.
 mod basic_cache_operations_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -72,7 +72,7 @@ mod basic_cache_operations_1 {
     }
 }
 
-/// rust.md line 211: "Getting and refreshing a token", block 1.
+/// rust.md line 200: "Getting and refreshing a token", block 1.
 mod getting_and_refreshing_a_token_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use std::sync::Arc;
@@ -146,7 +146,7 @@ mod getting_and_refreshing_a_token_1 {
     }
 }
 
-/// rust.md line 295: "ClientConfig", block 1.
+/// rust.md line 284: "ClientConfig", block 1.
 mod clientconfig_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -187,7 +187,7 @@ mod clientconfig_1 {
     }
 }
 
-/// rust.md line 334: "Acting for many users", block 1.
+/// rust.md line 323: "Acting for many users", block 1.
 mod acting_for_many_users_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -215,7 +215,7 @@ mod acting_for_many_users_1 {
     }
 }
 
-/// rust.md line 399: "TLS and ALPN", block 1.
+/// rust.md line 388: "TLS and ALPN", block 1.
 mod tls_and_alpn_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -229,7 +229,7 @@ mod tls_and_alpn_1 {
     }
 }
 
-/// rust.md line 413: "TLS and ALPN", block 2.
+/// rust.md line 402: "TLS and ALPN", block 2.
 mod tls_and_alpn_2 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -246,7 +246,7 @@ mod tls_and_alpn_2 {
     }
 }
 
-/// rust.md line 432: "Configuration Tuning", block 1.
+/// rust.md line 421: "Configuration Tuning", block 1.
 mod configuration_tuning_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -264,7 +264,7 @@ mod configuration_tuning_1 {
     }
 }
 
-/// rust.md line 445: "Configuration Tuning", block 2.
+/// rust.md line 434: "Configuration Tuning", block 2.
 mod configuration_tuning_2 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1292,7 +1292,7 @@ mod keys_and_headers_1 {
     }
 }
 
-/// rust/publishing.md line 272: "Publisher API", block 1.
+/// rust/publishing.md line 276: "Publisher API", block 1.
 mod publisher_api_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1316,7 +1316,7 @@ mod publisher_api_1 {
     }
 }
 
-/// rust/publishing.md line 293: "Publisher Sharding", block 1.
+/// rust/publishing.md line 297: "Publisher Sharding", block 1.
 mod publisher_sharding_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1330,7 +1330,7 @@ mod publisher_sharding_1 {
     }
 }
 
-/// rust/publishing.md line 382: "Errors you can act on", block 1.
+/// rust/publishing.md line 386: "Errors you can act on", block 1.
 mod errors_you_can_act_on_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1356,7 +1356,7 @@ mod errors_you_can_act_on_1 {
     }
 }
 
-/// rust/publishing.md line 439: "Errors you can act on", block 2.
+/// rust/publishing.md line 443: "Errors you can act on", block 2.
 mod errors_you_can_act_on_2 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1375,7 +1375,7 @@ mod errors_you_can_act_on_2 {
     }
 }
 
-/// rust/publishing.md line 470: "Idempotent producers", block 1.
+/// rust/publishing.md line 474: "Idempotent producers", block 1.
 mod idempotent_producers_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1392,7 +1392,7 @@ mod idempotent_producers_1 {
     }
 }
 
-/// rust/publishing.md line 490: "Idempotent producers", block 2.
+/// rust/publishing.md line 494: "Idempotent producers", block 2.
 mod idempotent_producers_2 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1407,7 +1407,7 @@ mod idempotent_producers_2 {
     }
 }
 
-/// rust/publishing.md line 502: "Idempotent producers", block 3.
+/// rust/publishing.md line 506: "Idempotent producers", block 3.
 mod idempotent_producers_3 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1422,7 +1422,7 @@ mod idempotent_producers_3 {
     }
 }
 
-/// rust/publishing.md line 521: "Idempotent producers", block 4.
+/// rust/publishing.md line 525: "Idempotent producers", block 4.
 mod idempotent_producers_4 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
