@@ -522,9 +522,14 @@ impl StreamState {
     }
 
     /// A generation-start record sits at `offset` at the tail, the last of
-    /// `run` in a row. The next publish follows it, and the stream's
-    /// sequence and commit order move past it the way `advance_to` moves
-    /// them past replicated records, but the ring and held batches stay.
+    /// `run` in a row. The next publish follows it, and the commit order
+    /// moves past it the way `advance_to` moves it past replicated records,
+    /// but the ring and held batches stay.
+    ///
+    /// The stream's sequence moves past it too, unless batches are held:
+    /// then it stays below them, since it is where readers ended by a move
+    /// resume and the held batches have not reached them yet. The next
+    /// publish moves it past the record.
     ///
     /// Only before the leader serves: resetting the commit order under a
     /// publish in flight would let it jump its turn.
@@ -532,7 +537,9 @@ impl StreamState {
         let mut state = self.log_state.lock();
         let next = offset + 1;
         if state.next_seq < next {
-            state.next_seq = next;
+            if !self.held.is_busy() {
+                state.next_seq = next;
+            }
             self.commit_sequencer.reset(next);
         }
         state.generation_start_run = Some((next, run));

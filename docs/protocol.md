@@ -2271,6 +2271,9 @@ instead of being left with a feed nothing will write to or end.
   stream subscription every record below it was sent to the subscriber or dropped
   by the subscriber's own queue, and none at or above it was. It is the stream's
   position, not the subscriber's: a queue that dropped records does not move it.
+  On a `Quorum` stream a batch this broker holds for the committed mark was not
+  offered, so `resume_from` is at or below it: the batch is on disk and the next
+  leader can still commit it.
   Absent for an in-memory stream, whose sequence means nothing on another broker.
   For a cache watch it is the shard log's tail, and absent if writes were still
   in flight when the watch ended; resume after the last offset seen then.
