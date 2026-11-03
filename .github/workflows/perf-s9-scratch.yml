@@ -1,7 +1,7 @@
 name: Perf scratch (S9 election driver)
 
 # Temporary: RF 3 cluster A/B for the S9 election driver, election off.
-# a = main, b = feat/1009-s9-election-driver, c = b with FELIX_INTERNAL_ELECTION=true.
+# a = main, b = feat/1009-s9-election-driver with FELIX_INTERNAL_ELECTION=false, c = b with the variable unset (now on by default).
 # The test harness comes from this branch; only the broker binary differs by side.
 # Deleted with the branch.
 
@@ -81,8 +81,8 @@ jobs:
           cp /tmp/perf-bin/replicated_bench $p/bin/replicated_bench
           cp /tmp/perf-bin/felix-broker-b $p/bin/felix-broker
           printf '#!/bin/bash\nshift\nexec /tmp/perf-bin/felix-broker-a "$@"\n' > $p/wrap-a.sh
-          printf '#!/bin/bash\nshift\nexec /tmp/perf-bin/felix-broker-b "$@"\n' > $p/wrap-b.sh
-          printf '#!/bin/bash\nshift\nexport FELIX_INTERNAL_ELECTION=true\nexec /tmp/perf-bin/felix-broker-b "$@"\n' > $p/wrap-c.sh
+          printf '#!/bin/bash\nshift\nexport FELIX_INTERNAL_ELECTION=false\nexec /tmp/perf-bin/felix-broker-b "$@"\n' > $p/wrap-b.sh
+          printf '#!/bin/bash\nshift\nexec /tmp/perf-bin/felix-broker-b "$@"\n' > $p/wrap-c.sh
           chmod +x $p/wrap-*.sh
           for round in $(seq 1 "$ROUNDS"); do
             sides=(a b c); k=$(( (round + ${{ matrix.shard }}) % 3 ))
