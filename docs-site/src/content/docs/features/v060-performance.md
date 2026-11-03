@@ -32,7 +32,8 @@ The page is in this order:
 
 On one 8 vCPU broker with local NVMe, over QUIC with TLS, with 64 publishers on
 four load generators. These single-broker figures were measured on the
-measured build (`88a91681`). The measurement round is the set of runs on that build, and every figure here comes from it unless a table says otherwise. The release build (`6ec23a8f`) was compared with
+measured build (`88a91681`). The measurement round is the set of runs on
+that build. Figures come from it unless a table says otherwise. The release build (`6ec23a8f`) was compared with
 it on ten shapes: batched throughput matched within about 1% except 256 B
 fire-and-forget, which is 13% slower on the release (#1469, fixed in 0.6.1). The latency and
 batch-1 rows moved between -5.4% and +4.5%, on one trial each
@@ -452,7 +453,7 @@ defaults go faster than fire-and-forget with waiting only by dropping
 messages.
 
 Fire-and-forget should be the faster of the two, because the broker sends no
-acks. It is not, and the cause is unknown.
+acks. It is not, and the cause was not found.
 
 The first suspect was a defect in this build (#1416). When the ingress queue
 was full, a publish waiting for room was awaited inside the control stream's
@@ -915,7 +916,7 @@ as a durable publish:
 These figures are bound by latency: with one operation in flight per worker,
 throughput is the worker count divided by the latency, as Little's law says.
 Puts scale with workers. Gets stop near 3,000 a second between 8 and 32
-workers, and the cause is unknown. They show what one operation costs,
+workers, and the cause was not found. They show what one operation costs,
 not what the cache can sustain. Cache throughput on its own is tracked in
 #1473.
 
@@ -1063,7 +1064,7 @@ the number of broker core shards no longer changed throughput in these cells.
   single trial, within the spread between trials of that cell. It is not part
   of #1469.
 - **Fire-and-forget trails acked publishing** (lossless, in memory, 4 KiB
-  batches of 64: 3.6 GB/s against 4.4 GB/s acked). The cause is unknown. The release comparison ruled out the connection stall (#1416).
+  batches of 64: 3.6 GB/s against 4.4 GB/s acked). The cause was not found. The release comparison ruled out the connection stall (#1416).
 - **The cache figures are bound by latency.** They measure one operation in
   flight per worker on the RF=3 cluster. Cache throughput on a single broker
   and on a cluster is tracked in #1473.
