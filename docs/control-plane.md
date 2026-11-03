@@ -1410,7 +1410,16 @@ elected generation itself, not the next one:
   a node the catalog no longer holds also has only its generation taken,
   since no write can name that node. Under Raft, members below metadata
   level 26 apply the older form, which takes only the generation of any
-  other set, and finalizing `replica_election` needs every member at 26.
+  other set. A group finalizes `replica_election` only with every member at
+  26, but one that finalized it at an older release keeps it while its
+  members roll to 26, and applies the older form until they have.
+
+  When only the generation was taken, the control plane's leader is now
+  named at the generation the elected leader opened at, which ballots never
+  let it open. The same report then moves the shard past that collision at
+  once, as described under "A generation claimed twice" below, rather than
+  waiting for the next report while a failover could be planned from the
+  control plane's set.
 
 An election more than 16 generations past the assignment's, or past
 `i64::MAX`, is refused and the report is judged as before: elections run a
