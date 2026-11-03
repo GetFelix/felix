@@ -372,6 +372,7 @@ async fn the_set_a_move_left_is_stood_on_jointly() {
 /// at the kept set's generation means a leader opened on it, its joint fence
 /// already past. Carrying the set being left would need a majority of its
 /// voters, the dead leader among them, so no candidate could ever open. A
+/// later start may be a named leader's that fenced the kept set alone. A
 /// change pending on the kept set still keeps it from standing.
 #[tokio::test(start_paused = true)]
 async fn a_finished_moves_set_being_left_is_not_fenced_again() {
@@ -379,7 +380,7 @@ async fn a_finished_moves_set_being_left_is_not_fenced_again() {
     leaving.members[0].learner = true;
     let mut changed = set(3);
     changed.members[2].node = "broker-d".to_string();
-    for (opened, left) in [(3, &leaving), (4, &leaving), (4, &changed)] {
+    for (opened, left) in [(3, &leaving), (4, &leaving), (5, &leaving), (4, &changed)] {
         let (broker, _dir) = follower().await;
         let ctx = ctx(&broker, voters(None));
         let log = shard_log(&broker, &key()).await.expect("log");
@@ -404,7 +405,7 @@ async fn a_finished_moves_set_being_left_is_not_fenced_again() {
         let (_, elected) = tokio::time::timeout(Duration::from_secs(30), stand_and_watch(&ctx))
             .await
             .expect("never stood");
-        let expected = (opened < 4).then(|| leaving.clone());
+        let expected = (opened != 4).then(|| leaving.clone());
         assert_eq!(elected.leaving, expected, "opened at {opened}");
     }
 }
