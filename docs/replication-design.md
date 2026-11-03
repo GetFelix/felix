@@ -1604,8 +1604,12 @@ start reaches a majority of the new set only behind those records
 (`the_joint_start_waits_for_the_current_stints_start`). The log remembers its
 current stint's start in memory only; after a restart the next fenced open
 writes a new one, even when the log already ends with an earlier stint's. A
-cache shard's counter log still counts from the start the generation history
-records.
+cache shard's counter log counts its joint start from its current stint's
+start record too
+(`the_counter_logs_joint_start_waits_for_the_current_stints_start`). Its mark
+still counts from the start the generation history records: the records
+between the two starts are this generation's own, and only the flip needs
+them on the new set.
 
 An in-memory stream writes none either. Its publishes never reach the shard's
 log: they take no offsets, nothing ships, the fence has nothing to take, and a
@@ -4216,8 +4220,18 @@ acknowledgement is the one it was.
   with no pending change, and acknowledgements go back to the new set alone.
   The model's `CpFlip` keeps the generation; here the next one is fenced
   jointly again and opens on the new set.
-- A cache's counter log is counted on the new set alone, as the model's
-  counters are.
+- A cache's counter log is counted the same way, on both majorities, and the
+  leader reports the joint start only once the counter log's own start
+  record for its current stint is acknowledged on both as well. The counter
+  updates acknowledged before the cut-over sit behind that record, not the
+  cache log's. Reported on the cache log alone, the control plane could take a
+  new set where only the leader holds them
+  (`a_flip_waits_for_the_counter_log_on_both_majorities` and
+  `a_pending_change_counts_counters_on_both_majorities` in
+  `driver/tests/joint_acks.rs`). A counter log that does not open on a pass
+  holds the joint start back for that pass, rather than counting as a cache
+  with no counters (`a_counter_log_that_does_not_open_reports_no_joint_start`). The model's set-change configurations have
+  no counter log yet.
 - This leader ships to the new set's followers only. A majority of the set
   being left that needs a member outside the new set therefore does not form,
   and the change times out (`FELIX_SHARD_PENDING_SET_TIMEOUT_MS`) and is
