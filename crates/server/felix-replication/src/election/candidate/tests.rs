@@ -316,7 +316,8 @@ async fn a_pending_set_change_is_not_stood_on() {
 /// copies, the staged successor (here broker-a, the leader now suspected)
 /// flagged a learner. Refusing it would leave a moved shard unable to elect
 /// until the control plane is back. The standing carries the set being left,
-/// so its fence covers that set's voters too.
+/// so its fence covers that set's voters too. A route with a change pending,
+/// or naming another set, still keeps it from standing.
 #[tokio::test(start_paused = true)]
 async fn the_set_a_move_left_is_stood_on_jointly() {
     let (broker, _dir) = follower().await;
@@ -337,7 +338,33 @@ async fn the_set_a_move_left_is_stood_on_jointly() {
 
     assert_eq!(elected.leader, LOCAL);
     assert_eq!(elected.set.generation, 4);
-    assert_eq!(elected.leaving, Some(leaving));
+    assert_eq!(elected.leaving, Some(leaving.clone()));
+
+    // Only while the control plane's route records the kept set with
+    // nothing pending: the leader then counts the kept set alone.
+    for pending in [true, false] {
+        let (broker, _dir) = follower().await;
+        let held = self::ctx(&broker, voters(None));
+        let log = shard_log(&broker, &key()).await.expect("log");
+        log.accept_set(ReplicaSet {
+            current: set(4),
+            leaving: Some(leaving.clone()),
+        })
+        .await
+        .expect("set");
+        let route = held.router.snapshot().get(&key()).expect("route").clone();
+        let mut recorded = Recorded::of_route(&route);
+        if pending {
+            recorded.pending = true;
+        } else {
+            recorded.members.remove("broker-c");
+            recorded.members.insert("broker-d".to_string(), None);
+        }
+        held.elections.note_recorded(key(), recorded);
+
+        assert_eq!(stand(&held, &key(), &route).await, Round::Ineligible);
+        assert_eq!(log.accepted_generation(), 3, "no ballot");
+    }
 }
 
 /// The place counts voters with a log ahead and granting voters with a
