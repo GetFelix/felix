@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793689411269,
+  "lastUpdate": 1793693943744,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -43420,6 +43420,58 @@ window.BENCHMARK_DATA = {
             "range": "74317.09",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1233726.38\nmean: 1200551.29\nstdev: 74317.09\ncv: 6.19%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d37a51f91afd4dbdd1e65af0f2d05b3a8c65f665",
+          "message": "test(broker): serialize tests that toggle the global timings collector (#1850)\n\nFixes main's red Coverage run 41576291934 (job 125727089222): `collection_records_and_samples` panicked on `assertion failed: !should_sample()`.\n\nThe timings collector is process-global. The collector and timings unit tests ran in parallel with the `#[serial]` quic stream tests that call `enable_collection` / `set_enabled(true)`, so the flag could flip between the test's `set_enabled(false)` and its assertion.\n\nChanges (tests only):\n- `#[serial]` on the collector test and on the timings tests that toggle or record (`enable_collection`, `set_enabled`, `record_*`), so they share the lock the quic stream tests already hold.\n- `#[serial]` on the connection_writer tests, which drain the global samples and could steal the collector test's records.\n- Dropped the emptiness check after the drain in the collector test: other tests record unconditionally (e.g. subscribe lane queue wait), so it raced them. The test still asserts the sentinel values it records.\n\nEvidence: with `--features telemetry`, looping `timings` plus the writer/control_cache timing tests, the original code failed 1 of 150 runs on exactly this assertion (collector/tests.rs:10); with the change 0 of 450. `task lint` is clean.\n\nDesign calls\n- Used `serial_test`'s `#[serial]` (already the lock these tests use) rather than a new mutex helper, so there is one lock instead of two.",
+          "timestamp": "2026-11-02T23:54:56-08:00",
+          "tree_id": "51a3ef69bccf6a3810689dd288fb7877e8dbf0b8",
+          "url": "https://github.com/GetFelix/felix/commit/d37a51f91afd4dbdd1e65af0f2d05b3a8c65f665"
+        },
+        "date": 1793693943130,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 367859.46,
+            "range": "3861.67",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 367859.46\nmean: 366704.16\nstdev: 3861.67\ncv: 1.05%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 367859.46,
+            "range": "3861.67",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 367859.46\nmean: 366704.16\nstdev: 3861.67\ncv: 1.05%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80753.71,
+            "range": "6309.97",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80753.71\nmean: 78367.81\nstdev: 6309.97\ncv: 8.05%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 807537.1,
+            "range": "63099.70",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 807537.10\nmean: 783678.12\nstdev: 63099.70\ncv: 8.05%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
