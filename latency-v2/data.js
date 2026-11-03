@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793703651009,
+  "lastUpdate": 1793710244982,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -55308,6 +55308,72 @@ window.BENCHMARK_DATA = {
             "range": "130.45",
             "unit": "us",
             "extra": "trials: 5\nmedian: 563.00\nmean: 626.20\nstdev: 130.45\ncv: 20.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3b293394baa688ba726d49e8732d89538646b841",
+          "message": "fix(broker): a deposed leader's readers resume below a newer leader's records (#1837) (#1851)\n\nFixes #1837.\n\n## What the issue said, and what is reachable\n\nThe issue names two ways records past the commit mark reach a stream's `next_seq` without being held: a promoted follower adopting its replicated tail, and a restart reopening a `Quorum` log whose commit offset is below its tail. A move then sets `resume_from = next_seq`.\n\nNeither reaches a client through the service. A reader below `next_seq` with uncommitted records in between is still in its history phase (`subscribe_from` puts everything below `next_seq` in `history`, read with `read_committed`, which waits at the mark). When the shard goes, the bound turns `Refused`, `read_committed` returns `NotReadable`, and `handlers/subscribe.rs` resets the event stream (`NOT_SERVING_HERE`). The client resumes after its last record; it never sees that `resume_from`. A reader that is live has had its history read up to `next_seq` through the mark, so everything below it was committed. The broker-level repro in the issue subscribes with `Broker::subscribe`, which joins at `next_seq` (2), so `Some(2)` is right for it. Hydrate only ever runs on a fresh state, with no subscribers.\n\nA third way is reachable: **a deposed leader whose log takes the new leader's records before its readers are ended.** The replica stores a batch once the router shows this broker as a follower at the sender's generation. The lifecycle ends the readers later: a release flushes the log first, and a deposal ends them from a notify. In that window `adopt_replicated` -> `advance_to` moves `next_seq` to the new leader's tail and discards what this broker held for the mark. The move then tells live readers to resume at that tail, past the new leader's records and past the held batch, which the new leader may commit.\n\n## Fix\n\n`advance_to` ends the subscribers still registered before it moves the sequence, as for a move, at the position they had reached. The handoff names the leader and generation the log last accepted. Followers have no subscribers, so on the replication path this is one uncontended lock per batch.\n\n`reset_to` does the same when it moves the sequence up. A rebuild that keeps the committed records (`rebuild_above_commit`) can move it past a batch held here that the mark already covers but the release task has not appended yet; the new leader has that batch. A move down (a log cut back) passes over nothing, so it ends nobody.\n\n## Tests\n\n- `stream::committed::tests::readers_resume_below_records_a_newer_leader_ships`: a live reader saw offset 0, offset 1 is held, a newer leader's batch is adopted through 4. The reader resumes at 1; one that joined after the adopt resumes at 4. With the ending in `advance_to` disabled it fails: `left: Some(4), right: Some(1)`.\n- `readers_resume_below_a_held_batch_a_rebuild_moves_past`: the same through `reset_log` (rebuild keeping the commit offset). Without the ending in `reset_to`: `left: Some(2), right: Some(1)`.\n- `a_batch_shipped_again_does_not_end_readers`: a no-op `advance_to` leaves readers registered. It fails if the ending is moved above the early return.\n- `a_publish_superseded_by_a_reset_is_not_applied` now expects its subscriber ended at 0 by the reset, and still that no batch reached it.\n- `cargo test -p felix-broker -p felix-replication -p felix-kafka`, clippy, fmt, `task docs:evidence`.\n\n## Docs\n\n- `docs/protocol.md`, \"Shard moves\": a broker that takes a newer leader's records (or is rebuilt) ends its readers then; a subscription whose history is waiting at the mark is reset, not sent `shard_moved`.\n- `docs/replication-design.md`, \"Readers stop at the committed mark\": the same.\n\n## Design calls\n\n- Ended at the jump rather than capping `resume_from` at the commit offset (tried and backed out in #1836: with no replicas the commit offset need not move, and a reader that had received nothing would replay the stream). Ending at the jump also stops a stale reader from silently skipping the jump if this state fans out again.\n- The handoff's `node_id` is the log's accepted leader, a hint like every other `node_id`.\n- Independent of #1836 in code (different function; tests appended elsewhere in the same file). The replication-design.md sentence sits at the end of the paragraph #1836 edits, so the two should merge cleanly. No merge of its branch here.\n\n## Review\n\nOpus review of 80e2e86af. MUST: `reset_to` could also pass over a committed, held batch (rebuild above the commit offset): fixed in 323f718de with a test, revert-checked. SHOULDs: docs placement and wording fixed; test gaps (no-op adopt, rebuild path) covered; `committed_bound` returning `Unbounded` for a deposed leader when the new route has no replicas is pre-existing and filed as #1852. NITs (stale ring entry from an in-flight release, below-start resume for a reader that joined past held batches, hint fields read separately) are pre-existing or hint-only. Delta review of 80e2e86af..323f718de: no MUST or SHOULD. One NIT (why a downward reset leaves readers registered) addressed in a comment in 14f693171.\n\n## Performance (RF 3, run 41585300508)\n\nA is the merge-base 73f81e21b, F is the fix at 80e2e86af (the `advance_to` change, which is the only part near the hot path; `reset_to` runs only when a follower's log is rebuilt). 3 runs x 6 rounds, alternating, 18 pairs per phase; geomean F/A, with the spread of the log ratios (sd_log) and the range.\n\n| phase | msgs/s | p50 | p99 | p999 | quorum read p99 |\n|---|---|---|---|---|---|\n| steady | 0.991 (sd 0.04, 0.94-1.12) | 1.007 | 1.023 | 1.024 | 1.013 |\n| promotion burst | 0.960 (sd 0.14, 0.78-1.20) | 0.986 | 1.065 (sd 0.44) | 1.183 (sd 0.49) | 1.004 (sd 0.54) |\n\nSteady is within noise on every metric. The burst phase is noisy (per-pair ratios span 0.5x to 2x on the tail percentiles), so its tail ratios do not distinguish a change from none. No failed publishes or reads on either side.",
+          "timestamp": "2026-11-03T04:43:33-08:00",
+          "tree_id": "28c7fcfee408e61a535463177f2e9d7452e79df3",
+          "url": "https://github.com/GetFelix/felix/commit/3b293394baa688ba726d49e8732d89538646b841"
+        },
+        "date": 1793710238062,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 151,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 151.00\nmean: 151.40\nstdev: 0.55\ncv: 0.36%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 221,
+            "range": "2.51",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 221.00\nmean: 220.40\nstdev: 2.51\ncv: 1.14%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 294,
+            "range": "72.35",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 294.00\nmean: 314.80\nstdev: 72.35\ncv: 22.98%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 199,
+            "range": "10.88",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 199.00\nmean: 203.60\nstdev: 10.88\ncv: 5.34%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 393,
+            "range": "451.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 393.00\nmean: 593.00\nstdev: 451.14\ncv: 76.08%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 543,
+            "range": "1131.95",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 543.00\nmean: 1034.40\nstdev: 1131.95\ncv: 109.43%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
