@@ -48,9 +48,9 @@ pub struct Elected {
     /// The set it was fenced on. Standing changes no set, so this keeps the
     /// generation of the assignment that wrote it.
     pub set: Membership,
-    /// The set being left beside it, which the fence covers too. Only ever
-    /// the same copies as `set` with other learner flags: a candidate does
-    /// not stand while a real set change is pending.
+    /// The set kept beside it, which the fence covers too. A candidate stands
+    /// only when it names the same copies as `set`; a follower records what
+    /// the candidate's fence carried.
     pub leaving: Option<Membership>,
     /// The stream or cache incarnation it stood on. A recreated stream is
     /// another log, which this leadership says nothing about.

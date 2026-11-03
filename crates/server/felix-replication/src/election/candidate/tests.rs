@@ -4,7 +4,7 @@ use std::sync::Mutex;
 
 use felix_broker::{ConsistencyLevel, DurableStorage, StreamMetadata};
 use felix_common::fleet::{
-    FleetGate, GENERATION_START, LEASE_FREE_READS, MAJORITY_ACK, REPLICA_ELECTION,
+    FleetGate, GENERATION_START, JOINT_FENCE, LEASE_FREE_READS, MAJORITY_ACK, REPLICA_ELECTION,
 };
 use felix_router::{NodeRef, RegionRouter, RoutingTable};
 use felix_storage::EphemeralCache;
@@ -165,6 +165,7 @@ fn ctx(broker: &Arc<Broker>, voters: Voters) -> Ctx<Voters> {
         MAJORITY_ACK.name(),
         LEASE_FREE_READS.name(),
         REPLICA_ELECTION.name(),
+        JOINT_FENCE.name(),
     ];
     let fleet = FleetGate::new(names);
     fleet.observe(names);
@@ -365,6 +366,43 @@ async fn the_set_a_move_left_is_stood_on_jointly() {
         assert_eq!(stand(&held, &key(), &route).await, Round::Ineligible);
         assert_eq!(log.accepted_generation(), 3, "no ballot");
     }
+}
+
+/// **A set kept beside with the same flags is stood on too**: a leader the
+/// control plane named under `joint_fence` keeps the set before beside its
+/// own even when nothing changed. Without `joint_fence` finalized nothing
+/// stands on a set kept beside, since its fence could never open.
+#[tokio::test(start_paused = true)]
+async fn an_unchanged_set_kept_beside_is_stood_on_once_joint_fences_are_on() {
+    let (broker, _dir) = follower().await;
+    let log = shard_log(&broker, &key()).await.expect("log");
+    log.accept_set(ReplicaSet {
+        current: set(4),
+        leaving: Some(set(3)),
+    })
+    .await
+    .expect("set");
+
+    let mut off = ctx(&broker, voters(None));
+    let names = [
+        GENERATION_START.name(),
+        MAJORITY_ACK.name(),
+        LEASE_FREE_READS.name(),
+        REPLICA_ELECTION.name(),
+    ];
+    let fleet = FleetGate::new(names);
+    fleet.observe(names);
+    off.marks = Arc::new(QuorumMarks::with_fleet(Arc::new(fleet)));
+    off.marks.set_elections(Arc::clone(&off.elections));
+    let route = off.router.snapshot().get(&key()).expect("route").clone();
+    assert_eq!(stand(&off, &key(), &route).await, Round::Ineligible);
+    assert_eq!(log.accepted_generation(), 3, "no ballot");
+
+    let on = ctx(&broker, voters(None));
+    let (_, elected) = tokio::time::timeout(Duration::from_secs(30), stand_and_watch(&on))
+        .await
+        .expect("never stood");
+    assert_eq!(elected.leaving, Some(set(3)));
 }
 
 /// The place counts voters with a log ahead and granting voters with a

@@ -259,6 +259,13 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
     {
         return ctx.ineligible(key, "the kept replica set has a change pending");
     }
+    // Its fence would stay pending, after the ballot took a generation.
+    if kept.leaving.is_some() && !ctx.marks.fleet_supports(felix_common::fleet::JOINT_FENCE) {
+        return ctx.ineligible(
+            key,
+            "a set is kept beside this one and joint fences are off",
+        );
+    }
     if kept.current.generation == 0 {
         return ctx.ineligible(key, "this copy keeps no replica set");
     }
@@ -272,9 +279,11 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
     if !votes || log.member_is_wiped(local) {
         return ctx.ineligible(key, "this copy does not vote in its kept set");
     }
-    // A candidate fences only the set it keeps. If the control plane records
-    // another set, a majority of that one could hold what this fence never
-    // reaches, so it does not stand at all (#1806).
+    // A candidate fences the set it keeps and the one kept beside it. If the
+    // control plane records another set, a majority of that one could hold
+    // what this fence never reaches, so it does not stand at all (#1806).
+    // That also means the elected leader counts the kept set alone: the
+    // control plane holds it with nothing pending.
     let recorded = ctx
         .elections
         .recorded(key)

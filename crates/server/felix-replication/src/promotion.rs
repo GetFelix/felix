@@ -276,8 +276,16 @@ pub(crate) async fn fence_shard_as<R: PeerRequester>(
                 }
                 (Some(joint), Some(set), Some(_)) => match leaving {
                     Some(leaving) => Some(
-                        joint::across(requester, local_node_id, route, set, leaving.clone(), joint)
-                            .await,
+                        joint::across(
+                            requester,
+                            local_node_id,
+                            route,
+                            set,
+                            leaving.clone(),
+                            None,
+                            joint,
+                        )
+                        .await,
                     ),
                     None => None,
                 },
@@ -485,7 +493,7 @@ async fn fence_log<R: PeerRequester>(
                 (Some(joint), Some(set)) => Some(FenceElection {
                     candidate,
                     set: set.clone(),
-                    leaving: Some(joint.leaving.clone()),
+                    leaving: Some(joint.leaving_for(&node_id).clone()),
                 }),
                 (None, Some(set)) => {
                     let offered = match requester.recorded_capabilities(&node_id) {
