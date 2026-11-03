@@ -2153,8 +2153,26 @@ fn promised_elsewhere(
         correlation_id,
         ErrorCode::FencedEpoch,
         0,
-        format!("this broker accepted generation {generation} from {leader}"),
+        promised_detail(generation, leader),
     )
+}
+
+/// The detail of a refusal at a generation promised to `leader`. Brokers that
+/// predate [`promised_to`] send the same text, so it is the only place the
+/// promise is named on the wire.
+pub(crate) fn promised_detail(generation: u64, leader: &str) -> String {
+    format!("this broker accepted generation {generation} from {leader}")
+}
+
+/// The node a `FencedEpoch` refusal says `generation` was promised to, or
+/// `None` when the refusal is for any other reason, such as a newer
+/// generation.
+pub(crate) fn promised_to(detail: &str, generation: u64) -> Option<&str> {
+    detail
+        .strip_prefix(&format!(
+            "this broker accepted generation {generation} from "
+        ))
+        .filter(|leader| !leader.is_empty())
 }
 
 /// Where a batch from a leader at `generation` must start for every record

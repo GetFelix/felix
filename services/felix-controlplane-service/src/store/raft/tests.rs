@@ -886,6 +886,7 @@ async fn deletes_take_shard_state_only_once_every_member_does() {
                         node_incarnations: Default::default(),
                         follower_storage: Default::default(),
                         joint_start_acked: None,
+                        refused: None,
                         holds_start: Default::default(),
                     },
                     "broker-x",
@@ -1089,6 +1090,7 @@ async fn halted_copies_wait_for_every_member_and_the_report_does_not() {
         node_incarnations: Default::default(),
         follower_storage: Default::default(),
         joint_start_acked: None,
+        refused: None,
         holds_start: Default::default(),
     };
     let held = || async {
@@ -1279,6 +1281,7 @@ async fn by_round_waits_for_every_member_and_the_rest_of_the_report_does_not() {
         node_incarnations: Default::default(),
         follower_storage: Default::default(),
         joint_start_acked: None,
+        refused: None,
         holds_start: Default::default(),
     };
     let held = || async {
@@ -1414,6 +1417,7 @@ async fn pending_sets_wait_for_every_member() {
         given_up: false,
         inherited_storage: Default::default(),
         joint_start_acked: Some(assigned.generation),
+        refused: None,
         holds_start: Default::default(),
     };
     let held = || async {
@@ -1473,6 +1477,7 @@ async fn pending_sets_wait_for_every_member() {
             ReplicaReport {
                 generation: written.generation,
                 joint_start_acked: Some(written.generation),
+                refused: None,
                 ..report
             },
             "broker-x",
@@ -1662,6 +1667,7 @@ async fn inherited_storage_waits_for_every_member() {
         node_incarnations: Default::default(),
         follower_storage: [("broker-y".to_string(), id.clone())].into(),
         joint_start_acked: None,
+        refused: None,
         holds_start: Default::default(),
     };
     let held = || async {
@@ -1784,6 +1790,7 @@ async fn learners_wait_for_every_member() {
         node_incarnations: Default::default(),
         follower_storage: [("broker-y".to_string(), id.clone())].into(),
         joint_start_acked: None,
+        refused: None,
         holds_start: ["broker-y".to_string()].into(),
     };
     let held = || async {
@@ -1850,6 +1857,123 @@ async fn learners_wait_for_every_member() {
             .expect("finalize")
             .contains(joint)
     );
+}
+
+/// A member before level 25 would drop the refusal a leader reports when it
+/// promised its generation to an elected node, and the rest would act on it.
+/// Until every member has the level it is dropped, so the shard waits as it
+/// did, and the rest of the report is kept.
+#[tokio::test]
+async fn a_refusal_waits_for_every_member() {
+    use crate::model::{ReplicaReport, ShardAssignment, ShardKey, ShardKind, ShardState};
+    let id = "0123456789abcdef0123456789abcdef".to_string();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), super::REFUSED_LEVEL - 1).await;
+    store
+        .create_stream(routed_stream("orders", Default::default()))
+        .await
+        .expect("stream");
+    for (node_id, port) in [("broker-x", 7101), ("broker-y", 7102), ("broker-z", 7103)] {
+        store
+            .register_node(crate::store::contract::nodes::with_features(
+                crate::store::contract::nodes::node(node_id, port),
+                &[],
+            ))
+            .await
+            .expect("register");
+    }
+    let key = ShardKey {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "orders".to_string(),
+        shard: 0,
+        kind: ShardKind::Stream,
+    };
+    let assigned = store
+        .put_shard_assignment(ShardAssignment {
+            key: key.clone(),
+            leader: "broker-x".to_string(),
+            replicas: vec!["broker-y".to_string(), "broker-z".to_string()],
+            generation: 0,
+            state: ShardState::Active,
+            successor: None,
+            joining: None,
+            move_started_at_millis: None,
+            move_reason: None,
+            incarnation: 0,
+            fence_storage_ids: Default::default(),
+            member_storage_ids: Default::default(),
+            learners: Default::default(),
+            pending_set: None,
+        })
+        .await
+        .expect("assign");
+    let report = ReplicaReport {
+        inherited_storage: Default::default(),
+        given_up: false,
+        counter_offsets: Default::default(),
+        stream_incarnation: None,
+        by_round: false,
+        leader_incarnation: None,
+        key: key.clone(),
+        generation: assigned.generation,
+        caught_up: ["broker-y".to_string()].into(),
+        offsets: [("broker-y".to_string(), 3)].into(),
+        reported_at_millis: 1,
+        drained: false,
+        leader_offset: Some(3),
+        halted: Default::default(),
+        leader: None,
+        node_incarnations: Default::default(),
+        follower_storage: [("broker-y".to_string(), id.clone())].into(),
+        joint_start_acked: None,
+        holds_start: Default::default(),
+        refused: Some(felix_common::membership::RefusedGeneration {
+            generation: assigned.generation,
+            promised_to: "broker-z".to_string(),
+        }),
+    };
+    let held = || async {
+        store
+            .list_replica_reports()
+            .await
+            .expect("reports")
+            .into_iter()
+            .find(|held| held.key == key)
+            .expect("the report was recorded")
+    };
+
+    assert_eq!(
+        store
+            .record_replica_report(report.clone(), "broker-x")
+            .await
+            .expect("recorded without inherited identities"),
+        crate::store::ReportWrite::Stored
+    );
+    let first = held().await;
+    assert_eq!(first.refused, None);
+    assert_eq!(first.follower_storage, report.follower_storage);
+
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        store
+            .record_replica_report(report.clone(), "broker-x")
+            .await
+            .expect("record");
+        if held().await.refused.is_some() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the refusal was still dropped after every member reported the level"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(held().await.refused, report.refused);
 }
 
 /// A member before level 12 would drop a node's storage identity and a
@@ -1936,6 +2060,7 @@ async fn storage_ids_wait_for_every_member() {
         node_incarnations: [("broker-y".to_string(), 1)].into(),
         follower_storage: [("broker-y".to_string(), id.clone())].into(),
         joint_start_acked: None,
+        refused: None,
         holds_start: Default::default(),
     };
     let held = || async {

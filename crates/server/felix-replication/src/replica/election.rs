@@ -160,7 +160,39 @@ impl ReplicaHandler {
                 ),
             ));
         };
-        let set = crate::replica_set::kept(route, None);
+        let mut set = crate::replica_set::kept(route, None);
+        match self.joint_gate() {
+            None => return Some(undecided(correlation_id, key)),
+            // Under `joint_fence` the leader keeps the set before as the one
+            // being left, and whoever stands next fences it. This copy's own
+            // older set may not be that one (an elected leader's, say), so
+            // only the control plane's is taken, and without it only the
+            // fence teaches the set (`LearnsLeavingSet` in the model).
+            Some(true) => {
+                match crate::promotion::set_before(None, route, self.router.prior_set(key).as_ref())
+                {
+                    Ok(before) => {
+                        set.leaving = Some(before.unwrap_or(Membership {
+                            generation: route.generation.saturating_sub(1),
+                            members: Vec::new(),
+                        }));
+                    }
+                    Err(_) => {
+                        metrics::record_replicated(metrics::OUTCOME_REFUSED);
+                        return Some(refused(
+                            correlation_id,
+                            ErrorCode::StaleRoute,
+                            0,
+                            format!(
+                                "this broker does not know the set before generation {stamped}; \
+                             a fence carries it"
+                            ),
+                        ));
+                    }
+                }
+            }
+            Some(false) => {}
+        }
         if let Some(refusal) = self.refuse_undecided(correlation_id, key, log, &set.current) {
             return Some(refusal);
         }

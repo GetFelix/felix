@@ -15,11 +15,12 @@ offsets. A consumer reads the state and follows every change after it without
 a gap. A slow consumer never holds up a publisher or anyone else. Every
 operation is scoped to a tenant, and every connection is QUIC with TLS 1.3.
 
-Each page shows how the scenario is usually built, why Felix fits it, working
-code, a few commands to try on your machine, a comparison with the
-systems people reach for first, and where Felix stops. Where a scenario depends
-on a capability that is still partial, the page says what is missing, using the
-status markers from [What Felix Is For](/getting-started/what-felix-is-for/).
+Each page below opens with what you get and a short way to try it, then why
+Felix fits, how it works, a worked example, how it compares with the systems
+people reach for first, and the limits you can plan around. Where a scenario
+depends on a capability that is still partial, the page says what works and what
+the workaround is, using the status markers from
+[What Felix Is For](/getting-started/what-felix-is-for/).
 
 ## Keeping many consumers in sync
 
@@ -47,7 +48,7 @@ that each need an accurate local copy of state that keeps changing.
 | [Events and state together](/use-cases/event-and-state/) | An event and the state it changes written as one record, with no outbox | Postgres plus an outbox table plus Kafka |
 | [Audit logs and replay](/use-cases/event-log-and-replay/) | A crash-safe log with offsets, append times, and the identity of whoever wrote each record | Kafka, JetStream, a database audit table |
 | [Coming from Kafka](/use-cases/kafka-migration/) | Kafka producers, and consumers that assign their own partitions, read and write durable streams; no consumer groups or transactions | Kafka |
-| [Coming from NATS](/use-cases/nats-migration/) | How subjects, queue groups, JetStream, KV and accounts map onto streams, consumer groups, the cache and tenants, and what Felix lacks | NATS |
+| [Coming from NATS](/use-cases/nats-migration/) | How subjects, queue groups, JetStream, KV and accounts map onto streams, consumer groups, the cache and tenants, and which NATS features stay on NATS | NATS |
 
 ## Running it for others
 
@@ -59,13 +60,19 @@ that each need an accurate local copy of state that keeps changing.
 ## Try it
 
 The [Quickstart](/getting-started/quickstart/) runs a broker, a control plane
-and `felixctl` with one `docker compose up`. Every page below has a short "Try
-it" section that runs against that stack.
+and `felixctl` with one `docker compose up`. Every page above has a short "Try
+it" section that runs against that stack, except
+[Browsers and mobile clients](/use-cases/browser-realtime/),
+[Data residency](/use-cases/data-residency/), [Coming from Kafka](/use-cases/kafka-migration/)
+and [Events and state together](/use-cases/event-and-state/), which say what extra
+they need.
 
-## When to use something else
+## Choosing
 
-Felix is pre-1.0. If you need a mature connector ecosystem, stream processing
-or exactly-once pipelines across topics, Kafka is the better choice today. If
-you need a small, strongly consistent store for cluster coordination and do not
-need fanout, etcd is simpler to run. [Why Felix?](/getting-started/why-felix/)
-covers this in more detail.
+Felix is built for fanout, queues, caches and counters on one log. Connector
+ecosystems, stream processing and exactly-once pipelines across topics stay on
+Kafka, and a small strongly consistent store for cluster coordination with no
+fanout stays on etcd. Each page ends with its limits and what to do about them. For the wider picture,
+[Why Felix?](/getting-started/why-felix/) covers where Felix fits and where another
+system is the better tool, and [What Felix Is For](/getting-started/what-felix-is-for/)
+holds the status of every capability.

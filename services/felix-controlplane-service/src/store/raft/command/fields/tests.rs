@@ -216,6 +216,10 @@ fn report() -> ReplicaReport {
         follower_storage: any_map(s("0123456789abcdef0123456789abcdef")),
         inherited_storage: any_map(s("0123456789abcdef0123456789abcdef")),
         joint_start_acked: Some(1),
+        refused: Some(felix_common::membership::RefusedGeneration {
+            generation: 1,
+            promised_to: s("b"),
+        }),
         holds_start: BTreeSet::from([s("c")]),
     }
 }

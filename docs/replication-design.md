@@ -1310,9 +1310,12 @@ elected leader waits for the lease until the control plane is back (issue
    changes the set records the new set as pending; the old set stays the
    control plane's set until a leader on the new set reports its
    generation's start record acknowledged on a majority of both sets. Only
-   then does the control plane take the new set, and only once the leader
-   hears that does it acknowledge on a majority of the new set alone. Until
-   then the change is pending everywhere it went: a replica persists the
+   then does the control plane take the new set, at a new generation naming
+   the same leader, which fences the new set alone before it acknowledges
+   on a majority of it. A candidate may have taken that generation already;
+   a replica that answered one refuses the other, so the two cannot both
+   win majorities (`FelixShardElectSwapFlip.cfg`). Until the flip the
+   change is pending everywhere it went: a replica persists the
    old set beside the new one, a fence and a batch carry both, a leader
    acknowledges on a majority of both, and whoever stands next fences both,
    so a leader deposed mid-change leaves the change to the next one rather
@@ -1320,7 +1323,13 @@ elected leader waits for the lease until the control plane is back (issue
    change. A leader elected on the old set while it is pending is not
    adopted (rule 10). A cut-over that changes the set also waits for the
    drain, so the old leader has stopped and the joining copies hold the
-   destination's log, which holds the old leader's.
+   destination's log, which holds the old leader's. The control plane
+   flips on the leader's report alone, and the report can be stale. If the
+   leader promised the new generation to a candidate after sending it, the
+   leader refuses that generation and reports the refusal, and the control
+   plane names it again one generation up, as after an election it did not
+   adopt (rule 10). The model checks the flip and the rename separately,
+   not yet together.
 9. *Redirects.* A follower answers `NotLeader` with the leader it promised,
    so clients find an elected leader without asking the control plane.
 10. *Adoption.* The elected leader reports its generation and its set's
@@ -1343,7 +1352,16 @@ elected leader waits for the lease until the control plane is back (issue
     control plane's set, that set is named. When the two sets differ, the
     elected set is written as the control plane's and its own as a pending
     change from it, so the change ends as a cut-over's does (see "Adopting
-    an elected leader" in `docs/control-plane.md`).
+    an elected leader" in `docs/control-plane.md`). If the
+    control plane still names the old leader at the elected generation, that
+    leader cannot serve there: either it promised the generation to the
+    elected one, so its open fails, or a majority of the set did, so its
+    fence never reaches a majority. It reports the refusal (`refused`: the
+    generation and the node it was promised to), and the control plane
+    names it again at the next generation, on the same set. That generation
+    is above the one promised away, so it opens and fences, and its
+    followers depose the elected leader. The control plane acts on that
+    report, never on silence (`CpRename` in the model).
 
 **Why it is safe.** Ballots give one leader per generation: each generation
 is fenced on one set, any two majorities of one set share a replica, and
@@ -3909,9 +3927,12 @@ the destination records it as `felix_broker_shard_switchover_seconds`.
 A destination that dies before it leads is passed over: another caught-up
 replica, or the old leader itself, takes the shard at a new generation. If it
 dies after the fence but before it is level, the drained report would wait
-for it forever, so the control plane first drops it at a new generation that
-is still fenced; the leader then reports drained against the followers it
-has, and reports even when that is none. A
+for it forever, so once the destination is marked down the control plane
+gives the shard back to the old leader at a new generation, the same write as
+an operator's cancel. Nobody has led since the fence, so the old leader holds
+every write it accepted. A destination that halts instead is dropped at a new
+generation that is still fenced; the leader then reports drained against the
+followers it has, and reports even when that is none. A
 leader that dies mid-move is a failover, and the successor is a candidate
 there like any other replica. Neither path can name a broker holding less
 than the report said, because the report is the only input either reads.
@@ -4017,7 +4038,13 @@ unless `FELIX_INTERNAL_ELECTION=false` or the fence is off. Between them:
   refused with `StaleSet`, naming the newer generation, and nothing is
   persisted for it. A batch whose set is newer than the one kept learns the
   members from the routing view at that generation, or is refused as
-  retryable until a fence carries the set.
+  retryable until a fence carries the set. Under `joint_fence` it also needs
+  the control plane's set before that generation (the pending change, or the
+  set the watch saw right before), kept as the set being left as the leader
+  keeps it. The copy's own older set is never used for that: it may be an
+  elected leader's, and a follower that stood on it could leave out the set
+  holding the leader's records. Without it the batch is refused, and the
+  leader sends its fence again to a follower that refuses as behind.
 - A fence whose set lists this replica only as a learner, or not at all, is
   refused: a learner never votes. A move's staged successor is listed as a
   learner only in the set the leader keeps while shipping, where it is left
@@ -4064,6 +4091,17 @@ which the leader opens on the new set alone, while `CpFlip` keeps the
 generation. The model is to cover that before the election driver.
 A leader sends `joint_start_acked` once `joint_fence` is finalized (below;
 control-plane.md, [Moving a shard](control-plane.md#moving-a-shard)).
+
+An election the control plane records and does not adopt (rule 10) does not
+leave the shard waiting. The old leader the assignment still names cannot
+serve the elected generation: its open is refused when it promised the
+generation away, and its fence is refused when a majority of the set did.
+Either way it says so in its report (`refused`, sent each tick in place of
+the usual measurements, with no tail). Placement names it again at the next
+generation, on the same set, and nothing else about the shard changes
+(control-plane.md, [Adopting an elected
+leader](control-plane.md#adopting-an-elected-leader)). In the model that is
+`CpRename`, checked by `FelixShardElectRename.cfg`.
 
 Joint fences and the fenced next-generation open are built too, dormant
 behind `joint_fence`. A broker reports that feature only when it offers

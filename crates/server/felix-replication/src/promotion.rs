@@ -94,6 +94,15 @@ pub enum Outcome {
     Fenced { caught_up_from: Option<String> },
     /// Some replica did not offer the fence, so the shard opens on the lease.
     Lease { lacking: String },
+    /// Not yet, and not in this attempt: so many replicas promised this
+    /// generation to `promised_to` that no majority is left to take it. The
+    /// shard stays closed, and this broker reports the refusal so the
+    /// control plane names it again above the generation (#1730).
+    Refused {
+        promised_to: String,
+        why: String,
+        took: Vec<String>,
+    },
     /// Not yet: no majority answered, or the catch-up did not finish. The
     /// shard stays closed and the next pass tries again.
     Pending {
@@ -403,8 +412,51 @@ pub(crate) async fn refence<R: PeerRequester>(
     kind: LogKind,
     candidacy: &crate::election::Candidacy,
 ) -> bool {
-    // A follower without `ELECTION` records no elected leader, so the fence
-    // would move nothing.
+    let election = FenceElection {
+        candidate: true,
+        set: candidacy.set.clone(),
+        leaving: candidacy.leaving.as_ref().map(joint::view),
+    };
+    fence_again(requester, node_id, addr, shard, kind, election).await
+}
+
+/// Send a named leader's joint fence again to one follower that missed it.
+/// A batch teaches no set being left that the follower cannot read from its
+/// own routing view, so without this a follower that was down for the fence
+/// refuses every batch until the next generation. Only a set this leader keeps
+/// at the shard's generation with a set being left is sent.
+pub(crate) async fn refence_kept<R: PeerRequester>(
+    requester: &R,
+    node_id: &str,
+    addr: std::net::SocketAddr,
+    shard: &ShardRef,
+    kind: LogKind,
+    kept: Option<&felix_storage::disk_log::ReplicaSet>,
+) -> bool {
+    let Some((current, leaving)) = kept
+        .filter(|kept| kept.current.generation == shard.generation)
+        .and_then(|kept| Some((&kept.current, kept.leaving.as_ref()?)))
+    else {
+        return false;
+    };
+    let election = FenceElection {
+        candidate: false,
+        set: joint::view(current),
+        leaving: Some(joint::view(leaving)),
+    };
+    fence_again(requester, node_id, addr, shard, kind, election).await
+}
+
+async fn fence_again<R: PeerRequester>(
+    requester: &R,
+    node_id: &str,
+    addr: std::net::SocketAddr,
+    shard: &ShardRef,
+    kind: LogKind,
+    election: FenceElection,
+) -> bool {
+    // A follower without `ELECTION` records no elected leader and checks no
+    // set, so the fence would move nothing.
     let offered = match requester.recorded_capabilities(node_id) {
         Some(offered) => Some(offered),
         None => requester.capabilities(node_id, addr).await.ok(),
@@ -412,11 +464,7 @@ pub(crate) async fn refence<R: PeerRequester>(
     if !offered.is_some_and(|offered| offered.contains(PeerCapabilities::ELECTION)) {
         return false;
     }
-    let election = FenceElection {
-        candidate: true,
-        set: candidacy.set.clone(),
-        leaving: candidacy.leaving.as_ref().map(joint::view),
-    };
+    let candidate = election.candidate;
     let (_, _, answer, _) = ask_fence(
         requester,
         node_id.to_string(),
@@ -434,7 +482,8 @@ pub(crate) async fn refence<R: PeerRequester>(
         shard = shard.shard,
         generation = shard.generation,
         took,
-        "sent the elected leader's fence again to a follower whose route is behind",
+        candidate,
+        "sent the leader's fence again to a follower whose route is behind",
     );
     took
 }
@@ -479,6 +528,20 @@ async fn fence_log<R: PeerRequester>(
     // Why the replicas that refused did, for the shard's status: a refusal
     // that no retry gets past names its way out there.
     let mut refusals: Vec<String> = Vec::new();
+    // Replicas that promised this generation to another node. Each is a vote
+    // that node holds, so once a majority can no longer be made without
+    // them, no answer still to come opens the shard.
+    let mut promised_away: Vec<(String, String)> = Vec::new();
+    let reachable = |promised_away: &[(String, String)]| {
+        let left = replicas
+            .iter()
+            .map(|replica| replica.node_id.as_str())
+            .filter(|node| !promised_away.iter().any(|(away, _)| away == node));
+        match joint {
+            None => left.count() + 1 >= needed,
+            Some(joint) => joint.has_majorities(left),
+        }
+    };
     let mut asks = futures::stream::FuturesUnordered::new();
     for replica in replicas {
         let (node_id, addr) = (replica.node_id.clone(), replica.advertise_addr);
@@ -535,6 +598,32 @@ async fn fence_log<R: PeerRequester>(
                 uncounted(key, kind, &node_id, reported_ids, identity);
             }
             Ok(InternalMessage::FenceOk(ok)) => answered.push((node_id, addr, ok)),
+            Ok(InternalMessage::ReplicateError(err))
+                if err.code == ErrorCode::FencedEpoch
+                    && crate::replica::promised_to(&err.detail, shard.generation).is_some() =>
+            {
+                let other = crate::replica::promised_to(&err.detail, shard.generation)
+                    .unwrap_or_default()
+                    .to_string();
+                refusals.push(format!("{node_id} refused: {}", err.detail));
+                promised_away.push((node_id, other));
+                if !reachable(&promised_away) {
+                    let mut why = format!(
+                        "{} of the replicas promised generation {} to another node",
+                        promised_away.len(),
+                        shard.generation
+                    );
+                    for refusal in &refusals {
+                        why.push_str("; ");
+                        why.push_str(refusal);
+                    }
+                    return Err(Outcome::Refused {
+                        promised_to: promised_away[0].1.clone(),
+                        why,
+                        took: took(&answered),
+                    });
+                }
+            }
             Ok(InternalMessage::ReplicateError(err)) if err.code == ErrorCode::FencedEpoch => {
                 // A replica has taken a newer leader: this promotion is over.
                 return Err(Outcome::pending(

@@ -9,21 +9,18 @@ they happen. A mobile app wants the same notification stream the web app gets.
 The browser or phone is the least trusted part of the system, it cannot hold a
 broker credential for the whole tenant, and it connects and disconnects all day.
 
-## How this is usually built
+Felix reaches browsers through a WebSocket gateway. Each connection gets a token
+narrowed to the rooms or keys it may see, and the gateway turns a stream or a
+cache watch into events the page can render, resuming from an offset after a
+reconnect.
 
-The standard answer is a WebSocket tier. A fleet of Node, Go or Elixir servers
-holds the browser connections, authenticates each one, and relays between the
-sockets and a backend: Redis pub/sub, Kafka, NATS or a database change feed. The
-tier needs sticky routing or a shared session store, a reconnect strategy that
-tolerates a thundering herd after a deploy, per-connection backpressure so one
-slow phone cannot grow a node's memory, and a way to resume after a drop. Authorization is the hard part: the application code decides on every
-message which room a socket may touch, so a bug in that code is a data leak.
+## Try it
 
-Hosted realtime services such as Pusher or Ably take that tier off your hands,
-with channels, presence and history behind an SLA. If you want someone else to
-run the edge, that is the sensible choice. NATS can also accept WebSocket
-clients directly, with per-user permissions on subjects, which removes the tier
-at the cost of running NATS at the edge of your network.
+The one-command stack has no gateway, so a browser cannot connect to it. Run
+the gateway command from the example below against a broker, or use the
+Quickstart stack to see the stream a browser would be fed:
+`docker compose run --rm felixctl sub orders` in one terminal and
+`docker compose run --rm felixctl pub orders 'hello'` in another.
 
 ## Why Felix fits
 
@@ -128,8 +125,11 @@ docker run -p 8787:8787 \
   -e GATEWAY_FELIX_BROKERS=felix-broker:5000 \
   -e GATEWAY_FELIX_CONTROL_PLANE=https://felix-controlplane:8443 \
   -v "$PWD/scope.toml:/etc/felix-gateway/scope.toml:ro" \
-  ghcr.io/getfelix/felix-gateway:0.2.0
+  ghcr.io/getfelix/felix-gateway:0.8.0
 ```
+
+The gateway is versioned on its own, apart from Felix. Release 0.8.0 is
+tested against Felix 0.6.2.
 
 `GATEWAY_NAMESPACE` defaults to `default`. In the browser:
 
@@ -172,40 +172,57 @@ simulator publishes ticks to a durable stream that the gateway relays.
 
 ## Compared with a hand-built WebSocket tier, hosted services and NATS WebSocket
 
+### How it is usually built
+
+The standard answer is a WebSocket tier. A fleet of Node, Go or Elixir servers
+holds the browser connections, authenticates each one, and relays between the
+sockets and a backend: Redis pub/sub, Kafka, NATS or a database change feed. The
+tier needs sticky routing or a shared session store, a reconnect strategy that
+tolerates a thundering herd after a deploy, per-connection backpressure so one
+slow phone cannot grow a node's memory, and a way to resume after a drop. Authorization is the hard part: the application code decides on every
+message which room a socket may touch, so a bug in that code is a data leak.
+
+Hosted realtime services such as Pusher or Ably take that tier off your hands,
+with channels, presence and history behind an SLA. If you want someone else to
+run the edge, that is the sensible choice. NATS can also accept WebSocket
+clients directly, with per-user permissions on subjects, which removes the tier
+at the cost of running NATS at the edge of your network.
+
+### How Felix differs
+
 A hand-built tier gives you full control: any protocol, any auth model, any payload handling, and presence or rate limits in your own code. It also leaves you responsible for per-connection fanout memory, resume after reconnect and authorization on every message. The Felix gateway moves authorization into the brokers and resume into the log. The cost is that it cannot decode a payload, so anything that needs a payload-level decision, such as stamping a sender, is declared in the scope file (`stamp_sender`) or done by a service that subscribes as a normal client.
 
 Hosted realtime services remove operations entirely and bring features Felix does not have, such as presence APIs, multi-region edge points of presence and mobile SDKs. If you want someone else to run the edge, pick one. Felix is self-hosted: you run brokers, a control plane with Postgres or its embedded Raft store, an identity provider and the gateway. In return, state lives in your cluster, resume uses offsets in your own log, and the same cluster serves your services' streams, caches and queues.
 
 NATS WebSocket is the closest in shape: browsers connect to the server itself, and permissions are per user on subjects with wildcards, which is more flexible than a scope file. JetStream adds replay. The Felix gateway takes the sign-in from your identity provider through token exchange, narrows per scope, and relays resumable offsets and cache watches in its protocol. Pick NATS if wildcard subject permissions matter more to you than those.
 
-## Try it
+## Limits you can plan around
 
-The one-command stack has no gateway, so a browser cannot connect to it. Run
-the gateway command from the example above against a broker, or use the
-Quickstart stack to see the stream a browser would be fed:
-`docker compose run --rm felixctl sub orders` in one terminal and
-`docker compose run --rm felixctl pub orders 'hello'` in another.
+**One gateway serves a bounded audience.** Each browser session opens its own
+Felix client and a broker accepts a bounded number of connections. For a very
+large audience, run several gateways.
 
-## Where it stops
-
-Each browser session opens its own Felix client, and a broker accepts a bounded
-number of connections, so one gateway does not serve very large audiences yet.
-The gateway is pre-1.0, and its scope file format and library API may change
+**The gateway is pre-1.0.** Its scope file format and library API may change
 between minor versions. The browser protocol's version 1 is frozen.
 
-A gateway runs one kind of scope. An app with rooms and also with user inboxes
-runs two gateways. The gateway never retries a publish or a counter add, so a
-counter add repeated by the browser after a lost answer is counted twice.
+**A gateway runs one kind of scope.** An app with rooms and also with user inboxes
+runs two gateways.
 
-There is no Felix SDK for iOS or Android, and no Go client has been started.
-A native mobile app today speaks the gateway's JSON-over-WebSocket protocol
+**The gateway never retries a publish or a counter add.** A counter add repeated
+by the browser after a lost answer is counted twice, so send adds from a browser only
+where a duplicate is tolerable, or route them through a service of yours that
+uses an idempotent producer.
+
+**Native mobile apps use the gateway protocol.** There is no Felix SDK for iOS or
+Android and no Go client yet. A mobile app speaks the gateway's JSON-over-WebSocket
+protocol
 ([documented in the gateway repository](https://github.com/GetFelix/felix-gateway/blob/main/docs/protocol.md)),
-because the `felix-gateway-client` package targets browsers. Felix clients exist for
-Rust, Python, Node, C and C#.
+because the `felix-gateway-client` package targets browsers. Felix clients exist
+for Rust, Python, Node, C and C#.
 
-On a broker that binds tokens to client certificates, a gateway sharing its
-connections would have to delegate each user's token, and the gateway does not do
-that yet. Events carry no publisher, so sender identity needs `stamp_sender`.
+**Sender identity needs `stamp_sender`.** Events carry no publisher. On a broker
+that binds tokens to client certificates, a gateway sharing its connections would
+have to delegate each user's token, and the gateway does not do that yet.
 
 ## Related
 
