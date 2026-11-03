@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793739065265,
+  "lastUpdate": 1793746483600,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -55836,6 +55836,72 @@ window.BENCHMARK_DATA = {
             "range": "101.48",
             "unit": "us",
             "extra": "trials: 5\nmedian: 300.00\nmean: 314.60\nstdev: 101.48\ncv: 32.26%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1014-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d8e6fac4455ae936e790ce8e507c5c731b1af76c",
+          "message": "fix(replication): a cut-over's joint fence leaves the control plane's recorded set (#1806) (#1810)\n\nCloses #1806. Prerequisite for #1009 S9.\n\n## What\n\n`promotion/joint.rs` `set_before`: when the route carries a pending change at its own generation (a cut-over), the set being left is the control plane's `PendingChange::leaving`. The watch prior, the leader's kept `leaving` and the log at G-1 only fill in storage ids and learner marks, and only when they name exactly the recorded members. Otherwise the members count by node id alone.\n\nWhy: after S9, a recorded-only adoption (`ShardAssignment::adopting`, `!matches`) keeps the control plane's set S at E while the elected leader's log keeps S'. At E+1 the log source returned S' and the watch returned S, depending on whether the watch saw E. The model's `Swap` takes `oldSet' = CpSet`, and the leader's acks while pending already use `route.pending.leaving` (`held_by_both`), so the fence now agrees with both.\n\nTest: `a_pending_cut_over_leaves_the_recorded_set_whatever_the_log_kept`. The log keeps the elected set {a, x, z} at 4, the watch saw nothing, the route's pending change leaves {x, b, c}. With b, c down the fence stays pending (\"1 of 3 voters of the set being left\"); once b answers it opens and b keeps {x, b, c} as the set being left. With the pending branch disabled it opens on the log's set (verified locally).\n\nFailover (5fc0cb5c2): outside a pending cut-over, when the log's set from before the route differs from the set `set_before` found (members, learner marks or copies), the fence needs a majority of both, as the model's `Promote` fences the promoted broker's own set. A member voting only in the log's set is sent that set as the one being left. Each set being left counts an answer only from the copy it names (`JointSets::has_majorities` takes each answer's handshake identity). Tests: `a_failover_fences_both_the_recorded_set_and_the_logs`, `a_log_set_differing_only_in_learners_is_fenced_beside_the_one_before` (#1853), `a_log_set_naming_another_copy_is_fenced_beside_the_one_before`; the last two fail with their fix reverted.\n\n## Design calls\n\n1. Pending cut-over: the set being left is the control plane's `PendingChange::leaving` only. The log's set is not fenced beside it there (opus review SHOULD, not changed): on main no broker elects, so every route generation names a set fenced at that generation, and `held_by_both` keeps acks on the recorded set. Under elections (S9) a successor whose log keeps an elected set E != the recorded set could leave E's members unfenced at the cut-over generation; that needs a Swap-after-recorded-election model run before S9 relies on it.\n2. Failover: fence the log's set beside the recorded one whenever they differ at all, members, voters (#1853: compare (node, learner) pairs) or copies (review SHOULD: a majority of the set before could otherwise be met by another copy of a member than the one that acknowledged on the log's set).\n3. Fill-in sources for a recorded set (watch prior first, then what the leader kept, then the log at G-1) must name exactly the recorded members. A member no source names a copy for takes the copy the route registers (`member_storage_ids`), else counts by node id, so the fence does not stay pending forever after a restart. This loosens the #1737 copy check for such members only (review NIT, kept).\n4. A fence retried at the generation after the log took the new set fences only the set kept beside it; the first fence's promises and catch-up still hold.\n\n## Model\n\n`FelixShardElectAdoptFailover` (the widened model on spec/1806-fence-both-sets) has not completed a pass. The shrunk config (Elections 1 / Adopt 2 / Suspicions 3, 2c2ee24b7) ran in 41584936659 until its 360 min limit: depth 20, 192.5M distinct states, 85.8M left on the queue, no violation. The spec lane owns the next step (split or a longer runner).\n\n## Perf\n\nFence path only (once per generation), no ship or ack change. RF 3 A/B (run 41726491506; a = main 52e219bcb, f = 1e5de8044; 3 shards x 6 rounds, alternating sides, geomean f/a):\n- steady (18 pairs): msgs/s 1.011, p50 0.999, p99 0.994, p999 0.827 (sd_log 0.59, noise), quorum read p50 1.006 / p99 1.007. No regression.\n- promotion burst (12 pairs; one shard's runner truncated its burst lines on both sides): msgs/s 1.049, p50 0.925, p99 1.029, p999 1.025 (sd_log 0.4-0.6). No failed publishes either side.",
+          "timestamp": "2026-11-03T14:49:55-08:00",
+          "tree_id": "93dd185964f470d65ad145275975f626920e5961",
+          "url": "https://github.com/GetFelix/felix/commit/d8e6fac4455ae936e790ce8e507c5c731b1af76c"
+        },
+        "date": 1793746476333,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 142,
+            "range": "1.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 142.00\nmean: 141.20\nstdev: 1.10\ncv: 0.78%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 202,
+            "range": "2.28",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 202.00\nmean: 201.20\nstdev: 2.28\ncv: 1.13%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 245,
+            "range": "111.18",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 245.00\nmean: 293.20\nstdev: 111.18\ncv: 37.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 192,
+            "range": "1.79",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 192.00\nmean: 191.80\nstdev: 1.79\ncv: 0.93%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 376,
+            "range": "7.50",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 376.00\nmean: 376.60\nstdev: 7.50\ncv: 1.99%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 521,
+            "range": "123.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 521.00\nmean: 601.20\nstdev: 123.00\ncv: 20.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
