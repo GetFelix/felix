@@ -209,8 +209,9 @@ waited behind other shards' work on the broker-to-broker connections.
 The `scale` suite rebuilds that load on three brokers. A canary renews four
 keys in a one-shard `Quorum` cache every 2 s with a 6 s TTL while the test
 creates hundreds of single-shard streams with three replicas and appends
-steadily to some of them. It fails if any lease lapses, or if the canary's p99
-under load is more than 20 times its idle p99 (and over 2 s). The 600-stream
+steadily to some of them. It fails if any lease lapses, if a renewal under
+load takes over 4 s (the TTL minus the interval, after which the lease has run
+out), or if a read under load takes over 2 s. The 600-stream
 size runs on every pull request. `scale-nightly.yml` runs it at 1500 streams on a
 release build and opens an issue labelled `scale-nightly` when it fails.
 [`docs/cluster-harness.md`](https://github.com/GetFelix/felix/blob/main/docs/cluster-harness.md#shard-starvation)
