@@ -116,11 +116,14 @@ impl FrameHeader {
     }
 
     /// Parse a header, refusing a foreign magic, an unsupported version, or a
-    /// flag bit outside [`crate::KNOWN_FLAGS`].
+    /// flag bit this version does not define ([`crate::has_unknown_flags`]).
     ///
     /// Flags select the payload layout, so a frame with an unknown bit cannot
     /// be parsed correctly by this version, and refusing it here covers every
     /// reader rather than only the ones that remember to check.
+    /// [`crate::FLAG_EXTENDED`] is defined but outside [`crate::KNOWN_FLAGS`],
+    /// so it passes here: the body decoders own it, reading the extension word
+    /// or refusing the frame kind (`take_extension`, `reject_extension`).
     pub fn decode(buf: Bytes) -> Result<Self> {
         let header = Self::decode_allowing_unknown_flags(buf)?;
         if crate::has_unknown_flags(header.flags) {

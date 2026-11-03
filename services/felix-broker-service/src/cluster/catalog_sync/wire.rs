@@ -191,6 +191,10 @@ pub(super) struct Stream {
     /// plane that predates incarnations, which reads as 0.
     #[serde(default)]
     pub(super) incarnation: u64,
+    /// The MQTT topic prefix the stream is mounted at. Absent from a control
+    /// plane that predates mounts, and from a stream that has none.
+    #[serde(default)]
+    pub(super) mount: Option<String>,
 }
 
 /// A stream's retention as the control plane stores it.
@@ -219,6 +223,7 @@ impl Stream {
                     .map(std::time::Duration::from_secs),
             },
             incarnation: self.incarnation,
+            mount: self.mount.clone(),
         })
     }
 }

@@ -94,6 +94,14 @@ async fn satisfies_the_resources_contract() {
     crate::store::contract::resources::run_resources_race_contract(store, 20).await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn satisfies_the_mount_contract() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = single_node_store(dir.path()).await;
+    crate::store::contract::mounts::run_mount_contract(store.clone()).await;
+    crate::store::contract::mounts::run_mount_race_contract(store, 20).await;
+}
+
 #[tokio::test]
 async fn satisfies_the_rbac_contract() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -437,6 +445,7 @@ fn routed_stream(name: &str, routing: crate::model::StreamRouting) -> Stream {
         region: None,
         routing,
         incarnation: 0,
+        mount: None,
     }
 }
 
@@ -2833,6 +2842,7 @@ async fn a_consistency_change_fences_placement_once_every_member_is_at_19() {
         consistency: Some(consistency),
         delivery: None,
         durable: None,
+        mount: None,
     };
     let before = store.placement_token().await.expect("token");
     store
@@ -2862,6 +2872,7 @@ async fn a_consistency_change_fences_placement_once_every_member_is_at_19() {
                 consistency: None,
                 delivery: None,
                 durable: None,
+                mount: None,
             },
         )
         .await
@@ -2873,6 +2884,82 @@ async fn a_consistency_change_fences_placement_once_every_member_is_at_19() {
         .expect("patch");
     assert_eq!(store.placement_token().await.expect("token"), before + 1);
     assert_eq!(store.machine.levels_used(), super::PATCH_FENCE_LEVEL);
+}
+
+/// A member before level 24 would store a mounted stream unmounted, and
+/// would let two overlapping mounts through, so a mount is refused before it
+/// reaches the log and nothing is written. Once every member is there it is
+/// applied, and an overlap is refused by the apply.
+#[tokio::test]
+async fn a_mount_waits_for_every_member() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), super::MOUNT_LEVEL - 1).await;
+    let mounted = |name: &str, prefix: &str| {
+        let mut stream = routed_stream(name, Default::default());
+        stream.durable = true;
+        stream.mount = Some(prefix.to_string());
+        stream
+    };
+    let key = |name: &str| StreamKey {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: name.to_string(),
+    };
+    let patch = |mount| crate::model::StreamPatchRequest {
+        retention: None,
+        consistency: None,
+        delivery: None,
+        durable: None,
+        mount: Some(mount),
+    };
+    store
+        .create_stream(routed_stream("plain", Default::default()))
+        .await
+        .expect("an unmounted stream needs no level");
+    let applied = || store.handle.status().last_applied_index;
+    let before = applied();
+
+    let err = store
+        .create_stream(mounted("orders", "orders/"))
+        .await
+        .expect_err("refused");
+    assert!(crate::store::upgrade_refusal(&err).is_some(), "{err:?}");
+    for patch in [patch(Some("orders/".to_string())), patch(None)] {
+        let err = store
+            .patch_stream(&key("plain"), patch)
+            .await
+            .expect_err("refused");
+        assert!(crate::store::upgrade_refusal(&err).is_some(), "{err:?}");
+    }
+    let err = store
+        .create_resources(vec![mounted("batch", "batch/")], vec![])
+        .await
+        .expect_err("refused");
+    assert!(crate::store::upgrade_refusal(&err).is_some(), "{err:?}");
+    assert_eq!(applied(), before, "nothing reached the log");
+    assert!(store.get_stream(&key("orders")).await.is_err());
+    assert!(store.machine.levels_used() < super::MOUNT_LEVEL);
+
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while store.group_level().await < super::MOUNT_LEVEL {
+        assert!(std::time::Instant::now() < deadline, "level never read");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    store
+        .create_stream(mounted("orders", "orders/"))
+        .await
+        .expect("mounted");
+    assert_eq!(store.machine.levels_used(), super::MOUNT_LEVEL);
+    let err = store
+        .create_stream(mounted("returns", "orders/returns/"))
+        .await
+        .expect_err("overlap");
+    assert!(crate::model::mount::refusal(&err).is_some(), "{err:?}");
+    assert!(store.get_stream(&key("returns")).await.is_err());
 }
 
 /// An adoption writes a generation the store did not pick, which a member

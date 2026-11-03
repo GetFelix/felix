@@ -125,6 +125,11 @@ pub struct ClientConfig {
     /// consumer-group record. Off by default, since it adds eight bytes to
     /// every event. [`crate::Connection::offset_for_time`] works either way.
     pub timestamps: bool,
+    /// Offer brokers record headers: [`crate::Event::headers`] on read, and
+    /// [`crate::Publisher::publish_with_headers`] on write. On by default; it
+    /// costs nothing on a record without headers. Off, the client sends the
+    /// same `Auth` it did before headers existed.
+    pub record_headers: bool,
     /// Longest a connect to one broker may take, handshake and stream setup
     /// included, before it fails with an error. The first token fetch is not part of it
     /// ([`crate::FETCH_TIMEOUT`] bounds that); a refetch after a broker refuses
@@ -177,6 +182,7 @@ impl ClientConfig {
             ack_on_commit: false,
             publishers: false,
             timestamps: false,
+            record_headers: true,
             client_sub_queue_policy: ClientSubQueuePolicy::DropNew,
             broker_sub_queue_capacity: None,
             max_frame_bytes: DEFAULT_MAX_FRAME_BYTES,

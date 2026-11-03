@@ -1017,3 +1017,25 @@ async fn a_group_below_a_trim_resumes_at_its_floor() {
     }
     assert_eq!(fx.reader.committed(&key).await.expect("committed"), Some(9));
 }
+
+/// **An acknowledgement that moves the cursor wakes replication for its
+/// shard**, so the cursor ships without waiting for the tick.
+#[tokio::test]
+async fn a_committed_ack_marks_its_shard_appended() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fx = open(dir.path());
+    let appended = Arc::new(crate::AppendedShards::default());
+    let reader = fx.reader.waking(Arc::clone(&appended));
+    publish(&fx.log, &["a"]).await;
+    let claimed = reader
+        .poll(&key(), &fx.log, 10, Instant::now())
+        .await
+        .expect("poll");
+    let slot = crate::AppendedShards::slot(T, NS, S, 0);
+    assert!(!appended.take().contains(slot), "a poll marked the shard");
+    reader.ack(&key(), claimed[0].offset).await.expect("ack");
+    assert!(
+        appended.take().contains(slot),
+        "the ack did not mark the shard"
+    );
+}

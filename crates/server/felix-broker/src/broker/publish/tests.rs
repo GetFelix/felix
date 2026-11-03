@@ -15,6 +15,7 @@ mod byte_bound;
 mod conditional;
 mod idempotent;
 mod publisher;
+mod record_headers;
 
 #[tokio::test]
 async fn publish_delivers_to_subscriber() {
@@ -397,6 +398,121 @@ async fn queue_depth_returns_to_zero_after_receive_and_receiver_drop() {
     assert_eq!(stream_state.queued_items.load(Ordering::Relaxed), 2);
     drop(receiver);
     assert_eq!(stream_state.queued_items.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn queue_depth_counts_only_what_a_full_queue_took() {
+    // A fanout reserves depth for every subscriber up front; what a full
+    // queue drops must be given back.
+    let broker = Broker::new(EphemeralCache::new().into())
+        .with_topic_capacity(2)
+        .expect("capacity")
+        .with_subscriber_queue_policy(SubQueuePolicy::DropNew);
+    broker.register_tenant("t1").await.expect("tenant");
+    broker
+        .register_namespace("t1", "default")
+        .await
+        .expect("namespace");
+    broker
+        .register_stream("t1", "default", "orders", StreamMetadata::default())
+        .await
+        .expect("register");
+    let stream_state = broker
+        .get_stream_state("t1", "default", "orders", 0)
+        .await
+        .expect("stream state");
+    let (receiver, _guard) = broker
+        .subscribe("t1", "default", "orders", 0)
+        .await
+        .expect("subscribe")
+        .into_parts();
+
+    for _ in 0..5 {
+        broker
+            .publish("t1", "default", "orders", Bytes::from_static(b"x"))
+            .await
+            .expect("publish");
+    }
+    assert_eq!(stream_state.queued_items.load(Ordering::Relaxed), 2);
+    drop(receiver);
+    assert_eq!(stream_state.queued_items.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn an_answering_publish_answers_before_any_subscriber_has_the_batch() {
+    let broker = Broker::new(EphemeralCache::new().into())
+        .with_subscriber_queue_policy(SubQueuePolicy::DropNew);
+    broker.register_tenant("t1").await.expect("tenant");
+    broker
+        .register_namespace("t1", "default")
+        .await
+        .expect("namespace");
+    broker
+        .register_stream("t1", "default", "orders", StreamMetadata::default())
+        .await
+        .expect("register");
+    let mut sub = broker
+        .subscribe("t1", "default", "orders", 0)
+        .await
+        .expect("subscribe");
+    let handle = broker
+        .resolve_stream_handle("t1", "default", "orders", 0)
+        .await
+        .expect("handle");
+    let payloads = [Bytes::from_static(b"one")];
+    let claimed = broker
+        .claim_publish(&handle, &payloads, None, None)
+        .await
+        .expect("claim");
+
+    let mut answered = None;
+    broker
+        .complete_publish_answering(claimed, |outcome| {
+            answered = Some((outcome.expect("published"), sub.try_recv().is_err()));
+        })
+        .await;
+    let (outcome, queue_was_empty) = answered.expect("answered");
+    assert_eq!(outcome.subscribers, 0);
+    assert!(queue_was_empty, "answered after the fanout");
+    assert_eq!(sub.recv().await.expect("recv"), Bytes::from_static(b"one"));
+}
+
+#[tokio::test]
+async fn under_block_an_answering_publish_answers_after_the_fanout() {
+    let broker = Broker::new(EphemeralCache::new().into())
+        .with_subscriber_queue_policy(SubQueuePolicy::Block);
+    broker.register_tenant("t1").await.expect("tenant");
+    broker
+        .register_namespace("t1", "default")
+        .await
+        .expect("namespace");
+    broker
+        .register_stream("t1", "default", "orders", StreamMetadata::default())
+        .await
+        .expect("register");
+    let mut sub = broker
+        .subscribe("t1", "default", "orders", 0)
+        .await
+        .expect("subscribe");
+    let handle = broker
+        .resolve_stream_handle("t1", "default", "orders", 0)
+        .await
+        .expect("handle");
+    let payloads = [Bytes::from_static(b"one")];
+    let claimed = broker
+        .claim_publish(&handle, &payloads, None, None)
+        .await
+        .expect("claim");
+
+    let mut answered = None;
+    broker
+        .complete_publish_answering(claimed, |outcome| {
+            answered = Some((outcome.expect("published"), sub.try_recv().ok()));
+        })
+        .await;
+    let (outcome, queued) = answered.expect("answered");
+    assert_eq!(outcome.subscribers, 1);
+    assert_eq!(queued, Some(Bytes::from_static(b"one")));
 }
 
 #[tokio::test]

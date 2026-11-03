@@ -9,6 +9,7 @@ mod counters;
 mod cursors;
 mod drain;
 mod election;
+mod fairness;
 mod groups;
 mod halts;
 mod head_trim;
@@ -231,6 +232,20 @@ fn router_over_shards(
     );
     router.publish(table, &nodes);
     router
+}
+
+/// Wake the driver for a write to the test's shard, as the write path does.
+fn mark_appended(broker: &Broker) {
+    mark_shard_appended(broker, 0);
+}
+
+/// [`mark_appended`] for shard `shard`.
+fn mark_shard_appended(broker: &Broker, shard: u32) {
+    broker
+        .appended_shards()
+        .mark(felix_broker::AppendedShards::slot(
+            TENANT, NAMESPACE, STREAM, shard,
+        ));
 }
 
 /// A broker leading `shards` shards, each with `per_shard` records on disk.

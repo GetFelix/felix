@@ -229,6 +229,32 @@ async fn ship_batch<R: PeerRequester>(
         return Progress::UpToDate;
     }
 
+    // Headers replicate in the next change of #1688. Until then this path
+    // never ships such a record bare: a follower that acked it would hold a
+    // different record than the leader. What precedes it still goes. The
+    // promotion catch-up fetch (`replica.rs`) does not carry headers yet either.
+    if let Some(at) = records.iter().position(|record| record.headers.is_some()) {
+        records.truncate(at);
+        if records.is_empty() {
+            if HEADER_REFUSALS_LOGGED.due(&format!(
+                "{}/{}/{}/{}/{}",
+                cursor.node_id, shard.tenant_id, shard.namespace, shard.stream, shard.shard
+            )) {
+                tracing::error!(
+                    node_id = %cursor.node_id,
+                    stream = %shard.stream,
+                    shard = shard.shard,
+                    offset = cursor.next_offset,
+                    "cannot replicate a record with headers yet; the follower stays behind it, \
+                     and this shard cannot rebuild, drain or move until headers replicate",
+                );
+            }
+            metrics::record_shipped(metrics::OUTCOME_HEADERS_UNSUPPORTED);
+            cursor.stalled = true;
+            return Progress::Retry;
+        }
+    }
+
     let first_offset = records[0].offset;
     // Marks go only when there are any: an unmarked batch is byte for byte
     // what a follower that predates them reads.
@@ -567,6 +593,9 @@ fn request_holds_trim(request: &InternalMessage) -> bool {
 
 /// When the refusal to ship a trim was last logged, per follower and shard.
 static TRIM_REFUSALS_LOGGED: LogLimit = LogLimit::new(std::time::Duration::from_secs(60));
+
+/// The same for the refusal to ship a record with headers.
+static HEADER_REFUSALS_LOGGED: LogLimit = LogLimit::new(std::time::Duration::from_secs(60));
 
 /// Most keys a [`LogLimit`] remembers.
 const LOG_LIMIT_KEYS: usize = 1024;

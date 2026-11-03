@@ -95,6 +95,7 @@ pub(super) fn context_with(scheduler: Arc<PublishScheduler>) -> PublishContext {
 
 fn make_job() -> PublishJob {
     PublishJob {
+        headers: None,
         target: PublishTarget::Named {
             tenant_id: "tenant".to_string(),
             namespace: "ns".to_string(),

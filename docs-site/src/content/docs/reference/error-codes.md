@@ -48,7 +48,7 @@ The class is the default the broker sends. `Number` is the `u16` a binary publis
 | `stale_claim` | 15 | `retry`, shown as `fatal` by the clients | The group has no record of handing this offset out. Nothing was applied, and the record will be delivered again. | A `group_ack` or `group_nack` after the group's in-memory state was rebuilt, by eviction while idle or a shard failover. Sent as `fatal` to a `group_extend`, or a `group_nack` naming `attempts`, whose claim no longer stands. | Drop the settlement and poll again. The record comes back. |
 | `revoked` | 16 | `fatal` | The credential was revoked: its principal, or the actor of a delegated token. | Answer to `auth` with such a token, or the last frame of an open stream when the revocation reaches the broker. | Stop using the token. A token minted after the revocation may be accepted, so a client with a token provider can authenticate again. |
 | `stale_width` | 17 | `retry` | The keyed batch was routed by a width the stream does not have on this broker. Nothing was written. | The stream was deleted and created again with a different shard count after the client last asked for its width. | Ask `stream_shards` again, then retry. Only a client that sent `publish_width` gets it. |
-| `feature_not_enabled` | 18 | `fatal` | The request needs a fleet feature that has not been finalized. `detail.reason` names it. Nothing was applied. | A head trim on a cluster that has not finalized `head_trim` (`detail.reason` `head_trim`). | Finalize the feature (`felix-controlplane admin features finalize head_trim`) once every broker is upgraded. It keeps failing until then. |
+| `feature_not_enabled` | 18 | `fatal` | The request needs a fleet feature that has not been finalized. `detail.reason` names it. Nothing was applied. | A head trim on a cluster that has not finalized `head_trim` (`detail.reason` `head_trim`), or a publish with record headers to a single broker run with `FELIX_RECORD_HEADERS=false` (`detail.reason` `record_headers`). A forwarded publish with headers is refused the same way. | For a head trim, finalize the feature (`felix-controlplane admin features finalize head_trim`) once every broker is upgraded. It keeps failing until then. |
 | `stream_has_commits` | 19 | `fatal` | The stream holds atomic commits, whose state lives in the records a trim would remove. Nothing was written. | A head trim on a stream that has taken a `commit`. | Do not trim that stream. Retention still applies to it. |
 
 A code this client does not know is kept as an unknown code with its retry class. `0` is never sent as a number.
@@ -86,6 +86,14 @@ A code this client does not know is kept as an unknown code with its retry class
 | `trim_past_tail` | `invalid_request` | `before` is past the expected offset, where the trim record would land. Nothing was written. | Trim to at most the expected offset. |
 | `not_durable` | `invalid_request` | The stream is in memory and keeps no log to trim. | Retention and the replay ring bound an in-memory stream instead. |
 | `trim_timed_out` | `unacknowledged` | The broker waited 30 seconds for the trim to commit. It may still land. | Read the shard: below `before` is `too_old` once it landed. A retry with the same expected offset is refused with `offset_mismatch` if it did. |
+
+## Feature reasons
+
+`detail.reason` on a `feature_not_enabled` error that is not a head trim (those are under [Head trim reasons](#head-trim-reasons)).
+
+| Reason | Code | Meaning | What to do |
+| --- | --- | --- | --- |
+| `record_headers` | `feature_not_enabled` | A publish carried record headers to a single broker whose `FELIX_RECORD_HEADERS` switch is off, or (as a guard) was forwarded to the shard's owner, which cannot carry them yet. Nothing was written. | Publish without headers, or turn the switch back on. A client of a cluster member learns at connect time that headers are unavailable and never sends them. |
 
 ## Publish refusal reasons
 

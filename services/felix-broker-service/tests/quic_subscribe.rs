@@ -383,6 +383,7 @@ async fn quic_subscribe_invalid_frame_closes_stream() -> Result<()> {
             client_flags: None,
             client_features: None,
             client_features_hi: None,
+            client_flags_ext: None,
         },
     )
     .await?;

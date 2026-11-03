@@ -14,7 +14,10 @@ The viewer in the browser is a live picture of the swarm: workers claiming
 tasks, sending and receiving work, and results coming back. Any run can be
 replayed by scrubbing back to any moment of it.
 
-It is in design. Nothing runs yet. The [style frame](https://github.com/GetFelix/felix-agents/blob/main/prototype/style-frame.html)
+It is at the design stage. `agents-tool` sets up a run's streams and caches on
+Felix and writes its first record, and `felix-mcp` serves one MCP tool, which
+says which run the agent is in. The task tools are not built, so no swarm runs. The
+[style frame](https://github.com/GetFelix/felix-agents/blob/main/prototype/style-frame.html)
 fixes the look of the viewer, driven by a hand-written run rather than a
 working swarm. The sections below describe the design.
 
@@ -81,15 +84,19 @@ folds it into the state of the run at any offset. To follow live it subscribes
 from the offset after the last record it read, so the replay and live delivery
 meet with no gap.
 
-Some of this is planned work rather than something Felix offers today.
-felix-gateway's TypeScript client has no range read yet, the gateway has no
-time lookup and does not pass on the recorded publisher, so scrubbing and
-verified authorship in the viewer wait on those. The attempt limit before a
-task is dead-lettered is one broker setting, so workers also count attempts
-themselves. Agent identities need an outside OIDC issuer, which `agents-tool`
-runs for now. There is no request and reply between clients, so `ask` is built
-on the messages stream, and there is no bounded counter add, so a budget takes
-a reserve, a check and a refund. Each gap has an
+felix-gateway serves range reads and time lookups, but its TypeScript client
+does not expose them ([#53](https://github.com/GetFelix/felix-gateway/issues/53)).
+It also does not pass on the recorded publisher
+([#54](https://github.com/GetFelix/felix-gateway/issues/54)). Scrubbing and
+verified authorship in the viewer wait on both.
+
+The attempt limit before a task is dead-lettered is one broker setting, so
+workers also count attempts themselves. Agent identities need an outside OIDC
+issuer, which `agents-tool` runs for now.
+
+There is no request and reply between clients, so `ask` is built on the
+messages stream. There is no bounded counter add, so a budget takes a reserve,
+a check and a refund. Each gap has an
 [issue](https://github.com/GetFelix/felix-agents/labels/felix-gap).
 
 ## What it demonstrates

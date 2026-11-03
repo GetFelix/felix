@@ -9,25 +9,23 @@ QUIC connection.
 
 This page is the short version of how it fits together. The
 [status table](/getting-started/what-felix-is-for/) is the page to trust
-for what is and is not built, and [Terminology](/reference/terminology/)
-explains the words the docs use, such as shard, leader lease and fleet.
+for what is and is not built.
 
-## The core idea: one log, three readings
+:::note[Words you will see]
+- **Shard**: one slice of a stream or cache, with its own log and its own leader.
+- **Lease**: the time-limited right to act as a shard's leader.
+- **Fence**: a step that makes an old leader stop accepting writes before a new one starts.
+- **Fleet feature**: a cross-broker capability that turns on only once every broker supports it.
+- **Quorum**: a majority of a shard's replicas; a `Quorum` publish waits for it.
 
-Internally there is a single primitive: an append-only log per shard. Each
-external API is a different way of reading it:
+More in [Terminology](/reference/terminology/).
+:::
 
-- **Streams** read by offset. Every subscription keeps its own cursor, so a
-  slow reader never holds anyone else back.
-- **Queues** read through a cursor a consumer group shares. A record goes to
-  one consumer, is redelivered if unacknowledged, and dead-lettered when it
-  keeps failing.
-- **Cache** reads through a key index over the same log: latest value per key,
-  with TTL.
+## The core idea
 
-Because it is one log, there is one durability path, one recovery path, one
-placement rule and one replication path. There is no second
-system, so the cache and the stream cannot drift apart.
+Internally there is one primitive, an append-only log per shard, and streams,
+queues and the cache are three ways of reading it. [Why Felix?](/getting-started/why-felix/)
+explains the idea in plain terms; this page covers the parts.
 
 ## What Felix optimizes for
 
@@ -180,25 +178,13 @@ and a bounded graceful drain on SIGTERM. See
 
 ## Is Felix right for your workload?
 
-A good fit: real-time streaming with high fanout, low-latency caching,
-work distribution with retries and dead letters, and services that currently
-run a broker *and* a cache *and* a queue and would rather run one system.
-Services that already talk Kafka can keep their producers and their
-partition-assigning consumers: Felix serves the Kafka protocol for those (see
-[Kafka compatibility](/features/kafka/)).
-
-A bad fit: petabyte-scale batch pipelines, complex stream processing
-(joins, windowing; use Flink or Kafka Streams), or anything that needs a
-mature connector ecosystem today. Kafka Connect and Kafka Streams need
-consumer groups, which Felix's Kafka listener does not offer. Felix is young
-and its ecosystem is small.
-
-The full version of this list, kept current per capability, is
-[What Felix Is For](/getting-started/what-felix-is-for/).
+[Why Felix?](/getting-started/why-felix/#when-not-to-use-felix) says when not to use it, and
+[What Felix Is For](/getting-started/what-felix-is-for/) is the status table, kept current per capability.
 
 ## Where next
 
 - [Quickstart](/getting-started/quickstart/): run a broker and the demos
+- [Tutorials](/tutorials/overview/): build a small app step by step
 - [Installation](/getting-started/installation/): build from source
 - [Pub/Sub Streaming](/features/pubsub/): the feature most readers want first
 - [System design](/architecture/system-design/): the architecture in depth

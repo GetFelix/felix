@@ -134,20 +134,19 @@ docs-only change gets both within a minute or two.
 `coverage` itself runs only on pushes to main, where it publishes the badge;
 on a pull request it is skipped and `Coverage ok` passes.
 
-Its jobs:
+Its jobs, in [`ci.yml`](https://github.com/GetFelix/felix/blob/main/.github/workflows/ci.yml),
+which is the authority for what each one runs:
 
-| Job | Runs |
-| --- | --- |
-| `test` | `task test:workspace` (every crate but `felix-cluster`), then `task test:stress` |
-| `cluster` | `task test:cluster SUITE=…`, one job each for `routing`, `failures` and `history`, and one for the rest of `felix-cluster`'s suites |
-| `checks` | `task lint`, `task deny`, `task publish:check`, `task ci:toolchains`, `task ci:timeouts`, `task docs:evidence`, `task changelog:check`, `scripts/check_release_version.py`, `task demo:check` (then fails if a demo lockfile changed), `task deny:rsa:default` |
-| `images` | Builds `docker/broker.Dockerfile` and `docker/controlplane.Dockerfile`, then checks each image starts, serves `/ready` and does not run as root |
-| `compose` | Loads the images `images` built, brings up `compose.yaml` with them and does one `felixctl` publish/subscribe round trip (`scripts/ci/compose_smoke.sh`) |
-| `chart` | `scripts/check_chart.py`, the same as `task chart:check` |
-| `python`, `typescript` | Builds each binding and runs its client conformance suite, then verifies the results with `felix-conformance verify` |
-| `spec-pairing` | `scripts/check_spec_pairing.py` against the PR base, on pull requests that change code |
-| `formal` | `scripts/check_tla.sh` (`task tla:check`), only when `docs/formal/`, `scripts/check_tla.sh` or `ci.yml` changes. A pull request checks the configurations of ten minutes or less (`TLA_QUICK=1`) and the ones whose `.cfg` it changes, each one over 30 minutes in a `formal-heavy` job of its own; main checks all of them |
-| `fuzz` | `task fuzz` with `FUZZ_SECONDS=30` |
+- `test`: the workspace tests except `felix-cluster`, then the stress tests.
+- `cluster`: the `felix-cluster` suites, split into `routing`, `failures`, `history` and the rest.
+- `checks`: lint, `cargo-deny`, publish and toolchain checks, `task docs:evidence`, the changelog and release-version checks, and `task demo:check`.
+- `images`: builds the broker and control-plane images and checks each starts, serves `/ready` and does not run as root.
+- `compose`: brings up `compose.yaml` with those images and does one `felixctl` round trip.
+- `chart`: `task chart:check`.
+- `python`, `typescript`: build each binding and run its client conformance suite.
+- `spec-pairing`: on pull requests that change code, checks that a change to a modelled area names its spec.
+- `formal`: the TLA+ checks, when `docs/formal/` or the check script changes. A pull request runs the short configurations and any it changes; main runs all of them.
+- `fuzz`: `task fuzz` for 30 seconds per target.
 
 `task deny` runs `cargo-deny check` against
 [deny.toml](https://github.com/GetFelix/felix/blob/main/deny.toml), then checks
@@ -163,6 +162,10 @@ Other workflows:
   changes, one job per family, nightly (`task tla:walk`).
 - `power-loss-nightly.yml`: the storage power-loss suite across 110 seeds per
   scenario from a random base, where pull requests run eight plus the pinned ones.
+- `scale-nightly.yml`: the lease canary in `felix-cluster`'s `scale` suite at
+  1500 streams on a release build (pull requests run 600 once the #1760 fixes
+  are on main). A failed night opens an issue labelled `scale-nightly`. See
+  [How Felix Is Tested](/architecture/testing/#shard-starvation).
 - `soak.yml`: a weekly soak and resource-leak run.
 - `perf-pr.yml`, `perf-publish.yml`, `perf-comprehensive.yml`: benchmarks. The
   PR run is advisory and never fails a check.
@@ -321,8 +324,8 @@ a notice. An org owner sets it up once:
    Turn the webhook off.
 2. Give it repository permissions Contents (read and write), Pull requests
    (read and write), Workflows (read and write) and Metadata (read).
-3. Install it on the companion repos only. The felix repo does not need it,
-   because the dispatch goes to the companions.
+3. Install it on felix and the companion repos. Felix's nightly build uses it
+   to move the `nightly` tag (see [Nightly builds](#nightly-builds)).
 4. Generate a private key for the App.
 5. Add the App ID as the org secret `FELIX_RELEASE_BOT_APP_ID` and the key as
    `FELIX_RELEASE_BOT_PRIVATE_KEY`, shared with felix and the companion repos.
@@ -482,6 +485,14 @@ builds everything a release builds and changes what gets published:
   felixctl archives, the wheels, the Node addons and one `SHA256SUMS`. Its
   notes link the commit and the CI run and carry the `[Unreleased]` section of
   `CHANGELOG.md`. It is never marked latest.
+
+The tag and release move with a token from the release bot App (see
+[Companion repos](#companion-repos)), not the workflow's own token. GitHub
+refuses to point a ref at a commit that changes `.github/workflows/` unless the
+token has the Workflows permission, and the workflow's own token never has it.
+The nightly cannot publish without the App: the first job checks that the
+`FELIX_RELEASE_BOT_*` secrets are set and the App is installed on the repo, so
+either one missing fails the run before the build starts.
 
 A last step deletes `nightly-YYYYMMDD` image tags older than 14 days. It can
 only delete versions of a package that grants this repository admin access,

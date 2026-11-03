@@ -52,6 +52,10 @@ pub(crate) struct EventWriterConfig {
     /// Whether this subscriber negotiated `FLAG_EVENT_BATCH_TIMESTAMPS`.
     pub(super) timestamps_enabled: bool,
 
+    /// Whether this subscriber negotiated `EXT_RECORD_HEADERS`, and so gets
+    /// each record's key and headers.
+    pub(super) headers_enabled: bool,
+
     /// Whether this subscriber offered `FEATURE_SHARD_MOVED`, and so gets a
     /// `shard_moved` frame when its shard moves away.
     pub(super) shard_moved_enabled: bool,
@@ -77,6 +81,7 @@ impl EventWriterConfig {
             offsets: self.offsets_enabled,
             skips: self.skip_enabled,
             publisher: self.publisher_enabled,
+            headers: self.headers_enabled,
             timestamps: self.timestamps_enabled,
         }
     }

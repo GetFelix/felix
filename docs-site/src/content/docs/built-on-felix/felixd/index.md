@@ -12,9 +12,13 @@ workloads continues on another node from the last record it handled, with no
 gaps and no duplicates in its output. Any workload can be rebuilt as it was at a
 past input offset or time, and inspected.
 
-This section documents felixd as it is on its main branch today. Where the
-design describes something that is not built, the page says so and links the
-felixd issue.
+This section explains how felixd works and how to use it. felixd runs
+workload contracts 0.2 and 0.3. These pages teach 0.2, which is enough to write
+and run a workload; 0.3 is the current one. The felixd repository's
+[docs](https://github.com/GetFelix/felixd/tree/main/docs) are the reference for
+0.3, every record kind and the operator commands. They move faster than these
+pages. Where something is
+not built, a page says so and links the felixd issue.
 
 | Page | What it covers |
 |---|---|
@@ -47,32 +51,46 @@ felixd issue.
 - **Checking.** `felixd check` replays each workload over its input and
   reports gaps, duplicates, records out of order, epoch regressions and outputs
   that differ.
-- **Workload contract 0.2.** Named and keyed outputs, rejection of a single
-  input without failing the workload, chunked snapshots, and separate fuel for
-  snapshots and restores.
+- **Pipelines and several inputs.** A workload can read another workload's
+  output, or several streams at once. The holder records the order it stepped
+  them in, so a new owner, a replay and `felixd check` see the same order.
+  Pipelines survive failover at every stage.
+- **Operations.** `felixd ps` shows every workload's state and holder and how
+  far behind it is. `felixd drain` hands a node's workloads over before you
+  stop it. Agents expose Prometheus metrics, and `felixd agent` releases its
+  leases on SIGTERM as well as Ctrl-C. A scheduler, itself a felixd workload,
+  can assign workloads to nodes, with first claim wins as the fallback.
+- **Trimming history.** Old snapshots, merge log records and inputs can be
+  deleted below every reader's floor. It needs a fleet that has finalized
+  `head_trim` and node tokens with `stream.trim`, which `felixd init
+  --grant-trim` grants. Without them everything is kept.
+- **Workload contract.** Named and keyed outputs, rejection of a single input
+  without failing the workload, chunked snapshots and the authenticated
+  publisher of each input. felixd runs contract 0.3 and still runs 0.2; the
+  pages here describe 0.2, which is enough to write and run a workload.
+- **Release binaries and operator docs.** Releases have builds for Linux and
+  macOS, a compose file starts a three-node cluster, and
+  [`docs/operating.md`](https://github.com/GetFelix/felixd/blob/main/docs/operating.md)
+  covers running one.
 - **A formal model and tests that kill nodes.** A TLA+ model of the lease,
   fence, snapshot and failure paths is checked in CI. A three-node failover test
   that keeps killing the node holding the most leases runs on every pull
   request and ends with `felixd check`.
 
-## What is not built yet
+## Current limits
 
-| Not built | Where it stands |
+| Limit | Where it stands |
 |---|---|
-| `felixd ps` and `felixd drain` | [#17](https://github.com/GetFelix/felixd/issues/17). The binary has `agent`, `run`, `check` and `replay`. An agent does release its leases on a clean shutdown (Ctrl-C), which is the only drain there is |
-| Metrics | [#18](https://github.com/GetFelix/felixd/issues/18) |
-| Trimming old snapshots and inputs | [#19](https://github.com/GetFelix/felixd/issues/19), [#63](https://github.com/GetFelix/felixd/issues/63). Everything is kept |
-| A tested three-stage pipeline | [#16](https://github.com/GetFelix/felixd/issues/16). A workload can already read another workload's output stream, but no failover test covers a chain yet |
-| Several inputs per workload | [#58](https://github.com/GetFelix/felixd/issues/58) |
 | Effects: reaching the outside world | [#71](https://github.com/GetFelix/felixd/issues/71). The contract reserves the shape. A workload that returns an effect request fails today |
-| Module upgrades at a recorded offset | [#64](https://github.com/GetFelix/felixd/issues/64) and [#72](https://github.com/GetFelix/felixd/issues/72). Today a new module needs a new workload id |
-| Typed system records and error classes | [#73](https://github.com/GetFelix/felixd/issues/73). Specs, leases and failure reasons are JSON and text |
-| A recorded way out of a poison input, and retrying a host-dependent trap elsewhere | [#98](https://github.com/GetFelix/felixd/issues/98) |
-| Counting restarts across the cluster and recording `degraded` | [#99](https://github.com/GetFelix/felixd/issues/99) |
+| Module upgrades at a recorded offset | [#64](https://github.com/GetFelix/felixd/issues/64). Today a new module needs a new workload id. `felixd replay --module` checks an upgrade before it goes live |
+| A recorded way out of a poison input, and retrying a host-dependent trap elsewhere | [#98](https://github.com/GetFelix/felixd/issues/98). A poison input fails the workload |
+| Restarts counted across the cluster | [#99](https://github.com/GetFelix/felixd/issues/99). A node records `degraded` and another takes the workload, but each node counts its own attempts |
 | A determinism ABI recorded in the spec | [#62](https://github.com/GetFelix/felixd/issues/62). Every node has to run the same felixd build, and nothing checks that |
-| Placement beyond "first claim wins" with a per-node cap | [#60](https://github.com/GetFelix/felixd/issues/60), [#100](https://github.com/GetFelix/felixd/issues/100) |
+| Placement rules | [#100](https://github.com/GetFelix/felixd/issues/100). The scheduler is optional and first claim wins without it |
+| Rolling upgrades of felixd | [#65](https://github.com/GetFelix/felixd/issues/65). Drain a node, replace it, undrain it, one at a time |
 | Per-lease credentials | [#74](https://github.com/GetFelix/felixd/issues/74). Any node may write any workload's output, and fencing keeps that correct |
-| Release binaries, a compose file for a three-node cluster and operator docs | [#22](https://github.com/GetFelix/felixd/issues/22), [#23](https://github.com/GetFelix/felixd/issues/23), [#24](https://github.com/GetFelix/felixd/issues/24). Build from source |
+| Snapshot retention and a shared chunk store | [#63](https://github.com/GetFelix/felixd/issues/63), [#77](https://github.com/GetFelix/felixd/issues/77) |
+| A stop command | [#101](https://github.com/GetFelix/felixd/issues/101). Delete the workload's entry in the `workloads` cache |
 | Native programs | [#75](https://github.com/GetFelix/felixd/issues/75) |
 
 ## How it uses Felix

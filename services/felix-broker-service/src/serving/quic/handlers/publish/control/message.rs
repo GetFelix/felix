@@ -286,6 +286,7 @@ pub(crate) async fn handle_publish_message(
         publish_ctx,
         &tenant_id,
         PublishJob {
+            headers: None,
             target,
             payloads: vec![Bytes::from(payload)],
             response,

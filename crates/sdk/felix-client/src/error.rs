@@ -100,6 +100,30 @@ impl std::fmt::Display for PublishRefused {
 
 impl std::error::Error for PublishRefused {}
 
+/// A publish with record headers that was refused before anything was sent.
+///
+/// Recover it from an `anyhow::Error` with `downcast_ref`. None of these is
+/// worth retrying: the same call fails the same way.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum RecordHeadersError {
+    /// The broker did not answer `EXT_RECORD_HEADERS`, or
+    /// [`ClientConfig::record_headers`](crate::ClientConfig::record_headers)
+    /// is off. Sending the headers anyway would drop them, so none were sent.
+    #[error("this broker does not accept record headers; nothing was sent")]
+    Unsupported,
+    /// A header name was empty.
+    #[error("a header name must not be empty")]
+    EmptyName,
+    /// A header name starts with `felix.`, which the broker reserves.
+    #[error(
+        "header name {name:?} is reserved: names starting with \"felix.\" belong to the broker"
+    )]
+    ReservedName {
+        /// The offending name.
+        name: String,
+    },
+}
+
 /// The broker does not own this shard, and names the one that does.
 ///
 /// Typed rather than a formatted string because it is an instruction, not a

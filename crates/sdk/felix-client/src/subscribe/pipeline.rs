@@ -9,9 +9,9 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
-use anyhow::Context;
+use anyhow::{Context, Result};
 use bytes::{Bytes, BytesMut};
-use felix_wire::{Frame, Message};
+use felix_wire::{Frame, Message, RecordHeaders};
 use quinn::RecvStream;
 use tokio::sync::mpsc;
 
@@ -254,7 +254,7 @@ async fn run_subscription_dispatch_task(
         #[cfg(feature = "telemetry")]
         let decode_start = crate::telemetry::t_now_if(sample);
 
-        let (payloads, base_offset, skipped_before, publisher, timestamps) =
+        let (payloads, base_offset, skipped_before, publisher, timestamps, record_headers) =
             if queued_frame.frame.header.flags & felix_wire::FLAG_BINARY_EVENT_BATCH_SHARED != 0 {
                 match felix_wire::binary::decode_shared_event_batch(&queued_frame.frame)
                     .context("decode shared binary event batch")
@@ -275,6 +275,7 @@ async fn run_subscription_dispatch_task(
                             batch.skipped_before,
                             publisher_of(batch.publisher),
                             batch.timestamps,
+                            batch.record_headers,
                         )
                     }
                     Err(err) => {
@@ -333,6 +334,7 @@ async fn run_subscription_dispatch_task(
                             batch.skipped_before,
                             publisher_of(batch.publisher),
                             batch.timestamps,
+                            batch.record_headers,
                         )
                     }
                     Err(err) => {
@@ -388,7 +390,7 @@ async fn run_subscription_dispatch_task(
                             counters.sub_batches_in_ok.fetch_add(1, Ordering::Relaxed);
                             counters.sub_items_in_ok.fetch_add(1, Ordering::Relaxed);
                         }
-                        (vec![Bytes::from(payload)], offset, 0, None, None)
+                        (vec![Bytes::from(payload)], offset, 0, None, None, None)
                     }
                     Message::EventBatch {
                         payloads,
@@ -407,6 +409,7 @@ async fn run_subscription_dispatch_task(
                             payloads.into_iter().map(Bytes::from).collect(),
                             base_offset,
                             0,
+                            None,
                             None,
                             None,
                         )
@@ -493,6 +496,22 @@ async fn run_subscription_dispatch_task(
             } else {
                 queue_policy
             };
+            // The wire decode already validated each block, so a failure here
+            // is a bug, and the subscription ends rather than hand out a
+            // record with its headers missing.
+            let headers = match decode_headers(record_headers.as_deref(), index) {
+                Ok(headers) => headers,
+                Err(err) => {
+                    let _ = enqueue_event(
+                        &event_tx,
+                        QueuedEvent::Error(err),
+                        ClientSubQueuePolicy::Block,
+                        queue_capacity,
+                    )
+                    .await;
+                    return;
+                }
+            };
             let outcome = enqueue_event(
                 &event_tx,
                 // The skip describes the offsets before the batch, so only its
@@ -505,6 +524,7 @@ async fn run_subscription_dispatch_task(
                     timestamp_micros: timestamps
                         .as_ref()
                         .and_then(|times| times.get(index).copied()),
+                    headers,
                 },
                 policy,
                 queue_capacity,
@@ -588,4 +608,14 @@ async fn enqueue_event(
 /// anything else is shown lossily rather than dropped.
 fn publisher_of(publisher: Option<Bytes>) -> Option<Arc<str>> {
     publisher.map(|publisher| Arc::from(String::from_utf8_lossy(&publisher)))
+}
+
+/// The headers of the event at `index`, from the batch's raw blocks.
+fn decode_headers(blocks: Option<&[Option<Bytes>]>, index: usize) -> Result<Option<RecordHeaders>> {
+    match blocks.and_then(|blocks| blocks.get(index)) {
+        Some(Some(block)) => RecordHeaders::decode(block.clone())
+            .map(Some)
+            .context("decode record headers"),
+        _ => Ok(None),
+    }
 }

@@ -39,6 +39,7 @@ async fn subscribe_against(
                         server_flags: felix_wire::ORIGINAL_V1_FLAGS,
                         server_features: Some(features),
                         server_features_hi: None,
+                        server_flags_ext: None,
                         listener_ports: None,
                         publish_window: None,
                     },

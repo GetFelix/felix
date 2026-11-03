@@ -3,10 +3,10 @@
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use serde::de::Error as SerdeError;
 
-use super::checked_payload_count;
+use super::{checked_payload_count, min_record_len, take_extension, take_record_block};
 use crate::client::flags::{
-    FLAG_BINARY_PUBLISH_ACKED, FLAG_BINARY_PUBLISH_BATCH, FLAG_BINARY_PUBLISH_IDEMPOTENT,
-    FLAG_BINARY_PUBLISH_KEYED,
+    EXT_RECORD_HEADERS, FLAG_BINARY_PUBLISH_ACKED, FLAG_BINARY_PUBLISH_BATCH,
+    FLAG_BINARY_PUBLISH_IDEMPOTENT, FLAG_BINARY_PUBLISH_KEYED,
 };
 use crate::client::frame::{Frame, FrameHeader};
 use crate::error::{Error, Result};
@@ -27,6 +27,11 @@ pub struct PublishBatch {
     /// Record bodies, each a slice of the decoded frame's payload rather than
     /// a copy, so a retained record keeps its whole frame alive.
     pub payloads: Vec<Bytes>,
+    /// Each record's headers block, raw and already validated, from
+    /// `EXT_RECORD_HEADERS`. One per payload (`None` for a record with none),
+    /// or `None` when the frame does not carry the extension. Parse a block
+    /// with [`RecordHeaders::decode`](crate::RecordHeaders::decode).
+    pub record_headers: Option<Vec<Option<Bytes>>>,
 }
 
 /// How often the output buffer had to grow while encoding.
@@ -275,9 +280,25 @@ pub fn decode_publish_batch(frame: &Frame) -> Result<PublishBatch> {
         )));
     }
     let mut buf = frame.payload.clone();
+    let ext = take_extension(frame.header.flags, &mut buf)?;
+    decode_publish_body(
+        buf,
+        frame.header.flags & FLAG_BINARY_PUBLISH_KEYED != 0,
+        ext & EXT_RECORD_HEADERS != 0,
+    )
+}
+
+/// The batch after any extension word and acked prefix: the key prefix when
+/// `keyed`, the names, then the records, each preceded by its block when
+/// `with_headers`.
+pub(super) fn decode_publish_body(
+    mut buf: Bytes,
+    keyed: bool,
+    with_headers: bool,
+) -> Result<PublishBatch> {
     // The key prefix comes first, so everything after it is the ordinary body
     // at a shifted offset rather than a second layout to parse.
-    let key = if frame.header.flags & FLAG_BINARY_PUBLISH_KEYED != 0 {
+    let key = if keyed {
         if buf.remaining() < KEY_LEN_PREFIX {
             return Err(Error::Incomplete);
         }
@@ -313,9 +334,17 @@ pub fn decode_publish_batch(frame: &Frame) -> Result<PublishBatch> {
     let stream_bytes = buf.copy_to_bytes(stream_len);
     let stream = String::from_utf8(stream_bytes.to_vec())
         .map_err(|_| Error::Deserialize(SerdeError::custom("invalid stream name")))?;
-    let count = checked_payload_count(buf.get_u32() as usize, buf.remaining())?;
+    let count = checked_payload_count(
+        buf.get_u32() as usize,
+        buf.remaining(),
+        min_record_len(with_headers, false),
+    )?;
     let mut payloads = Vec::with_capacity(count);
+    let mut record_headers = with_headers.then(|| Vec::with_capacity(count));
     for _ in 0..count {
+        if let Some(record_headers) = record_headers.as_mut() {
+            record_headers.push(take_record_block(&mut buf)?);
+        }
         if buf.remaining() < 4 {
             return Err(Error::Incomplete);
         }
@@ -331,6 +360,7 @@ pub fn decode_publish_batch(frame: &Frame) -> Result<PublishBatch> {
         stream,
         key,
         payloads,
+        record_headers,
     })
 }
 
@@ -345,7 +375,7 @@ pub(super) fn publish_flags(key: Option<&[u8]>) -> u16 {
 
 // Bytes the key prefix adds to a payload, and a `FrameTooLarge` for a key that
 // cannot state its own length.
-fn key_prefix_len(key: Option<&[u8]>) -> Result<usize> {
+pub(super) fn key_prefix_len(key: Option<&[u8]>) -> Result<usize> {
     match key {
         None => Ok(0),
         Some(key) => {
@@ -355,7 +385,7 @@ fn key_prefix_len(key: Option<&[u8]>) -> Result<usize> {
     }
 }
 
-fn put_key_prefix(buf: &mut BytesMut, key: Option<&[u8]>) {
+pub(super) fn put_key_prefix(buf: &mut BytesMut, key: Option<&[u8]>) {
     if let Some(key) = key {
         // Length already validated by `key_prefix_len`.
         buf.put_u16(key.len() as u16);

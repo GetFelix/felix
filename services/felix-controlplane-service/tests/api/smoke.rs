@@ -1939,3 +1939,105 @@ async fn a_stream_keeps_its_home_region() {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(read_json(response).await["region"], "eu");
 }
+
+/// A stream can be mounted at an MQTT topic prefix when it is created or
+/// later, and the prefix is refused when it could never match a topic, when
+/// the stream is not durable, or when it overlaps another mount of the
+/// tenant. A stream with no mount reads exactly as before.
+#[tokio::test]
+async fn a_stream_can_be_mounted_and_unmounted() {
+    let h = harness("local").await;
+    let app = h.app.clone();
+    let admin = h.admin("t1");
+    h.create_tenant("t1").await;
+    let create_namespace = json_request_as(
+        "POST",
+        "/v1/tenants/t1/namespaces",
+        &admin,
+        serde_json::json!({ "namespace": "default", "display_name": "Default" }),
+    );
+    let response = app.clone().oneshot(create_namespace).await.expect("ns");
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let streams = "/v1/tenants/t1/namespaces/default/streams";
+    let body = |name: &str, mount: Option<&str>, durable: bool| {
+        let mut body = serde_json::json!({
+            "stream": name,
+            "kind": "Stream",
+            "shards": 1,
+            "retention": { "max_age_seconds": null, "max_size_bytes": null },
+            "consistency": "Leader",
+            "delivery": "AtLeastOnce",
+            "durable": durable,
+        });
+        if let Some(mount) = mount {
+            body["mount"] = mount.into();
+        }
+        body
+    };
+    let send = |method: &str, uri: &str, body: serde_json::Value| {
+        let app = app.clone();
+        let request = json_request_as(method, uri, &admin, body);
+        async move {
+            let response = app.oneshot(request).await.expect("response");
+            (response.status(), read_json(response).await)
+        }
+    };
+
+    let (status, created) = send("POST", streams, body("plain", None, true)).await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert!(
+        created.get("mount").is_none(),
+        "an unmounted stream reads as it did before: {created}"
+    );
+
+    let (status, created) = send("POST", streams, body("plant", Some("plant/"), true)).await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(created["mount"], "plant/");
+    let (status, again) = send("POST", streams, body("plant", Some("plant/"), true)).await;
+    assert_eq!(status, StatusCode::OK, "a retried create is not a conflict");
+    assert_eq!(again["mount"], "plant/");
+
+    for bad in ["", "plant/+/x", "plant/#", "$SYS/", "a\u{0}b"] {
+        let (status, _) = send("POST", streams, body("bad", Some(bad), true)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad:?}");
+    }
+    let (status, error) = send("POST", streams, body("memory", Some("mem/"), false)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(error["message"].as_str().unwrap().contains("durable"));
+
+    let (status, error) = send("POST", streams, body("deep", Some("plant/line1/"), true)).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let message = error["message"].as_str().unwrap();
+    assert!(
+        message.contains("default/plant"),
+        "names the other: {message}"
+    );
+    let (status, _) = send("POST", streams, body("wide", Some("pla"), true)).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    let one = format!("{streams}/plain");
+    let (status, _) = send("PATCH", &one, serde_json::json!({ "mount": "plant/x/" })).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let (status, _) = send("PATCH", &one, serde_json::json!({ "mount": "" })).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, patched) = send("PATCH", &one, serde_json::json!({ "mount": "dock/" })).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(patched["mount"], "dock/");
+    let (status, patched) = send("PATCH", &one, serde_json::json!({ "durable": true })).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(patched["mount"], "dock/", "an unrelated patch leaves it");
+    let (status, _) = send("PATCH", &one, serde_json::json!({ "durable": false })).await;
+    assert_eq!(status, StatusCode::CONFLICT, "not while it is mounted");
+
+    let (status, patched) = send("PATCH", &one, serde_json::json!({ "mount": null })).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(patched.get("mount").is_none(), "{patched}");
+
+    // Deleting a stream frees its prefix.
+    let delete = request_as("DELETE", &format!("{streams}/plant"), &admin);
+    let status = app.clone().oneshot(delete).await.expect("delete").status();
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = send("POST", streams, body("deep", Some("plant/line1/"), true)).await;
+    assert_eq!(status, StatusCode::CREATED);
+}

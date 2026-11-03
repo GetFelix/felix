@@ -123,6 +123,7 @@
 5 create_resources.streams[].durable
 10 create_resources.streams[].incarnation
 5 create_resources.streams[].kind
+24 create_resources.streams[].mount
 5 create_resources.streams[].namespace
 5 create_resources.streams[].region
 5 create_resources.streams[].replication_factor
@@ -142,6 +143,7 @@
 0 create_stream.stream.durable
 10 create_stream.stream.incarnation
 0 create_stream.stream.kind
+24 create_stream.stream.mount
 0 create_stream.stream.namespace
 0 create_stream.stream.region
 0 create_stream.stream.replication_factor
@@ -478,6 +480,7 @@
 0 import_state.state.stream_changes.items[].stream.durable
 10 import_state.state.stream_changes.items[].stream.incarnation
 0 import_state.state.stream_changes.items[].stream.kind
+24 import_state.state.stream_changes.items[].stream.mount
 0 import_state.state.stream_changes.items[].stream.namespace
 0 import_state.state.stream_changes.items[].stream.region
 0 import_state.state.stream_changes.items[].stream.replication_factor
@@ -500,6 +503,7 @@
 0 import_state.state.streams[][].durable
 10 import_state.state.streams[][].incarnation
 0 import_state.state.streams[][].kind
+24 import_state.state.streams[][].mount
 0 import_state.state.streams[][].namespace
 0 import_state.state.streams[][].region
 0 import_state.state.streams[][].replication_factor
@@ -582,6 +586,7 @@
 0 patch_stream.patch.consistency
 0 patch_stream.patch.delivery
 0 patch_stream.patch.durable
+24 patch_stream.patch.mount
 0 patch_stream.patch.retention
 0 patch_stream.patch.retention.max_age_seconds
 0 patch_stream.patch.retention.max_size_bytes
@@ -1085,6 +1090,7 @@
 0 snapshot.state.stream_changes.items[].stream.durable
 10 snapshot.state.stream_changes.items[].stream.incarnation
 0 snapshot.state.stream_changes.items[].stream.kind
+24 snapshot.state.stream_changes.items[].stream.mount
 0 snapshot.state.stream_changes.items[].stream.namespace
 0 snapshot.state.stream_changes.items[].stream.region
 0 snapshot.state.stream_changes.items[].stream.replication_factor
@@ -1107,6 +1113,7 @@
 0 snapshot.state.streams[][].durable
 10 snapshot.state.streams[][].incarnation
 0 snapshot.state.streams[][].kind
+24 snapshot.state.streams[][].mount
 0 snapshot.state.streams[][].namespace
 0 snapshot.state.streams[][].region
 0 snapshot.state.streams[][].replication_factor

@@ -5,11 +5,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use felix_wire::AckMode;
+use felix_wire::{AckMode, RecordHeaders};
 
 use super::{Attempt, Client, Next, Retrying, ShardKey, next_step, wants_reconnect};
 use crate::client::Connection;
-use crate::publish::{AckOutcome, IdempotentProducer, Width};
+use crate::publish::{AckOutcome, Blocks, IdempotentProducer, Width, split_records};
 
 impl Client {
     /// Publish, reconnecting if the broker in use has gone.
@@ -52,6 +52,61 @@ impl Client {
             0,
         );
         self.publish_to_shard(shard, vec![payload], Routing::Unkeyed, ack, None)
+            .await
+    }
+
+    /// Publish one payload with a key and headers.
+    ///
+    /// The key in `headers` belongs to the record and does not route: the
+    /// record goes where [`Self::publish`] sends it, with the same retries.
+    /// An empty `headers` publishes a plain record. Returns the record's log
+    /// offset, when there is one; see [`Self::publish`].
+    ///
+    /// Fails with [`crate::RecordHeadersError`] and sends nothing when a
+    /// header name is empty or starts with `felix.` (reserved for the
+    /// broker), or the broker did not accept record headers; no retry would
+    /// change that. Routing keys and idempotent producers do not carry
+    /// headers.
+    pub async fn publish_with_headers(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        headers: RecordHeaders,
+        payload: Vec<u8>,
+        ack: AckMode,
+    ) -> Result<Option<u64>> {
+        self.publish_batch_with_headers(tenant_id, namespace, stream, vec![(headers, payload)], ack)
+            .await
+    }
+
+    /// Publish an unkeyed batch whose records carry keys and headers, one
+    /// [`RecordHeaders`] per payload; an empty one leaves that record plain.
+    ///
+    /// The batch goes to shard 0's owner as one frame, as with
+    /// [`Self::publish_batch`], and returns the first record's log offset
+    /// when there is one. Errors are those of [`Self::publish_with_headers`].
+    pub async fn publish_batch_with_headers(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        records: Vec<(RecordHeaders, Vec<u8>)>,
+        ack: AckMode,
+    ) -> Result<Option<u64>> {
+        let (payloads, blocks) = split_records(records)?;
+        let Some(blocks) = blocks else {
+            return self
+                .publish_batch(tenant_id, namespace, stream, payloads, ack)
+                .await;
+        };
+        let shard: ShardKey = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            stream.to_string(),
+            0,
+        );
+        self.publish_to_shard(shard, payloads, Routing::Blocks(blocks), ack, None)
             .await
     }
 
@@ -433,6 +488,11 @@ async fn publish_once_to(
                 )
                 .await
         }
+        Routing::Blocks(blocks) => {
+            publisher
+                .publish_blocks_reporting_owner(tenant_id, namespace, stream, payload, blocks, ack)
+                .await
+        }
         // Unkeyed is shard 0, which is what the publisher assumes.
         Routing::Unkeyed => {
             publisher
@@ -451,4 +511,6 @@ pub(super) enum Routing {
     Keyed(bytes::Bytes),
     /// The shard itself, sent as `shard`.
     Named,
+    /// No key, so shard 0, and each record's encoded key-and-headers block.
+    Blocks(Blocks),
 }
