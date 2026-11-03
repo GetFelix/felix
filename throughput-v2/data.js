@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793674563748,
+  "lastUpdate": 1793676738399,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -43212,6 +43212,58 @@ window.BENCHMARK_DATA = {
             "range": "16234.87",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1168442.33\nmean: 1161866.25\nstdev: 16234.87\ncv: 1.40%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "fb0b0ba7c856f9423b67d53176e8a058ad205726",
+          "message": "docs(formal): model the control plane's flip as a new generation (#1725) (#1789)\n\n* docs(formal): model the flip as a new generation naming the leader again (#1725)\n\nTakePendingSet writes the pending set at the next generation, naming the\ncut-over's leader again, and that leader fences the new set alone. Under\nFlipNewGeneration the model now does the same. A candidate may already\nhold that generation; the ballot keeps the two fences apart, and\nFelixShardElectSwapFlipSkipsBallot.cfg shows two leaders at one\ngeneration without it. The set-change pieces keep the old flip.\n\n* docs(formal): the flip follows a stale report too (#1725)\n\nThe control plane flips on the leader's report alone, so the leader may\nhave promised the next generation to a candidate since it sent it. The\nmodel now flips in that case as well, and the leader refuses the\ngeneration and stays as it is. Also review nits: the FlipFence comment,\nthe set-change wording in replication-design.md.\n\n* docs(formal): flip on a report from a leader that stopped leading, review wording (#1725)\n\nThe stale-report branch now covers any leader that stopped leading its\ngeneration after the joint open (lease lapse, a candidate's fence), and\nthe leader fences at the new generation whenever it may promise it.\nDocs: say who serves after a refusal, fix the replica refusal wording.\n\n* spec: split FelixShardElectSwapFlip at its cut-over\n\n* spec: register the flip pieces that fit a pull request, the rest nightly (#1725)\n\nMeasured on a four-core CI runner. The nine under 45 minutes are\nregistered; Keep0, Drop0, Keep0StoodOneOther, the four StoodOneDest\n(each the same states as its unstood twin) and the four StoodSeveralDest\nrun in the nightly exhaustive job.\n\n* ci(tla): weights from a hosted runner's shard times\n\nA pull request's shard 0 ran out its hour: FelixShardWipeStripped took\n28.5 min against a weight of 10, FelixShardReportFloor 10 against 5 and\nFelixShardElectAdoptPromote 9 against 3. Every configuration that ran over\nits weight by more than a minute now weighs its measured time, so those\nover ten minutes leave the pull-request tier and run on main.\n\n* spec: keep FelixShard in every PR check; the empty cut-over pieces prove they are empty\n\nFelixShard, the base configuration, now runs on every pull request\nwhatever its weight.\n\nThe StoodSeveralOther pieces of FelixShardElectSwap and\nFelixShardElectSwapFlip reach no cut-over: Swap needs the old leader\nstill leading, a leader that answers a fence stops leading, and a spare\nneither stands nor answers, so in a set of three only the third member can\nhave stood besides the destination. Each piece held just the states before\na cut-over (694 and 5,189, the same in every one). They now check that\nthey stay empty (NoCutOverInPiece); a mutated piece that does reach a\ncut-over violates it at depth 8.",
+          "timestamp": "2026-11-02T18:43:44-08:00",
+          "tree_id": "c214e14b268b54c1f3e786ce60bf399b2ec949e2",
+          "url": "https://github.com/GetFelix/felix/commit/fb0b0ba7c856f9423b67d53176e8a058ad205726"
+        },
+        "date": 1793676737522,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 481132.86,
+            "range": "19095.57",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 481132.86\nmean: 478822.19\nstdev: 19095.57\ncv: 3.99%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 481132.86,
+            "range": "19095.57",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 481132.86\nmean: 478822.19\nstdev: 19095.57\ncv: 3.99%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 114231.46,
+            "range": "6553.30",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 114231.46\nmean: 111829.16\nstdev: 6553.30\ncv: 5.86%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1142314.56,
+            "range": "65532.97",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1142314.56\nmean: 1118291.60\nstdev: 65532.97\ncv: 5.86%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
