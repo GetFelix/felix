@@ -412,8 +412,51 @@ pub(crate) async fn refence<R: PeerRequester>(
     kind: LogKind,
     candidacy: &crate::election::Candidacy,
 ) -> bool {
-    // A follower without `ELECTION` records no elected leader, so the fence
-    // would move nothing.
+    let election = FenceElection {
+        candidate: true,
+        set: candidacy.set.clone(),
+        leaving: candidacy.leaving.as_ref().map(joint::view),
+    };
+    fence_again(requester, node_id, addr, shard, kind, election).await
+}
+
+/// Send a named leader's joint fence again to one follower that missed it.
+/// A batch teaches no set being left that the follower cannot read from its
+/// own routing view, so without this a follower that was down for the fence
+/// refuses every batch until the next generation. Only a set this leader keeps
+/// at the shard's generation with a set being left is sent.
+pub(crate) async fn refence_kept<R: PeerRequester>(
+    requester: &R,
+    node_id: &str,
+    addr: std::net::SocketAddr,
+    shard: &ShardRef,
+    kind: LogKind,
+    kept: Option<&felix_storage::disk_log::ReplicaSet>,
+) -> bool {
+    let Some((current, leaving)) = kept
+        .filter(|kept| kept.current.generation == shard.generation)
+        .and_then(|kept| Some((&kept.current, kept.leaving.as_ref()?)))
+    else {
+        return false;
+    };
+    let election = FenceElection {
+        candidate: false,
+        set: joint::view(current),
+        leaving: Some(joint::view(leaving)),
+    };
+    fence_again(requester, node_id, addr, shard, kind, election).await
+}
+
+async fn fence_again<R: PeerRequester>(
+    requester: &R,
+    node_id: &str,
+    addr: std::net::SocketAddr,
+    shard: &ShardRef,
+    kind: LogKind,
+    election: FenceElection,
+) -> bool {
+    // A follower without `ELECTION` records no elected leader and checks no
+    // set, so the fence would move nothing.
     let offered = match requester.recorded_capabilities(node_id) {
         Some(offered) => Some(offered),
         None => requester.capabilities(node_id, addr).await.ok(),
@@ -421,11 +464,7 @@ pub(crate) async fn refence<R: PeerRequester>(
     if !offered.is_some_and(|offered| offered.contains(PeerCapabilities::ELECTION)) {
         return false;
     }
-    let election = FenceElection {
-        candidate: true,
-        set: candidacy.set.clone(),
-        leaving: candidacy.leaving.as_ref().map(joint::view),
-    };
+    let candidate = election.candidate;
     let (_, _, answer, _) = ask_fence(
         requester,
         node_id.to_string(),
@@ -443,7 +482,8 @@ pub(crate) async fn refence<R: PeerRequester>(
         shard = shard.shard,
         generation = shard.generation,
         took,
-        "sent the elected leader's fence again to a follower whose route is behind",
+        candidate,
+        "sent the leader's fence again to a follower whose route is behind",
     );
     took
 }

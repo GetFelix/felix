@@ -929,20 +929,31 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                     cut
                 };
                 let (cut, ()) = futures::future::join(records, groups).await;
-                // A follower that missed the candidate fence has no route at
-                // this generation, so only the fence moves it (#1009).
-                if cursor.route_behind
-                    && let Some(candidacy) = &candidacy
-                {
-                    crate::promotion::refence(
-                        requester,
-                        &cursor.node_id,
-                        cursor.addr,
-                        &shard,
-                        log_kind,
-                        candidacy,
-                    )
-                    .await;
+                // A follower that missed the fence refuses batches until a
+                // fence reaches it: a candidate's generation is in no route,
+                // and a set being left is not learned from a batch (#1009).
+                if cursor.route_behind {
+                    if let Some(candidacy) = &candidacy {
+                        crate::promotion::refence(
+                            requester,
+                            &cursor.node_id,
+                            cursor.addr,
+                            &shard,
+                            log_kind,
+                            candidacy,
+                        )
+                        .await;
+                    } else {
+                        crate::promotion::refence_kept(
+                            requester,
+                            &cursor.node_id,
+                            cursor.addr,
+                            &shard,
+                            log_kind,
+                            log.replica_set().as_ref(),
+                        )
+                        .await;
+                    }
                 }
                 // A follower level with the tail was sent nothing, so nothing
                 // vouches for a position the mark still has to count. Its
