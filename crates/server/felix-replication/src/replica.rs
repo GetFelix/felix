@@ -1054,6 +1054,38 @@ impl ReplicaHandler {
         {
             return refusal;
         }
+        // Scratch experiment: hold fences that may write (a new log or a raised
+        // generation) to FELIX_SCRATCH_FENCE_CAP at a time in this process.
+        static FENCE_CAP: std::sync::OnceLock<Option<Arc<tokio::sync::Semaphore>>> =
+            std::sync::OnceLock::new();
+        let gate = FENCE_CAP.get_or_init(|| {
+            std::env::var("FELIX_SCRATCH_FENCE_CAP")
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+                .filter(|n| *n > 0)
+                .map(|n| Arc::new(tokio::sync::Semaphore::new(n)))
+        });
+        let _scratch_permit = match gate {
+            Some(gate) => {
+                let settled = self
+                    .broker
+                    .shard_log(
+                        log_kind,
+                        &key.tenant_id,
+                        &key.namespace,
+                        &key.stream,
+                        key.shard,
+                    )
+                    .await
+                    .is_some_and(|log| log.accepted_generation() == generation);
+                if settled {
+                    None
+                } else {
+                    Arc::clone(gate).acquire_owned().await.ok()
+                }
+            }
+            None => None,
+        };
         let Some(log) = self
             .broker
             .shard_log_for(

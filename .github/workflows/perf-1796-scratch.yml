@@ -2,7 +2,7 @@ name: Perf scratch (#1796 listener)
 
 # Temporary: control-path microbench and RF 3 cluster A/B for the #1796
 # follow-up. Three sides: p = main before #1800, m = main after #1800,
-# f = the follow-up (this branch). Deleted with the branch.
+# f/g = #1800 with fences that may write capped at 2/8 per broker. Deleted with the branch.
 
 on:
   push:
@@ -70,8 +70,8 @@ jobs:
       matrix:
         shard: [1, 2, 3]
     env:
-      ROUNDS: "7"
-      MICRO_ROUNDS: "5"
+      ROUNDS: "6"
+      MICRO_ROUNDS: "0"
     steps:
       - uses: actions/download-artifact@v7
         with:
@@ -99,14 +99,17 @@ jobs:
           mkdir -p $p/bin
           cp /tmp/perf-bin/replicated_bench $p/bin/replicated_bench
           cp /tmp/perf-bin/felix-broker-f $p/bin/felix-broker
-          for side in p m f; do
+          for side in p m; do
             printf '#!/bin/bash\nshift\nexec /tmp/perf-bin/felix-broker-%s "$@"\n' "$side" > $p/wrap-$side.sh
             chmod +x $p/wrap-$side.sh
           done
+          printf '#!/bin/bash\nshift\nFELIX_SCRATCH_FENCE_CAP=2 exec /tmp/perf-bin/felix-broker-f "$@"\n' > $p/wrap-f.sh
+          printf '#!/bin/bash\nshift\nFELIX_SCRATCH_FENCE_CAP=8 exec /tmp/perf-bin/felix-broker-f "$@"\n' > $p/wrap-g.sh
+          chmod +x $p/wrap-f.sh $p/wrap-g.sh
           for round in $(seq 1 "$ROUNDS"); do
-            sides=(p m f); k=$(( (round + ${{ matrix.shard }}) % 3 ))
-            for i in 0 1 2; do
-              side=${sides[$(( (i + k) % 3 ))]}
+            sides=(p m f g); k=$(( (round + ${{ matrix.shard }}) % 4 ))
+            for i in 0 1 2 3; do
+              side=${sides[$(( (i + k) % 4 ))]}
               r=${{ matrix.shard }}-$round
               echo "::group::round $r side $side"
               FELIX_BROKER_WRAPPER=$p/wrap-$side.sh BENCH_SIDE=$side BENCH_ROUND=$r \

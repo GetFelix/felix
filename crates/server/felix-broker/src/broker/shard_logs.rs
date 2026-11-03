@@ -166,18 +166,11 @@ impl Broker {
                 .await
                 .ok()
                 .map(StreamLog::from_log),
-            LogKind::Stream => {
-                stream_off_runtime(
-                    self.durable_storage.as_ref()?,
-                    tenant_id,
-                    namespace,
-                    name,
-                    None,
-                    move |s, t, n, m| s.open_stream(t, n, m, shard),
-                    shard,
-                )
-                .await
-            }
+            LogKind::Stream => self
+                .durable_storage
+                .as_ref()?
+                .open_stream(tenant_id, namespace, name, shard)
+                .ok(),
         }
     }
 
@@ -223,18 +216,11 @@ impl Broker {
                 .await
                 .ok()
                 .map(StreamLog::from_log),
-            LogKind::Stream => {
-                stream_off_runtime(
-                    self.durable_storage.as_ref()?,
-                    tenant_id,
-                    namespace,
-                    name,
-                    None,
-                    move |s, t, n, m| s.open_stream_at(t, n, m, shard, base_offset),
-                    shard,
-                )
-                .await
-            }
+            LogKind::Stream => self
+                .durable_storage
+                .as_ref()?
+                .open_stream_at(tenant_id, namespace, name, shard, base_offset)
+                .ok(),
         }
     }
 
@@ -290,18 +276,11 @@ impl Broker {
                 .await
                 .ok()
                 .map(StreamLog::from_log),
-            LogKind::Stream => {
-                stream_off_runtime(
-                    self.durable_storage.as_ref()?,
-                    tenant_id,
-                    namespace,
-                    name,
-                    Some(incarnation),
-                    move |s, t, n, m| s.open_stream_for(t, n, m, shard, base_offset, incarnation),
-                    shard,
-                )
-                .await
-            }
+            LogKind::Stream => self
+                .durable_storage
+                .as_ref()?
+                .open_stream_for(tenant_id, namespace, name, shard, base_offset, incarnation)
+                .ok(),
             LogKind::GroupCursors => self
                 .consumer_groups
                 .as_ref()?
@@ -481,33 +460,4 @@ impl Broker {
             }
         }
     }
-}
-
-// Scratch experiment: a new log's open fsyncs directories; keep it off the async workers.
-async fn stream_off_runtime<F>(
-    storage: &crate::durable::DurableStorage,
-    tenant: &str,
-    namespace: &str,
-    name: &str,
-    incarnation: Option<u64>,
-    open: F,
-    shard: u32,
-) -> Option<StreamLog>
-where
-    F: FnOnce(&crate::durable::DurableStorage, &str, &str, &str) -> crate::Result<StreamLog>
-        + Send
-        + 'static,
-{
-    let registered = storage.stream_incarnation(tenant, namespace, name);
-    if (incarnation.is_none() || registered == incarnation)
-        && let Some(log) = storage.opened_stream(tenant, namespace, name, shard)
-    {
-        return Some(log);
-    }
-    let storage = storage.clone();
-    let (t, n, m) = (tenant.to_string(), namespace.to_string(), name.to_string());
-    tokio::task::spawn_blocking(move || open(&storage, &t, &n, &m))
-        .await
-        .ok()?
-        .ok()
 }
