@@ -1067,17 +1067,25 @@ impl ReplicaHandler {
         });
         let _scratch_permit = match gate {
             Some(gate) => {
-                let settled = self
-                    .broker
-                    .shard_log(
-                        log_kind,
-                        &key.tenant_id,
-                        &key.namespace,
-                        &key.stream,
-                        key.shard,
-                    )
-                    .await
-                    .is_some_and(|log| log.accepted_generation() == generation);
+                // Never opens a stream log here: creating one is part of
+                // what the cap holds.
+                let open = match log_kind {
+                    felix_broker::LogKind::Stream => self.broker.durable_storage().and_then(|d| {
+                        d.opened_stream(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+                    }),
+                    _ => {
+                        self.broker
+                            .shard_log(
+                                log_kind,
+                                &key.tenant_id,
+                                &key.namespace,
+                                &key.stream,
+                                key.shard,
+                            )
+                            .await
+                    }
+                };
+                let settled = open.is_some_and(|log| log.accepted_generation() == generation);
                 if settled {
                     None
                 } else {
