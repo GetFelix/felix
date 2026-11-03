@@ -20,6 +20,10 @@ class StalePins(unittest.TestCase):
     def test_v_prefixed_tag_is_flagged(self):
         self.assertEqual(pins.stale_pins("tag v0.7.0-preview.1", CURRENT), [(1, "0.7.0-preview.1")])
 
+    def test_python_rc_spelling_is_checked_as_the_same_preview(self):
+        self.assertEqual(pins.stale_pins("==0.7.0rc1", CURRENT), [(1, "0.7.0rc1")])
+        self.assertEqual(pins.stale_pins("==0.7.0rc2", CURRENT), [])
+
     def test_current_version_passes(self):
         self.assertEqual(pins.stale_pins("x:0.7.0-preview.2", CURRENT), [])
 

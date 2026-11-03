@@ -4,9 +4,9 @@ description: What an operator moving a cluster from 0.6.2 to the 0.7 line needs 
 ---
 
 :::caution[0.7 is not released]
-The 0.7 line is in preview; the newest is `0.7.0-preview.2`. This page lists
-what has changed since 0.6.2 and is finalized when 0.7.0 is tagged. Do not plan
-a production upgrade from it yet. The released versions are in the
+This page covers `main`, which is ahead of the newest preview,
+`0.7.0-preview.2`. Items marked *(main)* are not in a preview yet. The page is
+finalized when 0.7.0 is tagged. Do not plan a production upgrade from it yet. The released versions are in the
 [release notes](/release-notes/).
 :::
 
@@ -16,7 +16,7 @@ features and rollback.
 
 ## Breaking changes
 
-- **Lease-token templates take over braces in RBAC objects.** A policy object
+- **Lease-token templates take over braces in RBAC objects** *(main)*. A policy object
   that holds `{` or `}` is now a lease template. A grant on a literal cache key
   with braces, such as `cache:t1/prod/c/{leases}`, stops granting that key. It
   instead lets the holder of key `K` in cache `t1/prod/leases` get a lease
@@ -35,15 +35,20 @@ features and rollback.
   fields (`record_headers`, `client_flags_ext`, `server_flags_ext`), so struct
   literals and exhaustive matches need them. The wire bytes for a client that
   does not use these are unchanged.
-- **Storage format 8.** `FORMAT_VERSION` was 6 in 0.6.2 and is 8 now. Version 7
-  holds the head-trim record and version 8 holds a record's key and headers.
-  A broker moves a log onto one of them only to hold such a record: v7 at the   first trim, v8 at the first publish with headers. Until then the log stays
-  readable by 0.6.2. After that, 0.6.2 refuses to open it and there is no
-  rollback except restoring a backup. To keep v8 off, set
-  `FELIX_RECORD_HEADERS=false`; it does not affect v7. Headers only work on a
-  single broker for now, since replication does not ship them.
+- **Storage format 7 and 8.** `FORMAT_VERSION` was 6 in 0.6.2, is 7 in
+  preview.2 and is 8 on `main` *(v8: main)*. Version 7 holds the head-trim
+  record and version 8 holds a record's key and headers. A broker moves a log
+  onto one of them only to hold such a record: v7 at the first trim (in a
+  cluster, once `head_trim` is finalized), v8 at the first publish with
+  headers. Until then the log stays readable by 0.6.2. After that, 0.6.2
+  refuses to open it and there is no rollback except restoring a backup. To
+  keep v8 off, set `FELIX_RECORD_HEADERS=false`; it does not affect v7. Headers
+  only work on a single broker for now, since replication does not ship them.
+  A single broker allows trims from the start and writes a `head-trimmed`
+  marker, so that data directory cannot join a cluster until the cluster has
+  finalized `head_trim` (see [`head_trim`](/deployment/upgrades/#head_trim)).
 
-## Wire protocol
+## Wire protocol *(main)*
 
 Record headers are negotiated, so 0.6.2 clients and brokers keep working. A
 frame flag, `FLAG_EXTENDED`, opens an extension word, and `Auth` and `AuthOk`
@@ -58,12 +63,15 @@ None of these is required. Each default keeps the 0.6.2 behavior.
 
 | Setting | What it does |
 |---|---|
-| `FELIX_RECORD_HEADERS` | Single broker only. `false` refuses publishes that carry headers, which keeps logs at v7 or older. |
-| `FELIX_MQTT_LISTEN`, `FELIX_MQTT_WS_LISTEN` | Bind the MQTT listener, plain and over WebSockets. Unset leaves it off. Related `FELIX_MQTT_*` limits are in [the reference](/reference/environment-variables/). |
-| `FELIX_LEASE_TOKEN_KEY_FILE`, `FELIX_LEASE_TOKEN_MAX_TTL_SECONDS` | Key file and longest lifetime for lease tokens. Without the key file a broker neither mints nor accepts them. Every broker needs the same file. |
+| `FELIX_RECORD_HEADERS` *(main)* | Single broker only. `false` refuses publishes that carry headers, which keeps logs at v7 or older. Turning it off later leaves stored headers readable. In a cluster headers are refused regardless, because the `record_headers` fleet feature is not implemented yet. |
+| `FELIX_MQTT_LISTEN`, `FELIX_MQTT_WS_LISTEN` *(main)* | Bind the MQTT listener, plain and over WebSockets. Unset leaves it off. Related `FELIX_MQTT_*` limits are in [the reference](/reference/environment-variables/). |
+| `FELIX_LEASE_TOKEN_KEY_FILE`, `FELIX_LEASE_TOKEN_MAX_TTL_SECONDS` *(main)* | Key file and longest lifetime for lease tokens. Without the key file a broker neither mints nor accepts them. Every broker needs the same file. |
 | `FELIX_SHARD_ELECTION_HOLD_MS`, `FELIX_SHARD_PENDING_SET_TIMEOUT_MS` | Control-plane timers for `replica_election`, which no broker offers yet. Nothing uses them today. |
 
 ## Upgrade order
+
+Before you start, list your RBAC grants for objects with braces (see the first
+breaking change).
 
 The ordinary order applies: control plane, then brokers one at a time, then
 clients. Back up the data directory first if you may use headers or head trim,
@@ -77,6 +85,12 @@ once every broker runs the new build:
 felix-controlplane admin features finalize head_trim --dry-run
 felix-controlplane admin features finalize head_trim
 ```
+
+The dry run names any live or draining broker that lacks the feature. A broker
+that is down is not counted and is refused later if it returns on the old
+build, so replace or retire it first. After the finalize, watch
+`felix_broker_fleet_feature_enabled{feature="head_trim"}` reach 1 on each
+broker, or read `GET /v1/fleet/features`.
 
 Finalizing is one-way. A cluster created on the new build finalizes it at the
 first broker registration. See [`head_trim`](/deployment/upgrades/#head_trim)
@@ -112,6 +126,19 @@ yet.
 - With the Raft backend, both need every member at metadata level 21, and so
   does finalizing `replica_election`.
 
+Later control-plane changes are on `main`:
+
+- Every placement write names each member's registered storage id
+  (`member_storage_ids`): Postgres migration `0039`, Raft metadata level 22.
+- A copy whose storage was replaced is a learner until it is re-admitted, and
+  a leader reports where its generation started (`holds_start`): migration
+  `0040`, level 23. Finalizing `joint_fence` needs that level.
+- A stream can carry an MQTT mount: migration `0041`, level 24.
+
+In short, Postgres runs migrations `0037` to `0041` on start, and under Raft
+these features wait for metadata levels 20 to 24, so upgrade every
+control-plane member before the brokers.
+
 ## Clients
 
 The Rust client has the rename above. The other clients are additive: every
@@ -127,7 +154,8 @@ Cache and consumer-group calls on the Rust `Client` now follow
 `ReconnectPolicy`, as publishes already did. The limits bound the whole call,
 and a write is sent again only after a refusal that says nothing was applied.
 
-A `Connection` opens its pooled connections as its traffic needs them. A
+A `Connection` opens its pooled connections as its traffic needs them
+*(main)*. A
 subscriber with default settings now holds 5 broker connections instead of 20,
 so about 100 fit under the default `FELIX_MAX_CONNECTIONS_PER_IP=512` instead
 of about 25. No action is needed; the pool sizes are ceilings.
@@ -137,7 +165,8 @@ of about 25. No action is needed; the pool sizes are ceilings.
 A client can trim a stream's oldest records at the tail it expects
 (`trim_before`, `felixctl stream trim`); a cursor error now says where to resume
 and carries the trim's headers; a single broker accepts and delivers record
-headers; the Rust client has lease tokens; and a broker can serve MQTT. See
+headers; the Rust client has lease tokens; and a broker can serve MQTT (the last
+four are on `main`). See
 [what Felix is for](/getting-started/what-felix-is-for/) for the status of each.
 
 ## Packaging

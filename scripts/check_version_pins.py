@@ -8,6 +8,10 @@ The workspace version is the next, untagged preview, so it is the wrong source.
 Previews of other lines (0.6.0-preview.9 in a history note) are left alone, and
 so are the release notes generated from the changelog. A line that needs an old
 pin on purpose carries `version-pin: allow`.
+
+Once 0.7.0 is tagged, every `0.7.0-preview.N` string outside the generated
+release notes is flagged. That is intended: a stable release makes the preview
+pins wrong. The Python spelling `X.Y.ZrcN` is checked as preview N.
 """
 
 from __future__ import annotations
@@ -23,7 +27,7 @@ EXTRA = [REPO / "README.md"]
 HAND_WRITTEN = "upgrading-to-0-7.md"
 SUFFIXES = {".md", ".mdx"}
 ALLOW = "version-pin: allow"
-PREVIEW = re.compile(r"(?<![\d.])(\d+\.\d+\.\d+)-preview\.(\d+)\b")
+PREVIEW = re.compile(r"(?<![\d.])(\d+\.\d+\.\d+)(?:-preview\.|rc)(\d+)\b")
 
 
 def released_version(compose: str) -> str:
@@ -34,13 +38,14 @@ def released_version(compose: str) -> str:
 
 
 def stale_pins(text: str, current: str) -> list[tuple[int, str]]:
-    base = current.split("-", 1)[0]
+    base, _, pre = current.partition("-preview.")
+    current_rc = f"{base}rc{pre}"
     found = []
     for number, line in enumerate(text.splitlines(), 1):
         if ALLOW in line:
             continue
         for m in PREVIEW.finditer(line):
-            if m.group(1) == base and m.group(0) != current:
+            if m.group(1) == base and m.group(0) not in (current, current_rc):
                 found.append((number, m.group(0)))
     return found
 

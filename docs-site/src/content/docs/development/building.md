@@ -179,7 +179,9 @@ Pushing a `v*` tag runs `release.yml`. A tag with a `-` suffix
 (`v0.6.0-preview`) is a GitHub prerelease, and its images are not tagged
 `latest`. The tag has to match every version field in the tree, and every image tag the
 docs and `compose.yaml` pin (`scripts/check_release_version.py`), and its release notes are its
-`CHANGELOG.md` section. The release step that bumps the `compose.yaml` default makes `scripts/check_version_pins.py` (in `task docs:evidence`) list every docs pin to bump. The workflow:
+`CHANGELOG.md` section. When a release bumps the `compose.yaml` default,
+`scripts/check_version_pins.py` (part of `task docs:evidence`) lists the docs
+pins to update. The workflow:
 
 - creates the GitHub release with `felix-<tag>-linux-x86_64.tar.gz` (broker
   and control plane) and `SHA256SUMS`;
