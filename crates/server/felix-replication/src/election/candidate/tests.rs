@@ -4,7 +4,7 @@ use std::sync::Mutex;
 
 use felix_broker::{ConsistencyLevel, DurableStorage, StreamMetadata};
 use felix_common::fleet::{
-    FleetGate, GENERATION_START, LEASE_FREE_READS, MAJORITY_ACK, REPLICA_ELECTION,
+    FleetGate, GENERATION_START, JOINT_FENCE, LEASE_FREE_READS, MAJORITY_ACK, REPLICA_ELECTION,
 };
 use felix_router::{NodeRef, RegionRouter, RoutingTable};
 use felix_storage::EphemeralCache;
@@ -165,6 +165,7 @@ fn ctx(broker: &Arc<Broker>, voters: Voters) -> Ctx<Voters> {
         MAJORITY_ACK.name(),
         LEASE_FREE_READS.name(),
         REPLICA_ELECTION.name(),
+        JOINT_FENCE.name(),
     ];
     let fleet = FleetGate::new(names);
     fleet.observe(names);
@@ -181,6 +182,7 @@ fn ctx(broker: &Arc<Broker>, voters: Voters) -> Ctx<Voters> {
         elections,
         suspects,
         held_back: Default::default(),
+        pre_vote_gate: None,
     }
 }
 
@@ -311,6 +313,98 @@ async fn a_pending_set_change_is_not_stood_on() {
     assert_eq!(log.accepted_generation(), 3, "no ballot");
 }
 
+/// **The set a move's cut-over leaves is stood on**: it names the same
+/// copies, the staged successor (here broker-a, the leader now suspected)
+/// flagged a learner. Refusing it would leave a moved shard unable to elect
+/// until the control plane is back. The standing carries the set being left,
+/// so its fence covers that set's voters too. A route with a change pending,
+/// or naming another set, still keeps it from standing.
+#[tokio::test(start_paused = true)]
+async fn the_set_a_move_left_is_stood_on_jointly() {
+    let (broker, _dir) = follower().await;
+    let ctx = ctx(&broker, voters(None));
+    let log = shard_log(&broker, &key()).await.expect("log");
+    let mut leaving = set(3);
+    leaving.members[0].learner = true;
+    log.accept_set(ReplicaSet {
+        current: set(4),
+        leaving: Some(leaving.clone()),
+    })
+    .await
+    .expect("set");
+
+    let (_, elected) = tokio::time::timeout(Duration::from_secs(30), stand_and_watch(&ctx))
+        .await
+        .expect("never stood");
+
+    assert_eq!(elected.leader, LOCAL);
+    assert_eq!(elected.set.generation, 4);
+    assert_eq!(elected.leaving, Some(leaving.clone()));
+
+    // Only while the control plane's route records the kept set with
+    // nothing pending: the leader then counts the kept set alone.
+    for pending in [true, false] {
+        let (broker, _dir) = follower().await;
+        let held = self::ctx(&broker, voters(None));
+        let log = shard_log(&broker, &key()).await.expect("log");
+        log.accept_set(ReplicaSet {
+            current: set(4),
+            leaving: Some(leaving.clone()),
+        })
+        .await
+        .expect("set");
+        let route = held.router.snapshot().get(&key()).expect("route").clone();
+        let mut recorded = Recorded::of_route(&route);
+        if pending {
+            recorded.pending = true;
+        } else {
+            recorded.members.remove("broker-c");
+            recorded.members.insert("broker-d".to_string(), None);
+        }
+        held.elections.note_recorded(key(), recorded);
+
+        assert_eq!(stand(&held, &key(), &route).await, Round::Ineligible);
+        assert_eq!(log.accepted_generation(), 3, "no ballot");
+    }
+}
+
+/// **A set kept beside with the same flags is stood on too**: a leader the
+/// control plane named under `joint_fence` keeps the set before beside its
+/// own even when nothing changed. Without `joint_fence` finalized nothing
+/// stands on a set kept beside, since its fence could never open.
+#[tokio::test(start_paused = true)]
+async fn an_unchanged_set_kept_beside_is_stood_on_once_joint_fences_are_on() {
+    let (broker, _dir) = follower().await;
+    let log = shard_log(&broker, &key()).await.expect("log");
+    log.accept_set(ReplicaSet {
+        current: set(4),
+        leaving: Some(set(3)),
+    })
+    .await
+    .expect("set");
+
+    let mut off = ctx(&broker, voters(None));
+    let names = [
+        GENERATION_START.name(),
+        MAJORITY_ACK.name(),
+        LEASE_FREE_READS.name(),
+        REPLICA_ELECTION.name(),
+    ];
+    let fleet = FleetGate::new(names);
+    fleet.observe(names);
+    off.marks = Arc::new(QuorumMarks::with_fleet(Arc::new(fleet)));
+    off.marks.set_elections(Arc::clone(&off.elections));
+    let route = off.router.snapshot().get(&key()).expect("route").clone();
+    assert_eq!(stand(&off, &key(), &route).await, Round::Ineligible);
+    assert_eq!(log.accepted_generation(), 3, "no ballot");
+
+    let on = ctx(&broker, voters(None));
+    let (_, elected) = tokio::time::timeout(Duration::from_secs(30), stand_and_watch(&on))
+        .await
+        .expect("never stood");
+    assert_eq!(elected.leaving, Some(set(3)));
+}
+
 /// The place counts voters with a log ahead and granting voters with a
 /// lower node id.
 #[tokio::test]
@@ -401,6 +495,7 @@ async fn a_slow_dial_carries_over_to_the_next_round() {
         elections,
         suspects,
         held_back: Default::default(),
+        pre_vote_gate: None,
     };
     let log = shard_log(&ctx.broker, &key()).await.expect("log");
 
@@ -519,6 +614,7 @@ async fn a_standing_promised_away_is_withdrawn() {
             leader: LOCAL.to_string(),
             generation: 4,
             set: set(3),
+            leaving: None,
             incarnation: 0,
         },
     );

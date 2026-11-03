@@ -500,6 +500,13 @@ before a `restart_node`. That is how a test runs a mixed fleet: in a debug build
 play an older build and then be restarted as an upgraded one. A release build
 ignores it and reports what it implements.
 
+In a debug build, `FELIX_TEST_PRE_VOTE_GATE` names a file that holds a
+broker's election pre-votes: while it exists, a follower standing for election
+dials the voters and waits before it asks them, and logs "holding the pre-vote
+at the test gate" once per round. A test that creates the file before the
+leader dies and deletes it once two candidates have logged that line sends
+their pre-votes out together. A release build ignores it.
+
 > `a_fleet_feature_turns_on_only_when_finalized` -- every broker reports a
 > feature and the gate stays shut; one broker is rolled back, which works,
 > and finalizing is refused while it serves. Upgraded again, the feature is

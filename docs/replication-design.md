@@ -4077,7 +4077,14 @@ Once it is finalized on a broker that offers `ELECTION`:
   each. That covers a move's cut-over, a replacement's join and
   seat, a top-up and a grow. The set being left is the control plane's set
   at the generation right before the route's, as the model's `Swap` takes it.
-  The broker learns it from the assignment its watch saw at that generation,
+  For a cut-over the control plane holds as pending, that set is on the
+  route, and it is authoritative: the broker takes it from there, the same
+  set the leader acknowledges on. Its watch, its log or what it kept beside
+  its set only fill in each member's copy and learner mark, and only when
+  they name the same members. With none of them, each member counts only
+  from the copy the route names for it, or by node id when it names none;
+  such a fence does not stay pending. For other changes the broker learns
+  the set from the assignment its watch saw at that generation,
   from the set the leader before shipped with at it, or from what this
   leader kept beside its own set. When none of those knows it (the watch
   started from a snapshot, or skipped that generation, and the log keeps an
@@ -4086,6 +4093,14 @@ Once it is finalized on a broker that offers `ELECTION`:
   to leave. A member of the old set that no route names any more is reached
   at the address the node catalog gives, and answers even though its own
   routing view leaves it out.
+- Outside a pending cut-over, a failover can leave two sets. When the
+  control plane records an election without taking the elected leader's
+  set, its own set and the one the elected leader shipped with can differ,
+  and a majority of either may hold acknowledged records. So when the set
+  the promoted broker's log keeps from before the route names other members
+  than the set found above, the fence needs a majority of that set too, as
+  the model's `Promote` fences the promoted broker's own set. A member that
+  votes only in the log's set is sent that set as the one being left.
 - Each member of the set being left is counted as a voter and, where it was
   a move's staged destination, also not: replicas may keep the set either
   way, and the fence needs a majority of each reading.
@@ -4201,7 +4216,8 @@ follows whose leader it suspects, and which acknowledges by its followers
 `fenced_caches`), it:
 
 1. checks that it votes in the set its log keeps, that the set has no change
-   pending, and that the control plane records that same set;
+   pending, and that the control plane records that same set (see below for
+   the set a move leaves behind);
 2. sends a pre-vote to the set's other voters and needs a majority, itself
    included;
 3. waits 300 ms for each voter ahead of it: one whose log is ahead, or one
@@ -4212,6 +4228,22 @@ follows whose leader it suspects, and which acknowledges by its followers
 5. records the standing, which the routing feed lays over the control
    plane's route. The shard then opens through the promotion path, with a
    fence marked as a candidate's that carries the kept set.
+
+A set can be kept beside the current one without a change pending. A move's
+cut-over leaves one on every member that took its fence: the same brokers on
+the same copies, with only the successor's learner flag different, since it
+was staged in the set being left. A leader the control plane named under
+`joint_fence` also keeps the set before beside its own, even when nothing
+changed. A candidate stands on such a set as long as the control plane's
+route records the kept set with nothing pending. The cut-over that wrote it
+may not have finished, so the candidate does not rely on it: its own fence
+carries both sets and opens only on a majority of each, the old set counted
+with and without its learner, as any joint fence does. That is the model's
+`Elect` with `oldSet` kept: `FenceMembers` takes the old set in and
+`OpenForWrites` needs its majority. Once open, the leader counts
+acknowledgements on the kept set alone, because the control plane records
+that set with nothing pending (`FinishChange`). Without `joint_fence`
+finalized such a fence could never open, so the broker does not stand.
 
 A replica that takes a candidate's fence records the candidate the same way,
 so it takes the candidate's batches and sends clients to it. The elected
@@ -4248,14 +4280,19 @@ to finalize it until learners can be re-admitted (`JOINT_FENCE_READY`). Until
 that changes, no fleet stands for election.
 
 The broker refuses to stand in two cases the model allows, which costs
-availability only: while its kept set has a pending change, and while the
-control plane records a set other than the kept one. In the second case a
+availability only: while its kept set has a pending change (a set being left
+that names other brokers or copies), and while the control plane records a
+set other than the kept one. In the second case a
 majority of the recorded set may hold acknowledged records that a fence of
 the kept set alone never reaches.
 
 > `a_granted_pre_vote_puts_the_ballot_on_disk_then_records_the_standing`,
 > `a_refused_pre_vote_writes_nothing`,
 > `a_set_the_control_plane_does_not_record_is_not_stood_on`,
+> `a_pending_set_change_is_not_stood_on`,
+> `the_set_a_move_left_is_stood_on_jointly`,
+> `an_unchanged_set_kept_beside_is_stood_on_once_joint_fences_are_on`,
+> `a_candidate_fences_the_set_a_move_left_jointly`,
 > `the_leader_refuses_a_pre_vote_against_itself`,
 > `a_candidate_stands_above_the_routes_generation`,
 > `a_candidate_does_not_stand_past_the_adoption_window`,

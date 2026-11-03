@@ -1422,7 +1422,14 @@ elected leader is named: its log holds everything acknowledged up to the
 collision, on whichever set. The shard is left alone while a set change is
 pending, while a copy is joining, or when the elected leader is not in the
 control plane's set. The named leader follows the new one, or stops when its
-route moves on if it is no longer in the set. If the elected leader did not
+route moves on if it is no longer in the set. The elected leader's fence at
+the new generation covers the set it was elected on as well as the control
+plane's, since its log keeps that set: the two can differ when the control
+plane changed the set at the claimed generation, and a majority of the
+elected set could otherwise elect again beside it. A report older than the
+elected leader's deposition can still move the shard to it, but the broker
+does not open a generation older than its ballot, so that write only costs
+the shard a promotion. If the elected leader did not
 open, its candidate withdraws the standing within 3 s and the named leader
 opens as usual.
 

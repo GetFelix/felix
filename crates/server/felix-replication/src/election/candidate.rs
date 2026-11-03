@@ -75,7 +75,10 @@ struct Ctx<R> {
     suspects: Arc<Suspects>,
     /// Why each shard last could not stand, so the reason is logged once
     /// when it changes rather than every round.
-    held_back: std::sync::Mutex<HashMap<ShardKey, &'static str>>,
+    held_back: std::sync::Mutex<HashMap<ShardKey, (&'static str, String)>>,
+    /// Test-only: while this file exists, a pre-vote waits before it asks,
+    /// so a test can release two candidates' rounds together.
+    pre_vote_gate: Option<std::path::PathBuf>,
 }
 
 impl<R> Ctx<R> {
@@ -85,12 +88,13 @@ impl<R> Ctx<R> {
     }
 
     fn held_back(&self, key: &ShardKey, why: &'static str, answers: &str) {
+        let seen = (why, answers.to_string());
         let changed = self
             .held_back
             .lock()
             .expect("held_back lock")
-            .insert(key.clone(), why)
-            != Some(why);
+            .insert(key.clone(), seen.clone())
+            != Some(seen);
         if changed {
             tracing::info!(
                 stream = %key.stream,
@@ -127,6 +131,7 @@ pub fn spawn<R: PeerRequester + Send + Sync + 'static>(
         elections,
         suspects,
         held_back: Default::default(),
+        pre_vote_gate: pre_vote_gate(),
     });
     Some(tokio::spawn(run(ctx, shutdown)))
 }
@@ -152,6 +157,7 @@ async fn run<R: PeerRequester + Send + Sync + 'static>(
                     match round {
                         Round::Opened => {
                             backoff.remove(&key);
+                            ctx.held_back.lock().expect("held_back lock").remove(&key);
                         }
                         Round::Failed => backoff.entry(key).or_default().failed(),
                         Round::Ineligible => backoff.entry(key).or_default().wait(INELIGIBLE_FOR),
@@ -171,6 +177,8 @@ async fn run<R: PeerRequester + Send + Sync + 'static>(
         let now = Instant::now();
         backoff.retain(|_, backoff| !backoff.idle(now));
         if names.is_empty() {
+            // The next outage says again why a shard does not stand.
+            ctx.held_back.lock().expect("held_back lock").clear();
             continue;
         }
         let local = ctx.router.local_node_id();
@@ -202,6 +210,14 @@ async fn run<R: PeerRequester + Send + Sync + 'static>(
     }
 }
 
+/// `FELIX_TEST_PRE_VOTE_GATE`, honoured in debug builds only.
+fn pre_vote_gate() -> Option<std::path::PathBuf> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    std::env::var_os("FELIX_TEST_PRE_VOTE_GATE").map(std::path::PathBuf::from)
+}
+
 /// Withdraw a standing whose generation this broker has since promised to
 /// another leader (rule 5). The driver stops leading it; this drops the
 /// route that named it leader.
@@ -223,16 +239,32 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
 ) -> Round {
     let local = ctx.router.local_node_id();
     let Some(log) = eligible_log(ctx, key).await else {
-        return ctx.ineligible(key, "the shard does not acknowledge on its followers");
+        return ctx.ineligible(
+            key,
+            "the shard does not acknowledge on its followers, or its log is not open here",
+        );
     };
     let Some(kept) = log.replica_set() else {
         return ctx.ineligible(key, "this copy keeps no replica set");
     };
     // A change pending on the kept set is left to the control plane: an
     // elected route names one set, so the followers' would not know which
-    // set to leave. Costs availability only.
-    if kept.leaving.is_some() {
+    // set to leave. Costs availability only. A set being left with the same
+    // copies is the one a move's cut-over leaves, its successor flagged a
+    // learner; that is stood on, and fenced jointly.
+    if kept
+        .leaving
+        .as_ref()
+        .is_some_and(|leaving| !same_copies(&kept.current, leaving))
+    {
         return ctx.ineligible(key, "the kept replica set has a change pending");
+    }
+    // Its fence would stay pending, after the ballot took a generation.
+    if kept.leaving.is_some() && !ctx.marks.fleet_supports(felix_common::fleet::JOINT_FENCE) {
+        return ctx.ineligible(
+            key,
+            "a set is kept beside this one and joint fences are off",
+        );
     }
     if kept.current.generation == 0 {
         return ctx.ineligible(key, "this copy keeps no replica set");
@@ -247,9 +279,11 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
     if !votes || log.member_is_wiped(local) {
         return ctx.ineligible(key, "this copy does not vote in its kept set");
     }
-    // A candidate fences only the set it keeps. If the control plane records
-    // another set, a majority of that one could hold what this fence never
-    // reaches, so it does not stand at all (#1806).
+    // A candidate fences the set it keeps and the one kept beside it. If the
+    // control plane records another set, a majority of that one could hold
+    // what this fence never reaches, so it does not stand at all (#1806).
+    // That also means the elected leader counts the kept set alone: the
+    // control plane holds it with nothing pending.
     let recorded = ctx
         .elections
         .recorded(key)
@@ -313,6 +347,7 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
             leader: local.to_string(),
             generation,
             set: kept.current,
+            leaving: kept.leaving,
             incarnation: crate::incarnation::of(&ctx.broker, key),
         },
     );
@@ -343,6 +378,18 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
         }
         tokio::time::sleep(OPEN_POLL).await;
     }
+}
+
+/// Whether `leaving` names the same members on the same copies as `current`,
+/// so the two differ in learner flags at most.
+fn same_copies(current: &Membership, leaving: &Membership) -> bool {
+    current.members.len() == leaving.members.len()
+        && current.members.iter().all(|member| {
+            leaving
+                .members
+                .iter()
+                .any(|left| left.node == member.node && left.storage == member.storage)
+        })
 }
 
 /// The shard's own log, if the shard may elect: acknowledged at quorum, by
@@ -418,7 +465,7 @@ async fn pre_vote<R: PeerRequester + Send + Sync + 'static>(
         .filter(|member| !member.learner)
         .map(|member| member.node.as_str())
         .collect();
-    let answers = futures::future::join_all(
+    let rounds = futures::future::join_all(
         voters
             .iter()
             .filter(|node| **node != local)
@@ -445,8 +492,18 @@ async fn pre_vote<R: PeerRequester + Send + Sync + 'static>(
                     }
                 }
             }),
-    )
-    .await;
+    );
+    if let Some(gate) = ctx.pre_vote_gate.as_ref().filter(|gate| gate.exists()) {
+        tracing::info!(
+            stream = %key.stream,
+            shard = key.shard,
+            "holding the pre-vote at the test gate",
+        );
+        while gate.exists() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+    let answers = rounds.await;
     let mut granted = 1;
     let mut place = 0;
     let heard = answers.iter().flatten().count();

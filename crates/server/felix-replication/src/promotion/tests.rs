@@ -1019,6 +1019,7 @@ async fn a_candidates_fence_carries_the_set_it_keeps() {
     };
     let candidacy = crate::election::Candidacy {
         set: crate::promotion::joint::view(&kept),
+        leaving: None,
     };
 
     let outcome = fence_shard_as(

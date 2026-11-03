@@ -43,6 +43,7 @@ fn elected(leader: &str, generation: u64) -> Elected {
         leader: leader.to_string(),
         generation,
         set: set(3),
+        leaving: None,
         incarnation: 0,
     }
 }
