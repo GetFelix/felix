@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793687343281,
+  "lastUpdate": 1793689408360,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -55044,6 +55044,72 @@ window.BENCHMARK_DATA = {
             "range": "47.80",
             "unit": "us",
             "extra": "trials: 5\nmedian: 535.00\nmean: 547.20\nstdev: 47.80\ncv: 8.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d4633850f76b33e65004dd5375422f96238593f5",
+          "message": "fix(broker): a move resumes readers at a batch held for the mark (#1835) (#1836)\n\nFixes #1835.\n\nA subscriber following a shard move could skip a record for good. Found as `11 missing-delivery` in the history checker (run 41551916526, seed 1592590337). The evidence and the log lines are in the issue.\n\n## What went wrong\n\n1. A `Quorum` publish is durable at offset N and waits in the commit hold for the mark. It is not in the replay ring yet, so the stream's `next_seq` stays at N.\n2. A generation change on the same leader writes a generation-start record at N+1 (`start_generation` in `shards/lifecycle.rs`, which also runs for the old leader's end of a move). `StreamState::skip_generation_start` then moved `next_seq` to N+2, past the held batch.\n3. The move ends the readers with `shard_moved.resume_from = next_seq`, N+2, and drops the hold.\n4. The batch is still on disk. It ships to the next owner, which commits it. The client resumes at `max(last + 1, resume_from)` = N+2 and never sees it.\n\n`docs/protocol.md` already says `resume_from` is the first offset the broker did not offer the reader. Step 2 broke that.\n\n## Fix\n\n`skip_generation_start` leaves `next_seq` where it is while anything is held or being released (`CommitHold::is_busy`, read under the ring lock that `hold()` pushes under). It still moves the commit order past the record, so the next publish lands after it. A release moves `next_seq` to the batch's end and the next publish moves it past the record.\n\nA lower `next_seq` is always the safe direction for its other readers: `register_clamped` serves less from disk and more live, and the state-view rebuild reads to it.\n\n## Tests\n\n- `a_move_resumes_readers_at_a_held_batch_below_a_generation_start` fails on main (`resume_from` is `Some(3)`, expected `Some(1)`) and passes with the fix.\n- `a_batch_held_across_a_generation_start_is_released_and_publishes_follow_it` guards the other side: the held batch still goes out once the mark covers it, and the next publish takes the offset after the record without waiting on a turn.\n- felix-broker: all tests pass. felix-broker-service lib tests pass. clippy, fmt, `task docs:evidence`.\n\n## Docs\n\n- `docs/protocol.md`, `shard_moved`: `resume_from` is at or below a batch this broker holds for the mark.\n- `docs/replication-design.md`, \"Readers stop at the committed mark\": the same, and that a generation-start record behind a held batch does not move it.\n\n## Design calls\n\n- The fix keeps `next_seq` low instead of making `end_subscribers` compute `min(next_seq, first held offset)`. The second option misses batches a release has taken off the hold but not yet appended. `is_busy` covers both.\n- Not fixed here: a batch held across a generation-start record goes out with `skipped_before = 0`, even when a start record sits just below it. The run is recorded for the next publish's offset only. A client would read that as a drop. It is cosmetic for the history checker and could be a follow-up.\n\n## Review\n\nOpus review of bbd520958: no MUST. SHOULD: records past the mark that this broker never held (inherited by a promoted follower, or reopened after a restart) still let a move set `resume_from` past them. Capping `resume_from` at the commit offset was tried and backed out: the commit offset may not advance on a shard with no replicas, so a subscriber that had received nothing would replay the whole stream after a move. Filed as #1837, and the protocol.md claim is narrowed to batches this broker holds. NITs (comment summary, doc wording and wrap) fixed in f018e5a7b.",
+          "timestamp": "2026-11-02T22:31:55-08:00",
+          "tree_id": "bb0d6ef42a1956b2d081aba0cbc1536b9d02b8cf",
+          "url": "https://github.com/GetFelix/felix/commit/d4633850f76b33e65004dd5375422f96238593f5"
+        },
+        "date": 1793689401803,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 95,
+            "range": "0.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 95.00\nmean: 95.00\nstdev: 0.00\ncv: 0.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 135,
+            "range": "6.56",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 135.00\nmean: 138.00\nstdev: 6.56\ncv: 4.75%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 183,
+            "range": "543.53",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 183.00\nmean: 422.80\nstdev: 543.53\ncv: 128.55%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 131,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 131.00\nmean: 130.60\nstdev: 0.55\ncv: 0.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 255,
+            "range": "5.41",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 255.00\nmean: 257.40\nstdev: 5.41\ncv: 2.10%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 412,
+            "range": "95.12",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 412.00\nmean: 448.00\nstdev: 95.12\ncv: 21.23%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
