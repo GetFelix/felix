@@ -4,7 +4,7 @@
 
 use felix_wire::internal::PeerCapabilities;
 
-use super::quorum::{follower_ack_marks, quorum_leader};
+use super::quorum::{follower_ack_marks, follower_ack_marks_adopted, quorum_leader};
 use super::*;
 
 /// Stores every batch, records what it was stamped with, and says which
@@ -327,13 +327,7 @@ impl PeerRequester for BehindFollower {
 fn elected_marks(leader: &str) -> QuorumMarks {
     use felix_storage::disk_log::{Member, Membership};
 
-    use felix_common::fleet::{FleetGate, GENERATION_START, MAJORITY_ACK};
-
-    // Adopted, so the driver fences rather than waiting on the fleet view.
-    let names = [GENERATION_START.name(), MAJORITY_ACK.name()];
-    let fleet = FleetGate::new(names);
-    fleet.restart(names);
-    let marks = QuorumMarks::with_fleet(Arc::new(fleet));
+    let marks = follower_ack_marks_adopted(true);
     let elections = Arc::new(crate::election::Elections::new(
         LOCAL,
         Arc::new(tokio::sync::Notify::new()),
@@ -417,8 +411,17 @@ impl PeerRequester for FenceTaker {
         _addr: SocketAddr,
         message: InternalMessage,
     ) -> std::result::Result<InternalMessage, PeerError> {
-        let InternalMessage::Fence(fence) = message else {
-            panic!("only the fence goes out before the shard opens");
+        let fence = match message {
+            InternalMessage::Fence(fence) => fence,
+            // Shipping begins once the shard has opened.
+            InternalMessage::ReplicateRecords(batch)
+            | InternalMessage::ReplicateMarkedRecords(batch) => {
+                return Ok(InternalMessage::ReplicateOk(ReplicateOk {
+                    correlation_id: 0,
+                    durable_offset: batch.first_offset + batch.payloads.len() as u64,
+                }));
+            }
+            other => panic!("unexpected {other:?}"),
         };
         Ok(InternalMessage::FenceOk(felix_wire::internal::FenceOk {
             correlation_id: fence.correlation_id,
@@ -449,13 +452,24 @@ impl PeerRequester for FenceTaker {
 /// being fenced when the open ran.
 struct WatchedOpen {
     elections: Arc<crate::election::Elections>,
+    awaiting: Mutex<Option<u64>>,
     held: Mutex<Vec<bool>>,
+}
+
+impl WatchedOpen {
+    fn new(elections: &Arc<crate::election::Elections>) -> Self {
+        Self {
+            elections: Arc::clone(elections),
+            awaiting: Mutex::new(Some(4)),
+            held: Mutex::new(Vec::new()),
+        }
+    }
 }
 
 #[async_trait::async_trait]
 impl crate::promotion::PromotionGate for WatchedOpen {
     fn awaiting(&self, _key: &crate::ShardKey) -> Option<u64> {
-        Some(4)
+        *self.awaiting.lock().expect("lock")
     }
 
     async fn open(&self, _key: &crate::ShardKey, generation: u64) -> bool {
@@ -463,6 +477,7 @@ impl crate::promotion::PromotionGate for WatchedOpen {
             .lock()
             .expect("lock")
             .push(self.elections.is_fencing(&key(), generation));
+        *self.awaiting.lock().expect("lock") = None;
         true
     }
 }
@@ -476,10 +491,7 @@ async fn a_standing_is_kept_until_its_shard_opens() {
     let (broker, _dir) = quorum_leader(3, 4).await;
     let marks = elected_marks(LOCAL);
     let elections = Arc::clone(marks.elections().expect("elections"));
-    let gate = WatchedOpen {
-        elections: Arc::clone(&elections),
-        held: Mutex::new(Vec::new()),
-    };
+    let gate = WatchedOpen::new(&elections);
     let router = router(LOCAL, &["broker-b", "broker-c"], 4);
 
     replicate_once_with(
@@ -508,4 +520,46 @@ async fn a_standing_is_kept_until_its_shard_opens() {
         !elections.is_fencing(&key(), 4),
         "the standing is released once the shard has opened"
     );
+}
+
+/// **The running driver keeps a standing until its shard has opened too.**
+/// Its shards fence and open in their own futures, apart from the pass that
+/// [`a_standing_is_kept_until_its_shard_opens`] drives.
+#[tokio::test]
+async fn the_running_driver_keeps_a_standing_until_its_shard_opens() {
+    let (broker, _dir) = quorum_leader(3, 4).await;
+    let marks = Arc::new(elected_marks(LOCAL));
+    let elections = Arc::clone(marks.elections().expect("elections"));
+    let gate = Arc::new(WatchedOpen::new(&elections));
+    let driver = spawn(
+        Arc::new(FenceTaker),
+        Arc::clone(&broker),
+        router(LOCAL, &["broker-b", "broker-c"], 4),
+        Arc::new(Unfenced),
+        Arc::clone(&gate) as Arc<dyn crate::promotion::PromotionGate>,
+        Published {
+            marks,
+            halted: Arc::new(crate::halted::HaltedReplicas::new()),
+            status: Arc::default(),
+        },
+        None,
+        Duration::from_secs(300),
+        Arc::default(),
+        RebuildPolicy::default(),
+        MoveThrottle::unlimited(),
+        CancellationToken::new(),
+    );
+
+    let opened = tokio::time::timeout(Duration::from_secs(10), async {
+        while gate.held.lock().expect("lock").is_empty() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(opened.is_ok(), "the shard never opened");
+    assert!(
+        gate.held.lock().expect("lock")[0],
+        "the standing was marked fenced while the shard opened"
+    );
+    driver.stop().await;
 }
