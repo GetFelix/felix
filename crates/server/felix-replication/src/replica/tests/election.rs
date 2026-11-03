@@ -177,6 +177,59 @@ async fn a_batch_under_joint_fence_learns_the_set_being_left_only_from_the_contr
     assert_eq!(nodes, vec!["broker-a", LOCAL, "broker-c"]);
 }
 
+/// **Only a wiped learner learns a set from a batch without the set before
+/// it.** A wiped voter votes and a staged learner may lead, so either could
+/// stand on the new set without fencing the one being left; both are refused
+/// until a fence carries it. `LearnsLeavingSet`.
+#[tokio::test]
+async fn only_a_wiped_learner_learns_a_set_without_the_set_before_it() {
+    for (learner, wiped, learns) in [
+        (true, true, true),
+        (false, true, false),
+        (true, false, false),
+    ] {
+        let (broker, _dir) = broker_with_storage().await;
+        stream_log(&broker)
+            .await
+            .accept_set(ReplicaSet {
+                current: Membership {
+                    generation: 3,
+                    members: vec![Member {
+                        node: LOCAL.to_string(),
+                        storage: None,
+                        learner,
+                        wiped,
+                    }],
+                },
+                leaving: None,
+            })
+            .await
+            .expect("set");
+        let handler = ReplicaHandler::new(Arc::clone(&broker), router_after(4, None))
+            .with_fleet(joint_marks());
+        let answer = handler
+            .apply(
+                SENDER,
+                stamped(4, 0, &["a"], 4),
+                felix_broker::LogKind::Stream,
+            )
+            .await;
+        // A wiped learner goes on to the confirmed read, which this
+        // handler has none of; it is not refused for the set before.
+        let stale = matches!(
+            &answer,
+            InternalMessage::ReplicateError(err) if err.code == ErrorCode::StaleRoute
+        );
+        assert_eq!(
+            stale, !learns,
+            "learner {learner}, wiped {wiped}: {answer:?}"
+        );
+        if !learns {
+            assert_eq!(stream_log(&broker).await.set_generation(), 3);
+        }
+    }
+}
+
 /// **A fence counting an older set is refused, naming the newer one**, and
 /// takes no ballot: a sender that has not seen the latest set must not gather
 /// a majority from replicas that have. `RefuseStaleSet`.
