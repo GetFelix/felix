@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793676738399,
+  "lastUpdate": 1793680516789,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -43264,6 +43264,58 @@ window.BENCHMARK_DATA = {
             "range": "65532.97",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1142314.56\nmean: 1118291.60\nstdev: 65532.97\ncv: 5.86%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "73f81e21b65f591d552fdd87a8f7616b6d7f096d",
+          "message": "test(cluster): judge the starvation guard's renewals per variant (#1760) (#1834)\n\nTest and docs only.\n\n- The lease canary's renewal bound is now per variant. The per-PR run (debug brokers, healthy renewals up to about 2.2 s) keeps 4 s, the lease's slack (6 s TTL minus 2 s renewal interval). The nightly run (release build, healthy about 0.33 s) uses 2 s, so the nightly guard is not loosened. `Load` carries the bound and the report prints it.\n- `docs/cluster-harness.md` (\"Shard starvation\"): the failure list is one list, the per-variant bounds are documented, and the 4 s claim is stated as holding only when the previous round finished inside its tick (`MissedTickBehavior::Delay`), with the lapse check covering the rest. Read numbers are attributed: 2.5-2.7 s without #1799/#1800, 5-6 s without #1801.\n- Nits: history narration removed from the doc and changelog fragment, changelog wrap fixed, \"baseline\" replaced by \"idle phase\" in the test.",
+          "timestamp": "2026-11-02T20:07:54-08:00",
+          "tree_id": "f1558436f02698fa9701e7aea3bc0a8296d17aaa",
+          "url": "https://github.com/GetFelix/felix/commit/73f81e21b65f591d552fdd87a8f7616b6d7f096d"
+        },
+        "date": 1793680515983,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 349352.32,
+            "range": "19643.15",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 349352.32\nmean: 346381.61\nstdev: 19643.15\ncv: 5.67%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 349352.32,
+            "range": "19643.15",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 349352.32\nmean: 346381.61\nstdev: 19643.15\ncv: 5.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82094.76,
+            "range": "4558.35",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82094.76\nmean: 80569.19\nstdev: 4558.35\ncv: 5.66%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 820947.64,
+            "range": "45583.54",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 820947.64\nmean: 805691.91\nstdev: 45583.54\ncv: 5.66%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
