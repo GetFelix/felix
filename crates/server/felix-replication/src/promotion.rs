@@ -34,6 +34,7 @@ use felix_broker::replication::{self, Divergence};
 use felix_broker::{Broker, LogKind};
 use felix_router::{Route, ShardKey, ShardKind};
 use felix_storage::StorageId;
+use felix_storage::disk_log::Membership;
 use felix_wire::internal::{
     ErrorCode, Fence, FenceElection, FenceOk, InternalMessage, PeerCapabilities, ReplicaLog,
     ReplicaSetView, ReplicateFetch, ShardRef,
@@ -44,7 +45,7 @@ use crate::metrics;
 use crate::peer::{PeerError, PeerRequester};
 use crate::replica::last_generation;
 
-mod joint;
+pub(crate) mod joint;
 
 pub use joint::Joint;
 use joint::JointSets;
@@ -137,6 +138,34 @@ pub async fn fence_shard<R: PeerRequester>(
     lease_fallback: bool,
     joint: Option<&Joint<'_>>,
 ) -> Outcome {
+    fence_shard_as(
+        requester,
+        broker,
+        local_node_id,
+        key,
+        route,
+        lease_fallback,
+        joint,
+        None,
+    )
+    .await
+}
+
+/// [`fence_shard`], for a broker standing for election when `candidacy` is
+/// given: the fence says so, and carries the set the candidate keeps, with
+/// its own generation, rather than the route's. Standing changes no set, so
+/// the kept set is not rewritten either.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn fence_shard_as<R: PeerRequester>(
+    requester: &R,
+    broker: &Arc<Broker>,
+    local_node_id: &str,
+    key: &ShardKey,
+    route: &Route,
+    lease_fallback: bool,
+    joint: Option<&Joint<'_>>,
+    candidacy: Option<&crate::election::Candidacy>,
+) -> Outcome {
     let replicas: Vec<_> = route
         .replicas
         .iter()
@@ -171,9 +200,10 @@ pub async fn fence_shard<R: PeerRequester>(
     let shard = crate::incarnation::shard_ref(broker, key, route.generation);
     let reported_ids = route.fence_storage_ids.as_deref();
     // The set this leader counts, for replicas that check sets.
-    let set = requester
-        .offers_election()
-        .then(|| crate::replica_set::view(route, None));
+    let set = requester.offers_election().then(|| match candidacy {
+        Some(candidacy) => candidacy.set.clone(),
+        None => crate::replica_set::view(route, None),
+    });
     let own_logs = async {
         let mut caught_up_from = None;
         for &kind in logs {
@@ -236,8 +266,17 @@ pub async fn fence_shard<R: PeerRequester>(
             }
             // Under `joint_fence` a fence whose set being left is unknown
             // stays pending rather than fence the new set alone.
-            let under_joint = match (joint, set) {
-                (Some(joint), Some(set)) => {
+            let under_joint = match (joint, set, candidacy) {
+                // A candidate fences the set it keeps and the set that one is
+                // leaving, if a change is pending (`FenceMembers`).
+                (Some(joint), Some(set), Some(candidacy)) => {
+                    let leaving = candidacy.leaving.clone().unwrap_or(Membership {
+                        generation: set.generation,
+                        members: Vec::new(),
+                    });
+                    Some(joint::across(requester, local_node_id, route, set, leaving, joint).await)
+                }
+                (Some(joint), Some(set), None) => {
                     match joint::sets(requester, &log, local_node_id, route, set, joint).await {
                         Ok(fenced) => Some(fenced),
                         Err(why) => return Err(Outcome::pending(why, Vec::new())),
@@ -268,10 +307,11 @@ pub async fn fence_shard<R: PeerRequester>(
                 reported_ids,
                 set,
                 joint,
+                candidacy.is_some(),
             )
             .await;
             caught_up_from = caught_up_from.or(fenced?);
-            if set.is_some() {
+            if set.is_some() && candidacy.is_none() {
                 keep_own_set(
                     &log,
                     local_node_id,
@@ -354,6 +394,7 @@ async fn fence_log<R: PeerRequester>(
     reported_ids: Option<&BTreeMap<String, String>>,
     set: Option<&ReplicaSetView>,
     joint: Option<&JointSets>,
+    candidate: bool,
 ) -> Result<Option<String>, Outcome> {
     // Answers until a majority, this broker included, has taken the fence.
     // Later answers are not waited for: the model opens on the first majority.
@@ -386,7 +427,7 @@ async fn fence_log<R: PeerRequester>(
             // holds up only its own answer.
             let election = match (joint, set) {
                 (Some(joint), Some(set)) => Some(FenceElection {
-                    candidate: false,
+                    candidate,
                     set: set.clone(),
                     leaving: Some(joint.leaving.clone()),
                 }),
@@ -398,7 +439,7 @@ async fn fence_log<R: PeerRequester>(
                     offered
                         .is_some_and(|offered| offered.contains(PeerCapabilities::ELECTION))
                         .then(|| FenceElection {
-                            candidate: false,
+                            candidate,
                             set: set.clone(),
                             leaving: None,
                         })

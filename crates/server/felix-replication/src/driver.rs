@@ -579,7 +579,11 @@ async fn fence_one<R: PeerRequester>(
                 .with_local_storage(marks.local_storage())
                 .with_replaced_storage(marks.non_voting_ready() && marks.replaced_storage())
         });
-    let outcome = promotion::fence_shard(
+    // This broker's own standing for election, if that is what the route is.
+    let candidacy = marks
+        .elections()
+        .and_then(|elections| elections.candidacy(&key, route.generation));
+    let outcome = promotion::fence_shard_as(
         requester,
         broker,
         router.local_node_id(),
@@ -587,6 +591,7 @@ async fn fence_one<R: PeerRequester>(
         &route,
         lease_fallback,
         joint.as_ref(),
+        candidacy.as_ref(),
     )
     .await;
     // A fence taken on another incarnation's logs, which a recreate at the

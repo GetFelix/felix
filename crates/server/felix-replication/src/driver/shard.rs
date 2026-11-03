@@ -21,7 +21,6 @@ use crate::reporter::{ShardReport, shard_report};
 use crate::throttle::{MoveThrottle, paced_destination};
 use crate::{
     FollowerCursor, Progress, Rebuilds, caught_up, lag_records, metrics, quorum_offset_without,
-    ship_once_with,
 };
 
 /// How much of the log one exchange may carry.
@@ -292,6 +291,12 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
 ) -> ShardPass<'a> {
     marks.track_incarnations(broker);
     let route = &route;
+    // Led by election at a generation the control plane did not name: the set
+    // stays the one the candidate stood on, and the report asks for adoption.
+    let elected = marks
+        .elections()
+        .and_then(|elections| elections.reported(&key, route.generation));
+    let set_stamp = elected.as_ref().map(|elected| elected.set_generation);
     let shard_key = key.clone();
     let key = &key;
     // Resolved per pass rather than cached: a cache shard's log is replaced
@@ -461,6 +466,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     // set before that is not known here is left for the fence, which then
     // stays pending, rather than kept without it.
     let kept = (electing
+        && elected.is_none()
         && log.set_generation() < route.generation
         && log.accepted_generation() >= route.generation)
         .then(|| {
@@ -872,7 +878,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                         let commit = quorum_shard
                             .then(|| marks.offset_at(&mark_key, incarnation, generation))
                             .flatten();
-                        let progress = ship_once_with(
+                        let progress = crate::ship::ship_once_stamped(
                             requester,
                             &log,
                             &shard,
@@ -881,6 +887,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                             MAX_BATCH_BYTES,
                             rebuilds,
                             commit,
+                            set_stamp,
                         )
                         .await;
                         if paced {
@@ -912,6 +919,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                             &mut cursor,
                             rebuilds,
                             Some(mark_now),
+                            set_stamp,
                         )
                         .await;
                     } else if ping_counters
@@ -925,6 +933,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                             counters,
                             rebuilds,
                             None,
+                            set_stamp,
                         )
                         .await;
                     }
@@ -1005,7 +1014,8 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                     .at_incarnation(incarnation)
                     .serving_by_round(by_round)
                     .with_joint_start(joint_start(tail, &counted))
-                    .with_holds_start(holders(&counted, &aux.counters.followers)),
+                    .with_holds_start(holders(&counted, &aux.counters.followers))
+                    .with_elected(elected.clone()),
                     &aux.counters.followers,
                 ),
                 offset,
@@ -1152,7 +1162,8 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                     .at_incarnation(incarnation)
                     .serving_by_round(by_round)
                     .with_joint_start(joint_start(tail, &counted))
-                    .with_holds_start(holders(&counted, &aux.counters.followers)),
+                    .with_holds_start(holders(&counted, &aux.counters.followers))
+                    .with_elected(elected.clone()),
                     &aux.counters.followers,
                 ),
                 offset,
@@ -1352,7 +1363,8 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         .at_incarnation(incarnation)
         .serving_by_round(by_round)
         .with_joint_start(joint_start(tail, &counted))
-        .with_holds_start(holders(&counted, &aux.counters.followers)),
+        .with_holds_start(holders(&counted, &aux.counters.followers))
+        .with_elected(elected.clone()),
         &aux.counters.followers,
     );
     // A follower missing some of that state would lose it if it led, so it is
@@ -2131,6 +2143,7 @@ async fn reship_last<R: PeerRequester>(
     cursor: &mut FollowerCursor,
     rebuilds: &Rebuilds,
     commit: Option<u64>,
+    set_stamp: Option<u64>,
 ) {
     let level = cursor.next_offset == cursor.confirmed;
     if cursor.halted.is_some()
@@ -2141,7 +2154,7 @@ async fn reship_last<R: PeerRequester>(
         return;
     }
     cursor.next_offset -= 1;
-    let progress = ship_once_with(
+    let progress = crate::ship::ship_once_stamped(
         requester,
         log,
         shard,
@@ -2150,6 +2163,7 @@ async fn reship_last<R: PeerRequester>(
         MAX_BATCH_BYTES,
         rebuilds,
         commit,
+        set_stamp,
     )
     .await;
     if !matches!(progress, Progress::Stored { .. }) && cursor.next_offset + 1 == cursor.confirmed {

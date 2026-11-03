@@ -1031,6 +1031,38 @@ impl ReplicaHandler {
     /// promoted leader fences those logs as well, after the shard's own, for
     /// where each ends: the answer is that log's.
     pub async fn fence(&self, sender: Option<&str>, request: Fence) -> InternalMessage {
+        // A candidate's fence on the shard's own log, from a sender that names
+        // itself: once taken, this replica routes the shard to it, so its
+        // batches pass the role check and clients are sent to it (rule 9).
+        let candidate = request
+            .election
+            .as_ref()
+            .filter(|election| election.candidate)
+            .filter(|_| matches!(request.log, ReplicaLog::Stream | ReplicaLog::Cache))
+            .zip(sender)
+            .zip(self.fleet.as_ref().and_then(|marks| marks.elections()))
+            .map(|((election, leader), elections)| {
+                let key = shard_key(&request.shard, log_kind(request.log));
+                let elected = crate::election::Elected {
+                    leader: leader.to_string(),
+                    generation: request.shard.generation,
+                    set: crate::replica_set::membership(&election.set),
+                    leaving: election
+                        .leaving
+                        .as_ref()
+                        .map(crate::replica_set::membership),
+                };
+                (Arc::clone(elections), key, elected)
+            });
+        let answer = self.fence_once(sender, request).await;
+        if let (Some((elections, key, elected)), InternalMessage::FenceOk(_)) = (candidate, &answer)
+        {
+            elections.record(key, elected);
+        }
+        answer
+    }
+
+    async fn fence_once(&self, sender: Option<&str>, request: Fence) -> InternalMessage {
         let correlation_id = request.correlation_id;
         let generation = request.shard.generation;
         let log_kind = log_kind(request.log);

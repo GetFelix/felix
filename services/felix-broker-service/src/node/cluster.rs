@@ -370,6 +370,19 @@ pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
             // written rather than a tick apart at each hop.
             let assignments_changed = Arc::new(tokio::sync::Notify::new());
             let routes_changed = Arc::new(tokio::sync::Notify::new());
+            // Leaderships the replicas elect, only where this broker checks
+            // sets: the routing feed lays them over the control plane's.
+            let elections = peers
+                .as_ref()
+                .filter(|pool| replication::peer::PeerRequester::offers_election(pool.as_ref()))
+                .map(|_| {
+                    let elections = Arc::new(replication::election::Elections::new(
+                        router.local_node_id(),
+                        Arc::clone(&assignments_changed),
+                    ));
+                    quorum_marks.set_elections(Arc::clone(&elections));
+                    elections
+                });
             let watch = tokio::spawn(shard_watch::run(
                 membership_client.clone(),
                 base_url.clone(),
@@ -392,6 +405,7 @@ pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
                     routes_changed: Arc::clone(&routes_changed),
                     joint_fence: Some(Arc::clone(fleet)),
                     prefetch,
+                    elections,
                 },
                 Some(shard_routing::CatalogSource {
                     client: membership_client.clone(),

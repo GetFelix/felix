@@ -328,11 +328,38 @@ async fn a_fence_carrying_a_set_ahead_of_its_generation_is_refused() {
         .await);
 }
 
-/// **A batch is stamped with its own generation**: a stamp that names another
-/// set is refused as retryable, even when the routing view has it, and the
-/// batch stores nothing.
+/// A batch stamped with a set this replica does not know, at another
+/// generation than the batch's own, is refused for now: no route has that
+/// set, so only a fence can carry it.
 #[tokio::test]
-async fn a_batch_stamped_with_another_generation_than_its_own_is_refused() {
+async fn a_batch_stamped_with_an_unknown_set_at_another_generation_is_refused() {
+    let (broker, _dir) = broker_with_storage().await;
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 6));
+    handler
+        .apply(SENDER, batch(6, 0, &["a"]), felix_broker::LogKind::Stream)
+        .await;
+    knows_set(&broker, 3).await;
+
+    let answer = handler
+        .apply(
+            SENDER,
+            stamped(6, 1, &["b"], 5),
+            felix_broker::LogKind::Stream,
+        )
+        .await;
+
+    assert_eq!(refusal(&answer).code, ErrorCode::StaleRoute);
+    assert!(refusal(&answer).code.is_retryable());
+    assert_eq!(stream_log(&broker).await.set_generation(), 3);
+    assert_eq!(held(&broker).await, vec!["a"]);
+}
+
+/// **An elected leader's batch is taken.** It stamps the set it stood on,
+/// which is older than the generation it leads, since standing does not
+/// change the set. The replica keeps that set, so there is nothing to learn
+/// (`SetCurrent`).
+#[tokio::test]
+async fn a_batch_stamped_with_the_set_this_replica_keeps_is_taken() {
     let (broker, _dir) = broker_with_storage().await;
     let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 6));
     handler
@@ -348,8 +375,10 @@ async fn a_batch_stamped_with_another_generation_than_its_own_is_refused() {
         )
         .await;
 
-    assert_eq!(refusal(&answer).code, ErrorCode::StaleRoute);
-    assert!(refusal(&answer).code.is_retryable());
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "expected the batch to be stored, got {answer:?}"
+    );
     assert_eq!(stream_log(&broker).await.set_generation(), 5);
-    assert_eq!(held(&broker).await, vec!["a"]);
+    assert_eq!(held(&broker).await, vec!["a", "b"]);
 }

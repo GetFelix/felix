@@ -657,6 +657,58 @@ pub fn routing_table_from(
     )
 }
 
+/// `assignments` with the leaderships the replicas elected laid over them
+/// (`felix_replication::election`): the lifecycle opens one this broker
+/// stood for as a promotion, and the routes send its followers' clients and
+/// batches to it. Each stands until the control plane names its generation
+/// or a newer one.
+fn with_elected(
+    mut assignments: std::collections::HashMap<ShardKey, crate::shards::watch::ShardAssignment>,
+    elections: &felix_replication::election::Elections,
+) -> std::collections::HashMap<ShardKey, crate::shards::watch::ShardAssignment> {
+    if elections.is_empty() {
+        return assignments;
+    }
+    let by_router_key: HashMap<felix_router::ShardKey, ShardKey> = assignments
+        .keys()
+        .map(|key| (to_router_key(key), key.clone()))
+        .collect();
+    let elected = elections.overlay(|key| {
+        by_router_key
+            .get(key)
+            .and_then(|key| assignments.get(key))
+            .map(|assignment| assignment.generation)
+    });
+    for (key, elected) in elected {
+        let Some(assignment) = by_router_key
+            .get(&key)
+            .and_then(|key| assignments.get_mut(key))
+        else {
+            continue;
+        };
+        assignment.replicas = elected
+            .set
+            .members
+            .iter()
+            .map(|member| member.node.clone())
+            .filter(|node| *node != elected.leader)
+            .collect();
+        assignment.member_storage_ids = elected
+            .set
+            .members
+            .iter()
+            .filter_map(|member| Some((member.node.clone(), member.storage?.to_hex())))
+            .collect();
+        assignment.leader = elected.leader;
+        assignment.generation = elected.generation;
+        assignment.state = "active".to_string();
+        assignment.successor = None;
+        assignment.fence_storage_ids.clear();
+        assignment.pending_set = None;
+    }
+    assignments
+}
+
 /// The shards `after` names `local` a follower of, by key and incarnation,
 /// that `before`, the assignments the feed last applied, did not. Nothing
 /// while `before` is empty, as in the first view after a start, whose
@@ -716,6 +768,9 @@ pub struct FeedState {
     /// follower, before the routes are even published, so the read is
     /// usually done before the leader's first request.
     pub prefetch: Option<felix_replication::confirmed::Prefetch>,
+    /// Leaderships the replicas elected, laid over the control plane's
+    /// assignments. Notifies `assignments_changed` when it changes.
+    pub elections: Option<Arc<felix_replication::election::Elections>>,
 }
 
 /// What the feed needs to read the node catalog.
@@ -756,6 +811,7 @@ pub fn spawn_feed(
         routes_changed,
         joint_fence,
         prefetch,
+        elections,
     } = state;
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(interval);
@@ -784,6 +840,10 @@ pub fn spawn_feed(
                         HashMap::new()
                     },
                 )
+            };
+            let assignments = match &elections {
+                Some(elections) => with_elected(assignments, elections),
+                None => assignments,
             };
             if let Some(prefetch) = &prefetch {
                 prefetch.named(newly_named(&applied, &assignments, ingress.local_node_id()));

@@ -124,9 +124,16 @@ impl ReplicaHandler {
         if let Some(refusal) = stale_set(correlation_id, key, log, stamped) {
             return Some(refusal);
         }
-        // A leader stamps its route generation, which is the batch's own. Any
-        // other stamp is refused as StaleRoute (retried) rather than StaleSet,
-        // which would halt a leader that is not at fault.
+        // The set this replica keeps: nothing to learn (`SetCurrent` in the
+        // model). An elected leader stamps it below its own generation, since
+        // standing does not change the set it was fenced on.
+        if stamped == log.set_generation() {
+            return None;
+        }
+        // A leader the control plane named stamps its route generation, which
+        // is the batch's own. Any other stamp is refused as StaleRoute
+        // (retried) rather than StaleSet, which would halt a leader that is
+        // not at fault.
         if stamped != generation {
             metrics::record_replicated(metrics::OUTCOME_REFUSED);
             return Some(refused(
@@ -137,9 +144,6 @@ impl ReplicaHandler {
                     "the set of generation {stamped} does not match the batch's generation {generation}"
                 ),
             ));
-        }
-        if stamped == log.set_generation() {
-            return None;
         }
         let snapshot = self.router.snapshot();
         let Some(route) = snapshot

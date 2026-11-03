@@ -50,6 +50,8 @@ pub struct QuorumMarks {
     status: std::sync::OnceLock<Arc<crate::status::ShardStatusBoard>>,
     /// The storage identity of this broker's directory, set once it is known.
     local_storage: std::sync::OnceLock<(felix_storage::StorageId, bool)>,
+    /// Leaderships the replicas elected, set where this broker may stand.
+    elections: std::sync::OnceLock<Arc<crate::election::Elections>>,
     /// A test's leave to mark wiped copies before [`NON_VOTING_READY`].
     non_voting: bool,
     /// When each shard's timeout was last logged.
@@ -249,6 +251,16 @@ impl QuorumMarks {
     /// the control plane last registered this node under another one.
     pub fn set_local_storage(&self, storage: felix_storage::StorageId, replaced: bool) {
         let _ = self.local_storage.set((storage, replaced));
+    }
+
+    /// Where this broker records the leaderships the replicas elected. Only
+    /// the first call counts.
+    pub fn set_elections(&self, elections: Arc<crate::election::Elections>) {
+        let _ = self.elections.set(elections);
+    }
+
+    pub(crate) fn elections(&self) -> Option<&Arc<crate::election::Elections>> {
+        self.elections.get()
     }
 
     pub(crate) fn local_storage(&self) -> Option<felix_storage::StorageId> {

@@ -267,6 +267,20 @@ pub(super) async fn sets<R: PeerRequester>(
             members: Vec::new(),
         },
     };
+    Ok(across(requester, local_node_id, route, set, before, joint).await)
+}
+
+/// The fence for `route` leaving `before`: jointly when the voters differ.
+/// A candidate passes the set it keeps as leaving, since standing changes no
+/// set and the route's generation is one no assignment wrote.
+pub(super) async fn across<R: PeerRequester>(
+    requester: &R,
+    local_node_id: &str,
+    route: &Route,
+    set: &ReplicaSetView,
+    before: Membership,
+    joint: &Joint<'_>,
+) -> Fenced {
     let new_voters: BTreeSet<String> = set
         .members
         .iter()
@@ -298,10 +312,10 @@ pub(super) async fn sets<R: PeerRequester>(
     });
     // An empty set being left is no change to fence across, as in the model.
     if before.members.is_empty() || (!replaced && old_voters.iter().all(|old| *old == new_voters)) {
-        return Ok(Fenced {
+        return Fenced {
             before,
             joint: None,
-        });
+        };
     }
 
     let route_nodes = std::iter::once(&route.leader).chain(&route.replicas);
@@ -348,13 +362,13 @@ pub(super) async fn sets<R: PeerRequester>(
         new_voters,
         local: local_node_id.to_string(),
     };
-    Ok(Fenced {
+    Fenced {
         before,
         joint: Some(joint),
-    })
+    }
 }
 
-fn view(set: &Membership) -> ReplicaSetView {
+pub(crate) fn view(set: &Membership) -> ReplicaSetView {
     ReplicaSetView {
         generation: set.generation,
         members: set

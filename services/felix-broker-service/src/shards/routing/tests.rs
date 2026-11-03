@@ -410,6 +410,7 @@ mod feed {
                 routes_changed: Arc::default(),
                 joint_fence: None,
                 prefetch: None,
+                elections: None,
             },
             router,
         )
