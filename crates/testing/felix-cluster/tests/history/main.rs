@@ -155,7 +155,7 @@ async fn adversarial_faults_heal_and_every_shard_serves_again() {
         "adversarial campaign: seed {seed}, mode {mode}; rerun with \
          FELIX_HISTORY_SEED={seed} FELIX_HISTORY_MODE={mode}"
     );
-    let mut nemesis = RoundRobin::new(RandomNemesis::adversarial().kinds().to_vec());
+    let mut nemesis = RoundRobin::new(adversarial_order());
     let history = run_checked(&campaign, &mut nemesis).await;
 
     let healed: BTreeSet<String> = nemesis
@@ -169,17 +169,34 @@ async fn adversarial_faults_heal_and_every_shard_serves_again() {
         .collect();
     // An isolation that forced no failover is logged as one that could not
     // be injected, so a healed one is a partition that caused a failover.
-    for kind in [
-        FaultKind::Isolate,
-        FaultKind::KillTwo,
-        FaultKind::RestartLoop,
-    ] {
+    for kind in ASSERTED_ADVERSARIAL_KINDS {
         assert!(
             healed.contains(&format!("{kind:?}")),
             "seed {seed}: no {kind:?} was injected and healed; picked {:?}",
             nemesis.picked,
         );
     }
+}
+
+/// The adversarial kinds the test requires to have been injected and healed.
+const ASSERTED_ADVERSARIAL_KINDS: [FaultKind; 3] = [
+    FaultKind::Isolate,
+    FaultKind::KillTwo,
+    FaultKind::RestartLoop,
+];
+
+/// The adversarial kinds with [`ASSERTED_ADVERSARIAL_KINDS`] first. The
+/// seed only varies timings and targets, so a slow run that fits fewer
+/// faults into the duration would otherwise stop before a kind listed late
+/// and fail the coverage check for a reason that is not a Felix bug.
+fn adversarial_order() -> Vec<FaultKind> {
+    let listed = RandomNemesis::adversarial();
+    let rest = listed
+        .kinds()
+        .iter()
+        .filter(|kind| !ASSERTED_ADVERSARIAL_KINDS.contains(kind))
+        .copied();
+    ASSERTED_ADVERSARIAL_KINDS.into_iter().chain(rest).collect()
 }
 
 /// Long enough for [`RoundRobin`] to go round a power loss and a control
@@ -421,4 +438,27 @@ impl Nemesis for CacheLeader {
         self.next += 1;
         Some(fault)
     }
+}
+
+#[test]
+fn adversarial_order_reaches_every_asserted_kind_first() {
+    let order = adversarial_order();
+    let mut head = order[..ASSERTED_ADVERSARIAL_KINDS.len()].to_vec();
+    head.sort_by_key(|kind| format!("{kind:?}"));
+    let mut asserted = ASSERTED_ADVERSARIAL_KINDS.to_vec();
+    asserted.sort_by_key(|kind| format!("{kind:?}"));
+    assert_eq!(head, asserted, "asserted kinds must be picked first");
+
+    let mut all: Vec<_> = order.iter().map(|kind| format!("{kind:?}")).collect();
+    all.sort();
+    let mut listed: Vec<_> = RandomNemesis::adversarial()
+        .kinds()
+        .iter()
+        .map(|kind| format!("{kind:?}"))
+        .collect();
+    listed.sort();
+    assert_eq!(
+        all, listed,
+        "no adversarial kind may be dropped or repeated"
+    );
 }

@@ -446,7 +446,8 @@ faults a failing run printed, implement `Nemesis`.
 > and injects and heals at least one fault of each family. The order puts a
 > shard move fourth and a drain sixth, so both run on every PR.
 > `adversarial_faults_heal_and_every_shard_serves_again`: a 150-second
-> lease-free campaign on four brokers that goes round the compound kinds
+> lease-free campaign on four brokers that goes round the compound kinds,
+> the three it checks for first so a slow run cannot end before them,
 > leaves a valid history, every shard serves again after each heal, and at
 > least one `Isolate`, one `KillTwo` and one `RestartLoop` are injected and
 > healed. The healed `Isolate` means a partition caused a failover.
