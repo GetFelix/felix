@@ -40,7 +40,8 @@ pub enum MoveStep {
     /// The leader has stopped. `to` leads from the next generation.
     CutOver { from: String, to: String },
     /// A move's destination, or a follower being copied in, stopped being
-    /// live before it finished; its staging is undone.
+    /// live before it finished, or a staged balance move met a broker down;
+    /// its staging is undone. After the fence, the leader serves again.
     Abandon { successor: String },
     /// A move's destination, or a follower being copied in, stopped
     /// following: its leader reported it halted for `reason`. Undone as for
@@ -172,6 +173,9 @@ pub enum Blocked {
     DestinationHalted { node: String, reason: String },
     /// A move is wanted, and placement is paused.
     Paused,
+    /// A move for balance is wanted, and a broker is down or a copy is being
+    /// restored. It starts once that is over.
+    Recovering,
     /// The set is above the replication factor, and no follower can go yet:
     /// a report at this generation does not show the rest caught up without
     /// one of them.
@@ -204,6 +208,10 @@ impl std::fmt::Display for Blocked {
                 "no live node can take this shard: the copy on {node} is halted ({reason})"
             ),
             Self::Paused => write!(f, "placement is paused"),
+            Self::Recovering => write!(
+                f,
+                "a broker is down or a copy is being restored; moves for balance wait until that is over"
+            ),
             Self::OverFactor => write!(
                 f,
                 "waiting for the replicas to catch up before dropping one above the replication factor"

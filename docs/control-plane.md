@@ -1502,9 +1502,10 @@ down is left where it is: a rolling restart would otherwise copy every shard
 once per node.
 
 A move stops safely at every step. A destination that stops being live is
-dropped from the move (`abandon`) or, after the fence, passed over for
-another caught-up replica or the old leader itself, which takes the shard
-back at a new generation. A leader that dies mid-move is a failover, where
+dropped from the move (`abandon`). After the fence, the old leader takes the
+shard back at once at a new generation, unless it has already reported
+drained; then the cut-over goes to another caught-up replica or the old
+leader itself. A leader that dies mid-move is a failover, where
 the successor is a candidate like any other replica, except on a durable
 `Quorum` stream: there a broker from before every change of leader was
 fenced would open the shard as a cut-over, without the fence, so failover
@@ -1560,6 +1561,26 @@ to the broker's leaderships before its follower copies: clients feel a
 leader, and a broker stopping for a restart waits only until it leads
 nothing.
 
+**Balancing waits while the cluster recovers.** While any broker is down
+or has left, and was last heard from within `shard_restore_after_ms` (five
+minutes when that is `0`), or any restore is copying a shard back, placement
+starts no move for balance: not for a stream's spread, not for the cluster's
+totals, and not to spread a zone. A balance move already staged is dropped
+(`abandon`) before it fences, which also frees its move slot for a drain or a
+restore. A zone reseat already staged and caught up on a stream that
+fences its seats waits too, instead of fencing a leader that is busy; it
+stays a follower meanwhile. `admin plan` lists the held shards as waiting
+for the recovery. Failover is not held: a dead
+broker's shards get new leaders in the same pass as always. Drains,
+restores and an operator's moves go on too. The reason is what a fence costs
+during a failover. The brokers left are opening the dead broker's shards,
+and a leader fenced then can take minutes to report drained, refusing the
+shard's writes the whole time. Caches and the system streams are the worst
+case, since every client waits on them. The restore window bounds the hold,
+so a broker that never comes back stops balancing for at most that long. A
+broker scaled in gracefully counts too: a broker added within five minutes of
+another leaving gets its shards once that window has passed.
+
 The limits hold across instances. A move is started from a read that saw a
 free slot, and the write lands only if no other placement write landed
 since that read (the placement token above), so of two instances that each
@@ -1579,11 +1600,23 @@ A move that has been fenced is not timed out. The leader has stopped
 serving; going back means a new generation and every client following the
 shard twice, while going on waits for at most the lag bound's worth of copy.
 An operator can still take one back (see [Operator controls](#operator-controls)).
-A destination that dies after the fence, while it is still copying the
-remainder, would hold the drained report forever; it is dropped at a new,
-still fenced generation, the leader reports drained against the followers it
-has, and the cut-over picks one of them or hands the shard back to the
-leader.
+
+A destination that stops being live after the fence (marked down, or
+draining) would hold the drained report forever, since the leader waits for it
+to be level. The next pass
+gives the move up (`abandon`) with the same write as an operator's cancel:
+the leader serves again at a new generation and the destination's staged
+copy is dropped. Nobody has led since the fence, so the leader still holds
+every write it accepted, and the write is conditional on the fenced
+generation, so a cut-over cannot also land. The shard is not held to the
+give-up backoff above, because the move failed through no fault of its own.
+So a dead destination keeps the shard fenced only until the broker is marked
+down (about 19 s after its last heartbeat, by default; see
+[Broker liveness](#broker-liveness)) plus one pass, rather than for
+`shard_fence_timeout_ms`. A halted destination is different: its leader is
+reporting, so it is dropped at a new, still fenced generation, the leader
+reports drained against the followers it has, and the cut-over picks one of
+them or hands the shard back to the leader.
 
 #### Restoring the replication factor
 
@@ -1631,7 +1664,7 @@ after the fence.
 | `felix_shard_replicas_missing` | the copies those shards are missing between them |
 | `felix_shard_replicas_halted` | copies whose leader reports it has stopped shipping to them; counted as missing, kept out of placement, and replaced after the restore delay |
 | `felix_shard_moves_timed_out_total` | moves and follower replacements abandoned at the move timeout, and restores dropped as `stalled`; a steady count means a copy that cannot finish |
-| `felix_shard_moves_waiting` | moves that could not advance in the last pass: a destination not catching up, a leader not reporting drained, or a move limit holding a drain back |
+| `felix_shard_moves_waiting` | moves that could not advance in the last pass: a destination not catching up, a leader not reporting drained, a move limit holding a drain back, or a move for balance held while the cluster recovers |
 | `felix_shard_assignment_write_conflicts_total` | placements and move steps not written because another instance changed the shard after this pass read it; the next pass re-plans |
 | `felix_placement_writes_fenced_total` | passes and operator requests that stopped because another placement write landed after they read the store; the pass re-plans, the request is decided again |
 | `felix_placement_lease_held` | 1 on the instance holding the placement lease; summed across instances it is 1, or 0 while a lease that was not released runs out |
