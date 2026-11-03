@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793716905904,
+  "lastUpdate": 1793728029624,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -43732,6 +43732,58 @@ window.BENCHMARK_DATA = {
             "range": "79200.25",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1554993.80\nmean: 1519844.70\nstdev: 79200.25\ncv: 5.21%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "36fab61a9703016bc2bd8c8c01bf368d0503da98",
+          "message": "fix(replication): count a cache's counter log on both sets during a set change (#1830) (#1842)\n\nFixes #1830.\n\n## Reachable on main\n\nWhile a set change is pending, `counter_level` (`driver/shard.rs`) counted a `Quorum` cache's counter log on the route's set alone, which is the new set. `joint_start` read only the cache log. Nothing else orders the counter log against the flip:\n\n- The cut-over is safe on its own. The drained report needs the successor level on every aux log (`drain_ready`), and the cut-over picks the new leader only from the report's `caught_up`, which leaves out a follower behind on counters. So the new leader holds every counter update.\n- The new set is not. When the successor is an existing follower, `drain_ready` checks only that follower, and `replicas_after_cut_over` (`placement/moves.rs`) drops a draining or dead old leader and tops up with a fresh node. RF 3 example: the old set is {L0, f1, f2}, and a counter update is acknowledged on {L0, f1}. The successor is f1 and L0 is draining, so the new set is {f1, f2, n}. The leaving set is {f1, L0, f2}, and f1 plus f2 hold the cache log's start record, so it reaches both majorities. The counter exchange ships ahead of the cache records but does not gate them: a cut counter slice or a failed counter request still lets the records through. The control plane then takes {f1, f2, n}, where only f1 holds the update.\n- Counter updates acknowledged *during* the pending change were counted on the new set alone at any RF. A dropped change (timeout, cancel or consistency change) writes the old set back, where only the leader may hold them. Same for a leader that cannot read the pending change: the cache log acknowledges nothing there, but the counters acknowledged on the new set.\n\n## Fix\n\n- `counter_level` counts the counter log on both majorities while a change is pending (`held_by_both`, as for the shard's own mark), and counts nothing when the route is pending but the leader cannot count both sets.\n- It also says whether the counter log's start record for this leader's current stint is held (`CounterLevel::start_held`), and `joint_start` requires that alongside the cache log's start. The stint start is the one `own_start` uses for the shard's own log since #1787: an earlier stint at the same generation may have acknowledged updates on the old set alone. The three report sites compute the counter level before the report so the joint start can read it.\n- A cache whose counter log does not open on a pass withholds the joint start for that pass, instead of being read as a cache without counters.\n\n## Tests\n\nIn `driver/tests/joint_acks.rs`. Each runs with the counter mark decided by the report and by the followers (`fenced_caches`, the setting a cache with a pending set runs under). Counter updates are acknowledged at generation 4 on `{a, b}` of `{a, b, c}`, then the leader begins generation 5 with the set moving to `{a, c, d}`.\n\n- `a_flip_waits_for_the_counter_log_on_both_majorities`: the cache log reaches `c` and `d` and the counters reach neither. On main the joint start is reported, so the control plane takes `{a, c, d}` with the updates on `a` alone. **Fails on main.**\n- `a_pending_change_counts_counters_on_both_majorities`: counters on `d` only. On main the counter mark reaches the tail on the new set alone. **Fails on main.**\n- `without_joint_fence_a_pending_change_acknowledges_no_counter_update`: pending route, feature off. On main the counters are acknowledged. **Fails on main.**\n- `a_flip_follows_the_counter_log_on_both_majorities`: `c` holds both logs, so the start is reported and the counter mark reaches the tail.\n- `the_counter_logs_joint_start_waits_for_the_current_stints_start`: the counter log has a second start record at the same generation, and `c`, `d` hold everything before it. Counted from the history's start, the joint start is reported. **Fails on the history start.**\n- `a_counter_log_that_does_not_open_reports_no_joint_start`: the counter store is at another incarnation, so the counter log does not open. **Fails without the guard.**\n\nRevert check (after merging main with #1787, #1811, #1846): with `shard.rs` from main, the three above plus the stint test fail under both settings. Each of the last two fails with its own change reverted. With the fix, `felix-replication` lib: 611 pass.\n\n## Cost\n\nThere is no hot-path cost. Stream shards do the same work as before: `counters_of` returns `None` at once, and `joint_start` returns at `pending?`. Cache shards add one `Option` match and one comparison per pass, with no I/O, no awaits and no locks. Moving `counters_of` ahead of the report changes when it runs, not how often.\n\n## RF 3 A/B\n\nRun 41670976571: a = main 56150009c, f = 1c1159338 (this PR merged with main, before the review fix, which adds one check per cache pass). 3 shards x 6 alternating rounds, 18 pairs, geomean f/a. No failed publishes or reads on either side.\n\n| phase | msgs/s | p50 | p99 | p999 | read p50 | read p99 |\n|---|---|---|---|---|---|---|\n| steady | 0.996 | 1.007 | 1.003 | 0.966 | 1.009 | 1.002 |\n| promotion burst | 1.008 | 1.009 | 1.057 | 0.926 | 0.999 | 1.215 |\n\nSteady spread (sd of log ratio) is 0.03 to 0.05 except p999 (0.22). Burst spread is 0.12 to 0.57, so its tail ratios are noise. The earlier run on the pre-merge head (41570274190) read the same: steady within 1.5%, burst tails noisy both ways.\n\n## Model change needed (spec lane, docs/formal not touched here)\n\nThe set-change configurations have no counter log: `CpFlip` reads `log` only, and the `Counters` configs have no `Swap`/`JointFence`. To cover this:\n\n1. Add the counter log (`clog`) to the `Swap` + `JointFence` configurations. The leader appends a counter-log start record at the new generation, as it does in `log`.\n2. Under `JointFence`, the counter mark (`HeldAtGen` over `clog`) counts both majorities while a change is pending, as `log` does.\n3. `CpFlip` (or the leader's report it reads) requires the counter log's start record on both majorities, not just `log`'s.\n4. Invariant: every acknowledged counter update is in the counter log of a majority of the control plane's set after `CpFlip`, and of the old set after a drop.\n5. Expected counterexample with step 3 removed, at RF 3: the old set {L0, f1, f2} with an update on {L0, f1}, the successor f1, L0 left out and a fresh member added, and f2 behind on counters.\n\nStill out of scope here: promotion fences the counter log on the new set alone (`promotion.rs`, \"The counter log carries no set\"). With a change pending, a promotion happens today only at the cut-over, whose leader already holds every counter update, or by adopting an elected leader. The election driver is not built yet. When it is, a leader elected during a pending change needs the counter log fenced on both sets too, for the same pre-cut-over updates. The model change above should include that step.\n\n## Design calls\n\n- The tail-read failure case of `counter_level` (returns `None`) withholds the joint start on a cache that has a counter log, rather than reporting on the cache log alone.\n- A cache whose counter log this pass could not open withholds the joint start (decided from the broker having a counter store), rather than reporting on the cache log alone.\n- The counter mark still counts from the history's start; only `start_held` and the start holders count from the stint. Records between the two starts are this generation's own, and only the flip needs them on the new set.\n- `start_held` requires a recorded counter-log generation start. `joint_fence` requires `generation_start`, so a leader under it always records one.\n- Spec pairing: the model change is spec PR #1848 (the spec lane owns `docs/formal`); the commits carry `Spec-Unaffected` lines pointing there.",
+          "timestamp": "2026-11-03T09:41:19-08:00",
+          "tree_id": "cedf7b0eedb90f76c0008e298b1d3ad0782346ac",
+          "url": "https://github.com/GetFelix/felix/commit/36fab61a9703016bc2bd8c8c01bf368d0503da98"
+        },
+        "date": 1793728029053,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 530466.16,
+            "range": "7946.02",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 530466.16\nmean: 533873.43\nstdev: 7946.02\ncv: 1.49%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 530466.16,
+            "range": "7946.02",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 530466.16\nmean: 533873.43\nstdev: 7946.02\ncv: 1.49%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 127851.58,
+            "range": "508.77",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 127851.58\nmean: 127910.18\nstdev: 508.77\ncv: 0.40%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1278515.77,
+            "range": "5087.73",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1278515.77\nmean: 1279101.78\nstdev: 5087.73\ncv: 0.40%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
