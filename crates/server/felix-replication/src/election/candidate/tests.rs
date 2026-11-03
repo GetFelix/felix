@@ -180,6 +180,7 @@ fn ctx(broker: &Arc<Broker>, voters: Voters) -> Ctx<Voters> {
         marks,
         elections,
         suspects,
+        held_back: Default::default(),
     }
 }
 
@@ -319,7 +320,7 @@ async fn the_place_counts_the_voters_ahead() {
     let place = |c| {
         let ctx = ctx(&broker, voters(c));
         let log = log.clone();
-        async move { pre_vote(&ctx, &key(), &log, &set(3), 4).await }
+        async move { pre_vote(&ctx, &key(), &log, &set(3), 4).await.ok() }
     };
     assert_eq!(place(None).await, Some(0), "broker-c sorts after broker-b");
     assert_eq!(place(Some(PreVoteRefusal::LogBehind)).await, None);
@@ -399,12 +400,13 @@ async fn a_slow_dial_carries_over_to_the_next_round() {
         marks,
         elections,
         suspects,
+        held_back: Default::default(),
     };
     let log = shard_log(&ctx.broker, &key()).await.expect("log");
 
-    assert_eq!(pre_vote(&ctx, &key(), &log, &set(3), 4).await, None);
+    assert!(pre_vote(&ctx, &key(), &log, &set(3), 4).await.is_err());
     tokio::time::sleep(BACKOFF_FIRST_TOP).await;
-    assert_eq!(pre_vote(&ctx, &key(), &log, &set(3), 4).await, Some(0));
+    assert_eq!(pre_vote(&ctx, &key(), &log, &set(3), 4).await, Ok(0));
 }
 
 /// A failed round waits from the floor to a top that doubles to the cap.

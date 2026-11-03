@@ -73,6 +73,34 @@ struct Ctx<R> {
     marks: Arc<QuorumMarks>,
     elections: Arc<Elections>,
     suspects: Arc<Suspects>,
+    /// Why each shard last could not stand, so the reason is logged once
+    /// when it changes rather than every round.
+    held_back: std::sync::Mutex<HashMap<ShardKey, &'static str>>,
+}
+
+impl<R> Ctx<R> {
+    fn ineligible(&self, key: &ShardKey, why: &'static str) -> Round {
+        self.held_back(key, why, "");
+        Round::Ineligible
+    }
+
+    fn held_back(&self, key: &ShardKey, why: &'static str, answers: &str) {
+        let changed = self
+            .held_back
+            .lock()
+            .expect("held_back lock")
+            .insert(key.clone(), why)
+            != Some(why);
+        if changed {
+            tracing::info!(
+                stream = %key.stream,
+                shard = key.shard,
+                why,
+                answers,
+                "not standing for election",
+            );
+        }
+    }
 }
 
 /// Stand for every shard whose leader this broker suspects, until
@@ -98,6 +126,7 @@ pub fn spawn<R: PeerRequester + Send + Sync + 'static>(
         marks,
         elections,
         suspects,
+        held_back: Default::default(),
     });
     Some(tokio::spawn(run(ctx, shutdown)))
 }
@@ -194,16 +223,19 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
 ) -> Round {
     let local = ctx.router.local_node_id();
     let Some(log) = eligible_log(ctx, key).await else {
-        return Round::Ineligible;
+        return ctx.ineligible(key, "the shard does not acknowledge on its followers");
     };
     let Some(kept) = log.replica_set() else {
-        return Round::Ineligible;
+        return ctx.ineligible(key, "this copy keeps no replica set");
     };
     // A change pending on the kept set is left to the control plane: an
     // elected route names one set, so the followers' would not know which
     // set to leave. Costs availability only.
-    if kept.leaving.is_some() || kept.current.generation == 0 {
-        return Round::Ineligible;
+    if kept.leaving.is_some() {
+        return ctx.ineligible(key, "the kept replica set has a change pending");
+    }
+    if kept.current.generation == 0 {
+        return ctx.ineligible(key, "this copy keeps no replica set");
     }
     // Only a voter of the set it keeps stands (`Elect`: f \in mine[f],
     // ~NonVoter(f)).
@@ -213,7 +245,7 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
         .iter()
         .any(|member| member.node == local && !member.learner);
     if !votes || log.member_is_wiped(local) {
-        return Round::Ineligible;
+        return ctx.ineligible(key, "this copy does not vote in its kept set");
     }
     // A candidate fences only the set it keeps. If the control plane records
     // another set, a majority of that one could hold what this fence never
@@ -223,7 +255,10 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
         .recorded(key)
         .unwrap_or_else(|| Recorded::of_route(route));
     if !recorded.is(&kept.current) {
-        return Round::Ineligible;
+        return ctx.ineligible(
+            key,
+            "the control plane records another set, or a change pending",
+        );
     }
 
     // Above the route's generation too: the control plane may have named
@@ -238,10 +273,14 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
             .generation
             .saturating_add(ELECTION_GENERATION_WINDOW)
     {
-        return Round::Ineligible;
+        return ctx.ineligible(key, "past the generations the control plane adopts");
     }
-    let Some(place) = pre_vote(ctx, key, &log, &kept.current, generation).await else {
-        return Round::Failed;
+    let place = match pre_vote(ctx, key, &log, &kept.current, generation).await {
+        Ok(place) => place,
+        Err(answers) => {
+            ctx.held_back(key, "the pre-vote found no majority", &answers);
+            return Round::Failed;
+        }
     };
     tokio::time::sleep(PLACE_DELAY * place).await;
     // Someone may have stood meanwhile, or the leader come back.
@@ -344,8 +383,8 @@ async fn shard_log(broker: &Broker, key: &ShardKey) -> Option<StreamLog> {
 }
 
 /// Ask the other voters of `set` whether they would take `generation`.
-/// Returns this broker's place in the order to stand in, or `None` without a
-/// majority, itself included.
+/// Returns this broker's place in the order to stand in, or without a
+/// majority, itself included, the answers it got.
 ///
 /// The place counts voters ahead of it: those that refused because their
 /// log is ahead, and those that granted with a lower node id, which may hold
@@ -356,9 +395,12 @@ async fn pre_vote<R: PeerRequester + Send + Sync + 'static>(
     log: &StreamLog,
     set: &Membership,
     generation: u64,
-) -> Option<u32> {
+) -> Result<u32, String> {
     let local = ctx.router.local_node_id();
-    let end = log.tail_offset().await.ok()?;
+    let end = log
+        .tail_offset()
+        .await
+        .map_err(|err| format!("could not read the log's end: {err}"))?;
     let request = PreVote {
         correlation_id: 0,
         shard: crate::incarnation::shard_ref(&ctx.broker, key, generation),
@@ -407,6 +449,12 @@ async fn pre_vote<R: PeerRequester + Send + Sync + 'static>(
     .await;
     let mut granted = 1;
     let mut place = 0;
+    let heard = answers.iter().flatten().count();
+    let refused: Vec<String> = answers
+        .iter()
+        .flatten()
+        .filter_map(|(node, refusal)| Some(format!("{node}: {:?}", refusal.as_ref()?)))
+        .collect();
     for (node, refusal) in answers.into_iter().flatten() {
         match refusal {
             None => {
@@ -419,7 +467,15 @@ async fn pre_vote<R: PeerRequester + Send + Sync + 'static>(
             Some(_) => {}
         }
     }
-    (granted * 2 > voters.len()).then_some(place)
+    if granted * 2 > voters.len() {
+        Ok(place)
+    } else {
+        Err(format!(
+            "{granted} of {} voters with this broker, {heard} answered, refused by [{}]",
+            voters.len(),
+            refused.join(", ")
+        ))
+    }
 }
 
 /// Whether the shard opened at `generation`: its start record is written.
