@@ -28,8 +28,8 @@ jobs:
         uses: ./.github/actions/code-changed
         with:
           ignore: '^docs/|^docs-site/|\.md$|(^|/)coverage\.svg$'
-          # Tests read the client pages and tutorials; see ci.yml.
-          keep: '^docs-site/src/content/docs/(clients|tutorials)/'
+          # Tests read the client pages and tutorials and the felixctl reference; see ci.yml.
+          keep: '^docs-site/src/content/docs/(clients/|tutorials/|reference/felixctl\.md$)'
 
   # Self-hosted for pushes to main, GitHub-hosted for PRs; see ci.yml's test
   # job.
