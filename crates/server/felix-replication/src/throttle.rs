@@ -125,7 +125,7 @@ pub(super) fn paced_destination<'a>(
     }
     let others = followers
         .iter()
-        .filter(|f| f.node_id != successor && f.halted.is_none())
+        .filter(|f| f.node_id != successor && f.counts())
         .count();
     // `majority_of` counts the leader.
     (others + 1 >= majority_of(followers.len())).then_some(successor)

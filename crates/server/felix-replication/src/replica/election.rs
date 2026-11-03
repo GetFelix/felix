@@ -404,12 +404,18 @@ impl ReplicaHandler {
     /// while marked). Until then its group fences are refused, and as a
     /// leader its own group logs do not count. Run after a batch is stored on
     /// any of the shard's logs.
+    ///
+    /// Returns whether the copy is still a learner, which the answer to the
+    /// batch says ([`ReplicateOk::learner`]) so the leader leaves it out of
+    /// its marks. True as well when the shard's own log cannot be opened.
+    ///
+    /// [`ReplicateOk::learner`]: felix_wire::internal::ReplicateOk::learner
     pub(super) async fn admit_when_caught_up(
         &self,
         key: &felix_router::ShardKey,
         log_kind: felix_broker::LogKind,
         log: &felix_broker::StreamLog,
-    ) {
+    ) -> bool {
         let opened;
         let own = match super::own_kind(log_kind) {
             None => log,
@@ -418,12 +424,19 @@ impl ReplicaHandler {
                     .broker
                     .shard_log(kind, &key.tenant_id, &key.namespace, &key.stream, key.shard)
                     .await;
+                // Unread, the copy may be a learner, and a learner counted as
+                // a voter is the unsafe mistake.
                 match &opened {
                     Some(own) => own,
-                    None => return,
+                    None => return true,
                 }
             }
         };
+        self.admit(key, own).await;
+        self.is_learner(own)
+    }
+
+    async fn admit(&self, key: &felix_router::ShardKey, own: &felix_broker::StreamLog) {
         let learner = self.is_learner(own);
         if !learner && !self.is_wiped(own) {
             return;

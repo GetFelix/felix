@@ -112,9 +112,10 @@ never have dialled the one that shipped to it.
 | `1 << 9` | `ELECTION` | takes part in electing a leader without the control plane: reads a `Fence` that names the replica set and says whether the sender is a candidate (`ElectionFence`), a batch stamped with the set's generation (`SetStamped`), and answers `PreVote` (see "Electing without the control plane") |
 | `1 << 10` | `STORAGE_IDENTITY` | answers a `HelloCapable` that offers this bit with its storage identity (see "Storage identity" below) |
 | `1 << 11` | `NODE_INCARNATION` | answers a `HelloCapable` that offers this bit with its node incarnation, and closes the connection once that changes (see "Node incarnation" below) |
-| `1 << 12` | `LANE_RENEWAL` | offered by a caller: it replaces a request stream it gets no answer on, so the listener may drop a stream whose handler overran (see "The transport") |
+| `1 << 12` | `LANE_RENEWAL` | offered by a caller: it replaces a request stream it gets no answer on, so the listener may drop a stream whose in-order handler overran (see "The transport") |
 | `1 << 13` | `FORWARD_INCARNATION` | reads a forwarded publish or cache op inside an `Incarnated` frame, and refuses one whose incarnation is not the one its routes name (see "Naming the stream incarnation") |
 | `1 << 14` | `HEAD_TRIM` | reads a head trim's mark (byte `5`) in a records batch and stores the trim record, applying its floor on a `Quorum` stream only once its commit offset passes the record. A batch holding a trim goes only to a peer that offered it |
+| `1 << 15` | `LEARNER_ACKS` | offered by a caller: it reads `ReplicateLearnerOk`, so a follower whose copy is a learner answers it with that kind (see "A learner's answers" under "Replication") |
 
 #### Storage identity
 
@@ -540,6 +541,47 @@ reports buffered data: a follower acknowledging before its own fsync would let
 the leader believe a record had survived a failure it would not have survived,
 and under `Quorum` that belief is the guarantee.
 
+#### A learner's answers
+
+A *learner* is a copy that lost its storage and is catching up before it may
+vote again (see "A copy that lost its storage does not vote" in
+`docs/replication-design.md`). It stores batches like any follower, but the
+leader must not count its answers toward a majority. Before the wipe the copy
+may have promised a candidate a newer generation, and the candidate may open
+with that old answer. Counting the learner's new answer could then acknowledge
+a record the candidate's log does not have.
+
+The leader cannot see that the follower is a learner: the mark is in the
+follower's own copy of the replica set. So the follower says so. It answers a
+batch on any of the shard's logs (stream, cache, counters, group cursors, dead
+letters) with `ReplicateLearnerOk` (kind 47) instead of `ReplicateOk` while
+the shard's own log marks it a learner. The body is the same: the correlation
+id and `durable_offset`.
+
+The leader stores the batch as usual and moves the follower's position, but
+leaves the follower out of the commit mark and the counter mark until an
+answer on that log arrives as plain `ReplicateOk`. The learner still counts
+in the set's size, so in a set of three the leader and the third copy make
+the majority. A follower that cannot open the shard's own log answers as a
+learner, since it cannot tell.
+
+The leader tracks the flag per log. The batch that completes the catch-up
+may be on any of the shard's logs, and only its answer is a voter's. The
+other logs (records, counters, group cursors, dead letters) still hold their
+last learner answer. So when a follower answers a batch as a voter, the
+leader sends the last record again on each of its other logs that still say
+learner, in the same exchange, to get a fresh answer. A pass that finds a
+mark waiting on such a follower asks the same way. Only a voter's answer to
+an actual batch triggers this, so a copy that is still catching up is not
+asked again and again.
+
+Only a caller that offered `LEARNER_ACKS` gets kind 47. To any other the
+listener sends the answer as `ReplicateOk`, byte for byte what that caller
+always read. Such a caller counts the learner, as it did before the kind
+existed. That is safe without elections, where a learner takes batches only
+from the leader the control plane confirms, and that leader fenced without
+it. Every broker that can elect offers the bit.
+
 The batch checksum covers each payload's length as well as its bytes. Without
 the length, a batch resplit in transit hashes the same as the original, and a
 resplit batch is a different set of records, which is exactly the divergence the
@@ -906,11 +948,12 @@ an incarnation-0 route for a name that now has an incarnation does not arise.
 A follower asks each broker that leads a shard it follows whether it is there:
 `Ping` (kind 38), answered with `Pong` (kind 39). Both bodies are the
 correlation id alone. It goes on the connection's control lane, so it never
-waits behind a forwarded publish, and the answer comes from the broker's
-serving runtime rather than the transport task, so a broker whose runtime is
-stuck reads as unreachable. Sent only to a peer that offered `PING`; one that
-did not is not watched at all, so a rolling upgrade never reads as a dead
-leader.
+waits behind a forwarded publish. It is answered as soon as it arrives, so it
+never waits behind a slow fence either (see "The transport"). The answer comes
+from the broker's serving runtime rather than the transport task, so a broker
+whose runtime is stuck reads as unreachable. Sent only to a peer that offered
+`PING`; one that did not is not watched at all, so a rolling upgrade never
+reads as a dead leader.
 
 A leader that has not answered for `FELIX_LEADER_SUSPECT_AFTER_MS` is named
 in the follower's heartbeat, and the control plane promotes once a majority of
@@ -944,8 +987,8 @@ Typed, because they need different responses:
 `ReplicateFetch` 31, `ReplicateLabelledRecords` 32,
 `ReplicateLabelledFetch` 33, `ReplicateTimedRecords` 36,
 `ReplicateTimedFetch` 37, `Incarnated` 40, `ElectionFence` 41,
-`SetStamped` 42, `PreVote` 43, `PreVoteAnswer` 44, `LeaseForwardCacheOp` 45
-and `LeaseForwardCacheOk` 46. A peer
+`SetStamped` 42, `PreVote` 43, `PreVoteAnswer` 44, `LeaseForwardCacheOp` 45,
+`LeaseForwardCacheOk` 46 and `ReplicateLearnerOk` 47. A peer
 that predates any of them rejects the
 kind rather than misreading the body, which is why
 each is a new kind rather than a field on `ReplicateRecords`: this protocol
@@ -1064,7 +1107,7 @@ goes on its own class's streams:
 
 | Class | Streams | Carries |
 | --- | --- | --- |
-| Control | 1 | `Hello`, `Fence`, `ReplicateFetch`, `Ping` |
+| Control | 1 | `Hello`, `Fence`, `ReplicateFetch`, `PreVote`, `Ping` |
 | Forward | `FELIX_INTERNAL_STREAMS_PER_CONN` | `ForwardPublish`, `ForwardCacheOp` |
 | Replication | `FELIX_INTERNAL_STREAMS_PER_CONN` | every other `Replicate*` request, for every log |
 
@@ -1078,6 +1121,45 @@ keep it off forward streams on the sending side, and a broker answers forwards
 out of order on the serving side, so a link is safe once either end has the
 fix. A promoted leader serves nothing until its fence is answered, and a ping
 stuck behind a forward would read as a dead leader, hence the control stream.
+
+**The control stream is not served in order either.** A broker answers each
+`Fence`, `ReplicateFetch`, `PreVote` and `Ping` as it finishes, matched by
+correlation id, and reads the next request while earlier ones run. Without
+this, one slow request held up everything behind it on the stream. During a
+burst of shard creates, the promotion fences for the new shards would hold up
+the fences a leader sends to confirm cache reads, and the pings followers use
+to tell a leader is alive. A queue that lasted
+`FELIX_LEADER_SUSPECT_AFTER_MS` read as a dead leader
+([#1796](https://github.com/GetFelix/felix/issues/1796)). `Hello` is still
+answered before the next request is read, because every later request on the
+connection is checked against the identity it gives.
+
+Nothing depends on the order of the control stream. A requester that needs
+one request to happen before another waits for the first answer before it
+sends the second:
+
+- A promoted leader waits for a follower's `FenceOk` before it fetches that
+  follower's tail, and before it ships a batch at the new generation. The
+  batches go on replication streams anyway, which were never ordered with the
+  control stream.
+- Two fences for the same shard can still run at once. That was already true
+  for fences from two brokers, or from one broker with more than one
+  connection (`FELIX_INTERNAL_CONNS_PER_PEER`). Accepting a generation
+  re-checks the ballot under the log's own lock, so the higher generation
+  wins and a generation is promised to one leader whichever fence lands
+  first.
+- A ping touches no state.
+
+Every requester build matches answers by correlation id, so the change needs
+no capability bit: an older broker gets the same answers, sooner. A stream
+holds at most 1024 fences, tail fetches and pre-votes at once, the requester's
+default in-flight limit per peer (`FELIX_INTERNAL_MAX_INFLIGHT`), so a
+requester at its defaults rarely reaches it: only when requests it gave up on
+after its timeout are still running here, as in a long disk stall. Past that,
+a request is answered `Overload` at once and nothing is applied, so the stream
+never stops reading and a ping never waits behind a slow fence. Only 16 of the
+fetches run at a time, because each answer can hold 4 MiB; the rest wait off
+the stream. A ping needs no permit at all.
 
 Round-robin within a class does not reorder replication: the driver keeps at
 most one exchange outstanding per follower and log, and waits for its answer

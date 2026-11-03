@@ -243,7 +243,8 @@ record, and leaves unmarked records in it as before.
 ### Generation-start records
 
 **Bit 29** of `payload_len` marks a leader's generation-start record: the first
-record a leader writes at a new generation, before it serves. Its payload
+record a leader writes at a new generation, before it serves, and again when
+it opens a new stint at a generation it already started. Its payload
 is the generation, a big-endian `u64`, and it has no tag. It is the replication
 protocol's, not a client's: it lets the leader's quorum mark cover the records
 it inherited (`docs/replication-design.md`, "The generation-start record").

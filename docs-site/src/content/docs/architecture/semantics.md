@@ -4,9 +4,10 @@ title: "Delivery Semantics and Consistency Model"
 
 What Felix promises about delivery, ordering, durability, and consistency, and what it does not. Applications should rely on what is written here and nothing stronger.
 
+This is the reader-facing page. The engineering reference is [`docs/semantics.md`](https://github.com/GetFelix/felix/blob/main/docs/semantics.md).
+
 :::note[What is built and what is not]
-This page describes behaviour that exists and behaviour that is planned. Where
-they differ it says which. The [status table](/getting-started/what-felix-is-for/)
+This page describes behaviour that exists and says plainly what is not built. The [status table](/getting-started/what-felix-is-for/)
 is the authority per capability, and [Projections](/architecture/projections/)
 carries the test behind each claim about a semantic.
 :::
@@ -135,7 +136,12 @@ a broker that opted out can ask for commit acks on its own connections
 Under **`Quorum`**, the leader writes durably, ships the record to its replicas
 concurrently, and answers once a **majority of the replica set, counting
 itself**, holds it. On a set of three that is two, so one unreachable replica
-costs nothing. The leader waits for enough of them, not all.
+costs nothing. The leader waits for enough of them, not all. The replica set
+is the one the control plane assigned. A replica this broker has no address for
+yet, say because it could not read the cluster's node list at startup, still
+counts as a member that has not answered. It can delay an acknowledgement, or
+hold every one back until the node list loads when a majority is missing, but
+it never makes one easier to reach.
 
 `Quorum` does *not* change how the record is stored. The record is written the same way, to the
 same log, with the same fsync policy. What changes is what the acknowledgement

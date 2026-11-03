@@ -12,11 +12,10 @@ It is playable. A match runs through Felix from warmup to results: the
 simulator commits every tick, writes the `keyframe` key, and applies inputs
 from the input stream, and browsers reach it through felix-gateway. Players
 and spectators join a match in progress from the `keyframe` key, and the kill
-cam replays kills from the log. The member and lobby caches, the epoch counter,
-three-replica `Quorum` streams and per-arena token narrowing are designed but
-not built yet; the development stack runs one broker with a stand-in identity
-provider. The sections below describe the full design and say which parts run
-today.
+cam replays kills from the log. A lobby lists the live arenas, and CI kills
+the simulator and the stream's broker mid-match and checks that play resumes.
+Per-arena sign-in is not built yet; the development stack uses a stand-in
+identity provider. The sections below describe the design.
 
 ![A felix-arena match: Coral and Violet hover-craft trading fire around the crystal at the centre of the arena, with the score, the kill feed and the hull and boost bars](/built-on-felix/arena-match.webp?v=2)
 
@@ -31,7 +30,6 @@ created once, at deployment:
 | `keyframe`, `match/<n>` | Stream state keys on the tick stream | The latest keyframe tick and each match's first offset |
 | `arena.input.<arena>` | In-memory stream | Player inputs |
 | `arena.members.<arena>`, `arena.lobby` | Caches with a TTL | Who is connected, and every arena's status |
-| `arena.epoch.<arena>` | Counter | The simulation's epoch, so readers can ignore a stale simulator |
 
 One simulator per arena is the authority. It writes each tick as an
 [atomic commit](/features/atomic-commits/) and waits for the answer before the
@@ -39,7 +37,8 @@ next, so ticks land in order and the simulator learns each tick's offset from
 the commit's answer. Every 30th tick is a keyframe holding the whole match
 state, and the same commit updates the `keyframe` state key, so the keyframe
 and the pointer to it can never disagree. On a `Quorum` stream, a state read
-never reflects a commit that a failover could take back.
+never reflects a commit that a failover could take back. Each tick carries the
+simulation's epoch, so readers can ignore a stale simulator.
 
 Joining mid-match is a read of the `keyframe` key, whose version is the
 keyframe's offset, followed by a subscription from that offset. The keyframe is
@@ -64,9 +63,10 @@ Inputs go on an in-memory stream because an input 40 ms old is worthless and
 the next one replaces it. Each input repeats the previous two, so a dropped
 record is almost always covered by the next.
 
-Browsers reach Felix through [felix-gateway](/clients/browsers/) 0.6.0 or
-later, using three opt-in features: binary event frames, `state_get` for the
-`keyframe` key, and `read` for the kill cam's range reads.
+Browsers reach Felix through [felix-gateway](/clients/browsers/) 0.8.0, the
+version the game is built against, using three opt-in features: binary event
+frames, `state_get` for the `keyframe` key, and `read` for the kill cam's range
+reads.
 The gateway stamps each input with the session's principal, and the simulator
 accepts an input only when that stamp matches the publisher the broker
 recorded on the event. In the design, each session's token is narrowed to one

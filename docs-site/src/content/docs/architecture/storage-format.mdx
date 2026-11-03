@@ -15,6 +15,8 @@ segment files, and it is intentionally independent of `felix-wire`: network
 framing is allowed to change shape for latency reasons, while bytes already on
 disk must stay readable by every later build.
 
+This is the reader-facing page. The engineering reference is [`docs/storage-format.md`](https://github.com/GetFelix/felix/blob/main/docs/storage-format.md).
+
 Implementation:
 [`crates/server/felix-storage/src/segment/format.rs`](https://github.com/GetFelix/felix/blob/main/crates/server/felix-storage/src/segment/format.rs).
 The two must move together; a change to one without the other is a bug.
@@ -101,7 +103,7 @@ removed from there by one background thread per store; being dotted, it is
 never read as a shard. `.streams/` holds a small text marker per stream
 naming the incarnation this broker holds, whether a delete of it is
 unfinished, and through which incarnation the control plane said the name is
-deleted; the format is in `docs/storage-format.md`. See [Deleting a stream](/architecture/durable-storage/#deleting-a-stream-and-creating-it-again).
+deleted; the format is in [`docs/storage-format.md`](https://github.com/GetFelix/felix/blob/main/docs/storage-format.md). See [Deleting a stream](/architecture/durable-storage/#deleting-a-stream-and-creating-it-again).
 
 Caches work the same way once the fleet finalized `cache_incarnations`: an
 incarnated cache's shard directories under `caches/` and `counters/` end in
@@ -211,7 +213,7 @@ record, and leaves unmarked records in it as before.
 record a leader writes at a new generation, before it serves. Its payload
 is the generation, a big-endian `u64`, and it has no tag. It belongs to the
 replication protocol rather than a client: it lets the leader's quorum mark cover the records
-it inherited (`docs/replication-design.md`, "The generation-start record").
+it inherited ([`docs/replication-design.md`](https://github.com/GetFelix/felix/blob/main/docs/replication-design.md), "The generation-start record").
 
 It takes an offset like any record, and every reader but replication skips it:
 subscriptions and replay, Kafka fetch, consumer groups, and the cache and
@@ -427,7 +429,7 @@ The entries are bounded, because every open reads the whole file and a
 generation older than the oldest retained record cannot be one two brokers
 diverge within.
 
-See `docs/replication-design.md`, "Divergence and truncation", for what it is
+See [`docs/replication-design.md`](https://github.com/GetFelix/felix/blob/main/docs/replication-design.md), "Divergence and truncation", for what it is
 for.
 
 ## `replica`: the accepted generation and the commit offset
@@ -466,7 +468,7 @@ alone: they trim segments in place and never replace the directory.
 
 A truncation or rebuild that would discard a record held below the commit
 offset is refused with `StorageError::BelowCommit`; see
-`docs/replication-design.md`, "Divergence and truncation".
+[`docs/replication-design.md`](https://github.com/GetFelix/felix/blob/main/docs/replication-design.md), "Divergence and truncation".
 
 ## `ballot`: whom the generation was accepted from
 
@@ -485,7 +487,7 @@ from a named leader: that generation and the leader's node id.
 Written the same way as `replica`, and before it when a generation is raised,
 so the ballot is on disk before anything from that leader is stored or
 acknowledged. At the accepted generation only that leader is answered; see
-`docs/replication-design.md`, "Ballots". On open, a ballot at the generation
+[`docs/replication-design.md`](https://github.com/GetFelix/felix/blob/main/docs/replication-design.md), "Ballots". On open, a ballot at the generation
 in `replica` names its leader, one ahead of it is a raise that crashed between
 the two writes and its generation is taken, and one behind it, or none, names
 no leader. A file that is present and does not decode fails the open, as
@@ -496,11 +498,11 @@ An empty leader (`leader_len` 0) is a generation given up: a broker back from
 a crash that may have cost it records it acknowledged writes it over its own
 ballot, so no leader is accepted at that generation, this broker included,
 and only a newer one replaces it (`DiskLog::give_up_generation`; see
-`docs/replication-design.md`, "A leader's own crash").
+[`docs/replication-design.md`](https://github.com/GetFelix/felix/blob/main/docs/replication-design.md), "A leader's own crash").
 
 ## `offload.manifest`: segments with a copy in the object store
 
-A stream shard whose broker runs with offload on (see `docs/durable-storage.md`,
+A stream shard whose broker runs with offload on (see [`docs/durable-storage.md`](https://github.com/GetFelix/felix/blob/main/docs/durable-storage.md),
 "Tiered storage: offload") holds an `offload.manifest`: one entry per sealed
 segment with a verified copy in the object store, ordered by base offset.
 

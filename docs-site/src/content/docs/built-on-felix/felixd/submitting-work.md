@@ -21,10 +21,14 @@ streams' tails (see [what felixd needs from Felix](/built-on-felix/felixd/runnin
 It also needs a control plane token, because it creates the caches and the
 workload's two streams. Without that token it cannot get as far as writing the spec.
 
-There is no intake stream with an admission step yet. Nothing reviews a submission
-before it takes effect: the spec in the `workloads` cache is the workload, and the
-cache holds only its latest value, not a history of specs. Keeping specs as records
-on a log is part of [#72](https://github.com/GetFelix/felixd/issues/72).
+How a submission takes effect depends on whether the namespace runs admission. After
+`felixd init`, `felixd run` publishes a request on the `sys.intake` stream and a felixd
+workload called `admission` decides whether to accept it, by who asked. Without
+`init`, an operator submits directly with a control plane token, and nothing reviews the
+submission. Either way the spec in the `workloads` cache is the workload, the cache holds
+only its latest value, and felixd also keeps every spec on a log, `sys.specs`. This page
+shows the direct path. [Running felixd](/built-on-felix/felixd/running/#roles-and-admission)
+covers admission.
 
 ## What a unit of work is
 
@@ -52,10 +56,11 @@ for the defaults:
 | Field | Meaning |
 |---|---|
 | `module` | The key of the component in the `modules` cache, its sha256 in hex |
-| `input` | The stream the workload reads. One stream per workload |
+| `input` | The stream the workload reads. A workload with several inputs has `inputs` instead, a list of 2 to 64 distinct names, and no `input` |
 | `output` | `wl.<id>.out`, derived from the id |
 | `snapshot_every` | A snapshot after this many inputs. At least 1 |
 | `snapshot_every_ms` | Also a snapshot at the first input of each interval this long. Left out unless set |
+| `keep_snapshots` | How many snapshots to keep before older history may be deleted. Left out unless set, which keeps everything |
 | `state` | `running`, `stopped` or `failed` |
 | `limits` | Fuel per call, the most memory in bytes and the fuel for a whole snapshot or restore |
 | `failure` | Why the workload failed. Present only when `state` is `failed` |
@@ -70,19 +75,22 @@ explains each field.
 ## Writing a workload
 
 A workload implements the `workload` world of
-[contract 0.2](/built-on-felix/felixd/contract/): a `step` function that takes one
+[contract 0.3](/built-on-felix/felixd/contract/): a `step` function that takes one
 input record and returns outputs, and a set of `state` functions that save, restore
 and describe its state. It imports nothing, so it has no clock, files or network.
 
-This is `workloads/counter/src/lib.rs`, trimmed to the step. The full file also
+This is `workloads/counter/src/lib.rs`, trimmed to the step and with the bindings
+pointed at `wit/0.3` (the repository's copy is built against 0.2). The full file also
 implements the `state` interface (`snapshot`, `snapshot_chunk`, `restore`,
 `restore_chunk` and `inspect`), which a workload must export too.
 
 ```rust
 wit_bindgen::generate!({
-    path: "../../wit",
+    path: "../../wit/0.3",
     world: "workload",
 });
+
+use std::cell::Cell;
 
 use exports::felixd::workload::step::{self, Addressed, Input, Output, StepError};
 
@@ -117,7 +125,7 @@ wasm-tools component new \
   workloads/target/wasm32-unknown-unknown/release/counter.wasm -o counter.wasm
 ```
 
-`felixd run` refuses a file that is not a component of contract 0.2.
+`felixd run` refuses a file that is not a component of contract 0.3 or 0.2.
 
 ## Submitting it
 
@@ -228,8 +236,10 @@ and the stream holds more than outputs. The second byte of each record says what
 |---|---|---|
 | 0 | output | One output of one step, with its input offset, index, name, optional key and payload |
 | 1 | claim | A node took over the workload. One per owner |
-| 2 | failure | The workload failed, with the reason |
+| 2, 5 | failure | The workload failed, with the reason (kind 2 is from older builds) |
 | 3 | rejection | A step rejected an input and the workload carried on |
+| 4 | claim under a spec | A claim that also names the spec record the owner runs |
+| 6, 7, 8, 9 | notes | Needs operator, a trim of old history, degraded, and a divergence. None is an output |
 
 An output's payload comes after its header, and its name is the name the workload
 gave it, so a workload with several kinds of output writes them all to this one
@@ -258,8 +268,7 @@ and snapshot settings can change freely.
 The module and the input cannot change once `wl.<id>.out` or `wl.<id>.snap` holds a
 record: `felixd run` refuses with a message to submit the change under a new id,
 because the new code would not reproduce what is already written. A new module
-needs a new id until [#64](https://github.com/GetFelix/felixd/issues/64) and
-[#72](https://github.com/GetFelix/felixd/issues/72) land. Running it again also
+needs a new id until [#64](https://github.com/GetFelix/felixd/issues/64) lands. Running it again also
 puts a `failed` workload back to `running`.
 
 **Stopping and removing.** There is no `felixd stop` or `felixd rm`. The agents act
@@ -276,8 +285,8 @@ felixctl cache del workloads counter          # remove it
 Both leave the module and the streams in place, and nothing deletes them. Running
 `felixd run` for the same id starts the workload again from its snapshot. After a
 `del`, the check that refuses a new module no longer has a spec to compare with, so
-do not reuse a deleted id for different code. `felixd drain` and `felixd ps` are not
-built ([#17](https://github.com/GetFelix/felixd/issues/17)).
+do not reuse a deleted id for different code. `felixd ps` shows what
+is running, and `felixd drain` moves a node's workloads away.
 
 ## When it goes wrong
 
@@ -286,9 +295,8 @@ built ([#17](https://github.com/GetFelix/felixd/issues/17)).
 | The step returns `reject` for an input | A rejection record on `wl.<id>.out` for that input. The workload keeps running | Look at the record's error code and detail. The input is skipped and nothing else is needed |
 | The step returns `poison`, traps, runs out of fuel or breaks the contract | A failure record on the output stream, then `state` `failed` and a `failure` reason in the spec | Fix the module and submit it under a new id. There is no recorded way past a poison input ([#98](https://github.com/GetFelix/felixd/issues/98)) |
 | Fuel or memory is too low, but the code is right | The same failure | Raise `--fuel` or `--max-memory` and run `felixd run` again for the same id |
-| The module is built for contract 0.1, or a restore runs out of `snapshot_fuel` | [Needs operator](/built-on-felix/felixd/terminology/#needs-operator). The agent logs `the workload needs an operator, not running it`, and releases the lease if it held one. Nothing is marked failed | Rebuild against 0.2, or raise `--snapshot-fuel` and run `felixd run` again for the same id. The agent starts the workload when the spec changes |
+| The module is built for contract 0.1, or a restore runs out of `snapshot_fuel` | [Needs operator](/built-on-felix/felixd/terminology/#needs-operator). The node records a needs-operator reason on the output stream and releases the lease if it held one; `felixd ps` shows it. Nothing is marked failed | Rebuild against 0.3, or raise `--snapshot-fuel` and run `felixd run` again for the same id. The agent starts the workload when the spec changes |
 
-Needs-operator is only a log line on the agent that tried. It is not a recorded
-state ([#112](https://github.com/GetFelix/felixd/issues/112)), so `felixd check` does
-not show it. A workload that never starts producing, with no failure record, is
-worth looking for in the agents' logs.
+Needs-operator is a recorded state, so `felixd ps` shows the reason. A workload
+that never starts producing, with no failure record, is worth looking up there
+first.
