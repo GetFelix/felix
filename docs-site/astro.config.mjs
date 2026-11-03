@@ -70,12 +70,12 @@ export default defineConfig({
           label: 'Getting Started',
           items: [
             { label: 'Why Felix?', slug: 'getting-started/why-felix' },
-            { label: 'What Felix Is For', slug: 'getting-started/what-felix-is-for' },
             { label: 'Overview', slug: 'getting-started/overview' },
             { label: 'Quickstart', slug: 'getting-started/quickstart' },
-            { label: 'felixctl', slug: 'getting-started/felixctl' },
             { label: 'Installation', slug: 'getting-started/installation' },
+            { label: 'felixctl', slug: 'getting-started/felixctl' },
             { label: 'Docker or Podman', slug: 'getting-started/containers' },
+            { label: 'What Felix Is For', slug: 'getting-started/what-felix-is-for' },
           ],
         },
         {

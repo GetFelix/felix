@@ -159,8 +159,9 @@ under [When not to use Felix](#when-not-to-use-felix), and the details are in
   with an optional expiry, plus counters. No lists, sets, sorted sets, hashes,
   streams, scripting or pub/sub channels. If you use Redis for anything beyond
   "remember this value," Felix is not a replacement for it.
-- **You need long-term history.** There is no tiered or cold storage. Retention is
-  bounded by the disks you give the brokers.
+- **You need long-term history.** Sealed segments can be copied to a directory
+  before retention deletes them, but nothing reads the copies back. What clients
+  can read is bounded by the disks you give the brokers.
 - **You need production mileage.** Nobody has run Felix in production. If your
   answer to "who else runs this?" has to be a name, the answer today is nobody.
 
@@ -186,7 +187,11 @@ What does not exist yet:
   unless you set it, so by default a log grows until the disk does.
 - Load-aware placement. Rebalancing evens out shard counts, not load, so a
   broker leading its share of hot shards is left as it is.
-- Tiered storage, cross-region bridges, encryption at rest, and audit logging.
+- Reading from tiered storage. Sealed segments can be copied out, but nothing
+  reads them back.
+- A region bridge that replicates data between regions. A stream can be pinned to
+  a region and bridged by an allowlist, but no agent moves data across.
+- Encryption at rest, and audit logging.
 - Go and mobile clients.
 
 For the detail on each capability (shipped, partial, or only intended), read
@@ -195,8 +200,8 @@ per capability and it is the page to trust when another disagrees with it.
 
 ## Where next
 
-- [What Felix Is For](/getting-started/what-felix-is-for/): the status table and where Felix fits
 - [Overview](/getting-started/overview/): the components and how a message moves through them
 - [Quickstart](/getting-started/quickstart/): run a broker and publish something
+- [What Felix Is For](/getting-started/what-felix-is-for/): the status table
 - [Use Cases](/use-cases/overview/): concrete scenarios, with code and how each compares with other brokers
 - [Projections](/architecture/projections/): the precise version of how one log is read three ways
