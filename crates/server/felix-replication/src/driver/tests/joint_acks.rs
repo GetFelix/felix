@@ -282,3 +282,267 @@ async fn a_report_lists_the_followers_holding_the_generations_start() {
         assert_eq!(report.holds_start, expected, "identified: {identified}");
     }
 }
+
+/// Stores a cache shard's batches: cache records for the nodes in `cache`,
+/// counter records for those in `counters`, and refuses the rest.
+struct CacheAnswers {
+    cache: &'static [&'static str],
+    counters: &'static [&'static str],
+}
+
+impl PeerRequester for CacheAnswers {
+    async fn request(
+        &self,
+        node_id: &str,
+        _addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, PeerError> {
+        let (batch, ok) = match message {
+            InternalMessage::ReplicateCacheRecords(batch) => (batch, self.cache),
+            InternalMessage::ReplicateCounterRecords(batch) => (batch, self.counters),
+            other => panic!("the driver sent {:?} for a cache shard", other.kind()),
+        };
+        if !ok.contains(&node_id) {
+            return Err(PeerError::Unavailable {
+                node_id: node_id.to_string(),
+                detail: "down".to_string(),
+            });
+        }
+        Ok(InternalMessage::ReplicateOk(ReplicateOk {
+            correlation_id: 0,
+            durable_offset: batch.first_offset + batch.payloads.len() as u64,
+        }))
+    }
+
+    fn recorded_capabilities(&self, _node_id: &str) -> Option<PeerCapabilities> {
+        Some(PeerCapabilities::ELECTION)
+    }
+
+    fn offers_election(&self) -> bool {
+        true
+    }
+}
+
+fn cache_key() -> ShardKey {
+    ShardKey {
+        kind: felix_router::ShardKind::Cache,
+        ..key()
+    }
+}
+
+/// The cache's route at `generation`, led from here, as [`route`] is.
+fn cache_route(replicas: &[&str], generation: u64, leaving: Option<&[&str]>) -> Arc<ShardRouter> {
+    let router = Arc::new(ShardRouter::new(
+        LOCAL,
+        "us-west-2",
+        RegionRouter::new("us-west-2".to_string()),
+    ));
+    let nodes = nodes();
+    let table = RoutingTable::build_with(
+        [felix_router::Placed {
+            key: cache_key(),
+            leader: LOCAL.to_string(),
+            replicas: replicas.iter().map(|r| r.to_string()).collect(),
+            generation,
+            draining: false,
+            successor: None,
+            routing: Default::default(),
+            incarnation: 0,
+            fence_storage_ids: Default::default(),
+            member_storage_ids: Default::default(),
+            pending: leaving.map(|leaving| PendingChange {
+                generation,
+                leaving: leaving.iter().map(|node| node.to_string()).collect(),
+            }),
+        }],
+        &nodes,
+    );
+    router.publish(table, &nodes);
+    router
+}
+
+/// One pass over the cache shard: its counter mark and counter tail, and the
+/// pending set it reported as started.
+async fn cache_pass(
+    answers: CacheAnswers,
+    broker: &Arc<Broker>,
+    router: &ShardRouter,
+    marks: &QuorumMarks,
+    generation: u64,
+) -> (u64, u64, Option<u64>) {
+    let pass = replicate_once(
+        &answers,
+        broker,
+        router,
+        marks,
+        None,
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+    )
+    .await;
+    let report = pass
+        .reports
+        .iter()
+        .find(|report| report.key == cache_key())
+        .expect("the cache was reported");
+    let tail = broker
+        .shard_log(
+            felix_broker::LogKind::Counters,
+            TENANT,
+            NAMESPACE,
+            STREAM,
+            0,
+        )
+        .await
+        .expect("log")
+        .tail_offset()
+        .await
+        .expect("tail");
+    let mark = marks
+        .counters()
+        .offset(&watch_key(&cache_key()), generation)
+        .unwrap_or(0);
+    (mark, tail, report.joint_start_acked)
+}
+
+/// A cache whose counter updates were acknowledged at generation 4 on the
+/// leader and `b`, a majority of {a, b, c}, and whose leader has begun
+/// generation 5 in both logs, each with one record past its start.
+async fn cache_cut_over(marks: &QuorumMarks) -> (Arc<Broker>, tempfile::TempDir) {
+    let (broker, dir) = super::quorum::quorum_cache_leader(4).await;
+    let (mark, tail, _) = cache_pass(
+        CacheAnswers {
+            cache: &["broker-b"],
+            counters: &["broker-b"],
+        },
+        &broker,
+        &cache_route(&["broker-b", "broker-c"], 4, None),
+        marks,
+        4,
+    )
+    .await;
+    assert_eq!(mark, tail, "the counter updates were acknowledged");
+    for kind in [
+        felix_broker::LogKind::Cache,
+        felix_broker::LogKind::Counters,
+    ] {
+        let log = broker
+            .shard_log(kind, TENANT, NAMESPACE, STREAM, 0)
+            .await
+            .expect("log");
+        let tail = log.tail_offset().await.expect("tail");
+        log.record_generation(5, tail).expect("generation");
+        log.append(&[Bytes::from_static(b"start")])
+            .await
+            .expect("append");
+    }
+    (broker, dir)
+}
+
+/// **The flip waits for the counter log on both majorities.** The set moves
+/// from {a, b, c} to {a, c, d} with the counter updates on `a` and `b`. The
+/// cache log's start record is on both majorities, but the counters reached
+/// neither `c` nor `d`. Reporting the start then would let the control plane
+/// take {a, c, d}, where only `a` holds the updates.
+#[tokio::test]
+async fn a_flip_waits_for_the_counter_log_on_both_majorities() {
+    let marks = marks(true);
+    let (broker, _dir) = cache_cut_over(&marks).await;
+    let router = cache_route(&["broker-c", "broker-d"], 5, Some(OLD));
+
+    let (mark, _, started) = cache_pass(
+        CacheAnswers {
+            cache: &["broker-c", "broker-d"],
+            counters: &[],
+        },
+        &broker,
+        &router,
+        &marks,
+        5,
+    )
+    .await;
+
+    assert_eq!(
+        started, None,
+        "the start was reported with the counter log on no follower of the new set"
+    );
+    assert_eq!(mark, 0);
+}
+
+/// **Counter updates wait for both majorities while a change is pending**, as
+/// the cache log's records do. `d` and the leader are a majority of {a, c, d}
+/// only.
+#[tokio::test]
+async fn a_pending_change_counts_counters_on_both_majorities() {
+    let marks = marks(true);
+    let (broker, _dir) = cache_cut_over(&marks).await;
+    let router = cache_route(&["broker-c", "broker-d"], 5, Some(OLD));
+
+    let (mark, tail, started) = cache_pass(
+        CacheAnswers {
+            cache: &["broker-c", "broker-d"],
+            counters: &["broker-d"],
+        },
+        &broker,
+        &router,
+        &marks,
+        5,
+    )
+    .await;
+
+    assert!(
+        mark < tail,
+        "a counter update was acknowledged on the new set alone"
+    );
+    assert_eq!(started, None);
+}
+
+/// **With the counters on both majorities the start is reported.** `c` is in
+/// both sets and holds both logs.
+#[tokio::test]
+async fn a_flip_follows_the_counter_log_on_both_majorities() {
+    let marks = marks(true);
+    let (broker, _dir) = cache_cut_over(&marks).await;
+    let router = cache_route(&["broker-c", "broker-d"], 5, Some(OLD));
+
+    let (mark, tail, started) = cache_pass(
+        CacheAnswers {
+            cache: &["broker-c"],
+            counters: &["broker-c"],
+        },
+        &broker,
+        &router,
+        &marks,
+        5,
+    )
+    .await;
+
+    assert_eq!(mark, tail);
+    assert_eq!(started, Some(5));
+}
+
+/// **A pending change a leader cannot count acknowledges no counter update.**
+/// Without the joint-fence feature the new set's majority is not enough for
+/// the counters either.
+#[tokio::test]
+async fn without_joint_fence_a_pending_change_acknowledges_no_counter_update() {
+    let marks = marks(false);
+    let (broker, _dir) = cache_cut_over(&marks).await;
+    let router = cache_route(&["broker-c", "broker-d"], 5, Some(OLD));
+
+    let (mark, _, _) = cache_pass(
+        CacheAnswers {
+            cache: &["broker-c", "broker-d"],
+            counters: &["broker-c", "broker-d"],
+        },
+        &broker,
+        &router,
+        &marks,
+        5,
+    )
+    .await;
+
+    assert_eq!(mark, 0);
+}

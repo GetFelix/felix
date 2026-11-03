@@ -4133,8 +4133,15 @@ acknowledgement is the one it was.
   with no pending change, and acknowledgements go back to the new set alone.
   The model's `CpFlip` keeps the generation; here the next one is fenced
   jointly again and opens on the new set.
-- A cache's counter log is counted on the new set alone, as the model's
-  counters are.
+- A cache's counter log is counted the same way, on both majorities, and the
+  leader reports the joint start only once the counter log's own
+  generation-start record is acknowledged on both as well. The counter
+  updates acknowledged before the cut-over sit behind that record, not the
+  cache log's. Reported on the cache log alone, the control plane could take a
+  new set where only the leader holds them
+  (`a_flip_waits_for_the_counter_log_on_both_majorities` and
+  `a_pending_change_counts_counters_on_both_majorities` in
+  `driver/tests/joint_acks.rs`).
 - This leader ships to the new set's followers only. A majority of the set
   being left that needs a member outside the new set therefore does not form,
   and the change times out (`FELIX_SHARD_PENDING_SET_TIMEOUT_MS`) and is

@@ -1340,7 +1340,8 @@ replacement, top-up or trim starts, and an operator's move or cancel is
 refused (409 `set_change_pending`); an operator's cancel ends it. The change
 ends in one of these ways. The leader reports, at the assignment's generation, `joint_start_acked` naming
 the pending set's generation, which says its generation-start record is on a
-majority of the old set and of the new; placement then writes the pending
+majority of the old set and of the new (for a cache, its counter log's start
+record too); placement then writes the pending
 set as `replicas` and clears it (`take_pending_set`), conditional on the
 generation it read. Or the leader is lost and a failover places the shard
 from the old set, which abandons the change. Or the change is dropped, with
