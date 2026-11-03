@@ -289,7 +289,7 @@ pub(crate) fn set_before(
 /// may hold one that acknowledged. A failover's fence needs a majority of
 /// both, as `Promote` fences the promoted broker's own set. A pending
 /// cut-over leaves only the recorded set.
-fn logged_besides(
+pub(super) fn logged_besides(
     stored: Option<&ReplicaSet>,
     route: &Route,
     before: &Membership,
@@ -303,8 +303,13 @@ fn logged_besides(
         return None;
     }
     let logged = &stored?.current;
-    let nodes = |set: &Membership| -> BTreeSet<String> {
-        set.members.iter().map(|m| m.node.clone()).collect()
+    // Learner flags count: the same names voting differently are another
+    // set, whose voter majorities the set before may miss.
+    let nodes = |set: &Membership| -> BTreeSet<(String, bool)> {
+        set.members
+            .iter()
+            .map(|m| (m.node.clone(), m.learner))
+            .collect()
     };
     (logged.generation < route.generation && nodes(logged) != nodes(before)).then(|| logged.clone())
 }
