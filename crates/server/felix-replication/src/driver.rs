@@ -339,6 +339,13 @@ pub trait WriteFence: Send + Sync {
     fn opened_since(&self, _key: &crate::ShardKey, _generation: u64) -> bool {
         true
     }
+
+    /// Whether `key` waits at `generation` for the promotion fence of a
+    /// leader that took it over on the lease. Such a shard has not opened yet
+    /// either, but was not led here before a restart.
+    fn promoting(&self, _key: &crate::ShardKey, _generation: u64) -> bool {
+        false
+    }
 }
 
 /// A fence that holds nothing back: every shard is quiet.
