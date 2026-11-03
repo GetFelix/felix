@@ -624,6 +624,29 @@ async fn a_fenced_leader_does_not_count_its_own_copy() {
     shutdown.cancel();
 }
 
+/// **A follower the node catalog does not name still counts toward the
+/// majority (#1845).** Of five copies, the leader and `broker-b` are two, not
+/// a majority; counting only the followers the catalog resolved would make
+/// them two of three.
+#[tokio::test]
+async fn a_follower_missing_from_the_catalog_is_a_voter_that_has_not_answered() {
+    let (reporter, shutdown) = unreachable_reporter();
+    // `broker-e` and `broker-f` are not in the catalog.
+    let router = router(LOCAL, &["broker-b", "broker-c", "broker-e", "broker-f"], 4);
+    let watched = watch_key(&key());
+    let (broker, _dir) = quorum_leader(3, 4).await;
+    let marks = follower_ack_marks();
+
+    pass_with_reporter(&OnlyB, &broker, &router, &marks, &reporter).await;
+
+    assert_eq!(
+        marks.offset(&watched, 4).unwrap_or(0),
+        0,
+        "acknowledged on two of five copies",
+    );
+    shutdown.cancel();
+}
+
 struct Confirms;
 
 #[async_trait::async_trait]

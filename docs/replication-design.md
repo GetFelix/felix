@@ -331,7 +331,9 @@ once, never behind a slow fence, from its serving runtime
 A leader that has not answered for the whole window is named in the
 follower's next heartbeat, which goes at once rather than an interval later.
 A leader first watched gets a whole window, and a peer that did not offer
-`PING` is not watched, so an upgrade does not read as a death.
+`PING` is not watched, so an upgrade does not read as a death. A leader the
+follower's node list has no address for yet is not watched either: not being
+able to reach it says nothing about whether it is up.
 
 **The control plane's half.** It keeps the names as soft state, like a
 heartbeat: in the store under the memory and Postgres backends, and in the
@@ -424,6 +426,18 @@ quorum. Where this
 leadership begins is recorded only then, so the records it took keep their
 own generation. Answers that arrive after the majority are not waited for,
 as in the model.
+
+**The voters are the assignment's set, not the addresses the leader has.** A
+broker learns where each node is from the control plane's node catalog
+(`/v1/nodes`), separately from the assignments, and its routes can be built
+before that read succeeds or after a node joined that the last read did not
+include. A replica the catalog does not name stays in the route with no
+address (`NodeRef::unresolved`), and the peer pool refuses to dial it, so it
+counts as a replica that has not answered. Dropping it instead would shrink
+every majority counted over the route: with an empty catalog a promoted
+leader of three would need only itself and open with neither follower fenced
+(#1845). The same list sizes the acknowledgement count, the read round, and
+the set the fence carries.
 
 **An answer counts only from the copy the failover's report named.** A
 follower that crashed under `FsyncMode::Periodic` or `None` comes back under a
@@ -1592,6 +1606,9 @@ code. The report and the lease leave the write's path:
   has answered a newer leader's fence, what it writes next is in no fence
   answer. The generation-start rule still applies on top, so the mark moves
   only once the majority reaches a record of the leader's own generation.
+  Every follower the assignment names is counted, including one the node
+  catalog has no address for yet, which holds nothing (see
+  [Fencing a promotion](#fencing-a-promotion)).
 - **The mark moves first.** The report still goes to the control plane every
   pass, for placement and promotion, but it is sent behind the mark and
   nothing waits for it to land.
