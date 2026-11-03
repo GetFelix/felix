@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793713458687,
+  "lastUpdate": 1793716905904,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -43680,6 +43680,58 @@ window.BENCHMARK_DATA = {
             "range": "26044.32",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 780003.75\nmean: 778961.70\nstdev: 26044.32\ncv: 3.34%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "56150009c6e89fb002564d96a3e4f982b4d200fb",
+          "message": "docs(formal): the flip waits for the named stint's start (#1787) (#1840)\n\nSpec half of #1787; the code fix is #1831. Merge after #1831: the two new configurations cite tests it adds\n(`the_joint_start_waits_for_the_current_stints_start`, `a_new_stint_at_a_started_generation_writes_its_own_start`),\nso `docs:evidence` fails here until it lands.\n\nA broker elected at a generation and then named at that same generation by a cut-over opens there twice. The\nflip (`joint_start`) used to take the generation's first start record, which is the elected stint's. So it could\nfire before the named stint's start was held on both majorities, and a write acknowledged in the elected stint\ncould end up on only the destination in the new set.\n\n## What changed\n- `JoinLags`: a copy joining in a cut-over holds any prefix of the destination's log, not necessarily all of it. A\n  top-up copy (`choose_replicas` in placement/moves.rs) is not checked for what it holds. This is what makes the\n  gap reachable. With the old atomic copy, the existing configurations pass.\n- `FelixShardElectSwapFlipJoinLagsFirstStart.cfg` (the flip takes the generation's first start) violates\n  `AckedOnMajority` (about 132K distinct states, a few seconds). It is registered.\n- `StintStarts`: opening again at a generation already started begins a new stint with its own start record.\n  The flip waits for that stint's start, as `own_start` in driver/shard.rs counts from the current stint's start.\n  Under `JoinLags` the first start must be held on majorities of both the pending and the recorded set\n  (`StartAcked`), as `joint_start` checks.\n- `FelixShardElectSwapFlipJoinLags.cfg` is the pass. It is not exhaustive in 5 minutes (3.28M distinct, depth 25,\n  clean), so it runs in the nightly exhaustive job (`tla-walk.yml`).\n- docs/formal/README.md rows and the switch descriptions.\n\nWithout `StintStarts` and `JoinLags`, `StartAcked` is the old guard (first start under the hwm), so every other\nconfiguration keeps its state counts (checked: Elect 312,474; ElectSwapFlip `StoodSeveralOther` 694).\n\n## Design calls\n- `StintStarts` is used only where `JoinLags` is on. Turning it on elsewhere changed state counts without\n  finding anything.\n- `Readmitted` and `CpAdmit` still accept any start record at the generation. The configurations with\n  `StintStarts` have no wipes.",
+          "timestamp": "2026-11-03T06:38:01-08:00",
+          "tree_id": "bb76008d6d78607879352011299277def7755253",
+          "url": "https://github.com/GetFelix/felix/commit/56150009c6e89fb002564d96a3e4f982b4d200fb"
+        },
+        "date": 1793716905012,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 604623.2,
+            "range": "66989.06",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 604623.20\nmean: 626660.40\nstdev: 66989.06\ncv: 10.69%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 604623.2,
+            "range": "66989.06",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 604623.20\nmean: 626660.40\nstdev: 66989.06\ncv: 10.69%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 155499.38,
+            "range": "7920.03",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 155499.38\nmean: 151984.47\nstdev: 7920.03\ncv: 5.21%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1554993.8,
+            "range": "79200.25",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1554993.80\nmean: 1519844.70\nstdev: 79200.25\ncv: 5.21%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
