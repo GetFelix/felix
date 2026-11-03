@@ -1144,8 +1144,8 @@ and `client.supports_read()` says whether the broker answers it.
 Subscriber queues shed under the default policy rather than blocking the
 publisher, so a subscriber can silently miss records. **A jump between
 consecutive offsets is a drop**, with one exception the broker tells you about:
-a new leader writes a generation-start record that takes an offset and is
-never delivered, and the event after it says so in `skipped_before`.
+a leader that takes or reopens the shard writes a generation-start record that
+takes an offset and is never delivered, and the event after it says so in `skipped_before`.
 
 ```rust
 let mut expected: Option<u64> = None;

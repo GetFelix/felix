@@ -2392,8 +2392,10 @@ A durable stream's log also holds records that are not events. Once the fleet
 has finalized `generation_start`, a leader appends a **generation-start**
 record whenever it starts serving a shard at a new generation, so its quorum
 mark can cover the records it inherited: after a promotion, at either end of a
-move, and when a cancelled move hands the shard back. Each step of a move is a
-new generation, so a move can leave several in a row. A record takes the next
+move, and when a cancelled move hands the shard back. A replicated leader that
+opens a shard again at a generation it already led, as after a restart,
+appends another. Each step of a move is a new generation, so a move can leave
+several in a row. A record takes the next
 offset like any other and is never delivered, not to a subscription, a
 consumer group, or a Kafka fetch. A subscriber therefore sees `N-1` and then
 `N+1` across a generation start at `N`.
@@ -2421,7 +2423,8 @@ drop by them. A drop is still reported, only its size is off.
 
 A client that did not offer `0x0800` gets the frames it always got, and reads
 the gap at generation starts as a drop. That is a false drop signal, once per
-leader change or move, and only after `generation_start` is finalized.
+leader change, move or leader restart, and only after `generation_start` is
+finalized.
 
 ## Event batch publisher
 

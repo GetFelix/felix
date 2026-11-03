@@ -1534,18 +1534,41 @@ stream shard at a new generation and its log is not empty: after a promotion,
 at a fresh placement over an existing log, at either end of a move, and on a
 hand-back. The control plane bumps the generation at each step of a move, so
 the leader that stays writes one at the staging and the fence too; they cost
-an offset each and nothing else. A reopen that finds the generation already
-has records writes none, fenced or not: the leader led at this generation
-before and comes back to it after a restart or a lost lease, the mark already
+an offset each and nothing else. A cache shard writes one on its cache log and
+one on its counter log, at the same points, since its fence can take a longer
+log on either; each mark counts only past a record in its own log
+(`a_cache_leader_counts_only_its_own_generation`). Cache replay, watches and
+counter sums skip the record.
+
+An open that does not fence writes none when the generation already has
+records. That is a broker that does not fence its shards, or the old leader's
+end of a move, coming back to a generation it led before: the mark already
 counts from the generation's recorded start, and every record past that start
-is the generation's own, so there is nothing inherited to cover. This is also
-how a shard whose generation began before the fleet finalized
-`generation_start` keeps serving: it has records at that generation and no
-start record, and it gets its first one at its next leadership change. A cache
-shard writes one on its cache log and one on its counter log, at the same
-points, since its fence can take a longer log on either; each mark counts only
-past its own log's record (`a_cache_leader_counts_only_its_own_generation`).
-Cache replay, watches and counter sums skip the record.
+is the generation's own, so there is nothing inherited to cover. A shard whose
+generation began before the fleet finalized `generation_start` keeps serving
+the same way: it has records at that generation and no start record, and it
+gets its first one at its next leadership change.
+
+**A new stint at the same generation.** A replicated broker reopens a shard
+fenced, after a restart too. A fenced open at a generation this broker already
+started, with records past its start record, writes another start record at
+the tail. Once elections ship, the same happens when a broker elected at a
+generation is then named there by a cut-over the control plane wrote without
+hearing of the election. Each such open is a new stint, and the leader counts
+from the start record of its current stint (`own_start` in the driver). The
+generation history still says where the generation began.
+
+The difference matters for a set change. Records the elected stint
+acknowledged on the old set alone sit between the two start records, and a
+copy joining in the cut-over may not hold them. If the joint start were
+counted from the first record, the control plane could flip to the new set
+while such a record is on one copy of it
+(`FelixShardElectSwapFlipJoinLagsFirstStart.cfg`, #1787). The current stint's
+start reaches a majority of the new set only behind those records
+(`the_joint_start_waits_for_the_current_stints_start`). The log remembers its
+current stint's start in memory only; after a restart the next fenced open
+writes a new one. A cache shard's counter log still counts from the start the
+generation history records.
 
 An in-memory stream writes none either. Its publishes never reach the shard's
 log: they take no offsets, nothing ships, the fence has nothing to take, and a
@@ -4132,7 +4155,8 @@ acknowledgement is the one it was.
   electing, the leader acknowledges nothing: it cannot count both sets, and
   the new set alone could lose a record if failover is placed from the old
   one. A stream that does not acknowledge at quorum reports no joint start.
-- The count is the least of the two, so the generation-start record is
+- The count is the least of the two, so the start record of the leader's
+  current stint (see "A new stint at the same generation" above) is
   acknowledged on both majorities exactly when the mark passes it. The
   leader's report then carries `joint_start_acked`, the pending set's
   generation, beside the generation it measured at. The control plane takes

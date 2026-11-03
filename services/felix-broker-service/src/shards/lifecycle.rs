@@ -1993,14 +1993,17 @@ async fn accept_led_generation(
     }
 }
 
-/// Write this leader's generation-start record, unless the log already starts
-/// the generation with one (an earlier attempt to open got that far), the
-/// generation already has records of its own, or the stream is in-memory.
+/// Write this leader's generation-start record, unless an earlier attempt to
+/// open got that far with nothing written since, the generation already has
+/// records of its own and no start record, or the stream is in-memory.
 ///
-/// It goes at the generation's recorded start, before any client write, so
+/// A new generation's goes at its recorded start, before any client write, so
 /// the quorum mark can cover records this leader inherited once a majority
-/// holds it. See `docs/replication-design.md`. For a cache shard `log` is its
-/// cache log or its counter log, each with a mark of its own.
+/// holds it. A generation this broker already started, with records past
+/// its start, gets another at the tail: the new stint's, which a set
+/// change's flip waits for. See `docs/replication-design.md`. For a cache
+/// shard `log` is its cache log or its counter log, each with a mark of its
+/// own.
 pub async fn write_generation_start(
     broker: &felix_broker::Broker,
     log: &felix_broker::StreamLog,
@@ -2021,29 +2024,38 @@ pub async fn write_generation_start(
             return Ok(());
         }
     }
-    if felix_replication::quorum::generation_start(log, generation)
-        .await
-        .is_some()
-    {
-        return Ok(());
-    }
     let tail = log
         .tail_offset()
         .await
         .map_err(|err| anyhow::anyhow!("read shard tail: {err}"))?;
-    match log.generations().last() {
-        Some(epoch) if epoch.generation == generation && epoch.start_offset == tail => {}
-        // This broker led at this generation before and reopens it after a
-        // restart or a lost lease, which is always the case for a generation
-        // that began before the fleet finalized `generation_start`. The mark
-        // already counts from the recorded start and every record past it is
-        // this generation's own, so there is nothing inherited to cover.
-        Some(epoch) if epoch.generation == generation && epoch.start_offset < tail => {
+    let last = log.generations().last().copied();
+    if let Some(start) = felix_replication::quorum::generation_start(log, generation).await {
+        // A new stint at a generation this broker started before: it was
+        // elected there and a cut-over names it there again, or it opens
+        // again after a restart. Records the earlier stint acknowledged on
+        // the old set alone sit past the first start record, so a flip
+        // counted from it could leave them off a majority of the new set
+        // (#1787). Skipped when the log already ends with this stint's.
+        let new_stint = tail > start + 1
+            && log.stint_start(generation) != Some(tail - 1)
+            && last.is_some_and(|epoch| epoch.generation == generation);
+        if !new_stint {
             return Ok(());
         }
-        // Anywhere else, the records before it would not be this
-        // generation's, and the mark would count them as if they were.
-        _ => anyhow::bail!("generation {generation} does not begin at the tail {tail}"),
+    } else {
+        match last {
+            Some(epoch) if epoch.generation == generation && epoch.start_offset == tail => {}
+            // This broker led at this generation before the fleet finalized
+            // `generation_start` and reopens it. The mark already counts from
+            // the recorded start and every record past it is this
+            // generation's own, so there is nothing inherited to cover.
+            Some(epoch) if epoch.generation == generation && epoch.start_offset < tail => {
+                return Ok(());
+            }
+            // Anywhere else, the records before it would not be this
+            // generation's, and the mark would count them as if they were.
+            _ => anyhow::bail!("generation {generation} does not begin at the tail {tail}"),
+        }
     }
     match key.kind {
         // Through the broker, so the stream's commit order and its
