@@ -126,6 +126,7 @@ async fn a_batch_acked_on_enqueue_is_written_across_a_move() {
         ],
         None,
         None,
+        None,
         Some(9),
         Some(felix_wire::AckMode::PerBatch),
         false,

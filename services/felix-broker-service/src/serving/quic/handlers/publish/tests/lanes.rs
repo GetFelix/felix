@@ -48,6 +48,7 @@ async fn a_stalled_forward_does_not_hold_up_another_shard() {
 
     let (forward_tx, mut forward_rx) = oneshot::channel();
     let forward = PublishJob {
+        headers: None,
         target: PublishTarget::Forward {
             target: ForwardTarget {
                 node_id: "broker-b".to_string(),
@@ -81,6 +82,7 @@ async fn a_stalled_forward_does_not_hold_up_another_shard() {
 
     let (local_tx, local_rx) = oneshot::channel();
     let local = PublishJob {
+        headers: None,
         target: PublishTarget::Resolved {
             handle,
             shard: None,
@@ -177,6 +179,7 @@ async fn forwards_to_one_shard_reach_the_owner_in_order() {
     for n in 0..5u8 {
         let (tx, rx) = oneshot::channel();
         let job = PublishJob {
+            headers: None,
             target: PublishTarget::Forward {
                 target: ForwardTarget {
                     node_id: "broker-b".to_string(),
@@ -215,4 +218,59 @@ async fn forwards_to_one_shard_reach_the_owner_in_order() {
     let applied: Vec<u8> = owner.applied.lock().iter().map(|p| p[0]).collect();
     assert_eq!(applied, vec![0, 1, 2, 3, 4]);
     stop.cancel();
+}
+
+/// A forward does not carry record headers yet, so one that has them is
+/// refused with an answer rather than sent without them, which would tell the
+/// client they were kept.
+#[tokio::test]
+async fn a_forward_with_headers_is_refused_not_stripped() {
+    let broker = Arc::new(broker_with_stream().await);
+    let ctx = build_publish_context(
+        Arc::clone(&broker),
+        &BrokerConfig::default(),
+        ClusterContext::default(),
+    );
+    let (tx, rx) = oneshot::channel();
+    let forward = PublishJob {
+        headers: Some(vec![Some(Bytes::from_static(b"block"))]),
+        target: PublishTarget::Forward {
+            target: ForwardTarget {
+                node_id: "broker-b".to_string(),
+                advertise_addr: "127.0.0.1:9".parse().expect("addr"),
+                generation: 1,
+                incarnation: 0,
+            },
+            key: ForwardKey {
+                tenant_id: "t2".to_string(),
+                namespace: "ns".to_string(),
+                stream: "remote".to_string(),
+                shard: 0,
+            },
+            ack: felix_wire::internal::AckMode::OnCommit,
+            credential: "token".to_string(),
+        },
+        payloads: vec![Bytes::from_static(b"forwarded")],
+        response: Some(tx.into()),
+        acked_on_enqueue: false,
+        admission_permit: None,
+        fenced: None,
+        publisher: None,
+    };
+    assert!(
+        enqueue_tenant_publish(&ctx, "t2", forward, EnqueuePolicy::Wait, None)
+            .await
+            .expect("queued")
+    );
+    let answer = tokio::time::timeout(Duration::from_secs(2), rx)
+        .await
+        .expect("the forward is answered")
+        .expect("a response");
+    let refusal = answer.expect_err("refused");
+    assert!(
+        refusal
+            .to_string()
+            .contains("record headers cannot be forwarded"),
+        "{refusal}"
+    );
 }

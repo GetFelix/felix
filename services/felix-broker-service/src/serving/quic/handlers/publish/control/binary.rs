@@ -19,6 +19,7 @@ use crate::serving::quic::client_error::ClientError;
 use crate::serving::quic::handlers::publish::ack::{
     AckEncoding, AckTimeoutState, Outgoing, handle_ack_enqueue_result, send_outgoing_critical,
 };
+use crate::serving::quic::handlers::publish::headers::publishable;
 use crate::serving::quic::handlers::publish::ingress::{Enqueued, enqueue_acked_tenant_publish};
 use crate::serving::quic::handlers::publish::route::{
     DeclaredWidth, publish_target, resolve_declared_shard, resolve_route,
@@ -130,6 +131,16 @@ pub(crate) async fn handle_binary_publish_batch_control(
         count_publish("error");
         return Ok(());
     };
+    // Unacknowledged, so there is nobody to tell: a batch with a reserved
+    // header name is dropped and counted.
+    let headers = match publishable(batch.record_headers) {
+        Ok(headers) => headers,
+        Err(err) => {
+            count_publish("error");
+            tracing::warn!(error = %err, "dropping a publish batch with refused headers");
+            return Ok(());
+        }
+    };
     let span = tracing::info_span!(
         "publish_batch_binary",
         tenant_id = %batch.tenant_id,
@@ -145,6 +156,7 @@ pub(crate) async fn handle_binary_publish_batch_control(
             publish_ctx,
             &batch.tenant_id,
             PublishJob {
+                headers,
                 target,
                 payloads,
                 response: None,
@@ -296,6 +308,14 @@ pub(crate) async fn handle_acked_binary_publish_batch_control(
         return Ok(());
     }
 
+    let headers = match publishable(batch.record_headers) {
+        Ok(headers) => headers,
+        Err(err) => {
+            count_publish("error");
+            reply_error(err).await?;
+            return Ok(());
+        }
+    };
     handle_publish_batch_message(
         peer_flags,
         broker,
@@ -322,6 +342,7 @@ pub(crate) async fn handle_acked_binary_publish_batch_control(
         batch.namespace,
         batch.stream,
         batch.payloads,
+        headers,
         batch.key,
         None,
         Some(request_id),

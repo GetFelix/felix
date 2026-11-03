@@ -93,6 +93,7 @@ async fn a_connection_flood_does_not_slow_quic_publishes() -> Result<()> {
         },
         None,
         Arc::new(BrokerMqttAuth::new(Arc::clone(&demo.auth))),
+        Arc::new(felix_mqtt::NoMounts),
     )?;
     let mqtt_addr = mqtt.local_addr()?;
     let shutdown = CancellationToken::new();

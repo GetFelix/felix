@@ -16,6 +16,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::sync::CancellationToken;
 
 use crate::auth::Authenticator;
+use crate::mount::Mounts;
 use crate::settings::Settings;
 
 /// Answers MQTT clients. Cheap to clone.
@@ -27,13 +28,18 @@ pub struct MqttService {
 /// What every connection shares.
 pub(crate) struct Shared {
     pub(crate) auth: Arc<dyn Authenticator>,
+    pub(crate) mounts: Arc<dyn Mounts>,
     pub(crate) settings: Settings,
 }
 
 impl MqttService {
-    pub fn new(auth: Arc<dyn Authenticator>, settings: Settings) -> Self {
+    pub fn new(auth: Arc<dyn Authenticator>, mounts: Arc<dyn Mounts>, settings: Settings) -> Self {
         Self {
-            shared: Arc::new(Shared { auth, settings }),
+            shared: Arc::new(Shared {
+                auth,
+                mounts,
+                settings,
+            }),
         }
     }
 

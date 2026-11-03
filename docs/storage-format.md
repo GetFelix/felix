@@ -370,7 +370,9 @@ u8[n]  payload
 ```
 
 Storage keeps the block as it is given and does not look inside it. Its
-layout is the broker's, the way a commit record's payload is.
+layout is the wire's record headers block, byte for byte, so the broker
+stores what a publisher sent and replays it without re-encoding. See
+[The record headers block](protocol.md#the-record-headers-block).
 
 A record stored without the block has no bit 26, so it is byte for byte what
 v7 wrote. A block length that claims more than the body
@@ -391,6 +393,15 @@ it. A record refused for its size is refused before the roll. As with the
 other kinds, the roll happens before the record is written, so a crash, or a
 conditional append whose condition fails, in between leaves an empty v8
 active segment, which an older build refuses.
+
+Replication does not carry a record's key and headers yet. The ship path holds
+such a record back instead of sending it bare: the follower stays behind it, and the
+leader logs the stall and counts it as `headers_unsupported` in
+`felix_broker_replication_shipped_total`. A cluster member never accepts headers
+for that reason, so do not move a data directory that holds them into a cluster
+until headers replicate: replication stalls at the first record that has them,
+so the shard cannot rebuild, drain or move. The promotion catch-up fetch does
+not carry headers yet either; both are fixed when replication carries them.
 
 ## Index file
 

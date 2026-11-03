@@ -67,6 +67,7 @@ async fn publish_through_workers(publishers: usize) -> (u64, u64) {
                 let (response, answer) = oneshot::channel();
                 scheduler
                     .send(PublishJob {
+                        headers: None,
                         target: PublishTarget::Resolved {
                             handle: handle.clone(),
                             shard: None,

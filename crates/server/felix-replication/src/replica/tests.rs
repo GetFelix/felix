@@ -130,6 +130,28 @@ fn refusal(answer: &InternalMessage) -> &ReplicateError {
     }
 }
 
+/// Ask until the answer is not a refusal to wait for a confirmed read made
+/// off the lane: what a leader's retry sees.
+async fn settled<F, Fut>(mut ask: F) -> InternalMessage
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = InternalMessage>,
+{
+    for _ in 0..400 {
+        let answer = ask().await;
+        if !reading(&answer) {
+            return answer;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    panic!("the confirmed read never finished");
+}
+
+fn reading(answer: &InternalMessage) -> bool {
+    matches!(answer, InternalMessage::ReplicateError(err)
+        if err.code == ErrorCode::StaleRoute && err.detail.contains("reading the control plane"))
+}
+
 /// A follower at the leader's epoch stores the batch and reports its durable
 /// mark.
 #[tokio::test]

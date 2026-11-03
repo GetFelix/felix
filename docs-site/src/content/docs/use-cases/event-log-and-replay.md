@@ -9,19 +9,39 @@ a projection after a bad deploy. Both need a record of events that is written
 once, kept for a defined time, and readable from any point. A durable Felix
 stream is that log.
 
-## How this is usually built
+A durable stream survives a crash, numbers every record, stamps it with the time
+it was appended and, when enabled, the identity of whoever wrote it. You read
+history from an offset or from a point in time, and a consumer resumes exactly
+where it stopped.
 
-Kafka is the usual choice for an event log. It is mature, has configurable
-retention and log compaction, tiered storage, and a very large ecosystem of
-connectors and processing frameworks. If you already run it and use its tooling,
-that is a good reason to stay.
+## Try it
 
-JetStream gives NATS a persistent stream with replay by sequence or time and
-per-consumer acknowledgement. A database audit table, written by triggers or by
-the application in the same transaction as the change, is the other common
-pattern, and its strength is that the audit row commits with the change. Its
-weakness is that it shares the database's load, retention and access controls
-with everything else.
+Start the stack from the
+[Quickstart](/getting-started/quickstart/#try-it-in-one-command) (it covers Podman
+too) and run these from the directory holding `compose.yaml`.
+
+`orders` is durable and may already hold records, such as the quickstart's
+`hello`. Publish three, and note the offset the first one prints:
+
+```bash
+docker compose run --rm felixctl pub orders 'account opened'
+docker compose run --rm felixctl pub orders 'limit raised'
+docker compose run --rm felixctl pub orders 'account closed'
+```
+
+The first prints `published 1 to orders at offset N`. Read from there, and
+again from the next offset:
+
+```bash
+docker compose run --rm felixctl sub orders --from N --count 3 --format offsets
+docker compose run --rm felixctl sub orders --from N+1 --count 2 --format offsets
+```
+
+Write the offsets as numbers, for example `--from 7` and `--from 8`. Each output
+line starts with the shard and the log offset. `--from earliest` replays
+everything the stream holds, including older records. Nothing is removed when
+a record is read, so a consumer that rebuilds a projection can resume from the
+last offset it saw.
 
 ## Why Felix fits
 
@@ -157,6 +177,22 @@ Rebuilding a projection is the same loop with `apply(record)` in place of
 
 ## Compared with Kafka, JetStream and an audit table
 
+### How it is usually built
+
+Kafka is the usual choice for an event log. It is mature, has configurable
+retention and log compaction, tiered storage, and a very large ecosystem of
+connectors and processing frameworks. If you already run it and use its tooling,
+that is a good reason to stay.
+
+JetStream gives NATS a persistent stream with replay by sequence or time and
+per-consumer acknowledgement. A database audit table, written by triggers or by
+the application in the same transaction as the change, is the other common
+pattern, and its strength is that the audit row commits with the change. Its
+weakness is that it shares the database's load, retention and access controls
+with everything else.
+
+### How Felix differs
+
 Kafka has broader retention and compaction options, offload that can be read
 back, exactly-once semantics between topics, and the ecosystem. Felix puts the
 log, the live fanout, the cache and the queues on the same offsets, and has a
@@ -178,60 +214,39 @@ UPDATE statement can reach and that does not share the database's load, retentio
 or access controls. Pick the table when the audit row must commit atomically with
 data that has to stay in your database.
 
-## Try it
+## Limits you can plan around
 
-Start the stack from the
-[Quickstart](/getting-started/quickstart/#try-it-in-one-command) (it covers Podman
-too) and run these from the directory holding `compose.yaml`.
+**Only durable streams are replayable.** An in-memory stream has no log, no times
+and no offsets.
 
-`orders` is durable and may already hold records, such as the quickstart's
-`hello`. Publish three, and note the offset the first one prints:
+**Retention is off by default.** A read below what retention kept fails, so set a
+bound on the stream. Streams are not compacted by key, so a stream grows until
+retention trims it.
 
-```bash
-docker compose run --rm felixctl pub orders 'account opened'
-docker compose run --rm felixctl pub orders 'limit raised'
-docker compose run --rm felixctl pub orders 'account closed'
-```
-
-The first prints `published 1 to orders at offset N`. Read from there, and
-again from the next offset:
-
-```bash
-docker compose run --rm felixctl sub orders --from N --count 3 --format offsets
-docker compose run --rm felixctl sub orders --from N+1 --count 2 --format offsets
-```
-
-Write the offsets as numbers, for example `--from 7` and `--from 8`. Each output
-line starts with the shard and the log offset. `--from earliest` replays
-everything the stream holds, including older records. Nothing is removed when
-a record is read, so a consumer that rebuilds a projection can resume from the
-last offset it saw.
-
-## Where it stops
-
-Only durable streams are replayable. An in-memory stream has no log, no times
-and no offsets. Retention is off by default and a read below what retention kept
-fails; set a bound on the stream. Tiered storage is partial: sealed segments can
+**Replay reaches what is local.** Tiered storage is partial: sealed segments can
 be offloaded to a directory, verified and recorded before retention may delete
-them, but nothing reads the copies back yet, so replay reaches only what is
-local. There is no cloud backend.
+them, but nothing reads the copies back yet, and there is no cloud backend. Size
+retention for the history you need to replay.
 
-Record times are the clock of the broker that led when the record was written,
-so a clock that steps back makes an offset-for-time lookup approximate. The
-publisher principal is the broker vouching for who sent the write, not for the
-payload, and it is stored only when `FELIX_RECORD_PUBLISHERS` (or the
-`publisher_principal` fleet feature in a cluster) is on. That is a one-way
-change to the storage format for the data directory. The Rust client exposes
+**Record times are the broker's clock.** They come from the broker that led when
+the record was written, so a clock that steps back makes an offset-for-time lookup
+approximate.
+
+**Publisher identity is opt-in.** It is the broker vouching for who sent the write,
+not for the payload, and it is stored only when `FELIX_RECORD_PUBLISHERS` (or the
+`publisher_principal` fleet feature in a cluster) is on. Turning it on is a
+one-way change to the storage format for the data directory, so decide before you
+write the data you will audit.
+
+**Client coverage differs.** The Rust, Python and TypeScript clients expose
 publisher identity, `offset_for_time` and range reads. The C ABI and the C# SDK
-expose publisher identity and `offset_for_time` but not range reads. The Python
-and TypeScript bindings document none of them yet, so from those languages use
-the Kafka listener or felixctl for replay. Idempotent producers are in
-every client. Streams are not
-compacted by key, so a stream grows until retention trims it.
+expose publisher identity and `offset_for_time` but not range reads. From those,
+use the Kafka listener or `felixctl` to replay. Idempotent producers are in every
+client.
 
 ## Related
 
 - [Durable storage](/architecture/durable-storage/)
 - [Publish/Subscribe](/features/pubsub/)
-- [Rust client: replaying from a time](/clients/rust/#when-an-event-was-written-and-replaying-from-a-time)
+- [Rust client: replaying from a time](/clients/rust/subscribing/#when-an-event-was-written-and-replaying-from-a-time)
 - [Kafka compatibility](/features/kafka/)

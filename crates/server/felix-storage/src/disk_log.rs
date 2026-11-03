@@ -1071,8 +1071,15 @@ impl DiskLog {
             .map_err(|err| StorageError::Io(std::io::Error::other(err)))??;
 
             metrics::counter!(metrics_names::READ_RECORDS_TOTAL).increment(records.len() as u64);
-            metrics::counter!(metrics_names::READ_BYTES_TOTAL)
-                .increment(records.iter().map(|r| r.payload.len() as u64).sum::<u64>());
+            metrics::counter!(metrics_names::READ_BYTES_TOTAL).increment(
+                records
+                    .iter()
+                    .map(|r| {
+                        let block = r.headers.as_ref().map_or(0, |block| block.len());
+                        (r.payload.len() + block) as u64
+                    })
+                    .sum::<u64>(),
+            );
             metrics::histogram!(metrics_names::READ_DURATION_SECONDS)
                 .record(started.elapsed().as_secs_f64());
             Ok((records, tail))

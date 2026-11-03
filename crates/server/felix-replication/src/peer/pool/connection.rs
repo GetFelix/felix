@@ -375,10 +375,11 @@ impl PeerConnection {
     /// Swap `lane`'s stream for a fresh one, if it is still `stale`.
     ///
     /// A stream whose peer stopped answering stays wedged for as long as the
-    /// connection lives: a peer serves a stream one request at a time, so one
-    /// handler that never returns holds every request behind it. The old
-    /// stream is finished and left to drain; answers that still arrive on it
-    /// reach their waiters if they have any.
+    /// connection lives: a peer serves a replication stream one request at a
+    /// time, and an older peer serves every stream that way, so one handler
+    /// that never returns holds every request behind it. The old stream is
+    /// finished and left to drain; answers that still arrive on it reach
+    /// their waiters if they have any.
     async fn replace_lane(&self, lane: usize, stale: &Arc<LaneStream>, within: Duration) {
         let slot = &self.lanes[lane];
         let _replacing = slot.replacing.lock().await;
@@ -471,8 +472,10 @@ impl Drop for PeerConnection {
 /// follower and log, so round-robin within a class cannot reorder a shard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LaneClass {
-    /// The handshake, the promotion fence and pings: one stream nothing slow
-    /// shares. A ping queued behind a forward would read as a dead leader.
+    /// The handshake, fences, tail fetches, pre-votes and pings: one stream
+    /// no forward shares, since a ping queued behind one would read as a dead
+    /// leader. The listener answers these as they finish, so a slow fence does
+    /// not hold up the rest either.
     Control,
     /// Forwarded publishes and cache operations.
     Forward,

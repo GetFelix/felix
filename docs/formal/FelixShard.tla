@@ -633,7 +633,7 @@ ReplacedIdLearner == TRUE
 \* `FelixShardElectWipeNonVoterCreatesLearnerAcks.cfg`).
 \* `CatchUpFromDeposed`: a non-voter takes a catch-up batch from a leader the
 \* control plane named at that leader's generation after it moved on, as
-\* the code's confirmed read, cached for 500 ms or answered just before a
+\* the code's confirmed read, reused for 10 s or answered just before a
 \* failover, lets it. The cache is in memory, so its reads came after the
 \* wipe: at the generation then or a later one. Only without elections,
 \* where every leader that opened was named.
@@ -2688,6 +2688,16 @@ CutOverPiece ==
        /\ (t[3] > 0) = PieceStood
        /\ t[3] \in (IF PieceStood THEN PieceStoodCounts ELSE {0})
        /\ t[4] \in PieceDestStood
+
+\* For a piece whose cut-overs no behaviour reaches: it holds only the states
+\* before a cut-over, which every piece checks, so it is useful only as proof
+\* that it is empty. In a set of three, no cut-over finds several replicas
+\* stood with the destination not among them: `Swap` needs the old leader
+\* still leading at the control plane's generation, a leader that answers a
+\* fence stops leading (`AnswerFence`), and a spare outside the set neither
+\* stands nor answers, so only the third member can have stood. TLC checks
+\* invariants on states the CONSTRAINT then drops, hence `~CutOverPiece`.
+NoCutOverInPiece == cutOver = <<>> \/ ~CutOverPiece
 
 \* A cut-over that changes several members of the set at once, as
 \* `replicas_after_cut_over` in services/felix-controlplane-service/src/

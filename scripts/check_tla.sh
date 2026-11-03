@@ -249,6 +249,15 @@ expectations=(
   "FelixShardElectSwapDrop1StoodOneDest pass"
   "FelixShardElectSwapDrop1StoodOneOther pass"
   "FelixShardElectSwapDrop1StoodSeveralOther pass"
+  "FelixShardElectSwapFlipKeep1 pass"
+  "FelixShardElectSwapFlipKeep1StoodOneOther pass"
+  "FelixShardElectSwapFlipKeep0StoodSeveralOther pass"
+  "FelixShardElectSwapFlipKeep1StoodSeveralOther pass"
+  "FelixShardElectSwapFlipDrop1 pass"
+  "FelixShardElectSwapFlipDrop0StoodOneOther pass"
+  "FelixShardElectSwapFlipDrop0StoodSeveralOther pass"
+  "FelixShardElectSwapFlipDrop1StoodOneOther pass"
+  "FelixShardElectSwapFlipDrop1StoodSeveralOther pass"
   "FelixShardElectSwapFlipSkipsBallot violates OneLeaderPerGeneration"
   "FelixShardElectSwapFlipJoinLagsFirstStart violates AckedOnMajority"
   "FelixShardElectPreVote pass"
@@ -362,10 +371,15 @@ fi
 # FelixShardElectSwap is not registered: it does not finish in one run, so
 # it is checked in pieces split at the cut-over. The eleven that take under 45
 # minutes are registered above; FelixShardElectSwapKeep0, the four
-# FelixShardElectSwap{Keep0,Keep1,Keep2,Drop2}Stood,
-# FelixShardElectSwapDrop{0,1}StoodSeveralDest and
-# FelixShardElectSwapFlipJoinLags run in the nightly exhaustive job
-# (tla-walk.yml).
+# FelixShardElectSwap{Keep0,Keep1,Keep2,Drop2}Stood and
+# FelixShardElectSwapDrop{0,1}StoodSeveralDest run in the nightly exhaustive
+# job (tla-walk.yml).
+# FelixShardElectSwapFlip is checked the same way, in twenty pieces. The nine
+# under 45 minutes are registered above; FelixShardElectSwapFlip{Keep0,Drop0},
+# the four FelixShardElectSwapFlip{Keep,Drop}{0,1}StoodOneDest (each the same
+# states as its unstood twin), FelixShardElectSwapFlipKeep0StoodOneOther and
+# the four FelixShardElectSwapFlip{Keep,Drop}{0,1}StoodSeveralDest run nightly.
+# So is FelixShardElectSwapFlipJoinLags.
 # So are FelixShardElectWipeNonVoter{Twice,Failover,FailoverWipesLeader,
 # WipesLeader,Setless,Groups}: each runs well over an hour on a four-core runner. Their
 # violating twins and witnesses stay registered.
@@ -379,7 +393,7 @@ fi
 # `--plan-heavy`: give a new heavy one its weight.
 weights=(
   "FelixShardFencedAckMoveShort 31"
-  "FelixShardWipeStripped 10"
+  "FelixShardWipeStripped 29"
   "FelixShardFencedAckMoveCancelShort 45"
   "FelixShardFencedAckStagedMoveShort 26"
   "FelixShardFencedAckTwoPromotionsStart 24"
@@ -393,8 +407,8 @@ weights=(
   "FelixHeadTrimCrash 13"
   "FelixHeadTrimTwoPromotions 2"
   "FelixHeadTrimCrashTwoPromotions 3"
-  "FelixShardFigure8CutOver 9"
-  "FelixShard 7"
+  "FelixShardFigure8CutOver 14"
+  "FelixShard 11"
   "FelixShardWipeFull 5"
   "FelixShardLeaderCrashGivesUp 3"
   "FelixShardProcessCrashKeepsId 20"
@@ -404,36 +418,36 @@ weights=(
   "FelixShardFencedCrash 26"
   "FelixShardFencedCrashInheritedCounts 3"
   "FelixShardFencedLeaderCrashTwiceNamesByInheritance 21"
-  "FelixShardFencedPromotion 7"
-  "FelixShardCancelResend 6"
-  "FelixShardFigure8FollowerAcks 6"
-  "FelixShardCancel 6"
-  "FelixShardReportFloor 5"
+  "FelixShardFencedPromotion 12"
+  "FelixShardCancelResend 11"
+  "FelixShardFigure8FollowerAcks 10"
+  "FelixShardCancel 10"
+  "FelixShardReportFloor 10"
   "FelixShardAckWithoutLease 4"
-  "FelixShardFigure8 4"
+  "FelixShardFigure8 7"
   "FelixShardRealMargins 4"
   "FelixShardRealMarginsLease 4"
   "FelixShardFencedAckSeat 15"
   "FelixShardFencedAckSeatPair 12"
   "FelixShardFencedAckUndoPair 26"
-  "FelixShardFencedAckTrim 9"
-  "FelixShardFollowerLabels 3"
+  "FelixShardFencedAckTrim 5"
+  "FelixShardFollowerLabels 5"
   "FelixShardHandoff 3"
-  "FelixShardIdempotentHandoff 3"
-  "FelixShardStalePlannerCas 3"
+  "FelixShardIdempotentHandoff 5"
+  "FelixShardStalePlannerCas 5"
   "FelixShardLogOrder 3"
   "FelixShardStagedMove 3"
-  "FelixShardElectHandoffLeaders 6"
+  "FelixShardElectHandoffLeaders 10"
   "FelixShardElectAdopt 11"
-  "FelixShardElectPreVote 5"
-  "FelixShardElectAdoptPromote 3"
+  "FelixShardElectPreVote 1"
+  "FelixShardElectAdoptPromote 10"
   "FelixShardSessionsSubscriber 2"
   "FelixShardSuspicion 2"
   "FelixShardSuspicionWipeRoutes 3"
   "FelixShardSuspicionWipeUnbacked 2"
-  "FelixShardElectWipeOracle 5"
-  "FelixShardElectWipeNonVoter 28"
-  "FelixShardElectWipeNonVoterCreates 3"
+  "FelixShardElectWipeOracle 12"
+  "FelixShardElectWipeNonVoter 45"
+  "FelixShardElectWipeNonVoterCreates 6"
   "FelixShardElectWipeNonVoterCreatesReadmits 2"
   "FelixShardElectWipeNonVoterWipesLeader 40"
   "FelixShardElectWipeNonVoterTwice 60"
@@ -441,10 +455,11 @@ weights=(
   "FelixShardElectWipeNonVoterFailoverWipesLeader 100"
   "FelixShardElectWipeNonVoterSetless 120"
   "FelixShardElectWipeNonVoterGroups 120"
-  "FelixShardElectWipeNonVoterGroupsKeepDropsMark 10"
-  "FelixShardElectWipeNonVoterIdlessCreation 6"
+  "FelixShardElectWipeNonVoterGroupsKeepDropsMark 19"
+  "FelixShardElectWipeNonVoterIdlessCreation 12"
+  "FelixShardElectWipeNonVoterCountersUnchecked 8"
   "FelixShardElectSwapKeep1 27"
-  "FelixShardElectSwapKeep2 6"
+  "FelixShardElectSwapKeep2 8"
   "FelixShardElectSwapDrop0 43"
   "FelixShardElectSwapDrop1 17"
   "FelixShardElectSwapDrop2 5"
@@ -452,7 +467,14 @@ weights=(
   "FelixShardElectSwapDrop0StoodOneOther 13"
   "FelixShardElectSwapDrop0StoodSeveralOther 1"
   "FelixShardElectSwapDrop1StoodOneDest 12"
-  "FelixShardElectSwapDrop1StoodOneOther 3"
+  "FelixShardElectSwapDrop1StoodOneOther 5"
+  "FelixShardElectSwapFlipKeep1 15"
+  "FelixShardElectSwapFlipDrop1 20"
+  "FelixShardElectSwapFlipKeep1StoodOneOther 11"
+  "FelixShardElectSwapFlipDrop1StoodOneOther 8"
+  "FelixShardElectSwapFlipDrop0StoodOneOther 41"
+  "FelixShardElectStepDown 3"
+  "FelixShardHandoffLeaderAck 3"
 )
 
 weight_of() {
@@ -504,12 +526,14 @@ fi
 # 30 minutes is left to a job of its own (`--plan-heavy`). A changed .tla
 # does not pull in its heavy configurations: FelixShard.tla is behind most of
 # them. Pull requests check that tier; the rest run when the spec changes on
-# main. Configurations named on the command line always run.
+# main. Configurations named on the command line always run. FelixShard,
+# the base configuration every other one varies, runs on every pull request
+# whatever its weight.
 if [ -n "${TLA_QUICK:-}" ] && [ "$#" -eq 0 ]; then
   quick=()
   for entry in "${selected[@]}"; do
     weight="$(weight_of "${entry%% *}")"
-    if [ "$weight" -le 10 ]; then
+    if [ "$weight" -le 10 ] || [ "${entry%% *}" = FelixShard ]; then
       quick+=("$entry")
     elif [[ "$changed_cfgs" == *" ${entry%% *} "* ]]; then
       if [ "$weight" -le 30 ]; then

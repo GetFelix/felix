@@ -188,6 +188,21 @@ impl LaneWork {
                 self.work
                     .spawn(async move { this.publish_idempotent(job, held, lane).await });
             }
+            // Forwarding does not carry headers yet, and a forward that left
+            // them off would tell the client they were kept.
+            PublishTarget::Forward { .. } if job.headers.is_some() => {
+                drop(lane);
+                let refused = ClientError::from_broker(
+                    &felix_broker::BrokerError::RecordHeadersNotEnabled,
+                    "record headers cannot be forwarded to the shard's owner; publish to the owner",
+                );
+                settle(
+                    job.response,
+                    job.acked_on_enqueue,
+                    None,
+                    Err(refused.into()),
+                );
+            }
             // Held for the whole round trip. A forward can be retried or
             // redirected, so a later batch sent before this one is answered
             // could land ahead of it. Only this shard's later publishes wait.
@@ -258,6 +273,7 @@ impl LaneWork {
         let PublishJob {
             target,
             mut payloads,
+            headers,
             publisher,
             response,
             acked_on_enqueue,
@@ -304,8 +320,10 @@ impl LaneWork {
         };
         // Released with the first job's, when this returns.
         let mut permits = Vec::new();
-        // An empty publish claims no offsets, so there is nothing to share.
-        if !payloads.is_empty() {
+        // An empty publish claims no offsets, so there is nothing to share. A
+        // publish with headers is claimed alone, so the claim's headers stay
+        // one per payload without merging two jobs' lists.
+        if !payloads.is_empty() && headers.is_none() {
             self.take_queued(
                 &handle,
                 &shard,
@@ -321,7 +339,7 @@ impl LaneWork {
         // claims return in is the order records land on disk.
         let claimed = self
             .broker
-            .claim_publish(&handle, &payloads, publisher.as_ref())
+            .claim_publish(&handle, &payloads, publisher.as_ref(), headers.as_deref())
             .await;
         drop(lane);
         let claimed = match claimed {
@@ -336,8 +354,24 @@ impl LaneWork {
         let ingress = self.ingress.clone();
         let quorum_timeout = self.quorum_timeout;
         self.work.spawn(async move {
-            let completed = broker.complete_publish(claimed).await;
             let ClaimGroup { members, fences } = group;
+            // Answered before the fanout, so the acks do not queue behind
+            // the work of waking every subscriber. A `Quorum` answer waits
+            // for its quorum, so it keeps the old order.
+            if handle.consistency() != felix_broker::ConsistencyLevel::Quorum {
+                broker
+                    .complete_publish_answering(claimed, |completed| {
+                        let result = completed
+                            .map(|outcome| first_offset(&outcome))
+                            .map_err(Into::into);
+                        settle_group(members, shard.as_ref(), result);
+                    })
+                    .await;
+                drop(fences);
+                drop(slot);
+                return;
+            }
+            let completed = broker.complete_publish(claimed).await;
             drop(fences);
             let result = match completed {
                 // One wait for the group's last offset: the mark is
@@ -378,6 +412,7 @@ impl LaneWork {
         let records_publishers = self.broker.records_publishers();
         let taken = lane.take_more(CLAIM_MAX_JOBS - 1, |next, _| {
             let joins = (!records_publishers || next.publisher.as_ref() == publisher)
+                && next.headers.is_none()
                 && matches!(
                 &next.target,
                 PublishTarget::Resolved { handle: next_handle, .. } if next_handle.id() == handle.id()
@@ -448,10 +483,48 @@ impl LaneWork {
             *generation,
         ) {
             Err(refused) => Err(refused.into()),
+            Ok(fenced) if handle.consistency() != felix_broker::ConsistencyLevel::Quorum => {
+                // Answered before the fanout, as a durable publish is. The
+                // lane is held until the fanout is done: it is what keeps
+                // an in-memory stream's deliveries in publish order.
+                let response = job.response;
+                let acked_on_enqueue = job.acked_on_enqueue;
+                let answer = |published: felix_broker::Result<felix_broker::PublishOutcome>| {
+                    let result = published
+                        .map(|outcome| first_offset(&outcome))
+                        .map_err(Into::into);
+                    settle(response, acked_on_enqueue, shard.as_ref(), result);
+                };
+                match self
+                    .broker
+                    .claim_publish(
+                        handle,
+                        &job.payloads,
+                        job.publisher.as_ref(),
+                        job.headers.as_deref(),
+                    )
+                    .await
+                {
+                    Ok(claimed) => {
+                        self.broker
+                            .complete_publish_answering(claimed, answer)
+                            .await;
+                    }
+                    Err(err) => answer(Err(err)),
+                }
+                drop(fenced);
+                drop(lane);
+                return;
+            }
             Ok(fenced) => {
                 let published = self
                     .broker
-                    .publish_batch_with_outcome(handle, &job.payloads, job.publisher.as_ref())
+                    .publish_batch_with_outcome(
+                        handle,
+                        &job.payloads,
+                        job.publisher.as_ref(),
+                        job.headers.as_deref(),
+                    )
                     .await;
                 drop(fenced);
                 published.map_err(anyhow::Error::from)
@@ -532,6 +605,7 @@ impl LaneWork {
                         &job.payloads,
                         *reuse,
                         job.publisher.as_ref(),
+                        job.headers.as_deref(),
                     )
                     .await;
                 drop(lane);
@@ -772,6 +846,19 @@ fn settle(
                 reason,
                 error = %err,
                 "a publish acknowledged on enqueue was not written",
+            );
+        }
+        // Fire-and-forget has nobody to refuse, so a batch the broker will not
+        // store with its headers is dropped, counted and logged.
+        (None, Err(err))
+            if *ClientError::from_anyhow(&err).code()
+                == felix_wire::ErrorCode::FeatureNotEnabled =>
+        {
+            crate::serving::quic::telemetry::count_publish("headers_refused");
+            tracing::warn!(
+                shard = ?shard,
+                error = %err,
+                "dropping an unacknowledged publish with record headers"
             );
         }
         (None, _) => {}

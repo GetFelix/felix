@@ -17,7 +17,7 @@ use crate::cluster::lease::LeaseState;
 use crate::config::{BrokerConfig, KafkaListenerConfig, MqttListenerConfig};
 use crate::serving::kafka::{BrokerCluster, KafkaListener, STANDALONE_NODE_ID};
 use crate::serving::limits::{ListenerLimits, TenantRates};
-use crate::serving::mqtt::{BrokerMqttAuth, MqttListener};
+use crate::serving::mqtt::{BrokerMounts, BrokerMqttAuth, MqttListener};
 use crate::serving::tls::ClientTls;
 use crate::serving::{auth::BrokerAuth, quic};
 use crate::shards::routing::IngressRouter;
@@ -265,7 +265,11 @@ pub(super) fn spawn_kafka(
 
 /// Bind the MQTT listener, when one is configured. Bound before anything is
 /// accepted, like Kafka's, so a port conflict fails startup.
-pub(super) fn bind_mqtt(tls: &ClientTls, auth: &Arc<BrokerAuth>) -> Result<Option<MqttListener>> {
+pub(super) fn bind_mqtt(
+    tls: &ClientTls,
+    auth: &Arc<BrokerAuth>,
+    mounts: BrokerMounts,
+) -> Result<Option<MqttListener>> {
     let Some(mqtt) = MqttListenerConfig::from_env()? else {
         return Ok(None);
     };
@@ -287,6 +291,7 @@ pub(super) fn bind_mqtt(tls: &ClientTls, auth: &Arc<BrokerAuth>) -> Result<Optio
         &mqtt,
         mqtt_tls,
         Arc::new(BrokerMqttAuth::new(Arc::clone(auth))),
+        Arc::new(mounts),
     )?;
     tracing::info!(
         addr = %listener.local_addr()?,

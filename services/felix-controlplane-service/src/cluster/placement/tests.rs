@@ -15,6 +15,7 @@ mod pacing;
 mod pending_set;
 mod readmit;
 mod reconciler;
+mod recovering;
 mod regions;
 mod rendezvous;
 mod replicas;
@@ -67,6 +68,7 @@ fn replicated_stream(name: &str, shards: u32, replication_factor: u32) -> Stream
         region: None,
         routing: Default::default(),
         incarnation: 0,
+        mount: None,
     }
 }
 

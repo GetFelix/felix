@@ -30,10 +30,11 @@ use bytes::Bytes;
 use felix_wire::binary;
 use felix_wire::internal::{InternalHeader, InternalMessage, Kind};
 use felix_wire::{
-    FLAG_BINARY_EVENT_BATCH, FLAG_BINARY_EVENT_BATCH_SHARED, FLAG_BINARY_PUBLISH_ACK,
+    AckMode, FLAG_BINARY_EVENT_BATCH, FLAG_BINARY_EVENT_BATCH_SHARED, FLAG_BINARY_PUBLISH_ACK,
     FLAG_BINARY_PUBLISH_ACK_OFFSET, FLAG_BINARY_PUBLISH_ACK_OWNER, FLAG_BINARY_PUBLISH_ACKED,
-    FLAG_BINARY_PUBLISH_BATCH, FLAG_BINARY_PUBLISH_KEYED, FLAG_EVENT_BATCH_OFFSETS, Frame,
-    FrameHeader, KNOWN_FLAGS, MAGIC, Message, VERSION, has_unknown_flags,
+    FLAG_BINARY_PUBLISH_BATCH, FLAG_BINARY_PUBLISH_KEYED, FLAG_EVENT_BATCH_OFFSETS,
+    FLAG_EVENT_BATCH_TIMESTAMPS, FLAG_EXTENDED, Frame, FrameHeader, KNOWN_FLAGS, MAGIC, Message,
+    RecordHeaders, VERSION, has_unknown_flags,
 };
 
 /// xorshift64*. Deterministic and dependency-free, so a failing seed printed in
@@ -149,7 +150,7 @@ fn an_unknown_flag_bit_is_refused_on_every_frame_that_carries_one() {
     // it would misparse.
     for bit in 0..16u16 {
         let flags = 1u16 << bit;
-        if flags & KNOWN_FLAGS != 0 {
+        if (KNOWN_FLAGS | FLAG_EXTENDED) & flags != 0 {
             continue;
         }
         for with in [0, FLAG_BINARY_PUBLISH_BATCH] {
@@ -176,35 +177,219 @@ fn every_binary_layout_refuses_a_body_it_cannot_account_for() {
         FLAG_BINARY_EVENT_BATCH | FLAG_EVENT_BATCH_OFFSETS,
         FLAG_BINARY_EVENT_BATCH_SHARED,
         FLAG_BINARY_EVENT_BATCH_SHARED | FLAG_EVENT_BATCH_OFFSETS,
+        // The extended forms. Their body starts with an extension word, which
+        // is set to the one defined bit for half the inputs below so the
+        // decoders get past it to the record headers blocks.
+        FLAG_EXTENDED | FLAG_BINARY_PUBLISH_BATCH,
+        FLAG_EXTENDED | FLAG_BINARY_PUBLISH_BATCH | FLAG_BINARY_PUBLISH_KEYED,
+        FLAG_EXTENDED | FLAG_BINARY_PUBLISH_BATCH | FLAG_BINARY_PUBLISH_ACKED,
+        FLAG_EXTENDED | FLAG_BINARY_EVENT_BATCH,
+        FLAG_EXTENDED | FLAG_BINARY_EVENT_BATCH | FLAG_EVENT_BATCH_TIMESTAMPS,
+        FLAG_EXTENDED | FLAG_BINARY_EVENT_BATCH_SHARED | FLAG_EVENT_BATCH_OFFSETS,
+        FLAG_EXTENDED | FLAG_BINARY_PUBLISH_ACK,
     ];
 
-    for seed in 0..2_000 {
+    for seed in 0..4_000 {
         let mut rng = Rng::new(seed);
-        let body = rng.bytes_below(64);
+        let mut body = rng.bytes_below(64);
+        if seed % 2 == 0 && body.len() >= 4 {
+            body[..4].copy_from_slice(&felix_wire::EXT_RECORD_HEADERS.to_be_bytes());
+        }
         for &flags in LAYOUTS {
             let frame = Frame::new(flags, Bytes::from(body.clone())).expect("frame");
+            if flags & FLAG_EXTENDED != 0 && flags & FLAG_BINARY_PUBLISH_ACK != 0 {
+                assert!(binary::decode_publish_ack(&frame).is_err(), "seed {seed}");
+                continue;
+            }
 
             // Property: parse or error, never panic, and never report more
             // payloads than the body had bytes to describe them with.
             if flags & FLAG_BINARY_PUBLISH_ACKED != 0 {
                 if let Ok(batch) = binary::decode_acked_publish_batch(&frame) {
                     assert!(batch.batch.payloads.len() <= body.len(), "seed {seed}");
+                    check_blocks(
+                        batch.batch.record_headers.as_deref(),
+                        batch.batch.payloads.len(),
+                        seed,
+                    );
                 }
             } else if flags & FLAG_BINARY_PUBLISH_BATCH != 0 {
                 if let Ok(batch) = binary::decode_publish_batch(&frame) {
                     assert!(batch.payloads.len() <= body.len(), "seed {seed}");
+                    check_blocks(batch.record_headers.as_deref(), batch.payloads.len(), seed);
                 }
             } else if flags & FLAG_BINARY_PUBLISH_ACK != 0 {
                 let _ = binary::decode_publish_ack(&frame);
             } else if flags & FLAG_BINARY_EVENT_BATCH_SHARED != 0 {
                 if let Ok(batch) = binary::decode_shared_event_batch(&frame) {
                     assert!(batch.payloads.len() <= body.len(), "seed {seed}");
+                    check_blocks(batch.record_headers.as_deref(), batch.payloads.len(), seed);
                 }
             } else if let Ok(batch) = binary::decode_event_batch(&frame) {
                 assert!(batch.payloads.len() <= body.len(), "seed {seed}");
+                check_blocks(batch.record_headers.as_deref(), batch.payloads.len(), seed);
             }
         }
     }
+}
+
+/// A batch that decoded holds one block per payload, and every block it hands
+/// back is one the codec accepts and writes back unchanged.
+fn check_blocks(blocks: Option<&[Option<Bytes>]>, payloads: usize, seed: u64) {
+    let Some(blocks) = blocks else {
+        return;
+    };
+    assert_eq!(blocks.len(), payloads, "seed {seed}");
+    for block in blocks.iter().flatten() {
+        assert!(!block.is_empty(), "seed {seed}: an empty block is no block");
+        RecordHeaders::validate(block).expect("a returned block validates");
+        let parsed = RecordHeaders::decode(block.clone()).expect("a returned block decodes");
+        assert_eq!(parsed.encode().expect("re-encode"), *block, "seed {seed}");
+    }
+}
+
+/// A record headers block decodes to exactly the bytes it was, or not at all,
+/// and `validate` agrees with `decode` on every input.
+fn check_block(data: &[u8], seed: u64) {
+    let validated = RecordHeaders::validate(data);
+    let decoded = RecordHeaders::decode(Bytes::copy_from_slice(data));
+    assert_eq!(validated.is_ok(), decoded.is_ok(), "seed {seed}");
+    if let Ok(block) = decoded {
+        assert_eq!(
+            block.encode().expect("a decoded block re-encodes").as_ref(),
+            data,
+            "seed {seed}: a block did not re-encode to the bytes it came from",
+        );
+    }
+}
+
+#[test]
+fn a_record_headers_block_decodes_to_exactly_what_was_on_the_wire_or_not_at_all() {
+    let valid = RecordHeaders {
+        key: Some(Bytes::from_static(b"key")),
+        headers: vec![
+            ("a".to_owned(), Bytes::from_static(b"1")),
+            ("a".to_owned(), Bytes::new()),
+            ("trace".to_owned(), Bytes::from_static(b"xyz")),
+        ],
+    }
+    .encode()
+    .expect("encode");
+    for seed in 0..4_000 {
+        let mut rng = Rng::new(seed);
+        check_block(&rng.bytes_below(48), seed);
+
+        // One bit away from a real block, where the interesting failures are.
+        let mut flipped = valid.to_vec();
+        let at = rng.below(flipped.len());
+        flipped[at] ^= 1u8 << rng.below(8);
+        check_block(&flipped, seed);
+
+        let cut = rng.below(valid.len());
+        check_block(&valid[..cut], seed);
+    }
+    check_block(&valid, 0);
+}
+
+/// Every frame kind that carries record headers, built by the encoders, then
+/// damaged: it must decode to something sound or not at all.
+#[test]
+fn a_damaged_frame_with_record_headers_never_panics_or_returns_a_bad_block() {
+    let block = RecordHeaders {
+        key: Some(Bytes::from_static(b"k")),
+        headers: vec![("h".to_owned(), Bytes::from_static(b"v"))],
+    }
+    .encode()
+    .expect("encode");
+    let headers = [Some(block.clone()), None, Some(block)];
+    let payloads = [
+        Bytes::from_static(b"one"),
+        Bytes::from_static(b"two"),
+        Bytes::from_static(b"three"),
+    ];
+    let timestamps = [1, 2, 3];
+    let meta = binary::EventBatchMeta {
+        base_offset: Some(4),
+        timestamps: Some(&timestamps),
+        record_headers: Some(&headers),
+        ..binary::EventBatchMeta::default()
+    };
+    let frames = [
+        binary::encode_event_batch_bytes_with_meta(9, &payloads, meta).expect("event"),
+        binary::encode_shared_event_batch_bytes_with_meta(&payloads, meta).expect("shared"),
+        binary::encode_publish_batch_bytes_with_headers(
+            None,
+            None,
+            Some(b"k"),
+            "t",
+            "n",
+            "s",
+            &payloads,
+            &headers,
+        )
+        .expect("publish"),
+        binary::encode_publish_batch_bytes_with_headers(
+            Some((5, AckMode::PerBatch)),
+            None,
+            None,
+            "t",
+            "n",
+            "s",
+            &payloads,
+            &headers,
+        )
+        .expect("acked"),
+    ];
+
+    for seed in 0..4_000 {
+        let mut rng = Rng::new(seed);
+        for original in &frames {
+            let mut bytes = original.to_vec();
+            match rng.below(3) {
+                0 => {
+                    let at = rng.below(bytes.len());
+                    bytes[at] ^= 1u8 << rng.below(8);
+                }
+                1 => bytes.truncate(FrameHeader::LEN + rng.below(bytes.len() - FrameHeader::LEN)),
+                _ => {
+                    let at = FrameHeader::LEN + rng.below(bytes.len() - FrameHeader::LEN);
+                    bytes[at] = rng.next_u64() as u8;
+                }
+            }
+            // The header length may now lie; decoding the frame is a separate
+            // property. Rebuild a frame around whatever body is left.
+            let flags = u16::from_be_bytes([bytes[6], bytes[7]]);
+            let body = Bytes::copy_from_slice(&bytes[FrameHeader::LEN.min(bytes.len())..]);
+            let Ok(frame) = Frame::new(flags, body) else {
+                continue;
+            };
+            if flags & FLAG_BINARY_PUBLISH_ACKED != 0 {
+                if let Ok(batch) = binary::decode_acked_publish_batch(&frame) {
+                    check_blocks(
+                        batch.batch.record_headers.as_deref(),
+                        batch.batch.payloads.len(),
+                        seed,
+                    );
+                }
+            } else if flags & FLAG_BINARY_PUBLISH_BATCH != 0 {
+                if let Ok(batch) = binary::decode_publish_batch(&frame) {
+                    check_blocks(batch.record_headers.as_deref(), batch.payloads.len(), seed);
+                }
+            } else if flags & FLAG_BINARY_EVENT_BATCH_SHARED != 0 {
+                if let Ok(batch) = binary::decode_shared_event_batch(&frame) {
+                    check_blocks(batch.record_headers.as_deref(), batch.payloads.len(), seed);
+                }
+            } else if let Ok(batch) = binary::decode_event_batch(&frame) {
+                check_blocks(batch.record_headers.as_deref(), batch.payloads.len(), seed);
+            }
+        }
+    }
+}
+
+#[test]
+fn a_json_frame_with_the_extended_flag_is_refused() {
+    let frame = Frame::new(FLAG_EXTENDED, Bytes::from_static(br#"{"type":"ok"}"#)).expect("frame");
+    assert!(Message::decode(frame).is_err());
 }
 
 #[test]

@@ -83,6 +83,9 @@ pub struct RecordView {
     pub checksum: u32,
     /// The principal that published the record, when it was stored with one.
     pub publisher: Option<Vec<u8>>,
+    /// Size of the record's key and headers block, when it has one. Storage
+    /// keeps the block opaque, so only its size is reported.
+    pub headers_len: Option<u64>,
     /// The payload cut at [`PAYLOAD_PREVIEW_BYTES`], only when asked for.
     pub payload: Option<Vec<u8>>,
 }
@@ -490,6 +493,7 @@ impl<'a> Walk<'a> {
                     payload_len: decoded.payload.len() as u64,
                     checksum: decoded.header.checksum,
                     publisher: decoded.publisher.as_deref().map(<[u8]>::to_vec),
+                    headers_len: decoded.headers.as_ref().map(|block| block.len() as u64),
                     payload: self.payload.then(|| {
                         let keep = decoded.payload.len().min(PAYLOAD_PREVIEW_BYTES);
                         decoded.payload[..keep].to_vec()

@@ -619,7 +619,7 @@ accepted.
 **So before an upgrade that changes `FORMAT_VERSION`: take a backup, and treat
 the rollout as one-way.**
 
-The current build reads format 7 but writes 3, which the previous release
+The current build reads format 8 but writes 3, which the previous release
 reads, so upgrading to it is still reversible. It moves a log to a newer
 version only to hold a record that needs it, and writes each such record only
 once something enables it: a v4 segment for a generation-start record, once
@@ -629,8 +629,10 @@ with its publisher, once `publisher_principal` is, or on a single broker with
 `FELIX_RECORD_PUBLISHERS=true` (see
 [`publisher_principal`](#publisher_principal)); and v7 for a head trim, once
 `head_trim` is, or from the start on a single broker (see
-[`head_trim`](#head_trim)). Each of those is the one-way
-step. Consumer-group cursors are not in the segment format but have a layout
+[`head_trim`](#head_trim)); and v8 for a record with a key and headers, on a
+single broker from the first publish that carries headers (a cluster does not
+accept headers yet, and `FELIX_RECORD_HEADERS=false` makes a single broker
+refuse them). Each of those is the one-way step. Consumer-group cursors are not in the segment format but have a layout
 of their own: a cluster moves to the newer one once
 [`group_cursor_dependencies`](#group_cursor_dependencies) is finalized, and a
 single broker from the start, after which an older build cannot read that

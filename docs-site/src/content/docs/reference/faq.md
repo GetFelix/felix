@@ -56,7 +56,7 @@ keeps its own offsets can read it. This is tested with kcat (librdkafka).
 What does not work is anything built on consumer groups or transactions:
 `subscribe()` with a `group.id`, committed offsets, `transactional.id`, and so
 Kafka Connect, Kafka Streams, ksqlDB, Debezium and MirrorMaker. Those are
-refused with an error that says why, rather than left hanging. Record keys and
+refused with an error that says why, rather than left hanging. Through the Kafka listener, record keys and
 headers are not stored. The whole picture, with use cases and troubleshooting,
 is on [Kafka compatibility](/features/kafka/).
 
@@ -162,7 +162,7 @@ has the full list with defaults. Change things off a measurement.
 Yes to both. See [Docker Compose](/deployment/docker-compose/) and
 [Kubernetes](/deployment/kubernetes/). Each release publishes images to
 `ghcr.io/getfelix/felix-broker:<version>` and
-`ghcr.io/getfelix/felix-controlplane:<version>` (`ghcr.io/gabloe` for 0.6.0-preview and earlier). The Helm chart is not published,
+`ghcr.io/getfelix/felix-controlplane:<version>`. The Helm chart is not published,
 so install it from `deploy/helm/felix` in the repository. The
 broker ships what an orchestrator expects: `/live` and `/ready` that answer
 different questions, and a bounded drain on SIGTERM

@@ -457,3 +457,72 @@ fn the_trim_refusal_log_is_rate_limited_per_key() {
     assert!(limit.due("b/s1"));
     assert!(LogLimit::new(std::time::Duration::ZERO).due("b/s0"));
 }
+
+/// A leader log of `a`, then `b` with a headers block, then `c`.
+async fn log_with_headers() -> (StreamLog, TempDir) {
+    let (log, dir) = leader_log(&["a"]).await;
+    let order = std::sync::Arc::new(felix_storage::CommitSequencer::new(1));
+    let (pending, _turn) = log
+        .begin_append(
+            &[Bytes::from_static(b"b")],
+            &[],
+            Some(&[Some(Bytes::from_static(b"block"))]),
+            0,
+            &order,
+        )
+        .await
+        .expect("append");
+    log.commit(&pending).await.expect("commit");
+    log.append(&[Bytes::from_static(b"c")])
+        .await
+        .expect("append");
+    (log, dir)
+}
+
+/// **A record with headers is never shipped without them.** Replication does
+/// not carry headers yet, and a follower that acked the bare record would hold
+/// a different one than the leader. What comes before it still ships; the
+/// follower then waits at the record, loudly, and the pass ends instead of
+/// going round again.
+#[tokio::test]
+async fn a_record_with_headers_is_held_not_shipped_bare() {
+    let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+    let handle = recorder.handle();
+    let _local = ::metrics::set_default_local_recorder(&recorder);
+    let (log, _dir) = log_with_headers().await;
+    let follower = ScriptedFollower::new([Ok(stored(1))]);
+    let mut cursor = cursor(0);
+
+    let first = ship_once(
+        &follower,
+        &log,
+        &shard(),
+        felix_broker::LogKind::Stream,
+        &mut cursor,
+        BATCH_BYTES,
+        &Rebuilds::disabled(),
+    )
+    .await;
+    assert_eq!(first, Progress::Stored { durable_offset: 1 });
+    assert_eq!(follower.sent(), vec![(0, vec_of(&["a"]))]);
+
+    let second = ship_once(
+        &follower,
+        &log,
+        &shard(),
+        felix_broker::LogKind::Stream,
+        &mut cursor,
+        BATCH_BYTES,
+        &Rebuilds::disabled(),
+    )
+    .await;
+    assert_eq!(second, Progress::Retry);
+    assert!(cursor.stalled);
+    assert_eq!(cursor.next_offset, 1);
+    assert_eq!(follower.sent().len(), 1, "nothing was sent for the record");
+    let rendered = handle.render();
+    assert!(
+        rendered.contains(r#"outcome="headers_unsupported"} 1"#),
+        "{rendered}"
+    );
+}

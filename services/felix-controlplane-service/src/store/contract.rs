@@ -8,6 +8,7 @@ mod adoption;
 pub(crate) mod cache_incarnations;
 pub(crate) mod change_feeds;
 pub(crate) mod incarnations;
+pub(crate) mod mounts;
 pub(crate) mod nodes;
 pub(crate) mod pagination;
 pub(crate) mod placement;

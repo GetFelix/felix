@@ -69,6 +69,8 @@ pub(crate) struct StreamState {
     /// the log by offset (the Kafka listener's long-poll fetch) rather than
     /// holding a subscription.
     pub(crate) appended: Arc<tokio::sync::Notify>,
+    /// This shard's bit in the broker's [`crate::AppendedShards`].
+    pub(crate) append_slot: u16,
     /// Durable batches past the committed mark, kept from the ring and from
     /// subscribers until it passes them. Empty unless the stream is `Quorum`.
     pub(crate) held: CommitHold,
@@ -126,6 +128,19 @@ impl CommitScan {
 }
 
 impl StreamState {
+    /// The state of shard `shard` of `name`, which replication tells apart
+    /// from other shards' appends by this.
+    pub(crate) fn for_shard(
+        mut self,
+        tenant_id: &str,
+        namespace: &str,
+        name: &str,
+        shard: u32,
+    ) -> Self {
+        self.append_slot = crate::AppendedShards::slot(tenant_id, namespace, name, shard);
+        self
+    }
+
     pub(crate) fn new(
         handle_id: u64,
         subscriber_queue_capacity: usize,
@@ -155,6 +170,7 @@ impl StreamState {
             commit_sequencer: Arc::new(CommitSequencer::new(0)),
             producers: ProducerTable::default(),
             appended: Arc::new(tokio::sync::Notify::new()),
+            append_slot: 0,
             held: CommitHold::default(),
             commits: CommitScan::default(),
         }
@@ -270,13 +286,17 @@ impl StreamState {
                 continue;
             }
             let record = crate::commit::client_record(record);
-            if !state.log.admit(record.payload.len()) {
+            if !state
+                .log
+                .admit(record.payload.len() + record.headers.as_deref().map_or(0, Bytes::len))
+            {
                 continue;
             }
             state.log.push_back(LogEntry {
                 seq: record.offset,
                 payload: record.payload,
                 publisher: record.publisher,
+                headers: record.headers,
                 timestamp_micros: Some(record.timestamp_micros),
             });
         }
@@ -389,6 +409,7 @@ impl StreamState {
         commit: Option<&[StateOp]>,
         publisher: Option<&Bytes>,
         timestamp_micros: Option<u64>,
+        headers: Option<&[Option<Bytes>]>,
     ) -> Option<(Arc<Vec<SubscriberEntry>>, u64)> {
         if payloads.is_empty() {
             return Some((self.subscribers_snapshot.load_full(), 0));
@@ -419,13 +440,19 @@ impl StreamState {
             _ => 0,
         };
         let mut seq = first_seq.unwrap_or(state.next_seq);
-        let bytes = payloads.iter().map(Bytes::len).sum();
+        let bytes = payloads.iter().map(Bytes::len).sum::<usize>()
+            + headers.map_or(0, |headers| {
+                headers.iter().flatten().map(Bytes::len).sum::<usize>()
+            });
         if state.log.admit(bytes) {
-            for payload in payloads {
+            for (index, payload) in payloads.iter().enumerate() {
                 state.log.push_back(LogEntry {
                     seq,
                     payload: payload.clone(),
                     publisher: publisher.cloned(),
+                    headers: headers
+                        .and_then(|headers| headers[index].clone())
+                        .map(Box::new),
                     timestamp_micros,
                 });
                 seq = seq.checked_add(1).expect("log sequence overflow");
@@ -540,7 +567,7 @@ impl StreamState {
     /// exercise the ring without a log behind it.
     #[cfg(test)]
     pub(crate) fn append_batch(&self, payloads: &[Bytes], log_capacity: usize) {
-        self.append_batch_at(payloads, None, None, log_capacity, None, None, None);
+        self.append_batch_at(payloads, None, None, log_capacity, None, None, None, None);
     }
 
     pub(crate) fn register_subscriber(&self) -> (u64, SubscriptionReceiver) {
@@ -662,6 +689,7 @@ impl StreamState {
                 offset: entry.seq,
                 payload: entry.payload.clone(),
                 publisher: entry.publisher.clone(),
+                headers: entry.headers.as_deref().cloned(),
                 timestamp_micros: entry.timestamp_micros,
             })
             .collect();
@@ -748,11 +776,32 @@ impl StreamState {
         self.subscribers_snapshot.load_full()
     }
 
+    /// Count one batch of `count` items as queued for one subscriber.
     pub(crate) fn increment_queue_depth(&self, count: usize) {
+        self.reserve_queue_depth(count);
+        self.settle_queue_depth(0, count, 1);
+    }
+
+    /// Count `count` items as queued before they are sent, so a receiver that
+    /// takes one at once never finds the depth short. A fanout reserves for
+    /// every subscriber in one step rather than touching these shared
+    /// counters once per subscriber, then settles with
+    /// [`Self::settle_queue_depth`].
+    pub(crate) fn reserve_queue_depth(&self, count: usize) {
         self.queued_items.fetch_add(count, Ordering::Relaxed);
+        queue_metrics().len.increment(count as f64);
+    }
+
+    /// Give back the `unsent` items of a reservation, and count the `sent`
+    /// ones, queued as `batches` entries.
+    pub(crate) fn settle_queue_depth(&self, unsent: usize, sent: usize, batches: usize) {
         let metrics = queue_metrics();
-        metrics.len.increment(count as f64);
-        metrics.enqueued.increment(count as u64);
+        if unsent > 0 {
+            self.queued_items.fetch_sub(unsent, Ordering::Relaxed);
+            metrics.len.decrement(unsent as f64);
+        }
+        metrics.enqueued.increment(sent as u64);
+        metrics.shared_batch_handles.increment(batches as u64);
     }
 
     fn rebuild_subscriber_snapshot(&self, state: &SubscriberRegistry) {

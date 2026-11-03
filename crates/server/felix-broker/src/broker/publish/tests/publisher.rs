@@ -65,6 +65,7 @@ async fn publish_as(
             &handle,
             &[Bytes::from_static(payload.as_bytes())],
             publisher,
+            None,
         )
         .await
         .expect("publish");
