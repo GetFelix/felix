@@ -104,6 +104,9 @@ async fn a_wiped_follower_counts_only_once_it_holds_the_start() {
     let storage = cluster.node(&wiped).expect("wiped").storage_dir();
     std::fs::remove_dir_all(&storage).expect("wipe its storage");
     cluster.restart_node(&wiped).await.expect("restart it");
+    // The harness steps placement only when asked; the failover and the
+    // re-admission below need it running.
+    cluster.run_placement(Duration::from_millis(200));
 
     // With the leader gone, placement names the follower that kept its data
     // and holds the wiped one a learner.
