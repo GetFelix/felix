@@ -12,11 +12,13 @@ workloads continues on another node from the last record it handled, with no
 gaps and no duplicates in its output. Any workload can be rebuilt as it was at a
 past input offset or time, and inspected.
 
-This section explains how felixd works and how to use it. The felixd
-repository's [docs](https://github.com/GetFelix/felixd/tree/main/docs) are the
-reference for the current workload contract, every record kind and the
-operator commands, and they move faster than these pages. Where something is
-not built, a page says so and links the felixd issue.
+This section explains how felixd works and how to use it. These pages teach
+workload contract 0.3, the current one. felixd still runs workloads built against
+0.2, and [the contract page](/built-on-felix/felixd/contract/#still-on-02) says what
+differs. The felixd repository's
+[docs](https://github.com/GetFelix/felixd/tree/main/docs) are the reference for every
+record kind and the operator commands, and they move faster than these pages. Where
+something is not built, a page says so and links the felixd issue.
 
 | Page | What it covers |
 |---|---|
@@ -58,15 +60,16 @@ not built, a page says so and links the felixd issue.
   stop it. Agents expose Prometheus metrics, and `felixd agent` releases its
   leases on SIGTERM as well as Ctrl-C. A scheduler, itself a felixd workload,
   can assign workloads to nodes, with first claim wins as the fallback.
+- **Roles and admission.** `felixd init` sets up a namespace with roles for nodes,
+  submitters and a workload called admission, which decides who may run what by the
+  publisher of each request. Without it an operator submits directly.
 - **Trimming history.** Old snapshots, merge log records and inputs can be
-  deleted below every reader's floor. It needs a fleet that has finalized
-  `head_trim` and node tokens with `stream.trim`, which `felixd init
-  --grant-trim` grants. Without them everything is kept.
+  deleted below every reader's floor. See
+  [Running felixd](/built-on-felix/felixd/running/#trimming-history) for what it needs.
 - **Workload contract.** Named and keyed outputs, rejection of a single input
   without failing the workload, chunked snapshots and the authenticated
-  publisher of each input. felixd runs contract 0.3 and still runs 0.2; the
-  pages here describe 0.2, which is enough to write and run a workload.
-- **Release binaries and operator docs.** Each release has builds for Linux and
+  publisher of each input. These pages teach contract 0.3, and felixd still runs 0.2.
+- **Release binaries and operator docs.** Releases have builds for Linux and
   macOS, a compose file starts a three-node cluster, and
   [`docs/operating.md`](https://github.com/GetFelix/felixd/blob/main/docs/operating.md)
   covers running one.

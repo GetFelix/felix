@@ -9,12 +9,21 @@ takes 24 minutes. Everything that happens is written to Felix, so you can drag
 the timeline back to any moment the log still holds, see the city exactly as it
 was, and let it play forward until it catches up with live.
 
-It is playable. A simulator steps the city and the browser draws it live. You
-can drag the timeline back through the hours the log still holds, play the past
-forward and rejoin live with no gap, follow one resident through their day, and
-sign in as a builder to put up buildings and lay roads. Zones are not built yet,
-and the page has no way to fork a city yet, although the simulator can. The
-[README](https://github.com/GetFelix/felix-metro#readme) has the controls and a
+It is playable. A simulator steps the city and the browser draws it live.
+
+What works:
+
+- Dragging the timeline back through the hours the log still holds, playing the
+  past forward and rejoining live with no gap.
+- Following one resident through their day.
+- Signing in as a builder to put up buildings and lay roads.
+
+Not built yet:
+
+- Zones.
+- Forking a city from the page (the simulator can already fork).
+
+The [README](https://github.com/GetFelix/felix-metro#readme) has the controls and a
 quick start. The sections below describe how it works.
 
 | Day | Night |

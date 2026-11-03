@@ -3,8 +3,9 @@ title: "Quickstart"
 ---
 
 The shortest path to a running Felix cluster with something happening on it.
-This page targets the `main` branch, the 0.7 line, so the compose file and the
-Rust example below match the code you build from a clone.
+This page targets `main` (the 0.7 line), so the compose file and the Rust
+example below match the code you build from a clone. For 0.6.2 or earlier, use
+the stable docs at <https://docs.getfelix.dev/>.
 
 A broker on its own is not a working system: it authenticates every connection
 against a control plane, so it needs one to talk to and a credential to present.
@@ -14,7 +15,7 @@ come first here rather than last.
 ## Try it in one command
 
 With Docker or Podman and nothing else, this runs a control plane, a broker and
-development credentials from the released images:
+development credentials from the 0.7 preview images:
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/GetFelix/felix/main/compose.yaml
@@ -52,7 +53,7 @@ build on this stack and take you from a first stream to a small app.
 
 ## Prerequisites
 
-- **Rust** 1.97 or later ([rustup](https://rustup.rs/))
+- **Rust** 1.97 or later; the repo pins 1.99.1 and rustup fetches it ([rustup](https://rustup.rs/))
 - **Git**
 - Optional: [Task](https://taskfile.dev/), for the shortcuts CI uses
 
@@ -234,10 +235,12 @@ broker's certificate. Where each comes from:
 ### Publish and subscribe
 
 Make a crate for the example. The client API below is the 0.7 one, so depend on
-`felix-client` from your clone of the repository (the path here assumes the
-clone sits next to the new crate):
+`felix-client` from your clone of the repository. Run this from the directory
+that contains your `felix` clone, not from inside it, so the new crate sits
+next to the clone:
 
 ```bash
+cd ..
 cargo new orders-demo && cd orders-demo
 cargo add felix-client --path ../felix/crates/sdk/felix-client
 cargo add tokio --features macros,rt-multi-thread
@@ -284,6 +287,13 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 ```
+
+Replace `127.0.0.1:5000` with a client address from the session file
+(`${TMPDIR:-/tmp}/felix-cluster.json`, written by `felix-cluster up`): each
+entry of `nodes` has a `client_addr`. Replace `<felix token>` with its top-level
+`client_token`. A `felix-cluster` broker writes its certificate to `broker-cert.pem` in its
+data directory, and the `cert_file` of each entry names it. Copy one to
+`broker-cert.pem` in the crate, or change the path in the code.
 
 The stream must already exist in the control plane. `felix-cluster up`
 creates `orders` in tenant `t1`, namespace `ns`. A subscription is served only

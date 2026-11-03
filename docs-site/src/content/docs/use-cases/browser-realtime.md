@@ -128,6 +128,9 @@ docker run -p 8787:8787 \
   ghcr.io/getfelix/felix-gateway:0.8.0
 ```
 
+The gateway is versioned on its own, apart from Felix. Release 0.8.0 is
+tested against Felix 0.6.2.
+
 `GATEWAY_NAMESPACE` defaults to `default`. In the browser:
 
 ```ts

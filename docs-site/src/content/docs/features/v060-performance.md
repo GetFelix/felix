@@ -1,6 +1,6 @@
 ---
 title: "0.6.0 performance report"
-description: "What Felix v0.6.0 does on real Azure hardware: one broker and a three-broker RF=3 cluster, the exact conditions, how to read the numbers, throughput and latency for each publish shape, a NATS JetStream comparison on the same VMs, and the defects the main run found and fixed."
+description: "What Felix v0.6.0 does on real Azure hardware: one broker and a three-broker RF=3 cluster, the exact conditions, how to read the numbers, throughput and latency for each publish shape, a NATS JetStream comparison on the same VMs, and the defects the measurement round found and fixed."
 ---
 
 This is the report for the 0.6.0 release. Newer releases have their own
@@ -32,9 +32,10 @@ The page is in this order:
 
 On one 8 vCPU broker with local NVMe, over QUIC with TLS, with 64 publishers on
 four load generators. These single-broker figures were measured on the
-main-run build (`88a91681`). The release build (`6ec23a8f`) was compared with
+measured build (`88a91681`). The measurement round is the set of runs on
+that build. Figures come from it unless a table says otherwise. The release build (`6ec23a8f`) was compared with
 it on ten shapes: batched throughput matched within about 1% except 256 B
-fire-and-forget, which is 13% slower on the release (#1469). The latency and
+fire-and-forget, which is 13% slower on the release (#1469, fixed in 0.6.1). The latency and
 batch-1 rows moved between -5.4% and +4.5%, on one trial each
 ([details](#the-release-build-against-this-build)).
 
@@ -168,7 +169,7 @@ cluster's conditions are in [its own section](#cluster-conditions).
 | UDP buffers | `net.core.rmem_max` and `wmem_max` 26214400, `rmem_default` and `wmem_default` 8388608 |
 
 The device baseline was taken with `fio` on the broker's data volume twice,
-before each half of the main run. Sequential 256 KiB writes with an
+before each half of the measurement round. Sequential 256 KiB writes with an
 `fdatasync` after each ran at 1414 and 1426 MB/s with one job, 1467 and 1480
 MB/s with four, and 1456 and 1478 MB/s with eight. Sequential 4 KiB writes with
 one job ran at 80 and 46 MB/s. These are the ceilings the durable cells are
@@ -199,9 +200,9 @@ It does not contain #1421 (durable streams ack after commit by default), #1443
 generator finishes its publishers gracefully). The page says where each of
 those matters.
 
-The main run also built v0.6.0-preview.9 (`71960125bd9a9dee61115a7553f21342a1d136d1`)
+The measurement round also built v0.6.0-preview.9 (`71960125bd9a9dee61115a7553f21342a1d136d1`)
 on the same VMs and ran it against this build as a gate on the headline cells.
-A cell more than 3% slower than preview.9 would have stopped the main run.
+A cell more than 3% slower than preview.9 would have stopped the measurement round.
 
 ### Settings
 
@@ -301,11 +302,19 @@ sweeps, then deallocates the VMs. This run was trimmed to fit its time limit:
 and 8, the 64 MiB window arm, the 4-in-flight arm of the latency curve and the
 second trial of the sweeps were dropped.
 
+```bash
+cd scripts/perf/azure
+SESSION=<name> BUILD_SHA=88a9168148f6fab3245712ea8dee3dc110c9f778 ./campaign-final.sh --dry-run
+SESSION=<name> BUILD_SHA=88a9168148f6fab3245712ea8dee3dc110c9f778 nohup ./campaign-final.sh &
+```
+
+The dry run lists every cell, the expected hours and the cost.
+
 ## Single broker results
 
 ### This build against v0.6.0-preview.9
 
-Before measuring anything else, the main run ran both builds on the same VMs,
+Before measuring anything else, the measurement round ran both builds on the same VMs,
 two trials each, alternating, with identical clients and settings.
 
 | Shape | preview.9 MB/s | This build MB/s | Change |
@@ -345,11 +354,11 @@ cell, alternating, both driven by the release load generator. One trial each.
 
 Throughput is payload; for latency, lower is better. The verdict: no
 regression on any headline shape except 256 B fire-and-forget, which is 13%
-slower on the release (#1469). Only small messages are affected; the 4 KiB and
+slower on the release (#1469, fixed in 0.6.1). Only small messages are affected; the 4 KiB and
 64 KiB rows of the same mode moved by under 1%. The release broker also
 dropped almost no UDP datagrams in that cell (1 a second against 68). The 256 B
 `on_commit` ack is 15 µs slower at p50 and 53 µs at p999. That is within the
-spread between single trials of this cell (the main run's three trials of this
+spread between single trials of this cell (the measurement round's three trials of this
 build ran 312 µs at p50, this run's 333 µs), so it is not a finding on one
 trial. It is a separate watch item from #1469.
 
@@ -357,11 +366,11 @@ The A/B did not repeat every shape. In particular it did not repeat in-memory
 256 B batches of 64 acked, the 8.78 M messages a second row below, so that
 figure has no release-build measurement.
 
-The headline figures on this page come from the main run, not this
+The headline figures on this page come from the measurement round, not this
 one, because this run's VMs ran 0 to 4% faster for the same build: acked
 4 KiB batches at 4593 against 4403 MB/s, fire-and-forget 4 KiB at 3650 against
 3624. Comparing the release from this run with this build from the
-main run would credit the release with that drift.
+measurement round would credit the release with that drift.
 
 With the graceful finish in the release load generator (#1460), sent and
 accepted bytes now match exactly in these cells, for example 159,886 MB each
@@ -444,7 +453,7 @@ defaults go faster than fire-and-forget with waiting only by dropping
 messages.
 
 Fire-and-forget should be the faster of the two, because the broker sends no
-acks. It is not, and the measurements did not show why.
+acks. It is not, and the cause was not found.
 
 The first suspect was a defect in this build (#1416). When the ingress queue
 was full, a publish waiting for room was awaited inside the control stream's
@@ -520,7 +529,7 @@ throughput keeps many and accepts the wait.
 
 ### Shipped defaults against the durability profile
 
-The main run uses what we call the durability profile: acks after the
+The measurement round uses what we call the durability profile: acks after the
 write, publishers wait for room, io_uring on. These cells run the same loads with
 the measured build's defaults instead: ack on accept, no waiting, io_uring off.
 Two trials each.
@@ -587,7 +596,7 @@ small gap.
 ### The earlier 4.1 GB/s figure
 
 The site previously quoted 4.1 GB/s for in-memory 4 KiB fire-and-forget. To
-check it, the main run ran the load generator that produced that figure next to
+check it, the measurement round ran the load generator that produced that figure next to
 the current one, on this build, with publishers waiting for room:
 
 | Load generator | Trial 1 | Trial 2 |
@@ -759,7 +768,7 @@ the first of each comparison:
 NATS answers a lone publish sooner in every comparison, by 13 to 80 µs at p50. The
 largest gap is with an fsync before the ack: 280 against 351 µs at 256 B. A
 second trial of that comparison measured 279 µs for NATS and 419 µs for Felix, and
-the main run's three trials of the same Felix cell measured 312 µs, so the
+the measurement round's three trials of the same Felix cell measured 312 µs, so the
 Felix figure moves between runs more than the NATS one does. At the tail the
 two are closer: at 4 KiB NATS's ack p999 is the longer one in both fsync
 comparisons, and its delivery p999 is longer in five of the six rows. These are
@@ -907,7 +916,7 @@ as a durable publish:
 These figures are bound by latency: with one operation in flight per worker,
 throughput is the worker count divided by the latency, as Little's law says.
 Puts scale with workers. Gets stop near 3,000 a second between 8 and 32
-workers, and the measurements did not show why. They show what one operation costs,
+workers, and the cause was not found. They show what one operation costs,
 not what the cache can sustain. Cache throughput on its own is tracked in
 #1473.
 
@@ -1020,7 +1029,7 @@ fsync. More publishes in flight per commit raise throughput until CPU takes
 over.
 
 **The NIC and the path.** A larger MTU means fewer packets per byte. The
-main run used MTU 3900 because the Azure virtual network accepts it. At the
+measurement round used MTU 3900 because the Azure virtual network accepts it. At the
 default 1500 the same load needs more than twice the packets.
 
 **Per-shard publish streams are a trade-off.** A client can give each shard of
@@ -1049,13 +1058,13 @@ the number of broker core shards no longer changed throughput in these cells.
 
 ## Known issues
 
-- **256 B fire-and-forget is 13% slower on the release** than on the main run
-  build, with the 4 KiB and 64 KiB rows unchanged (#1469).
+- **256 B fire-and-forget is 13% slower on the release** than on the measured
+  build, with the 4 KiB and 64 KiB rows unchanged (#1469), fixed in 0.6.1.
 - **Watch item: the 256 B `on_commit` p50 was 4.5% slower on the release** in a
   single trial, within the spread between trials of that cell. It is not part
   of #1469.
-- **Fire-and-forget trails acked publishing.** Lossless, in memory, 4 KiB
-  batches of 64: 3.6 GB/s fire-and-forget against 4.4 GB/s acked. The measurements did not show the cause. The release comparison ruled out the connection stall (#1416).
+- **Fire-and-forget trails acked publishing** (lossless, in memory, 4 KiB
+  batches of 64: 3.6 GB/s against 4.4 GB/s acked). The cause was not found. The release comparison ruled out the connection stall (#1416).
 - **The cache figures are bound by latency.** They measure one operation in
   flight per worker on the RF=3 cluster. Cache throughput on a single broker
   and on a cluster is tracked in #1473.
@@ -1104,7 +1113,7 @@ larger than assumed: one build measured between 66 and 94 MB/s across runs.
 Durable cells also looked 35 to 38% lower for a day. That was the disk, not
 Felix. The VM had been deallocated and came back with a local NVMe that ran
 at 18% of its spec in eastus2. A `fio` baseline on the data volume showed it,
-and the main run moved to westus3, where the device matched the original
+and the measurement round moved to westus3, where the device matched the original
 baseline (1416 against 1427 MB/s). On that disk durable cells were not regressed:
 256 B batch 1 went from 27.1 to 34.4 MB/s and 4 KiB batch 1 from 268 to 354
 MB/s.

@@ -71,11 +71,11 @@ export default defineConfig({
           items: [
             { label: 'Why Felix?', slug: 'getting-started/why-felix' },
             { label: 'Overview', slug: 'getting-started/overview' },
+            { label: 'What Felix Is For', slug: 'getting-started/what-felix-is-for' },
             { label: 'Quickstart', slug: 'getting-started/quickstart' },
             { label: 'Installation', slug: 'getting-started/installation' },
             { label: 'felixctl', slug: 'getting-started/felixctl' },
             { label: 'Docker or Podman', slug: 'getting-started/containers' },
-            { label: 'What Felix Is For', slug: 'getting-started/what-felix-is-for' },
           ],
         },
         {
@@ -143,7 +143,20 @@ export default defineConfig({
           items: [
             { label: 'Choosing a Client', slug: 'clients/overview' },
             { label: 'Building Resilient Clients', slug: 'clients/resilient-clients' },
-            { label: 'Rust', slug: 'clients/rust' },
+            { label: 'Errors Across Clients', slug: 'clients/errors' },
+            { label: 'Auth and TLS', slug: 'clients/auth-and-tls' },
+            {
+              label: 'Rust',
+              collapsed: true,
+              items: [
+                { label: 'Setup and configuration', slug: 'clients/rust' },
+                { label: 'Publishing', slug: 'clients/rust/publishing' },
+                { label: 'Subscribing', slug: 'clients/rust/subscribing' },
+                { label: 'Cache Operations', slug: 'clients/rust/cache' },
+                { label: 'Consumer Groups and Commits', slug: 'clients/rust/groups-and-commits' },
+                { label: 'Clusters and Operations', slug: 'clients/rust/operations' },
+              ],
+            },
             { label: 'Python', slug: 'clients/python' },
             { label: 'TypeScript', slug: 'clients/typescript' },
             { label: 'C', slug: 'clients/c' },

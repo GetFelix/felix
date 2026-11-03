@@ -41,12 +41,13 @@ A component as stored. Its sha256 in hex is its identity, and it is kept in the
 
 The WebAssembly Interface Type language that describes a component's imports and
 exports. The workload contract is written in WIT, in
-[`wit/workload.wit`](https://github.com/GetFelix/felixd/blob/main/wit/0.2/workload.wit).
+[`wit/0.3/workload.wit`](https://github.com/GetFelix/felixd/blob/main/wit/0.3/workload.wit).
 
 ### Contract
 
-The interface between felixd and a workload and what each side promises. The
-current version is 0.2. A component built against 0.1 is refused. See
+The interface between felixd and a workload and what each side promises. These pages
+teach 0.3. felixd still runs 0.2, which differs only in that a step never sees the
+publisher. A component built against 0.1 is refused. See
 [The workload contract](/built-on-felix/felixd/contract/).
 
 ### Step
@@ -62,8 +63,27 @@ The workload function that returns its state as JSON. `felixd replay` prints it.
 ### Input
 
 One record on the workload's input stream, with metadata: the stream, the incarnation,
-the offset, the broker's append time, and the key and payload. When the input is
+the offset, the broker's append time, the key, the payload and the publisher. When the input is
 another workload's output stream, only the outputs addressed to `out` are inputs.
+
+### Publisher
+
+The principal the broker authenticated an input record's write from, such as `p:alice`.
+A step receives it with the record, and it is `none` when the broker recorded none or
+when the input is another workload's output. It says who wrote the record, not what is
+in it. See [The publisher](/built-on-felix/felixd/contract/#the-publisher).
+
+### Merge log
+
+The stream `wl.<id>.merge` of a workload with several inputs. The lease holder appends
+the order it chose to step their records in before it steps them, so a new owner, a
+replay and `felixd check` use the same order.
+
+### Admission
+
+A felixd workload that decides which submitted workloads run, by who asked. After
+`felixd init`, `felixd run` sends a request to it and nodes run only what it accepted.
+See [Running felixd](/built-on-felix/felixd/running/#roles-and-admission).
 
 ### Input offset
 
@@ -251,8 +271,9 @@ hold no output.
 ### Incarnation
 
 A stream deleted and created again under the same name is a different incarnation of
-it. The contract carries an incarnation in each input's source. Specs do not record
-one yet, so it is always 0 ([#72](https://github.com/GetFelix/felixd/issues/72)).
+it. The contract carries an incarnation in each input's source. It is always 0 today,
+because Felix does not expose incarnations to clients yet
+([#133](https://github.com/GetFelix/felixd/issues/133)).
 
 ### Failover
 

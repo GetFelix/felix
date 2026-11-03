@@ -9,7 +9,7 @@ demos.
 
 ## Prerequisites
 
-- **Rust 1.97.1 or later**, from [rustup](https://rustup.rs/)
+- **Rust 1.97 or later**, from [rustup](https://rustup.rs/)
 - **Git**
 - Optional: [Task](https://taskfile.dev/) for the shortcuts CI uses
 
@@ -320,7 +320,7 @@ previous one fails the handshake after a restart.
 ### Build failures
 
 ```bash
-rustc --version  # 1.97.1 or later
+rustc --version  # 1.97 or later
 rustup update
 ```
 
