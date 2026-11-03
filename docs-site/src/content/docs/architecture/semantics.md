@@ -136,7 +136,11 @@ a broker that opted out can ask for commit acks on its own connections
 Under **`Quorum`**, the leader writes durably, ships the record to its replicas
 concurrently, and answers once a **majority of the replica set, counting
 itself**, holds it. On a set of three that is two, so one unreachable replica
-costs nothing. The leader waits for enough of them, not all.
+costs nothing. The leader waits for enough of them, not all. The replica set
+is the one the control plane assigned. A replica this broker has no address for
+yet, say because it could not read the cluster's node list at startup, still
+counts as a member that has not answered, so it can only slow an
+acknowledgement down, never make one easier to reach.
 
 `Quorum` does *not* change how the record is stored. The record is written the same way, to the
 same log, with the same fsync policy. What changes is what the acknowledgement
