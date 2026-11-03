@@ -45,6 +45,7 @@ jobs:
           for side in p m f; do
             case $side in p) sha=$P_SHA;; m) sha=$M_SHA;; f) sha=$f_sha;; esac
             git checkout --detach -q "$sha"
+            mkdir -p crates/server/felix-replication/tests
             cp /tmp/control_path_bench.rs crates/server/felix-replication/tests/control_path_bench.rs
             cargo build --release -p felix-broker-service --bin felix-broker
             cp target/release/felix-broker $out/felix-broker-$side
