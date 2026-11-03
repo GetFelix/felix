@@ -331,7 +331,9 @@ once, never behind a slow fence, from its serving runtime
 A leader that has not answered for the whole window is named in the
 follower's next heartbeat, which goes at once rather than an interval later.
 A leader first watched gets a whole window, and a peer that did not offer
-`PING` is not watched, so an upgrade does not read as a death.
+`PING` is not watched, so an upgrade does not read as a death. A leader the
+follower's node list has no address for yet is not watched either: not being
+able to reach it says nothing about whether it is up.
 
 **The control plane's half.** It keeps the names as soft state, like a
 heartbeat: in the store under the memory and Postgres backends, and in the

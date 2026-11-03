@@ -145,30 +145,38 @@ fn only_the_leaders_of_followed_shards_are_watched() {
     );
 }
 
-/// **A leader the catalog has no address for is not watched (#1845).** With an
-/// empty catalog every route still names this broker as a follower, but the
-/// leader cannot be dialled. Pinging it would only time out and make a healthy
-/// leader a suspect on every shard this broker follows.
+/// **A leader the catalog has no address for is not watched (#1845).** The
+/// catalog here names only `broker-a` and `broker-c`, so `broker-b` is a
+/// placeholder in every route. Pinging it fails without a dial and would make
+/// a healthy leader a suspect; `broker-c`, which has an address, is still
+/// watched.
 #[test]
 fn a_leader_with_no_address_is_not_watched() {
-    let nodes: Map<String, NodeRef> = Map::new();
+    let nodes: Map<String, NodeRef> = [("broker-a", 7001), ("broker-c", 7003)]
+        .into_iter()
+        .map(|(id, port)| (id.to_string(), node(id, port)))
+        .collect();
     let router = ShardRouter::new(
         "broker-a",
         "us-west-2",
         RegionRouter::new("us-west-2".to_string()),
     );
-    let table = RoutingTable::build(
-        [(
-            key(0),
-            "broker-b".to_string(),
-            vec!["broker-a".to_string(), "broker-c".to_string()],
+    let placed = |shard, leader: &str| {
+        (
+            key(shard),
+            leader.to_string(),
+            vec!["broker-a".to_string(), "broker-d".to_string()],
             1,
-        )],
-        &nodes,
-    );
+        )
+    };
+    let table = RoutingTable::build([placed(0, "broker-b"), placed(1, "broker-c")], &nodes);
     router.publish(table, &nodes);
 
-    assert!(leaders_followed(&router).is_empty());
+    let watched: Vec<String> = leaders_followed(&router)
+        .into_iter()
+        .map(|(node, _)| node)
+        .collect();
+    assert_eq!(watched, vec!["broker-c".to_string()]);
 }
 
 /// A peer that offers `offered` and answers a ping with `answer`.
