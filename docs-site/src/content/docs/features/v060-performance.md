@@ -1,7 +1,10 @@
 ---
-title: "v0.6.0 Performance"
-description: "What Felix v0.6.0 does on real Azure hardware: one broker and a three-broker RF=3 cluster, the exact conditions, how to read the numbers, throughput and latency for each publish shape, a NATS JetStream comparison on the same VMs, and the defects the campaign found and fixed."
+title: "0.6.0 performance report"
+description: "What Felix v0.6.0 does on real Azure hardware: one broker and a three-broker RF=3 cluster, the exact conditions, how to read the numbers, throughput and latency for each publish shape, a NATS JetStream comparison on the same VMs, and the defects the main run found and fixed."
 ---
+
+This is the report for the 0.6.0 release. Newer releases have their own
+numbers, so do not read these as the current figures.
 
 This page reports what Felix v0.6.0 does on real Azure hardware. It covers a
 single broker in detail, compares it with NATS JetStream on the same machines,
@@ -21,7 +24,7 @@ The page is in this order:
 6. [Three-broker cluster](#three-broker-cluster)
 7. [What limits each shape](#what-limits-each-shape)
 8. [Known issues](#known-issues)
-9. [What the campaign found and fixed](#what-the-campaign-found-and-fixed)
+9. [What the benchmarking found and fixed](#what-the-benchmarking-found-and-fixed)
 10. [How we got here](#how-we-got-here): the investigation behind the single
    broker numbers
 
@@ -29,7 +32,7 @@ The page is in this order:
 
 On one 8 vCPU broker with local NVMe, over QUIC with TLS, with 64 publishers on
 four load generators. These single-broker figures were measured on the
-campaign build (`88a91681`). The release build (`6ec23a8f`) was compared with
+main-run build (`88a91681`). The release build (`6ec23a8f`) was compared with
 it on ten shapes: batched throughput matched within about 1% except 256 B
 fire-and-forget, which is 13% slower on the release (#1469). The latency and
 batch-1 rows moved between -5.4% and +4.5%, on one trial each
@@ -51,16 +54,16 @@ batch-1 rows moved between -5.4% and +4.5%, on one trial each
   nothing else is running**: 312 µs at p50 and 437 µs at p999 for 256 B.
   In-memory publishes take 160 to 180 µs.
 - **Felix has higher throughput than NATS JetStream in every acked and durable
-  pair**, from 1.2 times for in-memory single messages to 14.8 times for durable
+  comparison**, from 1.2 times for in-memory single messages to 14.8 times for durable
   batches of small messages. The two largest ratios, 14.8 and 9.5 times, are
   partly the publishers' windows rather than the servers: Felix kept more
-  requests in flight than `nats bench` did in those pairs, and how much of each
+  requests in flight than `nats bench` did in those comparisons, and how much of each
   ratio that accounts for has not been measured (see
-  [How each pair is matched](#how-each-pair-is-matched-and-where-it-still-differs)).
+  [How each comparison is matched](#how-each-comparison-is-matched-and-where-it-still-differs)).
   A rerun with matched windows is tracked in #1507.
   **Core NATS has about 1.35 times Felix's
   throughput for fire-and-forget.** With one publish in flight, NATS answers
-  sooner in every pair, by 13 to 80 µs at p50. Both ran on the same VMs,
+  sooner in every comparison, by 13 to 80 µs at p50. Both ran on the same VMs,
   interleaved.
 - **This build is as fast as or faster than v0.6.0-preview.9** on every shape
   in the gate, from +0.3% for durable to +32% for small acked messages.
@@ -69,8 +72,8 @@ On three 4-core brokers with three fsynced copies of every durable record,
 durable 4 KiB batches ran at 656 MB/s of payload, which is about 2 GB/s written
 across the three brokers' disks, and in-memory 4 KiB batches at 4.6 GB/s.
 Publishing straight to each shard's owner was 1.3 to 4.4 times faster than
-publishing through any broker. On a cluster whose fleet features are not yet
-finalized, a durable ack waits about 3.5 ms; [Three-broker
+publishing through any broker. On a cluster whose fleet features are
+not finalized, a durable ack waits about 3.5 ms; [Three-broker
 cluster](#three-broker-cluster) explains why.
 
 ## How to read the numbers
@@ -147,8 +150,8 @@ other as the in-flight count rises.
 
 ## Exact conditions
 
-Everything below was recorded by the campaign driver and is in the repository
-under `scripts/perf/azure/sessions/v060-w3-final-results/`. The three-broker
+Everything below was recorded by the benchmark driver. The per-measurement
+result files are not part of the repository checkout. The three-broker
 cluster's conditions are in [its own section](#cluster-conditions).
 
 ### Hardware and network
@@ -165,7 +168,7 @@ cluster's conditions are in [its own section](#cluster-conditions).
 | UDP buffers | `net.core.rmem_max` and `wmem_max` 26214400, `rmem_default` and `wmem_default` 8388608 |
 
 The device baseline was taken with `fio` on the broker's data volume twice,
-before each half of the campaign. Sequential 256 KiB writes with an
+before each half of the main run. Sequential 256 KiB writes with an
 `fdatasync` after each ran at 1414 and 1426 MB/s with one job, 1467 and 1480
 MB/s with four, and 1456 and 1478 MB/s with eight. Sequential 4 KiB writes with
 one job ran at 80 and 46 MB/s. These are the ceilings the durable cells are
@@ -196,14 +199,14 @@ It does not contain #1421 (durable streams ack after commit by default), #1443
 generator finishes its publishers gracefully). The page says where each of
 those matters.
 
-The campaign also built v0.6.0-preview.9 (`71960125bd9a9dee61115a7553f21342a1d136d1`)
+The main run also built v0.6.0-preview.9 (`71960125bd9a9dee61115a7553f21342a1d136d1`)
 on the same VMs and ran it against this build as a gate on the headline cells.
-A cell more than 3% slower than preview.9 would have stopped the campaign.
+A cell more than 3% slower than preview.9 would have stopped the main run.
 
 ### Settings
 
 The broker runs at its defaults except for the variables below, which the
-campaign sets on every cell.
+benchmark driver sets on every cell.
 
 | Variable | Measured value | Product default | Differs |
 |---|---|---|---|
@@ -289,36 +292,20 @@ Delivery latency runs from the publish to when the subscriber receives it.
 
 ### Reproduce it
 
-The driver is committed. It starts the session, runs the preflight, records the
-system facts, runs the gate, the matrix, the latency cells, the NATS pairings and
-the sweeps, then deallocates the VMs:
-
-```bash
-cd scripts/perf/azure
-SESSION=<name> BUILD_SHA=88a9168148f6fab3245712ea8dee3dc110c9f778 ./campaign-final.sh --dry-run
-SESSION=<name> BUILD_SHA=88a9168148f6fab3245712ea8dee3dc110c9f778 nohup ./campaign-final.sh &
-```
-
-The dry run lists every cell, the expected hours and the cost. The README in
-that directory describes the cell format and `summarize.py`, which turns a
-results directory into `cells.csv` and `summary.md`, or prints one cell with
-`--cell <dir>`. This run was trimmed to fit its time limit: 64 KiB batch-1
-cells, plain-key batch-64 cells, listener counts 1 and 8, the 64 MiB window arm,
-the 4-in-flight arm of the latency curve and the second trial of the sweeps were
-dropped.
-
-`scripts/perf/azure/v060_tables.py <results-dir>` prints the tables on this
-page from the cell directories: median of the finished trials, the min to max
-spread, and how many trials finished. `scripts/perf/azure/v060_charts.py
---single <results-dir> --rf3-release <rf3-results-dir>` draws the charts from the same
-cells into `docs-site/public/charts/v060/`. Bars are medians, and whiskers span
-the trials' minimum to maximum.
+The driver for these measurements lives under `scripts/perf/azure/`, and the
+README there describes the result format and the summary tools. It provisions
+the VMs, runs the preflight, records the system facts, runs the gate, the
+throughput matrix, the latency measurements, the NATS comparisons and the
+sweeps, then deallocates the VMs. This run was trimmed to fit its time limit:
+64 KiB batch-1 measurements, plain-key batch-64 measurements, listener counts 1
+and 8, the 64 MiB window arm, the 4-in-flight arm of the latency curve and the
+second trial of the sweeps were dropped.
 
 ## Single broker results
 
 ### This build against v0.6.0-preview.9
 
-Before measuring anything else, the campaign ran both builds on the same VMs,
+Before measuring anything else, the main run ran both builds on the same VMs,
 two trials each, alternating, with identical clients and settings.
 
 | Shape | preview.9 MB/s | This build MB/s | Change |
@@ -340,7 +327,7 @@ and did not move.
 
 The release build (`6ec23a8f71c90e8aa688415e58adc92647be8b67`) adds, among
 others, #1421, #1443, #1457, #1459 and #1460 to this build. To check that none of them cost
-throughput, the two builds ran on the same VMs in a later session, cell by
+throughput, the two builds ran on the same VMs in a later run, cell by
 cell, alternating, both driven by the release load generator. One trial each.
 
 | Shape | This build | Release | Change |
@@ -362,19 +349,19 @@ slower on the release (#1469). Only small messages are affected; the 4 KiB and
 64 KiB rows of the same mode moved by under 1%. The release broker also
 dropped almost no UDP datagrams in that cell (1 a second against 68). The 256 B
 `on_commit` ack is 15 µs slower at p50 and 53 µs at p999. That is within the
-spread between single trials of this cell (the campaign's three trials of this
-build ran 312 µs at p50, this session's 333 µs), so it is not a finding on one
+spread between single trials of this cell (the main run's three trials of this
+build ran 312 µs at p50, this run's 333 µs), so it is not a finding on one
 trial. It is a separate watch item from #1469.
 
 The A/B did not repeat every shape. In particular it did not repeat in-memory
 256 B batches of 64 acked, the 8.78 M messages a second row below, so that
 figure has no release-build measurement.
 
-The headline figures on this page come from the campaign session, not this
-one, because this session's VMs ran 0 to 4% faster for the same build: acked
+The headline figures on this page come from the main run, not this
+one, because this run's VMs ran 0 to 4% faster for the same build: acked
 4 KiB batches at 4593 against 4403 MB/s, fire-and-forget 4 KiB at 3650 against
-3624. Comparing the release from this session with this build from the
-campaign would credit the release with that drift.
+3624. Comparing the release from this run with this build from the
+main run would credit the release with that drift.
 
 With the graceful finish in the release load generator (#1460), sent and
 accepted bytes now match exactly in these cells, for example 159,886 MB each
@@ -436,8 +423,8 @@ What the two tables show:
   rate by 22.
 - **Durable 256 B batches, acked, stop at 38% of the disk and 3 cores.** Neither
   the CPU nor the disk is the limit in that cell, and the fire-and-forget cell
-  of the same shape reaches the disk. We have not yet found what limits the
-  acked one.
+  of the same shape reaches the disk. The measurements did not show what limits
+  the acked one.
 - **Fire-and-forget is slower than acked for 4 KiB batches in memory**: 3.6
   against 4.4 GB/s. The next section explains the likely cause.
 
@@ -457,7 +444,7 @@ defaults go faster than fire-and-forget with waiting only by dropping
 messages.
 
 Fire-and-forget should be the faster of the two, because the broker sends no
-acks. It is not, and the cause is not yet known.
+acks. It is not, and the measurements did not show why.
 
 The first suspect was a defect in this build (#1416). When the ingress queue
 was full, a publish waiting for room was awaited inside the control stream's
@@ -533,7 +520,7 @@ throughput keeps many and accepts the wait.
 
 ### Shipped defaults against the durability profile
 
-The main campaign runs what we call the durability profile: acks after the
+The main run uses what we call the durability profile: acks after the
 write, publishers wait for room, io_uring on. These cells run the same loads with
 the measured build's defaults instead: ack on accept, no waiting, io_uring off.
 Two trials each.
@@ -594,13 +581,13 @@ is an artifact of how the measured load generator ended a cell: at the deadline
 it closed its connections with publishes still in flight, so some bytes it
 counted as sent never reached the broker. #1460 makes it stop issuing at the
 deadline, wait for outstanding acks, and finish every publisher, so sent equals
-accepted. The fix landed after this campaign, so the numbers here carry the
+accepted. The fix landed after this run, so the numbers here carry the
 small gap.
 
 ### The earlier 4.1 GB/s figure
 
 The site previously quoted 4.1 GB/s for in-memory 4 KiB fire-and-forget. To
-check it, the campaign ran the load generator that produced that figure next to
+check it, the main run ran the load generator that produced that figure next to
 the current one, on this build, with publishers waiting for room:
 
 | Load generator | Trial 1 | Trial 2 |
@@ -664,7 +651,7 @@ not worth publishing:
 - NATS runs at its best, not its defaults. Its stream count was tuned first,
   because JetStream spreads work by stream the way Felix spreads it by shard. At
   48, 96 and 192 streams it ran within 2% (file storage 114 to 116 MB/s, memory
-  146 to 149 MB/s), so every pair uses 48 streams, the same as Felix's shards.
+  146 to 149 MB/s), so every comparison uses 48 streams, the same as Felix's shards.
 - Same VMs. NATS server 2.15.0 and natscli 0.5.0 replaced the Felix broker on
   the same L8as_v4 and the same four D4as_v5 generators, with TLS. JetStream's
   store is on the same RAID0 volume.
@@ -675,15 +662,15 @@ not worth publishing:
 - Every durability difference is stated next to the number.
 - Where NATS is faster, the page says so.
 
-### How each pair is matched, and where it still differs
+### How each comparison is matched, and where it still differs
 
-The two systems are not built the same way, so no pair is a perfect copy of the
-other. Each pair is matched on what the publisher is promised when it gets its
+The two systems are not built the same way, so no comparison is a perfect copy of the
+other. Each comparison is matched on what the publisher is promised when it gets its
 answer, as closely as the two systems allow. The table says what each side
 does, and the last column says what still differs. Read every ratio together
 with its row.
 
-| Pair | Felix | NATS JetStream | What still differs |
+| Comparison | Felix | NATS JetStream | What still differs |
 |---|---|---|---|
 | Durable, one at a time | Durable stream, batch 1, 64 in flight. The ack comes after the record is fsynced (`on_commit`). | File stream with `sync_interval: always`, `nats bench js pub fast` with batch 1 and 64 outstanding acks. The ack comes after the write is fsynced. | Both fsync before the ack. Felix group-commits the writes that are waiting together into one fsync. |
 | Durable, 64 per request | Batch of 64 records in one request, 64 requests in flight, fsynced before the ack. | File stream, `sync_interval: always`, `nats bench js pub atomic` with batches of 64. | `nats bench` sends one atomic batch at a time per client, where Felix keeps 64 in flight. NATS's atomic batch is all-or-nothing. A Felix batch is acked or refused as one unit, but it is not atomic on disk: a crash partway through writing it can leave its first records in the log, unacknowledged ("Producer marks" in `docs/storage-format.md`). An idempotent producer's re-send completes such a batch. |
@@ -697,7 +684,7 @@ replay ring: by default the last 1,024 records, and at most 64 MiB of payload
 from a position still in the ring catches up from it; one that resumes from an
 older position is refused as too old. Live delivery never depends on the ring.
 
-Two differences apply to every pair:
+Two differences apply to every comparison:
 
 - **Transport and client.** Felix uses QUIC with TLS and its Rust load
   generator. NATS uses TCP with TLS and `nats bench` (Go). Both are each
@@ -708,10 +695,10 @@ Two differences apply to every pair:
 
 ### Results
 
-Payload MB/s at the server, the mean of two trials per pair,
+Payload MB/s at the server, the mean of two trials per comparison,
 and the server's CPU in cores:
 
-| Pair | Payload | Felix MB/s | Felix cores | NATS MB/s | NATS cores | Faster |
+| Comparison | Payload | Felix MB/s | Felix cores | NATS MB/s | NATS cores | Faster |
 |---|---|---|---|---|---|---|
 | Durable, one at a time | 256 B | 52.5 | 6.7 | 16.1 | 3.3 | Felix, 3.27× |
 | Durable, one at a time | 4 KiB | 367 | 4.5 | 204 | 4.1 | Felix, 1.79× |
@@ -724,19 +711,19 @@ and the server's CPU in cores:
 | Fire and forget | 256 B | 2046 | 7.4 | 2736 | 7.4 | NATS, 1.34× |
 | Fire and forget | 4 KiB | 3621 | 7.7 | 5033 | 6.7 | NATS, 1.39× |
 
-![Felix's payload rate divided by NATS JetStream's for ten pairs on a log scale centred on 1×. Felix has the higher throughput in every acked and durable pair, from 1.19× to 14.8×; core NATS has the higher throughput for fire-and-forget, by 1.34× and 1.39×. Each bar names the pair's main caveat.](/charts/v060/nats.svg)
+![Felix's payload rate divided by NATS JetStream's for ten comparisons on a log scale centred on 1×. Felix has the higher throughput in every acked and durable comparison, from 1.19× to 14.8×; core NATS has the higher throughput for fire-and-forget, by 1.34× and 1.39×. Each bar names the comparison's main caveat.](/charts/v060/nats.svg)
 
 Each bar is labelled with the difference that matters most for reading it.
-The full list of what still differs is in [How each pair is
-matched](#how-each-pair-is-matched-and-where-it-still-differs).
+The full list of what still differs is in [How each comparison is
+matched](#how-each-comparison-is-matched-and-where-it-still-differs).
 
-What the pairs show:
+What the comparisons show:
 
 - **Durable writes are where Felix leads most.** With an fsync before every
   ack, group commit lets Felix's outstanding requests share fsyncs. In the
-  batch pair, Felix also keeps 64 batches in flight where `nats bench` sends
+  batch comparison, Felix also keeps 64 batches in flight where `nats bench` sends
   one atomic batch at a time, so part of the 14.8× comes from the publisher's
-  window rather than the server. In the 4 KiB batch pair Felix runs at the
+  window rather than the server. In the 4 KiB batch comparison Felix runs at the
   disk's rate on under 4 cores.
 - **Periodic fsync narrows the gap at 4 KiB** to 1.25×, as neither side waits
   on the disk. At 256 B Felix leads by 9.5×, but Felix kept 4,096 messages
@@ -752,13 +739,13 @@ One Felix fire-and-forget 256 B trial had a shorter steady window, 46 seconds
 instead of 72, because its generators finished unevenly. It measured 2041 MB/s
 against 2051 for the other trial, and both are in the mean.
 
-#### Latency pairs
+#### Latency comparisons
 
 One publisher, one publish in flight, batch 1, one subscriber, on the same VMs
-and with the same pairings as above. Felix ran this build. One trial each,
-the first of each pair:
+and with the same comparisons as above. Felix ran this build. One trial each,
+the first of each comparison:
 
-| Pair | Payload | Felix ack p50 / p99 / p999 | NATS ack p50 / p99 / p999 | Felix delivery p50 / p99 / p999 | NATS delivery p50 / p99 / p999 |
+| Comparison | Payload | Felix ack p50 / p99 / p999 | NATS ack p50 / p99 / p999 | Felix delivery p50 / p99 / p999 | NATS delivery p50 / p99 / p999 |
 |---|---|---|---|---|---|
 | Fsync before the ack (`on_commit` / `sync_interval: always`) | 256 B | 351 / 436 / 486 µs | 280 / 366 / 406 µs | 364 / 449 / 495 µs | 276 / 356 / 408 µs |
 | Fsync before the ack | 4 KiB | 416 / 495 / 531 µs | 336 / 401 / 554 µs | 435 / 507 / 550 µs | 369 / 449 / 610 µs |
@@ -767,19 +754,19 @@ the first of each pair:
 | In memory | 256 B | 168 / 212 / 281 µs | 150 / 209 / 257 µs | 172 / 232 / 282 µs | 153 / 200 / 333 µs |
 | In memory | 4 KiB | 191 / 242 / 270 µs | 167 / 230 / 271 µs | 212 / 274 / 295 µs | 214 / 298 / 370 µs |
 
-![Ack latency with one publish in flight, Felix against NATS JetStream: NATS is 13 to 80 µs faster at p50 in every pair, and both stay under 0.5 ms at p99.](/charts/v060/nats-latency.svg)
+![Ack latency with one publish in flight, Felix against NATS JetStream: NATS is 13 to 80 µs faster at p50 in every comparison, and both stay under 0.5 ms at p99.](/charts/v060/nats-latency.svg)
 
-NATS answers a lone publish sooner in every pair, by 13 to 80 µs at p50. The
+NATS answers a lone publish sooner in every comparison, by 13 to 80 µs at p50. The
 largest gap is with an fsync before the ack: 280 against 351 µs at 256 B. A
-second trial of that pair measured 279 µs for NATS and 419 µs for Felix, and
-the campaign's own three trials of the same Felix cell measured 312 µs, so the
+second trial of that comparison measured 279 µs for NATS and 419 µs for Felix, and
+the main run's three trials of the same Felix cell measured 312 µs, so the
 Felix figure moves between runs more than the NATS one does. At the tail the
 two are closer: at 4 KiB NATS's ack p999 is the longer one in both fsync
-pairs, and its delivery p999 is longer in five of the six rows. These are
-one-publish latencies. Under load the [throughput pairs](#results) are the
+comparisons, and its delivery p999 is longer in five of the six rows. These are
+one-publish latencies. Under load the [throughput comparisons](#results) are the
 ones to read.
 
-Core NATS has no Felix pair here, because its publish has no server
+Core NATS has no Felix comparison here, because its publish has no server
 acknowledgement. The measuring tool times a core publish followed by a flush,
 which returns in 34 µs at p50 for 256 B and 37 µs for 4 KiB. Delivery to the
 subscriber takes 827 µs at p50 and 2.82 ms at p99 for 256 B, and 594 µs and
@@ -795,7 +782,7 @@ An in-memory stream keeps one: it is not replicated, and each shard lives on
 its leader only.
 
 The main measurements ran with the fleet features `majority_ack`,
-`generation_start` and `lease_free_reads` not yet finalized. The perf harness
+`generation_start` and `lease_free_reads` not finalized. The perf harness
 reseeds the cluster before it measures, which restarts the brokers, so the
 cluster no longer reads as new and the automatic finalize that a new cluster
 performs at its first registration (#1457) does not run. A real new v0.6.0
@@ -920,9 +907,9 @@ as a durable publish:
 These figures are bound by latency: with one operation in flight per worker,
 throughput is the worker count divided by the latency, as Little's law says.
 Puts scale with workers. Gets stop near 3,000 a second between 8 and 32
-workers, and we have not yet found why. They show what one operation costs,
-not what the cache can sustain; a dedicated cache campaign will measure that
-(#1473).
+workers, and the measurements did not show why. They show what one operation costs,
+not what the cache can sustain. Cache throughput on its own is tracked in
+#1473.
 
 ### Forwarding
 
@@ -1033,7 +1020,7 @@ fsync. More publishes in flight per commit raise throughput until CPU takes
 over.
 
 **The NIC and the path.** A larger MTU means fewer packets per byte. The
-campaign used MTU 3900 because the Azure virtual network accepts it. At the
+main run used MTU 3900 because the Azure virtual network accepts it. At the
 default 1500 the same load needs more than twice the packets.
 
 **Per-shard publish streams are a trade-off.** A client can give each shard of
@@ -1062,30 +1049,29 @@ the number of broker core shards no longer changed throughput in these cells.
 
 ## Known issues
 
-- **256 B fire-and-forget is 13% slower on the release** than on the campaign
+- **256 B fire-and-forget is 13% slower on the release** than on the main run
   build, with the 4 KiB and 64 KiB rows unchanged (#1469).
 - **Watch item: the 256 B `on_commit` p50 was 4.5% slower on the release** in a
   single trial, within the spread between trials of that cell. It is not part
   of #1469.
 - **Fire-and-forget trails acked publishing.** Lossless, in memory, 4 KiB
-  batches of 64: 3.6 GB/s fire-and-forget against 4.4 GB/s acked. The cause is
-  not yet found. The release comparison ruled out the connection stall (#1416).
+  batches of 64: 3.6 GB/s fire-and-forget against 4.4 GB/s acked. The measurements did not show the cause. The release comparison ruled out the connection stall (#1416).
 - **The cache figures are bound by latency.** They measure one operation in
-  flight per worker on the RF=3 cluster. A dedicated campaign will measure
-  cache throughput on a single broker and on a cluster (#1473).
+  flight per worker on the RF=3 cluster. Cache throughput on a single broker
+  and on a cluster is tracked in #1473.
 - **Forwarding costs throughput on a cluster.** A publish that enters a broker
   that does not own its shard is 1.3 to 4.4 times slower under load than one
   sent straight to the owner. Use the cluster client
   ([Forwarding](#forwarding)).
 
-## What the campaign found and fixed
+## What the benchmarking found and fixed
 
 Running Felix at full load on real hardware for days found defects that the
 test suites had not. Each one below is fixed on main.
 
 | Issue | What failed | Impact | Fix |
 |---|---|---|---|
-| #1406 | Unbatched publishes cost about 55% more broker CPU per message than in an earlier campaign. | In-memory 256 B batch 1 acked fell from 136 to 87 MB/s on the same broker. | A thundering herd on the ingress queue, a queue too small for the load, too many per-shard streams by default, and a metric lookup per publish: #1414, #1415, #1418, #1419. See [How we got here](#how-we-got-here). |
+| #1406 | Unbatched publishes cost about 55% more broker CPU per message than in an earlier round of measurements. | In-memory 256 B batch 1 acked fell from 136 to 87 MB/s on the same broker. | A thundering herd on the ingress queue, a queue too small for the load, too many per-shard streams by default, and a metric lookup per publish: #1414, #1415, #1418, #1419. See [How we got here](#how-we-got-here). |
 | #1416 | A publish waiting for room in a full ingress queue stopped the control stream's read loop, stalling every publish on the connection. | One full shard queue stalled every publish stream on the connection. | #1443 parks the waiting publish and keeps the loop reading. |
 | #1435 | A broker that took a shard by an operator move kept serving it after the stream was deleted. | A recreated stream could not move a shard to that broker, and the stuck move held the cluster's only move slot for 30 minutes. | #1437 replaces the held shard with the recreated stream's first assignment. |
 | #1447 | Recreating a deleted stream under the same name reopened its old logs on the followers, which then held committed records the new leader did not have. | The followers halted as diverged and the stream's `Quorum` writes stalled. The halt is the safety check working: a follower refuses to drop a record it holds as committed. | #1448 refuses to reuse a deleted name until stream incarnations are finalized. #1449 finalizes incarnations on every new cluster, so a recreated stream gets directories of its own. |
@@ -1098,10 +1084,10 @@ test suites had not. Each one below is fixed on main.
 ## How we got here
 
 A performance page that only reports the good outcome hides what the numbers
-depend on. This is what happened between the first single-broker campaign and
+depend on. This is what happened between the first single-broker round of measurements and
 this one.
 
-**The first numbers.** An earlier campaign measured in-memory 256 B batch 1
+**The first numbers.** An earlier round measured in-memory 256 B batch 1
 acked at 135.8 MB/s on a single 8 vCPU broker, with the broker CPU-bound at
 7.35 cores. The same cell on v0.6.0-preview.9 measured 87.0 MB/s at 7.36 cores,
 about 40% lower and about 55% more broker CPU per message. Batched cells fell
@@ -1118,7 +1104,7 @@ larger than assumed: one build measured between 66 and 94 MB/s across runs.
 Durable cells also looked 35 to 38% lower for a day. That was the disk, not
 Felix. The VM had been deallocated and came back with a local NVMe that ran
 at 18% of its spec in eastus2. A `fio` baseline on the data volume showed it,
-and the campaign moved to westus3, where the device matched the original
+and the main run moved to westus3, where the device matched the original
 baseline (1416 against 1427 MB/s). On that disk durable cells were not regressed:
 256 B batch 1 went from 27.1 to 34.4 MB/s and 4 KiB batch 1 from 268 to 354
 MB/s.
@@ -1129,7 +1115,7 @@ shard count from the broker and spreading key names evenly over every shard
 (#924). Nothing else in the client changed. On one binary, in-memory 256 B
 acked: batch 1 ran at 108 MB/s with the old plain keys and about 62 to 64 MB/s
 with spread keys; batch 64 ran at 2208 to 2320 against 1672 to 1710 MB/s. The
-original campaign's key pattern was lumpy, and lumpy load lets a backlog build
+original round's key pattern was lumpy, and lumpy load lets a backlog build
 up that makes each wake-up and lock acquisition serve several messages. Evenly
 spread load pays for them one message at a time. The 40% was real for spread
 keys, and it was a property of the broker, not of the measurement.
@@ -1162,7 +1148,7 @@ cost in the table above, so the default dropped from 16 to 4 (#1418).
 
 **Lessons for measuring.**
 
-- Baseline the hardware every session. A disk at 18% of its spec looked like a
+- Baseline the hardware every run. A disk at 18% of its spec looked like a
   Felix regression for a day.
 - A benchmark's load shape is part of the result. Changing how keys are spread
   moved throughput 40%, more than any code change in the range.

@@ -4,9 +4,10 @@ title: "Delivery Semantics and Consistency Model"
 
 What Felix promises about delivery, ordering, durability, and consistency, and what it does not. Applications should rely on what is written here and nothing stronger.
 
+This is the reader-facing page. The engineering reference is [`docs/semantics.md`](https://github.com/GetFelix/felix/blob/main/docs/semantics.md).
+
 :::note[What is built and what is not]
-This page describes behaviour that exists and behaviour that is planned. Where
-they differ it says which. The [status table](/getting-started/what-felix-is-for/)
+This page describes behaviour that exists and says plainly what is not built. The [status table](/getting-started/what-felix-is-for/)
 is the authority per capability, and [Projections](/architecture/projections/)
 carries the test behind each claim about a semantic.
 :::

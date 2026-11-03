@@ -601,6 +601,69 @@ Tuning without measuring tends to make things worse. Benchmark before and after 
 Alert against your own measured baseline (say, p99 above twice it) rather
 than absolute numbers, because useful thresholds depend on the workload.
 
+## Platform notes
+
+Felix targets Linux. Most published measurements are macOS, because that is
+where the throughput ceiling that drove the transport tuning showed up. Linux
+is faster and has different constraints.
+
+Microsecond-scale localhost QUIC measurements depend on the OS. At `batch=1`,
+tail latency is mostly scheduler wakeups and the UDP receive path, not broker
+logic, so expect more jitter in p99 and p999 on macOS and other desktop systems.
+For serious runs use a Linux host, or a Linux VM pinned to dedicated CPUs, a
+release build, the performance CPU governor and isolated cores.
+
+The transport defaults that matter are on out of the box, so sustained
+throughput needs no environment tuning. Three knobs exist for the cases where
+you do want to change them:
+
+- `FELIX_IO_RUNTIME_THREADS` runs QUIC driver tasks on dedicated
+  single-threaded I/O runtimes. It is on for macOS only and defaults to `0`
+  elsewhere. On Linux the pool measures 47 to 88% worse p50 latency and up to
+  25% less throughput, because Linux's scheduler does not have the re-poll
+  problem the pool works around.
+- `FELIX_ACK_FREQ_DISABLE` turns off the ACK-frequency extension, which quinn
+  peers negotiate by default (2 ms maximum ACK delay, an ACK every 20th
+  packet; `FELIX_ACK_ELICITING_THRESHOLD` sets the packet count).
+- `FELIX_INITIAL_MTU` sets the MTU that loopback connections are guaranteed. The
+  default is 16,336 on macOS and 4,096 elsewhere. Linux UDP GSO caps one
+  `sendmsg` at a single 65,535-byte IP datagram, so a larger guarantee stalls
+  delivery. On Linux, `FELIX_INITIAL_MTU` and `FELIX_MTU_UPPER_BOUND` are
+  clamped to 6,550 with a warning. Path-MTU discovery probes up to 16 KiB on
+  macOS and 4,096 elsewhere, and UDP socket buffers request 8 MiB.
+
+Together these raised sustained macOS loopback throughput about 7.5 times. On
+Linux the baseline without them already exceeded what macOS reaches with all of
+them. A run far below the numbers on the [Benchmarks](/features/benchmarks/)
+page means something is wrong, so investigate it instead of rerunning.
+
+`latency-demo` throughput reflects the publish, fanout and delivery pipeline.
+For a strict end-to-end barrier, run with acknowledged publishes and compare
+against the ack counters. Its `publish_write_shape` output
+(`writes_per_batch`, `avg_bytes_per_write`) compares write fragmentation across
+settings such as `publish_fastpath` on and off.
+
+To reproduce a run, set the queue and flow-control variables and start the demo:
+
+```bash
+export FELIX_SUB_QUEUE_CAPACITY=4096
+export FELIX_SUB_QUEUE_POLICY=drop_new
+export FELIX_SUB_SINGLE_WRITER_PER_CONN=true
+export FELIX_CLIENT_SUB_QUEUE_CAPACITY=4096
+export FELIX_CLIENT_SUB_QUEUE_POLICY=drop_new
+
+# Optional flow-control tuning
+export FELIX_EVENT_CONN_RECV_WINDOW=268435456
+export FELIX_EVENT_STREAM_RECV_WINDOW=67108864
+export FELIX_EVENT_SEND_WINDOW=268435456
+
+cargo run --release -p felix-broker-service --features demo --bin latency-demo -- \
+  --all false --warmup 2000 --total 20000 --payload 4096 --fanout 10 --batch 64 --binary
+```
+
+For latency runs (`batch=1`), start with low fanout, then raise it to find
+queueing and flow-control effects.
+
 ## Hardware Recommendations
 
 ### CPU
