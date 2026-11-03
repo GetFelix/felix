@@ -2089,6 +2089,13 @@ RefuseStaleSet(b, f) ==
                     promised, confirmed, ballot, opened, installed, nextVars, ackGen >>
     /\ UNCHANGED placeVars
 
+\* What `installed` keeps of a set change `b` opens. Under `StintStarts` it
+\* also keeps the generation, so a flip on a stale report can tell the named
+\* stint's open from an elected stint's at a lower generation.
+Installed(b) ==
+    IF StintStarts THEN <<setGen[b], mine[b], oldSet[b], bgen[b]>>
+    ELSE <<setGen[b], mine[b], oldSet[b]>>
+
 \* `open_promoted` in crates/server/felix-replication/src/driver.rs, on the
 \* first majority `fence_shard` in promotion.rs gets; the tail that wins is
 \* the answer furthest ahead by `Ahead`, taken before this.
@@ -2109,7 +2116,7 @@ OpenForWrites(b) ==
     /\ Counters => LeaderMajority(b, canswered[b] \cup (IF GroupLogs /\ marked[b] THEN {} ELSE {b}))
     /\ fencing' = [fencing EXCEPT ![b] = FALSE]
     /\ oldSet' = IF Settled(b) THEN [oldSet EXCEPT ![b] = {}] ELSE oldSet
-    /\ installed' = IF oldSet[b] /= {} THEN installed \cup {<<setGen[b], mine[b], oldSet[b]>>} ELSE installed
+    /\ installed' = IF oldSet[b] /= {} THEN installed \cup {Installed(b)} ELSE installed
     /\ Opens(b, bgen[b])
     /\ log' = [log EXCEPT ![b] = Opened(b, bgen[b])]
     /\ clog' = IF Counters THEN [clog EXCEPT ![b] = COpened(b, bgen[b])] ELSE clog
@@ -2779,9 +2786,13 @@ FlipReported ==
           /\ mine[leader] = cpNext /\ setGen[leader] = cpNextGen /\ oldSet[leader] /= {}
        \* A stale report: the joint open happened. This also admits a report
        \* the leader never sent, when it learned the hwm from a candidate
-       \* that took its log, so it is broader than the code.
+       \* that took its log, so it is broader than the code. Under
+       \* `StintStarts` the open must be at the control plane's generation: a
+       \* leader elected past its named generation never reports that stint.
        \/ /\ ~(bgen[leader] = gen /\ ~fencing[leader])
-          /\ <<cpNextGen, cpNext, CpSet>> \in installed
+          /\ \E r \in installed :
+                /\ r[1] = cpNextGen /\ r[2] = cpNext /\ r[3] = CpSet
+                /\ StintStarts => r[4] = gen
 
 CpFlipNamed ==
     /\ FlipNewGeneration

@@ -732,6 +732,12 @@ start (`StintStarts`), which reaches the new set only behind those records.
 `FelixShardElectSwapFlipJoinLagsFirstStart.cfg` takes the generation's first
 start instead, as the code's `own_start` does today, and loses an
 acknowledged write (#1787).
+The control plane may flip on a report that has since gone stale, so the
+model lets it flip once the leader opened jointly. Under `StintStarts` that
+open must be at the control plane's generation: a destination that stood
+again, past the generation it was named at, never opened the named stint
+and so never reported it. Without that, the flip followed the elected
+stint's start, before the joining copy held the write.
 
 A failover (`Promote`) abandons the
 pending change; it writes the set at a generation above the pending one.
