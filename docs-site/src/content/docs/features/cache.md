@@ -843,30 +843,11 @@ pub_stream_recv_window: 4194304      # per stream, a quarter of the connection
 cache_send_window: 268435456         # send window
 ```
 
-## Limitations and Planned Features
+## Limits
 
-### Current limitations
-
-1. **No multi-key operations**: no transactions. A conditional write checks one key
+1. **No multi-key operations**: the cache has no multi-key get and no transaction. A conditional write checks one key. To change several pieces of state together with an event, use an [atomic commit](/features/atomic-commits/), which writes the event and its state updates as one record on one shard.
 2. **Best-effort eviction** in the in-memory backend: no guaranteed LRU or LFU. The log-backed cache does not evict at all; it compacts.
 3. **A prefix watch reads one shard**: keys sharing a prefix hash to different shards, so `Connection` needs one `watch_cache_shard` per shard. `Client::watch_cache_sharded` opens and merges them for you, as `subscribe_sharded` does for streams
-
-### Planned Features
-
-**Multi-key operations**:
-
-```rust
-// Batch get
-let keys = vec!["key1", "key2", "key3"];
-let values = client.cache_get_batch("data", &keys).await?;
-
-// Transaction
-client.cache_transaction()
-    .put("accounts", "alice", decrease(100))
-    .put("accounts", "bob", increase(100))
-    .commit()
-    .await?;
-```
 
 ## Designing around the cache
 

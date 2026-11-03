@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::leadership::{Leadership, Owner, Shares};
-use super::moves::{MovePolicy, Moves, move_step};
+use super::moves::{DEFAULT_RESTORE_AFTER_MILLIS, MovePolicy, Moves, move_step};
 use super::rendezvous::{choose, choose_replicas, promote};
 use super::restore::{self, replication};
 use super::zones;
@@ -227,6 +227,21 @@ fn plan_once(
         .filter(|shard| shard.under_replicated())
         .map(|shard| shard.key.clone())
         .collect();
+    // A broker down and not yet replaced, or a copy being restored: brokers
+    // are busy failing over or rebuilding, and a move for balance fenced now
+    // can hold a shard's writes for minutes (#1805). Bounded by the restore
+    // window even where nothing is restored, so a broker that never returns
+    // does not stop balancing for good.
+    let recovering = {
+        let window = restore_after.unwrap_or(DEFAULT_RESTORE_AFTER_MILLIS);
+        let recently_down = |node: &Node| {
+            now.is_some_and(|now| {
+                !node.status.lifecycle.is_serving()
+                    && now.saturating_sub(node.status.last_heartbeat_at_millis) < window
+            })
+        };
+        nodes.iter().any(recently_down) || found.iter().any(|shard| shard.restoring.is_some())
+    };
     let missing_copies = found
         .iter()
         .map(|shard| shard.desired.saturating_sub(shard.current))
@@ -328,6 +343,7 @@ fn plan_once(
         restore::unpaced(assignment, replication_factor, caught_up, unpaced_max)
     });
     moves.cluster_moves = cluster_moves;
+    moves.recovering = recovering;
 
     // Slots go to drains first, then to rebalancing, and last to shards whose
     // previous move timed out; see `start_order`. Planned in that order, and

@@ -241,7 +241,7 @@ docker run -p 8787:8787 \
   -e GATEWAY_FELIX_BROKERS=felix-broker:5000 \
   -e GATEWAY_FELIX_CONTROL_PLANE=https://felix-controlplane:8443 \
   -v "$PWD/scope.toml:/etc/felix-gateway/scope.toml:ro" \
-  ghcr.io/getfelix/felix-gateway:0.2.0
+  ghcr.io/getfelix/felix-gateway:0.8.0
 ```
 
 With Podman the arguments are the same. On an SELinux host, relabel the
@@ -255,8 +255,11 @@ podman run -p 8787:8787 \
   -e GATEWAY_FELIX_BROKERS=felix-broker:5000 \
   -e GATEWAY_FELIX_CONTROL_PLANE=https://felix-controlplane:8443 \
   -v "$PWD/scope.toml:/etc/felix-gateway/scope.toml:ro,Z" \
-  ghcr.io/getfelix/felix-gateway:0.2.0
+  ghcr.io/getfelix/felix-gateway:0.8.0
 ```
+
+The gateway is versioned on its own, apart from Felix. Release 0.8.0 is
+tested against Felix 0.6.2.
 
 If the brokers use a certificate from a private CA, mount it and set
 `GATEWAY_FELIX_CA_FILE`; set `GATEWAY_FELIX_SERVER_NAME` to the name the

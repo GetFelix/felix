@@ -4,10 +4,11 @@ description: "Workload contract 0.2: the WIT interfaces a felixd workload export
 ---
 
 The contract is the interface between felixd and a workload, and what each side
-promises. This page describes version 0.2, which is the only version felixd
-runs. The WIT is in
-[`wit/workload.wit`](https://github.com/GetFelix/felixd/blob/main/wit/workload.wit)
-and the full note, with the decisions behind it, is
+promises. This page describes version 0.2. felixd runs 0.2 and the current 0.3, which
+adds the authenticated publisher of each input, snapshot layouts and several
+inputs. The WIT for this page is
+[`wit/0.2/workload.wit`](https://github.com/GetFelix/felixd/blob/main/wit/0.2/workload.wit);
+`wit/0.3/` is the current one. The full note for 0.3, with the decisions behind it, is
 [docs/contract.md](https://github.com/GetFelix/felixd/blob/main/docs/contract.md).
 For how the contract is used, see [How it works](/built-on-felix/felixd/how-it-works/).
 
@@ -84,7 +85,7 @@ be a `response`. These cases exist in the types so that effects can be added
 without another breaking change. Nothing performs an effect today
 ([#71](https://github.com/GetFelix/felixd/issues/71)). A step that returns a
 request breaks the contract and fails the workload with the reason that this
-build has no effect executors. The planned design is that a request is an output
+build has no effect executors. The design is that a request is an output
 written exactly once, its id is the output header (input offset, index and epoch)
 so an executor can use it as an idempotency key, and the response comes back as a
 recorded input that replay reads instead of performing the effect again.
@@ -127,14 +128,14 @@ one whose sha256 the previous snapshot already holds.
 A failed workload is recorded as described in
 [When a workload fails](/built-on-felix/felixd/how-it-works/#when-a-workload-fails).
 Failures are not retried, because a deterministic failure would fail again on any
-node. Retrying a trap that depends on the host on another node is not built yet
-([#98](https://github.com/GetFelix/felixd/issues/98)), nor is a recorded way to
+node. A trap that depends on the host is not retried on another node
+([#98](https://github.com/GetFelix/felixd/issues/98)), and there is no recorded way to
 get past a poison input. Today the way out is a new spec: fix the module under a
 new id.
 
-A `degraded` state, for a workload that fails everywhere, is only in the design
-([#99](https://github.com/GetFelix/felixd/issues/99)). There is `failed` and
-nothing between it and `running`.
+A workload that keeps failing on a transient error is recorded as `degraded`, and
+another node takes it. Counting those failures across the whole cluster is not
+built ([#99](https://github.com/GetFelix/felixd/issues/99)).
 
 ## Limits and fuel
 
@@ -202,10 +203,7 @@ would be a second contract to keep deterministic.
 ## Not in this version
 
 - Module upgrades at a recorded input offset ([#64](https://github.com/GetFelix/felixd/issues/64)),
-  which need spec history as records ([#72](https://github.com/GetFelix/felixd/issues/72)).
-- Several inputs ([#58](https://github.com/GetFelix/felixd/issues/58)). `source`
-  already names which input a record came from.
-- Typed spec and failure records ([#73](https://github.com/GetFelix/felixd/issues/73)).
+  which build on the spec history that felixd now records.
 - Effects ([#71](https://github.com/GetFelix/felixd/issues/71)).
 
 ## An example
