@@ -324,6 +324,10 @@ impl Broker {
     /// view of the stream stays at zero while its disk fills. Left that way, the
     /// first publish this broker accepts after being promoted waits on commit
     /// turns that were never taken, and never returns.
+    ///
+    /// Subscribers still registered, on a leader that took a newer leader's
+    /// records before its readers were ended, are ended as for a move to the
+    /// leader this log last accepted, told to resume below those records.
     pub async fn adopt_replicated(
         &self,
         tenant_id: &str,
@@ -335,7 +339,8 @@ impl Broker {
         let handle = self
             .resolve_stream_handle(tenant_id, namespace, stream, shard)
             .await?;
-        handle.state.advance_to(durable_offset);
+        let state = &handle.state;
+        state.advance_to(durable_offset, || accepted_leader(state));
         Ok(())
     }
 
@@ -406,7 +411,8 @@ impl Broker {
         let handle = self
             .resolve_stream_handle(tenant_id, namespace, stream, shard)
             .await?;
-        handle.state.reset_to(base_offset);
+        let state = &handle.state;
+        state.reset_to(base_offset, || accepted_leader(state));
         Ok(())
     }
 
@@ -459,5 +465,18 @@ impl Broker {
                 Ok(())
             }
         }
+    }
+}
+
+/// Where readers ended by another leader's records are sent: the leader this
+/// shard's log last accepted. A hint, like every handoff.
+fn accepted_leader(state: &crate::stream::StreamState) -> crate::ShardHandoff {
+    let log = state.durable.as_ref();
+    crate::ShardHandoff {
+        node_id: log
+            .and_then(StreamLog::accepted_leader)
+            .map(|leader| leader.to_string()),
+        addr: None,
+        generation: log.map_or(0, StreamLog::accepted_generation),
     }
 }

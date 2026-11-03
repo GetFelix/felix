@@ -620,6 +620,29 @@ impl DiskLog {
         Ok(())
     }
 
+    /// Note that the leader wrote `generation`'s start record at `offset`.
+    pub fn note_stint_start(&self, generation: u64, offset: Offset) {
+        *self.inner.stint.lock() = Some(Epoch {
+            generation,
+            start_offset: offset,
+        });
+    }
+
+    /// Where the last start record noted for `generation` sits, if one was
+    /// noted since the log was opened.
+    ///
+    /// A leader that opens again at a generation it already started writes
+    /// another start record, so the history's start for the generation can
+    /// be an earlier stint's. Kept in memory only: after a restart the next
+    /// open that writes one notes it again.
+    pub fn stint_start(&self, generation: u64) -> Option<Offset> {
+        self.inner
+            .stint
+            .lock()
+            .filter(|stint| stint.generation == generation)
+            .map(|stint| stint.start_offset)
+    }
+
     /// One past the last record known committed. Zero if none is known.
     pub fn commit_offset(&self) -> Offset {
         self.inner.commit_offset.load(Ordering::Acquire)
@@ -923,6 +946,7 @@ impl DiskLog {
             manifest: Mutex::new(manifest),
             offloader,
             epochs: Mutex::new(epochs),
+            stint: Mutex::new(None),
             accepted_generation: AtomicU64::new(accepted_generation),
             ballot: RwLock::new((accepted_generation, accepted_leader)),
             set_generation: AtomicU64::new(set_generation),
@@ -1306,6 +1330,9 @@ struct LogInner {
     /// on the replication path, not the append path, and the append path is
     /// where lock contention costs something.
     epochs: Mutex<epochs::EpochMap>,
+    /// The start record this log's leader last wrote; see
+    /// [`DiskLog::stint_start`].
+    stint: Mutex<Option<Epoch>>,
     /// The highest generation a leader was accepted at, read without a lock
     /// on every replicated batch. Raised only after it is on disk.
     accepted_generation: AtomicU64,
