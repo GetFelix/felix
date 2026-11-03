@@ -324,6 +324,10 @@ impl Broker {
     /// view of the stream stays at zero while its disk fills. Left that way, the
     /// first publish this broker accepts after being promoted waits on commit
     /// turns that were never taken, and never returns.
+    ///
+    /// Subscribers still registered, on a leader that took a newer leader's
+    /// records before its readers were ended, are ended as for a move to the
+    /// leader this log last accepted, told to resume below those records.
     pub async fn adopt_replicated(
         &self,
         tenant_id: &str,
@@ -335,7 +339,16 @@ impl Broker {
         let handle = self
             .resolve_stream_handle(tenant_id, namespace, stream, shard)
             .await?;
-        handle.state.advance_to(durable_offset);
+        let durable = handle.state.durable.as_ref();
+        handle
+            .state
+            .advance_to(durable_offset, || crate::ShardHandoff {
+                node_id: durable
+                    .and_then(crate::StreamLog::accepted_leader)
+                    .map(|leader| leader.to_string()),
+                addr: None,
+                generation: durable.map_or(0, crate::StreamLog::accepted_generation),
+            });
         Ok(())
     }
 

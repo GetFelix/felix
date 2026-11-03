@@ -2267,6 +2267,13 @@ before one of these endings, and registered just after it, is refused
 (`shard_unavailable`, reason `fenced` for a lapse or `moving` for the rest)
 instead of being left with a feed nothing will write to or end.
 
+A broker can also take a newer leader's records as a follower before its own
+release has ended its readers. It ends them as soon as those records reach its
+log, naming the leader its log accepted, so `resume_from` stays below records
+it never offered. A subscription still reading its history when the shard goes
+gets no `shard_moved`: its event stream is reset, and the client resumes after
+the last record it received.
+
 - `resume_from` is the first offset this broker did not offer the reader. For a
   stream subscription every record below it was sent to the subscriber or dropped
   by the subscriber's own queue, and none at or above it was. It is the stream's

@@ -22,7 +22,7 @@ use crate::ConsistencyLevel;
 use crate::broker::RingRecord;
 use crate::commit::{StateEntry, StateOp, StateView};
 use crate::durable::StreamLog;
-use crate::handoff::{Ending, FeedEnd, ShardMoved};
+use crate::handoff::{Ending, FeedEnd, ShardHandoff, ShardMoved};
 
 /// One stream shard's live state, shared by every handle to it.
 #[derive(Debug)]
@@ -328,7 +328,11 @@ impl StreamState {
     /// `Broker::subscribe_from`. Kept, it would end below the records just
     /// written, and a reader from before them would get the ring and then the
     /// live edge, skipping everything in between.
-    pub(crate) fn advance_to(&self, next_seq: u64) {
+    ///
+    /// Subscribers still registered were offered none of those records, so
+    /// they are ended here as for a move to `to()`, told to resume where the
+    /// sequence stood. Ended later, they would be told to resume past them.
+    pub(crate) fn advance_to(&self, next_seq: u64, to: impl FnOnce() -> ShardHandoff) {
         let mut state = self.log_state.lock();
         // The commit order can stand past the ring: dropping a hold releases
         // turns for records that stay on disk but never reach the ring. A
@@ -336,6 +340,16 @@ impl StreamState {
         // and moving the order back to it would leave a turn nobody takes.
         if next_seq <= state.next_seq.max(self.commit_sequencer.next_offset()) {
             return;
+        }
+        if !self.subscribers.lock().senders.is_empty() {
+            let ended = self.end_locked(&state, Some(Ending::Moved(to())));
+            tracing::info!(
+                stream = self.held.shard().map(|(stream, _)| stream),
+                shard = self.held.shard().map(|(_, shard)| shard),
+                ended,
+                resume_from = state.next_seq,
+                "ended readers of a shard whose log took another leader's records",
+            );
         }
         state.log.clear();
         state.next_seq = next_seq;
@@ -742,6 +756,11 @@ impl StreamState {
     /// does any subscriber that registers on this state afterwards.
     pub(crate) fn end_subscribers(&self, ending: Option<Ending>) -> usize {
         let log = self.log_state.lock();
+        self.end_locked(&log, ending)
+    }
+
+    /// [`Self::end_subscribers`] with the log lock already held.
+    fn end_locked(&self, log: &LogState, ending: Option<Ending>) -> usize {
         let mut state = self.subscribers.lock();
         let ended = state.senders.len();
         match ending {

@@ -437,3 +437,53 @@ async fn a_range_read_stops_at_the_mark_and_does_not_wait() {
         })
     ));
 }
+
+/// **Readers of a deposed leader resume below the records a newer leader
+/// ships to it.** Until its readers are ended, a deposed leader can take the
+/// new leader's records as a follower. Those were offered to none of its
+/// readers, and neither was the batch it held for the mark, which the new
+/// leader may commit. Told to resume past them when the move ends them, a
+/// reader skips them for good.
+#[tokio::test]
+async fn readers_resume_below_records_a_newer_leader_ships() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (broker, _bounds) = broker_with(dir.path(), ReadBound::Committed(1)).await;
+    let mut live = broker
+        .subscribe("t1", "ns", "quorum", 0)
+        .await
+        .expect("subscribe");
+    publish(&broker, "quorum", b"seen").await;
+    assert_eq!(&next(&mut live).await[..], b"seen");
+    let held = publish(&broker, "quorum", b"held").await;
+    assert_eq!(held.offsets, Some((1, 1)));
+
+    // The newer leader's batch lands, ending at 4.
+    broker
+        .adopt_replicated("t1", "ns", "quorum", 0, 4)
+        .await
+        .expect("adopt");
+    // A reader that joins after them starts past them.
+    let mut joined = broker
+        .subscribe("t1", "ns", "quorum", 0)
+        .await
+        .expect("subscribe");
+    let handoff = crate::ShardHandoff {
+        node_id: Some("next".to_string()),
+        addr: None,
+        generation: 3,
+    };
+    broker
+        .end_subscriptions("t1", "ns", "quorum", 0, Some(handoff))
+        .await;
+
+    for (sub, resume_from) in [(&mut live, 1), (&mut joined, 4)] {
+        let ended = tokio::time::timeout(Duration::from_secs(5), sub.recv())
+            .await
+            .expect("ended in time");
+        assert!(ended.is_none(), "delivered past the mark: {ended:?}");
+        assert_eq!(
+            sub.receiver.moved().and_then(|moved| moved.resume_from),
+            Some(resume_from),
+        );
+    }
+}
