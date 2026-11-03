@@ -196,6 +196,8 @@ newcomer as a top-up instead of undoing it; that case is a unit test only.
 | `AdoptedMatchesOpened` | The control plane's leader, once open at the control plane's generation and while it still holds it, leads the set the control plane records, an adopted leader included: the pending set while a cut-over's change is pending. Checked where the control plane adopts. |
 | `SetChangesJoint` | Once a set change opened, a majority of the new set and of the set before it know the new set. A history invariant over consecutive sets, checked under `SetCheck`. |
 | `QuorumReportNamesASuccessor` | Under `Quorum`, a report from a leader still serving names a follower that may take over, whenever a majority is still replicating. A liveness property in invariant form, checked in `FelixShard.cfg`. |
+| `ElectionSettles` | With the control plane down, elections end with a live leader that stays open and that no live broker has promised past. A temporal property (`<>[]LeaderSettled`), checked under `LiveSpec` in `FelixShardElectLive.cfg`. |
+| `NoStandAgainstHeardLeader` | Nobody starts fencing against an open leader that a majority of its set still hears. An action property, checked with the liveness configurations. |
 
 ## The configurations, and what each must do
 
@@ -231,6 +233,9 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardElectSwapFlip.cfg` | `FelixShardElectSwap.cfg` with one write and the flip as the code writes it (`FlipNewGeneration`): the control plane takes the pending set at the next generation, naming the cut-over's leader again, which fences the new set alone. A candidate may already hold that generation, and the flip may follow a stale report: if the leader promised that generation to a candidate since, the leader refuses the generation | pass, the same invariants (not yet measured) |
 | `FelixShardElectSwapFlipSkipsBallot.cfg` | the same with replicas answering the flip's fence by the generation alone, not the ballot (`NamedFenceSkipsBallot`) | violate `OneLeaderPerGeneration`: a candidate fences both sets without the leader and opens at the generation after the cut-over's; the flip names the leader there, and it opens too |
 | `FelixShardElectPreVote.cfg` | `FelixShardElect.cfg` with pre-vote and stickiness (`PreVote`), time to 2 so leases lapse and elections follow, two writes, the set check | pass, the same invariants (not yet measured) |
+| `FelixShardElectLive.cfg` | three brokers with the control plane down (`CpDown`), no writes, no symmetry, up to four generations of elections, one broker (the leader or not) allowed to stop for good (`FailStops = 1`), pre-vote as the driver asks it (`PreVoteAsked`), and backoff with at most two split rounds (`Backoff`, `Splits = 2`), under fairness (`LiveSpec`) | pass `ElectionSettles` and `NoStandAgainstHeardLeader` (3,000 distinct states, 1 s locally) |
+| `FelixShardElectLiveLoosePreVote.cfg` | the same with a pre-vote that counts any member hearing no leader, the open leader included | violate `NoStandAgainstHeardLeader`: a follower that still hears the leader stands against it |
+| `FelixShardElectLiveNoBackoff.cfg` | the same without backoff | violate `ElectionSettles`: candidates split, stand again at once and split again until the generation bound, and nobody leads |
 | `FelixShardElectNoBallotAcks.cfg` | `FelixShardElect.cfg` without ballots, two generations of elections and two writes, the set check on so the first leader can follow a candidate | violate `AckedHeldByLeader`, checked per generation |
 | `FelixShardElectAdoptPromote.cfg` | `FelixShardElect.cfg` with one write, the set check, adoption up to generation 2 and promotion on suspicion up to generation 2 | pass, the same invariants (186K distinct states without the write; not yet measured with it) |
 | `FelixShardElectStepDown.cfg` | `FelixShardElect.cfg` with time to 2, `L = 2` and `Margin = 2` (so no promotion), one write and one generation of elections: an elected leader acknowledges a write and then steps down when its own lease lapses, leaving the control plane's leader at an older generation it has promised away | pass the same invariants (1.49M distinct states, under a minute). Found by `FelixShardWalkElect.cfg`: before `Newest` counted promises, `AckedHeldByLeader` took that deposed leader for the newest one |
@@ -778,6 +783,26 @@ majority of its set, itself included, no longer hears a leader, and a replica
 that still hears its leader refuses a candidate's fence. Safety does not rest
 on it; every other election configuration runs without it.
 `FelixShardElectPreVote.cfg` runs with it, time moving so leases lapse.
+
+The configurations above check safety only: nothing bad happens, whether or
+not anyone is ever elected. `FelixShardElectLive.cfg` checks that an election
+finishes. With the control plane down and any one broker stopped for good,
+even the leader, the replicas elect a leader that stays (`ElectionSettles`).
+That needs three things the safety checks do without. Fairness: a step an election needs is taken once it
+stays possible. A pre-vote as the driver asks it: a member says yes only when
+it leads nothing open, hears no leader and holds no log ahead of the
+candidate's. Backoff: a candidate whose round cannot reach a majority gives it
+up. Real backoff is randomised and separates candidates within a few rounds;
+the model cannot say how few, so it allows at most `Splits` rounds where two
+candidates stand at once. Without backoff
+(`FelixShardElectLiveNoBackoff.cfg`) candidates split forever, and with a
+looser pre-vote (`FelixShardElectLiveLoosePreVote.cfg`) a follower deposes a
+leader the rest of the set still hears.
+
+The bound on generations hides churn: a model that ran out of generations
+would also stop electing. `NoStandAgainstHeardLeader` covers that, since it
+holds at every step rather than in the end. Not covered: liveness with writes
+in flight, or with a wiped voter.
 
 Nothing in the broker elects yet; these check the design in
 `docs/replication-design.md`, "Electing without the control plane", before
