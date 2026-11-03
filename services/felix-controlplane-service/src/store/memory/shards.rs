@@ -71,6 +71,10 @@ pub(super) async fn adopt_elected_leader(
             current: Some(current.generation),
         });
     };
+    // Measured on the elected generation: a reissue names the elected
+    // leader one past it.
+    crate::model::check_elected_generation(current.generation, elected.generation)
+        .map_err(StoreError::Conflict)?;
     let generation = adopted.generation;
     write_shard_assignment(
         store,
@@ -169,11 +173,13 @@ async fn write_shard_assignment(
                 Some(elected) if elected <= existing.generation => {
                     return Ok(AssignmentWrite::Stale { current });
                 }
-                Some(elected) => {
-                    crate::model::check_elected_generation(existing.generation, elected)
-                        .map_err(StoreError::Conflict)?;
-                    elected
+                // The adoption checked the window on the elected generation.
+                Some(elected) if elected > i64::MAX as u64 => {
+                    return Err(StoreError::Conflict(format!(
+                        "generation {elected} is past the last the control plane can issue"
+                    )));
                 }
+                Some(elected) => elected,
                 None => crate::model::next_generation(existing.generation)
                     .map_err(StoreError::Conflict)?,
             };
