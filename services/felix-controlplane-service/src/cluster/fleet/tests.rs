@@ -130,8 +130,7 @@ fn follower_features_wait_for_generation_start() {
 }
 
 /// A new cluster starts with every feature this build implements but
-/// `publisher_principal`, and the election features a broker reports when it
-/// offers `ELECTION`; a feature added later fails this until it picks.
+/// `publisher_principal`; a feature added later fails this until it picks.
 #[test]
 fn a_new_cluster_leaves_only_publisher_principal_to_the_operator() {
     let manual: Vec<_> = felix_common::fleet::IMPLEMENTED
@@ -139,16 +138,9 @@ fn a_new_cluster_leaves_only_publisher_principal_to_the_operator() {
         .filter(|feature| !NEW_CLUSTER.contains(feature))
         .collect();
     assert_eq!(manual, [&felix_common::fleet::PUBLISHER_PRINCIPAL]);
-    let election: Vec<_> = NEW_CLUSTER
-        .iter()
-        .filter(|feature| !felix_common::fleet::IMPLEMENTED.contains(feature))
-        .collect();
     assert_eq!(
-        election,
-        [
-            &felix_common::fleet::JOINT_FENCE,
-            &felix_common::fleet::REPLICA_ELECTION
-        ]
+        NEW_CLUSTER.len() + 1,
+        felix_common::fleet::IMPLEMENTED.len()
     );
 }
 
@@ -165,8 +157,9 @@ fn a_new_cluster_finalizes_prerequisites_first() {
     }
 }
 
-/// A fleet whose brokers do not report the election features cannot finalize
-/// them, even with every prerequisite enabled.
+/// Only a broker under `FELIX_INTERNAL_ELECTION` reports the election features,
+/// so a fleet without it cannot finalize them even with every prerequisite
+/// enabled, and a new cluster leaves them to the operator.
 #[test]
 fn the_election_features_cannot_be_finalized_yet() {
     let reported: Vec<&str> = felix_common::fleet::IMPLEMENTED
@@ -183,6 +176,7 @@ fn the_election_features_cannot_be_finalized_yet() {
             matches!(&refused, Err(StoreError::Conflict(message)) if message.contains("do not support it")),
             "{feature}: {refused:?}"
         );
+        assert!(!NEW_CLUSTER.iter().any(|f| f.name() == feature));
     }
     // The prerequisites are still enforced in order.
     let refused = check_prerequisites(&set(&["generation_start"]), "replica_election");

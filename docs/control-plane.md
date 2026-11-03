@@ -243,10 +243,7 @@ ran an older release has nothing to roll back to, so at its first broker
 registration it finalizes every feature its brokers report except
 `publisher_principal` (`cluster::fleet::NEW_CLUSTER`). That puts a `Quorum`
 write on `majority_ack` from the first stream: without it the leader waits
-for a replica report to reach the control plane before it acknowledges. It
-includes `joint_fence` and `replica_election`, so replicas elect a leader
-while the control plane is down, once this control plane may finalize
-`joint_fence` (until then both are refused and stay the operator's).
+for a replica report to reach the control plane before it acknowledges.
 
 The registration handler checks that the cluster is new: no stream or cache
 was ever created (the change feeds and snapshots are empty) and every node
@@ -1412,8 +1409,8 @@ elected generation itself, not the next one:
   since no write can name that node. Under Raft, members below metadata
   level 26 apply the older form, which takes only the generation of any
   other set. A group finalizes `replica_election` only with every member at
-  26, but one that finalized it at an older release keeps it while its
-  members roll to 26, and applies the older form until they have.
+  26. The older form stays so a member that has not yet rolled to 26
+  applies the same entries the same way.
 
   When only the generation was taken, the control plane's leader is now
   named at the generation the elected leader opened at, which ballots never
