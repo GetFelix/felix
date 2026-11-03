@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793728025801,
+  "lastUpdate": 1793732717903,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -55572,6 +55572,72 @@ window.BENCHMARK_DATA = {
             "range": "473.07",
             "unit": "us",
             "extra": "trials: 5\nmedian: 288.00\nmean: 568.20\nstdev: 473.07\ncv: 83.26%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9c23e4979fc49bcdb37dcb1b24daf4f5e7fcd352",
+          "message": "spec: rename on a refused fence, and the rename check in pieces (#1809) (#1849)\n\nSpec follow-up to #1809 (#1730).\n\n## What changes\n\n- `RenameDue` now also covers a leader that took the control plane's generation and is still fencing, when its fence is refused on its own set or, for a joint fence, on the set being left. This matches what `promotion.rs` reports. The old `bgen < gen` case is still covered by `NeverRenameDue`. A new witness, `FelixShardElectRenameFencingDue`, violates `NeverRenameWhileFencing` (170 states, depth 6, through the joint path).\n- `FelixShardElectRename` didn't finish in one run, so it is now checked in 20 cut-over pieces, `FelixShardElectRename{Keep,Drop}{0,1}{,Stood{One,Several}{Dest,Other}}`, split the same way as `FelixShardElectSwap`.\n  - The four `StoodOneDest` pieces run nightly. The cut-over overwrites everything the destination's stand wrote, so they should reach the same states as the pieces where nobody stood; that is argued, not measured.\n  - The four `StoodSeveralOther` pieces are registered (37,646 distinct states, 2 s). They hold no cut-over at all (37,646 is the count of states before one): in a set of three, only the third member can have stood besides the destination. They check that they stay empty (`NoCutOverInPiece`), as the `FelixShardElectSwap` ones do.\n  - The other 12 were measured on a four-core CI runner (dispatch 41560991406, all pass): 3 to 39 min, 1.1M to 25.1M distinct states. Eight are registered with their weights. `Keep0StoodSeveralDest` (38 min, then 1 h 16 min in PR run 41588434044), `Keep1StoodSeveralDest` (51 min), `Drop0StoodSeveralDest` (1 h 21 min) and `Drop0StoodOneOther` (6 to 10 min, moved off the per-PR quick shards) run nightly. `Drop1` weighs 14, as it took in that run, so it leaves the quick shards too. Figures are in each header.\n- `FelixShardElectRename` comes off the nightly list.\n- `FelixShardElectRenameFencingDue` says `Evidence: none yet`: no test covers a joint fence refused on the set being left (#1856).\n\n## Review notes\n\n- Code gap: no promotion test covers a joint fence that is refused on the set being left. The model now renames on it, the same way `promotion.rs` reports it.\n- Spec only. No code changes.",
+          "timestamp": "2026-11-03T10:58:09-08:00",
+          "tree_id": "acbb71f96d2979367867e04f494fc31cd12260ca",
+          "url": "https://github.com/GetFelix/felix/commit/9c23e4979fc49bcdb37dcb1b24daf4f5e7fcd352"
+        },
+        "date": 1793732710800,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 152,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 152.00\nmean: 151.80\nstdev: 0.45\ncv: 0.29%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 220,
+            "range": "131.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 220.00\nmean: 277.20\nstdev: 131.30\ncv: 47.37%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 271,
+            "range": "449.81",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 271.00\nmean: 474.00\nstdev: 449.81\ncv: 94.90%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 199,
+            "range": "12.54",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 199.00\nmean: 204.60\nstdev: 12.54\ncv: 6.13%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 398,
+            "range": "202.21",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 398.00\nmean: 482.60\nstdev: 202.21\ncv: 41.90%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 513,
+            "range": "976.01",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 513.00\nmean: 1117.80\nstdev: 976.01\ncv: 87.31%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
