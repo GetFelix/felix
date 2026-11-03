@@ -634,25 +634,36 @@ sequenceDiagram
 It fails when:
 
 - **A lease lapsed.** A renewal was refused because the entry had expired, or
-  the read after it found the key gone. A renewal has 4 s (TTL minus the
-  interval) to be applied.
-- **A renewal under load took over 4 s.** That is the lease's slack, TTL
-  minus the interval: a renewal that takes longer lands after the lease ran
-  out, so felixd would have lost it even if the cache did not say so.
+  the read after it found the key gone.
+- **A renewal under load took too long.** The bound is per variant: 4 s on the
+  per-PR run and 2 s on the nightly run (see below). A renewal slower than the
+  bound may have landed after the lease it renews ran out.
 - **A read under load took over 2 s.**
-
-The two bounds differ because the per-PR variant runs debug brokers, which
-keep a 4-vCPU GitHub runner's CPU 90% busy or more through the load phase. That
-slows every quorum write, so healthy renewals there take 0.5 to 2.2 s. Reads
-stay under 0.4 s. Starvation looks different: the canary's renewals and reads
-time out at 5 to 6 s, several rounds in a row. Without the fixes, reads queued
-behind other shards' fences took 2.5 to 6 s. The nightly variant runs
-release brokers with CPU to spare, and stays under 0.35 s for both.
-
-The idle samples are printed next to the loaded ones for comparison but are
-not judged: one slow idle sample on a busy runner used to move the bound.
 - **The load never applied.** Fewer than half the appended streams took an
   append, so the canary was not tested under load.
+
+The renewal bounds differ because the variants differ in build. The per-PR
+variant runs debug brokers, which keep a 4-vCPU GitHub runner's CPU 90% busy
+or more through the load phase. That slows every quorum write, so healthy
+renewals there take 0.5 to 2.2 s. Its bound is 4 s, the lease's slack: the 6 s
+TTL minus the 2 s renewal interval. The nightly variant runs release brokers
+with CPU to spare. Healthy renewals take about 0.33 s, so its bound is 2 s and
+the guard is not loosened there.
+
+The 4 s slack holds only when the previous round finished inside its tick.
+The canary uses `MissedTickBehavior::Delay`, so a late round pushes the next
+one later, and the gap between two renewals can then exceed 2 s. The lapse
+check covers that case: it fails the run whenever the cache refuses a renewal
+because the entry has expired, whatever the timings were.
+
+Reads stay under 0.4 s on a saturated runner. Starvation looks different: the
+canary's renewals and reads time out at 5 to 6 s, several rounds in a row.
+Without the #1799 and #1800 fixes, reads queued behind other shards' fences
+took 2.5 to 2.7 s. Without the #1801 fix they took 5 to 6 s.
+
+The idle samples are printed next to the loaded ones for comparison but are
+not judged, because one slow idle sample on a busy runner says nothing about
+the load.
 
 | Variant | Streams | Appended | Hold | Build | Where |
 | --- | --- | --- | --- | --- | --- |
