@@ -2,6 +2,10 @@
 title: "Rust Client SDK"
 ---
 
+:::note
+The old single-page guide is now split. Jump to [Publishing](/clients/rust/publishing/), [Subscribing](/clients/rust/subscribing/), [Cache Operations](/clients/rust/cache/), [Consumer Groups and Commits](/clients/rust/groups-and-commits/) or [Clusters and Operations](/clients/rust/operations/).
+:::
+
 `felix-client` is the Rust SDK: publish, subscribe, cache, consumer groups,
 and the cluster client, over multiplexed QUIC connections. This page covers
 setup and configuration; the topic pages below cover the rest.
@@ -9,31 +13,7 @@ setup and configuration; the topic pages below cover the rest.
 The Python and TypeScript clients and the C ABI bind to it, and the C# SDK binds the C ABI. See [Choosing a Client](/clients/overview/) for those bindings
 and for how a new language is gated on a conformance suite.
 
-## API at a glance
-
-| Operation | Method | Use Case |
-|-----------|--------|----------|
-| Connect | `Client::connect()` | Any deployment: one broker or a cluster |
-| Single publish | `Client::publish()` | Low-rate events |
-| Batch publish | `Client::publish_batch()` | High-throughput |
-| Idempotent publish | `idempotent_producer()` | Safe resend after `OutcomeUnknown` |
-| Subscribe | `subscribe()` | Event consumption |
-| Cache put / get / delete | `cache_put()`, `cache_get()`, `cache_delete()` | Key-value with TTL |
-| Conditional cache writes | `cache_put_if()`, `cache_delete_if()`, `cache_get_versioned()` | Leases, idempotency keys, compare-and-set |
-| Cache watch | `watch_cache()`, `watch_cache_retained()` | Follow changes to a key or prefix |
-| Counters | `counter_add()`, `counter_get()` | Durable counters |
-| Consumer groups | `group_poll()`, `group_ack()`, `group_nack()` | Work queues |
-| Single connection | `Connection::connect()`, `Connection::publisher()` | Tools and special cases; one broker, no reconnect |
-| One shard | `Client::subscribe_shard()` | Follow a chosen shard through moves |
-| Flush | `Client::finish()`, `Publisher::finish()` | Before exit, after `AckMode::None` |
-| Shard owners | `Connection::shard_owners()` | Which broker owns each shard |
-| Mutual TLS | `quic_client_config_with_identity()` | Present a client certificate |
-
-For complete API documentation, see the [rustdoc](https://docs.rs/felix-client).
-
-## The rest of this guide
-
-This page covers setup and configuration. The rest is split by topic:
+## Topic pages
 
 - [Publishing](/clients/rust/publishing/): single and batch publishes, keys, acknowledgement modes, headers, and idempotent producers.
 - [Subscribing](/clients/rust/subscribing/): live and replayed reads, filters, shards, and resuming after a restart.
@@ -45,10 +25,10 @@ This page covers setup and configuration. The rest is split by topic:
 ## Installation
 
 ```bash
-cargo add felix-client
+cargo add felix-client@0.7.0-preview.2
 ```
 
-This page describes the 0.7 API. While 0.7 is in preview, `cargo add felix-client` installs the last stable release, which does not have it. Ask for the preview by version: `cargo add felix-client@0.7.0-preview.N`, where N is the newest preview on the [releases page](https://github.com/GetFelix/felix/releases).
+This page describes the 0.7 API. While 0.7 is in preview, a plain `cargo add felix-client` installs the last stable release, which does not have it, so name the preview. Replace `2` with the newest preview on the [releases page](https://github.com/GetFelix/felix/releases).
 
 With the optional telemetry feature:
 
@@ -287,6 +267,19 @@ client; the client keeps the last token until it expires.
 
 A gateway gives each user's handle a provider of its own; see [Acting for many
 users](#acting-for-many-users).
+
+## API at a glance
+
+| To do this | Call | Details |
+|------------|------|---------|
+| Connect to one broker or a cluster | `Client::connect()` | [Setup](#client-configuration) |
+| Publish records | `Client::publish()`, `publish_batch()` | [Publishing](/clients/rust/publishing/) |
+| Read a stream | `subscribe()` | [Subscribing](/clients/rust/subscribing/) |
+| Store keys with a TTL | `cache_put()`, `cache_get()` | [Cache Operations](/clients/rust/cache/) |
+| Share work between consumers | `group_poll()`, `group_ack()` | [Consumer Groups and Commits](/clients/rust/groups-and-commits/) |
+| Attach headers to a record | `publish_with_headers()` | [Publishing](/clients/rust/publishing/) |
+
+For complete API documentation, see the [rustdoc](https://docs.rs/felix-client).
 
 ## Client Configuration
 

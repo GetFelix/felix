@@ -13,10 +13,10 @@ what the conformance suite does about it.
 ## Installing
 
 ```bash
-pip install felix-client
+pip install felix-client==0.7.0-preview.2
 ```
 
-This page describes the 0.7 API. While 0.7 is in preview, add `--pre` to install it: `pip install --pre felix-client`.
+This page describes the 0.7 API. While 0.7 is in preview, a plain `pip install felix-client` installs the last stable release, which does not have it, so name the preview. Replace `2` with the newest preview on the [releases page](https://github.com/GetFelix/felix/releases).
 
 Wheels ship compiled, one per platform, for every Python from 3.9 up, so
 installing needs no Rust toolchain. Linux (x86-64 and arm64), macOS (Intel and

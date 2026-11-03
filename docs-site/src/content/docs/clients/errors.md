@@ -13,19 +13,23 @@ Branch on the class, not the code. A client that does not know a newer code stil
 
 | Retry class | What it means | Rust | Python | TypeScript | C# | C |
 | --- | --- | --- | --- | --- | --- | --- |
-| `retry` | Nothing was applied. Send it again. | `BrokerError.retry == RetryClass::Retry` | `err.retry == "retry"` | `err.retry === "retry"`, `err.retryable` | `IsRetryable` for `Connection` and `ShardUnavailable` | n/a |
-| `retry_after` | Nothing was applied. Wait, then send it again. | `RetryClass::RetryAfter`, and `detail.retry_after_ms` | `err.retry == "retry_after"`, `err.detail` | `err.retry === "retry_after"`, `err.detail` | `IsRetryable` for `Overloaded` | n/a |
+| `retry` | Nothing was applied. Send it again. | `BrokerError.retry == RetryClass::Retry` | `err.retry == "retry"` | `err.retry === "retry"`, `err.retryable` | `IsRetryable` | n/a |
+| `retry_after` | Nothing was applied. Wait, then send it again. | `RetryClass::RetryAfter`, and `detail.retry_after_ms` | `err.retry == "retry_after"`, `err.detail` | `err.retry === "retry_after"`, `err.detail` | `IsRetryable` | n/a |
 | `redirect` | Nothing was applied. Another broker owns the shard. | `NotLeaderError`, or `RetryClass::Redirect` | `ShardUnavailableError` | `ShardUnavailableError` | `FelixStatus.ShardUnavailable` | `FELIX_STATUS_SHARD_UNAVAILABLE` |
 | `outcome_unknown` | It may have been applied. Resend only an idempotent request. | `outcome_unknown(&err)`, `AckLost` | `OutcomeUnknownError` | `OutcomeUnknownError` | `OutcomeUnknown` property | `FELIX_STATUS_OUTCOME_UNKNOWN` |
 | `fatal` | Sending it again fails the same way. | `RetryClass::Fatal` | `err.retry == "fatal"` | `err.retry === "fatal"` | other statuses | other statuses |
 
 The clients retry `retry`, `retry_after` and `redirect` themselves before an error reaches you. What you see is what was left after that. See [Building Resilient Clients](/clients/resilient-clients/).
 
+In C#, `IsRetryable` is true for `Connection`, `ShardUnavailable` and `Overloaded`. `NotFound` is not retryable there, even though the broker sends `not_found` with the `retry_after` class.
+
 The C ABI reports one status per call and has no field for the broker's class. It folds the class into the status, as the table shows.
 
 ## Error codes
 
-A cell says `n/a` where the client does not tell this code apart from others. The Python and TypeScript names are the same. When the class the broker sends is `outcome_unknown`, Python, TypeScript, C# and C report that, whatever the code. The table gives the usual class.
+The Python and TypeScript exception names are the same, so they share a column.
+
+The class column is the usual one. When the broker sends the class `outcome_unknown`, Python, TypeScript, C# and C report that, whatever the code.
 
 | Code | Usual class | Rust | Python and TypeScript | C# `FelixStatus` | C status |
 | --- | --- | --- | --- | --- | --- |

@@ -143,6 +143,8 @@ export default defineConfig({
           items: [
             { label: 'Choosing a Client', slug: 'clients/overview' },
             { label: 'Building Resilient Clients', slug: 'clients/resilient-clients' },
+            { label: 'Errors Across Clients', slug: 'clients/errors' },
+            { label: 'Auth and TLS', slug: 'clients/auth-and-tls' },
             {
               label: 'Rust',
               collapsed: true,
@@ -160,8 +162,6 @@ export default defineConfig({
             { label: 'C', slug: 'clients/c' },
             { label: 'C#', slug: 'clients/csharp' },
             { label: 'Browsers (felix-gateway)', slug: 'clients/browsers' },
-            { label: 'Errors Across Clients', slug: 'clients/errors' },
-            { label: 'Auth and TLS', slug: 'clients/auth-and-tls' },
           ],
         },
         {
