@@ -1318,9 +1318,10 @@ elected leader waits for the lease until the control plane is back (issue
    destination's log, which holds the old leader's. The control plane
    flips on the leader's report alone, and the report can be stale. If the
    leader promised the new generation to a candidate after sending it, the
-   leader refuses that generation and the candidate keeps serving there;
-   the control plane does not adopt the candidate, since its generation is
-   not above the control plane's (issue #1730).
+   leader refuses that generation and reports the refusal, and the control
+   plane names it again one generation up, as after an election it did not
+   adopt (rule 10). The model checks the flip and the rename separately,
+   not yet together.
 9. *Redirects.* A follower answers `NotLeader` with the leader it promised,
    so clients find an elected leader without asking the control plane.
 10. *Adoption.* The elected leader reports its generation and its set's
