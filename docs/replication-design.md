@@ -1246,6 +1246,11 @@ has finalized `replica_election`, which needs `joint_fence` first (see "What
 is implemented so far"). Without both, a leader that dies while the control
 plane is down is not replaced until the control plane is back.
 
+A broker that restarts while the control plane is down waits for it before
+it opens its data, so it neither votes nor stands until the control plane is
+back. A shard is elected during an outage only while a majority of its
+copies kept running (issue #1196).
+
 **Which shards.** The ones failover on the followers' word already covers: a
 durable `Quorum` stream with `majority_ack` and `lease_free_reads` finalized,
 and a `Quorum` cache with `fenced_caches` as well. `Leader` streams,
@@ -1386,8 +1391,10 @@ talk, nobody is elected, by design.
    `AckedOnMajority`, `NoTruncationBelowHwm`). `AtMostOneServing` stays
    unenforced under follower acks, as it is today: a deposed leader may go on
    taking writes it cannot get acknowledged.
-4. Brokers persisting their last routes, so a restarted broker can rejoin
-   during a control-plane outage, is a follow-up (issue #1196).
+4. A broker that restarts during a control-plane outage stays out of
+   elections until the control plane is back (see the status above).
+   Persisting its last routes and fleet gate so it can rejoin is a follow-up
+   (issue #1196).
 5. `replica_election` is one-way once finalized, like the other fleet
    features.
 6. Consumer groups on an elected leader still wait for the lease (issue
