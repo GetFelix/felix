@@ -88,10 +88,12 @@ least that commit; a commit landing in between can only make the state newer,
 which is allowed. The state's version is an offset, so the read after it must
 hold that commit's event there, whatever landed since.
 
-Rule 12 is the model's `OneLeaderPerGeneration`. No client can see which
+Rule 12 is `OneLeaderPerGeneration` from the TLA+ shard model
+([`FelixShard.tla`](formal/FelixShard.tla)). No client can see which
 broker opened a shard, so it is read from the broker logs instead of the
 operations: each broker logs "a majority took the fence; opening the shard
-for writes" with the shard and the generation. The campaign collects those
+for writes" with the shard and the generation. That is the lease-free open;
+the lease path logs a different line, which this rule does not read. The campaign collects those
 lines only when the brokers elect leaders themselves (see "Elections without
 the control plane"), and reads the logs after every fault, because the
 harness keeps only a broker's current log and the one before its last
@@ -394,7 +396,9 @@ sequenceDiagram
    the chosen leader leads has a replica reported caught up and nothing in
    flight. A follower only stands on a set its leader kept, so a fault
    aimed too early would test nothing. If the wait fails, the fault is
-   logged as one that could not be injected.
+   logged as one that could not be injected and the run goes on. The test
+   fails only if no fault was healed at all, and prints how many were
+   skipped.
 2. It crashes the control plane and kills the leader.
 3. Within 20s (times `FELIX_TEST_TIMEOUT_SCALE`), each of the killed
    leader's shards must have been opened at a later generation by another
@@ -585,8 +589,8 @@ a few times.
 Each active segment reserves blocks as it fills, up to a full segment. On a
 small disk, set `FELIX_DURABLE_PREALLOCATE=false` to turn that off.
 
-The per-PR run uses the fixed seed and takes about a minute per test, cluster
-start-up included. The nightly workflow (`.github/workflows/history.yml`) runs
+The per-PR run uses the fixed seed and takes one to three minutes per test,
+cluster start-up included. The nightly workflow (`.github/workflows/history.yml`) runs
 it for 20 minutes as two jobs, one per nemesis (`all` and `adversarial`), each
 with its own random seed, in `lease-free` mode unless a manual run picks
 `lease`. Each prints its seed, mode and nemesis first, and in the job summary,

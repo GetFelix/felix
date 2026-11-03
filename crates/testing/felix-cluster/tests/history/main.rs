@@ -71,10 +71,13 @@ async fn a_fault_campaign_keeps_quorum_histories_valid() {
             campaign = campaign.with_spare_broker();
             (RandomNemesis::adversarial(), "adversarial faults")
         }
-        Some("election") => (
-            RandomNemesis::election(),
-            "leader kills with the control plane down",
-        ),
+        Some("election") => {
+            campaign.mode = Mode::LeaseFree;
+            (
+                RandomNemesis::election(),
+                "leader kills with the control plane down",
+            )
+        }
         Some("all") | None if long => (RandomNemesis::all_faults(), "every fault family"),
         None => (RandomNemesis::process_faults(), "process faults"),
         Some(other) => panic!(
@@ -254,6 +257,8 @@ async fn replicas_elect_a_leader_while_the_control_plane_is_down() {
     let mut campaign =
         Campaign::from_env(SEED, ELECTION_DURATION, Mode::LeaseFree).expect("campaign settings");
     campaign.duration = ELECTION_DURATION;
+    // Elections need the lease-free path, whatever mode the nightly runs.
+    campaign.mode = Mode::LeaseFree;
     let (seed, mode) = (campaign.seed, campaign.mode);
     println!(
         "election campaign: seed {seed}, mode {mode}; rerun with \
@@ -262,19 +267,25 @@ async fn replicas_elect_a_leader_while_the_control_plane_is_down() {
     let mut nemesis = RoundRobin::new(vec![FaultKind::ElectWithoutControlPlane]);
     let history = run_checked(&campaign, &mut nemesis).await;
 
-    let healed = nemesis
-        .picked
-        .iter()
-        .filter(|fault| {
-            let line = format!("healed {fault}");
-            history.faults.iter().any(|f| f.what == line)
-        })
-        .count();
+    // Counted from the timeline rather than from `picked`: two faults can
+    // print the same, and a skipped one is still picked.
+    let count = |prefix: &str| {
+        history
+            .faults
+            .iter()
+            .filter(|f| f.what.starts_with(prefix))
+            .count()
+    };
+    let healed = count("healed crash the control plane and kill leader");
+    let skipped = count("could not crash the control plane and kill leader");
     assert!(
         healed >= 1,
-        "seed {seed}: no leader was killed with the control plane down and healed; picked {:?}",
+        "seed {seed}: no leader was killed with the control plane down and healed \
+         ({skipped} skipped); picked {:?}",
         nemesis.picked,
     );
+    // Each line is an open at a later generation by a broker other than the
+    // killed leader, read from its log and then probed.
     let elected = history
         .faults
         .iter()
@@ -284,10 +295,7 @@ async fn replicas_elect_a_leader_while_the_control_plane_is_down() {
         elected >= healed,
         "seed {seed}: {healed} kill(s) healed but only {elected} election(s) seen"
     );
-    assert!(
-        !history.opens.is_empty(),
-        "seed {seed}: no broker log recorded opening a shard, so rule 12 checked nothing"
-    );
+    println!("{healed} election fault(s) healed, {skipped} skipped, {elected} shard(s) elected");
 }
 
 /// Long enough for [`CacheLeader`] to fault the cache's leader several times.

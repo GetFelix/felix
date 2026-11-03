@@ -299,10 +299,18 @@ pub(super) async fn return_control_plane(
     }
     cluster.recover_control_plane().await?;
     if started_early {
-        cluster.await_node_ready(node).await
-    } else {
-        restart_if_down(cluster, node).await
+        match cluster.await_node_ready(node).await {
+            Ok(()) => return Ok(()),
+            // An early start that lost a port race has exited, and only
+            // `restart_node` retries that.
+            Err(_)
+                if !cluster
+                    .node(node)
+                    .is_some_and(crate::BrokerNode::is_running) => {}
+            Err(err) => return Err(err),
+        }
     }
+    restart_if_down(cluster, node).await
 }
 
 /// `node` if it leads a shard, or else a broker that does: faulting a
