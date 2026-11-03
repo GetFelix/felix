@@ -822,9 +822,10 @@ async fn a_new_cluster_finalizes_every_feature_at_its_first_registration() {
     );
 }
 
-/// A new cluster of default brokers, which report the election features,
-/// leaves `joint_fence` and `replica_election` off while the control plane
-/// says they are not ready, as an operator's finalize does.
+/// A new cluster whose brokers report the election features
+/// (`FELIX_INTERNAL_ELECTION=true`) leaves `joint_fence` and
+/// `replica_election` off while the control plane says they are not ready,
+/// as an operator's finalize does.
 #[tokio::test]
 async fn a_new_cluster_does_not_finalize_the_election_features_before_they_are_ready() {
     let store = store();

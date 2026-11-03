@@ -167,7 +167,7 @@ fn reported_features() -> std::collections::BTreeSet<String> {
                 .ok()
                 .map(|value| value.trim().to_ascii_lowercase())
                 .as_deref(),
-            None | Some("" | "1" | "true" | "yes")
+            Some("1" | "true" | "yes")
         );
     let mut features = features_for(fences, reads_by_lease);
     if election {
