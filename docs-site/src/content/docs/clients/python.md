@@ -13,8 +13,10 @@ what the conformance suite does about it.
 ## Installing
 
 ```bash
-pip install felix-client
+pip install felix-client==0.7.0-preview.2
 ```
+
+This page describes the 0.7 API. While 0.7 is in preview, a plain `pip install felix-client` installs the last stable release, which does not have it, so name the preview. Replace `2` with the newest preview on the [releases page](https://github.com/GetFelix/felix/releases).
 
 Wheels ship compiled, one per platform, for every Python from 3.9 up, so
 installing needs no Rust toolchain. Linux (x86-64 and arm64), macOS (Intel and
@@ -261,8 +263,14 @@ felix.Client(
     server_name="localhost",  # the name the broker's certificate carries
     ca_file=None,             # trust a specific CA; omit for the system store
     offer_alpn=False,         # offer the felix/1 ALPN
+    reconnect_attempts=None,      # None keeps the default, 5
+    reconnect_deadline=None,      # seconds across all attempts; None is no ceiling
+    reconnect_backoff=None,       # seconds before the first retry; None keeps 0.2
+    reconnect_max_backoff=None,   # longest wait in seconds; None keeps 2
 )
 ```
+
+The `reconnect_*` options are covered under [Reconnecting](#reconnecting).
 
 One reachable address is enough. The client discovers the rest of the cluster
 and will use brokers it was never told about. It is built on the Rust
@@ -284,6 +292,8 @@ turn a secure deployment insecure, and a CA file covers development without it.
 running with `FELIX_TLS_REQUIRE_ALPN=true` insists on. It is off by default
 because a broker older than ALPN support refuses a client that offers it.
 
+Client certificates (mutual TLS) are Rust only: this client trusts the broker's certificate but cannot present one of its own. [Auth and TLS](/clients/auth-and-tls/) compares the options across clients.
+
 ### Acting for many users
 
 A gateway serving many users can hold one client and give each user a client
@@ -304,8 +314,7 @@ certificate-bound token rules are the Rust client's; see
 
 ## Connecting to a cluster
 
-In every language the client is a cluster client; see
-[Choosing a Client](/clients/overview/#every-client-is-a-cluster-client).
+See [Every client is a cluster client](/clients/overview/#every-client-is-a-cluster-client).
 
 ```python
 import felix
@@ -368,7 +377,7 @@ with felix.Client(
 
 A deadline shorter than one attempt's own timeout means no retry happens: the first attempt spends the whole budget and the call returns after trying once. Set it to cover at least one attempt plus the backoff you can afford, and leave it off if you would rather wait out a failover. A client from `with_identity` inherits both.
 
-The Rust page covers [clusters](/clients/rust/#clusters) in full. [Building Resilient Clients](/clients/resilient-clients/) shows reconnection, token refresh, retries, resuming and shutdown side by side in every language.
+The Rust page covers [clusters](/clients/rust/operations/#clusters) in full. [Building Resilient Clients](/clients/resilient-clients/) shows reconnection, token refresh, retries, resuming and shutdown side by side in every language.
 
 ## Publishing
 
@@ -548,6 +557,10 @@ with client.producer() as producer:
 the same methods as coroutines (`id_for` included, so it never blocks the event
 loop) and is an `async with` block.
 
+### Record headers
+
+Record headers, the named byte values a record can carry next to its payload, are Rust only. This binding publishes the payload and a routing `key`; an event it reads has no `headers`. Use the [Rust client](/clients/rust/publishing/#keys-and-headers) when you need them.
+
 ## Subscribing
 
 ```python
@@ -574,9 +587,15 @@ tail.
 
 `subscribe` reads one shard: pass `shard=` for any but shard 0, or use [`subscribe_sharded`](#multi-shard-streams) for all of them. `start_offset` and `live_offset` on the handle say where the subscription began and where live delivery began when it opened, or `None` for an in-memory stream.
 
-### Replaying from a time
+### Replay from an offset or a time
 
-`offset_for_time` finds the first offset on one shard whose record was appended at or after a time, given as integer microseconds since the Unix epoch. Subscribe at it to replay from then:
+To replay from an offset, pass it as `start`. `"earliest"` replays everything the shard still holds:
+
+```python
+replay = client.subscribe("t1", "default", "orders", start=1200)
+```
+
+To replay from a time, `offset_for_time` finds the first offset on one shard whose record was appended at or after a time, given as integer microseconds since the Unix epoch. Subscribe at it to replay from then:
 
 ```python
 import time
@@ -709,6 +728,8 @@ except felix.NotFoundError:
 | `PublishRefusedError` | an idempotent producer's batch was refused and nothing written (`reason`: `sequence_gap`, `unknown_producer`, ...); see [idempotent producers](#idempotent-producers) | no; it ends the producer on that stream |
 | `CursorError` | the start offset is not available: retention or a head trim discarded it, or it is past the tail | no; resume from `available` |
 | `FelixError` | the base, and anything else (`invalid_request`, `limit_exceeded`, a code this client does not know) | see `retry` |
+
+Every exception derives from `FelixError`, which derives from the built-in `Exception`, so one `except felix.FelixError` catches them all. Directly under it sit `ConnectionError`, `AuthError`, `NotFoundError`, `CursorError`, `ShardUnavailableError`, `OverloadedError`, `OutcomeUnknownError`, `PublishRefusedError`, `TrimError` and `CommitError`. `NotOnOwningShardError` and `EventCountError` are subclasses of `CommitError`. `felix.ConnectionError` is Felix's own class, not Python's built-in. [Errors Across Clients](/clients/errors/) maps every broker code and retry class to the type each client raises.
 
 Every exception carries three attributes from the broker:
 

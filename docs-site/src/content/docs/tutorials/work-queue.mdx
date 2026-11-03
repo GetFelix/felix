@@ -796,7 +796,7 @@ b: finished job 3 (attempt 2)
 ```
 
 The Rust, C# and C clients can choose the visibility for a poll. The Rust
-[`GroupPollOptions`](/clients/rust/#creating-moving-and-deleting-a-group) and
+[`GroupPollOptions`](/clients/rust/groups-and-commits/#creating-moving-and-deleting-a-group) and
 the C# `visibility` argument do it per poll, and a worker whose jobs run
 longer than the default can also extend a claim while it works.
 
@@ -1079,6 +1079,6 @@ job. The [queues page](/features/queues/) covers what the broker guarantees,
 long work and backoff (extending a claim, delayed nacks), named members that
 take their claims back after a restart, and the limits a group has. For the
 fuller API in your language, see the consumer group sections of the
-[Rust](/clients/rust/#consumer-groups), [Python](/clients/python/),
+[Rust](/clients/rust/groups-and-commits/#consumer-groups), [Python](/clients/python/),
 [TypeScript](/clients/typescript/#queues) and [C#](/clients/csharp/#consumer-groups)
 pages.
