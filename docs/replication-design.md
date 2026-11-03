@@ -4059,6 +4059,14 @@ Once it is finalized on a broker that offers `ELECTION`:
   to leave. A member of the old set that no route names any more is reached
   at the address the node catalog gives, and answers even though its own
   routing view leaves it out.
+- Outside a pending cut-over, a failover can leave two sets. When the
+  control plane records an election without taking the elected leader's
+  set, its own set and the one the elected leader shipped with can differ,
+  and a majority of either may hold acknowledged records. So when the set
+  the promoted broker's log keeps from before the route names other members
+  than the set found above, the fence needs a majority of that set too, as
+  the model's `Promote` fences the promoted broker's own set. A member that
+  votes only in the log's set is sent that set as the one being left.
 - Each member of the set being left is counted as a voter and, where it was
   a move's staged destination, also not: replicas may keep the set either
   way, and the fence needs a majority of each reading.

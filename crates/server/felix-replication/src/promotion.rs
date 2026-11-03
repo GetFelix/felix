@@ -388,7 +388,7 @@ async fn fence_log<R: PeerRequester>(
                 (Some(joint), Some(set)) => Some(FenceElection {
                     candidate: false,
                     set: set.clone(),
-                    leaving: Some(joint.leaving.clone()),
+                    leaving: Some(joint.leaving_for(&node_id).clone()),
                 }),
                 (None, Some(set)) => {
                     let offered = match requester.recorded_capabilities(&node_id) {
