@@ -11,6 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::Shared;
 use super::connect::Session;
+use super::publish::{MAX_QUOTA_HOLD, Publishing};
 use crate::metrics;
 
 /// A write that has not finished by now means the peer has stopped reading.
@@ -75,6 +76,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     ) -> Result<Infallible, End> {
         let limits = shared.settings.limits();
         let version = session.version;
+        let max_inflight = usize::from(shared.settings.max_inflight);
         let keepalive = session.keep_alive.mul_f32(KEEPALIVE_GRACE);
 
         let revoked = session.principal.revoked();
@@ -92,12 +94,39 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         tokio::pin!(expired);
         let silent = sleep_until(Instant::now() + keepalive);
         tokio::pin!(silent);
+        let mut publishing = Publishing::new(shared, &session);
+        // Reading stops until then, to hold the tenant to its publish quota.
+        let mut muted_until: Option<Instant> = None;
 
         loop {
             while let Some(packet) = self.next_packet(Some(version), &limits)? {
-                self.handle(shared, &session, packet)?;
+                self.handle(shared, &session, &mut publishing, packet)?;
             }
+            if let Some(hold) = publishing.start(&shared.writes)
+                && !hold.is_zero()
+            {
+                muted_until = Some(Instant::now() + hold.min(MAX_QUOTA_HOLD));
+            }
+            self.release(&mut publishing)?;
             self.flush().await?;
+
+            let now = Instant::now();
+            let muted = muted_until.filter(|until| *until > now);
+            // Stopped reading, by quota or because the broker is behind, TCP
+            // pushes back on the client. It cannot ping meanwhile, so the
+            // keepalive clock waits for reading to resume.
+            // One more than the limit is read, so a 5.0 client that sends a
+            // publish past `Receive Maximum` is seen doing it.
+            let reading = muted.is_none() && publishing.pending() <= max_inflight;
+            if !reading {
+                silent.as_mut().reset(now + keepalive);
+            }
+            let unmute = async {
+                match muted {
+                    Some(until) => sleep_until(until).await,
+                    None => std::future::pending().await,
+                }
+            };
             tokio::select! {
                 biased;
                 _ = shutdown.cancelled() => {
@@ -109,10 +138,14 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
                 _ = &mut expired => {
                     return Err(End::Disconnect(ReasonCode::NotAuthorized, Some("token_expired")));
                 }
-                _ = &mut silent => {
+                _ = &mut silent, if reading => {
                     return Err(End::Disconnect(ReasonCode::KeepAliveTimeout, Some("keepalive_timeout")));
                 }
-                read = self.io.read_buf(&mut self.inbound) => {
+                result = publishing.completed(), if publishing.is_writing() => {
+                    self.settle(&mut publishing, version, result)?;
+                }
+                _ = unmute => {}
+                read = self.io.read_buf(&mut self.inbound), if reading => {
                     match read {
                         Ok(0) | Err(_) => return Err(End::Gone),
                         Ok(_) => silent.as_mut().reset(Instant::now() + keepalive),

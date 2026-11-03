@@ -632,7 +632,10 @@ with its publisher, once `publisher_principal` is, or on a single broker with
 [`head_trim`](#head_trim)); and v8 for a record with a key and headers, on a
 single broker from the first publish that carries headers (a cluster does not
 accept headers yet, and `FELIX_RECORD_HEADERS=false` makes a single broker
-refuse them). Each of those is the one-way step. Consumer-group cursors are not in the segment format but have a layout
+refuse them). Every MQTT message carries headers, so an MQTT publish to a
+mounted stream is what moves that stream's logs to v8; mounting the stream is
+the explicit step that opts in, and a broker that refuses headers refuses the
+MQTT publish too. Each of those is the one-way step. Consumer-group cursors are not in the segment format but have a layout
 of their own: a cluster moves to the newer one once
 [`group_cursor_dependencies`](#group_cursor_dependencies) is finalized, and a
 single broker from the start, after which an older build cannot read that
