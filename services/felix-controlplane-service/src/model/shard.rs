@@ -730,15 +730,15 @@ impl ShardAssignment {
             return Some(adopted);
         }
         if self.nodes().any(|node| *node == elected.leader) {
-            // Beyond the window the store would refuse the write, and taking
-            // only the generation would name this set's leader where the
-            // elected one opened. Not adopted: the report is judged as before.
+            // One write at the generation after the elected one, so the
+            // window is the elected generation's and this set's leader is
+            // never named where the elected one opened. `None` only at the
+            // top of the range, which the store refuses anyway.
             return ShardAssignment {
                 generation: elected.generation,
                 ..self.clone()
             }
-            .reissuing(elected, known)
-            .filter(|next| check_elected_generation(self.generation, next.generation).is_ok());
+            .reissuing(elected, known);
         }
         Some(adopted.on_elected_set(elected))
     }
