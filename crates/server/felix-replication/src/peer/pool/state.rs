@@ -46,6 +46,15 @@ impl Peer {
         if let Some(connection) = state.next(pool.config.conns_per_peer) {
             return Ok(connection);
         }
+        // Port 0 is a node the catalog has no address for. Use a connection
+        // already open to it, or refuse without dialling: a failed dial would
+        // start a backoff that outlasts the catalog catching up.
+        if addr.port() == 0 {
+            return state.next(1).ok_or_else(|| PeerError::Unavailable {
+                node_id: self.node_id.clone(),
+                detail: "no address for it in the node catalog".to_string(),
+            });
+        }
 
         if let Some(remaining) = state.backoff_remaining() {
             return Err(PeerError::Unavailable {
