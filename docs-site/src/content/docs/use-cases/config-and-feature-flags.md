@@ -10,25 +10,37 @@ reconnects from a network blip. The values are small and change a few times a
 minute at most. What matters is that each consumer ends up holding the same
 current value, never misses a change, and finds out when it could not keep up.
 
-## How this is usually built
+On Felix a consumer reads the current value and then receives every change
+after it, in one watch, with no gap between the two. A consumer that
+disconnects resumes by offset and misses nothing, and one that falls too far
+behind is told where to pick up.
 
-The authoritative value lives in a coordination store such as etcd or Consul, or
-in a database. Consumers either poll it or watch it. A watch in etcd reads at a
-revision and then streams every later change from that revision, which is the
-right contract. The cost shows up at scale: etcd runs a consensus quorum over a
-small dataset, and the Kubernetes apiserver keeps its own watch cache in front
-of etcd so that thousands of watchers do not each hold a stream to it. Teams that
-need the same shape for their own fleet end up writing that fanout tier
-themselves.
+## Try it
 
-The cheaper version is Redis. The control plane does `SET` and `PUBLISH`, and
-every consumer subscribes and then runs `GET`. Redis pub/sub keeps no history,
-so a consumer that was disconnected when the message went out never learns of
-it. The usual repair is to `GET` again on every reconnect and to poll on a timer
-as a backstop, which means the pub/sub channel is a hint and the poll is the
-mechanism. Plain polling with an ETag is simpler still, and for a few hundred
-consumers it is often the right answer. Its cost is a staleness bound equal to
-the poll interval and a burst of requests whenever many consumers start at once.
+Start the stack from the
+[Quickstart](/getting-started/quickstart/#try-it-in-one-command) (it covers Podman
+too) and run these from the directory holding `compose.yaml`.
+
+Put two flags, then watch the prefix in one terminal:
+
+```bash
+docker compose run --rm felixctl cache put config flag/new-checkout on
+docker compose run --rm felixctl cache put config flag/beta-search on
+docker compose run --rm felixctl cache watch config --prefix flag/ --retained
+```
+
+The watcher prints both flags straight away, `flag/new-checkout<TAB>on` and its
+neighbour: those are the retained values. In a second terminal, change one flag
+and delete the other:
+
+```bash
+docker compose run --rm felixctl cache put config flag/new-checkout off
+docker compose run --rm felixctl cache del config flag/beta-search
+```
+
+The first terminal prints `flag/new-checkout<TAB>off` and then
+`flag/beta-search<TAB>(deleted)` as they happen. Stop the watcher and start it
+again with `--retained`: it begins from the current values, with nothing missing.
 
 ## Why Felix fits
 
@@ -46,7 +58,8 @@ Writers use `cache_put_if`, whose check and write are one step on the key's owne
 
 Configuration goes in a cache. A log-backed cache is a log: every write appends
 a record with an offset, and a key's current value is an index over that log.
-That one structure supplies the three things the stack above assembles from
+That one structure supplies the three things the usual stack (see
+[Compared with etcd, Consul, JetStream KV, Redis and polling](#compared-with-etcd-consul-jetstream-kv-redis-and-polling)) assembles from
 parts: the current value of each key, a change feed that resumes at an offset,
 and a notice when a consumer falls behind.
 
@@ -227,7 +240,29 @@ clients have their own watch examples.
 
 ## Compared with etcd, Consul, JetStream KV, Redis and polling
 
-etcd has multi-key transactions, linearizable reads by default, a global revision across all keys and years of Kubernetes production use. If a change must commit atomically across several keys, or you already run etcd for a few hundred watchers, use etcd. Felix is built for the other end of the problem: many watchers of a small keyspace. Each watcher has a bounded queue, and a slow one is ended with a resume offset instead of holding up the writer. The measured numbers are in the section above. Counts above 500 watchers have not been measured.
+### How it is usually built
+
+The authoritative value lives in a coordination store such as etcd or Consul, or
+in a database. Consumers either poll it or watch it. A watch in etcd reads at a
+revision and then streams every later change from that revision, which is the
+right contract. The cost shows up at scale: etcd runs a consensus quorum over a
+small dataset, and the Kubernetes apiserver keeps its own watch cache in front
+of etcd so that thousands of watchers do not each hold a stream to it. Teams that
+need the same shape for their own fleet end up writing that fanout tier
+themselves.
+
+The cheaper version is Redis. The control plane does `SET` and `PUBLISH`, and
+every consumer subscribes and then runs `GET`. Redis pub/sub keeps no history,
+so a consumer that was disconnected when the message went out never learns of
+it. The usual repair is to `GET` again on every reconnect and to poll on a timer
+as a backstop, which means the pub/sub channel is a hint and the poll is the
+mechanism. Plain polling with an ETag is simpler still, and for a few hundred
+consumers it is often the right answer. Its cost is a staleness bound equal to
+the poll interval and a burst of requests whenever many consumers start at once.
+
+### How Felix differs
+
+etcd has multi-key transactions, linearizable reads by default, a global revision across all keys and years of Kubernetes production use. If a change must commit atomically across several keys, or you already run etcd for a few hundred watchers, use etcd. Felix is built for the other end of the problem: many watchers of a small keyspace. Each watcher has a bounded queue, and a slow one is ended with a resume offset instead of holding up the writer. The measured numbers are in the example earlier on this page. Counts above 500 watchers have not been measured.
 
 Consul's watches are blocking queries: the client long-polls with the last index it saw and makes a new request per change. They work well through the local agent and suit service discovery. A Felix watch is one stream per consumer that carries each change as it happens and resumes at an offset, so a change costs no new request.
 
@@ -237,62 +272,34 @@ Redis with pub/sub plus `GET` is the fastest to stand up. The channel keeps noth
 
 Polling is the right answer when the fleet is small, tens of seconds of staleness are fine, and you do not want a connection per consumer.
 
-## Try it
+## Limits you can plan around
 
-Start the stack from the
-[Quickstart](/getting-started/quickstart/#try-it-in-one-command) (it covers Podman
-too) and run these from the directory holding `compose.yaml`.
+**Keep the key set small.** A log-backed cache holds its whole key index in
+memory, so memory grows with the key count, and nothing caps or reports it yet
+(marked 🚧 Partial in [What Felix Is For](/getting-started/what-felix-is-for/)).
+Config sets are small, which fits. For millions of keys, use a durable stream.
 
-Put two flags, then watch the prefix in one terminal:
+**Conditional writes are per key.** There is no transaction across keys, so put
+a change that must land atomically into one value. Conditional writes are
+available in the Rust, Python, TypeScript and .NET clients.
 
-```bash
-docker compose run --rm felixctl cache put config flag/new-checkout on
-docker compose run --rm felixctl cache put config flag/beta-search on
-docker compose run --rm felixctl cache watch config --prefix flag/ --retained
-```
+**Watch a multi-shard cache one shard at a time.** In Rust,
+`Client::watch_cache_sharded` merges the shards. In Python and TypeScript, and
+with `Client::watch_cache`, you open one watch per shard, and a prefix watch that
+names no shard on a multi-shard cache is refused. A one-shard cache avoids the
+question for config.
 
-The watcher prints both flags straight away, `flag/new-checkout<TAB>on` and its
-neighbour: those are the retained values. In a second terminal, change one flag
-and delete the other:
+**`Quorum` reads depend on a fleet feature.** By default a `Quorum` read
+confirms leadership with the owner's lease, which trusts clocks. After an
+operator finalizes the `lease_free_reads` fleet feature it uses a round of
+confirmations from a majority instead. Failover is decided by the control plane,
+so with it down a dead leader is not replaced until it returns.
 
-```bash
-docker compose run --rm felixctl cache put config flag/new-checkout off
-docker compose run --rm felixctl cache del config flag/beta-search
-```
-
-The first terminal prints `flag/new-checkout<TAB>off` and then
-`flag/beta-search<TAB>(deleted)` as they happen. Stop the watcher and start it
-again with `--retained`: it begins from the current values, with nothing missing.
-
-## Where it stops
-
-A log-backed cache holds its whole key index in memory, so memory grows with the
-key count and nothing caps or reports it yet. This is why the log-backed cache is
-marked 🚧 Partial in [What Felix Is For](/getting-started/what-felix-is-for/).
-Config sets are small, which fits, but do not use it as a store of millions of
-keys.
-
-Conditional writes are per key. There is no transaction across keys, so a change
-that must land atomically in several keys belongs in one value, or in a system
-with transactions. They exist in the Rust client only so far.
-
-A prefix watch across the shards of a multi-shard cache is a Rust call
-(`Client::watch_cache_sharded`). In Python and TypeScript, and with
-`Client::watch_cache`, it takes one watch per shard, and a prefix watch
-that names no shard on a multi-shard cache is refused. A one-shard cache avoids
-the question for config.
-
-By default a `Quorum` read confirms leadership with the owner's lease, which
-trusts clocks. After an operator finalizes the `lease_free_reads` fleet feature
-it uses a round of confirmations from a majority instead. Multi-node clustering
-is itself 🚧 Partial: the control plane still decides every failover, so with it
-down a dead leader is not replaced.
-
-An in-memory cache, which is what a broker without durable storage runs, has no
-watch. A cache keeps the latest value per key and discards superseded ones when
-it compacts, so it is not a history of every edit; use a durable stream for that.
-A TTL expiry reaches watchers as a delete, written by a pass that runs once a
-second and handles at most 1,024 deletes per shard.
+**A cache keeps the latest value, not a history.** It discards superseded values
+when it compacts. Use a durable stream when you need every edit. An in-memory
+cache, which is what a broker without durable storage runs, has no watch. A TTL
+expiry reaches watchers as a delete, written by a pass that runs once a second
+and handles at most 1,024 deletes per shard.
 
 ## Related
 
