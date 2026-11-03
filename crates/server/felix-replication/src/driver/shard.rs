@@ -659,7 +659,11 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 .iter()
                 .rev()
                 .find(|epoch| epoch.generation == route.generation)
-                .map(|epoch| epoch.start_offset);
+                .map(|epoch| {
+                    counter_log
+                        .stint_start(route.generation)
+                        .map_or(epoch.start_offset, |stint| stint.max(epoch.start_offset))
+                });
             (view(counters), start)
         });
         crate::reporter::holders_of_start(
@@ -697,10 +701,18 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     // cache's counter log too: the counter updates acknowledged before the
     // cut-over are behind its own start record, not the cache log's, and the
     // new set alone keeps them after the flip.
+    // A counter log that would not open this pass holds the flip back too:
+    // read as absent, the start would be reported on the cache log alone.
+    let counters_unread = key.kind == felix_router::ShardKind::Cache
+        && broker.counters().is_some()
+        && counter_log.is_none();
     let joint_start = |tail: u64, followers: &[FollowerCursor], counters: Option<&CounterLevel>| {
         let change = pending?;
-        let counters_started =
-            counter_mark.is_none() || counters.is_some_and(|level| level.start_held);
+        let counters_started = if counter_mark.is_some() || counters_unread {
+            counters.is_some_and(|level| level.start_held)
+        } else {
+            true
+        };
         (acks_at_quorum
             && inherited != u64::MAX
             && held_offset(tail, followers) > inherited

@@ -444,7 +444,7 @@ async fn cache_cut_over(marks: &QuorumMarks) -> (Arc<Broker>, tempfile::TempDir)
             .expect("log");
         let tail = log.tail_offset().await.expect("tail");
         log.record_generation(5, tail).expect("generation");
-        log.append(&[Bytes::from_static(b"start")])
+        log.append(&[Bytes::from_static(b"first")])
             .await
             .expect("append");
     }
@@ -682,15 +682,16 @@ impl PeerRequester for CountersLagging {
 }
 
 /// **The counter log's joint start counts from the current stint's start
-/// record**, as the shard's own log does. The leader began generation 5 in
-/// its counter log at 0, wrote an update at 1, and a new stint at 5 wrote a
-/// start record at 2. `c` and `d` hold the counter log up to the update, not
-/// including it. The first start is on both majorities and the update is not
-/// on the new one, so no joint start may be reported.
+/// record**, as the shard's own log does. The counter log's history begins
+/// generation 5 at 0; past its three records the leader wrote a start record
+/// at 3, an update at 4, and a new stint's start record at 5. `c` and `d`
+/// hold the counter log up to the stint's start, not including it. Counted
+/// from the history's start, the joint start would be reported on a new set
+/// that may lack updates an earlier stint acknowledged on the old set alone.
 #[tokio::test]
 async fn the_counter_logs_joint_start_waits_for_the_current_stints_start() {
     for by_followers in [false, true] {
-        for (upto, expected) in [(1, None), (u64::MAX, Some(5))] {
+        for (upto, expected) in [(5, None), (u64::MAX, Some(5))] {
             let marks = marks_for_caches(true, by_followers);
             let (broker, _dir) = super::quorum::quorum_cache_leader(5).await;
             for kind in [
@@ -739,4 +740,42 @@ async fn the_counter_logs_joint_start_waits_for_the_current_stints_start() {
             );
         }
     }
+}
+
+/// **A counter log that does not open holds the flip back.** The cache's
+/// counter store refuses the shard's counter log this pass, so its start
+/// cannot be counted; reading that as a cache without counters would report
+/// the joint start on the cache log alone.
+#[tokio::test]
+async fn a_counter_log_that_does_not_open_reports_no_joint_start() {
+    let marks = marks_for_caches(true, false);
+    let (broker, _dir) = super::quorum::quorum_cache_leader(5).await;
+    let log = broker
+        .shard_log(felix_broker::LogKind::Cache, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    log.append_generation_start(5).await.expect("start");
+    // Both logs then open only at incarnation 0, and the counter store has
+    // moved on to another.
+    broker.require_registered_caches();
+    broker.set_cache_incarnation(TENANT, NAMESPACE, STREAM, Some(0));
+    broker
+        .counters()
+        .expect("counters")
+        .set_incarnation(TENANT, NAMESPACE, STREAM, Some(7));
+    let router = cache_route(&["broker-c", "broker-d"], 5, Some(OLD));
+
+    let (_, _, started) = cache_pass(
+        CacheAnswers {
+            cache: &["broker-c", "broker-d"],
+            counters: &["broker-c", "broker-d"],
+        },
+        &broker,
+        &router,
+        &marks,
+        5,
+    )
+    .await;
+
+    assert_eq!(started, None);
 }
