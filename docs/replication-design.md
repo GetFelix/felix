@@ -1335,9 +1335,12 @@ elected leader waits for the lease until the control plane is back (issue
     set's leader, carrying a newer set generation, deposes it. If the
     control plane already named someone else at the elected generation, only
     one of the two can open there. If the elected leader opened, it keeps
-    leading, and its report moves the shard to the next generation under it,
-    an ordinary fenced promotion on the control plane's set (see "Adopting an
-    elected leader" in `docs/control-plane.md`).
+    leading, and its report moves the shard to the next generation under it
+    with the same fenced write placement uses. When it was elected on the
+    control plane's set, that set is named. When the two sets differ, the
+    elected set is written as the control plane's and its own as a pending
+    change from it, so the change ends as a cut-over's does (see "Adopting
+    an elected leader" in `docs/control-plane.md`).
 
 **Why it is safe.** Ballots give one leader per generation: each generation
 is fenced on one set, any two majorities of one set share a replica, and
@@ -4234,8 +4237,9 @@ cut-over leaves one on every member that took its fence: the same brokers on
 the same copies, with only the successor's learner flag different, since it
 was staged in the set being left. A leader the control plane named under
 `joint_fence` also keeps the set before beside its own, even when nothing
-changed. A candidate stands on such a set as long as the control plane's
-route records the kept set with nothing pending. The cut-over that wrote it
+changed. A candidate stands on such a set only when the set kept beside it
+names the same brokers on the same copies, and the control plane's route
+records the kept set with nothing pending. The cut-over that wrote it
 may not have finished, so the candidate does not rely on it: its own fence
 carries both sets and opens only on a majority of each, the old set counted
 with and without its learner, as any joint fence does. That is the model's
