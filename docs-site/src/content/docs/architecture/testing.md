@@ -28,7 +28,7 @@ connection, `outcome_unknown`). Half the clients are idempotent producers that
 re-send under the same sequence, so the campaign also exercises deduplication
 across leader changes.
 
-It checks eleven rules:
+It checks twelve rules:
 
 1. No acknowledged append is missing from the final read.
 2. No value sits at two offsets.
@@ -47,6 +47,9 @@ It checks eleven rules:
     offset.
 11. Every record in the final log reaches a subscriber or shows up as a gap
     in its offsets, up to the end of the log.
+12. No two brokers open one shard for writes at the same generation. This
+    one is read from the broker logs, and only in the election campaign
+    below.
 
 A read that is missing records is allowed, because a subscriber may drop under
 `DropNew` and the offsets show the gap. What a read does hold has to match.
@@ -85,6 +88,16 @@ And it crashes the control plane 300 ms after starting a move, a drain or the
 kill of a leader, keeping its state, and brings it back after the hold with
 placement running again. The heal waits for any move it had started to
 finish or be dropped.
+
+A third nemesis tests leader election without the control plane. With the
+`replica_election` fleet feature on, it crashes the control plane, then kills
+a leader while the clients keep writing and the subscribers keep reading.
+Within 20 s, with the control plane still down, another broker must open each
+of the dead leader's shards at a later generation and take a write or answer
+a get. Half the time the killed broker is started again before the control
+plane returns, and nothing waits for it to rejoin until then. A 90-second
+campaign of these runs on every pull request, and a manual run of the nightly
+workflow can pick it with `nemesis=election`.
 
 The nightly workflow runs it for 20 minutes beside the single-fault one, each
 with its own seed, and also goes round each compound kind once in a
