@@ -8,6 +8,8 @@ profiles, and points at the measured numbers. None of this has run in
 production. The configurations are benchmark-tested starting points, and
 your own measurements should override them.
 
+For OS and transport specifics, such as macOS against Linux, see [Platform notes](#platform-notes).
+
 ## Understanding Felix Performance
 
 These factors decide Felix performance, and they interact:
@@ -634,8 +636,11 @@ you do want to change them:
 
 Together these raised sustained macOS loopback throughput about 7.5 times. On
 Linux the baseline without them already exceeded what macOS reaches with all of
-them. A run far below the numbers on the [Benchmarks](/features/benchmarks/)
-page means something is wrong, so investigate it instead of rerunning.
+them. Driver isolation was the dominant term, since scheduler wakeups per
+datagram had been the byte-rate ceiling. The old roughly 30% degraded mode was
+a path-MTU collapse and is fixed. A run far below the numbers on the
+[Benchmarks](/features/benchmarks/) page means something is wrong, so
+investigate it instead of rerunning.
 
 `latency-demo` throughput reflects the publish, fanout and delivery pipeline.
 For a strict end-to-end barrier, run with acknowledged publishes and compare
