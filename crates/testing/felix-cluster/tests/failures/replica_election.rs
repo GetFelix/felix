@@ -605,6 +605,9 @@ async fn the_control_plane_returning_mid_election_leaves_one_leader() {
     cluster.shutdown().await;
 }
 
+/// Per broker: publishes acknowledged, failed, and the last failure.
+type Tally = BTreeMap<SocketAddr, (usize, usize, Option<String>)>;
+
 /// Publishes numbered records through the given brokers in turn until
 /// stopped, keeping the ones acknowledged. Holds no borrow of the cluster, so
 /// the test can kill and restart brokers under it.
@@ -614,8 +617,7 @@ struct Writer {
     /// Brokers left out of the rotation: a killed one would cost every
     /// round its full timeout.
     skipped: Arc<Mutex<BTreeSet<SocketAddr>>>,
-    /// Per broker: publishes acknowledged, failed, and the last failure.
-    tally: Arc<Mutex<BTreeMap<SocketAddr, (usize, usize, Option<String>)>>>,
+    tally: Arc<Mutex<Tally>>,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -644,7 +646,8 @@ impl Writer {
                 while !stop.load(Ordering::Relaxed) {
                     let addr = addrs[turn % addrs.len()];
                     turn += 1;
-                    if skipped.lock().expect("skip lock").contains(&addr) {
+                    let skip = skipped.lock().expect("skip lock").contains(&addr);
+                    if skip {
                         continue;
                     }
                     let payload = format!("w-{i}");
@@ -671,16 +674,17 @@ impl Writer {
                         Ok(Err(err)) => Some(format!("{err:#}")),
                         Err(_) => Some("no answer within 3s".to_string()),
                     };
-                    let mut tally = tally.lock().expect("tally lock");
-                    let entry = tally.entry(addr).or_insert((0, 0, None));
-                    match failure {
-                        None => entry.0 += 1,
-                        Some(why) => {
-                            entry.1 += 1;
-                            entry.2 = Some(why);
+                    {
+                        let mut tally = tally.lock().expect("tally lock");
+                        let entry = tally.entry(addr).or_insert((0, 0, None));
+                        match failure {
+                            None => entry.0 += 1,
+                            Some(why) => {
+                                entry.1 += 1;
+                                entry.2 = Some(why);
+                            }
                         }
                     }
-                    drop(tally);
                     i += 1;
                     tokio::time::sleep(Duration::from_millis(20)).await;
                 }
@@ -707,7 +711,7 @@ impl Writer {
     }
 
     /// Per broker: acknowledged, failed, and the last failure.
-    fn tally(&self) -> BTreeMap<SocketAddr, (usize, usize, Option<String>)> {
+    fn tally(&self) -> Tally {
         self.tally.lock().expect("tally lock").clone()
     }
 
