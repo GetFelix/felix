@@ -31,9 +31,9 @@ features and rollback.
 - **Rust crates that embed Felix.** `StreamLog::base_offset` is now
   `physical_base`, beside `readable_base`. `Broker::allow_head_trims_when`
   replaces `set_replication_enabled`. `SubscribeCursorError` gains
-  `trim_headers` and is no longer `Copy`. The `felix-wire` message types gained
-  fields (`record_headers`, `client_flags_ext`, `server_flags_ext`), so struct
-  literals and exhaustive matches need them. The wire bytes for a client that
+  `trim_headers` and is no longer `Copy`. On `main`, the `felix-wire` message types also gained fields
+  (`record_headers`, `client_flags_ext`, `server_flags_ext`), so struct literals
+  and exhaustive matches need them. The wire bytes for a client that
   does not use these are unchanged.
 - **Storage format 7 and 8.** `FORMAT_VERSION` was 6 in 0.6.2, is 7 in
   preview.2 and is 8 on `main` *(v8: main)*.
@@ -150,7 +150,8 @@ levels 20 to 24. Upgrade every control-plane member before the brokers.
 The Rust client has the rename above. The other clients are additive: every
 binding takes four reconnect options (an attempt count, a deadline for one
 retried call, and the backoff and max backoff between attempts), unset values
-keep the Rust defaults, and `trim_before` and richer cursor errors are new. The
+keep the Rust defaults, and `trim_before` is new. On `main`, cursor errors in every binding also carry
+the reason, the nearest available offsets and the trim's headers. The
 C struct `FelixConnectOptions` gained `reconnect_attempts`,
 `reconnect_deadline_ms`, `reconnect_backoff_ms` and `reconnect_max_backoff_ms`
 after `token_release`; a program built against the older `felix.h` keeps the
