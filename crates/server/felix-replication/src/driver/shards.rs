@@ -579,13 +579,14 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                 .collect();
             self.fences.push(Box::pin(async move {
                 // Held until the shard has opened.
-                let (key, generation, outcome, _fencing) =
+                let (key, generation, outcome, fencing) =
                     fence_one(cx.requester, cx.broker, cx.router, key, route, cx.marks).await;
                 let (took, why) = match &outcome {
                     Outcome::Pending { why, took } => (Some(took.clone()), Some(why.clone())),
                     Outcome::Fenced { .. } | Outcome::Lease { .. } => (None, None),
                 };
                 let opened = open_fenced(cx.gate, &key, generation, outcome).await;
+                drop(fencing);
                 let why = why.or_else(|| {
                     (!opened).then(|| "the fence was taken but the shard stayed closed".into())
                 });
