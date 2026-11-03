@@ -175,6 +175,8 @@ jobs:
           - FelixShardElectRenameKeep1StoodOneDest
           - FelixShardElectRenameDrop0StoodOneDest
           - FelixShardElectRenameDrop1StoodOneDest
+          - FelixShardElectRenameDrop0StoodSeveralDest
+          - FelixShardElectRenameKeep1StoodSeveralDest
           - FelixShardFencedAckTwoPromotions
           - FelixShardFencedAckSeatLonger
           - FelixShardFencedAckMove

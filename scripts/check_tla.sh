@@ -255,6 +255,16 @@ expectations=(
   "FelixShardElectRenameKeep1StoodSeveralOther pass"
   "FelixShardElectRenameDrop0StoodSeveralOther pass"
   "FelixShardElectRenameDrop1StoodSeveralOther pass"
+  "FelixShardElectRenameKeep0 pass"
+  "FelixShardElectRenameKeep1 pass"
+  "FelixShardElectRenameDrop0 pass"
+  "FelixShardElectRenameDrop1 pass"
+  "FelixShardElectRenameKeep0StoodOneOther pass"
+  "FelixShardElectRenameKeep1StoodOneOther pass"
+  "FelixShardElectRenameDrop0StoodOneOther pass"
+  "FelixShardElectRenameDrop1StoodOneOther pass"
+  "FelixShardElectRenameKeep0StoodSeveralDest pass"
+  "FelixShardElectRenameDrop1StoodSeveralDest pass"
   "FelixShardElectSwapFlipKeep1 pass"
   "FelixShardElectSwapFlipKeep1StoodOneOther pass"
   "FelixShardElectSwapFlipKeep0StoodSeveralOther pass"
@@ -390,10 +400,11 @@ fi
 # WipesLeader,Setless,Groups}: each runs well over an hour on a four-core runner. Their
 # violating twins and witnesses stay registered.
 # So is FelixShardElectRename, which is checked in pieces
-# (FelixShardElectRename{Keep,Drop}{0,1}{,Stood...}): the pieces not registered
-# above have not been measured yet. The four StoodOneDest pieces run nightly
-# (tla-walk.yml): the cut-over overwrites everything the destination's stand
-# wrote, so they reach the same states as the pieces where nobody stood. Its
+# (FelixShardElectRename{Keep,Drop}{0,1}{,Stood...}): the fourteen under 45
+# minutes are registered above. FelixShardElectRename{Drop0,Keep1}StoodSeveralDest
+# and the four StoodOneDest pieces run nightly (tla-walk.yml). The cut-over
+# overwrites everything the destination's stand wrote, so the StoodOneDest
+# pieces reach the same states as the pieces where nobody stood. Its
 # witnesses and the two rename walks stay registered.
 
 # Minutes each of the longer configurations takes on a four-core CI runner,
@@ -485,6 +496,16 @@ weights=(
   "FelixShardElectSwapFlipKeep1StoodOneOther 11"
   "FelixShardElectSwapFlipDrop1StoodOneOther 8"
   "FelixShardElectSwapFlipDrop0StoodOneOther 41"
+  "FelixShardElectRenameKeep0 28"
+  "FelixShardElectRenameKeep1 16"
+  "FelixShardElectRenameDrop0 26"
+  "FelixShardElectRenameDrop1 7"
+  "FelixShardElectRenameKeep0StoodOneOther 11"
+  "FelixShardElectRenameKeep1StoodOneOther 3"
+  "FelixShardElectRenameDrop0StoodOneOther 10"
+  "FelixShardElectRenameDrop1StoodOneOther 3"
+  "FelixShardElectRenameKeep0StoodSeveralDest 39"
+  "FelixShardElectRenameDrop1StoodSeveralDest 36"
   "FelixShardElectStepDown 3"
   "FelixShardHandoffLeaderAck 3"
 )
