@@ -669,3 +669,18 @@ fn a_learner_counts_toward_no_mark_and_stays_in_the_size() {
     assert_eq!(held_at_generation(9, true, &followers, None), 5);
     assert_eq!(held_in_set(9, true, "a", &followers, &["a", "b", "c"]), 5);
 }
+
+/// Before registration answers, a feature this broker reports may already be
+/// enabled, but one it does not report never can be.
+#[test]
+fn an_unreported_feature_is_decided_off_before_registration() {
+    use felix_common::fleet::{FleetGate, GENERATION_START, JOINT_FENCE};
+    let without = QuorumMarks::with_fleet(Arc::new(FleetGate::new([GENERATION_START.name()])));
+    assert_eq!(without.fleet_decides(JOINT_FENCE), Some(false));
+
+    let fleet = Arc::new(FleetGate::new([JOINT_FENCE.name()]));
+    let with = QuorumMarks::with_fleet(Arc::clone(&fleet));
+    assert_eq!(with.fleet_decides(JOINT_FENCE), None);
+    fleet.restart([JOINT_FENCE.name()]);
+    assert_eq!(with.fleet_decides(JOINT_FENCE), Some(true));
+}

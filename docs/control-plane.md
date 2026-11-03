@@ -214,8 +214,9 @@ refuse them by name. Finalizing `joint_fence` is refused while a serving
 broker lacks `peer_election`, `start_holders` or `non_voting`, and until
 every Raft member is at metadata level 23 (see "Turning on joint fences"
 below). These are checked only when the operator finalizes; after that a
-broker is admitted on the enabled features alone, which holds because every
-build that reports `joint_fence` also reports the three markers;
+broker is admitted on the enabled features alone. That is enough because no
+build reports `joint_fence` without the three markers; the one way around
+it is a debug build told otherwise through `FELIX_TEST_FLEET_FEATURES`;
 `replica_election` is also refused before `joint_fence` and its other
 prerequisites, and until the control plane
 has the metadata level for the pending replica set (see

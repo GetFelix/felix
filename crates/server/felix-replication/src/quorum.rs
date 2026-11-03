@@ -144,13 +144,18 @@ impl QuorumMarks {
     }
 
     /// Whether the fleet has enabled `feature`, or `None` while this broker
-    /// has not yet taken a registration's answer, when a feature missing
-    /// from the gate may still be enabled. False without a fleet.
+    /// has not yet taken a registration's answer, when a feature it reports
+    /// may still be enabled. False without a fleet, and for a feature this
+    /// broker does not report: registration refuses a broker without an
+    /// enabled feature, so it never runs with one on.
     pub(crate) fn fleet_decides(&self, feature: felix_common::fleet::FleetFeature) -> Option<bool> {
         let Some(fleet) = &self.fleet else {
             return Some(false);
         };
         let view = fleet.view();
+        if !view.reports(feature) {
+            return Some(false);
+        }
         view.adopted().then(|| view.supports(feature))
     }
 

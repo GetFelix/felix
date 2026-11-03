@@ -1133,7 +1133,10 @@ only the copy it named.
 
 **Before the gate is known.** Whether a set naming another id makes a copy a
 learner depends on the `joint_fence` gate, which the broker learns only when
-it registers, after its peer listener is up. Until then such a request is
+it registers, after its peer listener is up. A broker that does not report
+`joint_fence` knows the answer already: registration would refuse it if the
+fleet had the feature, so it treats the gate as off. For one that does, until
+then such a request is
 refused as `Unavailable` and nothing is written. A request for a copy that
 holds a promise answers as before, so a broker that restarts with its data
 keeps serving the shards it held. A request for a copy with no promise is
@@ -1141,7 +1144,7 @@ handled as if the gate were on: it is refused, or refused retryably until a
 fresh confirmed read of the control plane backs its leader. A mark already on
 disk holds whatever the gate says.
 
-Not covered yet, and needed before elections (#1009 S9):
+Not covered yet, and needed before elections (#1009):
 
 - The model's group logs (`GroupLogs`) stand in the counter log's place:
   one log beside the records, not the dead-letter and cursor pair, and the
@@ -4113,7 +4116,7 @@ other prerequisites are finalized, every serving broker offers `ELECTION`,
 and the control plane has the metadata level for the pending replica set and
 adoption (level 21 under Raft, which every member must report). No broker
 reports `joint_fence` or offers `ELECTION` yet, and the control plane holds
-its metadata-level flag back until the election driver (#1009 S9) turns it
+its metadata-level flag back until the election driver (#1009) turns it
 on, so both features stay unfinalizable.
 
 The control plane's side of rule 8 is built. Under `replica_election`, a

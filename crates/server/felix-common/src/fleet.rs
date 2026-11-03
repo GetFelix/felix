@@ -296,6 +296,14 @@ impl FleetView<'_> {
             .is_some_and(|bit| self.enabled & (1 << bit) != 0)
     }
 
+    /// Whether this broker reported `feature`, so the fleet could ever
+    /// enable it here.
+    pub fn reports(&self, feature: FleetFeature) -> bool {
+        self.reported
+            .iter()
+            .any(|reported| reported == feature.name())
+    }
+
     /// Whether this process had taken a registration's answer when the view
     /// was read. Before that, a feature missing from the view may be enabled.
     pub fn adopted(&self) -> bool {
