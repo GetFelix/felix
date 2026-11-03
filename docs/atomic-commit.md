@@ -61,7 +61,7 @@ The client refuses a commit before sending it, with
 
 The same API in every client:
 
-- Rust: the [Rust client guide](../docs-site/src/content/docs/clients/rust.md#atomic-commits)
+- Rust: the [Rust client guide](../docs-site/src/content/docs/clients/rust/groups-and-commits.md#atomic-commits)
   and [`felix-client`](../crates/sdk/felix-client/README.md).
 - Python: `Client.commit` / `AsyncClient.commit` with `felix.CommitOp`, raising
   `NotOnOwningShardError` and `EventCountError`

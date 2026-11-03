@@ -37,6 +37,7 @@ fn every_key_in_the_file_reaches_the_config() {
     // true.
     let mut config = BrokerConfig {
         ack_on_commit: false,
+        record_headers: false,
         disable_timings: false,
         pub_ingress_wait: false,
         subscriber_single_writer_per_conn: false,
@@ -50,6 +51,7 @@ fn every_key_in_the_file_reaches_the_config() {
             controlplane_url: "http://cp.example:8443"
             controlplane_sync_interval_ms: 1004
             ack_on_commit: true
+            record_headers: true
             max_frame_bytes: 1006
             publish_queue_wait_timeout_ms: 1007
             ack_wait_timeout_ms: 1008
@@ -102,6 +104,7 @@ fn every_key_in_the_file_reaches_the_config() {
     );
     assert_eq!(config.controlplane_sync_interval_ms, 1004);
     assert!(config.ack_on_commit);
+    assert!(config.record_headers);
     assert_eq!(config.max_frame_bytes, 1006);
     assert_eq!(config.publish_queue_wait_timeout_ms, 1007);
     assert_eq!(config.ack_wait_timeout_ms, 1008);

@@ -63,6 +63,7 @@ async fn lane_fanout_preserves_order_for_multiple_subscribers() -> Result<()> {
                 felix_wire::ORIGINAL_V1_FLAGS,
                 0,
                 0,
+                0,
                 None,
             )
             .await?;
@@ -391,6 +392,7 @@ fn tiny_queues() -> (
         lane_queue_capacity: 1,
         lane_queue_policy: felix_broker::SubQueuePolicy::DropNew,
         lane_queue_highwater: vec![std::sync::atomic::AtomicUsize::new(0)],
+        lane_queue_len: vec![metrics::gauge!("felix_sub_lane_queue_len")],
         connection_writers,
         subscriber_connections: dashmap::DashMap::new(),
         connection_queue_capacity: 1,

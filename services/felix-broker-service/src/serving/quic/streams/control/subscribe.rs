@@ -112,6 +112,7 @@ pub(super) async fn subscribe(
         shard,
         queue_capacity,
         session.peer_flags,
+        session.peer_flags_ext,
         session.peer_features,
         session.peer_features_hi,
         session.auth_ctx.as_ref(),

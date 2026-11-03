@@ -13,35 +13,37 @@ cheaply when the winner is gone.
 
 Felix covers these with four primitives it already has for other reasons:
 conditional cache writes with a TTL, a keyed watch on the cache, a
-version on every cached value, and a conditional publish on a stream. This
-page shows how they fit, and is plain about where a purpose-built
-coordination store is the better choice.
+version on every cached value, and a conditional publish on a stream. Whoever
+wins a conditional write gets a version that doubles as a fencing token, a
+lapsed lease reaches every waiting worker as a watch event, and the leases
+survive a broker restart.
 
-## How this is usually built
+## Try it
 
-The common answer is Redis. `SET lease:reconcile <worker-id> NX PX 30000`
-claims a name for 30 seconds if nobody holds it, and the holder renews it
-with a script that checks the value before extending. It is one round trip
-and almost everyone already runs Redis. The weak points are known. With a
-primary and an asynchronously replicated replica, a failover can promote a
-replica that never saw the claim, and two clients then hold the same lock.
-Redlock tries to fix that by claiming on a majority of independent
-instances, but it still relies on clocks and offers no monotonic token, so a
-holder that stalls past its expiry (a long GC pause, a stopped VM) can write
-after its lease has passed to someone else. Martin Kleppmann's critique of it
-is the standard reference.
+Start the stack from the
+[Quickstart](/getting-started/quickstart/#try-it-in-one-command) (it covers Podman
+too) and run these from the directory holding `compose.yaml`.
 
-When correctness matters, teams move to etcd, ZooKeeper or Consul. etcd
-grants a lease with a TTL that the holder keeps alive, attaches keys to it,
-and gives every write a cluster-wide revision that serves as a fencing
-token. ZooKeeper uses ephemeral nodes tied to a client session and sequential
-nodes for ordered waiting. Both are linearizable through a consensus
-protocol, and both are built for exactly this. The cost is another cluster to
-run, a client library with session semantics to get right, and a
-write rate that is modest by design.
+In one terminal, watch the key:
 
-Idempotency keys are usually a database table with a unique constraint, or
-Redis `SET NX` with a result stored beside the key.
+```bash
+docker compose run --rm felixctl cache watch config --key lease/job-1 --retained
+```
+
+In another, take a lease for thirty seconds and read it:
+
+```bash
+docker compose run --rm felixctl cache put config lease/job-1 worker-a --ttl-ms 30000
+docker compose run --rm felixctl cache get config lease/job-1
+```
+
+The watcher prints `worker-a` and `get` prints it too. Thirty seconds later the
+watcher prints `lease/job-1<TAB>(deleted)` without anyone polling, and `get`
+exits with status 5.
+
+Conditional writes, which make the lease safe, are not in `felixctl`. To see the
+compare-and-set, run the Rust example below against a cluster from the
+[Quickstart](/getting-started/quickstart/#a-cluster-in-one-command).
 
 ## Why Felix fits
 
@@ -276,6 +278,34 @@ to see what happened.
 
 ## Compared with Redis, etcd and ZooKeeper
 
+### How it is usually built
+
+The common answer is Redis. `SET lease:reconcile <worker-id> NX PX 30000`
+claims a name for 30 seconds if nobody holds it, and the holder renews it
+with a script that checks the value before extending. It is one round trip
+and almost everyone already runs Redis. The weak points are known. With a
+primary and an asynchronously replicated replica, a failover can promote a
+replica that never saw the claim, and two clients then hold the same lock.
+Redlock tries to fix that by claiming on a majority of independent
+instances, but it still relies on clocks and offers no monotonic token, so a
+holder that stalls past its expiry (a long GC pause, a stopped VM) can write
+after its lease has passed to someone else. Martin Kleppmann's critique of it
+is the standard reference.
+
+When correctness matters, teams move to etcd, ZooKeeper or Consul. etcd
+grants a lease with a TTL that the holder keeps alive, attaches keys to it,
+and gives every write a cluster-wide revision that serves as a fencing
+token. ZooKeeper uses ephemeral nodes tied to a client session and sequential
+nodes for ordered waiting. Both are linearizable through a consensus
+protocol, and both are built for exactly this. The cost is another cluster to
+run, a client library with session semantics to get right, and a
+write rate that is modest by design.
+
+Idempotency keys are usually a database table with a unique constraint, or
+Redis `SET NX` with a result stored beside the key.
+
+### How Felix differs
+
 Against Redis `SET NX PX`, Felix returns a version that works as a fencing
 token, offers a `Quorum` level whose acknowledgement survives losing the owner,
 and tells waiters when a lease is deleted. Redis is quicker to adopt, has the
@@ -299,46 +329,32 @@ decided by the leader's clock, and a leader whose clock jumps forward expires
 entries early. Felix needs no session library and no separate ensemble. Pick
 ZooKeeper when you need ephemeral nodes tied to a connection.
 
-## Try it
+## Limits you can plan around
 
-Start the stack from the
-[Quickstart](/getting-started/quickstart/#try-it-in-one-command) (it covers Podman
-too) and run these from the directory holding `compose.yaml`.
+**Conditional writes cover one key on one shard.** There are no multi-key
+transactions and no lease that owns several keys. Put what must change together
+into one value, or use [an atomic commit](/use-cases/event-and-state/) on one
+stream shard.
 
-Conditional writes, which make the lease safe, are not in `felixctl`, so the
-election code on this page is Rust. What `felixctl` shows is how a lapsing
-lease reaches the workers waiting for it. In one terminal, watch the key:
+**A dead holder is detected by TTL.** Expiry deletes are written about once a
+second, so choose a TTL with that granularity in mind. Renew before it lapses.
 
-```bash
-docker compose run --rm felixctl cache watch config --key lease/job-1
-```
+**Watches need a log-backed cache.** The in-memory cache has no log, so no watch,
+and its versions come from a clock-seeded counter. Set
+`FELIX_DURABLE_STORAGE_DIR` for leases.
 
-In another, take a lease for ten seconds and read it:
+**`Leader` consistency can lose an acknowledged claim on failover.** Declare the
+cache `Quorum` for leases that must not be lost.
 
-```bash
-docker compose run --rm felixctl cache put config lease/job-1 worker-a --ttl-ms 10000
-docker compose run --rm felixctl cache get config lease/job-1
-```
+**The fence only helps if the protected resource checks it.** Pass the version
+along with the work and have the resource refuse a lower one.
 
-The watcher prints the put. The `get` prints `worker-a`. Ten seconds later the
-watcher prints `lease/job-1<TAB>(deleted)` without anyone polling, and `get`
-exits with status 5. To see the compare-and-set, run the Rust example above
-against a cluster from the
-[Quickstart](/getting-started/quickstart/#a-cluster-in-one-command).
-
-## Where it stops
-
-The [status page](/getting-started/what-felix-is-for/) lists strongly
-consistent coordination, leader election and locks as a weak fit and points
-at etcd, Consul or ZooKeeper, and that still stands. Conditional writes are
-checks on one key and one shard. There are no multi-key transactions and no
-lease that owns several keys. Detection of a dead holder is by TTL, with
-expiry deletes written about once a second. The in-memory cache has no log, so
-no watch, and its versions come from a clock-seeded counter. A watch needs a
-log-backed cache, which means `FELIX_DURABLE_STORAGE_DIR`. `Leader` caches and
-streams can lose an acknowledged claim on failover. The version fence only
-helps if the protected resource checks it. The conditional calls are in the
-Rust client only.
+**These are leases on a replicated log, not a consensus lock service.** The
+[status page](/getting-started/what-felix-is-for/) lists strongly consistent
+coordination as a weak fit while the multi-node story is 🚧 Partial. If you need
+strongly consistent coordination today, etcd, Consul or ZooKeeper are the
+purpose-built choice; for leases that tolerate this model, use `Quorum` and a
+fence. The conditional calls are in every client.
 
 ## Related
 
@@ -347,4 +363,4 @@ Rust client only.
 - [Conditional publishes](/features/pubsub/#conditional-publishes)
 - [Atomic commits](/features/atomic-commits/#a-commit-at-an-expected-offset)
 - [Delivery semantics and consistency](/architecture/semantics/)
-- [Rust client](/clients/rust/#conditional-writes)
+- [Rust client](/clients/rust/cache/#conditional-writes)

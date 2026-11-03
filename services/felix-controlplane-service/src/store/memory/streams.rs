@@ -1,5 +1,6 @@
 //! Streams and their change log.
 use super::{Decide, InMemoryStore, ShardCleanup};
+use crate::model::mount;
 use crate::model::{
     NamespaceKey, ShardKind, Stream, StreamChange, StreamChangeOp, StreamKey, StreamPatchRequest,
 };
@@ -55,6 +56,10 @@ pub(super) async fn create_stream(
     if streams.contains_key(&key) {
         return Err(StoreError::Conflict("stream exists".into()));
     }
+    // Under the write lock, so two creates cannot both pass.
+    if let Some(prefix) = &stream.mount {
+        check_mount(&*streams, &key, prefix, stream.durable)?;
+    }
     // Held until the stream is in, so a finalize cannot land between the
     // read and the write: nothing is created at 0 after it.
     let nodes = store.nodes.read().await;
@@ -85,22 +90,35 @@ pub(super) async fn patch_stream(
     fence: bool,
 ) -> StoreResult<Stream> {
     let mut streams = store.streams.write().await;
-    let stream = streams
-        .get_mut(key)
+    let current = streams
+        .get(key)
         .ok_or_else(|| StoreError::NotFound("stream".into()))?;
-    let (consistency, durable) = (stream.consistency.clone(), stream.durable);
+    let (consistency, durable) = (current.consistency.clone(), current.durable);
+    let mut updated = current.clone();
+    let touches_mount = patch.mount.is_some() || patch.durable.is_some();
     if let Some(retention) = patch.retention {
-        stream.retention = retention;
+        updated.retention = retention;
     }
     if let Some(consistency) = patch.consistency {
-        stream.consistency = consistency;
+        updated.consistency = consistency;
     }
     if let Some(delivery) = patch.delivery {
-        stream.delivery = delivery;
+        updated.delivery = delivery;
     }
     if let Some(durable) = patch.durable {
-        stream.durable = durable;
+        updated.durable = durable;
     }
+    if let Some(mount) = patch.mount {
+        updated.mount = mount;
+    }
+    // Refused before anything is stored: a patch applies whole or not at all.
+    if let Some(prefix) = &updated.mount
+        && touches_mount
+    {
+        check_mount(&*streams, key, prefix, updated.durable)?;
+    }
+    let stream = streams.get_mut(key).expect("checked above");
+    *stream = updated;
     // Placement decides how a shard fails over from these, so a pass that
     // read them before the change must not write after it (#1253).
     if fence && (stream.consistency != consistency || stream.durable != durable) {
@@ -121,6 +139,27 @@ pub(super) async fn patch_stream(
         });
     metrics::counter!("felix_stream_changes_total", "op" => "updated").increment(1);
     Ok(updated)
+}
+
+/// Whether `key` may be mounted at `prefix`: the stream is durable and no
+/// other stream of the tenant has an overlapping mount.
+pub(super) fn check_mount<'a>(
+    streams: impl IntoIterator<Item = (&'a StreamKey, &'a Stream)>,
+    key: &StreamKey,
+    prefix: &str,
+    durable: bool,
+) -> StoreResult<()> {
+    if !durable {
+        return Err(mount::needs_durable());
+    }
+    let mounted = streams
+        .into_iter()
+        .filter(|(other, _)| other.tenant_id == key.tenant_id)
+        .filter_map(|(other, stream)| Some((other, stream.mount.as_deref()?)));
+    match mount::find_overlap(prefix, key, mounted) {
+        Some((other_key, other)) => Err(mount::overlap(prefix, other_key, other)),
+        None => Ok(()),
+    }
 }
 
 pub(super) async fn delete_stream(

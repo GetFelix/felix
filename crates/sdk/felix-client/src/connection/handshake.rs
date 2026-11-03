@@ -22,6 +22,8 @@ pub(crate) struct Credentials {
     features: u32,
     /// The frame-flag bits offered in `Auth`.
     flags: u16,
+    /// The extension bits of the frame flags offered in `Auth`.
+    flags_ext: u32,
 }
 
 impl Credentials {
@@ -38,6 +40,7 @@ impl Credentials {
             flags: felix_wire::KNOWN_FLAGS
                 & !felix_wire::FLAG_EVENT_BATCH_PUBLISHER
                 & !felix_wire::FLAG_EVENT_BATCH_TIMESTAMPS,
+            flags_ext: 0,
         }
     }
 
@@ -54,7 +57,16 @@ impl Credentials {
             tokens,
             features: self.features,
             flags: self.flags,
+            flags_ext: self.flags_ext,
         }
+    }
+
+    /// Also offer record headers. See [`felix_wire::EXT_RECORD_HEADERS`].
+    pub(crate) fn with_record_headers(mut self, record_headers: bool) -> Self {
+        if record_headers {
+            self.flags_ext |= felix_wire::EXT_RECORD_HEADERS;
+        }
+        self
     }
 
     /// Also ask for each record's append time. See
@@ -86,8 +98,13 @@ impl Credentials {
         self
     }
 
-    /// Authenticate `first`, a stream just opened on `connection`, with the
-    /// current token.
+    /// The token the next stream authenticates with.
+    pub(crate) async fn current_token(&self) -> Result<String> {
+        self.tokens.token().await.map_err(token_failure)
+    }
+
+    /// Authenticate `first`, a stream just opened on `connection`, with
+    /// `token`, from [`Credentials::current_token`].
     ///
     /// If the broker refuses the token and the provider has a different one,
     /// retry once on a new stream (the broker closes a stream after a failed
@@ -97,9 +114,10 @@ impl Credentials {
         &self,
         connection: &QuicConnection,
         first: (SendStream, RecvStream),
+        token: String,
         max_frame_bytes: usize,
     ) -> Result<(SendStream, RecvStream, Negotiated)> {
-        let mut token = self.tokens.token().await.map_err(token_failure)?;
+        let mut token = token;
         let mut retried = false;
         let mut next = Some(first);
         loop {
@@ -112,7 +130,7 @@ impl Credentials {
                 &mut recv,
                 &self.tenant_id,
                 &token,
-                self.flags,
+                felix_wire::offer_flags(self.flags, self.flags_ext),
                 self.features,
                 max_frame_bytes,
             )
@@ -135,34 +153,6 @@ impl Credentials {
     }
 }
 
-impl Credentials {
-    /// Authenticate `connection` without waiting for an answer, on a uni
-    /// stream that carries only the `Auth`.
-    ///
-    /// A broker closes a connection that has authenticated nothing within its
-    /// auth timeout, and a pooled connection may sit idle until much later.
-    /// Nothing is read back: a refused token shows up on the first real
-    /// stream, which authenticates again.
-    pub(crate) async fn announce(&self, connection: &QuicConnection) -> Result<()> {
-        let token = self.tokens.token().await.map_err(token_failure)?;
-        let mut send = connection.open_uni().await?;
-        write_message(
-            &mut send,
-            Message::Auth {
-                tenant_id: self.tenant_id.clone(),
-                token,
-                client_flags: None,
-                client_features: None,
-                client_features_hi: None,
-            },
-        )
-        .await
-        .context("send auth")?;
-        send.finish().context("finish auth stream")?;
-        Ok(())
-    }
-}
-
 /// What one authenticated stream agreed with the broker.
 #[derive(Debug, Clone)]
 pub(crate) struct Negotiated {
@@ -172,6 +162,9 @@ pub(crate) struct Negotiated {
     pub(crate) server_features: u32,
     /// The extended feature word, counted only behind the marker bit.
     pub(crate) server_features_hi: u32,
+    /// The extension bits of the frame flags, counted only behind
+    /// `FLAG_EXTENDED`.
+    pub(crate) server_flags_ext: u32,
     /// Every port the broker's client-facing listeners are bound to, when it
     /// reported more than one. Empty otherwise, which is the same instruction:
     /// keep using the address already dialled.
@@ -197,7 +190,7 @@ async fn authenticate_stream(
     recv: &mut RecvStream,
     tenant_id: &str,
     token: &str,
-    flags: u16,
+    (flags, flags_ext): (u16, Option<u32>),
     features: u32,
     max_frame_bytes: usize,
 ) -> Result<Negotiated> {
@@ -211,6 +204,7 @@ async fn authenticate_stream(
             client_flags: Some(flags),
             client_features: Some(features),
             client_features_hi: features_hi,
+            client_flags_ext: flags_ext,
         },
     )
     .await
@@ -221,6 +215,7 @@ async fn authenticate_stream(
             server_flags,
             server_features,
             server_features_hi,
+            server_flags_ext,
             listener_ports,
             publish_window,
         }) => Ok(Negotiated {
@@ -233,6 +228,7 @@ async fn authenticate_stream(
                 server_features.unwrap_or(0),
                 server_features_hi,
             ),
+            server_flags_ext: felix_wire::peer_flags_ext(server_flags, server_flags_ext),
             listener_ports: listener_ports.unwrap_or_default(),
             // Only meaningful with the feature bit; a window without it would
             // be a broker promising an order it never agreed to.
@@ -250,6 +246,7 @@ async fn authenticate_stream(
             server_flags: felix_wire::ORIGINAL_V1_FLAGS,
             server_features: 0,
             server_features_hi: 0,
+            server_flags_ext: 0,
             listener_ports: Vec::new(),
             publish_window: 0,
         }),

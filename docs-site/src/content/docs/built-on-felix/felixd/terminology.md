@@ -41,12 +41,13 @@ A component as stored. Its sha256 in hex is its identity, and it is kept in the
 
 The WebAssembly Interface Type language that describes a component's imports and
 exports. The workload contract is written in WIT, in
-[`wit/workload.wit`](https://github.com/GetFelix/felixd/blob/main/wit/workload.wit).
+[`wit/0.3/workload.wit`](https://github.com/GetFelix/felixd/blob/main/wit/0.3/workload.wit).
 
 ### Contract
 
-The interface between felixd and a workload and what each side promises. The
-current version is 0.2. A component built against 0.1 is refused. See
+The interface between felixd and a workload and what each side promises. These pages
+teach 0.3. felixd still runs 0.2, which differs only in that a step never sees the
+publisher. A component built against 0.1 is refused. See
 [The workload contract](/built-on-felix/felixd/contract/).
 
 ### Step
@@ -62,8 +63,27 @@ The workload function that returns its state as JSON. `felixd replay` prints it.
 ### Input
 
 One record on the workload's input stream, with metadata: the stream, the incarnation,
-the offset, the broker's append time, and the key and payload. When the input is
+the offset, the broker's append time, the key, the payload and the publisher. When the input is
 another workload's output stream, only the outputs addressed to `out` are inputs.
+
+### Publisher
+
+The principal the broker authenticated an input record's write from, such as `p:alice`.
+A step receives it with the record, and it is `none` when the broker recorded none or
+when the input is another workload's output. It says who wrote the record, not what is
+in it. See [The publisher](/built-on-felix/felixd/contract/#the-publisher).
+
+### Merge log
+
+The stream `wl.<id>.merge` of a workload with several inputs. The lease holder appends
+the order it chose to step their records in before it steps them, so a new owner, a
+replay and `felixd check` use the same order.
+
+### Admission
+
+A felixd workload that decides which submitted workloads run, by who asked. After
+`felixd init`, `felixd run` sends a request to it and nodes run only what it accepted.
+See [Running felixd](/built-on-felix/felixd/running/#roles-and-admission).
 
 ### Input offset
 
@@ -105,8 +125,8 @@ an error code and detail. See
 
 The result of a step that returns `poison`, which says the workload cannot go on.
 The word also names the class of failure that comes from an input the workload
-deterministically fails on. It fails the workload and is not retried. A recorded
-way past a poison input is not built ([#98](https://github.com/GetFelix/felixd/issues/98)).
+deterministically fails on. It fails the workload and is not retried. There is no recorded
+way past a poison input ([#98](https://github.com/GetFelix/felixd/issues/98)).
 
 ### Contract failure
 
@@ -124,16 +144,16 @@ out of bounds access. A trap fails the workload. Running out of fuel is a trap.
 
 A workload that no node can run through no fault of its own and that a person has to
 fix: a module built against contract 0.1, or a restore that ran out of
-`snapshot_fuel`. It is not marked failed. Today it is a logged error on the agent,
-and the agent leaves the workload alone until its spec changes. It is not yet a
-recorded state ([#112](https://github.com/GetFelix/felixd/issues/112)).
+`snapshot_fuel`. It is not marked failed. The node writes a needs-operator
+record, with a reason, to the output stream and releases the lease. `felixd ps`
+shows it, and no node runs the workload until its spec changes.
 
 ### Failed and degraded
 
 `failed` is a value of a spec's `state`. A holder writes it after the failure is
 recorded on the output stream, and it stays until `felixd run` writes a new spec.
-`degraded` is a design idea for a workload that keeps failing on every node, to be
-recorded after a bounded number of takeovers. It does not exist
+`degraded` is recorded when a node keeps failing on a transient error and releases
+the workload so another node can try. Counting that across the cluster is not built
 ([#99](https://github.com/GetFelix/felixd/issues/99)). See
 [When a workload fails](/built-on-felix/felixd/how-it-works/#when-a-workload-fails).
 
@@ -251,8 +271,9 @@ hold no output.
 ### Incarnation
 
 A stream deleted and created again under the same name is a different incarnation of
-it. The contract carries an incarnation in each input's source. Specs do not record
-one yet, so it is always 0 ([#72](https://github.com/GetFelix/felixd/issues/72)).
+it. The contract carries an incarnation in each input's source. It is always 0 today,
+because Felix does not expose incarnations to clients yet
+([#133](https://github.com/GetFelix/felixd/issues/133)).
 
 ### Failover
 
@@ -363,7 +384,8 @@ workload that returns a request fails
 
 The component that would perform an effect and answer it. It would use the request's
 id, which is the output header, as an idempotency key, and refuse a request whose
-epoch is below the highest it has seen. Not built.
+epoch is below the highest it has seen. No executor exists yet
+([#71](https://github.com/GetFelix/felixd/issues/71)).
 
 ### NineLives
 

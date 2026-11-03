@@ -19,6 +19,8 @@ messages to Felix and ships its own browser client.
 npm install felix-client
 ```
 
+This page describes the 0.7 API. While 0.7 is in preview, npm installs the stable release unless you ask for the `preview` tag: `npm install felix-client@preview`. An exact version such as `felix-client@0.7.0-preview.N` works too.
+
 The binary ships as one package per platform, declared as optional
 dependencies, so npm fetches only the one your machine needs. Nothing is
 compiled at install time and no Rust toolchain is required. Linux (x86-64 and
@@ -210,9 +212,13 @@ a broker running with `FELIX_TLS_REQUIRE_ALPN=true` insists on. It is off by
 default because a broker older than ALPN support refuses a client that offers
 it.
 
+Client certificates (mutual TLS) are Rust only: this client trusts the broker's certificate but cannot present one of its own. [Auth and TLS](/clients/auth-and-tls/) compares the options across clients.
+
 ```ts
-const client = await Client.connect(addrs, "t1", { token, caFile, offerAlpn: true });
+await using client = await Client.connect(addrs, "t1", { token, caFile, offerAlpn: true });
 ```
+
+(`await using` closes the client when the scope ends. It needs Node 24; see [Disposal](#disposal) for the older form.)
 
 ### Acting for many users
 
@@ -238,16 +244,17 @@ certificate-bound token rules are the Rust client's; see
 
 ## Connecting to a cluster
 
-In every language the client is a cluster client; see
-[Choosing a Client](/clients/overview/#every-client-is-a-cluster-client).
+See [Every client is a cluster client](/clients/overview/#every-client-is-a-cluster-client).
 
 ```ts
-const client = await Client.connect(
+await using client = await Client.connect(
   ["felix-0:5000", "felix-1:5000", "felix-2:5000"],
   "t1",
   { token },
 );
 ```
+
+`await using` needs Node 24; see [Disposal](#disposal) for the older form.
 
 These are seeds: the client asks whichever answers which brokers exist and adds
 them, and it keeps your seeds whatever the answer, so a stale one cannot leave
@@ -296,7 +303,7 @@ try {
 
 A deadline shorter than one attempt's own timeout means no retry happens: the first attempt spends the whole budget and the call returns after trying once. Set it to cover at least one attempt plus the backoff you can afford, and leave it off if you would rather wait out a failover. A client from `withIdentity` inherits both.
 
-The Rust page covers [clusters](/clients/rust/#clusters) in full. [Building Resilient Clients](/clients/resilient-clients/) shows reconnection, token refresh, retries, resuming and shutdown side by side in every language.
+The Rust page covers [clusters](/clients/rust/operations/#clusters) in full. [Building Resilient Clients](/clients/resilient-clients/) shows reconnection, token refresh, retries, resuming and shutdown side by side in every language.
 
 ## Disposal
 
@@ -502,6 +509,10 @@ try {
 }
 ```
 
+### Record headers
+
+Record headers, the named byte values a record can carry next to its payload, are Rust only. This binding publishes the payload and a routing `key`; an event it reads has no `headers`. Use the [Rust client](/clients/rust/publishing/#keys-and-headers) when you need them.
+
 ## Subscribing
 
 ```ts
@@ -559,9 +570,15 @@ async function nextWithin(timeoutMs: number) {
 
 `subscribe` reads one shard: pass a shard number after `start` for any but shard 0, or use [`subscribeSharded`](#multi-shard-streams) for all of them. `startOffset` and `liveOffset` on the handle say where the subscription began and where live delivery began when it opened, or `null` for an in-memory stream.
 
-### Replaying from a time
+### Replay from an offset or a time
 
-`offsetForTime` finds the first offset on one shard whose record was appended at or after a time, given as microseconds since the Unix epoch in a `bigint`. Subscribe at it to replay from then:
+To replay from an offset, pass it as `start`, a `bigint`. `"earliest"` replays everything the shard still holds:
+
+```ts
+const replay = await client.subscribe("t1", "default", "orders", 1200n);
+```
+
+To replay from a time, `offsetForTime` finds the first offset on one shard whose record was appended at or after a time, given as microseconds since the Unix epoch in a `bigint`. Subscribe at it to replay from then:
 
 ```ts
 const since = BigInt(Date.now() - 3_600_000) * 1000n;
@@ -745,6 +762,8 @@ try {
 `FELIX_SHARD_UNAVAILABLE`, …), set whether or not the broker sent a code, for
 code that would rather switch than test `instanceof`. Never match on the message;
 it is prose and will be reworded.
+
+[Errors Across Clients](/clients/errors/) maps every broker code and retry class to the type each client raises.
 
 ## Queues
 
@@ -1080,8 +1099,10 @@ A `CacheWatchHandle` also exposes `resumeFrom`, the `fromOffset` that continues 
 Pass `true` as the last argument to retain: every matching key's current value arrives first, from every shard, and `stateComplete` marks the moment all of them have. `retainedCount` is the total to expect. A retained watch cannot also resume.
 
 ```ts
-const roster = await client.watchCacheSharded("t1", "default", "sessions", "room:42:", undefined, true);
+await using roster = await client.watchCacheSharded("t1", "default", "sessions", "room:42:", undefined, true);
 ```
+
+`await using` needs Node 24; see [Disposal](#disposal) for the older form.
 
 ## Atomic commits
 

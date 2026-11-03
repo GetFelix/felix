@@ -3,7 +3,7 @@ title: "Diagnosing a Cluster"
 description: "What to look at, in order, when a shard will not serve, a follower falls behind, a subscriber misses records or lags, a client is refused, local disk fills while offload is on, or a broker will not start."
 ---
 
-This page is organised by what you see. Each section says what to run, in
+This page is for a live cluster that is misbehaving. [Troubleshooting](/reference/troubleshooting/) covers the failures people hit getting a broker or client running. This page is organised by what you see. Each section says what to run, in
 order, how to read the answer, what usually causes it and what to do. Errors
 and log lines are quoted as Felix prints them. For problems getting a broker
 or a client set up in the first place, see the
@@ -238,6 +238,14 @@ follower. If both followers are `stalled` or `halted`, or listed as
 `unreachable`, no majority can form, and every `Quorum` write to the shard
 times out. A `committed` mark well below `tail` that does not move is the same
 thing seen from the mark.
+
+If the followers are level and idle but the mark still lags, the shard may be
+waiting for a pass slot. The leader ships at most 16 shards at a time, and
+shards with new writes take turns at the slots. Check
+`felix_broker_replication_passes_waiting` and
+`felix_broker_replication_slot_wait_seconds` on the leader: a wait that is a
+large part of the quorum timeout means the broker leads more busy shards than it
+ships at once, and moving some shards to another broker helps.
 
 **What to do.** Restore a majority: start the followers' brokers or fix the
 peer network between them. Placement restores a follower whose broker has been
@@ -616,8 +624,10 @@ kind is `plain` for an ordinary record, or `producer-batch-start`,
 row for the offset you asked for is starred. The payload is not shown unless
 you add `--payload`, which prints each as a hex dump with text beside it, cut at
 64 KiB. `--json` prints one line per record, with `payload_hex` and
-`payload_utf8` fields under `--payload`. Add `--kind` and `--incarnation` for a
-shard that is not a stream, or not at incarnation 0, as for `inspect segments`.
+`payload_utf8` fields under `--payload`. It also has `headers_bytes`, the size
+of the record's key and headers block, or `null` when it has none; the table
+does not show it. Add `--kind` and `--incarnation` for a shard that is not a
+stream, or not at incarnation 0, as for `inspect segments`.
 
 A record that fails to verify ends the read, with the rows before it kept.
 Whether it is a torn tail or damage is startup's verdict, so it agrees with

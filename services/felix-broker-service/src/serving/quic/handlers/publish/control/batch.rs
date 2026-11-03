@@ -60,6 +60,8 @@ pub(crate) async fn handle_publish_batch_message(
     namespace: String,
     stream: String,
     payloads: Vec<Bytes>,
+    // Each payload's headers block, when any has one; never from JSON.
+    headers: Option<Vec<Option<Bytes>>>,
     key: Option<bytes::Bytes>,
     // Used instead of hashing `key` when the client named a shard.
     shard: Option<u32>,
@@ -391,6 +393,7 @@ pub(crate) async fn handle_publish_batch_message(
             publish_ctx,
             &tenant_id,
             PublishJob {
+                headers,
                 target,
                 payloads,
                 response,

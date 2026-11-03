@@ -111,6 +111,13 @@ pub(super) struct Peers {
     pub(super) pool: Option<Arc<PeerPool>>,
 }
 
+/// The broker-internal listener's task, and what lets the routing feed start
+/// a copy's confirmed read early. Both absent outside a cluster.
+pub(super) struct PeerListener {
+    pub(super) task: Option<JoinHandle<()>>,
+    pub(super) prefetch: Option<replication::confirmed::Prefetch>,
+}
+
 /// Bind and serve the broker-internal listener, when this broker is in a
 /// cluster. This is the address `NodeSpec.advertise_addr` names, so it must be
 /// up for peers to reach this node at all.
@@ -128,10 +135,27 @@ pub(super) fn bind_peer_listener(
     unclean: Option<Arc<replication::unclean::UncleanStart>>,
     controlplane: Option<(&reqwest::Client, &str, &Option<NodeCredential>)>,
     peer_shutdown: &CancellationToken,
-) -> Result<Option<JoinHandle<()>>> {
+) -> Result<PeerListener> {
     Ok(
         match (&config.peer_transport, &config.membership, cluster) {
             (Some(peer_config), Some(membership_config), Some((router, ingress, _, _))) => {
+                let replicas = replica_handler(
+                    broker,
+                    router,
+                    quorum_marks,
+                    storage_id,
+                    unclean,
+                    controlplane.map(|(client, base_url, credential)| {
+                        crate::shards::ControlPlaneRoutes::new(
+                            client.clone(),
+                            base_url,
+                            credential.clone(),
+                        )
+                    }),
+                )
+                // A leader retries a copy that refused it on its driver tick.
+                .with_leader_retry(Duration::from_millis(config.controlplane_sync_interval_ms));
+                let prefetch = replicas.confirmed_prefetch();
                 let server = peer::PeerServer::bind_with_tls(
                     membership_config.node_id.clone(),
                     peer_config,
@@ -145,20 +169,7 @@ pub(super) fn bind_peer_listener(
                             Duration::from_millis(config.publish_quorum_timeout_ms.max(1)),
                             Arc::clone(auth),
                         ),
-                        replica_handler(
-                            broker,
-                            router,
-                            quorum_marks,
-                            storage_id,
-                            unclean,
-                            controlplane.map(|(client, base_url, credential)| {
-                                crate::shards::ControlPlaneRoutes::new(
-                                    client.clone(),
-                                    base_url,
-                                    credential.clone(),
-                                )
-                            }),
-                        ),
+                        replicas,
                     )),
                     peer_tls.clone(),
                 )
@@ -186,9 +197,15 @@ pub(super) fn bind_peer_listener(
                          reachable from brokers only; see docs/internal-protocol.md",
                     ),
                 }
-                Some(tokio::spawn(server.serve(peer_shutdown.clone())))
+                PeerListener {
+                    task: Some(tokio::spawn(server.serve(peer_shutdown.clone()))),
+                    prefetch,
+                }
             }
-            _ => None,
+            _ => PeerListener {
+                task: None,
+                prefetch: None,
+            },
         },
     )
 }
@@ -250,6 +267,8 @@ pub(super) struct ShardTaskDeps<'a> {
     /// Set after a start that rotated the storage id; see
     /// `replication::unclean`.
     pub(super) unclean: &'a Option<Arc<replication::unclean::UncleanStart>>,
+    /// Starts a copy's confirmed read when the routes first name it.
+    pub(super) prefetch: Option<replication::confirmed::Prefetch>,
     pub(super) sync_shutdown: &'a CancellationToken,
 }
 
@@ -274,6 +293,7 @@ pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
         incarnation,
         storage_id,
         unclean,
+        prefetch,
         sync_shutdown,
     } = deps;
     match (cluster, &config.controlplane_url, durable_storage) {
@@ -371,6 +391,7 @@ pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
                     assignments_changed,
                     routes_changed: Arc::clone(&routes_changed),
                     joint_fence: Some(Arc::clone(fleet)),
+                    prefetch,
                 },
                 Some(shard_routing::CatalogSource {
                     client: membership_client.clone(),

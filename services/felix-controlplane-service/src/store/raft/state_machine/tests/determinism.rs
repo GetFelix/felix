@@ -839,3 +839,71 @@ async fn stream_entries_from_a_level_8_proposer_store_what_level_8_stores() {
         "{proposed:?}"
     );
 }
+
+/// A mount that overlaps another is refused by the apply itself, so every
+/// member rejects the same entries and keeps the same streams: the group
+/// cannot split over which of two racing creates won.
+#[tokio::test]
+async fn overlapping_mounts_are_refused_the_same_on_every_member() {
+    let run = || async {
+        let machine = machine();
+        let mut outcomes = Vec::new();
+        let mounted = |name: &str, prefix: &str| {
+            let mut s = stream("t-a", "ns-1", name);
+            s.durable = true;
+            s.mount = Some(prefix.to_string());
+            MetaCommand::CreateStream {
+                names: false,
+                stream: s,
+                incarnations: false,
+            }
+        };
+        let remount = |name: &str, prefix: Option<&str>| MetaCommand::PatchStream {
+            key: crate::model::StreamKey {
+                tenant_id: "t-a".to_string(),
+                namespace: "ns-1".to_string(),
+                stream: name.to_string(),
+            },
+            patch: crate::model::StreamPatchRequest {
+                retention: None,
+                consistency: None,
+                delivery: None,
+                durable: None,
+                mount: Some(prefix.map(str::to_string)),
+            },
+            fence: false,
+        };
+        for command in [
+            MetaCommand::CreateTenant {
+                tenant: tenant("t-a"),
+            },
+            MetaCommand::CreateNamespace {
+                namespace: namespace("t-a", "ns-1"),
+            },
+            mounted("a", "plant/"),
+            mounted("b", "plant/x/"),
+            mounted("c", "yard/"),
+            remount("c", Some("plant/")),
+            remount("c", Some("dock/")),
+            remount("c", None),
+        ] {
+            outcomes.push(format!("{:?}", machine.dispatch(command).await.is_ok()));
+        }
+        (
+            outcomes,
+            crate::raft::AppStateMachine::snapshot(&machine).await,
+        )
+    };
+    let (first, first_snapshot) = run().await;
+    let (second, second_snapshot) = run().await;
+    assert_eq!(first, second);
+    assert_eq!(first_snapshot, second_snapshot);
+    // tenant, namespace and the first and third create; the second create
+    // and the first remount overlap; the last two remounts go through.
+    assert_eq!(
+        first,
+        [
+            "true", "true", "true", "false", "true", "false", "true", "true"
+        ]
+    );
+}

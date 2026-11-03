@@ -6,7 +6,8 @@ that the page omits is one nobody can look up. The page is checked against the
 wire crate that defines them:
 
 * `ErrorCode` and `RetryClass` in `client/error_code.rs`, from their `as_str` arms,
-* the `shard_unavailable_reason` and `trim_reason` constants in the same file,
+* the `shard_unavailable_reason`, `trim_reason` and `feature_reason` constants
+  in the same file,
 * `PublishRefusalReason` and `CursorErrorReason` in `client/message/fields.rs`,
   from their variants.
 
@@ -87,6 +88,7 @@ def expected() -> dict[str, set[str]]:
         "Retry classes": set(re.findall(r'RetryClass::[A-Za-z]+ => "([a-z_]+)"', codes)),
         "Shard unavailable reasons": module_constants(codes, "shard_unavailable_reason"),
         "Head trim reasons": module_constants(codes, "trim_reason"),
+        "Feature reasons": module_constants(codes, "feature_reason"),
         "Overloaded reasons": set(
             re.findall(r'(?:TENANT_QUOTA|QUEUE_FULL)_REASON: &str = "([a-z_]+)"', overloaded)
         ),

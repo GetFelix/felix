@@ -7,6 +7,8 @@ A stream registered with `durable: true` writes every publish to a segmented,
 checksummed, crash-safe log before the publish is fanned out or acknowledged.
 This page covers what that guarantees, how it is built, and what it costs.
 
+This is the reader-facing page. The engineering reference, with the full design and every edge case, is [`docs/durable-storage.md`](https://github.com/GetFelix/felix/blob/main/docs/durable-storage.md).
+
 ## The guarantee
 
 > A record that a durable publish acknowledged is readable after a restart,
@@ -25,7 +27,7 @@ stream to change it between ephemeral and durable; this explicitly invalidates
 old handles and prevents durable offsets from diverging from existing in-memory
 cursors.
 
-## Ordering: append, then fanout, then ack
+## Ordering: append, then ack and fanout
 
 ```mermaid
 flowchart LR
@@ -80,8 +82,8 @@ sequenceDiagram
     end
 
     L-->>B: offsets assigned
-    B->>S: fanout
     B-->>C: ack
+    B->>S: fanout
 ```
 
 The append comes first on purpose. A record delivered to subscribers and
@@ -181,7 +183,11 @@ has the shard, and at that generation only for the leader the view names
 ([#1267](https://github.com/GetFelix/felix/issues/1267)). The view can lag
 the control plane, so the copy also checks the assignment the control
 plane's leader confirms before it takes any leader
-([#1332](https://github.com/GetFelix/felix/issues/1332)).
+([#1332](https://github.com/GetFelix/felix/issues/1332)). That read runs in
+the background, so no replication request waits on the control plane, and a
+new shard's copy skips it once streams carry incarnations: a creation set
+naming the copy's current storage id shows it never held the shard before
+([#1791](https://github.com/GetFelix/felix/issues/1791)).
 
 A **follower** that crashed under `periodic` or `none`, or lost its disk, may
 have answered for records it no longer holds. A failover's assignment names
@@ -354,7 +360,7 @@ An incarnated stream's shards start above every generation the deleted one
 reached, so the quorum marks and follower positions brokers kept for it never
 count for the new records. A shard assigned before its stream is registered
 waits without holding up other shards, and a follower refuses records for an
-incarnation it does not hold. See `docs/durable-storage.md` ("Deleting a
+incarnation it does not hold. See [`docs/durable-storage.md`](https://github.com/GetFelix/felix/blob/main/docs/durable-storage.md) ("Deleting a
 stream") for the whole mechanism and what it does not cover yet.
 
 ### Deleting a cache, and creating it again
@@ -371,7 +377,7 @@ data goes only on a `Deleted` change with `deleted_through`, a snapshot
 tombstone or an operator's removal, from both stores at once. Replication of a
 cache shard and its counter log names the incarnation, and a follower holding
 another refuses it. A broker without durable storage drops a deleted cache's
-entries from memory. See `docs/durable-storage.md` ("Deleting a cache").
+entries from memory. See [`docs/durable-storage.md`](https://github.com/GetFelix/felix/blob/main/docs/durable-storage.md) ("Deleting a cache").
 
 The full byte layout, versioning rules, and corruption verdicts are in the
 [Durable Segment Format specification](/architecture/storage-format/).
@@ -447,7 +453,7 @@ order that keeps the chain whole. Retention and compaction go oldest first.
 Replication's truncation and reset go newest first, and a reset creates its
 new segment only once the old ones are gone. A power loss partway through
 leaves a longer log, never a gap. Recovery refuses to open a log with a gap at
-the head; the manual fix is in `docs/durable-storage.md`, under "A gap at the
+the head; the manual fix is in [`docs/durable-storage.md`](https://github.com/GetFelix/felix/blob/main/docs/durable-storage.md), under "A gap at the
 head left by an older build".
 
 Idempotent producers' sequences are part of what an open rebuilds. Each record
@@ -587,7 +593,7 @@ printing wrong numbers.
   directories and is retried. Two cases leave copies behind: a delete while the
   offload directory is unmounted (a missing copy counts as removed), and
   recorded copies outside the broker's own prefix when the manifest does not
-  decode. See `docs/durable-storage.md`, "Tiered storage: offload".
+  decode. See [`docs/durable-storage.md`](https://github.com/GetFelix/felix/blob/main/docs/durable-storage.md), "Tiered storage: offload".
 - **Single node.** This page describes one broker's storage; replication
   across brokers is layered on top of it, and `seal`'s checksum and
   `read_range`'s bounded paging exist to serve that.

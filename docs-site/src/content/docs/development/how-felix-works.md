@@ -1,5 +1,6 @@
 ---
 title: "How Felix Works"
+description: "A tour of one broker's data path for contributors: which task owns each piece of work, where data is queued, and what happens under overload."
 ---
 
 This guide follows a message through the code. It is for contributors who want
@@ -77,7 +78,8 @@ flowchart LR
     class APP1,APP2 endpoint
 ```
 
-Every hop above is a named thing in the code. §9 and §11 walk the publish and
+Every hop above is a named thing in the code. [Internals: Publish](/development/internals-publish/) and
+[Internals: Subscribe](/development/internals-subscribe/) walk the publish and
 subscribe halves in order.
 
 The important architectural boundary is:
@@ -99,6 +101,11 @@ The important architectural boundary is:
 | `crates/server/felix-broker` | Stream registry, publish path (claim, persist, fan out), replay ring, subscriber registry, consumer groups | `crates/server/felix-broker/src/lib.rs` |
 | `crates/server/felix-storage` | Segment log, commit sequencer, log-backed and in-memory caches, counters | `crates/server/felix-storage/src/lib.rs` |
 | `crates/server/felix-replication` | Broker-to-broker transport and log replication | `crates/server/felix-replication/src/lib.rs` |
+| `crates/server/felix-router` | Which node serves a shard, from the control plane's assignments | `crates/server/felix-router/src/lib.rs` |
+| `crates/server/felix-kafka` | The read-only Kafka listener | `crates/server/felix-kafka/src/lib.rs` |
+| `crates/server/felix-mqtt` | The MQTT listener and its mounts | `crates/server/felix-mqtt/src/lib.rs` |
+| `crates/server/felix-common` | What broker and control plane must agree on: membership, clock, TLS, ids, the env registry | `crates/server/felix-common/src/lib.rs` |
+| `crates/sdk/felix-capi` | C ABI over the Rust client, for the Go and C# SDKs | `crates/sdk/felix-capi/src/lib.rs` |
 | `crates/server/felix-authz` | Token verification types and permission matching | `crates/server/felix-authz/src/lib.rs` |
 | `services/felix-broker-service` | Runnable broker, network handlers, auth, metrics, control-plane sync | `services/felix-broker-service/src/main.rs` |
 | `services/felix-controlplane-service` | Metadata APIs, placement, token exchange, JWKS, and RBAC | `services/felix-controlplane-service/src/lib.rs` |
@@ -176,76 +183,17 @@ They improve capacity; they do not change Felix's delivery semantics.
 
 ## 4. Felix's wire protocol
 
-QUIC provides reliable byte streams, but it does not define where one Felix
-message ends and another begins. Felix adds its own framing protocol in
-`crates/protocol/felix-wire/src/client/`.
+QUIC gives reliable byte streams but does not say where one Felix message ends.
+Felix adds a 12-byte frame header (magic, version, flags, payload length) in
+`crates/protocol/felix-wire/src/client/`. Control messages (`Auth`,
+`Subscribe`, acknowledged publishes, cache requests, errors) are JSON. The hot
+paths use binary frames, selected by flag bits in the header, and the shared
+event encoder writes each payload once for every subscriber. A flag bit
+the receiver does not know is rejected, because it would change the layout of
+the body.
 
-### 4.1 Frame envelope
-
-Every Felix frame begins with `FrameHeader`, a 12-byte header:
-
-```text
-u32 magic    = 0x464C5831 ("FLX1")
-u16 version  = 1
-u16 flags
-u32 payload length
-payload bytes...
-```
-
-`FrameHeader::decode` rejects an invalid magic value, unsupported version, or
-incomplete header before the payload is trusted. Higher-level read helpers also
-enforce configured frame-size limits.
-
-### 4.2 JSON control messages
-
-`crates/protocol/felix-wire/src/client/message.rs::Message` is the version-one protocol enum. With
-zero flags, `Message::encode` serializes a message as JSON and places it in a
-frame. JSON is used where flexibility and request metadata matter more than
-minimum encoding overhead:
-
-- `Auth`
-- acknowledged `Publish` and `PublishBatch`
-- `Subscribe` and `Subscribed`
-- `EventStreamHello`
-- cache request/response messages
-- acknowledgements and errors
-
-Payload bytes inside JSON messages are Base64 encoded.
-
-### 4.3 Binary data-plane frames
-
-The hot paths avoid JSON:
-
-- `FLAG_BINARY_PUBLISH_BATCH` identifies a binary publish batch, and
-  `FLAG_BINARY_PUBLISH_ACKED` one that expects an acknowledgement.
-- `FLAG_BINARY_EVENT_BATCH` identifies the event format that includes a
-  subscription ID.
-- `FLAG_BINARY_EVENT_BATCH_SHARED` identifies the shared event format the
-  broker sends.
-- `FLAG_EVENT_BATCH_OFFSETS` and `FLAG_EVENT_BATCH_SKIPPED` add a base offset
-  and a skip count to an event batch, for subscribers that negotiated them
-  (see §11.9).
-
-The binary publish encoder
-`felix_wire::binary::encode_publish_batch_bytes_with_stats` writes the resource
-names, item count, and length-prefixed payloads directly into a byte buffer.
-
-The shared event encoder
-`felix_wire::binary::encode_shared_event_batch_bytes` writes only:
-
-```text
-u32 payload_count
-repeated:
-  u32 payload_length
-  payload bytes
-```
-
-It does not repeat tenant, namespace, stream, or subscription identifiers. The
-preceding `EventStreamHello` has already bound that QUIC stream to one
-subscription. With offsets negotiated, a `u64 base_offset` comes before the
-count. A batch that follows offsets holding no event also sets
-`FLAG_EVENT_BATCH_SKIPPED` and carries a `u64 skipped_before` after the base
-offset.
+[Wire Protocol](/architecture/wire-protocol/) owns the frame layout, the message
+catalogue and capability negotiation.
 
 ## 5. Felix's resource model
 
@@ -312,43 +260,13 @@ it.
 :::
 ### 6.1 Graceful shutdown
 
-Shutdown is not a single task abort. `run_with_shutdown` performs an ordered
-drain:
-
-1. mark readiness as draining, so load balancers stop routing here while the
-   broker can still serve;
-2. on a cluster member, ask the control plane to move this broker's shards
-   elsewhere (`node/handoff.rs`), bounded by `FELIX_SHUTDOWN_HANDOFF_TIMEOUT_MS`;
-   whatever is still led when that runs out fails over;
-3. cancel the QUIC accept loop so no new connections are admitted;
-4. wind down the connections already accepted, and wait for them under one
-   deadline;
-5. stop control-plane synchronization;
-6. stop the metrics server last.
-
-Metrics stay up so operators can see what is still in flight. The deadline is
-one `felix_common::lifecycle::DrainBudget` shared by every subsystem, not a
-timeout per subsystem, so total shutdown time stays bounded however many things
-are slow.
-
-Step 4 is the subtle one. The same cancellation token reaches every connection
-task, and `handle_connection_with_shutdown` responds by:
-
-1. no longer accepting new streams on that connection;
-2. giving the streams already in flight a bounded grace period (half the
-   process drain budget) to finish; and
-3. closing the QUIC connection with CONNECTION_CLOSE, so the peer learns this
-   was a deliberate shutdown rather than a server that vanished.
-
-The grace has to be bounded because control and subscription streams are
-long-lived: neither ends until the client closes it. Waiting on them without a
-bound would burn the whole deadline and then force-abort, dropping the
-in-flight work the drain exists to protect.
-
-In-flight work inside the grace window completes. Publish executors,
-acknowledgement waiters and subscription writers are not signalled one by one,
-so work still running when the grace expires is ended by closing the
-connection.
+Shutdown is an ordered drain, not a task abort. The broker marks itself
+draining so load balancers stop routing to it, hands its shards to other
+brokers, stops accepting connections, gives in-flight streams a bounded grace
+period, then stops control-plane sync and the metrics server last. One
+`felix_common::lifecycle::DrainBudget` bounds the whole sequence. The code is
+`run_with_shutdown`. [Graceful shutdown](/deployment/graceful-shutdown/) has the
+order, the deadlines and the Kubernetes settings.
 
 ## 7. Client connection architecture
 
@@ -397,8 +315,10 @@ Before authentication:
 
 `services/felix-broker-service/src/serving/auth.rs::BrokerAuth::authenticate`:
 
-1. ensures the tenant's JWKS is cached;
-2. verifies the token signature and critical claims;
+1. ensures the tenant's JWKS is cached, fetching it only for a tenant it holds
+   no usable keys for (a background task renews the cached ones);
+2. verifies the token signature and critical claims, fetching the JWKS once
+   more when the token names a `kid` the cached set lacks;
 3. verifies tenant scope;
 4. compiles token permissions into a `PermissionMatcher`; and
 5. returns an `AuthContext`.
@@ -414,222 +334,12 @@ the data path locally instead of calling the control plane for every message.
 
 ## 9. The complete publish path
 
-This is the central path to understand.
-
-### 9.1 Application to `Publisher`
-
-The application obtains a handle using
-`felix_client::Connection::publisher`, then calls:
-
-- `Publisher::publish`; or
-- `Publisher::publish_batch`.
-
-In `crates/sdk/felix-client/src/publish.rs` and `publish/send.rs`:
-
-- `AckMode::None` selects binary encoding.
-- `AckMode::PerMessage` and `AckMode::PerBatch` select the acked binary frame
-  (`FLAG_BINARY_PUBLISH_ACKED`) when the broker advertised it during auth, and
-  fall back to JSON when it did not.
-
-### 9.2 Client worker selection
-
-`Publisher::select_worker` supports:
-
-- `PublishSharding::RoundRobin`, which distributes calls across workers; and
-- `PublishSharding::HashStream`, which consistently maps
-  `(tenant, namespace, stream)` to one worker.
-
-Hashing a stream to one worker preserves client-side order for that stream and
-avoids moving it between QUIC streams. A bounded `StreamShardCache` avoids
-rehashing frequently used stream names.
-
-Round-robin can provide more parallelism, but publishing the same logical
-stream through several workers weakens the simple per-client ordering model.
-
-### 9.3 Client byte admission
-
-Before enqueueing, `PublishAdmission::acquire` reserves permits equal to the
-estimated or encoded frame size from a byte-counting semaphore.
-
-This is distinct from the worker channel's item capacity:
-
-- the channel limits the number of queued requests;
-- the semaphore limits the number of queued or processing bytes.
-
-The `OwnedSemaphorePermit` is stored inside `PublishRequest`. It remains held
-until the writer has processed the request, so the budget represents resident
-work rather than only admission-time work.
-
-### 9.4 Client encoding and stream writer
-
-For unacknowledged traffic,
-`Publisher::publish_batch_binary` calls
-`felix_wire::binary::encode_publish_batch_bytes_with_stats`, then enqueues
-`PublishRequest::BinaryBytes`.
-
-`run_publisher_writer_with_limit` is the only task writing to that publish stream. For
-JSON requests it constructs the frame in reusable scratch storage. For binary
-requests it writes the already encoded bytes.
-
-For acknowledged traffic, the writer waits for a response and verifies the
-request ID. For unacknowledged traffic, the public call completes after the
-client writer has handed the frame to QUIC; it does not receive broker
-confirmation.
-
-### 9.5 Broker connection and stream handling
-
-`services/felix-broker-service/src/serving/quic/conn.rs::serve_with_shutdown` accepts QUIC
-connections and tracks each connection task.
-
-`handle_connection` concurrently accepts:
-
-- bidirectional streams, dispatched to
-  `serving/quic/streams.rs::handle_stream`; and
-- unidirectional streams, dispatched to
-  `serving/quic/streams.rs::handle_uni_stream`.
-
-For a bidirectional stream, `handle_stream` creates:
-
-- one outbound response queue;
-- one `run_writer_loop` task owning the stream's `SendStream`;
-- the commit-ack deadline sweep, which times out commit acks that are owed;
-- cancellation and throttling channels; and
-- a per-stream cache of resolved stream handles.
-
-The current task runs `run_control_loop` over incoming frames.
-
-### 9.6 Decode and authorize
-
-`run_control_loop` examines frame flags before JSON decoding. A binary publish
-batch goes directly to `handle_binary_publish_batch_control`.
-
-JSON `Publish` and `PublishBatch` messages are decoded into `Message`, checked
-against the authenticated tenant and permission matcher, and passed to the
-corresponding publish handler.
-
-### 9.7 Route the publish
-
-`handlers/publish/route.rs::resolve_route` is the one chokepoint every publish
-passes through. It answers with a `PublishRoute`:
-
-- `Local`: this broker owns the shard, and the stream resolved to a
-  `felix_broker::StreamHandle`;
-- `Forward`: another broker owns it, and the publish is sent on there;
-- `Refused`: nobody can take it right now, or the stream does not exist.
-
-Ownership is checked on every publish, outside the handle cache, because it
-changes the moment the control plane says so. The check is two atomic loads.
-
-A `StreamHandle` is a cheap `Arc<StreamState>` plus a dense numeric ID. The
-per-stream cache of handles has a TTL so metadata changes eventually invalidate
-old resolutions. Removed stream states are also marked inactive, and the broker
-checks that bit before it claims offsets.
-
-### 9.8 Broker byte and item admission
-
-The network handler constructs a `PublishJob` and calls
-`services/felix-broker-service/src/serving/quic/handlers/publish/ingress.rs::enqueue_publish`.
-
-Two byte budgets are acquired:
-
-1. a per-connection budget, preventing one publisher connection from occupying
-   the entire broker;
-2. a process-wide budget shared by all publishes.
-
-The job then enters the bounded publish scheduler queue. `EnqueuePolicy`
-determines what happens when there is no room:
-
-- `Drop`: shed fire-and-forget traffic and increment drop counters;
-- `Fail`: refuse acknowledged traffic at once with a retryable `overloaded`
-  (`detail.reason = "publish_queue_full"`);
-- `Wait`: wait up to a configured timeout, then refuse the same way;
-- `Backpressure`: wait until there is room or the connection goes.
-
-Refusals and drops are counted per tenant in
-`felix_tenant_publish_queue_full_total`. The permits remain attached to the
-`PublishJob` until it has been claimed.
-
-### 9.9 The publish scheduler: per-shard lanes, fair across tenants
-
-`services/felix-broker-service/src/serving/quic/handlers/publish/scheduler.rs` is a
-process-wide queue drained by a small fixed set of executors
-(`pub_workers_per_conn`). It is not one pool per connection, because that
-multiplies concurrent access to shared stream state.
-
-Every job belongs to a lane: the stream shard it writes, or the remote shard
-it is forwarded to. A lane runs one job at a time in arrival order, so
-publishes to the same shard are serialized inside the broker even when they
-arrive through different connections, while different shards run side by
-side. Tenants take turns for executors by deficit round robin, weighted by
-bytes, and each tenant is guaranteed `pub_queue_depth` queue slots, so one
-tenant flooding the broker is refused while others still get in.
-
-An executor holds a lane only for the ordered step (claiming offsets, an
-in-memory append). Flushes, forwards to other brokers and quorum waits run on
-tasks of their own, so a slow disk, peer or replica set holds up only its own
-shard.
-
-With `core_shards` enabled, each shard has its own queue and executors, on
-shard runtime `i`, and a stream's lane lives on the shard that owns it.
-
-### 9.10 Claim, persist, append, fan out
-
-The executor runs the publish in two halves, both in
-`crates/server/felix-broker/src/broker/publish.rs`:
-
-1. `Broker::claim_publish` is the ordered half, run while the executor holds
-   the lane. It checks the handle is active and, on a durable stream, calls
-   `begin_append` on the log, which consumes the batch's offsets, then
-   reserves the matching range in the stream's `CommitSequencer`. The order
-   claims return in is the order records land on disk.
-2. `Broker::complete_publish` runs on a task of its own. It waits for the
-   log's `commit` (the flush under the stream's fsync policy), waits for its
-   commit turn, appends the batch to the in-memory replay ring
-   (`StreamState::append_batch_at`), builds one `DeliveryEnvelope`, and
-   enqueues a clone of it to each subscriber.
-
-The commit turn is held until fanout finishes, so a later batch waits behind an
-earlier one whether that one succeeds, fails or is cancelled, and delivery
-order matches log order. Cancelling `complete_publish` does not cancel the
-batch: once its offsets are claimed its records exist, so the ring append and
-fanout finish on a detached task. On a `Quorum` stream a batch the committed
-mark has not yet passed is held back from the ring and from subscribers until
-it has, and the executor waits for a majority of replicas
-(`felix_replication::quorum::await_quorum`) before answering.
-
-An ephemeral stream skips the log and the sequencer: the claim only checks the
-handle, and completion appends to the ring and fans out.
-
-The subscriber registry is protected by a mutex because subscriptions come and
-go. The publish path does not take it: `StreamState` keeps an
-`ArcSwap<Vec<SubscriberEntry>>` snapshot that subscribe and unsubscribe rebuild
-and publish loads lock-free.
-
-### 9.11 What is copied during fanout
-
-`DeliveryEnvelope` contains:
-
-- `Arc<[Bytes]>` for the payload batch;
-- the batch's base offset and skip count, on a durable stream;
-- the enqueue timestamp; and
-- lazily cached encoded frames: plain, with offsets, and with offsets and a
-  skip count, each encoded at most once.
-
-Cloning an envelope for ten subscribers increments reference counts. It does
-not clone every payload buffer and does not encode ten event frames.
-
-The first subscriber feeder calling `DeliveryEnvelope::shared_event_frame`
-performs `encode_shared_event_batch_bytes` and stores the result. Other feeders
-receive cheap `Bytes` clones of the same encoded frame.
-
-This reuse applies when the envelope already contains multiple payloads, and in
-the forced single-event mode. In the ordinary one-payload batching path, each
-subscriber feeder may combine that payload with later envelopes according to
-its own timing and then encode its resulting batch. That path can therefore
-perform more than one event-frame encode per original publish. For multi-item
-publish batches, the case that matters for throughput, the shared envelope
-reduces serialization from one encode per subscriber to one per publish batch
-(two when some subscribers negotiated offsets and others did not).
+A publish crosses the client (`Publisher`, worker selection, byte admission, the
+stream writer), the broker's QUIC handler (decode, authorize, route), byte and
+item admission, the per-shard publish scheduler, and then the broker core, which
+claims offsets, persists and fans out. Each stage and the types it passes are
+walked in order in [Internals: Publish](/development/internals-publish/). The
+fanout copies nothing: one `DeliveryEnvelope` is shared by every subscriber.
 
 ## 10. Acknowledgement semantics
 
@@ -691,170 +401,13 @@ acknowledgement error as proof that the event was not published.
 
 ## 11. The complete subscription and fanout path
 
-### 11.1 Client subscribe request
-
-`crates/sdk/felix-client/src/client/subscribe.rs::Connection::subscribe`:
-
-1. checks that the requested tenant matches the client's authenticated tenant;
-2. selects an event connection round-robin;
-3. opens and authenticates a bidirectional control stream;
-4. sends `Message::Subscribe` with no client-assigned ID;
-5. finishes its send half;
-6. reads `Message::Subscribed`; and
-7. registers the returned ID with the event router.
-
-The broker assigns the ID. This is essential because independent `Connection`
-instances otherwise start local counters at the same values and can collide.
-
-### 11.2 Broker subscription registration
-
-The control loop authorizes the request and calls
-`services/felix-broker-service/src/serving/quic/handlers/subscribe.rs::handle_subscribe_message`.
-
-That function:
-
-1. allocates a globally unique subscription ID if none was supplied;
-2. reserves capacity in the connection's `SubscriptionLimiter`;
-3. calls `Broker::subscribe`, or `Broker::subscribe_from` when the request
-   names a start position (§11.9);
-4. opens a new broker-to-client unidirectional stream and writes
-   `EventStreamHello { subscription_id }`;
-5. sends `Subscribed`;
-6. on a resume, writes the stored history and ring backlog straight onto the
-   event stream;
-7. selects a writer lane and registers the event stream with it; and
-8. spawns `run_lane_feeder`.
-
-`Subscribed` goes out before any history, because the client does not read the
-event stream until it has seen it. Writing a large history first would fill
-the QUIC stream's receive window and deadlock. Live events queue on the
-broker-core subscriber queue meanwhile, and nothing drains that queue until
-step 7, so they cannot overtake the history.
-
-### 11.3 Broker-core subscriber queue
-
-`Broker::subscribe` resolves the stream and calls
-`StreamState::register_subscriber`.
-
-Registration creates a bounded `mpsc::channel<DeliveryEnvelope>`, stores its
-sender in a `Slab`, rebuilds the publish snapshot, and returns a
-`SubscriptionReceiver`.
-
-Dropping the accompanying `SubscriptionGuard` removes the registry entry and
-rebuilds the snapshot.
-
-### 11.4 Event stream routing on the client
-
-The broker may open the unidirectional event stream before or after the client
-has processed `Subscribed`. Therefore
-`crates/sdk/felix-client/src/connection/event_router.rs::run_event_router` maintains two
-bounded maps:
-
-- registrations waiting for streams;
-- streams waiting for registrations.
-
-It reads `EventStreamHello` from each new unidirectional stream and joins the
-two sides by subscription ID.
-
-### 11.5 Lane feeder
-
-`run_lane_feeder` receives `DeliveryEnvelope`s from the broker-core queue. It
-either:
-
-- reuses the envelope's shared encoded frame;
-- splits an oversized envelope into bounded frames; or
-- coalesces single-event envelopes until an event count, byte count, or timer
-  limit is reached.
-
-It then sends `LaneCommand::Delivery` to the selected writer lane.
-
-When core sharding is enabled, the feeder is spawned on the same shard that
-owns the stream's publish lane. The enqueue and dequeue sides of the
-broker-core subscriber channel therefore stay core-local.
-
-### 11.6 Writer lanes
-
-`WriterLaneManager` owns a configurable set of bounded lane queues. Lane
-`subscriber_single_writer_per_conn` is checked first; when enabled, every
-subscriber on one connection is forced onto that connection's lane. Otherwise,
-lane assignment follows `SubscriberLaneShard`:
-
-- `Auto` hashes the subscription ID;
-- `SubscriberIdHash` explicitly hashes the subscription ID;
-- `ConnectionIdHash` hashes the connection ID when one is available; or
-- `RoundRobinPin` assigns a stable lane once at subscription time.
-
-`run_writer_lane` performs little actual I/O. It receives lane commands and
-forwards them to the writer for the QUIC connection that owns the subscription.
-
-The lane layer bounds parallelism and separates broker-core fanout from
-connection-specific scheduling.
-
-### 11.7 Connection writer
-
-`run_connection_writer` owns the actual `SendStream`s for every subscription on
-one QUIC connection.
-
-For each subscriber it preserves at most one in-flight write. Across different
-subscribers it uses `FuturesUnordered`, so writes proceed concurrently:
-
-- subscriber A may be blocked by QUIC flow control;
-- subscriber B can complete;
-- B can begin its next write without waiting for A.
-
-This continuous pipeline avoids a round barrier where the slowest subscriber
-would delay every other subscriber sharing the connection.
-
-### 11.8 Client subscription pipeline
-
-Once the event router supplies the `RecvStream`,
-`Subscription::spawn_pipeline` creates two tasks:
-
-1. `run_subscription_io_task` reads complete Felix frames from QUIC into a
-   bounded frame queue.
-2. `run_subscription_dispatch_task` decodes those frames and places individual
-   payloads into a bounded event queue.
-
-`Subscription::next_event` receives one payload and returns an `Event` carrying
-the subscription's tenant, namespace, and stream identity.
-
-For `FLAG_BINARY_EVENT_BATCH_SHARED`, dispatch uses
-`felix_wire::binary::decode_shared_event_batch`. The subscription identity does
-not need to be present in each batch because the QUIC stream was already bound
-by `EventStreamHello`.
-
-### 11.9 Resuming from an offset
-
-`Message::Subscribe` takes an optional `start`: `latest`, `earliest` or an
-offset (`StartPosition`). On an in-memory stream it reaches only as far back as
-the replay ring, and events carry no offsets. `Broker::subscribe_from` in
-`crates/server/felix-broker/src/broker/subscribe.rs` handles it in an order that matters:
-
-1. read the log's tail;
-2. register the live subscriber, clamped to the oldest entry the replay ring
-   holds (`StreamState::register_clamped`), which returns the ring backlog;
-3. only then compute the disk range still to serve, `[requested,
-   backlog_start)`.
-
-Registering first closes that range: every record from `backlog_start` on is
-already in the backlog or on the subscriber's queue. Reading history first and
-registering after loses any publish that lands in between. An offset past the
-tail is refused as `in_future` and one retention has removed as `too_old`, both
-through `SubscribeCursorError`.
-
-`handlers/subscribe/replay.rs::write_replay` then pages the history from disk
-with `Broker::read_committed`, one page in memory at a time, followed by the
-backlog. On a `Quorum` stream a page stops at the committed mark and the next
-waits for it.
-
-On a durable stream, a client that negotiated `FLAG_EVENT_BATCH_OFFSETS` and
-sent a `start` gets two extra fields on `Subscribed`: `start_offset`, the first offset delivered, and `live_offset`,
-the tail when the subscriber registered. Records below `live_offset` are
-catch-up and records from it on are live. Every event batch carries its base
-offset, so a jump in offsets is exactly a drop. A promoted leader writes a
-generation-start record that takes an offset but is never delivered; a batch
-after one carries `skipped_before` (with `FLAG_EVENT_BATCH_SKIPPED`, when the
-client negotiated it) so the client does not read the gap as a drop.
+A subscription is registered with the broker core, assigned to a lane, fed by a
+per-lane feeder that encodes each batch once, written by a connection writer to
+one QUIC stream, and decoded by the client's event router and subscription
+pipeline. A subscriber that names a start offset gets history first, then the
+live stream, with nothing lost between them. The steps are in
+[Internals: Subscribe](/development/internals-subscribe/), and resuming is in
+[Resuming from an offset](/development/internals-subscribe/#resuming-from-an-offset).
 
 ## 12. Ordering guarantees
 
@@ -880,64 +433,13 @@ causal order between independent producers.
 
 ## 13. Backpressure and overload
 
-Felix uses bounded queues instead of allowing memory use to grow without limit.
-There are six main checkpoints in publish-to-delivery order:
-
-| # | Checkpoint | Bounds |
-|---:|---|---|
-| 1 | Client `PublishAdmission` | In-flight publish bytes across client workers |
-| 2 | Client publish worker channel | Queued publish items per worker |
-| 3 | Broker publish admission | Per-connection and process-wide publish bytes |
-| 4 | Broker publish scheduler queue | Queued publish jobs, shared fairly between tenants |
-| 5 | Broker-core subscriber channel | Envelopes waiting for one subscriber |
-| 6 | Connection writer, per subscription | Encoded deliveries waiting for one subscription's QUIC stream |
-
-QUIC flow control is the final transport-level checkpoint beneath these.
-
-### 13.1 Block versus drop
-
-Broker subscriber queues use `felix_broker::SubQueuePolicy`:
-
-- `Block` waits for capacity;
-- `DropNew` discards the new item when full;
-- `DropOld` behaves as `DropNew`, counted separately in
-  `felix_sub_queue_drop_old_emulated_total`.
-
-The writer lane has its own independent policy because a subscriber can have
-space in its broker-core queue while its shared connection writer is saturated.
-
-Production defaults favor bounded latency and visible drops. Lossless benchmark
-profiles select blocking queues and `pub_ingress_wait`, allowing pressure to
-propagate backward until publishers slow down.
-
-Neither policy is universally correct:
-
-- dropping isolates healthy publishers and subscribers from a slow consumer;
-- blocking preserves delivery but can let one slow subscriber throttle every
-  producer of that stream.
-
-Under `Block`, one stalled subscriber makes every publisher of its shard wait,
-each on its own enqueue. The commit turn held across fanout does not widen
-this: a second publisher would wait on the same full queue with no turn at
-all, which `block_policy_stalls_every_publisher_of_the_shard_without_a_commit_turn`
-shows on an ephemeral stream. The blast radius of `Block` is the shard. Within
-one batch, though, the fanout first queues it for every subscriber with room
-and only then waits on the full ones, so the batch reaches fast subscribers
-without waiting on a slow one. Under
-`DropNew`, the default, the work per subscriber is one non-blocking
-`try_reserve`, and publish latency stays flat across fanout.
-
-### 13.2 Why both byte limits and item limits exist
-
-A queue depth of 64 does not express how much memory 64 jobs consume. Jobs may
-contain tiny payloads or multi-megabyte batches.
-
-Felix therefore uses:
-
-- item-count channels for scheduler and queue bounds; and
-- byte-counting semaphores for resident payload bounds.
-
-The permit travels with the work and is released after processing.
+Felix bounds every queue instead of letting memory grow. There are six
+checkpoints between publisher and subscriber, then QUIC flow control beneath
+them. Subscriber queues drop by default so a slow consumer costs only itself;
+benchmark profiles switch to blocking so pressure reaches the publishers.
+[Internals: Backpressure](/development/internals-concurrency/#the-full-backpressure-chain)
+lists the checkpoints and their defaults, and explains why bytes and items are
+both bounded.
 
 ## 14. Cache request path
 
@@ -985,67 +487,20 @@ Counters go to a separate `CounterStore`.
 
 ## 15. Core sharding and CPU ownership
 
-Tokio's normal multi-threaded runtime may run a task on different worker
-threads over time. That is flexible, but a hot stream can pay for:
-
-- cross-core cache-line movement;
-- channel wakeups between cores; and
-- scheduler migration.
-
-`services/felix-broker-service/src/serving/core_shards.rs::CoreShards` creates dedicated
-single-threaded Tokio runtimes. On Linux, `pin_to_core` uses
-`sched_setaffinity` to pin each runtime thread to a CPU.
-
-A stream handle selects its owner:
-
-```text
-shard = handle_id % shard_count
-```
-
-The same mapping is used for:
-
-- its broker publish lane and the executors that run it; and
-- its subscription lane feeders.
-
-Append, fanout enqueue, and feeder dequeue therefore occur on one core. QUIC I/O
-remains on the main runtime because Quinn's endpoint driver performs
-packetization, encryption, and socket I/O independently.
-
-Core sharding scales across **streams**, not within one stream. A workload with
-one logical stream still has one owning shard by design.
+With `core_shards` on, a stream handle picks one dedicated single-threaded
+runtime (`handle_id % shard_count`), optionally pinned to a CPU, so append,
+fanout enqueue and feeder dequeue for a stream run on one core. It scales
+across streams, not within one. QUIC I/O stays on the main runtime. See
+[Internals: Core sharding](/development/internals-concurrency/#core-sharding).
 
 ## 16. Observability
 
-`services/felix-broker-service/src/observability.rs::init_observability` installs tracing,
-OpenTelemetry propagation, and a Prometheus recorder.
-
-The broker exposes:
-
-- health and readiness endpoints;
-- Prometheus metrics;
-- queue depth and drop counters;
-- publish-stage timings;
-- subscriber lane and connection-writer timings; and
-- optional frame counters.
-
-Hot-path timing code is feature-gated. The relevant modules are:
-
-- `services/felix-broker-service/src/observability/timings.rs`
-- `services/felix-broker-service/src/observability/timings/collector.rs`
-- `crates/server/felix-broker/src/timings.rs`
-- `crates/sdk/felix-client/src/timings.rs`
-- `services/felix-broker-service/src/serving/quic/telemetry.rs`
-
-When investigating missing messages, begin with:
-
-- broker ingress drop/rejection counters;
-- `felix_subscribe_dropped_total`;
-- `felix_sub_queue_dropped_total`, which counts every drop on the subscribe path;
-- client subscription queue drop counters; and
-- QUIC connection close/write-error logs.
-
-A nonzero drop counter indicates an intentional overload policy before it
-indicates a routing bug.
+`init_observability` installs tracing, OpenTelemetry propagation and a
+Prometheus recorder. [Observability](/features/observability/) lists the
+metrics, probes and tracing. When messages seem to be missing, check the drop
+counters first (`felix_subscribe_dropped_total`, `felix_sub_queue_dropped_total`,
+the broker's ingress drop counters): a nonzero count is an overload policy
+doing its job before it is a routing bug.
 
 ### 16.1 The soak harness
 
@@ -1093,9 +548,10 @@ Two local gaps are worth knowing while reading the code:
   `handle_subscribe_message` records a fallback
   (`broker_sub_stream_mode_fallback_total`) and uses one unidirectional stream
   per subscriber.
-- `SubQueuePolicy::DropOld` behaves as `DropNew` (§13.1).
+- `SubQueuePolicy::DropOld` behaves as `DropNew`; see
+  [Internals: Publish](/development/internals-publish/#fanout-and-the-subscriber-queue-policy).
 
-## 19. A worked example
+## 18. A worked example
 
 Assume one application publishes a binary batch of 64 payloads to
 `tenant-a/orders/updates`, with ten subscribers.
@@ -1133,7 +589,7 @@ Assume one application publishes a binary batch of 64 payloads to
 The batch was encoded once on publish ingress and once for event fanout, not
 once per subscriber.
 
-## 20. How to study the code
+## 19. How to study the code
 
 Read in this order and follow each symbol with editor "go to definition":
 

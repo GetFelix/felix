@@ -717,6 +717,7 @@ fn orders() -> felix_controlplane_service::model::Stream {
         region: None,
         routing: Default::default(),
         incarnation: 0,
+        mount: None,
     }
 }
 

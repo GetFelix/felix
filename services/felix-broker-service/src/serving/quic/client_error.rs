@@ -258,6 +258,8 @@ impl ClientError {
             E::TrimOnCommitStream => Self::new(ErrorCode::StreamHasCommits, message),
             E::HeadTrimNotEnabled => Self::new(ErrorCode::FeatureNotEnabled, message)
                 .with_reason(felix_wire::trim_reason::HEAD_TRIM),
+            E::RecordHeadersNotEnabled => Self::new(ErrorCode::FeatureNotEnabled, message)
+                .with_reason(felix_wire::feature_reason::RECORD_HEADERS),
             // Answered as `publish_refused` with the tail wherever the request
             // can carry it; this is only for a caller that cannot.
             E::OffsetMismatch { .. } => Self::invalid(message).with_retry(RetryClass::Fatal),

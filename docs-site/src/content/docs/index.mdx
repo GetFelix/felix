@@ -67,10 +67,10 @@ already know the area.
     built-in flow control and congestion awareness, and resistance to
     head-of-line blocking.
   </Card>
-  <Card title="Tunable, explicitly" icon="setting">
+  <Card title="Tuned defaults, every knob open" icon="setting">
     Connection pooling, stream multiplexing, time- and count-bounded batching,
-    flow-control window sizing, and optional per-stage telemetry. You set
-    all of it; none of it is hidden behind defaults.
+    flow-control window sizing, and optional per-stage telemetry. The defaults
+    are tuned, and every knob can be overridden.
   </Card>
 </CardGrid>
 
@@ -105,27 +105,30 @@ they show as a test.
 
 ## How It Works
 
-Felix uses a framed protocol (`felix-wire`) over QUIC streams to unify event
-streaming and request/response caching, with explicit control over multiplexing,
-batching, and flow control.
-
 ![One append-only log per shard, read three ways: as a stream by offset, as a cache through a key index, and as a queue through a cursor shared by a consumer group.](/diagrams/one-log.svg)
 
 Streams, caches and queues are three ways of reading the same bytes. They share one durability path, one recovery path, one placement
-rule and one replication path.
+rule and one replication path. In practice, with a broker running:
+
+```bash
+felixctl pub orders 'hello'   # the broker writes it once, then acknowledges
+felixctl sub orders           # every subscriber receives it, in order, with its offset
+```
+
+The [Quickstart](/getting-started/quickstart/) runs this for real. What follows is what happens inside, for each reading.
 
 <CardGrid>
   <Card title="Pub/Sub data flow" icon="right-arrow">
-    1. The client opens a bidirectional control stream to publish/subscribe and receive acknowledgements.
-    2. The broker validates scope, enqueues publish jobs, and fans out to subscribers.
-    3. Each subscription gets a dedicated unidirectional event stream for delivery.
-    4. Events travel as binary `EventBatch` frames with configurable batching.
+    1. The client opens one connection and sends publishes and subscribes over it.
+    2. The broker checks the caller's tenant and permissions, writes the record, and sends it to every subscriber.
+    3. Each subscription gets its own delivery stream, so a slow subscriber does not hold up the others.
+    4. Events are delivered in batches whose size and delay you can configure.
   </Card>
   <Card title="Cache data flow" icon="right-arrow">
-    1. The client maintains a cache connection pool with long-lived stream workers.
-    2. Cache requests carry a `request_id` and are multiplexed over those streams.
-    3. The broker processes request frames in a read loop and replies on the same stream.
-    4. This avoids per-request stream setup cost and improves tail latency under concurrency.
+    1. The client keeps a pool of long-lived streams to the broker.
+    2. Each cache request is tagged with an id and sent on one of those streams.
+    3. The broker answers on the same stream, tagged with the same id.
+    4. No request pays for opening a stream, which keeps tail latency low under concurrency.
   </Card>
   <Card title="Queue data flow" icon="right-arrow">
     1. A consumer **polls** a group rather than being pushed to, because only it knows when it has capacity.

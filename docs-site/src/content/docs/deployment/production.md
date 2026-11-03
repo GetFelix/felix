@@ -40,12 +40,15 @@ it, and compare resident memory before and after. Divide by the key count and
 multiply by your expected total, then add the headroom for the rest of the
 table.
 
-Connections follow from your clients, not from the broker. Each client holds
-the pools its configuration names (`FELIX_PUB_CONN_POOL`, `FELIX_EVENT_CONN_POOL`,
-`FELIX_CACHE_CONN_POOL`, `FELIX_CLUSTER_CONN_POOL`), and a cluster client dials
-the owner of each shard it uses. Count clients times pool sizes against
-`FELIX_MAX_CLIENT_CONNECTIONS`, and divide by the number of brokers the clients
-spread over.
+Connections follow from your clients, not from the broker. A cluster `Client`
+holds one connection per broker it uses, more only under heavy stream load (up to
+`FELIX_CLUSTER_CONN_POOL`). A plain `Connection` holds its publish pool
+(`FELIX_PUB_CONN_POOL`, 4) from connect, one event connection per subscription up
+to `FELIX_EVENT_CONN_POOL` (8), and its cache pool (`FELIX_CACHE_CONN_POOL`, 8)
+once it uses the cache. Count clients times those against
+`FELIX_MAX_CLIENT_CONNECTIONS`, divided by the number of brokers the clients
+spread over, and the clients on one host or NAT address against
+`FELIX_MAX_CONNECTIONS_PER_IP` (512).
 
 Watch these to see how close the cluster runs to its bounds:
 `felix_sub_queue_bytes`, `felix_sub_egress_bytes`, `felix_replay_ring_bytes` and

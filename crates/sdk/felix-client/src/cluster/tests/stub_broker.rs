@@ -41,6 +41,9 @@ pub(super) type Sequenced = (Option<bytes::Bytes>, u64);
 /// An acked batch as the broker received it: its routing key and payloads.
 pub(super) type Received = (Option<bytes::Bytes>, Vec<bytes::Bytes>);
 
+/// The `client_flags` and `client_flags_ext` an `Auth` offered.
+pub(super) type Offered = (Option<u16>, Option<u32>);
+
 /// A JSON publish or commit naming its shard, as the broker received it.
 pub(super) type Named = (&'static str, Option<u32>, Vec<Vec<u8>>);
 
@@ -146,6 +149,22 @@ impl StubBroker {
     /// Advertise `FEATURE_HEAD_TRIM` to streams authenticated from now on.
     pub(super) fn honour_head_trim(&self) {
         self.seen.head_trim.store(true, Ordering::SeqCst);
+    }
+
+    /// Answer `EXT_RECORD_HEADERS` to streams authenticated from now on.
+    pub(super) fn honour_record_headers(&self) {
+        self.seen.record_headers.store(true, Ordering::SeqCst);
+    }
+
+    /// The record headers blocks of every acked batch, in arrival order. A
+    /// batch that carried none is an empty list.
+    pub(super) fn blocks(&self) -> Vec<Vec<Option<bytes::Bytes>>> {
+        self.seen.blocks.lock().unwrap().clone()
+    }
+
+    /// What every `Auth` offered, in arrival order.
+    pub(super) fn offers(&self) -> Vec<Offered> {
+        self.seen.offers.lock().unwrap().clone()
     }
 
     pub(super) fn publishes(&self) -> usize {
@@ -328,6 +347,12 @@ struct Seen {
     explicit_shard: Arc<AtomicBool>,
     /// Advertise `FEATURE_HEAD_TRIM`.
     head_trim: Arc<AtomicBool>,
+    /// Answer `EXT_RECORD_HEADERS` to a client that offered it.
+    record_headers: Arc<AtomicBool>,
+    /// The record headers blocks of each acked batch, in arrival order.
+    blocks: Arc<Mutex<Vec<Vec<Option<bytes::Bytes>>>>>,
+    /// What each `Auth` offered.
+    offers: Arc<Mutex<Vec<Offered>>>,
     named: Arc<Mutex<Vec<Named>>>,
 }
 
@@ -356,6 +381,9 @@ impl Default for Seen {
             batches: Arc::default(),
             explicit_shard: Arc::default(),
             head_trim: Arc::default(),
+            record_headers: Arc::default(),
+            blocks: Arc::default(),
+            offers: Arc::default(),
             named: Arc::default(),
         }
     }
@@ -398,6 +426,10 @@ async fn serve_stream(
                 continue;
             }
             seen.publishes.fetch_add(1, Ordering::SeqCst);
+            seen.blocks
+                .lock()
+                .unwrap()
+                .push(batch.batch.record_headers.clone().unwrap_or_default());
             seen.batches
                 .lock()
                 .unwrap()
@@ -434,8 +466,26 @@ async fn serve_stream(
             continue;
         }
         match Message::decode(frame)? {
-            Message::Auth { token, .. } => {
+            Message::Auth {
+                token,
+                client_flags,
+                client_flags_ext,
+                ..
+            } => {
                 seen.tokens.lock().unwrap().push(token);
+                seen.offers
+                    .lock()
+                    .unwrap()
+                    .push((client_flags, client_flags_ext));
+                let (server_flags, server_flags_ext) = felix_wire::answer_flags(
+                    felix_wire::KNOWN_FLAGS,
+                    if seen.record_headers.load(Ordering::SeqCst) {
+                        felix_wire::EXT_RECORD_HEADERS
+                    } else {
+                        0
+                    },
+                    client_flags.unwrap_or(0),
+                );
                 checks_width = seen.checks_width.load(Ordering::SeqCst);
                 let features_hi = if checks_width {
                     felix_wire::FEATURE_PUBLISH_WIDTH
@@ -456,7 +506,7 @@ async fn serve_stream(
                     0
                 };
                 let answer = Message::AuthOk {
-                    server_flags: felix_wire::KNOWN_FLAGS,
+                    server_flags,
                     server_features: Some(
                         felix_wire::FEATURE_ERROR_CODES
                             | felix_wire::FEATURE_IDEMPOTENT_PRODUCER
@@ -470,6 +520,7 @@ async fn serve_stream(
                             | extended,
                     ),
                     server_features_hi: (features_hi != 0).then_some(features_hi),
+                    server_flags_ext,
                     listener_ports: None,
                     publish_window: None,
                 };

@@ -95,7 +95,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
 
         loop {
             while let Some(packet) = self.next_packet(Some(version), &limits)? {
-                self.handle(packet, version)?;
+                self.handle(shared, &session, packet)?;
             }
             self.flush().await?;
             tokio::select! {
@@ -187,6 +187,7 @@ fn decode_end(err: &DecodeError, version: Option<Version>) -> End {
         // different failure from a large one after it.
         DecodeError::PacketTooLarge { .. } if version.is_none() => "unauthenticated_frame_size",
         DecodeError::PacketTooLarge { .. } => "packet_too_large",
+        DecodeError::InvalidTopicName(_) => "invalid_topic_name",
         _ => match err.reason_code() {
             ReasonCode::MalformedPacket => "malformed_packet",
             ReasonCode::ProtocolError => "protocol_error",
