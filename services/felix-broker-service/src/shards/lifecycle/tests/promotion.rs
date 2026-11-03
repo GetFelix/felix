@@ -229,6 +229,98 @@ mod generation_start {
             Some(1),
         );
     }
+
+    /// **Opening again at a generation it already started writes the new
+    /// stint's start record (#1787).** The earlier stint's records sit past
+    /// the first one, and a flip counted from it could leave them off the
+    /// new set. Opening again with nothing written since adds none.
+    #[tokio::test]
+    async fn a_new_stint_at_a_started_generation_writes_its_own_start() {
+        let promoted = promoted(true).await;
+        assert!(promoted.gate.open(&key(0), 3).await);
+        promoted
+            .broker
+            .publish("t1", "ns", "orders", "first stint".into())
+            .await
+            .expect("publish");
+        let log = promoted
+            .storage
+            .open_stream("t1", "ns", "orders", 0)
+            .expect("log");
+
+        for _ in 0..2 {
+            crate::shards::lifecycle::write_generation_start(&promoted.broker, &log, &key(0), 3)
+                .await
+                .expect("second stint");
+        }
+
+        assert_eq!(log.tail_offset().await.expect("tail"), 4);
+        assert_eq!(log.stint_start(3), Some(3));
+        assert_eq!(
+            felix_replication::quorum::generation_start(&log, 3).await,
+            Some(1),
+            "the history still starts the generation at the first",
+        );
+    }
+
+    /// The same when retention dropped the generation's first start record:
+    /// the history says the generation began below what the log still
+    /// holds, and that is enough.
+    #[tokio::test]
+    async fn a_new_stint_after_retention_dropped_the_first_start_writes_its_own() {
+        let promoted = promoted(true).await;
+        let log = promoted
+            .storage
+            .open_stream("t1", "ns", "orders", 0)
+            .expect("log");
+        log.rebuild_at(5).await.expect("drop the head");
+        // As a follower does after rebuilding, or a publish waits forever on
+        // offsets the old copy never committed.
+        promoted
+            .broker
+            .reset_replicated("t1", "ns", "orders", 0, 5)
+            .await
+            .expect("reset the commit order");
+        log.record_generation(3, 2).expect("history");
+        promoted
+            .broker
+            .publish("t1", "ns", "orders", "first stint".into())
+            .await
+            .expect("publish");
+        assert_eq!(log.tail_offset().await.expect("tail"), 6);
+
+        crate::shards::lifecycle::write_generation_start(&promoted.broker, &log, &key(0), 3)
+            .await
+            .expect("second stint");
+
+        assert_eq!(log.tail_offset().await.expect("tail"), 7);
+        assert_eq!(log.stint_start(3), Some(6));
+    }
+
+    /// A generation that began before the fleet finalized `generation_start`
+    /// has records and no start record. It reopens without one (#1787 does
+    /// not reach it: it has had no elections).
+    #[tokio::test]
+    async fn a_generation_older_than_the_finalize_reopens_without_a_record() {
+        let promoted = promoted(true).await;
+        let log = promoted
+            .storage
+            .open_stream("t1", "ns", "orders", 0)
+            .expect("log");
+        log.record_generation(3, 0).expect("history");
+        promoted
+            .broker
+            .publish("t1", "ns", "orders", "before the finalize".into())
+            .await
+            .expect("publish");
+
+        crate::shards::lifecycle::write_generation_start(&promoted.broker, &log, &key(0), 3)
+            .await
+            .expect("reopen");
+
+        assert_eq!(log.tail_offset().await.expect("tail"), 2);
+        assert_eq!(log.stint_start(3), None);
+    }
 }
 
 /// A stream leader's dead-letter and cursor logs carry the generation it
