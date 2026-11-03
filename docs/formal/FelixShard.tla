@@ -731,9 +731,10 @@ StandsAboveKeptSet == FALSE
 \* (promotion.rs keeps no set from a refusal); learning it adds behaviours.
 RefusalLearnsSet == TRUE
 \* `LearnsLeavingSet`: a follower learning a leader's set during a change
-\* takes the leader's set being left. Off, it keeps the set it held before
-\* the change as the one being left, as the brokers do: a follower in the recorded set never
-\* learns the elected set the control plane wrote as being left.
+\* takes the leader's set being left, as a broker does from a fence
+\* (replica/election.rs). Off, it keeps the set it held before the change as
+\* the one being left, as a broker learning a set from a batch did; that
+\* loses acknowledged writes (FelixShardElectReissueReplaceBatchSet.cfg).
 LearnsLeavingSet == TRUE
 \* `DetectorMisfires`: a candidate may suspect a leader it still hears, as a
 \* failure detector can be wrong. Only its own yes is affected.
@@ -2742,9 +2743,10 @@ ReissueAt(b, g, E, S, pends) ==
 \* (`adopting_elected_set` in services/felix-controlplane-service/src/model/
 \* shard.rs). With `AdoptMatch`:
 \* - if the leader's set is the one the control plane records, or while a
-\*   cut-over is pending the pending set at its generation, it becomes the
-\*   control plane's leader at that generation, the change staying pending
-\*   until CpFlip;
+\*   cut-over is pending the pending set at its generation, and the leader
+\*   is in the recorded set and not a joining copy, it becomes the control
+\*   plane's leader at that generation, the change staying pending until
+\*   CpFlip;
 \* - if it is the control plane's own leader, elected on the set being left
 \*   while a change is pending, it opened past the change, which only it
 \*   could take, so the change is dropped;
@@ -2778,7 +2780,7 @@ CpAdopt(v, b, views) ==
            recordedOnly == \/ leader = b \/ cpNext /= {} \/ joining /= {}
                            \/ ~SetCheck \/ E \cap staged /= {}
        IN
-       IF AdoptMatch => CpHoldsSetOf(b)
+       IF AdoptMatch => CpHoldsSetOf(b) /\ b \in CpSet /\ b \notin joining
        THEN /\ gen' = g
             /\ leader' = b
             /\ cpExpiry' = now + L

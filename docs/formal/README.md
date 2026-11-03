@@ -245,6 +245,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardElectAdoptPromote.cfg` | `FelixShardElect.cfg` with one write, the set check, adoption up to generation 2 and promotion on suspicion up to generation 2 | pass, the same invariants (186K distinct states without the write; not yet measured with it) |
 | `FelixShardElectReissue.cfg` | `FelixShardElectAdoptPromote.cfg` with promotion on suspicion up to generation 1 and the control plane moving past a generation it named one leader at while another was elected and opened there: the next generation, under the elected leader, on the control plane's set (`Reissues`, CpReissue) | pass, the same invariants (130,796 distinct states, 6 s locally) |
 | `FelixShardElectReissueReplace.cfg` | `FelixShardElectReissue.cfg` with four brokers, a spare that promotion puts in place of the old leader (`ReplaceOnPromote`), no write, and adoption up to generation 2: the elected leader's set differs from the control plane's when they collide, so the reissue is a pending change from the elected set to the control plane's, and the reissued leader fences both (`ReissuePending`) | pass, the same invariants (66,576 distinct states, 4 s locally) |
+| `FelixShardElectReissueReplaceBatchSet.cfg` | `FelixShardElectReissueReplace.cfg` with one write, adoption up to generation 4, candidates standing no lower than the kept set's generation (`StandsAboveKeptSet`), refusals that teach no set, and a follower keeping its own old set as the one being left when it learns a set from a batch (`LearnsLeavingSet` off) | violate `AckedHeldByLeader`: a candidate fences no majority of the elected set and opens without the acknowledged write, so a broker takes the set being left only from the leader's fence |
 | `FelixShardElectStepDown.cfg` | `FelixShardElect.cfg` with time to 2, `L = 2` and `Margin = 2` (so no promotion), one write and one generation of elections: an elected leader acknowledges a write and then steps down when its own lease lapses, leaving the control plane's leader at an older generation it has promised away | pass the same invariants (1.49M distinct states, under a minute). Found by `FelixShardWalkElect.cfg`: before `Newest` counted promises, `AckedHeldByLeader` took that deposed leader for the newest one |
 | `FelixShardElectHandoff.cfg` | `FelixShardElect.cfg` with a planned move and a cancel, every change fenced (`FenceEveryChange`), the set check on, one generation of elections, one write, reports flowing so a move can start | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (111.2M distinct states, 2 h 23 min on a four-core CI runner; nightly) |
 | `FelixShardElectHandoffLeaders.cfg` | the same without the write, for every pull request | pass `OneLeaderPerGeneration` and the rest, which hold trivially without a write (5.05M distinct states, 5.9 min on a CI runner, with the set check's step-down) |
@@ -721,40 +722,40 @@ mid-fence, a replica that had learned the new set from it stood and opened on
 a majority of the new set alone, and a replica of the old set opened beside
 it at the same generation (OneLeaderPerGeneration).
 
-The control plane flips only after the joint fence. `Swap` records the new
-set as pending (`cpNext`, written at `cpNextGen`) and the old set stays the
+The control plane flips only after the joint fence. `Swap` records the new set
+as pending (`cpNext`, written at `cpNextGen`) and the old set stays the
 control plane's (`CpSet`), so `AckedOnMajority` keeps measuring records
-against it. While its change is pending a leader acknowledges on a majority
-of both sets (`HeldAtGen`) and ships to both. `CpFlip` takes the new set once
-a leader on it has its generation's start record acknowledged, which then
-sits on a majority of both, and `FinishChange` lets a leader drop the old set
-once the control plane holds its set. A failover (`Promote`) abandons the
-pending change; it writes the set at a generation above the pending one.
-While a change is pending, `CpAdopt` adopts only a leader on the pending set
-and takes just the generation of one on the old set, which the new set's
-higher set generation deposes; the walk found an adopted old-set leader
-fenced that way. The one exception is the control plane's own leader on the
-old set: it opened past the change, and only it could have taken it, so the
-change is dropped. With no change pending, a leader elected on a set other
-than the recorded one is not adopted on its generation alone. A majority of
-the elected set may hold records no majority of the recorded one does, and a
-later failover would promote from the recorded set. If the leader is in the
-recorded set, the control plane writes the next generation under it with the
-elected set as the set being left and the recorded one pending, as a cut-over
-does (see the reissue below). If it is not, the elected set becomes the
-recorded set at its generation. `FelixShardElectAdoptAboveKeptSet.cfg` found
-the generation-only form leaving a pending change below the adopted
-generation that no leader could complete. No placement change other than a failover starts while
-one is pending. Only the control plane ends a pending change, so while it
-is down a lost majority of the old set stops writes, and a destination
-lost before the rest of the new set learns it leaves the change pending
-until a failover clears it; nothing here checks liveness.
-`AdoptedMatchesOpened` compares the control plane's leader, while it still
-holds the control plane's generation, with the pending set while there is
-one, since that is the set the control plane named it for. The swap walk
-found the window this closes: a replica removed by a cut-over that never
-heard of it stood, fenced the stopped old leader, and acknowledged on a
-majority of the old set, which the control plane had already dropped
+against it. While its change is pending a leader acknowledges on a majority of
+both sets (`HeldAtGen`) and ships to both. `CpFlip` takes the new set once a
+leader on it has its generation's start record acknowledged, which then sits
+on a majority of both, and `FinishChange` lets a leader drop the old set once
+the control plane holds its set. A failover (`Promote`) abandons the pending
+change; it writes the set at a generation above the pending one. While a
+change is pending, `CpAdopt` adopts only a leader on the pending set that is
+in the old set, and not a joining copy, and takes just the generation of one
+on the old set, which the new set's higher set generation deposes; the walk
+found an adopted old-set leader fenced that way. The one exception is the
+control plane's own leader on the old set: it opened past the change, and only
+it could have taken it, so the change is dropped. With no change pending, a
+leader elected on a set other than the recorded one is not adopted on its
+generation alone. A majority of the elected set may hold records no majority
+of the recorded one does, and a later failover would promote from the recorded
+set. If the leader is in the recorded set, the control plane writes the next
+generation under it with the elected set as the set being left and the
+recorded one pending, as a cut-over does (see the reissue below). If it is
+not, the elected set becomes the recorded set at its generation.
+`FelixShardElectAdoptAboveKeptSet.cfg` found the generation-only form leaving
+a pending change below the adopted generation that no leader could complete.
+No placement change other than a failover starts while one is pending. Only
+the control plane ends a pending change, so while it is down a lost majority
+of the old set stops writes, and a destination lost before the rest of the new
+set learns it leaves the change pending until a failover clears it; nothing
+here checks liveness. `AdoptedMatchesOpened` compares the control plane's
+leader, while it still holds the control plane's generation, with the pending
+set while there is one, since that is the set the control plane named it for.
+The swap walk found the window this closes: a replica removed by a cut-over
+that never heard of it stood, fenced the stopped old leader, and acknowledged
+on a majority of the old set, which the control plane had already dropped
 (`AckedOnMajority`).
 
 Three rules come from TLC. The first version let a refused candidate fence on
