@@ -823,7 +823,7 @@ fn generate(spec: &Page, pages: &[String]) -> Result<String, String> {
     let file = spec.files.join(", ");
     let mut blocks: Vec<Block> = Vec::new();
     for (name, page) in spec.files.iter().zip(pages) {
-        for mut block in rust_blocks_of(*name, page) {
+        for mut block in rust_blocks_of(name, page) {
             block.nth = 1 + blocks.iter().filter(|b| b.heading == block.heading).count();
             blocks.push(block);
         }
