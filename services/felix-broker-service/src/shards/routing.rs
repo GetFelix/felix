@@ -207,6 +207,26 @@ impl IngressRouter {
         self.store(View { routes, servable });
     }
 
+    /// [`Self::publish`], for a table in which the shards `holding` names
+    /// keep the routes last published for them. Each keeps its servable
+    /// entry too, so a shard's route and its readiness change together.
+    pub(crate) fn publish_holding(
+        &self,
+        table: felix_router::RoutingTable,
+        nodes: &HashMap<String, felix_router::NodeRef>,
+        mut servable: ServableShards,
+        holding: impl Fn(&ShardKey) -> bool,
+    ) {
+        servable.retain(|key, _| !holding(key));
+        let current = self.view.load();
+        for (key, generation) in &current.servable {
+            if holding(key) {
+                servable.insert(key.clone(), *generation);
+            }
+        }
+        self.publish(table, nodes, servable);
+    }
+
     /// Replace the servable set, keeping the routes last published to the
     /// router.
     pub fn publish_servable(&self, servable: ServableShards) {
@@ -624,8 +644,15 @@ pub fn routing_table_from(
     assignments: &std::collections::HashMap<ShardKey, crate::shards::watch::ShardAssignment>,
     nodes: &std::collections::HashMap<String, felix_router::NodeRef>,
 ) -> felix_router::RoutingTable {
+    build_table(assignments.values(), nodes)
+}
+
+fn build_table<'a>(
+    assignments: impl Iterator<Item = &'a crate::shards::watch::ShardAssignment>,
+    nodes: &std::collections::HashMap<String, felix_router::NodeRef>,
+) -> felix_router::RoutingTable {
     felix_router::RoutingTable::build_with(
-        assignments.values().map(|assignment| felix_router::Placed {
+        assignments.map(|assignment| felix_router::Placed {
             key: to_router_key(&assignment.key),
             leader: assignment.leader.clone(),
             // While a change is pending the route names the new set, as it
@@ -655,6 +682,97 @@ pub fn routing_table_from(
         }),
         nodes,
     )
+}
+
+/// The routes a reconcile pass publishes while it runs.
+///
+/// A shard the pass still has work for keeps the route last published for
+/// it. The replication driver reads the routes: naming this broker the
+/// leader of a shard it is still opening would have it ship from, or fence
+/// with, a log that is not yet open at that generation.
+struct Staged {
+    /// How many of each shard's actions are not done yet.
+    pending: std::sync::Mutex<HashMap<ShardKey, usize>>,
+    settled: tokio::sync::Notify,
+    finished: std::sync::atomic::AtomicBool,
+}
+
+impl Staged {
+    fn new(actions: &[crate::shards::lifecycle::Action]) -> Self {
+        let mut pending = HashMap::new();
+        for key in actions.iter().filter_map(|action| action.key()) {
+            *pending.entry(key.clone()).or_insert(0) += 1;
+        }
+        Self {
+            pending: std::sync::Mutex::new(pending),
+            settled: tokio::sync::Notify::new(),
+            finished: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    fn settle(&self, key: &ShardKey) {
+        let mut pending = self.pending.lock().expect("pending");
+        if let Some(left) = pending.get_mut(key) {
+            *left -= 1;
+            if *left == 0 {
+                pending.remove(key);
+            }
+        }
+        drop(pending);
+        self.settled.notify_one();
+    }
+
+    fn is_pending(&self, key: &ShardKey) -> bool {
+        self.pending.lock().expect("pending").contains_key(key)
+    }
+
+    fn finish(&self) {
+        self.finished
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.settled.notify_one();
+    }
+
+    /// Wait for a shard to settle. False once the pass is over, when the
+    /// feed publishes the whole table itself.
+    async fn wait(&self) -> bool {
+        self.settled.notified().await;
+        !self.finished.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// The routes for `now`, except that a shard still pending keeps the
+    /// assignment and prior set of `last`, the last full publish.
+    fn table(
+        &self,
+        now: &Published,
+        last: &Published,
+        nodes: &Nodes,
+    ) -> felix_router::RoutingTable {
+        let pending = self.pending.lock().expect("pending");
+        let settled = now
+            .assignments
+            .iter()
+            .filter(|(key, _)| !pending.contains_key(*key))
+            .map(|(_, assignment)| assignment);
+        let held = pending.keys().filter_map(|key| last.assignments.get(key));
+        let mut priors = now.priors.clone();
+        for key in pending.keys() {
+            let key = to_router_key(key);
+            match last.priors.get(&key) {
+                Some(prior) => priors.insert(key, prior.clone()),
+                None => priors.remove(&key),
+            };
+        }
+        build_table(settled.chain(held), nodes).with_priors(priors)
+    }
+}
+
+type Nodes = HashMap<String, felix_router::NodeRef>;
+
+/// What a full publish of the routes is built from.
+#[derive(Default)]
+struct Published {
+    assignments: HashMap<ShardKey, crate::shards::watch::ShardAssignment>,
+    priors: HashMap<felix_router::ShardKey, felix_router::PriorSet>,
 }
 
 /// The shards `after` names `local` a follower of, by key and incarnation,
@@ -761,8 +879,8 @@ pub fn spawn_feed(
         let mut ticker = tokio::time::interval(interval);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut catalog = HashMap::new();
-        // The assignments the last pass applied, to tell which are new.
-        let mut applied = HashMap::new();
+        // What the last pass published, to tell which assignments are new.
+        let mut last = Published::default();
         loop {
             let woken = tokio::select! {
                 _ = shutdown.cancelled() => return,
@@ -773,20 +891,25 @@ pub fn spawn_feed(
             let joint = joint_fence
                 .as_ref()
                 .is_some_and(|fleet| fleet.supports(felix_common::fleet::JOINT_FENCE));
-            let (assignments, renewals, priors) = {
+            let (now, renewals) = {
                 let owned = ownership.read().await;
-                (
-                    owned.assignments().clone(),
-                    owned.renewals().clone(),
-                    if joint {
+                let now = Published {
+                    assignments: owned.assignments().clone(),
+                    priors: if joint {
                         owned.priors()
                     } else {
                         HashMap::new()
                     },
-                )
+                };
+                (now, owned.renewals().clone())
             };
+            let assignments = &now.assignments;
             if let Some(prefetch) = &prefetch {
-                prefetch.named(newly_named(&applied, &assignments, ingress.local_node_id()));
+                prefetch.named(newly_named(
+                    &last.assignments,
+                    assignments,
+                    ingress.local_node_id(),
+                ));
             }
 
             // Read on every refresh rather than once, so a refreshed token is
@@ -805,15 +928,42 @@ pub fn spawn_feed(
                         .unwrap_or_else(|_| Err(anyhow::anyhow!("timed out"))),
                 )
             };
-            let ((), fetched) = tokio::join!(
-                crate::shards::lifecycle::reconcile_renewed(
+            let actions = crate::shards::lifecycle::plan_pass(
+                &lifecycle,
+                store.as_ref(),
+                assignments,
+                &renewals,
+            )
+            .await;
+            // Each shard's route moves to its new assignment as soon as this
+            // pass is done with it, so a shard serves once its own open is
+            // done rather than once every open in the pass is.
+            let staged = Staged::new(&actions);
+            let pass = async {
+                crate::shards::lifecycle::run_pass(
                     &lifecycle,
                     store.as_ref(),
-                    &assignments,
-                    &renewals,
-                ),
-                refresh,
-            );
+                    assignments,
+                    actions,
+                    &|key| staged.settle(key),
+                )
+                .await;
+                staged.finish();
+            };
+            let publish_settled = async {
+                while staged.wait().await {
+                    let table = staged.table(&now, &last, &catalog);
+                    // Under the lock, as the fence's own publish is, so
+                    // neither overwrites a newer servable set with an older.
+                    let lifecycle = lifecycle.lock().await;
+                    ingress.publish_holding(table, &catalog, lifecycle.servable(), |key| {
+                        staged.is_pending(key)
+                    });
+                    drop(lifecycle);
+                    routes_changed.notify_one();
+                }
+            };
+            let ((), (), fetched) = tokio::join!(pass, publish_settled, refresh);
             match fetched {
                 Some(Ok(fetched)) => {
                     if let Some(endpoints) = &client_endpoints {
@@ -834,17 +984,15 @@ pub fn spawn_feed(
             // Read after reconcile, so an open that just finished is included:
             // publishing the routes first would advertise this node as the
             // owner of a shard it has not opened.
-            let servable = lifecycle.lock().await.servable();
-            ingress.publish(
-                routing_table_from(&assignments, &catalog).with_priors(priors),
-                &catalog,
-                servable,
-            );
+            let table = routing_table_from(assignments, &catalog).with_priors(now.priors.clone());
+            let lifecycle = lifecycle.lock().await;
+            ingress.publish(table, &catalog, lifecycle.servable());
+            drop(lifecycle);
             crate::shards::watch::metrics::set_catalog_nodes(catalog.len());
             if woken {
                 routes_changed.notify_one();
             }
-            applied = assignments;
+            last = now;
         }
     })
 }

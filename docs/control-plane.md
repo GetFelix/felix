@@ -2004,6 +2004,21 @@ One task keeps the two views in step, in a fixed order: reconcile local shard
 state, publish what is servable, then publish the routes. Publishing routes
 first would advertise this node as the owner of a shard it has not opened.
 
+The order holds per shard, not per pass. After a failover a broker can take
+over hundreds of shards in one pass, and each open writes and fsyncs a few
+small files. So a pass opens up to 8 shards at once, with their fsyncs on the
+blocking pool, and publishes again each time a shard's work is done:
+
+- A shard the pass is done with gets its new route and servable entry.
+- A shard the pass still has work for keeps the route and servable entry
+  published last. Replication reads the routes, and a route naming this broker
+  the leader of a shard that is still opening would have it ship from, or
+  fence with, a log that is not open yet.
+- Releases, closes and moves run one at a time, in order, alongside the opens.
+
+A taken-over shard therefore serves as soon as its own open (and, for a
+replicated shard, its fence) is done, not when the slowest open in the pass is.
+
 **A shard this broker does not own is forwarded to the one that does**, and the
 publish is acknowledged only once the owner has written it. The owner does not
 take the forwarder's word for the caller's authority: it verifies the client's

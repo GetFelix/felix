@@ -338,6 +338,8 @@ mod feed {
     use std::time::Duration;
     use tokio_util::sync::CancellationToken;
 
+    mod takeover;
+
     /// A `/v1/nodes` endpoint that can be told to start failing, so the
     /// refresh-failure path is exercised without stopping a server.
     async fn nodes_endpoint(failing: Arc<AtomicBool>) -> (String, tokio::task::JoinHandle<()>) {
@@ -385,6 +387,13 @@ mod feed {
     }
 
     fn state(assignments: &[ShardAssignment]) -> (FeedState, Arc<ShardRouter>) {
+        state_with(assignments, Arc::new(EphemeralShardStore::default()))
+    }
+
+    fn state_with(
+        assignments: &[ShardAssignment],
+        store: Arc<dyn crate::shards::lifecycle::ShardStore>,
+    ) -> (FeedState, Arc<ShardRouter>) {
         let router = Arc::new(ShardRouter::new(
             "broker-a",
             "us-west-2",
@@ -404,7 +413,7 @@ mod feed {
                     ownership
                 })),
                 lifecycle: Arc::new(tokio::sync::Mutex::new(lifecycle)),
-                store: Arc::new(EphemeralShardStore::default()),
+                store,
                 ingress,
                 assignments_changed: Arc::default(),
                 routes_changed: Arc::default(),

@@ -34,6 +34,11 @@ use crate::shards::{ShardKey, ShardKind, watch::ShardAssignment};
 /// write inside the fence is a commit and a fanout, normally milliseconds.
 const QUIESCE_BOUND: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// How many shards one reconcile pass opens at once. Each open fsyncs a few
+/// small files, and these share the disk with the commits of every shard
+/// this broker leads or follows, so the bound stays small.
+pub(crate) const OPEN_CONCURRENCY: usize = 8;
+
 /// Where this broker is with one shard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Phase {
@@ -147,6 +152,19 @@ pub enum Action {
     },
     /// Nothing to do.
     None,
+}
+
+impl Action {
+    /// The shard this action is for; `None` for [`Action::None`].
+    pub(crate) fn key(&self) -> Option<&ShardKey> {
+        match self {
+            Self::Open { key, .. }
+            | Self::Release { key, .. }
+            | Self::Prepare { key }
+            | Self::Close { key, .. } => Some(key),
+            Self::None => None,
+        }
+    }
 }
 
 /// This broker's view of the shards it holds.
@@ -1327,6 +1345,36 @@ impl DurableShardStore {
 }
 
 impl DurableShardStore {
+    /// A stream shard's log, at `incarnation` when it is not 0.
+    ///
+    /// On the blocking pool: a log not open yet is recovered from disk, and a
+    /// new one creates and fsyncs its directory.
+    async fn stream_log(
+        &self,
+        key: &ShardKey,
+        incarnation: u64,
+    ) -> anyhow::Result<felix_broker::StreamLog> {
+        let storage = Arc::clone(&self.storage);
+        let key = key.clone();
+        let opened = tokio::task::spawn_blocking(move || {
+            let (tenant, namespace, stream) = (&key.tenant_id, &key.namespace, &key.stream);
+            match incarnation {
+                0 => storage.open_stream(tenant, namespace, stream, key.shard),
+                incarnation => {
+                    storage.open_stream_for(tenant, namespace, stream, key.shard, None, incarnation)
+                }
+            }
+        })
+        .await;
+        match opened {
+            Ok(log) => log.map_err(|err| anyhow::anyhow!("open shard log: {err}")),
+            Err(err) => match err.try_into_panic() {
+                Ok(panic) => std::panic::resume_unwind(panic),
+                Err(_) => anyhow::bail!("open shard log: the runtime is shutting down"),
+            },
+        }
+    }
+
     /// The shard's own log, stream or cache, at `incarnation` when it is not
     /// 0. `None` for a cache this store cannot reach.
     async fn own_log(
@@ -1335,22 +1383,7 @@ impl DurableShardStore {
         incarnation: u64,
     ) -> anyhow::Result<Option<felix_broker::StreamLog>> {
         match key.kind {
-            ShardKind::Stream => match incarnation {
-                0 => {
-                    self.storage
-                        .open_stream(&key.tenant_id, &key.namespace, &key.stream, key.shard)
-                }
-                incarnation => self.storage.open_stream_for(
-                    &key.tenant_id,
-                    &key.namespace,
-                    &key.stream,
-                    key.shard,
-                    None,
-                    incarnation,
-                ),
-            }
-            .map(Some)
-            .map_err(|err| anyhow::anyhow!("open shard log: {err}")),
+            ShardKind::Stream => self.stream_log(key, incarnation).await.map(Some),
             ShardKind::Cache => {
                 let Some(starts) = &self.generation_starts else {
                     return Ok(None);
@@ -1592,20 +1625,7 @@ impl ShardStore for DurableShardStore {
         }
         // Recovery happens here: validating the tail and rebuilding indexes is
         // exactly the cost the `Opening` phase is holding writes back for.
-        let log = match incarnation {
-            0 => self
-                .storage
-                .open_stream(&key.tenant_id, &key.namespace, &key.stream, key.shard),
-            incarnation => self.storage.open_stream_for(
-                &key.tenant_id,
-                &key.namespace,
-                &key.stream,
-                key.shard,
-                None,
-                incarnation,
-            ),
-        }
-        .map_err(|err| anyhow::anyhow!("open shard log: {err}"))?;
+        let log = self.stream_log(key, incarnation).await?;
 
         // Where this leadership begins. Followers record what they accept, and
         // until now a leader recorded nothing — so a broker's history had a
@@ -1952,7 +1972,19 @@ pub async fn record_term_start(
         .tail_offset()
         .await
         .map_err(|err| anyhow::anyhow!("read shard tail: {err}"))?;
-    if let Err(err) = log.record_generation(generation, tail) {
+    // The epoch file is written and fsynced, which must not hold up an async
+    // worker while a pass opens many shards at once.
+    let recording = log.clone();
+    let recorded =
+        tokio::task::spawn_blocking(move || recording.record_generation(generation, tail))
+            .await
+            .unwrap_or_else(|err| match err.try_into_panic() {
+                Ok(panic) => std::panic::resume_unwind(panic),
+                Err(_) => Err(felix_broker::BrokerError::Storage(
+                    "the runtime is shutting down".into(),
+                )),
+            });
+    if let Err(err) = recorded {
         if required {
             anyhow::bail!("record where generation {generation} begins: {err}");
         }
@@ -2157,44 +2189,118 @@ pub(crate) async fn reconcile_renewed(
     assignments: &HashMap<ShardKey, ShardAssignment>,
     renewals: &HashMap<ShardKey, u64>,
 ) {
-    let ready = |key: &ShardKey| {
-        let incarnation = assignments
-            .get(key)
-            .map_or(0, |assignment| assignment.incarnation);
-        !store.awaits_registration(key, incarnation)
-    };
+    let actions = plan_pass(lifecycle, store, assignments, renewals).await;
+    run_pass(lifecycle, store, assignments, actions, &|_| {}).await;
+}
+
+/// Decide what one pass over `assignments` has to do, under one lock.
+pub(crate) async fn plan_pass(
+    lifecycle: &tokio::sync::Mutex<ShardLifecycle>,
+    store: &dyn ShardStore,
+    assignments: &HashMap<ShardKey, ShardAssignment>,
+    renewals: &HashMap<ShardKey, u64>,
+) -> Vec<Action> {
+    let mut owned = lifecycle.lock().await;
     let mut actions = Vec::new();
-    {
-        let mut owned = lifecycle.lock().await;
-        for (key, assignment) in assignments {
-            let renewal = renewals.get(key).copied().unwrap_or(0);
-            actions.push(owned.observe_renewed(key, Some(assignment), renewal));
-        }
-        for key in owned.missing_from(assignments.keys()) {
-            actions.push(owned.observe(&key, None));
-        }
-        owned.forget_incoming_except(assignments);
-        actions.extend(owned.ready_to_open(ready));
-        // Last, so a shard being released is flushed and its readers ended
-        // before its logs close under them.
-        actions.extend(owned.relinquished(assignments));
+    for (key, assignment) in assignments {
+        let renewal = renewals.get(key).copied().unwrap_or(0);
+        actions.push(owned.observe_renewed(key, Some(assignment), renewal));
     }
-    for action in actions {
-        // Held, not failed: it opens on a later pass once the catalog has
-        // caught up, and this pass goes on with every other shard.
-        if let Action::Open { key, .. } = &action
-            && !ready(key)
-        {
-            tracing::info!(
-                stream = %key.stream,
-                shard = key.shard,
-                "shard assigned before its stream is registered here; opening once it is",
-            );
-            lifecycle.lock().await.await_registration(action);
-            continue;
+    for key in owned.missing_from(assignments.keys()) {
+        actions.push(owned.observe(&key, None));
+    }
+    owned.forget_incoming_except(assignments);
+    actions.extend(owned.ready_to_open(|key| registered(store, assignments, key)));
+    // Last, so a shard being released is flushed and its readers ended
+    // before its logs close under them.
+    actions.extend(owned.relinquished(assignments));
+    actions.retain(|action| action.key().is_some());
+    actions
+}
+
+/// Do what [`plan_pass`] decided, calling `settled` with each action's key
+/// once that action is done.
+///
+/// Opens run up to [`OPEN_CONCURRENCY`] at once: after a failover this
+/// broker takes over hundreds of shards, and one at a time each waits out
+/// the fsyncs of the one before it. Every other action runs one after
+/// another in the order planned, alongside the opens.
+pub(crate) async fn run_pass(
+    lifecycle: &tokio::sync::Mutex<ShardLifecycle>,
+    store: &dyn ShardStore,
+    assignments: &HashMap<ShardKey, ShardAssignment>,
+    actions: Vec<Action>,
+    settled: &(dyn Fn(&ShardKey) + Sync),
+) {
+    use futures::StreamExt as _;
+
+    let (opens, rest): (Vec<_>, Vec<_>) = actions
+        .into_iter()
+        .partition(|action| matches!(action, Action::Open { .. }));
+    let opens = async {
+        let mut waiting = opens.into_iter();
+        let mut running = futures::stream::FuturesUnordered::new();
+        loop {
+            while running.len() < OPEN_CONCURRENCY
+                && let Some(action) = waiting.next()
+            {
+                running.push(open_settled(lifecycle, store, assignments, action, settled));
+            }
+            if running.next().await.is_none() {
+                break;
+            }
         }
+    };
+    let rest = async {
+        for action in rest {
+            let key = action.key().cloned();
+            apply(lifecycle, store, action).await;
+            if let Some(key) = key {
+                settled(&key);
+            }
+        }
+    };
+    tokio::join!(opens, rest);
+}
+
+/// Apply one open from a pass, or hold it until its stream is registered,
+/// then report its key settled.
+async fn open_settled(
+    lifecycle: &tokio::sync::Mutex<ShardLifecycle>,
+    store: &dyn ShardStore,
+    assignments: &HashMap<ShardKey, ShardAssignment>,
+    action: Action,
+    settled: &(dyn Fn(&ShardKey) + Sync),
+) {
+    let Some(key) = action.key().cloned() else {
+        return;
+    };
+    // Held, not failed: it opens on a later pass once the catalog has
+    // caught up, and this pass goes on with every other shard.
+    if registered(store, assignments, &key) {
         apply(lifecycle, store, action).await;
+    } else {
+        tracing::info!(
+            stream = %key.stream,
+            shard = key.shard,
+            "shard assigned before its stream is registered here; opening once it is",
+        );
+        lifecycle.lock().await.await_registration(action);
     }
+    settled(&key);
+}
+
+/// Whether `key`'s stream or cache is registered at the incarnation its
+/// assignment names, so its shard can open.
+fn registered(
+    store: &dyn ShardStore,
+    assignments: &HashMap<ShardKey, ShardAssignment>,
+    key: &ShardKey,
+) -> bool {
+    let incarnation = assignments
+        .get(key)
+        .map_or(0, |assignment| assignment.incarnation);
+    !store.awaits_registration(key, incarnation)
 }
 
 #[cfg(test)]
