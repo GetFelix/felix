@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793693939543,
+  "lastUpdate": 1793698572729,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -55176,6 +55176,72 @@ window.BENCHMARK_DATA = {
             "range": "744.06",
             "unit": "us",
             "extra": "trials: 5\nmedian: 557.00\nmean: 1073.20\nstdev: 744.06\ncv: 69.33%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c42aed549378581b408d1941082fe9be26750582",
+          "message": "fix(replication): a replica missing from the node catalog stays a voter (#1845) (#1846)\n\nFixes #1845.\n\n## What was wrong\n\n`RoutingTable::build_with` dropped every replica the node catalog did not name (`filter_map(nodes.get)`). Everything that sizes a majority reads `Route::replicas`, so a missing catalog entry shrank all of them. The broker feed publishes routes even when its first `/v1/nodes` read fails (`shards/routing.rs`, `spawn_feed` starts with an empty catalog and keeps the last one on error). Reachable on main, shown by tests that fail with the fix reverted:\n\n- **Promotion fence** (`promotion.rs` `fence_log`, `voters = replicas.len() + 1`): with an empty catalog a promoted leader of three needed only itself and returned `Fenced` with neither follower asked. `promotion::tests::a_replica_missing_from_the_catalog_still_counts_toward_the_majority`\n- **`replicated()`** (`IngressRouter`, gates every `Quorum` wait in `quorum.rs`): an empty catalog read as unreplicated, so a `Quorum` write was acknowledged on the leader alone. `shards::routing::tests::a_shard_whose_followers_have_no_address_is_still_replicated`\n- **Ack count** (`held_at_generation` over cursors from `reconcile_followers`): RF 5 with two followers unresolved acknowledged on two of five. `driver::tests::quorum::a_follower_missing_from_the_catalog_is_a_voter_that_has_not_answered`\n- Same source, fixed by the same change, no dedicated test: `leadership.rs` read-round majority, the `ReplicaSetView` a fence carries (`replica_set::view`), `replica.rs` `FailoverTwo`'s `routed.len() != 2` (a set of three with one unresolved looked like a set of two), `reclaim::probe`.\n\n## Fix\n\n- An unresolved replica stays in the route as `NodeRef::unresolved` (port 0, `live: false`), the same placeholder the leader already used.\n- `Peer::connection` refuses port 0 without dialling and without starting a backoff, reusing an open connection to that node if there is one. So the replica counts as not answering, and it is reached as soon as the catalog names it.\n\n- `suspicion::leaders_followed` skips a leader with port 0. With an empty catalog a follower now sees itself in every route, and pinging the placeholder leader would make every leader it follows a suspect, which can depose healthy leaders. `suspicion::tests::a_leader_with_no_address_is_not_watched` fails without this.\n\nNot touched: `joint.rs` already counts the set being left from the priors' ids and skips asking members with no address; `held_by_both` counts `leaving` from assignment ids.\n\n## Hot path\n\nNo change for a resolved catalog: the route has the same entries, and the pool adds one port comparison after the pooled-connection lookup.\n\nRF 3 cluster A/B (Actions run 41577771449), a = merge-base 76fd2ff07, f = 6846ca974, 3 runners x 6 rounds, sides alternated, 18 pairs per phase, 0 failed publishes or reads. f/a is the median of per-pair ratios, with the range in brackets; a and f ranges overlap on every metric.\n\n| phase | throughput | p50 | p99 | p999 |\n|---|---|---|---|---|\n| steady (16 publishers) | 0.989 [0.920-1.105] | 1.006 [0.948-1.067] | 1.027 [0.670-1.163] | 1.004 [0.254-3.156] |\n| promotion burst | 1.007 [0.798-1.378] | 1.035 [0.889-1.263] | 0.892 [0.423-2.163] | 0.898 [0.420-2.466] |\n\nNo regression.\n\n## Design calls\n\n- Placeholder in `replicas` rather than a separate `unresolved` list. Every existing and future quorum site then counts the full set without having to know about the catalog. The price is that unresolved replicas get cursors and fence asks that fail fast, which is the \"has not answered\" meaning we want.\n- Port 0 is the \"no address\" marker, as for the leader placeholder. No real advertise address has port 0, and quinn would refuse to dial it anyway.\n- A promotion that a reachable majority has refused stays `Pending`, without reporting a refusal, while an unresolved replica could still answer. Example: set {A, B, C}, B promised elsewhere, C not in the catalog. Before, C was dropped and A reported the refusal. Now C counts as a voter that has not answered, so A keeps waiting until the catalog names C. That fails closed, which is the Raft reading.\n- Existing open connections are reused for a node whose address went missing. The connection was authenticated to that node id, so its answer is a real member's answer.\n\n## Docs\n\n`docs/replication-design.md` (Fencing a promotion, Acknowledging by the followers) and `docs-site/.../architecture/semantics.md` say the voters are the assigned set and an unresolved replica counts as not answering. Changelog entry added.\n\nSpec-Unaffected: the model already counts the assignment's set; this fixes code that counted only the replicas it had addresses for.\n\n## S9 branch (`feat/1009-s9-election-driver`), reviewed, not edited\n\nThe candidate's pre-vote counts `set.members` from the kept set and only skips asking voters with no address, so it fails closed. `Recorded::of_route` builds from `replica_set::view(route)`. On main that view was short with a stale catalog, so the candidate went ineligible (fail-closed). With this fix it matches. The elected route goes through `routing_table_from`, so it gets the fix too.",
+          "timestamp": "2026-11-03T01:29:52-08:00",
+          "tree_id": "3a8ffc9dd083b571160b8cf9e45dab3cc66daf9d",
+          "url": "https://github.com/GetFelix/felix/commit/c42aed549378581b408d1941082fe9be26750582"
+        },
+        "date": 1793698566758,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 95,
+            "range": "1.67",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 95.00\nmean: 95.40\nstdev: 1.67\ncv: 1.75%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 130,
+            "range": "7.04",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 130.00\nmean: 132.00\nstdev: 7.04\ncv: 5.33%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 170,
+            "range": "160.26",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 170.00\nmean: 259.20\nstdev: 160.26\ncv: 61.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 131,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 131.00\nmean: 131.40\nstdev: 0.55\ncv: 0.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 252,
+            "range": "7.33",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 252.00\nmean: 255.80\nstdev: 7.33\ncv: 2.86%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 369,
+            "range": "426.75",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 369.00\nmean: 536.80\nstdev: 426.75\ncv: 79.50%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
