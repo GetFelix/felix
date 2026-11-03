@@ -267,19 +267,28 @@ async fn missing_on(cluster: &Cluster, node: &str, wanted: &[String]) -> Vec<Str
         tokio::time::Instant::now() + felix_cluster::wait::budget(Duration::from_secs(20));
     loop {
         let mut held = BTreeSet::new();
-        if let Ok((_client, mut replay)) = cluster.replay_on(node, STREAM).await {
-            while let Ok(Ok(Some(event))) =
-                tokio::time::timeout(Duration::from_secs(2), replay.next_event()).await
-            {
-                held.insert(String::from_utf8_lossy(&event.payload).into_owned());
-            }
-        }
+        let ended = match cluster.replay_on(node, STREAM).await {
+            Ok((_client, mut replay)) => loop {
+                match tokio::time::timeout(Duration::from_secs(2), replay.next_event()).await {
+                    Ok(Ok(Some(event))) => {
+                        held.insert(String::from_utf8_lossy(&event.payload).into_owned());
+                    }
+                    Ok(Ok(None)) => break "the broker ended the replay".to_string(),
+                    Ok(Err(err)) => break format!("delivery error: {err:#}"),
+                    Err(_) => break "no event within 2s".to_string(),
+                }
+            },
+            Err(err) => format!("{err:#}"),
+        };
         let missing: Vec<String> = wanted
             .iter()
             .filter(|record| !held.contains(*record))
             .cloned()
             .collect();
         if missing.is_empty() || tokio::time::Instant::now() >= deadline {
+            if !missing.is_empty() {
+                eprintln!("replaying {STREAM} on {node} ended with: {ended}");
+            }
             return missing;
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -354,10 +363,26 @@ async fn a_follower_is_elected_while_the_control_plane_is_down() {
         .iter()
         .find(|id| **id != elected)
         .expect("the other follower");
-    let missing = missing_on(&cluster, survivor, &acked).await;
+    // A follower does not serve reads, so its copy is checked through the
+    // leader's report: caught up at the elected generation.
+    let last = Mutex::new(None);
+    let caught_up = felix_cluster::wait::until(
+        Duration::from_secs(30),
+        "the other follower to catch up with the elected leader",
+        || async {
+            let report = cluster.replica_report(STREAM, 0).await.ok().flatten();
+            let done = report.as_ref().is_some_and(|report| {
+                report.generation >= generation && report.caught_up.contains(survivor)
+            });
+            *last.lock().expect("lock") = report;
+            done
+        },
+    )
+    .await;
     assert!(
-        missing.is_empty(),
-        "the other follower {survivor} lacks acknowledged records: {missing:?}"
+        caught_up.is_ok(),
+        "the other follower {survivor} is not caught up at {generation}: the last report is {:?}",
+        last.lock().expect("lock")
     );
     read_logged(&cluster, OPENED, &mut opened);
     assert_one_leader_per_generation(&opened, before.generation);
@@ -538,6 +563,7 @@ async fn the_control_plane_returning_mid_election_leaves_one_leader() {
 struct Writer {
     acked: Arc<Mutex<Vec<String>>>,
     stop: Arc<AtomicBool>,
+    last_error: Arc<Mutex<Option<String>>>,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -553,9 +579,11 @@ impl Writer {
         let token = cluster.client_token();
         let acked = Arc::new(Mutex::new(Vec::new()));
         let stop = Arc::new(AtomicBool::new(false));
+        let last_error = Arc::new(Mutex::new(None));
         let task = tokio::spawn({
             let acked = Arc::clone(&acked);
             let stop = Arc::clone(&stop);
+            let last_error = Arc::clone(&last_error);
             async move {
                 let mut i = 0usize;
                 while !stop.load(Ordering::Relaxed) {
@@ -576,15 +604,33 @@ impl Writer {
                         anyhow::Ok(())
                     })
                     .await;
-                    if matches!(sent, Ok(Ok(()))) {
-                        acked.lock().expect("acked lock").push(payload);
+                    match sent {
+                        Ok(Ok(())) => acked.lock().expect("acked lock").push(payload),
+                        Ok(Err(err)) => {
+                            *last_error.lock().expect("error lock") =
+                                Some(format!("via {addr}: {err:#}"));
+                        }
+                        Err(_) => {
+                            *last_error.lock().expect("error lock") =
+                                Some(format!("via {addr}: no answer within 3s"));
+                        }
                     }
                     i += 1;
                     tokio::time::sleep(Duration::from_millis(20)).await;
                 }
             }
         });
-        Self { acked, stop, task }
+        Self {
+            acked,
+            stop,
+            last_error,
+            task,
+        }
+    }
+
+    /// The last publish that failed, and why.
+    fn last_error(&self) -> Option<String> {
+        self.last_error.lock().expect("error lock").clone()
     }
 
     fn acked(&self) -> usize {
@@ -637,7 +683,12 @@ async fn the_control_plane_stays_down_across_a_leader_kill_under_load() {
         },
     )
     .await
-    .expect("the writer's records are acknowledged after the election");
+    .unwrap_or_else(|err| {
+        panic!(
+            "the writer's records are acknowledged after the election: {err:#}; its last failure: {:?}",
+            writer.last_error()
+        )
+    });
 
     cluster
         .recover_control_plane()
