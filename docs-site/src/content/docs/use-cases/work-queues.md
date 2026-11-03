@@ -173,8 +173,9 @@ loop {
 A single-shard consumer can long-poll instead with `group_poll_wait`, which
 asks the broker to hold the request until work arrives or the wait elapses.
 
-The Python binding has the same calls per shard (`group_poll`, `group_ack`,
-`group_nack`, `group_dead_letters`, `group_redrive`, `group_discard`):
+The Python and TypeScript bindings have the same calls per shard (`group_poll`,
+`group_ack`, `group_nack`, `group_dead_letters`, `group_redrive`, `group_discard`;
+camelCase in TypeScript, for example `groupPoll`). In Python:
 
 ```python
 for record in client.group_poll("acme", "prod", "jobs", 0, "workers", max_records=16, wait=5.0):
@@ -247,8 +248,7 @@ JetStream when you want acknowledged messages gone.
 
 **A group is bound to one shard.** The broker serves one shard's group at a time
 and nothing assigns shards to workers. Give a queue one shard, or have each worker
-poll every shard, which `ShardedGroup` does for you in Rust. The Python binding
-has no sharded helper.
+poll every shard, which `ShardedGroup` does for you in Rust, Python and TypeScript.
 
 **Timeouts and retry limits are broker settings.** The default visibility timeout
 and the attempt bound are not per stream or per group. Size your handlers to the
@@ -264,13 +264,13 @@ in-memory state rebuilt from disk, which redelivers what it still had in flight.
 
 **Groups need durable storage and the right role.** A role needs `group.consume`
 to poll and settle and `group.manage` to redrive or discard, and it can hold
-either on a single group. The Rust and Python clients have the calls.
+either on a single group. The Rust, Python and TypeScript clients have the calls.
 
 ## Related
 
 - [Queues and consumer groups](/features/queues/)
 - [Demo: queue semantics](/demos/queue-semantics/)
-- [Rust consumer groups](/clients/rust/#consumer-groups)
-- [Idempotent producers](/clients/rust/#idempotent-producers)
+- [Rust consumer groups](/clients/rust/groups-and-commits/#consumer-groups)
+- [Idempotent producers](/clients/rust/publishing/#idempotent-producers)
 - [Atomic commits](/features/atomic-commits/), for writing a job and the state it belongs to as one record
 - [felix-agents](/built-on-felix/agents/), which hands tasks out to a swarm of AI workers through a consumer group

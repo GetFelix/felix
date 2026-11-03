@@ -226,7 +226,7 @@ broker's environment. See [Multi-tenant SaaS](/use-cases/multi-tenant-saas/).
 ## Related
 
 - [Counters in the cache features](/features/cache/#8-counters)
-- [Rust client counters](/clients/rust/#counters)
+- [Rust client counters](/clients/rust/cache/#counters)
 - [Python cache and counters](/clients/python/#cache-and-counters)
 - [felixctl counters](/getting-started/felixctl/#counters)
 - [Consistency levels](/features/cache/#6-consistency-levels)

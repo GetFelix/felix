@@ -832,7 +832,7 @@ it. See [Known limit](#known-limit).
    fresh token it returns. A renewal that does not apply means the lease is
    gone: stop using the old token.
 
-The [Rust client page](../docs-site/src/content/docs/clients/rust.md#leases-and-lease-tokens)
+The [Rust client page](../docs-site/src/content/docs/clients/rust/cache.md#leases-and-lease-tokens)
 has the code.
 
 ```mermaid

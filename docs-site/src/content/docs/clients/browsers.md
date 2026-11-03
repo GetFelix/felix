@@ -258,6 +258,9 @@ podman run -p 8787:8787 \
   ghcr.io/getfelix/felix-gateway:0.8.0
 ```
 
+The gateway is versioned on its own, apart from Felix. Release 0.8.0 is
+tested against Felix 0.6.2.
+
 If the brokers use a certificate from a private CA, mount it and set
 `GATEWAY_FELIX_CA_FILE`; set `GATEWAY_FELIX_SERVER_NAME` to the name the
 certificate carries. See [Docker or Podman](/getting-started/containers/) for
@@ -277,6 +280,27 @@ GATEWAY_SCOPE_FILE=scope.toml GATEWAY_TENANT=my-tenant \
 The repository's `dev/up.sh` starts a control plane, a broker, a stand-in
 identity provider and seeded rooms, and `dev/seed.mjs` shows every grant a
 deployment needs.
+
+## Compared with a native client
+
+The browser protocol above is the whole surface. It has no message for anything else, so these are things a native [Felix client](/clients/overview/) does that a browser app cannot do through the gateway:
+
+| Feature | Native clients | Through the gateway |
+| --- | --- | --- |
+| Publish, subscribe from "live" or an offset | Yes | Yes |
+| Cache get, put, delete and watch | Yes | Yes |
+| Counter add | Yes | Yes |
+| Counter read | Yes | No |
+| Idempotent producers | Rust, Python, TypeScript, C#, C | No. The gateway never resends a publish, and the app decides whether a retry is safe. |
+| Record headers | Rust | No |
+| Replay from a time | Rust, Python, TypeScript, C#, C | No. Subscribe from an offset. |
+| Consumer groups | Yes | No |
+| Atomic commits and conditional writes | Yes | No |
+| Head trims | Yes | No |
+| Choosing a shard | Yes | No |
+| Client certificates (mutual TLS) | Rust | No. The browser's identity is its sign-in token. |
+
+Use a native client on a server you control when you need these, and the gateway for the part of the app that runs in the browser.
 
 ## Limits
 

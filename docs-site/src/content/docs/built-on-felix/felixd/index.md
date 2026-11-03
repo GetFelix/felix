@@ -12,10 +12,12 @@ workloads continues on another node from the last record it handled, with no
 gaps and no duplicates in its output. Any workload can be rebuilt as it was at a
 past input offset or time, and inspected.
 
-This section explains how felixd works and how to use it. The felixd
-repository's [docs](https://github.com/GetFelix/felixd/tree/main/docs) are the
-reference for the current workload contract, every record kind and the
-operator commands, and they move faster than these pages. Where something is
+This section explains how felixd works and how to use it. felixd runs
+workload contracts 0.2 and 0.3. These pages teach 0.2, which is enough to write
+and run a workload; 0.3 is the current one. The felixd repository's
+[docs](https://github.com/GetFelix/felixd/tree/main/docs) are the reference for
+0.3, every record kind and the operator commands. They move faster than these
+pages. Where something is
 not built, a page says so and links the felixd issue.
 
 | Page | What it covers |
@@ -66,7 +68,7 @@ not built, a page says so and links the felixd issue.
   without failing the workload, chunked snapshots and the authenticated
   publisher of each input. felixd runs contract 0.3 and still runs 0.2; the
   pages here describe 0.2, which is enough to write and run a workload.
-- **Release binaries and operator docs.** Each release has builds for Linux and
+- **Release binaries and operator docs.** Releases have builds for Linux and
   macOS, a compose file starts a three-node cluster, and
   [`docs/operating.md`](https://github.com/GetFelix/felixd/blob/main/docs/operating.md)
   covers running one.

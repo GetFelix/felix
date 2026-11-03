@@ -162,6 +162,10 @@ Other workflows:
   changes, one job per family, nightly (`task tla:walk`).
 - `power-loss-nightly.yml`: the storage power-loss suite across 110 seeds per
   scenario from a random base, where pull requests run eight plus the pinned ones.
+- `scale-nightly.yml`: the lease canary in `felix-cluster`'s `scale` suite at
+  1500 streams on a release build (pull requests run 600 once the #1760 fixes
+  are on main). A failed night opens an issue labelled `scale-nightly`. See
+  [How Felix Is Tested](/architecture/testing/#shard-starvation).
 - `soak.yml`: a weekly soak and resource-leak run.
 - `perf-pr.yml`, `perf-publish.yml`, `perf-comprehensive.yml`: benchmarks. The
   PR run is advisory and never fails a check.

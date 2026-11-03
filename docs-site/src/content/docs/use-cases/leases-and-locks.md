@@ -24,25 +24,25 @@ Start the stack from the
 [Quickstart](/getting-started/quickstart/#try-it-in-one-command) (it covers Podman
 too) and run these from the directory holding `compose.yaml`.
 
-Conditional writes, which make the lease safe, are not in `felixctl`, so the
-election code on this page is Rust. What `felixctl` shows is how a lapsing
-lease reaches the workers waiting for it. In one terminal, watch the key:
+In one terminal, watch the key:
 
 ```bash
-docker compose run --rm felixctl cache watch config --key lease/job-1
+docker compose run --rm felixctl cache watch config --key lease/job-1 --retained
 ```
 
-In another, take a lease for ten seconds and read it:
+In another, take a lease for thirty seconds and read it:
 
 ```bash
-docker compose run --rm felixctl cache put config lease/job-1 worker-a --ttl-ms 10000
+docker compose run --rm felixctl cache put config lease/job-1 worker-a --ttl-ms 30000
 docker compose run --rm felixctl cache get config lease/job-1
 ```
 
-The watcher prints the put. The `get` prints `worker-a`. Ten seconds later the
+The watcher prints `worker-a` and `get` prints it too. Thirty seconds later the
 watcher prints `lease/job-1<TAB>(deleted)` without anyone polling, and `get`
-exits with status 5. To see the compare-and-set, run the Rust example below
-against a cluster from the
+exits with status 5.
+
+Conditional writes, which make the lease safe, are not in `felixctl`. To see the
+compare-and-set, run the Rust example below against a cluster from the
 [Quickstart](/getting-started/quickstart/#a-cluster-in-one-command).
 
 ## Why Felix fits
@@ -353,8 +353,8 @@ along with the work and have the resource refuse a lower one.
 [status page](/getting-started/what-felix-is-for/) lists strongly consistent
 coordination as a weak fit while the multi-node story is 🚧 Partial. If you need
 strongly consistent coordination today, etcd, Consul or ZooKeeper are the
-purpose-built choice; for leases that tolerate this model, use `Quorum` and a fence. The conditional calls are in the Rust, Python,
-TypeScript and .NET clients.
+purpose-built choice; for leases that tolerate this model, use `Quorum` and a
+fence. The conditional calls are in every client.
 
 ## Related
 
@@ -363,4 +363,4 @@ TypeScript and .NET clients.
 - [Conditional publishes](/features/pubsub/#conditional-publishes)
 - [Atomic commits](/features/atomic-commits/#a-commit-at-an-expected-offset)
 - [Delivery semantics and consistency](/architecture/semantics/)
-- [Rust client](/clients/rust/#conditional-writes)
+- [Rust client](/clients/rust/cache/#conditional-writes)

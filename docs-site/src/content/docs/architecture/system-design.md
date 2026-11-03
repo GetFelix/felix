@@ -299,7 +299,9 @@ started with `FELIX_QUORUM_READS=lease` keeps its reads on the lease.
 
 A stream created with a `region` is placed only on brokers in that region, or in a region that the directional allowlist `FELIX_REGION_BRIDGES` bridges it to. A broker forwards a request only to a leader in a region it has a bridge to. See [Data residency](/use-cases/data-residency/) for how to set this up.
 
-That is all Felix enforces today. It has no bridge agent, no per-region encryption boundary, no audit log of cross-region movement and no metadata-level isolation, so do not make a compliance claim from it. The target design is in [`docs/design.md`](https://github.com/GetFelix/felix/blob/main/docs/design.md).
+The control plane applies this at placement, rebalancing, drains, failover and operator moves. A broker reports its region with `FELIX_REGION_ID`.
+
+The limits are: Felix has no bridge agent, no per-region encryption boundary, no audit log of cross-region movement and no metadata-level isolation, so do not make a compliance claim from it. The target design is in [`docs/design.md`](https://github.com/GetFelix/felix/blob/main/docs/design.md).
 
 ## Scalability Considerations
 
