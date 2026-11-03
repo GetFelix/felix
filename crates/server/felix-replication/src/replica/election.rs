@@ -574,10 +574,11 @@ impl ReplicaHandler {
         self.heard.lock().insert(key.clone(), Instant::now());
     }
 
-    /// Whether this broker serves `key` open at the generation its route
-    /// names, and its log has not promised past it. A route naming it is not
-    /// enough: one that went stale while this broker was cut off would keep
-    /// refusing a live majority's election for as long as nobody fences it.
+    /// Whether this broker's route names it leader of `key`, its log has
+    /// opened at that generation at least once, and has not promised past it.
+    /// A route naming it is not enough: one that went stale while this broker
+    /// was cut off would keep refusing a live majority's election for as long
+    /// as nobody fences it.
     fn leads(&self, key: &felix_router::ShardKey, log: &felix_broker::StreamLog) -> bool {
         self.router.snapshot().get(key).is_some_and(|route| {
             route.leader.node_id == self.router.local_node_id()

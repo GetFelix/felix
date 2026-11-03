@@ -578,7 +578,8 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                 .map(|replica| replica.node_id.clone())
                 .collect();
             self.fences.push(Box::pin(async move {
-                let (key, generation, outcome) =
+                // Held until the shard has opened.
+                let (key, generation, outcome, _fencing) =
                     fence_one(cx.requester, cx.broker, cx.router, key, route, cx.marks).await;
                 let (took, why) = match &outcome {
                     Outcome::Pending { why, took } => (Some(took.clone()), Some(why.clone())),

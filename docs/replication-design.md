@@ -4248,8 +4248,9 @@ the kept set alone never reaches.
 > `a_candidate_stands_above_the_routes_generation`,
 > `a_candidate_does_not_stand_past_the_adoption_window`,
 > `a_standing_is_kept_while_its_fence_runs`,
+> `a_standing_is_kept_until_its_shard_opens`,
 > `only_a_leader_open_at_its_routes_generation_refuses_a_pre_vote`,
-> `a_cut_off_leader_records_the_elected_leader_from_its_fence`,
+> `a_cut_off_leader_takes_the_elected_leaders_fence`,
 > `an_elected_leader_fences_a_follower_whose_route_is_behind_again`.
 
 When only the generation is taken, the control plane names its own leader at

@@ -976,7 +976,7 @@ async fn a_promotion_waits_for_the_fleet_view_before_the_lease() {
         let dead = &dead;
         let router = &router;
         async move {
-            let (_, _, outcome) = fence_one(dead, &broker, router, key(), route, &marks).await;
+            let (_, _, outcome, _) = fence_one(dead, &broker, router, key(), route, &marks).await;
             outcome
         }
     };
