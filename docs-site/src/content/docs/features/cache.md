@@ -845,7 +845,7 @@ cache_send_window: 268435456         # send window
 
 ## Limits
 
-1. **No multi-key operations**: the cache has no multi-key get and no transaction. A conditional write checks one key. To change several pieces of state together with an event, use an [atomic commit](/features/atomic-commits/), which writes the event and its state updates as one record on one shard.
+1. **No multi-key operations**: the cache has no multi-key get and no transaction. A conditional write checks one key. If the state belongs with an event, keep it in a stream's keyed state and write both with an [atomic commit](/features/atomic-commits/). That state is read with `state_get`, not through the cache.
 2. **Best-effort eviction** in the in-memory backend: no guaranteed LRU or LFU. The log-backed cache does not evict at all; it compacts.
 3. **A prefix watch reads one shard**: keys sharing a prefix hash to different shards, so `Connection` needs one `watch_cache_shard` per shard. `Client::watch_cache_sharded` opens and merges them for you, as `subscribe_sharded` does for streams
 

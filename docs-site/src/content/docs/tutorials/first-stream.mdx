@@ -714,7 +714,7 @@ bound removes old records.
 
 If `read` fails with a cursor error, the offset in your checkpoint is older than
 the stream's retention. See
-[A consumer that survives a restart](/clients/rust/#a-consumer-that-survives-a-restart)
+[A consumer that survives a restart](/clients/rust/subscribing/#a-consumer-that-survives-a-restart)
 for how to handle that in a long-running reader.
 
 ## C
@@ -971,7 +971,7 @@ This links `lib/libfelix.dylib` on macOS. To build from source instead, see
 ## Where next
 
 [A work queue](/tutorials/work-queue/) reads a stream as jobs, so each record
-goes to one worker and a failed one comes back. The [Rust client page](/clients/rust/#subscribing)
+goes to one worker and a failed one comes back. The [Rust client page](/clients/rust/subscribing/#subscribing)
 covers subscribing in more depth, including ranges and what to do when a
 subscription falls behind, and [Durable storage](/architecture/durable-storage/)
 explains how the log, offsets and retention fit together.

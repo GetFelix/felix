@@ -363,4 +363,4 @@ fence. The conditional calls are in every client.
 - [Conditional publishes](/features/pubsub/#conditional-publishes)
 - [Atomic commits](/features/atomic-commits/#a-commit-at-an-expected-offset)
 - [Delivery semantics and consistency](/architecture/semantics/)
-- [Rust client](/clients/rust/#conditional-writes)
+- [Rust client](/clients/rust/cache/#conditional-writes)
