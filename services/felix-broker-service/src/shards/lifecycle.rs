@@ -1993,14 +1993,42 @@ async fn accept_led_generation(
     }
 }
 
-/// Write this leader's generation-start record, unless the log already starts
-/// the generation with one (an earlier attempt to open got that far), the
-/// generation already has records of its own, or the stream is in-memory.
+/// Whether the generation beginning at `start` began before the fleet
+/// finalized `generation_start`: its first record is still in the log and is
+/// not a start record. A later generation that began on an empty log has none
+/// either; it was never fenced or elected, so it needs no stint record.
+/// Retention may have dropped the first record, which says nothing either
+/// way, so that reads as false and the caller writes one. A failed read is an
+/// error rather than a guess, since guessing "before" would skip the record a
+/// new stint needs.
+async fn began_before_the_finalize(
+    log: &felix_broker::StreamLog,
+    start: u64,
+) -> anyhow::Result<bool> {
+    if start < log.physical_base() {
+        return Ok(false);
+    }
+    let first = match log.read_replicated_from(start, 1).await {
+        Ok(first) => first,
+        // Retention dropped it between the check above and the read.
+        Err(_) if start < log.physical_base() => return Ok(false),
+        Err(err) => anyhow::bail!("read the generation's first record: {err}"),
+    };
+    Ok(first
+        .first()
+        .is_some_and(|record| record.offset == start && !record.mark.is_generation_start()))
+}
+
+/// Write this leader's generation-start record, unless an earlier attempt to
+/// open got that far with nothing written since, or the stream is in-memory.
 ///
-/// It goes at the generation's recorded start, before any client write, so
+/// A new generation's goes at its recorded start, before any client write, so
 /// the quorum mark can cover records this leader inherited once a majority
-/// holds it. See `docs/replication-design.md`. For a cache shard `log` is its
-/// cache log or its counter log, each with a mark of its own.
+/// holds it. A generation this broker already started, with records past
+/// its start, gets another at the tail: the new stint's, which a set
+/// change's flip waits for. See `docs/replication-design.md`. For a cache
+/// shard `log` is its cache log or its counter log, each with a mark of its
+/// own.
 pub async fn write_generation_start(
     broker: &felix_broker::Broker,
     log: &felix_broker::StreamLog,
@@ -2021,26 +2049,38 @@ pub async fn write_generation_start(
             return Ok(());
         }
     }
-    if felix_replication::quorum::generation_start(log, generation)
-        .await
-        .is_some()
-    {
-        return Ok(());
-    }
     let tail = log
         .tail_offset()
         .await
         .map_err(|err| anyhow::anyhow!("read shard tail: {err}"))?;
+    let started = felix_replication::quorum::generation_start(log, generation)
+        .await
+        .is_some();
     match log.generations().last() {
         Some(epoch) if epoch.generation == generation && epoch.start_offset == tail => {}
-        // This broker led at this generation before and reopens it after a
-        // restart or a lost lease, which is always the case for a generation
-        // that began before the fleet finalized `generation_start`. The mark
-        // already counts from the recorded start and every record past it is
-        // this generation's own, so there is nothing inherited to cover.
+        // A new stint at a generation this broker led before: it was elected
+        // there and a cut-over names it there again, or it opens again after
+        // a restart. Records the earlier stint acknowledged on the old set
+        // alone sit past the generation's start, so a flip counted from there
+        // could leave them off a majority of the new set (#1787). Skipped when
+        // the log holds nothing past the start record, already ends with this
+        // stint's, or the generation began before the fleet finalized
+        // `generation_start`: it has had no elections, and every record past
+        // its start is its own. Once retention drops such a generation's
+        // first record that cannot be told, and it gets one; that only
+        // delays the mark by a record.
         Some(epoch) if epoch.generation == generation && epoch.start_offset < tail => {
-            return Ok(());
+            let nothing_since = started && tail == epoch.start_offset + 1;
+            if nothing_since
+                || log.stint_start(generation) == Some(tail - 1)
+                || (!started && began_before_the_finalize(log, epoch.start_offset).await?)
+            {
+                return Ok(());
+            }
         }
+        // An earlier attempt to open wrote it, and a newer generation has
+        // begun since.
+        _ if started => return Ok(()),
         // Anywhere else, the records before it would not be this
         // generation's, and the mark would count them as if they were.
         _ => anyhow::bail!("generation {generation} does not begin at the tail {tail}"),

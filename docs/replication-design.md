@@ -1585,18 +1585,53 @@ stream shard at a new generation and its log is not empty: after a promotion,
 at a fresh placement over an existing log, at either end of a move, and on a
 hand-back. The control plane bumps the generation at each step of a move, so
 the leader that stays writes one at the staging and the fence too; they cost
-an offset each and nothing else. A reopen that finds the generation already
-has records writes none, fenced or not: the leader led at this generation
-before and comes back to it after a restart or a lost lease, the mark already
+an offset each and nothing else. A cache shard writes one on its cache log and
+one on its counter log, at the same points, since its fence can take a longer
+log on either; each mark counts only past a record in its own log
+(`a_cache_leader_counts_only_its_own_generation`). Cache replay, watches and
+counter sums skip the record.
+
+An open that does not fence writes none when the generation already has
+records. That is a broker that does not fence its shards, or the old leader's
+end of a move, coming back to a generation it led before: the mark already
 counts from the generation's recorded start, and every record past that start
-is the generation's own, so there is nothing inherited to cover. This is also
-how a shard whose generation began before the fleet finalized
-`generation_start` keeps serving: it has records at that generation and no
-start record, and it gets its first one at its next leadership change. A cache
-shard writes one on its cache log and one on its counter log, at the same
-points, since its fence can take a longer log on either; each mark counts only
-past its own log's record (`a_cache_leader_counts_only_its_own_generation`).
-Cache replay, watches and counter sums skip the record.
+is the generation's own, so there is nothing inherited to cover. A shard whose
+generation began before the fleet finalized `generation_start` keeps serving
+the same way: it has records at that generation and no start record, and it
+gets its first one at its next leadership change.
+
+**A new stint at the same generation.** A replicated broker opens its shards
+fenced, including after a restart. A fenced open at a generation this broker
+already started, with records past its start record, writes another start
+record at the tail. This holds when retention has dropped the first start
+record too: the generation history says the generation began below what the
+log still holds. A generation that began before the fleet finalized
+`generation_start` still reopens without one: it has had no elections, so
+every record past its start is its own, as for an open that does not fence.
+If retention has dropped its first record too, the broker cannot tell it from
+a trimmed start record and writes one, which costs an offset and nothing
+else. Once elections ship, a broker also writes a stint record when it was
+elected at a generation and is then named there by a cut-over the control
+plane wrote without hearing of the election. Each such open is a new stint, and the leader counts
+from the start record of its current stint (`own_start` in the driver). The
+generation history still says where the generation began.
+
+The difference matters for a set change. Records the elected stint
+acknowledged on the old set alone sit between the two start records, and a
+copy joining in the cut-over may not hold them. If the joint start were
+counted from the first record, the control plane could flip to the new set
+while such a record is on one copy of it
+(`FelixShardElectSwapFlipJoinLagsFirstStart.cfg`, #1787). The current stint's
+start reaches a majority of the new set only behind those records
+(`the_joint_start_waits_for_the_current_stints_start`). The log remembers its
+current stint's start in memory only; after a restart the next fenced open
+writes a new one, even when the log already ends with an earlier stint's. A
+cache shard's counter log counts its joint start from its current stint's
+start record too
+(`the_counter_logs_joint_start_waits_for_the_current_stints_start`). Its mark
+still counts from the start the generation history records: the records
+between the two starts are this generation's own, and only the flip needs
+them on the new set.
 
 An in-memory stream writes none either. Its publishes never reach the shard's
 log: they take no offsets, nothing ships, the fence has nothing to take, and a
@@ -2246,6 +2281,11 @@ batch, since the batch stays on disk and the next leader can commit it. A
 generation-start record written behind a held batch does not move it. While the lease is lapsed the bound is `Refused`: new
 subscribes, watches and cache reads are refused (`felix_broker_lease_refusals_total{boundary="read"}`),
 and the readers of every led shard are ended as for a move.
+If the old leader's log takes the new leader's records, or is rebuilt at its
+request, before its release ends its readers, they are ended then, at the
+position they had reached. The resume is below those records and below
+anything it held. A reader whose history is still waiting for the mark has
+seen nothing past it: its stream is reset and it resumes after its last record.
 
 ### Storage identities
 
@@ -4227,7 +4267,8 @@ acknowledgement is the one it was.
   electing, the leader acknowledges nothing: it cannot count both sets, and
   the new set alone could lose a record if failover is placed from the old
   one. A stream that does not acknowledge at quorum reports no joint start.
-- The count is the least of the two, so the generation-start record is
+- The count is the least of the two, so the start record of the leader's
+  current stint (see "A new stint at the same generation" above) is
   acknowledged on both majorities exactly when the mark passes it. The
   leader's report then carries `joint_start_acked`, the pending set's
   generation, beside the generation it measured at. The control plane takes
@@ -4237,8 +4278,18 @@ acknowledgement is the one it was.
   with no pending change, and acknowledgements go back to the new set alone.
   The model's `CpFlip` keeps the generation; here the next one is fenced
   jointly again and opens on the new set.
-- A cache's counter log is counted on the new set alone, as the model's
-  counters are.
+- A cache's counter log is counted the same way, on both majorities, and the
+  leader reports the joint start only once the counter log's own start
+  record for its current stint is acknowledged on both as well. The counter
+  updates acknowledged before the cut-over sit behind that record, not the
+  cache log's. Reported on the cache log alone, the control plane could take a
+  new set where only the leader holds them
+  (`a_flip_waits_for_the_counter_log_on_both_majorities` and
+  `a_pending_change_counts_counters_on_both_majorities` in
+  `driver/tests/joint_acks.rs`). A counter log that does not open on a pass
+  holds the joint start back for that pass, rather than counting as a cache
+  with no counters (`a_counter_log_that_does_not_open_reports_no_joint_start`). The model's set-change configurations have
+  no counter log yet.
 - This leader ships to the new set's followers only. A majority of the set
   being left that needs a member outside the new set therefore does not form,
   and the change times out (`FELIX_SHARD_PENDING_SET_TIMEOUT_MS`) and is
