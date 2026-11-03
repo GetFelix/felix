@@ -2646,6 +2646,16 @@ CutOverPiece ==
        /\ t[3] \in (IF PieceStood THEN PieceStoodCounts ELSE {0})
        /\ t[4] \in PieceDestStood
 
+\* For a piece whose cut-overs no behaviour reaches: it holds only the states
+\* before a cut-over, which every piece checks, so it is useful only as proof
+\* that it is empty. In a set of three, no cut-over finds several replicas
+\* stood with the destination not among them: `Swap` needs the old leader
+\* still leading at the control plane's generation, a leader that answers a
+\* fence stops leading (`AnswerFence`), and a spare outside the set neither
+\* stands nor answers, so only the third member can have stood. TLC checks
+\* invariants on states the CONSTRAINT then drops, hence `~CutOverPiece`.
+NoCutOverInPiece == cutOver = <<>> \/ ~CutOverPiece
+
 \* A cut-over that changes several members of the set at once, as
 \* `replicas_after_cut_over` in services/felix-controlplane-service/src/
 \* cluster/placement/moves.rs can: it keeps some of the staying replicas and

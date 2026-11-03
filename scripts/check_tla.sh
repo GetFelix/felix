@@ -524,12 +524,14 @@ fi
 # 30 minutes is left to a job of its own (`--plan-heavy`). A changed .tla
 # does not pull in its heavy configurations: FelixShard.tla is behind most of
 # them. Pull requests check that tier; the rest run when the spec changes on
-# main. Configurations named on the command line always run.
+# main. Configurations named on the command line always run. FelixShard,
+# the base configuration every other one varies, runs on every pull request
+# whatever its weight.
 if [ -n "${TLA_QUICK:-}" ] && [ "$#" -eq 0 ]; then
   quick=()
   for entry in "${selected[@]}"; do
     weight="$(weight_of "${entry%% *}")"
-    if [ "$weight" -le 10 ]; then
+    if [ "$weight" -le 10 ] || [ "${entry%% *}" = FelixShard ]; then
       quick+=("$entry")
     elif [[ "$changed_cfgs" == *" ${entry%% *} "* ]]; then
       if [ "$weight" -le 30 ]; then
