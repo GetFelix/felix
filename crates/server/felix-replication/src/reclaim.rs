@@ -204,6 +204,7 @@ pub fn refusal_report(key: &ShardKey, refused: RefusedGeneration) -> ShardReport
         joint_start_acked: None,
         holds_start: Vec::new(),
         refused: Some(refused),
+        elected: None,
     }
 }
 
