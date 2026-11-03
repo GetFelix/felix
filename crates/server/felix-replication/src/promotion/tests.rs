@@ -1118,3 +1118,88 @@ async fn a_candidates_fence_carries_the_set_it_keeps() {
         "the candidate keeps no set"
     );
 }
+
+/// Answers every fence and keeps the election it carried.
+struct TakesFences {
+    sent: Mutex<Vec<felix_wire::internal::FenceElection>>,
+}
+
+impl PeerRequester for TakesFences {
+    async fn request(
+        &self,
+        _node_id: &str,
+        _addr: SocketAddr,
+        message: InternalMessage,
+    ) -> Result<InternalMessage, PeerError> {
+        let InternalMessage::Fence(fence) = message else {
+            panic!("the leader sent {:?}", message.kind());
+        };
+        self.sent
+            .lock()
+            .expect("lock")
+            .extend(fence.election.clone());
+        Ok(InternalMessage::FenceOk(felix_wire::internal::FenceOk {
+            correlation_id: fence.correlation_id,
+            log_end: 0,
+            commit_offset: 0,
+            last_generation: 0,
+        }))
+    }
+
+    fn recorded_capabilities(&self, _node_id: &str) -> Option<PeerCapabilities> {
+        Some(REQUIRED.union(PeerCapabilities::ELECTION))
+    }
+}
+
+/// **A leader re-fences a follower with the set it keeps below its own
+/// generation**: an elected leader that restarted has no standing left in
+/// memory, and keeps the set it was fenced on, older than the generation it
+/// serves. Sending nothing would leave a follower that missed its fence
+/// refusing every batch until the generation changes. A kept set newer than
+/// the shard's generation is never sent.
+#[tokio::test]
+async fn a_leader_refences_with_a_kept_set_below_its_generation() {
+    let member = |node: &str| felix_storage::disk_log::Member {
+        node: node.to_string(),
+        storage: None,
+        learner: false,
+        wiped: false,
+    };
+    let kept = |generation| felix_storage::disk_log::ReplicaSet {
+        current: felix_storage::disk_log::Membership {
+            generation,
+            members: vec![member(LEADER), member("broker-b"), member("broker-c")],
+        },
+        leaving: None,
+    };
+    let mut shard = batch(7, 0, &[]).shard;
+    shard.generation = 7;
+    let addr: SocketAddr = "127.0.0.1:1".parse().expect("addr");
+    for (generation, sent) in [(5, true), (7, true), (8, false)] {
+        let requester = TakesFences {
+            sent: Mutex::new(Vec::new()),
+        };
+        let took = refence_kept(
+            &requester,
+            "broker-b",
+            addr,
+            &shard,
+            LogKind::Stream,
+            Some(&kept(generation)),
+        )
+        .await;
+        assert_eq!(took, sent, "kept at {generation}");
+        let elections = requester.sent.lock().expect("lock");
+        assert_eq!(
+            elections
+                .iter()
+                .map(|election| (election.candidate, election.set.generation))
+                .collect::<Vec<_>>(),
+            if sent {
+                vec![(false, generation)]
+            } else {
+                vec![]
+            },
+        );
+    }
+}

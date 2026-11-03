@@ -259,8 +259,16 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
     {
         return ctx.ineligible(key, "the kept replica set has a change pending");
     }
+    // A start record at or past the kept set's generation means a leader
+    // opened on it, so its joint fence already took a majority of the set
+    // being left. Fencing that set again would need its dead members too.
+    let leaving = kept.leaving.clone().filter(|_| {
+        !log.generations()
+            .iter()
+            .any(|epoch| epoch.generation >= kept.current.generation)
+    });
     // Its fence would stay pending, after the ballot took a generation.
-    if kept.leaving.is_some() && !ctx.marks.fleet_supports(felix_common::fleet::JOINT_FENCE) {
+    if leaving.is_some() && !ctx.marks.fleet_supports(felix_common::fleet::JOINT_FENCE) {
         return ctx.ineligible(
             key,
             "a set is kept beside this one and joint fences are off",
@@ -347,7 +355,7 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
             leader: local.to_string(),
             generation,
             set: kept.current,
-            leaving: kept.leaving,
+            leaving,
             incarnation: crate::incarnation::of(&ctx.broker, key),
         },
     );
