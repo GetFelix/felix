@@ -285,7 +285,9 @@ The browser protocol above is the whole surface. It has no message for anything 
 | Feature | Native clients | Through the gateway |
 | --- | --- | --- |
 | Publish, subscribe from "live" or an offset | Yes | Yes |
-| Cache get, put, delete, watch, and counters | Yes | Yes |
+| Cache get, put, delete and watch | Yes | Yes |
+| Counter add | Yes | Yes |
+| Counter read | Yes | No |
 | Idempotent producers | Rust, Python, TypeScript, C#, C | No. The gateway never resends a publish, and the app decides whether a retry is safe. |
 | Record headers | Rust | No |
 | Replay from a time | Rust, Python, TypeScript, C#, C | No. Subscribe from an offset. |

@@ -254,6 +254,8 @@ await using client = await Client.connect(
 );
 ```
 
+`await using` needs Node 24; see [Disposal](#disposal) for the older form.
+
 These are seeds: the client asks whichever answers which brokers exist and adds
 them, and it keeps your seeds whatever the answer, so a stale one cannot leave
 it worse off. List more than one so the first connection survives a seed being
@@ -1099,6 +1101,8 @@ Pass `true` as the last argument to retain: every matching key's current value a
 ```ts
 await using roster = await client.watchCacheSharded("t1", "default", "sessions", "room:42:", undefined, true);
 ```
+
+`await using` needs Node 24; see [Disposal](#disposal) for the older form.
 
 ## Atomic commits
 

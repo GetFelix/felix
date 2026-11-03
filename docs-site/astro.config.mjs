@@ -151,7 +151,7 @@ export default defineConfig({
                 { label: 'Publishing', slug: 'clients/rust/publishing' },
                 { label: 'Subscribing', slug: 'clients/rust/subscribing' },
                 { label: 'Cache Operations', slug: 'clients/rust/cache' },
-                { label: 'Groups and Commits', slug: 'clients/rust/groups-and-commits' },
+                { label: 'Consumer Groups and Commits', slug: 'clients/rust/groups-and-commits' },
                 { label: 'Clusters and Operations', slug: 'clients/rust/operations' },
               ],
             },
