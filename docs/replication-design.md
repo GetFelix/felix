@@ -4038,7 +4038,13 @@ unless `FELIX_INTERNAL_ELECTION=false` or the fence is off. Between them:
   refused with `StaleSet`, naming the newer generation, and nothing is
   persisted for it. A batch whose set is newer than the one kept learns the
   members from the routing view at that generation, or is refused as
-  retryable until a fence carries the set.
+  retryable until a fence carries the set. Under `joint_fence` it also needs
+  the control plane's set before that generation (the pending change, or the
+  set the watch saw right before), kept as the set being left as the leader
+  keeps it. The copy's own older set is never used for that: it may be an
+  elected leader's, and a follower that stood on it could leave out the set
+  holding the leader's records. Without it the batch is refused, and the
+  leader sends its fence again to a follower that refuses as behind.
 - A fence whose set lists this replica only as a learner, or not at all, is
   refused: a learner never votes. A move's staged successor is listed as a
   learner only in the set the leader keeps while shipping, where it is left
