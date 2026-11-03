@@ -15,8 +15,7 @@ and spectators join a match in progress from the `keyframe` key, and the kill
 cam replays kills from the log. A lobby lists the live arenas, and CI kills
 the simulator and the stream's broker mid-match and checks that play resumes.
 Per-arena sign-in is not built yet; the development stack uses a stand-in
-identity provider. The sections below describe the design and say which parts
-run today.
+identity provider. The sections below describe the design.
 
 ![A felix-arena match: Coral and Violet hover-craft trading fire around the crystal at the centre of the arena, with the score, the kill feed and the hull and boost bars](/built-on-felix/arena-match.webp?v=2)
 
@@ -64,8 +63,10 @@ Inputs go on an in-memory stream because an input 40 ms old is worthless and
 the next one replaces it. Each input repeats the previous two, so a dropped
 record is almost always covered by the next.
 
-Browsers reach Felix through [felix-gateway](/clients/browsers/) 0.8.0 or later, using three opt-in features: binary event frames, `state_get` for the
-`keyframe` key, and `read` for the kill cam's range reads.
+Browsers reach Felix through [felix-gateway](/clients/browsers/) 0.8.0, the
+version the game is built against, using three opt-in features: binary event
+frames, `state_get` for the `keyframe` key, and `read` for the kill cam's range
+reads.
 The gateway stamps each input with the session's principal, and the simulator
 accepts an input only when that stamp matches the publisher the broker
 recorded on the event. In the design, each session's token is narrowed to one

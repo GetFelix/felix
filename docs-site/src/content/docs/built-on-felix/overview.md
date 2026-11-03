@@ -18,7 +18,7 @@ repository.
 | [felix-metro](/built-on-felix/metro/) | A playable 3D city simulator whose timeline goes back to any moment | A shard per district, range reads, subscribe from an offset |
 | [felix-blocks](/built-on-felix/blocks/) | A voxel building game, early, that stores its world in Felix | A cache with one key per chunk, conditional writes |
 | [felix-agents](/built-on-felix/agents/) | A swarm of AI workers, early, whose runs can be watched and replayed | A consumer group, conditional cache writes, RBAC |
-| [felixd](/built-on-felix/felixd/) | A node agent that runs Wasm workloads and moves them when a node dies | Leases, `publish_if`, subscribe from an offset |
+| [felixd](/built-on-felix/felixd/) | A node agent that runs WebAssembly programs across nodes and moves them when a node dies | Leases, `publish_if`, subscribe from an offset |
 
 The browser apps reach Felix through
 [felix-gateway](/clients/browsers/), which is documented with the clients.
