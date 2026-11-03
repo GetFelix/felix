@@ -188,7 +188,8 @@ const ASSERTED_ADVERSARIAL_KINDS: [FaultKind; 3] = [
 /// The adversarial kinds with [`ASSERTED_ADVERSARIAL_KINDS`] first. The
 /// seed only varies timings and targets, so a slow run that fits fewer
 /// faults into the duration would otherwise stop before a kind listed late
-/// and fail the coverage check for a reason that is not a Felix bug.
+/// and fail the coverage check for a reason that is not a Felix bug. Going
+/// first makes that much less likely, not impossible.
 fn adversarial_order() -> Vec<FaultKind> {
     let listed = RandomNemesis::adversarial();
     let rest = listed
