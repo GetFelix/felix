@@ -692,6 +692,10 @@ async fn a_cache_leader_that_answered_a_newer_fence_raises_no_counter_mark() {
 #[derive(Default)]
 struct ReadmittedByCache {
     admitted: std::sync::atomic::AtomicBool,
+    /// The copy stays a learner whatever it stores.
+    never: bool,
+    /// Cache batches b was sent.
+    cache_batches: std::sync::atomic::AtomicUsize,
 }
 
 impl PeerRequester for ReadmittedByCache {
@@ -714,7 +718,10 @@ impl PeerRequester for ReadmittedByCache {
             });
         }
         if cache {
-            self.admitted.store(true, Ordering::SeqCst);
+            self.cache_batches.fetch_add(1, Ordering::SeqCst);
+            if !self.never {
+                self.admitted.store(true, Ordering::SeqCst);
+            }
         }
         Ok(InternalMessage::ReplicateOk(ReplicateOk {
             correlation_id: 0,
@@ -739,6 +746,44 @@ async fn a_copy_readmitted_on_its_cache_log_is_asked_again_for_the_counters() {
     assert!(
         prompt(&marks, tails).await,
         "the counter mark waited for a new counter record"
+    );
+    driver.stop().await;
+}
+
+/// **A copy still a learner is not asked twice for each batch.** Its counter
+/// log is empty, so that cursor has stored nothing and is no evidence the
+/// copy was re-admitted; one put ships one cache batch to b.
+#[tokio::test(start_paused = true)]
+async fn a_learner_with_an_empty_counter_log_is_sent_each_batch_once() {
+    let (broker, router, _dir) = quorum_cache().await;
+    let marks = by_followers(&broker).await;
+    let requester = Arc::new(ReadmittedByCache {
+        never: true,
+        ..Default::default()
+    });
+    let (driver, _marks) = driver(Arc::clone(&requester), &broker, &router, marks);
+
+    broker
+        .cache()
+        .put(
+            TENANT,
+            NAMESPACE,
+            STREAM,
+            0,
+            "k",
+            Bytes::from_static(b"v"),
+            None,
+        )
+        .await
+        .expect("put");
+    mark_appended(&broker);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(
+        requester
+            .cache_batches
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "a learner was asked again with no voter's answer to go on"
     );
     driver.stop().await;
 }

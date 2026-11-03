@@ -200,6 +200,23 @@ impl RideAlong {
             .any(|cursor| cursor.halted.is_some() || cursor.rebuilding)
     }
 
+    /// Bytes each of `main` and these cursors has stored, and whether its
+    /// last answer was a voter's, in a fixed order.
+    fn stored(&self, main: &FollowerCursor) -> [Option<(u64, bool)>; 4] {
+        [
+            Some(main),
+            self.group.as_ref(),
+            self.dead_letters.as_ref(),
+            self.counters.as_ref(),
+        ]
+        .map(|cursor| {
+            cursor.map(|cursor| {
+                let voter = cursor.halted.is_none() && !cursor.stalled && !cursor.learner;
+                (cursor.shipped_bytes, voter)
+            })
+        })
+    }
+
     fn cursors(&self) -> impl Iterator<Item = &FollowerCursor> {
         [&self.group, &self.dead_letters, &self.counters]
             .into_iter()
@@ -729,9 +746,10 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     // A copy is re-admitted by whichever of the shard's logs completes its
     // catch-up, and only that log's answer says so. Another log's cursor
     // keeps the learner answer it got before until it is asked again, which
-    // on a level log nothing else does. A voter's answer on any log is what
-    // makes asking worth it, so a copy still a learner everywhere is not
-    // re-asked every pass.
+    // on a level log nothing else does. A voter's answer to a batch on any
+    // log is what makes asking worth it, so a copy still a learner everywhere
+    // is not re-asked every pass. An empty log's cursor and a new one have
+    // confirmed nothing, and a log not open here keeps its cursor stalled.
     let answered_as_voter = |node: &str| {
         [
             &entry.followers,
@@ -742,7 +760,11 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         .into_iter()
         .flatten()
         .any(|cursor| {
-            cursor.node_id == node && cursor.halted.is_none() && !cursor.stalled && !cursor.learner
+            cursor.node_id == node
+                && cursor.halted.is_none()
+                && !cursor.stalled
+                && !cursor.learner
+                && cursor.confirmed > 0
         })
     };
     let would_raise = |node: &str,
@@ -854,6 +876,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 if let Ok(seen) = requester.identity(&cursor.node_id, cursor.addr).await {
                     restart_copy(&mut cursor, &mut rode, seen, base, &shard, rebuilds);
                 }
+                let stored_before = rode.stored(&cursor);
                 let RideAlong {
                     group,
                     dead_letters,
@@ -961,45 +984,59 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 // A batch on one log can re-admit the copy while another log
                 // still holds the learner answer it gave before, here or in
                 // an earlier exchange. Asked again, that log counts toward
-                // its mark now rather than at its next record.
-                let answered_as = |learner: bool| {
-                    move |cursor: &FollowerCursor| {
-                        cursor.halted.is_none() && !cursor.stalled && cursor.learner == learner
-                    }
+                // its marks now rather than at its next record. Only a voter's
+                // answer to a batch in this exchange is evidence: an empty
+                // log's cursor and a new one say nothing about the copy.
+                let stale = |cursor: &FollowerCursor| {
+                    cursor.halted.is_none() && !cursor.stalled && cursor.learner
                 };
-                let stale_records = answered_as(true)(&cursor);
-                let stale_counters = rode.counters.as_ref().is_some_and(answered_as(true));
-                let readmitted = (stale_records || stale_counters)
-                    && std::iter::once(&cursor)
-                        .chain(rode.cursors())
-                        .any(answered_as(false))
-                    && !requester.answered().is_empty();
-                if readmitted && stale_records {
-                    reship_last(
-                        requester,
-                        &log,
-                        &shard,
-                        log_kind,
-                        &mut cursor,
-                        rebuilds,
-                        Some(mark_now),
-                    )
-                    .await;
-                }
-                if readmitted
-                    && stale_counters
-                    && let (Some(log), Some(counters)) = (&counter_log, rode.counters.as_mut())
-                {
-                    reship_last(
-                        requester,
-                        log,
-                        &shard,
-                        felix_broker::LogKind::Counters,
-                        counters,
-                        rebuilds,
-                        None,
-                    )
-                    .await;
+                let readmitted =
+                    quorum_shard
+                        && leading
+                        && (stale(&cursor) || rode.cursors().any(stale))
+                        && rode.stored(&cursor).into_iter().zip(stored_before).any(
+                            |(now, before)| {
+                                now.is_some_and(|(bytes, voter)| {
+                                    voter && bytes > before.map_or(0, |(bytes, _)| bytes)
+                                })
+                            },
+                        );
+                if readmitted {
+                    if stale(&cursor) {
+                        reship_last(
+                            requester,
+                            &log,
+                            &shard,
+                            log_kind,
+                            &mut cursor,
+                            rebuilds,
+                            Some(mark_now),
+                        )
+                        .await;
+                    }
+                    for (log, aux, kind) in [
+                        (
+                            &counter_log,
+                            &mut rode.counters,
+                            felix_broker::LogKind::Counters,
+                        ),
+                        (
+                            &group_log,
+                            &mut rode.group,
+                            felix_broker::LogKind::GroupCursors,
+                        ),
+                        (
+                            &dead_letter_log,
+                            &mut rode.dead_letters,
+                            felix_broker::LogKind::GroupDeadLetters,
+                        ),
+                    ] {
+                        if let (Some(log), Some(aux)) = (log, aux.as_mut())
+                            && stale(aux)
+                        {
+                            reship_last(requester, log, &shard, kind, aux, rebuilds, None).await;
+                        }
+                    }
                 }
                 // Counted only on answers, every one of them from the copy
                 // the cursor now describes. One from another copy starts the

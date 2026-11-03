@@ -567,11 +567,13 @@ learner, since it cannot tell.
 
 The leader tracks the flag per log. The batch that completes the catch-up
 may be on any of the shard's logs, and only its answer is a voter's. The
-other logs still hold their last learner answer. When a mark waits on the
-follower and nothing new is due on such a log, the leader sends its last
-record again to get a fresh answer. It does this only once the follower
-has answered as a voter on some log, so a copy that is still catching up
-is not asked on every pass.
+other logs (records, counters, group cursors, dead letters) still hold their
+last learner answer. So when a follower answers a batch as a voter, the
+leader sends the last record again on each of its other logs that still say
+learner, in the same exchange, to get a fresh answer. A pass that finds a
+mark waiting on such a follower asks the same way. Only a voter's answer to
+an actual batch triggers this, so a copy that is still catching up is not
+asked again and again.
 
 Only a caller that offered `LEARNER_ACKS` gets kind 47. To any other the
 listener sends the answer as `ReplicateOk`, byte for byte what that caller
