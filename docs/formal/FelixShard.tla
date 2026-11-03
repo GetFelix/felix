@@ -232,6 +232,8 @@
 (* That leaves the control plane naming its old leader at a generation it  *)
 (* cannot serve. With `Renames` the control plane names it again one       *)
 (* generation up, on its own set, and the leader fences there (CpRename).  *)
+(* It does the same for a leader still fencing at its generation once too  *)
+(* many of its set promised a candidate for that fence to win.             *)
 (*                                                                         *)
 (* Elections also break the cut-over and the hand-back. The control plane  *)
 (* names them at a generation it picked without knowing of an election,    *)
@@ -533,9 +535,10 @@ CrashLeader == FALSE
 GiveUpOnCrash == FALSE
 Reclaims == FALSE
 ReclaimBlind == FALSE
-\* `Renames`: under `Adopt`, once the control plane records an election
-\* without adopting it, it names its leader again at the next generation when
-\* that leader reports it cannot serve the recorded one (CpRename).
+\* `Renames`: under `Adopt`, the control plane names its leader again at the
+\* next generation when that leader reports it cannot serve the recorded one:
+\* an election the control plane recorded without adopting it moved past it,
+\* or its fence there cannot win a majority (CpRename).
 \* `RenameUnfenced`: the renamed leader opens at once instead of fencing.
 Renames == FALSE
 RenameUnfenced == FALSE
@@ -2909,15 +2912,16 @@ RenameDue ==
 
 \* Under `Renames`, the control plane names its leader again at the next
 \* generation, the same set and any pending change kept, once that leader
-\* reports it cannot serve the generation a recorded election moved the
-\* control plane to (`election_refused`, `move_step` in
-\* services/felix-controlplane-service/src/cluster/placement/moves.rs). Not
-\* while a move drains its leader, which ends through its own steps. The
+\* reports it cannot serve the control plane's generation: a recorded
+\* election moved the control plane past it, or it is still fencing there
+\* and too many of its set promised a candidate (`election_refused`,
+\* `move_step` in services/felix-controlplane-service/src/cluster/placement/moves.rs).
+\* Not while a move drains its leader, which ends through its own steps. The
 \* leader fences there as at any new term: its open failed, so the broker
 \* reopens it fenced (`begin_open_renewed` in lifecycle.rs), on the set the
 \* assignment names, and while a change is pending, jointly with the set
-\* being left. Each one needs a recorded election before it, so `Adopt`
-\* bounds them.
+\* being left. Each one follows a stand, and stands stop at `Adopt`, so
+\* `Adopt` bounds them.
 CpRename(v, views) ==
     /\ RenameDue
     /\ ~v.draining

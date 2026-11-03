@@ -261,9 +261,7 @@ expectations=(
   "FelixShardElectRenameDrop1 pass"
   "FelixShardElectRenameKeep0StoodOneOther pass"
   "FelixShardElectRenameKeep1StoodOneOther pass"
-  "FelixShardElectRenameDrop0StoodOneOther pass"
   "FelixShardElectRenameDrop1StoodOneOther pass"
-  "FelixShardElectRenameKeep0StoodSeveralDest pass"
   "FelixShardElectRenameDrop1StoodSeveralDest pass"
   "FelixShardElectSwapFlipKeep1 pass"
   "FelixShardElectSwapFlipKeep1StoodOneOther pass"
@@ -402,11 +400,13 @@ fi
 # WipesLeader,Setless,Groups}: each runs well over an hour on a four-core runner. Their
 # violating twins and witnesses stay registered.
 # So is FelixShardElectRename, which is checked in pieces
-# (FelixShardElectRename{Keep,Drop}{0,1}{,Stood...}): the fourteen under 45
-# minutes are registered above. FelixShardElectRename{Drop0,Keep1}StoodSeveralDest
-# and the four StoodOneDest pieces run nightly (tla-walk.yml). The cut-over
-# overwrites everything the destination's stand wrote, so the StoodOneDest
-# pieces reach the same states as the pieces where nobody stood. Its
+# (FelixShardElectRename{Keep,Drop}{0,1}{,Stood...}): the twelve that fit a
+# pull request's shards are registered above.
+# FelixShardElectRename{Keep0,Drop0,Keep1}StoodSeveralDest,
+# FelixShardElectRenameDrop0StoodOneOther and the four StoodOneDest pieces run
+# nightly (tla-walk.yml). The cut-over overwrites everything the destination's
+# stand wrote, so the StoodOneDest pieces should reach the same states as the
+# pieces where nobody stood; that is argued, not measured. Its
 # witnesses and the two rename walks stay registered.
 
 # Minutes each of the longer configurations takes on a four-core CI runner,
@@ -501,12 +501,10 @@ weights=(
   "FelixShardElectRenameKeep0 28"
   "FelixShardElectRenameKeep1 16"
   "FelixShardElectRenameDrop0 26"
-  "FelixShardElectRenameDrop1 7"
+  "FelixShardElectRenameDrop1 14"
   "FelixShardElectRenameKeep0StoodOneOther 11"
   "FelixShardElectRenameKeep1StoodOneOther 3"
-  "FelixShardElectRenameDrop0StoodOneOther 10"
   "FelixShardElectRenameDrop1StoodOneOther 3"
-  "FelixShardElectRenameKeep0StoodSeveralDest 39"
   "FelixShardElectRenameDrop1StoodSeveralDest 36"
   "FelixShardElectStepDown 3"
   "FelixShardHandoffLeaderAck 3"
