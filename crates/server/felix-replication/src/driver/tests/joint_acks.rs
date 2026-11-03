@@ -36,6 +36,7 @@ impl PeerRequester for Answers {
         Ok(InternalMessage::ReplicateOk(ReplicateOk {
             correlation_id: 0,
             durable_offset: batch.first_offset + batch.payloads.len() as u64,
+            learner: false,
         }))
     }
 
@@ -319,6 +320,7 @@ impl PeerRequester for CacheAnswers {
         Ok(InternalMessage::ReplicateOk(ReplicateOk {
             correlation_id: 0,
             durable_offset: batch.first_offset + batch.payloads.len() as u64,
+            learner: false,
         }))
     }
 
@@ -561,5 +563,180 @@ async fn without_joint_fence_a_pending_change_acknowledges_no_counter_update() {
         .await;
 
         assert_eq!(mark, 0, "by_followers: {by_followers}");
+    }
+}
+
+/// Answers every batch, but `lagging` nodes hold the log only up to `upto`.
+struct Lagging {
+    lagging: &'static [&'static str],
+    upto: u64,
+}
+
+impl PeerRequester for Lagging {
+    async fn request(
+        &self,
+        node_id: &str,
+        _addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, PeerError> {
+        let (InternalMessage::ReplicateRecords(batch)
+        | InternalMessage::ReplicateMarkedRecords(batch)) = message
+        else {
+            panic!("the driver sent something other than a replication batch");
+        };
+        let end = batch.first_offset + batch.payloads.len() as u64;
+        Ok(InternalMessage::ReplicateOk(ReplicateOk {
+            correlation_id: 0,
+            durable_offset: if self.lagging.contains(&node_id) {
+                end.min(self.upto)
+            } else {
+                end
+            },
+            learner: false,
+        }))
+    }
+
+    fn recorded_capabilities(&self, _node_id: &str) -> Option<PeerCapabilities> {
+        Some(PeerCapabilities::ELECTION)
+    }
+
+    fn offers_election(&self) -> bool {
+        true
+    }
+}
+
+/// **The joint start counts from the current stint's start record (#1787).**
+/// The leader was elected at generation 4 and wrote its start record at 0,
+/// then a write at 3 that its earlier passes acknowledged on {a, b} of the
+/// old set. A cut-over named it at 4 again with the set {a, c, d}, and its
+/// new stint wrote a start record at 4. `c` and `d` joined holding the log
+/// up to, not including, the write at 3. `b` is outside the new set, so this leader no
+/// longer ships to it and counts nothing for it here. The first start is on
+/// both majorities and the write is not on the new one, so no joint start
+/// may be reported: the flip would leave the write on one copy of the new
+/// set.
+#[tokio::test]
+async fn the_joint_start_waits_for_the_current_stints_start() {
+    let router = route(&["broker-c", "broker-d"], Some(OLD));
+    for (lagging, expected) in [(&["broker-c", "broker-d"][..], None), (&[][..], Some(5))] {
+        let (broker, _dir) = quorum_leader(0, 4).await;
+        let log = broker
+            .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+            .await
+            .expect("log");
+        assert_eq!(log.append_generation_start(4).await.expect("start"), 0);
+        for record in ["r1", "r2", "w"] {
+            log.append(&[Bytes::from(record)]).await.expect("append");
+        }
+        assert_eq!(log.append_generation_start(4).await.expect("start"), 4);
+
+        let pass = replicate_once(
+            &Lagging { lagging, upto: 3 },
+            &broker,
+            &router,
+            &marks(true),
+            None,
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+        )
+        .await;
+
+        let report = pass.reports.first().expect("a report");
+        assert_eq!(report.joint_start_acked, expected, "lagging: {lagging:?}");
+    }
+}
+
+/// Stores every cache batch whole, and a counter batch only up to `upto`.
+struct CountersLagging {
+    upto: u64,
+}
+
+impl PeerRequester for CountersLagging {
+    async fn request(
+        &self,
+        _node_id: &str,
+        _addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, PeerError> {
+        let (batch, upto) = match message {
+            InternalMessage::ReplicateCacheRecords(batch) => (batch, u64::MAX),
+            InternalMessage::ReplicateCounterRecords(batch) => (batch, self.upto),
+            other => panic!("the driver sent {:?} for a cache shard", other.kind()),
+        };
+        Ok(InternalMessage::ReplicateOk(ReplicateOk {
+            correlation_id: 0,
+            durable_offset: (batch.first_offset + batch.payloads.len() as u64).min(upto),
+            learner: false,
+        }))
+    }
+
+    fn recorded_capabilities(&self, _node_id: &str) -> Option<PeerCapabilities> {
+        Some(PeerCapabilities::ELECTION)
+    }
+
+    fn offers_election(&self) -> bool {
+        true
+    }
+}
+
+/// **The counter log's joint start counts from the current stint's start
+/// record**, as the shard's own log does. The leader began generation 5 in
+/// its counter log at 0, wrote an update at 1, and a new stint at 5 wrote a
+/// start record at 2. `c` and `d` hold the counter log up to the update, not
+/// including it. The first start is on both majorities and the update is not
+/// on the new one, so no joint start may be reported.
+#[tokio::test]
+async fn the_counter_logs_joint_start_waits_for_the_current_stints_start() {
+    for by_followers in [false, true] {
+        for (upto, expected) in [(1, None), (u64::MAX, Some(5))] {
+            let marks = marks_for_caches(true, by_followers);
+            let (broker, _dir) = super::quorum::quorum_cache_leader(5).await;
+            for kind in [
+                felix_broker::LogKind::Cache,
+                felix_broker::LogKind::Counters,
+            ] {
+                let log = broker
+                    .shard_log(kind, TENANT, NAMESPACE, STREAM, 0)
+                    .await
+                    .expect("log");
+                let tail = log.tail_offset().await.expect("tail");
+                assert_eq!(log.append_generation_start(5).await.expect("start"), tail);
+                if kind == felix_broker::LogKind::Counters {
+                    log.append(&[Bytes::from_static(b"update")])
+                        .await
+                        .expect("append");
+                    assert_eq!(
+                        log.append_generation_start(5).await.expect("start"),
+                        tail + 2
+                    );
+                }
+            }
+            let router = cache_route(&["broker-c", "broker-d"], 5, Some(OLD));
+
+            let pass = replicate_once(
+                &CountersLagging { upto },
+                &broker,
+                &router,
+                &marks,
+                None,
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+            )
+            .await;
+
+            let report = pass
+                .reports
+                .iter()
+                .find(|report| report.key == cache_key())
+                .expect("the cache was reported");
+            assert_eq!(
+                report.joint_start_acked, expected,
+                "upto: {upto}, by_followers: {by_followers}"
+            );
+        }
     }
 }

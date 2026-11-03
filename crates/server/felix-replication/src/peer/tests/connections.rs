@@ -239,3 +239,38 @@ fn a_quiet_peer_connection_is_kept_alive_inside_its_idle_window() {
         "keep-alive {keep_alive:?} leaves no margin inside idle window {idle:?}",
     );
 }
+
+/// A node the catalog has no address for is refused without a dial and
+/// without a backoff, so it is reached as soon as the catalog names it.
+#[tokio::test]
+async fn a_node_with_no_address_is_refused_without_backing_off() {
+    let handler = Arc::new(CountingHandler::default());
+    let listener = Listener::start(PEER, handler.clone()).await;
+    let pool = pool(PeerTransportConfig {
+        reconnect_base: Duration::from_secs(60),
+        reconnect_max: Duration::from_secs(60),
+        ..config()
+    });
+    let unresolved: SocketAddr = "0.0.0.0:0".parse().expect("addr");
+
+    let refused = pool
+        .request(PEER, unresolved, forward())
+        .await
+        .expect_err("nowhere to send it");
+    assert!(
+        refused.to_string().contains("node catalog"),
+        "the refusal should say why: {refused}"
+    );
+
+    pool.request(PEER, listener.addr, forward())
+        .await
+        .expect("reached at once, with no backoff from the refusal");
+    // An open connection still serves a node whose address went missing.
+    pool.request(PEER, unresolved, forward())
+        .await
+        .expect("the open connection is used");
+    assert_eq!(handler.seen.load(Ordering::SeqCst), 2);
+
+    pool.shutdown().await;
+    listener.stop().await;
+}

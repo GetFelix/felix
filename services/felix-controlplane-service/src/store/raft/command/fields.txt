@@ -406,6 +406,9 @@
 13 import_state.state.replica_reports[].node_incarnations.*
 3 import_state.state.replica_reports[].offsets
 3 import_state.state.replica_reports[].offsets.*
+25 import_state.state.replica_reports[].refused
+25 import_state.state.replica_reports[].refused.generation
+25 import_state.state.replica_reports[].refused.promised_to
 3 import_state.state.replica_reports[].reported_at_millis
 10 import_state.state.replica_reports[].stream_incarnation
 0 import_state.state.shard_changes
@@ -708,6 +711,9 @@
 13 record_replica_report.report.node_incarnations.*
 0 record_replica_report.report.offsets
 0 record_replica_report.report.offsets.*
+25 record_replica_report.report.refused
+25 record_replica_report.report.refused.generation
+25 record_replica_report.report.refused.promised_to
 0 record_replica_report.report.reported_at_millis
 10 record_replica_report.report.stream_incarnation
 0 register_node
@@ -1016,6 +1022,9 @@
 13 snapshot.state.replica_reports[].node_incarnations.*
 3 snapshot.state.replica_reports[].offsets
 3 snapshot.state.replica_reports[].offsets.*
+25 snapshot.state.replica_reports[].refused
+25 snapshot.state.replica_reports[].refused.generation
+25 snapshot.state.replica_reports[].refused.promised_to
 3 snapshot.state.replica_reports[].reported_at_millis
 10 snapshot.state.replica_reports[].stream_incarnation
 0 snapshot.state.shard_changes

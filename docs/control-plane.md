@@ -1428,6 +1428,44 @@ the write is refused before it reaches the log, so every member keeps the
 assignment it had and the report is judged as before. Postgres needs no
 migration for it.
 
+**When the election is recorded and not adopted**, the assignment still names
+the old leader, now at the elected generation. That leader cannot serve there,
+in one of two ways:
+
+- It promised the generation to the elected broker before it heard of the
+  assignment, so its open fails.
+- It started to open first, persisting its own promise, but a majority of
+  the set promised the generation to the elected broker, so its fence can
+  never reach a majority.
+
+Either way it says so in its report, with `refused` set to the `generation`
+it refused and the node it `promised_to`, and repeats it each tick. The
+follower suspicion above cannot help, since the followers follow the elected
+leader.
+
+When the assignment's leader reports a refusal of exactly the assignment's
+generation, placement names it again (`election_refused`): the same leader,
+the same set, any pending change kept, at the next generation. That is above
+the one the leader promised away, so it opens and fences, and the followers,
+which take the higher generation, depose the elected leader.
+
+Placement acts only on that report, and does not check that it recorded an
+election: a refusal at the assignment's generation is enough. That also
+covers an election it never heard of, for example one that took a majority
+while placement was failing the shard over. Naming the same leader one
+generation up is a new fenced term either way. Placement ignores a refusal of
+an older generation and one that is no longer fresh. It also skips the step while the
+shard is in a move that ends through its own steps: one with a successor
+named, or one whose leader is draining. A follower replacement does not stop
+it: the new generation keeps the joining copy, and the replacement goes on
+under the same leader.
+
+Without the report the shard waits for the pending-set timeout or a lease
+lapse, as before. Under Raft the field is stored from metadata level 25 and
+dropped below it; under Postgres it is migration 0042 (`refused_generation`,
+`refused_to`), with `refused_at` as the marker that keeps what a member that
+predates the columns leaves behind from reading as a refusal.
+
 **Postgres: finish the control-plane upgrade before finalizing
 `replica_election`.** The finalize check runs on the instance that receives
 it, and the store records no version for the other instances (only who holds
@@ -1622,7 +1660,7 @@ after the fence.
 
 | Metric | Meaning |
 | --- | --- |
-| `felix_shard_move_steps_total{step}` | move steps written: `stage`, `fence`, `cut_over`, `abandon`, `halted` (the destination halted), `timed_out`, `stalled` (a restore's copy stopped moving), `reseat`, `restore`, `seat`, `take_pending_set` (a pending replica set taken on the leader's report), `pending_set_timed_out`, `pending_set_dropped`, `pending_set_cancelled` (one dropped), `readmit` (a replaced copy named by its new storage id and held as a learner), and an operator's `cancel`, `retake` and `discard` |
+| `felix_shard_move_steps_total{step}` | move steps written: `stage`, `fence`, `cut_over`, `abandon`, `halted` (the destination halted), `timed_out`, `stalled` (a restore's copy stopped moving), `reseat`, `restore`, `seat`, `take_pending_set` (a pending replica set taken on the leader's report), `pending_set_timed_out`, `pending_set_dropped`, `pending_set_cancelled` (one dropped), `readmit` (a replaced copy named by its new storage id and held as a learner), `election_refused` (a leader named again above a generation promised to an elected broker), and an operator's `cancel`, `retake` and `discard` |
 | `felix_shards_under_replicated` | shards with fewer copies on serving brokers than their replication factor; non-zero for longer than the restore delay plus a copy means no broker can take the copy, or placement is paused |
 | `felix_shard_replicas_missing` | the copies those shards are missing between them |
 | `felix_shard_replicas_halted` | copies whose leader reports it has stopped shipping to them; counted as missing, kept out of placement, and replaced after the restore delay |
