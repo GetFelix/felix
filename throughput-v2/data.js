@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793736732693,
+  "lastUpdate": 1793739068034,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -43940,6 +43940,58 @@ window.BENCHMARK_DATA = {
             "range": "8992.18",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1242120.41\nmean: 1240864.27\nstdev: 8992.18\ncv: 0.72%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0f604c67f664359cb9ad4b40084dea8374bfda52",
+          "message": "docs(formal): a set change carries a cache's counter log across (#1830) (#1848)\n\nModels #1830 (fix in PR #1842): during a set change, a cache shard's counter log must be counted on both sets and checked before the flip.\n\nMerge after #1842. The evidence lines cite #1842's tests, so `docs:evidence` fails until #1842 is on main.\n\n## What changed\n\n- `Swap` (the cut-over) waits for the destination to hold the old leader's counter log (`drain_ready` checks every log).\n- While a change is pending, `ShipCounter` ships to both sets, and with `CountersJoint` (default on) the counter mark needs a majority of the old set too (`counter_level`, `held_by_both`).\n- With `FlipChecksCounters` (default on), `CpFlip` and `FlipReported` also need the counter log's start record under the counter mark (`CounterLevel::start_held`, read by `joint_start`).\n- `CpFlipNamed` resets the leader's counter-fence answers and cursors at the new generation, so `Counters` no longer excludes `FlipNewGeneration`. With `Counters` off they stay at their initial values, so existing state counts are unchanged (checked: `FelixShardElectSwapFlipKeep0StoodSeveralOther` 694, `FelixShardElectSwapFlipSkipsBallot` still violates).\n- `Counters` now allows spares when they join only through `Swap`. `Swap` and `Elect` reset the new leader's counter-fence answers and cursors, as `Promote` and `CpFlipNamed` do, so answers from an earlier generation never count.\n- New invariant `CountersOnSetMajority`: every acknowledged counter update is on a majority of the set the control plane records, as `AckedOnMajority` is for the cache log.\n\n## Configurations\n\n| cfg | result |\n|---|---|\n| `FelixShardSwapCounters.cfg` (FelixShardElectSwapFlip on a cache shard, 1 write, no elections) | expected pass. Over 4M distinct states after 4 min locally and unfinished, so it is weighed 40 (a job of its own, as `--plan-heavy` gives it); this PR's run measures it, and it moves to nightly if it takes over 45 min |\n| `FelixShardSwapCountersFlipUnchecked.cfg` (`FlipChecksCounters` off) | violates `CountersOnSetMajority` in 1 s: the update is held on {a, b}, the cut-over goes to b on {b, c, d}, the cache-log start reaches c, and after the flip only b holds the update. This is the PR body's case 5 |\n| `FelixShardSwapCountersNewSetOnly.cfg` (`CountersJoint` off) | violates `CountersOnSetMajority` in 3 s: the update is acknowledged on {b, d} of the new set while the control plane still records {a, b, c} |\n\n## Design calls\n\n- The invariant is checked against the control plane's current set. This is checked while the change is pending too, which is what catches the new-set-only count.\n- Not covered: a candidate standing while a change is pending still fences the counter log on the new set alone, as `promotion.rs` does. These configs have no elections (`Elections > 0 => ~Counters` still holds). `Elect` now resets the counter fence's answers, so lifting that ASSUME later would not count an older generation's answers.\n- The model ships the counter log to the old set too while a change is pending; the code ships it to the route's set alone (`shard.rs`). Shipping more only adds behaviours.",
+          "timestamp": "2026-11-03T12:47:15-08:00",
+          "tree_id": "15c4021d42ef242339ca0b37dabb4f978d755a31",
+          "url": "https://github.com/GetFelix/felix/commit/0f604c67f664359cb9ad4b40084dea8374bfda52"
+        },
+        "date": 1793739067338,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 557710.23,
+            "range": "32549.15",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 557710.23\nmean: 572062.82\nstdev: 32549.15\ncv: 5.69%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1014-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 557710.23,
+            "range": "32549.15",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 557710.23\nmean: 572062.82\nstdev: 32549.15\ncv: 5.69%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1014-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 127676.14,
+            "range": "7160.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 127676.14\nmean: 124777.82\nstdev: 7160.31\ncv: 5.74%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1014-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1276761.42,
+            "range": "71603.10",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1276761.42\nmean: 1247778.22\nstdev: 71603.10\ncv: 5.74%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1014-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
