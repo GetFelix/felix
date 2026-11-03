@@ -481,16 +481,19 @@ async fn adopt_if_elected(
                 adopted,
                 "an elected leader reported; the control plane took its generation",
             );
-            state.placement_wakes.request_pass();
             // Taken as a generation only (below level 26, or an elected set
             // naming a node the catalog lacks), it now names another leader at
             // the elected one: move past that at once rather than on the next
             // report, so a failover planned meanwhile does not leave the
-            // elected set unfenced.
-            if !adopted && written.generation == elected.generation {
-                return reissue_past_collision(state, node_id, key, elected, written).await;
-            }
-            Ok(written)
+            // elected set unfenced. Placement wakes only after, so its write
+            // cannot win the generation first.
+            let result = if !adopted && written.generation == elected.generation {
+                reissue_past_collision(state, node_id, key, elected, written).await
+            } else {
+                Ok(written)
+            };
+            state.placement_wakes.request_pass();
+            result
         }
         Ok(_) => Ok(assignment),
         // Below metadata level 21 under Raft, or a set the store refuses:
