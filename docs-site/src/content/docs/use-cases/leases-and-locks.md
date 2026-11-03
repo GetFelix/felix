@@ -24,23 +24,22 @@ Start the stack from the
 [Quickstart](/getting-started/quickstart/#try-it-in-one-command) (it covers Podman
 too) and run these from the directory holding `compose.yaml`.
 
-Take a lease for ten seconds and read it:
-
-```bash
-docker compose run --rm felixctl cache put config lease/job-1 worker-a --ttl-ms 10000
-docker compose run --rm felixctl cache get config lease/job-1
-```
-
-In a second terminal, watch the key. A retained watch prints the current value first:
+In one terminal, watch the key:
 
 ```bash
 docker compose run --rm felixctl cache watch config --key lease/job-1 --retained
 ```
 
-The `get` prints `worker-a`, and so does the watcher, straight away. When the ten
-seconds are up the watcher prints `lease/job-1<TAB>(deleted)` without anyone
-polling, and `get` exits with status 5. Run the watch within the ten seconds, or
-put the key again.
+In another, take a lease for thirty seconds and read it:
+
+```bash
+docker compose run --rm felixctl cache put config lease/job-1 worker-a --ttl-ms 30000
+docker compose run --rm felixctl cache get config lease/job-1
+```
+
+The watcher prints `worker-a` and `get` prints it too. Thirty seconds later the
+watcher prints `lease/job-1<TAB>(deleted)` without anyone polling, and `get`
+exits with status 5.
 
 Conditional writes, which make the lease safe, are not in `felixctl`. To see the
 compare-and-set, run the Rust example below against a cluster from the

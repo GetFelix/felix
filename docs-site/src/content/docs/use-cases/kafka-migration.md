@@ -11,8 +11,9 @@ address, and which have to change.
 
 Felix runs a Kafka listener. Kafka producers write to durable Felix streams and
 consumers that assign their own partitions read them. Stock clients work
-unchanged (kcat is the client tested here), and the same records are also reachable from Felix subscriptions, consumer
-groups and caches.
+unchanged (kcat is the client tested here), and the same records are also
+reachable from Felix subscriptions, consumer groups and caches. A stored offset
+is the same number to a Kafka consumer and a Felix subscriber.
 
 ## Try it
 
@@ -40,6 +41,7 @@ for what that implies). Then create a durable stream and use kcat from the host:
 
 ```bash
 docker compose up -d
+docker compose logs felix-dev-ready   # wait until it reports the broker is ready
 docker compose run --rm felixctl stream create created --shards 4
 echo '{"id":42}' | kcat -b 127.0.0.1:9092 -P -t default.created -p 0
 kcat -b 127.0.0.1:9092 -C -t default.created -o beginning -e -q -f '%p:%o:%s\n'

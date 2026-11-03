@@ -11,7 +11,8 @@ asks where the data is, and the answer has to be something the system enforces.
 
 Create a stream with a region and the control plane keeps its leader and every
 replica on brokers in that region, through first placement, rebalancing, drains
-and failover. A copy that ends up outside is moved back once a broker in the region can take its place. Inside a region, replicas
+and failover. A copy that ends up outside is moved back once a broker in the
+region can take its place. Inside a region, replicas
 spread across failure zones. One control plane, one set of clients and one
 operations team serve every region.
 

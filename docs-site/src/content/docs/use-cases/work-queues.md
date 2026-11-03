@@ -173,8 +173,9 @@ loop {
 A single-shard consumer can long-poll instead with `group_poll_wait`, which
 asks the broker to hold the request until work arrives or the wait elapses.
 
-The Python and TypeScript bindings have the same calls per shard (`group_poll`, `group_ack`,
-`group_nack`, `group_dead_letters`, `group_redrive`, `group_discard`):
+The Python and TypeScript bindings have the same calls per shard (`group_poll`,
+`group_ack`, `group_nack`, `group_dead_letters`, `group_redrive`, `group_discard`;
+camelCase in TypeScript, for example `groupPoll`). In Python:
 
 ```python
 for record in client.group_poll("acme", "prod", "jobs", 0, "workers", max_records=16, wait=5.0):
@@ -263,7 +264,7 @@ in-memory state rebuilt from disk, which redelivers what it still had in flight.
 
 **Groups need durable storage and the right role.** A role needs `group.consume`
 to poll and settle and `group.manage` to redrive or discard, and it can hold
-either on a single group. The Rust and Python clients have the calls.
+either on a single group. The Rust, Python and TypeScript clients have the calls.
 
 ## Related
 
