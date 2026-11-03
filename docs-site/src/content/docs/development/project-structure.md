@@ -15,12 +15,14 @@ felix/
 ├── crates/
 │   ├── protocol/     felix-wire, felix-transport, felix-mqtt-wire
 │   ├── server/       felix-broker, felix-storage, felix-kafka, felix-replication,
-│   │                 felix-router, felix-authz, felix-common
-│   ├── sdk/          felix-client, felix-python*, felix-typescript*
-│   └── testing/      felix-cluster, felix-conformance, felix-loadgen
+│   │                 felix-router, felix-authz, felix-common, felix-mqtt
+│   ├── sdk/          felix-client, felix-capi, felix-python*, felix-typescript*
+│   ├── testing/      felix-cluster, felix-conformance, felix-loadgen
+│   └── tools/        felixctl
 ├── services/
 │   ├── felix-broker-service/        builds the felix-broker binary
 │   └── felix-controlplane-service/  builds the felix-controlplane binary
+├── sdks/dotnet/      the C# client (Felix.Client), built with dotnet
 ├── demos/
 │   ├── broker/                      demo binaries of felix-broker-service
 │   └── slow-consumer/*, state-divergence/*, rbac-live/*, cross_tenant_isolation/*
@@ -43,9 +45,10 @@ The fuzz crates under `crates/*/*/fuzz/` are outside the workspace too, because
 ## Crates
 
 Dependencies point one way. `sdk` and `server` depend on `protocol`, `testing`
-depends on whatever it exercises, and `protocol` depends on nothing else in the
-repository. Only `felix-wire`, `felix-transport` and `felix-client` are
-published to crates.io.
+depends on whatever it exercises, `tools` depends on `sdk`, and `protocol`
+depends on nothing else in the repository. The release workflow publishes five
+crates to crates.io: `felix-wire`, `felix-transport`, `felix-client`,
+`felix-loadgen` and `felixctl`. Every other crate sets `publish = false`.
 
 **Protocol**
 
@@ -67,6 +70,9 @@ published to crates.io.
   from it. See below.
 - `felix-kafka`: a read-only Kafka listener that answers Kafka consumers from
   the broker's shard logs.
+- `felix-mqtt`: the MQTT 3.1.1 and 5.0 listener and its mounts onto streams
+  and caches. Publish and subscribe over MQTT are refused for now; see
+  `service/refuse.rs`.
 - `felix-replication`: broker-to-broker transport (`peer/`, including its
   mTLS in `peer/tls.rs`) and log replication (`driver/`, `replica.rs`,
   `quorum.rs`, `promotion.rs`, `reporter.rs`). It does not depend on the broker
@@ -82,8 +88,17 @@ published to crates.io.
 **SDK**
 
 - `felix-client`: the Rust client. Start at `Client`.
+- `felix-capi`: the C ABI over `felix-client`, the base for the Go and C#
+  SDKs.
 - `felix-python`, `felix-typescript`: pyo3 and napi bindings over
   `felix-client`.
+- `sdks/dotnet`: the C# client. It binds `felix-capi` and is built with
+  `dotnet`, not cargo.
+
+**Tools**
+
+- `felixctl`: the command-line client. Publish, subscribe, read caches, manage
+  the control plane and run benchmarks.
 
 **Testing**
 
@@ -109,6 +124,8 @@ A segment store, not a WAL. The crate docs in `src/lib.rs` are the map:
   sparse `index`.
 - `io.rs`: positioned reads, preallocation and flushes (`F_FULLFSYNC` on
   macOS), and `log_thread`, the per-log threads appends and flushes run on.
+- `tiered.rs`: the interface for moving sealed segments to cold storage. Only
+  the interface exists; nothing implements it yet.
 - `cache.rs` (`EphemeralCache` and `LogCache`) and `counter_log.rs`: stores
   projected from their own logs, compacted in the background by
   `compaction.rs`.

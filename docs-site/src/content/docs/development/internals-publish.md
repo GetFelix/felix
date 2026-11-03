@@ -341,7 +341,7 @@ claim_publish                      │   complete_publish                       
    base offset and the skip count, plus lazily filled encoded-frame slots, and
    each subscriber gets a clone: an `Arc` bump, not a payload copy or a
    re-encode. The send is gated by `SubQueuePolicy` (`Block`, `DropNew`,
-   `DropOld`, where `DropOld` behaves as `DropNew`). This is the first of two
+   `DropOld`; see [the policy](#fanout-and-the-subscriber-queue-policy)). This is the first of two
    backpressure checkpoints on the subscribe side. See
    [Internals: Backpressure](/development/internals-concurrency/#the-full-backpressure-chain)
    for the second.
@@ -360,6 +360,16 @@ The commit turn is held until fanout finishes, so delivery order matches log
 order. Cancelling `complete_publish` does not cancel the batch: once its
 offsets are claimed its records exist, so the ring append and fanout finish on
 a detached task.
+
+### Fanout and the subscriber queue policy
+
+`SubQueuePolicy` decides what fanout does when a subscriber's queue is full.
+`Block` waits for room, so one slow subscriber stalls every publisher of its
+shard. `DropNew` discards the batch for that subscriber with one non-blocking
+`try_reserve`, so a publish costs the same however many subscribers there are.
+`DropOld` is accepted but behaves as `DropNew`, because a bounded channel cannot
+evict what it already holds. The broker counts those drops separately in
+`felix_sub_queue_drop_old_emulated_total`. `DropNew` is the default.
 
 ## Worked example
 

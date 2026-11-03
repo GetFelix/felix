@@ -205,7 +205,8 @@ brokers.
 
 The default overflow policy is `drop_new`: a slow subscriber loses its own
 events instead of slowing anyone else. Durable streams deliver log offsets, so
-a jump in offsets is a drop. See [Publish/Subscribe](/features/pubsub/).
+a jump in offsets is a drop. See [Publish/Subscribe](/features/pubsub/), and
+[Diagnosing a cluster](/deployment/diagnosing/#a-subscriber-misses-records) to trace where records were lost.
 
 ## Memory
 
