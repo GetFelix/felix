@@ -237,6 +237,7 @@ expectations=(
   "FelixShardElectStaleSet violates AckedHeldByLeader"
   "FelixShardElectAdopt pass"
   "FelixShardElectRenameDue violates NeverRenameDue"
+  "FelixShardElectRenameFencingDue violates NeverRenameWhileFencing"
   "FelixShardElectAdoptPromote pass"
   "FelixShardElectSwapNoJoint violates AckedHeldByLeader"
   "FelixShardElectSwapKeep1 pass"
@@ -250,6 +251,18 @@ expectations=(
   "FelixShardElectSwapDrop1StoodOneDest pass"
   "FelixShardElectSwapDrop1StoodOneOther pass"
   "FelixShardElectSwapDrop1StoodSeveralOther pass"
+  "FelixShardElectRenameKeep0StoodSeveralOther pass"
+  "FelixShardElectRenameKeep1StoodSeveralOther pass"
+  "FelixShardElectRenameDrop0StoodSeveralOther pass"
+  "FelixShardElectRenameDrop1StoodSeveralOther pass"
+  "FelixShardElectRenameKeep0 pass"
+  "FelixShardElectRenameKeep1 pass"
+  "FelixShardElectRenameDrop0 pass"
+  "FelixShardElectRenameDrop1 pass"
+  "FelixShardElectRenameKeep0StoodOneOther pass"
+  "FelixShardElectRenameKeep1StoodOneOther pass"
+  "FelixShardElectRenameDrop1StoodOneOther pass"
+  "FelixShardElectRenameDrop1StoodSeveralDest pass"
   "FelixShardElectSwapFlipKeep1 pass"
   "FelixShardElectSwapFlipKeep1StoodOneOther pass"
   "FelixShardElectSwapFlipKeep0StoodSeveralOther pass"
@@ -261,6 +274,9 @@ expectations=(
   "FelixShardElectSwapFlipDrop1StoodSeveralOther pass"
   "FelixShardElectSwapFlipSkipsBallot violates OneLeaderPerGeneration"
   "FelixShardElectSwapFlipJoinLagsFirstStart violates AckedOnMajority"
+  "FelixShardElectLive pass"
+  "FelixShardElectLiveLoosePreVote violates NoStandAgainstHeardLeader"
+  "FelixShardElectLiveNoBackoff violates liveness"
   "FelixShardElectPreVote pass"
   "FelixShardElectNoBallotAcks violates AckedHeldByLeader"
   "FelixShardElectStepDown pass"
@@ -386,9 +402,15 @@ fi
 # So are FelixShardElectWipeNonVoter{Twice,Failover,FailoverWipesLeader,
 # WipesLeader,Setless,Groups}: each runs well over an hour on a four-core runner. Their
 # violating twins and witnesses stay registered.
-# So is FelixShardElectRename: stopped after four minutes on a laptop at 5.8M
-# distinct states and depth 21, queue still growing, nothing violated. Its witness
-# FelixShardElectRenameDue and the two rename walks stay registered.
+# So is FelixShardElectRename, which is checked in pieces
+# (FelixShardElectRename{Keep,Drop}{0,1}{,Stood...}): the twelve that fit a
+# pull request's shards are registered above.
+# FelixShardElectRename{Keep0,Drop0,Keep1}StoodSeveralDest,
+# FelixShardElectRenameDrop0StoodOneOther and the four StoodOneDest pieces run
+# nightly (tla-walk.yml). The cut-over overwrites everything the destination's
+# stand wrote, so the StoodOneDest pieces should reach the same states as the
+# pieces where nobody stood; that is argued, not measured. Its
+# witnesses and the two rename walks stay registered.
 
 # Minutes each of the longer configurations takes on a four-core CI runner,
 # from the `Finished in` lines of a CI run (a new one is a guess until it has
@@ -479,6 +501,14 @@ weights=(
   "FelixShardElectSwapFlipKeep1StoodOneOther 11"
   "FelixShardElectSwapFlipDrop1StoodOneOther 8"
   "FelixShardElectSwapFlipDrop0StoodOneOther 41"
+  "FelixShardElectRenameKeep0 28"
+  "FelixShardElectRenameKeep1 16"
+  "FelixShardElectRenameDrop0 26"
+  "FelixShardElectRenameDrop1 14"
+  "FelixShardElectRenameKeep0StoodOneOther 11"
+  "FelixShardElectRenameKeep1StoodOneOther 3"
+  "FelixShardElectRenameDrop1StoodOneOther 3"
+  "FelixShardElectRenameDrop1StoodSeveralDest 36"
   "FelixShardElectStepDown 3"
   "FelixShardHandoffLeaderAck 3"
 )
@@ -639,7 +669,11 @@ for entry in "${selected[@]}"; do
       ;;
     "violates "*)
       invariant="${expect#violates }"
-      if ! grep -q "Invariant $invariant is violated" <<<"$output"; then
+      # `violates liveness` expects a temporal property to fail; an action
+      # property is named as an invariant is.
+      pattern="(Invariant|Action property) $invariant is violated"
+      if [ "$invariant" = liveness ]; then pattern="Temporal properties were violated"; fi
+      if ! grep -qE "$pattern" <<<"$output"; then
         echo "   FAIL: expected TLC to violate $invariant"
         echo "$output" | tail -40
         failed=1
