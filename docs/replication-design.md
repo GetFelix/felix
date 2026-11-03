@@ -1319,9 +1319,10 @@ elected leader waits for the lease until the control plane is back (issue
    destination's log, which holds the old leader's. The control plane
    flips on the leader's report alone, and the report can be stale. If the
    leader promised the new generation to a candidate after sending it, the
-   leader refuses that generation and the candidate keeps serving there;
-   the control plane does not adopt the candidate, since its generation is
-   not above the control plane's (issue #1730).
+   leader refuses that generation and reports the refusal, and the control
+   plane names it again one generation up, as after an election it did not
+   adopt (rule 10). The model checks the flip and the rename separately,
+   not yet together.
 9. *Redirects.* A follower answers `NotLeader` with the leader it promised,
    so clients find an elected leader without asking the control plane.
 10. *Adoption.* The elected leader reports its generation and its set's
@@ -1333,7 +1334,16 @@ elected leader waits for the lease until the control plane is back (issue
     records the generation only, and issues every later one above it. It
     never reissues a generation at or below one it was told was elected. A
     leader on the old set is passed over while a change is pending: the new
-    set's leader, carrying a newer set generation, deposes it.
+    set's leader, carrying a newer set generation, deposes it. The control
+    plane then still names the old leader at the elected generation. That
+    leader cannot serve there: either it promised the generation to the
+    elected one, so its open fails, or a majority of the set did, so its
+    fence never reaches a majority. It reports the refusal (`refused`: the
+    generation and the node it was promised to), and the control plane
+    names it again at the next generation, on the same set. That generation
+    is above the one promised away, so it opens and fences, and its
+    followers depose the elected leader. The control plane acts on that
+    report, never on silence (`CpRename` in the model).
 
 **Why it is safe.** Ballots give one leader per generation: each generation
 is fenced on one set, any two majorities of one set share a replica, and
@@ -2192,7 +2202,9 @@ history is read. A broker that just took a shard has no mark for its
 generation yet (`Settling`): a `Latest` subscribe is refused as retryable until
 the first mark. Held batches are dropped when the shard is released (never
 delivered as committed); subscribers are ended with where to resume and pick
-up on the next leader. While the lease is lapsed the bound is `Refused`: new
+up on the next leader. The resume position is at or below the first held
+batch, since the batch stays on disk and the next leader can commit it. A
+generation-start record written behind a held batch does not move it. While the lease is lapsed the bound is `Refused`: new
 subscribes, watches and cache reads are refused (`felix_broker_lease_refusals_total{boundary="read"}`),
 and the readers of every led shard are ended as for a move.
 
@@ -4059,6 +4071,17 @@ which the leader opens on the new set alone, while `CpFlip` keeps the
 generation. The model is to cover that before the election driver.
 A leader sends `joint_start_acked` once `joint_fence` is finalized (below;
 control-plane.md, [Moving a shard](control-plane.md#moving-a-shard)).
+
+An election the control plane records and does not adopt (rule 10) does not
+leave the shard waiting. The old leader the assignment still names cannot
+serve the elected generation: its open is refused when it promised the
+generation away, and its fence is refused when a majority of the set did.
+Either way it says so in its report (`refused`, sent each tick in place of
+the usual measurements, with no tail). Placement names it again at the next
+generation, on the same set, and nothing else about the shard changes
+(control-plane.md, [Adopting an elected
+leader](control-plane.md#adopting-an-elected-leader)). In the model that is
+`CpRename`, checked by `FelixShardElectRename.cfg`.
 
 Joint fences and the fenced next-generation open are built too, dormant
 behind `joint_fence`. No build reports that feature, so a fleet cannot
