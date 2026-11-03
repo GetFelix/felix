@@ -4021,10 +4021,11 @@ offers the `ELECTION` peer capability or names start holders in its reports
 (`start_holders`), and `replica_election` is refused until `joint_fence` and its
 other prerequisites are finalized, every serving broker offers `ELECTION`,
 and the control plane has the metadata level for the pending replica set and
-adoption (level 21 under Raft, which every member must report). No broker
-offers `ELECTION`, and the control plane holds its own flag back until the
-election driver (#1009 S9) turns it on, with joint fences, two-majority acks
-and the wiped-voter guard in, so both features stay unfinalizable.
+adoption (level 21 under Raft, which every member must report). A broker
+offers `ELECTION` only with `FELIX_INTERNAL_ELECTION` on, and then reports
+`peer_election`, `joint_fence` and `replica_election`. The control plane
+still refuses `joint_fence` until it can keep placement off a learner end to
+end (`JOINT_FENCE_READY`), so neither feature can be finalized yet.
 
 The control plane's side of rule 8 is built. Under `replica_election`, a
 cut-over that changes the set of a shard whose replicas elect names the new
@@ -4046,8 +4047,9 @@ A leader sends `joint_start_acked` once `joint_fence` is finalized (below;
 control-plane.md, [Moving a shard](control-plane.md#moving-a-shard)).
 
 Joint fences and the fenced next-generation open are built too, dormant
-behind `joint_fence`. No build reports that feature, so a fleet cannot
-finalize it; the cluster test reports it through `FELIX_TEST_FLEET_FEATURES`.
+behind `joint_fence`. A broker reports that feature only when it offers
+`ELECTION`, and the control plane refuses to finalize it for now (above);
+the cluster test reports it through `FELIX_TEST_FLEET_FEATURES`.
 Once it is finalized on a broker that offers `ELECTION`:
 
 - The generation right after one a broker serves is fenced before it serves,

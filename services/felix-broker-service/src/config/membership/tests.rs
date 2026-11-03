@@ -46,12 +46,13 @@ fn a_broker_reports_that_it_names_start_holders() {
     }
 }
 
-/// A broker offering `ELECTION` says so, and that it stands for election;
-/// one that does not reports neither.
+/// A broker offering `ELECTION` says so, that it fences jointly, and that it
+/// stands for election; one that does not reports none of them.
 #[test]
 fn a_broker_offering_election_reports_it() {
     let added: Vec<String> = election_features().collect();
     assert!(added.contains(&felix_common::fleet::PEER_ELECTION.name().to_string()));
+    assert!(added.contains(&felix_common::fleet::JOINT_FENCE.name().to_string()));
     assert!(added.contains(&felix_common::fleet::REPLICA_ELECTION.name().to_string()));
     for fences in [false, true] {
         let reported = features_for(fences, false);
