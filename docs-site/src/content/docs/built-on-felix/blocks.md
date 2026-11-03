@@ -9,9 +9,11 @@ out and place new ones, alone or with friends, and everyone in the same world
 sees each change as it lands. There is no game server. The browsers write the
 world, and Felix stores it, orders the writes and tells everyone what changed.
 
-It is in design. The [style frame](https://github.com/GetFelix/felix-blocks/blob/main/prototype/style-frame.html)
-fixes the look, by day and by night, and nothing is playable yet. The sections
-below describe the design.
+It is early. You can walk around a generated world in first person, dig and
+place blocks, and keep the world in Felix or in your browser. Players do not see
+each other yet. The [README](https://github.com/GetFelix/felix-blocks#readme)
+shows how to play. The images below are the style frame, and the sections after
+them describe how the game is built to work.
 
 | Day | Night |
 |---|---|
@@ -64,11 +66,12 @@ it, so a visitor's browser cannot change a world whatever it sends. A single
 player world is a world with one builder, and opening it to a friend is a grant.
 
 Browsers reach Felix through [felix-gateway](/clients/browsers/). The gateway
-relays cache puts, gets, deletes and watches today. Conditional writes through the gateway
-are planned ([felix-gateway#31](https://github.com/GetFelix/felix-gateway/issues/31)),
-and multiplayer waits for them; single player works without them. A gateway
-watch also covers the whole cache from the start, so until region watches
-arrive a client watches the whole world and downloads it again on reconnect.
+relays cache puts, gets, deletes, watches and, since 0.8.0, conditional writes
+([felix-gateway#31](https://github.com/GetFelix/felix-gateway/issues/31)), which
+shared editing builds on. A gateway watch covers the whole cache from the start,
+so a client watches the whole world and downloads it again on reconnect. A watch
+carries no entry versions, so a client reads a chunk before writing it
+conditionally.
 
 ## What it demonstrates
 

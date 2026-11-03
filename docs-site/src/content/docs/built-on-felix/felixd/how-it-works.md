@@ -111,7 +111,7 @@ never a second owner, because only the broker decides that a lease is gone.
 
 **Restart and shutdown.** An agent never adopts a lease it finds under its own
 node id. A restarted agent waits for its old leases to expire, so two processes
-configured with the same id cannot both believe they hold a workload. On Ctrl-C
+configured with the same id cannot both believe they hold a workload. On Ctrl-C or SIGTERM
 an agent deletes its leases with `cache_delete_if`, waiting up to two seconds
 for its workloads to let go, so other nodes can claim at once.
 
@@ -335,9 +335,9 @@ seconds.
 
 **A restore that runs out of fuel** puts the workload in the
 [needs-operator](/built-on-felix/felixd/terminology/#needs-operator) state, not
-failed: the limit can be raised and the workload resumed. Today that is a logged
-error on the node. It is not yet a recorded state
-([#112](https://github.com/GetFelix/felixd/issues/112)). Raising
+failed: the limit can be raised and the workload resumed. The holder writes a
+needs-operator record to the output stream and releases the lease, and
+`felixd ps` shows the reason. Raising
 `--snapshot-fuel` with `felixd run` for the same id writes a new spec, and the
 agent restarts the workload under it.
 

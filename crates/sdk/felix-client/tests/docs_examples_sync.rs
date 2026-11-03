@@ -2,7 +2,7 @@
 //!
 //! This reads `docs-site/src/content/docs/clients/rust.md` and
 //! `resilient-clients.mdx`, wraps every ```` ```rust ```` block in the harness
-//! listed for its page in [`PAGES`], and checks the result against
+//! listed for its page in [`pages`], and checks the result against
 //! `docs_examples/rust_md.rs` or `resilient_clients_mdx.rs`, which the
 //! `docs_examples` test target compiles. An edit to the page that is not regenerated fails here; a
 //! regenerated example that does not build fails there. To regenerate:
@@ -674,31 +674,44 @@ const RESILIENT_EXAMPLES: &[Example] = &[
 struct Page {
     /// The page's file names under `docs-site/src/content/docs/clients/`, in
     /// reading order. A page split across files is one list of examples.
-    files: &'static [&'static str],
+    files: Vec<String>,
     /// The generated file under `tests/docs_examples/`.
     generated: &'static str,
     examples: &'static [Example],
 }
 
-const PAGES: &[Page] = &[
-    Page {
-        files: &[
-            "rust.md",
-            "rust/publishing.md",
-            "rust/subscribing.md",
-            "rust/cache.md",
-            "rust/groups-and-commits.md",
-            "rust/operations.md",
-        ],
-        generated: "rust_md.rs",
-        examples: RUST_MD_EXAMPLES,
-    },
-    Page {
-        files: &["resilient-clients.mdx"],
-        generated: "resilient_clients_mdx.rs",
-        examples: RESILIENT_EXAMPLES,
-    },
-];
+/// `rust.md` plus every page under `rust/`, sorted, so a new topic page is
+/// compiled without anyone having to remember to list it.
+fn rust_guide_files() -> Vec<String> {
+    let dir = page_path("rust");
+    let mut files: Vec<String> = std::fs::read_dir(&dir)
+        .map(|entries| {
+            entries
+                .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+                .filter(|name| name.ends_with(".md"))
+                .map(|name| format!("rust/{name}"))
+                .collect()
+        })
+        .unwrap_or_default();
+    files.sort();
+    files.insert(0, "rust.md".to_string());
+    files
+}
+
+fn pages() -> Vec<Page> {
+    vec![
+        Page {
+            files: rust_guide_files(),
+            generated: "rust_md.rs",
+            examples: RUST_MD_EXAMPLES,
+        },
+        Page {
+            files: vec!["resilient-clients.mdx".to_string()],
+            generated: "resilient_clients_mdx.rs",
+            examples: RESILIENT_EXAMPLES,
+        },
+    ]
+}
 
 /// What every generated file starts with, after its own two lines.
 const HEADER_BODY: &str = "\
@@ -731,7 +744,7 @@ const ALLOW: &str = "#![allow(dead_code, unused_variables, unused_assignments, \
                      unreachable_code, unreachable_pub)]";
 
 struct Block {
-    file: &'static str,
+    file: String,
     heading: String,
     nth: usize,
     line: usize,
@@ -759,7 +772,7 @@ fn rust_blocks(page: &str) -> Vec<Block> {
     rust_blocks_of("", page)
 }
 
-fn rust_blocks_of(file: &'static str, page: &str) -> Vec<Block> {
+fn rust_blocks_of(file: &str, page: &str) -> Vec<Block> {
     let mut blocks: Vec<Block> = Vec::new();
     let mut heading = String::new();
     let mut fence: Option<bool> = None; // Some(is_rust) inside a fence
@@ -770,7 +783,7 @@ fn rust_blocks_of(file: &'static str, page: &str) -> Vec<Block> {
                 if is_rust {
                     let nth = 1 + blocks.iter().filter(|b| b.heading == heading).count();
                     blocks.push(Block {
-                        file,
+                        file: file.to_string(),
                         heading: heading.clone(),
                         nth,
                         line: index + 1,
@@ -898,7 +911,7 @@ fn generate(spec: &Page, pages: &[String]) -> Result<String, String> {
 
 #[test]
 fn generated_examples_match_the_page() {
-    for spec in PAGES {
+    for spec in &pages() {
         // A packaged crate has no docs site next to it. With the site present, a
         // missing page is a failure, not something to skip.
         if !docs_site_dir().is_dir() {

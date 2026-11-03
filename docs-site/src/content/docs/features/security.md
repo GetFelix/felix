@@ -15,8 +15,7 @@ otherwise. Encryption at rest and audit logging are **not** built.
 
 :::note[Security Maturity]
 Felix is pre-1.0 and has not been through an external security
-review yet. This page states plainly which protections exist and which are
-planned; the [status table](/getting-started/what-felix-is-for/) is
+review yet. This page states plainly which protections exist and which do not; the [status table](/getting-started/what-felix-is-for/) is
 kept current per capability.
 :::
 

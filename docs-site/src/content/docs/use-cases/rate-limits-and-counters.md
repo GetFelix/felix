@@ -10,29 +10,26 @@ voting page shows a running tally that every server increments. Each case
 needs a number that many processes add to, that is correct when they do so at
 the same time, and that the caller learns in the same breath as it changes it.
 
-## How this is usually built
+A Felix counter is a durable sum. One call adds a signed delta and returns the
+new total, so a limiter increments and checks in a single round trip, from any
+instance, and the total survives a restart.
 
-The usual tool is Redis. `INCR key` is atomic and returns the new value, and
-a limiter sets an expiry on the key when the result is 1 so the window resets
-itself. The pair is not atomic on its own, so careful implementations use a
-short Lua script or `SET key 0 NX EX 60` followed by `INCR`. It is fast and
-simple, and for a limit whose only job is to protect a backend it is a fine
-answer. The caveat is durability. Redis acknowledges before it persists unless
-the append-only file is set to sync every write, which most deployments do not
-do, and replication is asynchronous. A restart or a failover can lose the last
-second or so of increments, and the count then runs behind. For a rate limit
-that is a few extra requests. For a quota that is billed, it is an under-billed customer.
+## Try it
 
-A relational database is the other common choice for quotas:
-`UPDATE usage SET n = n + 1 WHERE key = $1 RETURNING n`. It is durable and
-transactional and the count can be joined with everything else. It is also a
-row lock per increment, so a hot key serializes, and every request pays a
-database round trip.
+Start the stack from the
+[Quickstart](/getting-started/quickstart/#try-it-in-one-command) (it covers Podman
+too) and run these from the directory holding `compose.yaml`.
 
-Some teams avoid the network and keep a token bucket in each process. It adds
-no latency, but with twelve instances each enforcing 1,000 a minute the real
-limit is twelve times that, and a load balancer that sends one key's traffic
-unevenly makes it unpredictable.
+The stack has a `stats` cache for counters:
+
+```bash
+docker compose run --rm felixctl counter add stats page-views 1
+docker compose run --rm felixctl counter add stats page-views 1
+docker compose run --rm felixctl counter get stats page-views
+```
+
+The first `add` prints `1`, the second prints `2`, and `get` prints `2`. Each
+`add` returns the sum including itself, and the broker applies it once.
 
 ## Why Felix fits
 
@@ -160,6 +157,32 @@ carry counter changes.
 
 ## Compared with Redis, SQL and local buckets
 
+### How it is usually built
+
+The usual tool is Redis. `INCR key` is atomic and returns the new value, and
+a limiter sets an expiry on the key when the result is 1 so the window resets
+itself. The pair is not atomic on its own, so careful implementations use a
+short Lua script or `SET key 0 NX EX 60` followed by `INCR`. It is fast and
+simple, and for a limit whose only job is to protect a backend it is a fine
+answer. The caveat is durability. Redis acknowledges before it persists unless
+the append-only file is set to sync every write, which most deployments do not
+do, and replication is asynchronous. A restart or a failover can lose the last
+second or so of increments, and the count then runs behind. For a rate limit
+that is a few extra requests. For a quota that is billed, it is an under-billed customer.
+
+A relational database is the other common choice for quotas:
+`UPDATE usage SET n = n + 1 WHERE key = $1 RETURNING n`. It is durable and
+transactional and the count can be joined with everything else. It is also a
+row lock per increment, so a hot key serializes, and every request pays a
+database round trip.
+
+Some teams avoid the network and keep a token bucket in each process. It adds
+no latency, but with twelve instances each enforcing 1,000 a minute the real
+limit is twelve times that, and a load balancer that sends one key's traffic
+unevenly makes it unpredictable.
+
+### How Felix differs
+
 Redis `INCR` costs one round trip on a single instance and will answer sooner
 than a Felix counter, which goes to the key's owner and, on a `Quorum` cache,
 waits for a majority. Felix gives a sum that survives restart and failover
@@ -175,42 +198,30 @@ A local token bucket has no network cost at all and suits a per-instance limit.
 It cannot enforce one limit across a fleet, which is what a shared counter is
 for.
 
-## Try it
+## Limits you can plan around
 
-Start the stack from the
-[Quickstart](/getting-started/quickstart/#try-it-in-one-command) (it covers Podman
-too) and run these from the directory holding `compose.yaml`.
+**Counters have no expiry and no delete.** A window key is never removed, so a
+per-minute limiter leaves one counter per principal per minute behind. Use a
+coarser window where you can, and budget for the growth.
 
-The stack has a `stats` cache for counters:
+**The limiter above is a fixed window.** A client can send up to twice the limit
+across a window boundary. If that matters, keep the window short or check the
+previous window's counter too. Felix has no server-side script, so a sliding
+window or token bucket is built from several calls and is not atomic.
 
-```bash
-docker compose run --rm felixctl counter add stats page-views 1
-docker compose run --rm felixctl counter add stats page-views 1
-docker compose run --rm felixctl counter get stats page-views
-```
+**Adds are not exactly-once.** A retried add whose answer was lost can count
+twice, so treat a counter as a tally and not as a ledger. There is no multi-key
+transaction, so a counter and a cache value cannot change together, and a
+counter cannot be watched.
 
-The first `add` prints `1`, the second prints `2`, and `get` prints `2`. Each
-`add` returns the sum including itself, and the broker applies it once.
+**Counters need a broker with durable storage.**
 
-## Where it stops
-
-A counter has no expiry and no delete. A window key is never removed, so a
-per-minute limiter leaves one counter per principal per minute behind. Use
-a coarser window where you can, or accept the growth. The
-limiter above is a fixed window, so a client can send up to twice the limit
-across a window boundary. A sliding window or token bucket needs a different
-shape, and Felix has no server-side script to build one atomically.
-
-Adds are not exactly-once. There is no multi-key transaction, so a counter and
-a cache value cannot be changed together. A counter is not watchable. Counters
-need a broker with durable storage.
-
-Felix also limits its own tenants: a tenant's publish bytes and messages per
-second can be capped per broker with `FELIX_TENANT_PUBLISH_BYTES_PER_SEC` and
-`FELIX_TENANT_PUBLISH_MSGS_PER_SEC`. That protects the cluster from one tenant
-and is a different thing from limiting your API's users. It is partial: only
-publishes are limited, and the rates live in each broker's environment. See
-[Multi-tenant SaaS](/use-cases/multi-tenant-saas/).
+**Felix also limits its own tenants, separately.** A tenant's publish bytes and
+messages per second can be capped per broker with
+`FELIX_TENANT_PUBLISH_BYTES_PER_SEC` and `FELIX_TENANT_PUBLISH_MSGS_PER_SEC`.
+That protects the cluster from one tenant and is a different thing from limiting
+your API's users. Only publishes are limited, and the rates are set in each
+broker's environment. See [Multi-tenant SaaS](/use-cases/multi-tenant-saas/).
 
 ## Related
 

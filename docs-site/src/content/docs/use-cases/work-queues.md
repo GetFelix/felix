@@ -11,38 +11,39 @@ load. This is a work queue: producers add jobs, a pool of consumers takes each
 job exactly once while it is being worked, and a job whose worker dies comes
 back.
 
-:::caution[Status: partial]
-Consumer groups work today, including acknowledgements, redelivery,
-dead letters, failover and a client that reads every shard. The status page
-marks them partial for one reason: a group is bound to one shard, and the
-broker serves one shard's group at a time. `Client::group_sharded`
-merges shards on the client, and nothing assigns shards to consumers. The
-default visibility timeout and the attempt bound are broker settings, not
-per stream or per group. Groups need durable storage.
-:::
+On Felix the queue is a consumer group on a durable stream. Workers claim jobs,
+acknowledge them, hand them back, and a job whose worker dies is redelivered
+after a timeout and dead-lettered after a retry limit. The jobs sit on the same
+log as your events, so one publish can feed both.
 
-## How this is usually built
+## Try it
 
-Most teams use a managed queue or a broker. Amazon SQS hands a message to one
-consumer and hides it for the visibility timeout (30 seconds by default). The
-consumer deletes it when done, and if it does not, the message reappears. A
-redrive policy moves a message to a dead-letter queue after a set number of
-receives. It is operated by AWS and scales without planning, which Felix
-does not match. RabbitMQ delivers to a consumer up to a prefetch limit and
-waits for an ack. A nack or a closed channel returns the message to the queue,
-and a dead-letter exchange takes the ones that are rejected or expire. It also
-routes: exchanges, bindings and topics let one publish fan out to differently
-shaped queues. NATS JetStream offers work-queue streams, where a message is
-removed once acknowledged, with pull consumers, an ack wait and a maximum
-number of deliveries.
+Start the stack from the
+[Quickstart](/getting-started/quickstart/#try-it-in-one-command) (it covers Podman
+too) and run these from the directory holding `compose.yaml`.
 
-Kafka is often pressed into service as a queue because it is already there.
-A consumer group divides partitions among its members, so parallelism stops at
-the partition count, a slow record holds up the partition behind it, and there
-is no per-record acknowledgement or retry: a consumer commits an offset, and a
-record that must be retried is re-published to a retry topic by the
-application. What Kafka gives in return is ordering within a partition and
-a log that can be replayed.
+`orders` is durable, which consumer groups need, and it may already hold
+records such as the quickstart's `hello`. Create a group at the live tail, so
+it sees only what you publish next. Creating a group that exists fails, so use
+a new name each run:
+
+```bash
+docker compose run --rm felixctl group create orders workers-1 --from latest
+docker compose run --rm felixctl pub orders 'job-1'
+docker compose run --rm felixctl group poll orders workers-1 --max 1 --wait-ms 5000
+docker compose run --rm felixctl group nack orders workers-1 0:OFFSET:1
+docker compose run --rm felixctl group poll orders workers-1 --max 1 --wait-ms 5000
+docker compose run --rm felixctl group ack orders workers-1 0:OFFSET:2
+```
+
+`poll` prints a claim, `SHARD:OFFSET:ATTEMPTS`, then a tab and the payload.
+Replace `OFFSET` with the offset it printed. After the `nack`, the second `poll`
+claims the same record with the attempt count at 2, which is the redelivery.
+The `ack` finishes it, and `group describe orders workers-1` shows nothing owed.
+
+Consumer groups are marked partial on the status page for one reason: a group is
+bound to one shard. Use a one-shard stream, or `Client::group_sharded` to read
+every shard from one client.
 
 ## Why Felix fits
 
@@ -190,6 +191,31 @@ of after the visibility timeout, polls under a stable name with
 
 ## Compared with SQS, RabbitMQ, Kafka and JetStream
 
+### How it is usually built
+
+Most teams use a managed queue or a broker. Amazon SQS hands a message to one
+consumer and hides it for the visibility timeout (30 seconds by default). The
+consumer deletes it when done, and if it does not, the message reappears. A
+redrive policy moves a message to a dead-letter queue after a set number of
+receives. It is operated by AWS and scales without planning, which Felix
+does not match. RabbitMQ delivers to a consumer up to a prefetch limit and
+waits for an ack. A nack or a closed channel returns the message to the queue,
+and a dead-letter exchange takes the ones that are rejected or expire. It also
+routes: exchanges, bindings and topics let one publish fan out to differently
+shaped queues. NATS JetStream offers work-queue streams, where a message is
+removed once acknowledged, with pull consumers, an ack wait and a maximum
+number of deliveries.
+
+Kafka is often pressed into service as a queue because it is already there.
+A consumer group divides partitions among its members, so parallelism stops at
+the partition count, a slow record holds up the partition behind it, and there
+is no per-record acknowledgement or retry: a consumer commits an offset, and a
+record that must be retried is re-published to a retry topic by the
+application. What Kafka gives in return is ordering within a partition and
+a log that can be replayed.
+
+### How Felix differs
+
 SQS is the simplest to run on AWS and scales without a shard count to choose.
 Felix needs brokers and a shard count at creation. In exchange a failed job is
 still readable in the log, a dead letter is a pointer and not a second queue
@@ -217,45 +243,28 @@ until retention removes it, which keeps replay and redrive available and means
 storage is bounded by retention and not by what is still pending. Pick
 JetStream when you want acknowledged messages gone.
 
-## Try it
+## Limits you can plan around
 
-Start the stack from the
-[Quickstart](/getting-started/quickstart/#try-it-in-one-command) (it covers Podman
-too) and run these from the directory holding `compose.yaml`.
+**A group is bound to one shard.** The broker serves one shard's group at a time
+and nothing assigns shards to workers. Give a queue one shard, or have each worker
+poll every shard, which `ShardedGroup` does for you in Rust. The Python binding
+has no sharded helper.
 
-`orders` is durable, which consumer groups need, and it may already hold
-records such as the quickstart's `hello`. Create a group at the live tail, so
-it sees only what you publish next. Creating a group that exists fails, so use
-a new name each run:
+**Timeouts and retry limits are broker settings.** The default visibility timeout
+and the attempt bound are not per stream or per group. Size your handlers to the
+visibility timeout, or extend a claim you are still working on.
 
-```bash
-docker compose run --rm felixctl group create orders workers-1 --from latest
-docker compose run --rm felixctl pub orders 'job-1'
-docker compose run --rm felixctl group poll orders workers-1 --max 1 --wait-ms 5000
-docker compose run --rm felixctl group nack orders workers-1 0:OFFSET:1
-docker compose run --rm felixctl group poll orders workers-1 --max 1 --wait-ms 5000
-docker compose run --rm felixctl group ack orders workers-1 0:OFFSET:2
-```
+**No priorities, per-message TTL or routing.** A delay applies to a `nack`, not to
+a first delivery, and routing is by stream and key only. Use one stream per
+priority or delay class.
 
-`poll` prints a claim, `SHARD:OFFSET:ATTEMPTS`, then a tab and the payload.
-Replace `OFFSET` with the offset it printed. After the `nack`, the second `poll`
-claims the same record with the attempt count at 2, which is the redelivery.
-The `ack` finishes it, and `group describe orders workers-1` shows nothing owed.
+**Handlers must tolerate seeing a job twice.** Delivery is at-least-once and order
+of completion is not guaranteed. A group untouched for ten minutes has its
+in-memory state rebuilt from disk, which redelivers what it still had in flight.
 
-## Where it stops
-
-A group is bound to one shard and nothing assigns shards to workers, so a
-worker must poll every shard itself or be told which ones to poll, which
-`ShardedGroup` does for you. There are no priorities, no per-message TTL, no
-delayed enqueue (a delay applies to a nack, not a first delivery), and no
-routing beyond stream and key. The attempt bound and default visibility are
-broker settings. A group untouched for ten minutes has its in-memory state
-rebuilt from disk, which redelivers what it still had in flight. Order of
-completion is not guaranteed, and a handler must tolerate seeing a job twice.
-Python and Rust clients have the calls; the Python binding has no sharded
-helper. A group needs `group.consume` to poll and
-settle, and `group.manage` to redrive or discard, which a role can hold on a
-single group.
+**Groups need durable storage and the right role.** A role needs `group.consume`
+to poll and settle and `group.manage` to redrive or discard, and it can hold
+either on a single group. The Rust and Python clients have the calls.
 
 ## Related
 

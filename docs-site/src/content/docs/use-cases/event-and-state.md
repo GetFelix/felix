@@ -10,33 +10,20 @@ disagreeing with itself: the status says placed and nobody was told, or
 fulfilment started on an order whose status never changed. A Felix commit makes
 them one write.
 
-## How this is usually built
+`commit` writes the event and the state change as one record on one stream
+shard. A subscriber that sees the event can read the state it produced, and a
+crash leaves both or neither, so there is no outbox table to poll.
 
-The state lives in a database and the events go to a broker, which means two
-systems with no shared transaction. Writing to both from the request handler is
-the dual-write problem. Whichever order you pick, a crash between the writes
-loses one of them.
+## Try it
 
-The common fix is the transactional outbox. The handler writes the order row
-and an outbox row in one database transaction. A separate relay, often Debezium
-reading the write-ahead log into Kafka, or a poller, moves outbox rows to the
-broker. This is sound, and it is the right answer when the state has to live in
-Postgres for queries and joins. The cost is the moving parts: the relay, its
-lag, duplicates when it restarts (so every consumer has to deduplicate), and a
-second pipeline to operate.
-
-Kafka transactions solve a different half. A producer can write to several
-partitions atomically, and a consume-transform-produce loop can commit its
-consumer offsets in the same transaction, which gives exactly-once processing
-between Kafka topics. That is real and well engineered. It does not cover the
-service's own state, since the state is not in Kafka, and Kafka brokers offer no
-keyed read of "what is order 42 right now" without building a table from the
-topic yourself.
-
-Event sourcing by hand puts the state in the log: append events, derive state by
-folding them. The write is atomic because there is only one. The reads are the
-problem. Every service builds and maintains its own projection, and a read of
-current state waits on the projection catching up.
+`felixctl` has no commit command, so the atomic write is shown by the Rust
+snippet in the example below: the `cluster.commit` call that enqueues the event,
+puts the state and deletes the cart as one record, and the `state_get` that reads
+it back. Run it against the local cluster from the
+[Quickstart](/getting-started/quickstart/#a-cluster-in-one-command), started with
+`--nodes 3` for the replicated stream. To see the event half alone on the
+one-command stack, run `docker compose run --rm felixctl sub orders` in one terminal and
+`docker compose run --rm felixctl pub orders 'order placed'` in another.
 
 ## Why Felix fits
 
@@ -162,6 +149,36 @@ felixctl does not read keyed state yet, so `state_get` is a client call today.
 
 ## Compared with an outbox, Kafka transactions and event sourcing
 
+### How it is usually built
+
+The state lives in a database and the events go to a broker, which means two
+systems with no shared transaction. Writing to both from the request handler is
+the dual-write problem. Whichever order you pick, a crash between the writes
+loses one of them.
+
+The common fix is the transactional outbox. The handler writes the order row
+and an outbox row in one database transaction. A separate relay, often Debezium
+reading the write-ahead log into Kafka, or a poller, moves outbox rows to the
+broker. This is sound, and it is the right answer when the state has to live in
+Postgres for queries and joins. The cost is the moving parts: the relay, its
+lag, duplicates when it restarts (so every consumer has to deduplicate), and a
+second pipeline to operate.
+
+Kafka transactions solve a different half. A producer can write to several
+partitions atomically, and a consume-transform-produce loop can commit its
+consumer offsets in the same transaction, which gives exactly-once processing
+between Kafka topics. That is real and well engineered. It does not cover the
+service's own state, since the state is not in Kafka, and Kafka brokers offer no
+keyed read of "what is order 42 right now" without building a table from the
+topic yourself.
+
+Event sourcing by hand puts the state in the log: append events, derive state by
+folding them. The write is atomic because there is only one. The reads are the
+problem. Every service builds and maintains its own projection, and a read of
+current state waits on the projection catching up.
+
+### How Felix differs
+
 Against a Postgres outbox, Felix removes the relay, its lag and the duplicate
 handling: one commit replaces the outbox row, the relay and the deduplication
 when the state is a small record per entity that services read by key. Postgres
@@ -180,35 +197,30 @@ append, so no service builds a projection and no read waits on one. Pick the
 hand-built version only when you need a read model that Felix's keyed state
 cannot express.
 
-## Try it
+## Limits you can plan around
 
-`felixctl` has no commit command, so the atomic write is shown by the Rust
-snippet in the example above: the `cluster.commit` call that enqueues the event,
-puts the state and deletes the cart as one record, and the `state_get` that reads
-it back. Run it against the local cluster from the
-[Quickstart](/getting-started/quickstart/#a-cluster-in-one-command), started with
-`--nodes 3` for the replicated stream. To see the event half alone on the
-one-command stack, run `docker compose run --rm felixctl sub orders` in one terminal and
-`docker compose run --rm felixctl pub orders 'order placed'` in another.
-
-## Where it stops
-
-Atomic commits are marked partial. Atomicity holds within one stream shard
-only. A commit naming a second stream is refused before anything is sent, with
-`NotOnOwningShard`. State and events share one stream shard, so there is nothing
-to split across shards or caches. Felix does not offer transactions across logs. An order that must update inventory in
+**Atomicity holds within one stream shard.** A commit naming a second stream is
+refused before anything is sent, with `NotOnOwningShard`, and Felix does not offer
+transactions across logs. Keep an entity's events and state on one stream shard,
+which is how the commit routes. An order that must also update inventory in
 another stream is two commits, and the application owns what happens between
 them.
 
-A commit is not idempotent: re-sending one whose answer was lost may write it
-twice, so a handler that can retry needs its own check, for example a
-`commit_if` at the expected offset. State is rebuilt from the retained log after
-a restart or a failover, with no snapshot, so retention on an entity stream
-must cover every live key. There is no read of state at an older version, and
-a per-key version check is not built: `commit_if` compares against the whole
-shard, so any write to the shard, including a plain publish, refuses it.
-Ephemeral streams refuse commits, and in a cluster an operator must finalize the
-`atomic_commit` fleet feature first.
+**A commit is not idempotent.** Re-sending one whose answer was lost may write it
+twice. A handler that retries needs its own check, for example `commit_if` at
+the expected offset.
+
+**State is rebuilt from the retained log.** After a restart or a failover there
+is no snapshot, so set retention on an entity stream to cover every live key.
+There is no read of state at an older version.
+
+**`commit_if` compares against the whole shard.** A per-key version check is not
+built, so any write to the shard, including a plain publish, refuses it. Retry
+from a fresh read.
+
+**Setup.** Ephemeral streams refuse commits, and in a cluster an operator must
+finalize the `atomic_commit` fleet feature first. Atomic commits are marked
+partial on the status page for the limits above.
 
 ## Related
 
