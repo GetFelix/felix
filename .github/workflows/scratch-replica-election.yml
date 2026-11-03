@@ -1,0 +1,55 @@
+name: Scratch (replica_election cluster tests)
+
+# Temporary: runs only failures::replica_election on a scratch branch.
+
+on:
+  push:
+    branches: ["scratch/1009-s10-replica-election"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scratch-replica-election
+  cancel-in-progress: true
+
+jobs:
+  replica-election:
+    runs-on: ${{ vars.FELIX_LARGE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.99.1"
+
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Build the broker
+        run: cargo build -p felix-broker-service --bin felix-broker
+
+      - name: Test
+        env:
+          FELIX_TEST_TIMEOUT_SCALE: "3"
+          FELIX_TEST_CLUSTER_LOG_DIR: ${{ runner.temp }}/cluster-logs
+        shell: bash
+        run: |
+          cargo test -p felix-cluster --test failures replica_election:: -- --nocapture 2>&1 | tee "$RUNNER_TEMP/test-output.log"
+
+      - name: Pack logs
+        if: failure()
+        run: tar -czf "$RUNNER_TEMP/cluster-logs.tar.gz" -C "$RUNNER_TEMP" cluster-logs test-output.log || true
+
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: replica-election-logs-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/cluster-logs.tar.gz
+          if-no-files-found: ignore
+          retention-days: 7
+          compression-level: 0
