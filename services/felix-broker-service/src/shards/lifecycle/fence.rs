@@ -410,6 +410,10 @@ impl felix_replication::driver::WriteFence for ShardFence {
             .is_some_and(|gate| gate.opened_below.load(SeqCst) > generation)
     }
 
+    fn promoting(&self, key: &ShardKey, generation: u64) -> bool {
+        self.awaiting_promotion(key) == Some(generation)
+    }
+
     fn withheld(&self, key: &ShardKey, generation: u64) -> bool {
         self.gave_up.read().get(key) == Some(&generation)
             || self
