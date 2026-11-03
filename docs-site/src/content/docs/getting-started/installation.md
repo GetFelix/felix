@@ -17,14 +17,14 @@ Felix from source.
 ## System Requirements
 
 - **Operating System:** Linux, macOS, or Windows (WSL2 recommended)
-- **Rust:** 1.97.1 or later
+- **Rust:** 1.97 or later (the repo pins 1.99.1, and rustup fetches it)
 - **Memory:** 4 GB minimum, 8 GB recommended for development
 - **Disk:** 2 GB for build artifacts
 - **Network:** For QUIC, ensure UDP traffic is allowed on your firewall
 
 ## Install Rust
 
-Felix requires Rust 1.97.1 or later. Install using [rustup](https://rustup.rs/):
+Felix needs Rust 1.97 or later. The repository pins 1.99.1 in `rust-toolchain.toml`, and rustup fetches that version the first time you build. Install using [rustup](https://rustup.rs/):
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -40,8 +40,8 @@ cargo --version
 Expected output:
 
 ```
-rustc 1.97.1 (or later)
-cargo 1.97.1 (or later)
+rustc 1.97 (or later)
+cargo 1.97 (or later)
 ```
 
 ## Clone the Repository

@@ -299,6 +299,9 @@ tasks:
       # And that the *runtime* knows them, so a mistyped name is reported
       # rather than quietly taking a default.
       - "python3 scripts/check_env_registry.py"
+      # A page that pins an older preview of this line tells readers to install
+      # a build that is no longer the newest.
+      - "python3 scripts/check_version_pins.py"
       # Every metric the code registers is on the metrics page, and no other.
       - "python3 scripts/check_metrics_reference.py"
       # Every error code, retry class and detail reason has a row on the error
