@@ -5,7 +5,7 @@
 //! request, so with [`LOG_DIR_VAR`] set each cluster copies its logs out first,
 //! and CI uploads the ones belonging to tests that failed.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, Once};
 
@@ -13,6 +13,9 @@ use super::Cluster;
 
 /// Where to keep the logs. Unset or empty keeps nothing.
 const LOG_DIR_VAR: &str = "FELIX_TEST_CLUSTER_LOG_DIR";
+
+/// Every run of a broker before the current one, oldest first.
+const EARLIER_RUNS: &str = "broker.log.earlier";
 
 fn log_dir() -> Option<PathBuf> {
     std::env::var_os(LOG_DIR_VAR)
@@ -49,8 +52,32 @@ impl Cluster {
                 node.data_dir.join("broker.log"),
                 dir.join(format!("{}.log", node.node_id)),
             );
+            let _ = std::fs::copy(
+                node.data_dir.join(EARLIER_RUNS),
+                dir.join(format!("{}.earlier.log", node.node_id)),
+            );
         }
     }
+}
+
+/// Move a stopped broker's log aside before it restarts.
+///
+/// The last run stays in `broker.log.previous`, where the history checker reads
+/// it. Every run is also appended to [`EARLIER_RUNS`] and kept with the cluster
+/// logs: a campaign restarts each broker many times, and the run that set up a
+/// failure is often several restarts back.
+pub(super) fn set_aside_log(data_dir: &Path) {
+    let log = data_dir.join("broker.log");
+    if let (Ok(mut from), Ok(mut to)) = (
+        std::fs::File::open(&log),
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(data_dir.join(EARLIER_RUNS)),
+    ) {
+        let _ = std::io::copy(&mut from, &mut to);
+    }
+    let _ = std::fs::rename(&log, log.with_extension("log.previous"));
 }
 
 /// Send this process's tracing to `<dir>/controlplane-<test binary>.log`.

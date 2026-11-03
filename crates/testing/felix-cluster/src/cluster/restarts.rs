@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 
+use super::kept_logs::set_aside_log;
 use super::startup::MAX_SPAWN_ATTEMPTS;
 use super::{Cluster, READY_TIMEOUT};
 use crate::node::spawn_broker;
@@ -107,8 +108,7 @@ impl Cluster {
             None => None,
         };
         // Kept beside the new one: the old run is usually what a failure is about.
-        let log = self.nodes[index].data_dir.join("broker.log");
-        let _ = std::fs::rename(&log, log.with_extension("log.previous"));
+        set_aside_log(&self.nodes[index].data_dir);
         // New ports can lose the same race start-up retries. Only that exit is
         // retried: a broker that cannot recover its storage must fail the test.
         let mut attempts = 1;
@@ -171,8 +171,7 @@ impl Cluster {
         if self.nodes[index].is_running() {
             bail!("{node_id} is still running");
         }
-        let log = self.nodes[index].data_dir.join("broker.log");
-        let _ = std::fs::rename(&log, log.with_extension("log.previous"));
+        set_aside_log(&self.nodes[index].data_dir);
         self.respawn(index)
     }
 

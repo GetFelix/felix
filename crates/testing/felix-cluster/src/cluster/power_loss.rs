@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow, bail};
 
 use super::Cluster;
+use super::kept_logs::set_aside_log;
 use super::startup::MAX_SPAWN_ATTEMPTS;
 use crate::node::{new_boot, power_loss_image, storage_fault_file};
 
@@ -118,8 +119,7 @@ impl Cluster {
             .filter(|index| !self.nodes[*index].is_running())
             .collect();
         for index in &stopped {
-            let log = self.nodes[*index].data_dir.join("broker.log");
-            let _ = std::fs::rename(&log, log.with_extension("log.previous"));
+            set_aside_log(&self.nodes[*index].data_dir);
             self.respawn(*index)?;
         }
         // A restarted broker can lose a port race like a single restart can
