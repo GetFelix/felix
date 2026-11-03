@@ -172,7 +172,14 @@ jobs:
           - FelixShardElectWipeNonVoterGroups
           - FelixShardElectHandoff
           - FelixShardElectAdoptTwoWrites
-          - FelixShardElectRename
+          - FelixShardElectRenameKeep0StoodOneDest
+          - FelixShardElectRenameKeep1StoodOneDest
+          - FelixShardElectRenameDrop0StoodOneDest
+          - FelixShardElectRenameDrop1StoodOneDest
+          - FelixShardElectRenameDrop0StoodSeveralDest
+          - FelixShardElectRenameKeep1StoodSeveralDest
+          - FelixShardElectRenameKeep0StoodSeveralDest
+          - FelixShardElectRenameDrop0StoodOneOther
           - FelixShardFencedAckTwoPromotions
           - FelixShardFencedAckSeatLonger
           - FelixShardFencedAckMove
