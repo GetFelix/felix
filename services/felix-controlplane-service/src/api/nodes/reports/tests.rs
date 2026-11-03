@@ -924,28 +924,21 @@ fn elected_on_x_z(at: u64, set_generation: u64) -> serde_json::Value {
     shard
 }
 
-/// x leads at `generation` on {x, z}, with the control plane's {x, y}
-/// pending from it.
-fn assert_pending_from_x_z(assignment: &ShardAssignment, generation: u64) {
+/// x leads at `generation` on {x, z}. A change to {x, y} could never
+/// complete: x would ship to y alone, which is no majority of {x, z}.
+fn assert_named_on_x_z(assignment: &ShardAssignment, generation: u64) {
     assert_eq!(assignment.generation, generation, "{assignment:?}");
     assert_eq!(assignment.leader, "broker-x");
     assert_eq!(assignment.replicas, vec!["broker-z"]);
-    assert_eq!(
-        assignment.pending_set,
-        Some(crate::model::PendingSet {
-            replicas: vec!["broker-y".to_string()],
-            generation,
-        })
-    );
+    assert_eq!(assignment.pending_set, None);
 }
 
-/// **A generation claimed twice on another set moves on with that set
-/// pending.** broker-x was elected on {x, z} while the control plane named
-/// broker-y on {x, y}. The next generation names x on the elected set, the
-/// control plane's own pending from it, so a majority of {x, z} that holds
-/// what x acknowledged is fenced and kept until x reports its start on both.
+/// **A generation claimed twice on another set moves on with that set.**
+/// broker-x was elected on {x, z} while the control plane named broker-y on
+/// {x, y}. The next generation names x on {x, z}, so the majority of it that
+/// holds what x acknowledged is fenced and kept.
 #[tokio::test]
-async fn a_collision_on_another_set_moves_on_with_the_recorded_set_pending() {
+async fn a_collision_on_another_set_moves_on_with_the_elected_set() {
     let (store, keys, named_y) = named_y_beside_z().await;
     let at = named_y.generation;
     let state = app_state_ready(Arc::clone(&store) as _);
@@ -954,15 +947,14 @@ async fn a_collision_on_another_set_moves_on_with_the_recorded_set_pending() {
         .get_shard_assignment(&shard_zero())
         .await
         .expect("get");
-    assert_pending_from_x_z(&assignment, at + 1);
+    assert_named_on_x_z(&assignment, at + 1);
 }
 
-/// **An election on another set past the control plane's moves on in the
-/// same report.** Adoption takes only the generation, which leaves broker-y
-/// named at the generation x opened at. Waiting for x's next report would
-/// let a failover in between promote from {x, y} alone.
+/// **An election on another set past the control plane's is named on it.**
+/// Taking only the generation would leave broker-y named at the generation x
+/// opened at, and a failover could then promote from {x, y} alone.
 #[tokio::test]
-async fn an_election_on_another_set_moves_on_in_the_adopting_report() {
+async fn an_election_on_another_set_is_adopted_on_it() {
     let (store, keys, named_y) = named_y_beside_z().await;
     let at = named_y.generation + 2;
     let state = app_state_ready(Arc::clone(&store) as _);
@@ -976,5 +968,5 @@ async fn an_election_on_another_set_moves_on_in_the_adopting_report() {
         .get_shard_assignment(&shard_zero())
         .await
         .expect("get");
-    assert_pending_from_x_z(&assignment, at + 1);
+    assert_named_on_x_z(&assignment, at + 1);
 }

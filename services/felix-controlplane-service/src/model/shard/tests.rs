@@ -629,21 +629,23 @@ fn elected_and_issued_generations_are_bounded() {
 }
 
 /// **A collided generation moves on under the elected leader, on the set it
-/// was elected on.** broker-b was elected at 7 on {b, d, e} while the control
-/// plane named broker-a there on {a, b, c}. A majority of {b, d, e} may hold
+/// was elected on.** broker-b was elected at 7 on {b, c, d} while the control
+/// plane named broker-a there on {a, b, c}. A majority of {b, c, d} may hold
 /// records no majority of {a, b, c} does, so the next generation leaves the
 /// elected set for the control plane's as a pending change: a failover
 /// meanwhile promotes from the elected set, and the control plane's comes
-/// back only once the leader reports its start record on both.
+/// back only once the leader reports its start record on both. Elected on
+/// {b, d, e}, the leader shipping to {a, b, c} could never reach a majority
+/// of the set being left, so it is named on {b, d, e} alone.
 #[test]
 fn reissuing_over_another_elected_set_leaves_it_as_a_pending_change() {
     let named_a = assignment();
     let next = named_a
-        .reissuing(&elected("broker-b", &["broker-d", "broker-e"], 7, 6))
+        .reissuing(&elected("broker-b", &["broker-c", "broker-d"], 7, 6))
         .expect("reissued");
     assert_eq!(next.leader, "broker-b");
     assert_eq!(next.generation, 8);
-    assert_eq!(next.replicas, vec!["broker-d", "broker-e"]);
+    assert_eq!(next.replicas, vec!["broker-c", "broker-d"]);
     let pending = next
         .pending_set
         .as_ref()
@@ -659,6 +661,14 @@ fn reissuing_over_another_elected_set_leaves_it_as_a_pending_change() {
         Ok(()),
         "the store's next generation is the pending one"
     );
+
+    let apart = named_a
+        .reissuing(&elected("broker-b", &["broker-d", "broker-e"], 7, 6))
+        .expect("reissued");
+    assert_eq!(apart.leader, "broker-b");
+    assert_eq!(apart.replicas, vec!["broker-d", "broker-e"]);
+    assert_eq!(apart.pending_set, None);
+    assert_eq!(apart.generation, 8);
 
     // Elected on the recorded set, it is named as is.
     let same = named_a

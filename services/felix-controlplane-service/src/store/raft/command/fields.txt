@@ -11,6 +11,7 @@
 21 adopt_elected_leader.elected.leader
 21 adopt_elected_leader.elected.replicas
 21 adopt_elected_leader.elected.set_generation
+26 adopt_elected_leader.elected_set
 21 adopt_elected_leader.expected_generation
 21 adopt_elected_leader.key
 21 adopt_elected_leader.key.kind

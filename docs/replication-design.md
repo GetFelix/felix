@@ -1329,7 +1329,10 @@ elected leader waits for the lease until the control plane is back (issue
     generation, while a change is pending), the control plane makes it the
     shard's leader at that generation, with the same conditional write as
     any assignment, so a planner acting on an older read loses. Otherwise it
-    records the generation only, and issues every later one above it. It
+    names the leader on the set it was elected on (in the control plane's
+    set, at the next generation with the control plane's set pending from
+    it), or, while a change is pending or a copy joins, records the
+    generation only. It issues every later generation above it. It
     never reissues a generation at or below one it was told was elected. A
     leader on the old set is passed over while a change is pending: the new
     set's leader, carrying a newer set generation, deposes it. If the

@@ -206,7 +206,7 @@ async fn an_election_on_the_old_set_is_recorded_not_adopted() {
 }
 
 /// The control plane named broker-a at a generation broker-b was elected at
-/// on {b, d, e}, and its own set is {a, b, c}. Answers the store and what
+/// on {b, c, d}, and its own set is {a, b, c}. Answers the store and what
 /// moving past the collision wrote.
 async fn reissued_past_a_collision() -> (InMemoryStore, ShardAssignment) {
     let store = election_store(
@@ -225,7 +225,7 @@ async fn reissued_past_a_collision() -> (InMemoryStore, ShardAssignment) {
         .reissuing(&ElectedLeader {
             leader: "broker-b".to_string(),
             generation: named_a.generation,
-            replicas: vec!["broker-d".to_string(), "broker-e".to_string()],
+            replicas: vec!["broker-c".to_string(), "broker-d".to_string()],
             set_generation: named_a.generation,
         })
         .expect("reissued");
@@ -245,34 +245,39 @@ async fn reissued_past_a_collision() -> (InMemoryStore, ShardAssignment) {
     (store, reissued)
 }
 
-/// **A failover while a reissue's change is pending promotes from the set
-/// the leader was elected on.** broker-b acknowledged on {b, d, e} before the
-/// collision was found, and dies before its new generation's start reaches a
-/// majority of {a, b, c}. A follower of {a, b, c} alone may hold none of
-/// those records: neither a nor c is promoted, and neither stands for
-/// election, since the route carries the pending change.
+/// **A failover while a reissue's change is pending keeps the set the
+/// leader was elected on.** broker-b acknowledged on {b, c, d} before the
+/// collision was found, then shipped only to {a, c}, the pending set, and
+/// dies before its new generation's start reaches a majority of both. Its
+/// report names a and c caught up. The failover promotes c from the elected
+/// set and keeps d, which may hold what b acknowledged; a is not in it.
+/// Nobody stands meanwhile: the route carries the pending change.
 #[tokio::test]
-async fn a_failover_during_a_reissue_promotes_from_the_elected_set() {
+async fn a_failover_during_a_reissue_keeps_the_elected_set() {
     let (store, reissued) = reissued_past_a_collision().await;
     assert_eq!(
         pass(&store).await,
         reissued,
         "taken without the leader's word"
     );
-    report(&store, &reissued, false, None).await;
+    // What the leader measured: the pending set it ships to.
+    let shipped = ShardAssignment {
+        replicas: reissued.pending_set.clone().expect("pending").replicas,
+        ..reissued.clone()
+    };
+    report(&store, &shipped, false, None).await;
     store
         .set_node_lifecycle("broker-b", NodeLifecycle::Down)
         .await
         .expect("down");
     let promoted = pass(&store).await;
+    assert_eq!(promoted.leader, "broker-c", "{promoted:?}");
     assert!(
-        ["broker-d", "broker-e"].contains(&promoted.leader.as_str()),
+        promoted.nodes().any(|node| node == "broker-d"),
         "{promoted:?}"
     );
     assert!(
-        !promoted
-            .nodes()
-            .any(|node| node == "broker-a" || node == "broker-c"),
+        !promoted.nodes().any(|node| node == "broker-a"),
         "{promoted:?}"
     );
     assert_eq!(promoted.pending_set, None);
@@ -295,12 +300,12 @@ async fn a_reissue_takes_the_recorded_set_on_the_leaders_joint_start() {
 }
 
 /// **A leader that stands again after a reissue it could not take is
-/// recorded on the set it opened on.** The reissue came from a stale report:
-/// broker-b had already promised that generation to another candidate, so it
-/// stood one higher on {b, d, e} and opened there. Its set generation is not
-/// the pending one, so the control plane takes only the generation, and the
-/// set it records for b is still {b, d, e}, the one b acknowledges on, with
-/// its own set pending until the timeout.
+/// recorded on the set it opened on, and the change it skipped is dropped.**
+/// The reissue came from a stale report: broker-b had already promised that
+/// generation to another candidate, so it stood one higher on {b, c, d} and
+/// opened there. The control plane names b on {b, c, d}, and drops the
+/// pending change back to {a, b, c}: only b could have taken it, and b
+/// opened past it on the set it leaves.
 #[tokio::test]
 async fn an_election_past_a_reissue_keeps_the_elected_set_recorded() {
     let (store, reissued) = reissued_past_a_collision().await;
@@ -311,7 +316,7 @@ async fn an_election_past_a_reissue_keeps_the_elected_set_recorded() {
             ElectedLeader {
                 leader: "broker-b".to_string(),
                 generation: reissued.generation + 1,
-                replicas: vec!["broker-d".to_string(), "broker-e".to_string()],
+                replicas: vec!["broker-c".to_string(), "broker-d".to_string()],
                 set_generation: reissued.generation - 1,
             },
         )
@@ -326,8 +331,12 @@ async fn an_election_past_a_reissue_keeps_the_elected_set_recorded() {
             .nodes()
             .map(String::as_str)
             .collect::<BTreeSet<_>>(),
-        BTreeSet::from(["broker-b", "broker-d", "broker-e"]),
+        BTreeSet::from(["broker-b", "broker-c", "broker-d"]),
         "the control plane records b on a set it did not open on"
     );
-    assert_eq!(recorded.pending_set, reissued.pending_set);
+    assert_eq!(
+        recorded.pending_set, None,
+        "a change only b could take, and b opened past it on the set it leaves"
+    );
+    assert_eq!(recorded.generation, reissued.generation + 1);
 }

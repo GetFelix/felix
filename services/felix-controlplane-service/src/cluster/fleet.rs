@@ -190,7 +190,7 @@ pub(crate) fn check_prerequisites(
 /// and adopts elected leaders, and `joint_fence_ready` says `joint_fence` may be
 /// finalized at all.
 /// Any other feature passes. Under Raft the finalize also needs every member
-/// at metadata level 21 (`replica_election`) or 23 (`joint_fence`), which the
+/// at metadata level 26 (`replica_election`) or 23 (`joint_fence`), which the
 /// store checks as it proposes.
 ///
 /// Checked when the operator asks, like [`check_prerequisites`]: a Raft member
