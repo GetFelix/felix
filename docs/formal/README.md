@@ -231,7 +231,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardElectSwapFlip.cfg` | `FelixShardElectSwap.cfg` with one write and the flip as the code writes it (`FlipNewGeneration`): the control plane takes the pending set at the next generation, naming the cut-over's leader again, which fences the new set alone. A candidate may already hold that generation, and the flip may follow a stale report: if the leader promised that generation to a candidate since, the leader refuses the generation | pass, the same invariants (not yet measured) |
 | `FelixShardElectSwapFlipSkipsBallot.cfg` | the same with replicas answering the flip's fence by the generation alone, not the ballot (`NamedFenceSkipsBallot`) | violate `OneLeaderPerGeneration`: a candidate fences both sets without the leader and opens at the generation after the cut-over's; the flip names the leader there, and it opens too |
 | `FelixShardElectSwapFlipJoinLags.cfg` | `FelixShardElectSwapFlip.cfg` where a copy joining in the cut-over holds any prefix of the destination's log (`JoinLags`), and the flip waits for the start record of the destination's named stint (`StintStarts`). Checked in the piece where the twin below finds its trace: the cut-over keeps the old leader, after the write, once several replicas had promised past the control plane's generation, the destination among them | pass, the same invariants (not yet measured) |
-| `FelixShardElectSwapFlipJoinLagsFirstStart.cfg` | the same with the flip taking the generation's first start record, as `own_start` does today (#1787) | violate `AckedOnMajority`: a destination elected past the old leader acknowledges a write on the old set, the cut-over names it again at that generation, the joining copy holds that stint's start but not the write, and the flip follows the start once a majority of both sets holds it, leaving the write on one copy of the new set |
+| `FelixShardElectSwapFlipJoinLagsFirstStart.cfg` | the same with the flip taking the generation's first start record instead of the named stint's (#1787) | violate `AckedOnMajority`: a destination elected past the old leader acknowledges a write on the old set, the cut-over names it again at that generation, the joining copy holds that stint's start but not the write, and the flip follows the start once a majority of both sets holds it, leaving the write on one copy of the new set |
 | `FelixShardElectPreVote.cfg` | `FelixShardElect.cfg` with pre-vote and stickiness (`PreVote`), time to 2 so leases lapse and elections follow, two writes, the set check | pass, the same invariants (not yet measured) |
 | `FelixShardElectNoBallotAcks.cfg` | `FelixShardElect.cfg` without ballots, two generations of elections and two writes, the set check on so the first leader can follow a candidate | violate `AckedHeldByLeader`, checked per generation |
 | `FelixShardElectAdoptPromote.cfg` | `FelixShardElect.cfg` with one write, the set check, adoption up to generation 2 and promotion on suspicion up to generation 2 | pass, the same invariants (186K distinct states without the write; not yet measured with it) |
@@ -730,8 +730,8 @@ joining in the cut-over may hold any prefix of the destination's log
 must wait for the named stint's start (`StintStarts`), which reaches the new
 set only behind those records.
 `FelixShardElectSwapFlipJoinLagsFirstStart.cfg` takes the generation's first
-start instead, as the code's `own_start` does today, and loses an
-acknowledged write (#1787). There the flip waits for that first start to be
+start instead and loses an acknowledged write (#1787); the code's
+`own_start` counts from the current stint's start, as `StintStarts` does. There the flip waits for that first start to be
 held on a majority of both sets, read from the logs as `joint_start` counts
 it, and a joining copy that holds the start but not the write is enough.
 

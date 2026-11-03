@@ -696,11 +696,11 @@ FlipNewGeneration == FALSE
 NamedFenceSkipsBallot == FALSE
 \* `StintStarts`: a leader opening again at a generation it already started
 \* (elected there, then named there by a cut-over) begins a new stint, and
-\* the flip waits for that stint's start record. Off, the flip takes the
-\* generation's first start, as `own_start` in felix-replication's
-\* driver/shard.rs reads the generation's start offset, which a retake
-\* does not move. Records the elected stint acknowledged after that start
-\* need not be on a majority of the new set (#1787).
+\* the flip waits for that stint's start record, as `own_start` in
+\* felix-replication's driver/shard.rs counts from the current stint's
+\* start. Off, the flip takes the generation's first start, and records the
+\* elected stint acknowledged after that start need not be on a majority of
+\* the new set (#1787).
 \* `Readmitted` and `CpAdmit` still accept any start record at the
 \* generation, not the named stint's; the configurations with `StintStarts`
 \* on have no wipes.
