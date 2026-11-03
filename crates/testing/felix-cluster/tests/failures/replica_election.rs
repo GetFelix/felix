@@ -717,3 +717,97 @@ async fn the_control_plane_stays_down_across_a_leader_kill_under_load() {
     assert_one_leader_per_generation(&opened, before.generation);
     cluster.shutdown().await;
 }
+
+/// **A broker restarted while the control plane is down does not vote.** Three
+/// brokers, RF 3. A broker starts only once the control plane answers, so a
+/// follower restarted during the outage neither votes nor stands, and with
+/// the leader also dead only one copy is serving: no majority, no new
+/// generation until the control plane returns (#1196).
+#[serial]
+#[tokio::test]
+async fn a_broker_restarted_while_the_control_plane_is_down_does_not_vote() {
+    let mut cluster = start(3, 3, false).await;
+    let before = assignment(&cluster).await;
+    let mut acked = publish_acked(&cluster, &before.leader, "before", 20).await;
+    let restarted = before.replicas.first().expect("a follower").clone();
+
+    cluster
+        .crash_control_plane()
+        .await
+        .expect("crash the control plane");
+    cluster.kill_node(&restarted).expect("kill a follower");
+    cluster
+        .start_node_unready(&restarted)
+        .expect("start the follower again without waiting for it");
+    cluster.kill_node(&before.leader).expect("kill the leader");
+
+    // Three times the election bound: long enough for a vote or a candidacy
+    // to show up in the logs if the restarted broker could take part.
+    let mut opened = BTreeMap::new();
+    let mut stood = BTreeMap::new();
+    let deadline = tokio::time::Instant::now() + ELECTED_WITHIN * 3;
+    while tokio::time::Instant::now() < deadline {
+        read_logged(&cluster, OPENED, &mut opened);
+        read_logged(&cluster, STOOD, &mut stood);
+        assert!(
+            opened.range(before.generation + 1..).next().is_none()
+                && stood.range(before.generation + 1..).next().is_none(),
+            "a shard with one serving copy elected while the control plane was down: \
+             opened {opened:?}, stood {stood:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+
+    cluster
+        .recover_control_plane()
+        .await
+        .expect("recover the control plane");
+    cluster
+        .await_node_ready(&restarted)
+        .await
+        .expect("the restarted follower comes up once the control plane answers");
+    let last = Mutex::new(None);
+    let (leader, generation) =
+        felix_cluster::wait::until_some(ELECTED_WITHIN * 3, "the shard to serve again", || {
+            let last = &last;
+            let cluster = &cluster;
+            let before = &before;
+            async move {
+                let now = cluster.shard_assignments().await.ok().and_then(|mut all| {
+                    all.remove(&format!(
+                        "{}/{}/{STREAM}/0",
+                        cluster.tenant_id, cluster.namespace
+                    ))
+                });
+                *last.lock().expect("lock") = now.clone();
+                let now = now?;
+                if now.generation <= before.generation || now.leader == before.leader {
+                    return None;
+                }
+                cluster
+                    .publish_via(&now.leader, STREAM, b"probe".to_vec())
+                    .await
+                    .ok()?;
+                Some((now.leader, now.generation))
+            }
+        })
+        .await
+        .unwrap_or_else(|err| {
+            panic!(
+                "no leader serves above generation {} after the control plane returned: \
+                 {err:#}; the control plane names {:?}",
+                before.generation,
+                last.lock().expect("lock")
+            )
+        });
+    assert!(generation > before.generation, "{generation}");
+    acked.extend(publish_acked(&cluster, &leader, "after", 5).await);
+    let missing = missing_on(&cluster, &leader, &acked).await;
+    assert!(
+        missing.is_empty(),
+        "{leader} lost acknowledged records: {missing:?}"
+    );
+    read_logged(&cluster, OPENED, &mut opened);
+    assert_one_leader_per_generation(&opened, before.generation);
+    cluster.shutdown().await;
+}

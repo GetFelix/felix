@@ -484,6 +484,11 @@ pub(crate) struct StoppedControlPlane {
 }
 
 impl StoppedControlPlane {
+    /// The address [`Self::start`] serves on again.
+    pub(crate) fn base_url(&self) -> String {
+        format!("http://{}", self.addr)
+    }
+
     /// Serve again, and run placement again if it was running.
     pub(crate) async fn start(self) -> Result<ControlPlane> {
         let control_plane = ControlPlane::serve(self.store, self.keys, self.addr).await?;
