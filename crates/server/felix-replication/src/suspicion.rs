@@ -184,13 +184,16 @@ pub(crate) async fn ping<R: PeerRequester>(
         .unwrap_or(Answer::Silent)
 }
 
-/// Every broker that leads a shard this one follows.
+/// Every broker that leads a shard this one follows, except leaders the node
+/// catalog has no address for (port 0): failing to reach one of those says
+/// nothing about whether it is up, so it must not make it a suspect.
 pub(crate) fn leaders_followed(router: &ShardRouter) -> Vec<(String, SocketAddr)> {
     let local = router.local_node_id();
     let mut seen = HashSet::new();
     let mut leaders = Vec::new();
     for (_, route) in router.snapshot().iter() {
         if route.leader.node_id == local
+            || route.leader.advertise_addr.port() == 0
             || !route
                 .replicas
                 .iter()

@@ -2291,6 +2291,18 @@ past `resume_from`; and records its queue dropped stay dropped, exactly as they
 would have without the move. Resumed that way, nothing is repeated and nothing
 is skipped that the subscriber would otherwise have received.
 
+A leader that loses a shard usually stays one of its replicas, and the new
+leader starts shipping to it at once. Those records can reach its log before it
+has ended its readers. It then ends them right away, as for a move to the
+leader its log accepted, with `resume_from` below the records it never offered.
+The same goes for a rebuild the new leader asks of it.
+
+A subscription still reading its history from disk on a `Quorum` stream waits
+at the committed mark. If the broker stops serving the shard before the mark
+reaches the end of that history, the event stream is reset rather than ended
+with `shard_moved`. The client then resumes after the last record it received,
+or where it asked to start if it received none.
+
 The Rust `Client` does this on its own: a subscription from
 `Client::subscribe` and a cache watch from `Client::watch_cache`
 follow their shard, and sharded subscriptions and watches report

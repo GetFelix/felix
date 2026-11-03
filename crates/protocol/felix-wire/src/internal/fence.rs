@@ -99,6 +99,12 @@ impl PeerCapabilities {
     ///
     /// [`ProducerMark::Trim`]: super::ProducerMark::Trim
     pub const HEAD_TRIM: Self = Self(1 << 14);
+    /// Offered by a caller that reads [`ReplicateOk::learner`], so a
+    /// learner's answer to it travels as `ReplicateLearnerOk`. To any other
+    /// caller the answer goes without the flag.
+    ///
+    /// [`ReplicateOk::learner`]: super::ReplicateOk::learner
+    pub const LEARNER_ACKS: Self = Self(1 << 15);
 
     pub fn from_bits(bits: u64) -> Self {
         Self(bits)

@@ -204,10 +204,31 @@ impl RideAlong {
     }
 
     fn may_rebuild(&self) -> bool {
+        self.cursors()
+            .any(|cursor| cursor.halted.is_some() || cursor.rebuilding)
+    }
+
+    /// Bytes each of `main` and these cursors has stored, and whether its
+    /// last answer was a voter's, in a fixed order.
+    fn stored(&self, main: &FollowerCursor) -> [Option<(u64, bool)>; 4] {
+        [
+            Some(main),
+            self.group.as_ref(),
+            self.dead_letters.as_ref(),
+            self.counters.as_ref(),
+        ]
+        .map(|cursor| {
+            cursor.map(|cursor| {
+                let voter = cursor.halted.is_none() && !cursor.stalled && !cursor.learner;
+                (cursor.shipped_bytes, voter)
+            })
+        })
+    }
+
+    fn cursors(&self) -> impl Iterator<Item = &FollowerCursor> {
         [&self.group, &self.dead_letters, &self.counters]
             .into_iter()
             .flatten()
-            .any(|cursor| cursor.halted.is_some() || cursor.rebuilding)
     }
 }
 
@@ -730,6 +751,30 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         Some(log) if acks_at_quorum && leading && !stepped_down() => log.tail_offset().await.ok(),
         _ => None,
     };
+    // A copy is re-admitted by whichever of the shard's logs completes its
+    // catch-up, and only that log's answer says so. Another log's cursor
+    // keeps the learner answer it got before until it is asked again, which
+    // on a level log nothing else does. A voter's answer to a batch on any
+    // log is what makes asking worth it, so a copy still a learner everywhere
+    // is not re-asked every pass. An empty log's cursor and a new one have
+    // confirmed nothing, and a log not open here keeps its cursor stalled.
+    let answered_as_voter = |node: &str| {
+        [
+            &entry.followers,
+            &aux.group.followers,
+            &aux.dead_letters.followers,
+            &aux.counters.followers,
+        ]
+        .into_iter()
+        .flatten()
+        .any(|cursor| {
+            cursor.node_id == node
+                && cursor.halted.is_none()
+                && !cursor.stalled
+                && !cursor.learner
+                && cursor.confirmed > 0
+        })
+    };
     let would_raise = |node: &str,
                        followers: &[FollowerCursor],
                        held: &dyn Fn(&[FollowerCursor]) -> u64,
@@ -738,7 +783,10 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         if !quorum_shard || !leading || learner.as_deref() == Some(node) {
             return false;
         }
-        if !mine.is_some_and(|cursor| cursor.confirmed > mark && cursor.halted.is_none()) {
+        let askable = |cursor: &FollowerCursor| {
+            cursor.halted.is_none() && (!cursor.learner || answered_as_voter(node))
+        };
+        if !mine.is_some_and(|cursor| cursor.confirmed > mark && askable(cursor)) {
             return false;
         }
         let hopeful: Vec<FollowerCursor> = followers
@@ -747,6 +795,9 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 let mut cursor = cursor.clone();
                 if cursor.stalled && cursor.node_id != node {
                     cursor.confirmed = 0;
+                }
+                if cursor.node_id == node {
+                    cursor.learner = false;
                 }
                 cursor
             })
@@ -833,6 +884,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 if let Ok(seen) = requester.identity(&cursor.node_id, cursor.addr).await {
                     restart_copy(&mut cursor, &mut rode, seen, base, &shard, rebuilds);
                 }
+                let stored_before = rode.stored(&cursor);
                 let RideAlong {
                     group,
                     dead_letters,
@@ -935,6 +987,63 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                             None,
                         )
                         .await;
+                    }
+                }
+                // A batch on one log can re-admit the copy while another log
+                // still holds the learner answer it gave before, here or in
+                // an earlier exchange. Asked again, that log counts toward
+                // its marks now rather than at its next record. Only a voter's
+                // answer to a batch in this exchange is evidence: an empty
+                // log's cursor and a new one say nothing about the copy.
+                let stale = |cursor: &FollowerCursor| {
+                    cursor.halted.is_none() && !cursor.stalled && cursor.learner
+                };
+                let readmitted =
+                    quorum_shard
+                        && leading
+                        && (stale(&cursor) || rode.cursors().any(stale))
+                        && rode.stored(&cursor).into_iter().zip(stored_before).any(
+                            |(now, before)| {
+                                now.is_some_and(|(bytes, voter)| {
+                                    voter && bytes > before.map_or(0, |(bytes, _)| bytes)
+                                })
+                            },
+                        );
+                if readmitted {
+                    if stale(&cursor) {
+                        reship_last(
+                            requester,
+                            &log,
+                            &shard,
+                            log_kind,
+                            &mut cursor,
+                            rebuilds,
+                            Some(mark_now),
+                        )
+                        .await;
+                    }
+                    for (log, aux, kind) in [
+                        (
+                            &counter_log,
+                            &mut rode.counters,
+                            felix_broker::LogKind::Counters,
+                        ),
+                        (
+                            &group_log,
+                            &mut rode.group,
+                            felix_broker::LogKind::GroupCursors,
+                        ),
+                        (
+                            &dead_letter_log,
+                            &mut rode.dead_letters,
+                            felix_broker::LogKind::GroupDeadLetters,
+                        ),
+                    ] {
+                        if let (Some(log), Some(aux)) = (log, aux.as_mut())
+                            && stale(aux)
+                        {
+                            reship_last(requester, log, &shard, kind, aux, rebuilds, None).await;
+                        }
                     }
                 }
                 // Counted only on answers, every one of them from the copy
@@ -1466,7 +1575,9 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         || entry.followers.iter().any(|cursor| {
             absorbed.contains(&cursor.node_id)
                 && cursor.halted.is_none()
-                && ((checked.lock().contains(&cursor.node_id) && cursor.confirmed > mark)
+                && ((!cursor.learner
+                    && checked.lock().contains(&cursor.node_id)
+                    && cursor.confirmed > mark)
                     || (!cursor.stalled && cursor.next_offset < tail))
         });
 
@@ -1563,7 +1674,7 @@ pub(super) async fn group_level(
             .iter()
             .find(|cursor| cursor.node_id == node)
             .map_or(Some(0), |cursor| {
-                cursor.halted.is_none().then(|| cursor.confirmed.min(tail))
+                cursor.counts().then(|| cursor.confirmed.min(tail))
             })
     };
     // Each follower's pair, `None` for one halted on either log. A move's
