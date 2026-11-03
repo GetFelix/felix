@@ -512,13 +512,20 @@ impl StreamState {
     /// sequence and commit order move past it the way `advance_to` moves
     /// them past replicated records, but the ring and held batches stay.
     ///
+    /// While batches are held, the sequence stays below them. It is where a
+    /// move tells readers to resume, and a held batch is still on disk for
+    /// the next owner to commit; resuming past it would skip it for good.
+    /// The next publish moves it past the record.
+    ///
     /// Only before the leader serves: resetting the commit order under a
     /// publish in flight would let it jump its turn.
     pub(crate) fn skip_generation_start(&self, offset: u64, run: u64) {
         let mut state = self.log_state.lock();
         let next = offset + 1;
         if state.next_seq < next {
-            state.next_seq = next;
+            if !self.held.is_busy() {
+                state.next_seq = next;
+            }
             self.commit_sequencer.reset(next);
         }
         state.generation_start_run = Some((next, run));
