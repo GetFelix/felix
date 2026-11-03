@@ -34,6 +34,33 @@ pub(super) fn read(cluster: &Cluster, into: &mut BTreeSet<Opened>) {
     }
 }
 
+/// What a candidate logs once its ballot is on disk.
+const STOOD: &str = "standing for election";
+
+/// Every `node at generation` that stood for shard `shard` of `name`, from
+/// the broker logs. For a report on an election that never opened.
+pub(super) fn stood(cluster: &Cluster, name: &str, shard: u32) -> Vec<String> {
+    let mut stood = Vec::new();
+    for node in cluster.node_ids() {
+        let Some(dir) = cluster.node(&node).map(|n| n.data_dir.clone()) else {
+            continue;
+        };
+        for log in LOGS {
+            let text = std::fs::read_to_string(dir.join(log)).unwrap_or_default();
+            for line in text.lines().filter(|line| line.contains(STOOD)) {
+                let line = strip_ansi(line);
+                if field(&line, "stream") == Some(name)
+                    && field(&line, "shard") == Some(&shard.to_string())
+                    && let Some(generation) = field(&line, "generation")
+                {
+                    stood.push(format!("{node} at {generation}"));
+                }
+            }
+        }
+    }
+    stood
+}
+
 /// The open `line` records, if it records one.
 pub(super) fn parse(line: &str, node: &str) -> Option<Opened> {
     if !line.contains(OPENED) {

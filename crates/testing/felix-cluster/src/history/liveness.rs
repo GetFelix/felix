@@ -203,10 +203,19 @@ pub(super) async fn await_election(
                 .iter()
                 .map(|status| {
                     let shard = format!("{} {}/{}", status.kind, status.name, status.shard);
-                    let why = last_refusal
-                        .get(&shard)
-                        .cloned()
-                        .unwrap_or_else(|| "no broker opened it at a later generation".to_string());
+                    let why = last_refusal.get(&shard).cloned().unwrap_or_else(|| {
+                        // Whether anyone stood tells a failed election from
+                        // one never started.
+                        let stood = super::leaders::stood(cluster, &status.name, status.shard);
+                        format!(
+                            "no broker opened it at a later generation; stood: {}",
+                            if stood.is_empty() {
+                                "nobody".to_string()
+                            } else {
+                                stood.join(", ")
+                            }
+                        )
+                    });
                     format!("{shard} (generation {}): {why}", status.generation)
                 })
                 .collect();

@@ -132,6 +132,7 @@ jobs:
           FELIX_HISTORY_MODE: ${{ steps.seed.outputs.mode }}
           FELIX_HISTORY_NEMESIS: ${{ matrix.nemesis }}
           FELIX_HISTORY_DURATION_SECS: ${{ inputs.duration_secs || '1200' }}
+          FELIX_TEST_CLUSTER_LOG_DIR: ${{ runner.temp }}/cluster-logs
         run: |
           set -o pipefail
           cargo test -p felix-cluster --test history -- --nocapture --include-ignored 2>&1 | tee ${{ runner.temp }}/history-output.txt
@@ -166,3 +167,14 @@ jobs:
           name: history-output-${{ matrix.nemesis }}
           path: ${{ runner.temp }}/history-output.txt
           retention-days: 30
+
+      # The output keeps only the end of each broker log; the whole logs are
+      # what a failed election or a lost write is read from.
+      - name: Upload the broker logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: history-cluster-logs-${{ matrix.nemesis }}
+          path: ${{ runner.temp }}/cluster-logs
+          if-no-files-found: ignore
+          retention-days: 7
