@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793698575212,
+  "lastUpdate": 1793703655327,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -43524,6 +43524,58 @@ window.BENCHMARK_DATA = {
             "range": "8093.61",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1222567.74\nmean: 1221278.79\nstdev: 8093.61\ncv: 0.66%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2757b0d18f546812668aa74fda31f0d66e13744c",
+          "message": "fix(replication): a leader leaves a learner's acknowledgements out of its marks (#1762) (#1811)\n\nCloses #1762. Part of #1009 (S9 prerequisite).\n\nA leader shipped a learner (a copy re-admitted after a wipe, still catching up) the same batches as any follower and counted its `ReplicateOk` toward the commit mark. With elections that loses an acknowledged write (`FelixShardElectWipeNonVoterCreatesLearnerAcks.cfg`). The leader cannot see the learner mark, which lives in the follower's kept set, so the follower now says so.\n\n## What changed\n- **Wire.** `ReplicateOk.learner: bool`. `false` encodes as kind 8, byte for byte as before; `true` encodes as the new kind `ReplicateLearnerOk` (47) with the same body. The internal protocol freezes body layouts, so a new kind rather than a field.\n- **Compatibility.** New caller capability `LEARNER_ACKS` (1 << 15), offered by every caller from the pool (like `LANE_RENEWAL`). The listener downgrades a learner's answer to kind 8 for a caller that did not offer it (`for_caller` in `peer/server.rs`), so an older leader never sees kind 47 and keeps counting as it did. That is only possible without elections, where it is safe.\n- **Follower.** `admit_when_caught_up` now returns whether the copy is still a learner, judged on the shard's own log (stream or cache) for every log kind. `apply` sets the flag from it, so the batch that completes the catch-up is already answered as a voter.\n- **Leader.** `FollowerCursor.learner`, set from the same answer as `confirmed`. `FollowerCursor::counts()` (not halted, not a learner) replaces `halted.is_none()` in every mark: `quorum_offset_without`, `held_at_generation`, `held_in_set` (so `held_by_both`), `group_level`, the counter mark, the move throttle and the wake checks. A learner stays in the set's size. The status board reports it as `learner`.\n- **Re-admission on another log.** The flag is tracked per log, and only the answer on the log whose batch completed the catch-up says voter. When an exchange gets a voter's answer to an actual batch (the cursor's stored bytes grew), it sends the last record again on each of that follower's other logs (records, counters, group cursors, dead letters) that still say learner (`reship_last`, which does nothing unless that cursor is level). Only on a `Quorum` shard this broker leads. A pass's `would_raise` re-asks a learner cursor too, once the node has a voter cursor that confirmed something. An empty log's cursor or a new one is no evidence. A straggler's answer that clears the flag counts as progress in `put_back`, so a pass follows.\n- **Fail closed.** A follower that cannot open the shard's own log answers as a learner.\n- **Docs.** `docs/internal-protocol.md` (capability row, kind list, new \"A learner's answers\" subsection), `docs/replication-design.md` (what a learner does), changelog fragment.\n\n## Tests (each fails with its part of the fix reverted; checked locally)\n- `driver::tests::quorum::a_learners_answer_does_not_move_the_mark_until_it_is_readmitted`: RF 3, the other follower unreachable; the learner's answer leaves the mark at 0, its next answer as a voter moves it to the tail.\n- `quorum::tests::a_learner_counts_toward_no_mark_and_stays_in_the_size`.\n- `replica::tests::non_voting::a_learner_says_so_in_its_answers_until_it_is_readmitted` (cache answer is a learner's until the counter log catches up).\n- `peer::tests::learner::*`: an older caller gets kind 8; a caller offering `LEARNER_ACKS` gets the flag.\n- `felix-wire`: `a_learners_answer_is_its_own_kind_and_a_voters_is_unchanged` pins the bytes.\n- `driver::tests::counters::a_copy_readmitted_on_its_cache_log_is_asked_again_for_the_counters`: the counters ship first and are answered as a learner, the cache batch then re-admits the copy; with no new counter record the counter mark must still rise (review finding 1).\n- `driver::tests::counters::a_learner_with_an_empty_counter_log_is_sent_each_batch_once`: b stays a learner and its counter log is empty; one put sends b one cache batch, not a second re-ask (delta review SHOULD 1).\n- `replica::tests::non_voting::a_copy_whose_own_log_cannot_open_answers_as_a_learner`: a cache with no log behind it; the counter batch is answered as a learner (review finding 2).\n\n## Model\nSpec unchanged. Ran locally: `FelixShardElectWipeNonVoterCreates.cfg` passes (2,137,852 distinct states); `FelixShardElectWipeNonVoterCreatesLearnerAcks.cfg` still violates `AckedHeldByLeader`. `LearnerAcksCount == Elections = 0` stays accurate: a leader may still count a learner only when it talks to a follower without the capability, which cannot happen once elections run. The comment above `LearnerAcksCount` (\"as the code's leader does\") is now stale; that wording change goes to the spec owner, no default change, so no ElectWipeNonVoter* dispatch.\n\n## Design calls\n- New kind plus a caller capability instead of a request-side signal: the follower answers per connection, and the listener already holds the caller's `Hello` bits.\n- The issue named `docs/protocol.md`; the internal protocol lives in `docs/internal-protocol.md`, which `protocol.md` points to, so the field is documented there.\n- `holders_of_start` and `caught_up` are untouched. The control plane re-admits a learner from `holds_start`, so leaving learners out there would strand them. Neither is a majority count.\n- Bootstrap and rebuild answers keep `learner: false`: neither moves `confirmed`.\n- Perf: on the follower, one `RwLock` read of the kept set per batch (already read by `admit_when_caught_up`); on the leader, a bool per cursor; on the listener, one atomic load per answer. No new allocation or round trip on the replication path.\n\n\n## Review\n- Opus review of cb4d6e80d: SHOULD 1 (a copy re-admitted on another log stayed out until a new record) and SHOULD 2 (fail closed when the own log cannot open) fixed in 65452226e, NIT 3 (docs) fixed.\n- Opus delta review of 65452226e + the merge with #1800: no MUST. SHOULD 1 (an empty log's or a new cursor counted as voter evidence, so a learner got a second request per batch) and SHOULD 2 (group and dead-letter cursors were never re-asked, and `group_level` reads them) are fixed. NITs: docs paragraph rewritten, comment on logs not open this pass. Merge: every `ReplicateOk` is built on the in-order arm, which goes through `for_caller`.\n\n## RF 3 perf A/B\n\nRun 41556414969: A = main a4e6a470e, B = ba2366e9a (this PR before the review's delta fixes). 3 brokers, RF 3, 8 alternating rounds. Values are medians across rounds, with min-max in brackets.\n\n| phase | metric | A | B | B/A |\n|---|---|---|---|---|\n| steady | p50 ms | 2.681 (2.631-2.747) | 2.684 (2.603-2.830) | 1.001 |\n| steady | p99 ms | 6.576 (6.454-6.640) | 6.756 (6.402-6.973) | 1.027 |\n| steady | p999 ms | 8.828 (8.582-8.941) | 9.040 (8.475-9.351) | 1.024 |\n| steady | read p99 ms | 3.193 | 3.197 | 1.001 |\n| 300 creates | create p50 ms | 3.302 | 3.486 | 1.056 |\n| 300 creates | p99 ms | 7.647 (7.394-8.133) | 7.868 (7.215-8.748) | 1.029 |\n\nEvery B range overlaps its A range, so the run shows no regression beyond round-to-round noise. With no learner present, the delta fixes add only a snapshot of four entries per exchange. That is why the run was not repeated on the final head.",
+          "timestamp": "2026-11-03T02:56:00-08:00",
+          "tree_id": "5b16474ad8de5caf76d855c64a054b69f1cafbd4",
+          "url": "https://github.com/GetFelix/felix/commit/2757b0d18f546812668aa74fda31f0d66e13744c"
+        },
+        "date": 1793703654705,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 350684.6,
+            "range": "9325.51",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 350684.60\nmean: 348617.63\nstdev: 9325.51\ncv: 2.67%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 350684.6,
+            "range": "9325.51",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 350684.60\nmean: 348617.63\nstdev: 9325.51\ncv: 2.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 78620.31,
+            "range": "5047.47",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 78620.31\nmean: 75901.29\nstdev: 5047.47\ncv: 6.65%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 786203.1,
+            "range": "50474.73",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 786203.10\nmean: 759012.84\nstdev: 50474.73\ncv: 6.65%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
