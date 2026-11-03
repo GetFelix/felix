@@ -1366,7 +1366,7 @@ Under Raft the pending set and the joint start need metadata level 21. Below
 it a write carrying a pending set is refused with 409 before it reaches the
 log, rather than written as a cut-over that takes the new set at once, and a
 report's joint start is dropped, which keeps a change pending; finalizing
-`replica_election` itself needs level 21. Under Postgres both come with
+`replica_election` itself needs level 26. Under Postgres both come with
 migration 0038 (`pending_set`, `joint_start_acked`), each with a marker
 (`pending_set_generation`, `joint_start_acked_at`): what a member that
 predates the columns leaves behind reads as none.
@@ -1392,12 +1392,25 @@ elected generation itself, not the next one:
   pending set stays pending under the new leader. A move in progress ends;
   a follower replacement goes on. The report is then that leader's and is
   judged as usual.
-- **Any other set**: only the generation is taken. The leader, the set and
-  any pending set stay as they were. A leader elected on the old set while a
-  change is pending is recorded this way, and its report is refused as
-  `not_leader`: the new set's leader deposes it. Without a pending change
-  the generation is now claimed twice, and the same report moves the shard
-  past it (below) instead of waiting for the next one.
+- **Any other set**: taking only the generation would leave the elected set
+  unrecorded, and a later failover could promote from the control plane's
+  set alone while a majority of the elected set holds records no majority of
+  it does. So, with no change pending and no copy joining:
+  - an elected leader in the control plane's set leads at the generation
+    after the elected one, as a reissue names it (below);
+  - one outside it leads at the elected generation on the elected set, and
+    placement moves that set as it moves any other.
+
+  Otherwise only the generation is taken and the report is refused as
+  `not_leader`: a leader elected on the old set while a change is pending is
+  deposed by the new set's leader. The exception is the control plane's own
+  leader elected on the control plane's set while a change from it is
+  pending: it opened past the change without taking it, and only it could
+  take it, so the change is dropped as on its timeout. An elected set naming
+  a node the catalog no longer holds also has only its generation taken,
+  since no write can name that node. Under Raft, members below metadata
+  level 26 apply the older form, which takes only the generation of any
+  other set, and finalizing `replica_election` needs every member at 26.
 
 An election more than 16 generations past the assignment's, or past
 `i64::MAX`, is refused and the report is judged as before: elections run a
@@ -1437,12 +1450,18 @@ The write depends on the set the leader was elected on:
   promotes from the elected set. The control plane takes its set back on
   the leader's report that its generation's start record is on a majority
   of both, or drops the change on the pending timeout and keeps the elected
-  set.
+  set. The leader ships only to the pending set, so this needs the pending
+  set, the leader included, to hold a majority of the elected set. When it
+  does not, the change could never complete, and the new generation names
+  the elected set alone.
+- **Another set naming a node the catalog no longer holds.** No write can
+  name that node, so the new generation names the control plane's set, as
+  adoption takes only the generation in that case.
 
 A report older than the elected leader's deposition can still move the shard
 to it, but the broker does not open a generation it promised to another
-candidate or one older than its ballot, so that write only costs the shard a
-promotion. If the elected leader did not open, its candidate withdraws the
+candidate or one older than its ballot. That write costs the shard a
+promotion, or, when it carries a pending change, the pending timeout. If the elected leader did not open, its candidate withdraws the
 standing within 3 s and the named leader opens as usual.
 
 One gap remains: an elected leader that restarts before its first report

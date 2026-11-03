@@ -488,6 +488,7 @@ fn commands() -> Vec<MetaCommand> {
                 replicas: vec![s("c")],
                 set_generation: 1,
             },
+            elected_set: true,
         },
         MetaCommand::TakePlacementLease { holder: s("h") },
         MetaCommand::DeleteShardAssignment { key: shard_key() },

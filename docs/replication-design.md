@@ -1329,7 +1329,10 @@ elected leader waits for the lease until the control plane is back (issue
     generation, while a change is pending), the control plane makes it the
     shard's leader at that generation, with the same conditional write as
     any assignment, so a planner acting on an older read loses. Otherwise it
-    records the generation only, and issues every later one above it. It
+    names the leader on the set it was elected on (in the control plane's
+    set, at the next generation with the control plane's set pending from
+    it), or, while a change is pending or a copy joins, records the
+    generation only. It issues every later generation above it. It
     never reissues a generation at or below one it was told was elected. A
     leader on the old set is passed over while a change is pending: the new
     set's leader, carrying a newer set generation, deposes it. If the
@@ -4104,6 +4107,11 @@ Once it is finalized on a broker that offers `ELECTION`:
   than the set found above, the fence needs a majority of that set too, as
   the model's `Promote` fences the promoted broker's own set. A member that
   votes only in the log's set is sent that set as the one being left.
+  Without the watch's view of the generation before, the set found is the
+  log's own set at it, which is the route's set. If a change was pending
+  there, the control plane's set was the one the log kept beside it as
+  being left, and the shard fails over from that set, so the fence needs a
+  majority of it too.
 - Each member of the set being left is counted as a voter and, where it was
   a move's staged destination, also not: replicas may keep the set either
   way, and the fence needs a majority of each reading.
@@ -4111,7 +4119,12 @@ Once it is finalized on a broker that offers `ELECTION`:
   the same, so a fence tried again at that generation, after a restart too,
   knows it. Every replica that took a joint fence keeps both. A leader that
   keeps its set while shipping keeps the old one beside it the same way, and
-  keeps nothing when it does not know it. A set kept at the route's
+  keeps nothing when it does not know it. A leader whose log already keeps
+  the route's members at an older generation was elected on them, since a
+  fence at the route's generation would have kept the set there. It keeps
+  that set and stamps its batches with it, so after a restart, which loses
+  the election, it does not refuse the next leader elected on the same set.
+  A set kept at the route's
   generation without the one it leaves (kept before the feature was
   finalized) is not read as no change.
 - An answer counts toward the set being left only from the copy that set

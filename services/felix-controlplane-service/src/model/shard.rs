@@ -586,8 +586,15 @@ impl ShardAssignment {
     /// it, as a cut-over writes one, because a majority of the elected set may
     /// hold records no majority of this one does. Until the leader reports its
     /// generation's start record on a majority of both, no follower stands
-    /// and a failover promotes from the elected set.
-    pub fn reissuing(&self, elected: &ElectedLeader) -> Option<ShardAssignment> {
+    /// and a failover promotes from the elected set. An elected set naming a
+    /// node `known` (the catalog) does not hold cannot be written, so then
+    /// the elected leader is named on this set, as [`Self::adopting_elected_set`]
+    /// falls back to the old form.
+    pub fn reissuing(
+        &self,
+        elected: &ElectedLeader,
+        known: &dyn Fn(&str) -> bool,
+    ) -> Option<ShardAssignment> {
         if self.pending_set.is_some()
             || self.joining.is_some()
             || !self.nodes().any(|node| *node == elected.leader)
@@ -616,8 +623,20 @@ impl ShardAssignment {
         }
         let same = elected_set.len() == next.replicas.len()
             && elected_set.iter().all(|node| next.replicas.contains(node));
-        if same {
+        if same || !elected_set.iter().all(|node| known(node)) {
             return Some(next);
+        }
+        // The leader ships to the pending set only, and counts an
+        // acknowledgement once a majority of the set being left holds it.
+        // Without such a majority among the pending set the change could
+        // never complete, so the elected set is named alone instead.
+        let shipped = elected_set
+            .iter()
+            .filter(|node| next.replicas.contains(node))
+            .count()
+            + 1;
+        if shipped * 2 <= elected_set.len() + 1 {
+            return Some(next.on_elected_set(elected));
         }
         Some(ShardAssignment {
             replicas: elected_set,
@@ -627,6 +646,101 @@ impl ShardAssignment {
             }),
             ..next
         })
+    }
+
+    /// This assignment, led by `elected.leader` on the set it was elected
+    /// on, with any move or pending change ended.
+    fn on_elected_set(self, elected: &ElectedLeader) -> ShardAssignment {
+        let mut replicas: Vec<String> = Vec::new();
+        for node in &elected.replicas {
+            if *node != elected.leader && !replicas.contains(node) {
+                replicas.push(node.clone());
+            }
+        }
+        let named = |node: &String| *node == elected.leader || replicas.contains(node);
+        ShardAssignment {
+            leader: elected.leader.clone(),
+            state: match self.state {
+                ShardState::Draining => ShardState::Assigning,
+                state => state,
+            },
+            successor: None,
+            move_started_at_millis: None,
+            move_reason: None,
+            pending_set: None,
+            member_storage_ids: self
+                .member_storage_ids
+                .iter()
+                .filter(|(node, _)| named(node))
+                .map(|(node, id)| (node.clone(), id.clone()))
+                .collect(),
+            learners: self
+                .learners
+                .iter()
+                .filter(|node| named(node))
+                .cloned()
+                .collect(),
+            replicas,
+            ..self
+        }
+    }
+
+    /// [`Self::adopting`], except that an elected set other than this one is
+    /// not left unrecorded. Taking only the generation would let a later
+    /// failover promote from this set alone, and a majority of the elected
+    /// set may hold records no majority of this one does.
+    ///
+    /// With no change pending and no copy joining, a leader elected on
+    /// another set is named at once: in this set, at the generation after
+    /// the elected one, with the elected set as the set being left and this
+    /// one pending from it ([`Self::reissuing`]); outside it, at the elected
+    /// generation on the elected set, which placement then moves as it moves
+    /// any set. The rest is as [`Self::adopting`], and so is an elected set
+    /// naming a node `known` (the catalog) does not hold, which no write can
+    /// name. Applied under Raft only by members at the level that knows it
+    /// (`ELECTED_SET_LEVEL`).
+    pub fn adopting_elected_set(
+        &self,
+        elected: &ElectedLeader,
+        known: &dyn Fn(&str) -> bool,
+    ) -> Option<ShardAssignment> {
+        let adopted = self.adopting(elected)?;
+        let elected_set: BTreeSet<&String> = std::iter::once(&elected.leader)
+            .chain(elected.replicas.iter())
+            .collect();
+        // This set's own leader elected on this set while a change from it is
+        // pending: it opened past the change without taking it, and only it
+        // could, so the change is dropped as on its timeout.
+        if self.pending_set.is_some()
+            && elected.leader == self.leader
+            && self.joining.is_none()
+            && elected_set == self.nodes().collect()
+        {
+            return Some(ShardAssignment {
+                pending_set: None,
+                ..adopted
+            });
+        }
+        if adopted.leader == elected.leader
+            || self.pending_set.is_some()
+            || self.joining.is_some()
+            || !known(&elected.leader)
+            || !elected.replicas.iter().all(|node| known(node))
+        {
+            return Some(adopted);
+        }
+        if self.nodes().any(|node| *node == elected.leader) {
+            // Beyond the window the store would refuse the write: recorded
+            // only, as before.
+            let reissued = ShardAssignment {
+                generation: elected.generation,
+                ..self.clone()
+            }
+            .reissuing(elected, known)
+            .filter(|next| check_elected_generation(self.generation, next.generation).is_ok());
+            return Some(reissued.unwrap_or(adopted));
+        }
+        Some(adopted.on_elected_set(elected))
     }
 
     /// Every node in the control plane's set, leader first. Not the

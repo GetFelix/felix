@@ -262,6 +262,52 @@ async fn under_joint_fence_a_shipping_leader_keeps_no_set_when_the_one_before_is
     assert_eq!(stream_log(&broker).await.set_generation(), 2);
 }
 
+/// **A leader elected on the route's members keeps that set at the
+/// generation it was elected on, even after a restart.** It was elected at 4
+/// on the set of generation 3, and the control plane named it at 4 on the
+/// same members. A restart lost the election, which lives in memory. Keeping
+/// the set at 4 would refuse the next leader elected on the set of 3, so the
+/// set stays at 3 and batches carry 3.
+#[tokio::test]
+async fn a_restarted_elected_leader_keeps_the_set_it_was_elected_on() {
+    use felix_storage::disk_log::{Member, Membership, ReplicaSet};
+
+    let (broker, _dir) = quorum_leader(3, 4).await;
+    let log = stream_log(&broker).await;
+    log.accept_generation(3, Some(LOCAL)).await.expect("ballot");
+    log.accept_set(ReplicaSet {
+        current: Membership {
+            generation: 3,
+            members: [LOCAL, "broker-b", "broker-c"]
+                .map(|node| Member {
+                    node: node.to_string(),
+                    storage: None,
+                    learner: false,
+                    wiped: false,
+                })
+                .to_vec(),
+        },
+        leaving: None,
+    })
+    .await
+    .expect("the set it was elected on");
+    log.accept_generation(4, Some(LOCAL))
+        .await
+        .expect("its own ballot");
+    let followers = Followers::new(true, &["broker-b", "broker-c"]);
+
+    pass(&followers, &broker, &follower_ack_marks()).await;
+
+    assert_eq!(stream_log(&broker).await.set_generation(), 3);
+    assert_eq!(
+        followers.stamps(),
+        vec![
+            ("broker-b".to_string(), Some(3)),
+            ("broker-c".to_string(), Some(3)),
+        ]
+    );
+}
+
 /// Refuses every batch to `behind` as a route that is behind, takes every
 /// fence, and records the batches' stamps and the fences.
 struct BehindFollower {

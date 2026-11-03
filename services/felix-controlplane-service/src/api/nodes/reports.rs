@@ -481,13 +481,6 @@ async fn adopt_if_elected(
                 "an elected leader reported; the control plane took its generation",
             );
             state.placement_wakes.request_pass();
-            // Taken as a generation only, it now names another leader at the
-            // elected one: move past that at once rather than on the next
-            // report, so a failover planned meanwhile does not leave the
-            // elected set unfenced.
-            if !adopted && written.generation == elected.generation {
-                return reissue_past_collision(state, node_id, key, elected, written).await;
-            }
             Ok(written)
         }
         Ok(_) => Ok(assignment),
@@ -525,7 +518,23 @@ async fn reissue_past_collision(
     elected: &felix_common::membership::ElectedLeadership,
     assignment: crate::model::ShardAssignment,
 ) -> Result<crate::model::ShardAssignment, ApiError> {
-    let Some(next) = assignment.reissuing(&elected.clone().into()) else {
+    // A member deleted from the catalog cannot be named, and a write naming
+    // it would fail on every report.
+    let mut unknown = std::collections::BTreeSet::new();
+    for node in &elected.replicas {
+        match state.store.get_node(node).await {
+            Ok(_) => {}
+            Err(StoreError::NotFound(_)) => {
+                unknown.insert(node.as_str());
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "reading an elected member failed");
+                return Ok(assignment);
+            }
+        }
+    }
+    let Some(next) = assignment.reissuing(&elected.clone().into(), &|node| !unknown.contains(node))
+    else {
         return Ok(assignment);
     };
     let token = match state.store.placement_token().await {
