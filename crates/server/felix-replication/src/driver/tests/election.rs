@@ -749,5 +749,15 @@ async fn the_running_driver_keeps_a_standing_until_its_shard_opens() {
         gate.held.lock().expect("lock")[0],
         "the standing was marked fenced while the shard opened"
     );
+    let recorded = tokio::time::timeout(Duration::from_secs(10), async {
+        while !elections.opened_elected(&key(), 4, 0) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(
+        recorded.is_ok(),
+        "an adoption must not make the open read as a plain bump"
+    );
     driver.stop().await;
 }

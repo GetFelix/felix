@@ -957,6 +957,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                             &shard,
                             log_kind,
                             log.replica_set().as_ref(),
+                            set_stamp,
                         )
                         .await;
                     }

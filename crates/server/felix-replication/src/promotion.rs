@@ -425,8 +425,11 @@ pub(crate) async fn refence<R: PeerRequester>(
 /// own routing view, so without this a follower that was down for the fence
 /// refuses every batch until the next generation. The set this leader keeps is
 /// sent as it is, with or without a set being left, so the follower keeps what
-/// the leader keeps. It may be older than the shard's generation: an elected
-/// leader that restarted keeps the set it was fenced on and no standing.
+/// the leader keeps. It may be older than the shard's generation only when
+/// the leader stamps its batches with it (`stamp`): an elected leader that
+/// restarted keeps the set it was fenced on and no standing. Any other older
+/// set is what a promotion that opened on the lease left behind, and that
+/// leader fences nobody.
 pub(crate) async fn refence_kept<R: PeerRequester>(
     requester: &R,
     node_id: &str,
@@ -434,8 +437,12 @@ pub(crate) async fn refence_kept<R: PeerRequester>(
     shard: &ShardRef,
     kind: LogKind,
     kept: Option<&felix_storage::disk_log::ReplicaSet>,
+    stamp: Option<u64>,
 ) -> bool {
-    let Some(kept) = kept.filter(|kept| kept.current.generation <= shard.generation) else {
+    let Some(kept) = kept.filter(|kept| {
+        let at = kept.current.generation;
+        at == shard.generation || (at < shard.generation && stamp == Some(at))
+    }) else {
         return false;
     };
     let election = FenceElection {
