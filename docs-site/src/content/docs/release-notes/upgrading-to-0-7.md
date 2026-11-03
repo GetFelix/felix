@@ -4,26 +4,106 @@ description: What an operator moving a cluster from 0.6.2 to the 0.7 line needs 
 ---
 
 :::caution[0.7 is not released]
-The 0.7 line is in preview; the newest is `0.7.0-preview.2`. This page lists
-what has changed since 0.6.2 and is reviewed and finalized when 0.7.0 is
-tagged. More will be added before then. Do not plan a production upgrade from
-it yet. The released versions are in the [release notes](/release-notes/).
+This page covers `main`, which is ahead of the newest preview,
+`0.7.0-preview.2`. Items marked *(main)* are not in a preview yet. The page is
+finalized when 0.7.0 is tagged. Do not plan a production upgrade from it yet.
+The released versions are in the [release notes](/release-notes/).
 :::
 
 Read [Upgrades and compatibility](/deployment/upgrades/) for the rules these
 notes rely on: the five compatibility surfaces, the upgrade order, fleet
 features and rollback.
 
-## Summary for an upgrade from 0.6.2
+## Breaking changes
 
-Nothing so far changes the client protocol, the internal protocol or the
-storage format. No new fleet feature has been added. Broker and control-plane
-settings are unchanged. The ordinary upgrade order applies: control plane,
-then brokers one at a time, then clients.
+- **Lease-token templates take over braces in RBAC objects** *(main)*. A policy object
+  that holds `{` or `}` is now a lease template. A grant on a literal cache key
+  with braces, such as `cache:t1/prod/c/{leases}`, stops granting that key. It
+  instead lets the holder of key `K` in cache `t1/prod/leases` get a lease
+  token for `c/K`. Before upgrading, list your grants for objects with braces.
+  Rename those keys so they hold none, and update the grants. The control plane
+  also refuses to write a malformed template.
+- **Rust client, renamed.** `ClusterClient` is now `Client`, and the old
+  single-connection `Client` is now `Connection`. Rename in this order, or the
+  second rename undoes the first: `Client` to `Connection`, then `ClusterClient`
+  to `Client`. Code that connected to one address with the old `Client` should
+  use the new `Client` with that address as its only seed.
+- **Rust crates that embed Felix.** `StreamLog::base_offset` is now
+  `physical_base`, beside `readable_base`. `Broker::allow_head_trims_when`
+  replaces `set_replication_enabled`. `SubscribeCursorError` gains
+  `trim_headers` and is no longer `Copy`. On `main`, the `felix-wire` message types also gained fields
+  (`record_headers`, `client_flags_ext`, `server_flags_ext`), so struct literals
+  and exhaustive matches need them. The wire bytes for a client that
+  does not use these are unchanged.
+- **Storage format 7 and 8.** `FORMAT_VERSION` was 6 in 0.6.2, is 7 in
+  preview.2 and is 8 on `main` *(v8: main)*.
+  - Version 7 holds the head-trim record. Version 8 holds a record's key and
+    headers.
+  - A broker moves a log onto a version only to hold such a record: v7 at the
+    first trim (in a cluster, once `head_trim` is finalized), v8 at the first
+    publish with headers. Until then the log stays readable by 0.6.2.
+  - After that, 0.6.2 refuses to open the log. There is no rollback except
+    restoring a backup.
+  - `FELIX_RECORD_HEADERS=false` keeps v8 off. It does not affect v7.
+  - Headers work on a single broker only for now, since replication does not
+    ship them.
+  - A single broker allows trims from the start and writes a `head-trimmed`
+    marker. That data directory cannot join a cluster until the cluster has
+    finalized `head_trim` (see [`head_trim`](/deployment/upgrades/#head_trim)).
 
-One change needs attention during the upgrade, on the control plane.
+## Wire protocol *(main)*
 
-## Control plane
+Record headers are negotiated, so 0.6.2 clients and brokers keep working. A
+frame flag, `FLAG_EXTENDED`, opens an extension word, and `Auth` and `AuthOk`
+carry `client_flags_ext` and `server_flags_ext` to agree on
+`EXT_RECORD_HEADERS`. A peer that does not offer it exchanges the same bytes as
+before. The Rust client offers it; the Python, TypeScript, C and C# clients do
+not yet. Header names starting with `felix.` are reserved.
+
+## New settings
+
+None of these is required. Each default keeps the 0.6.2 behavior.
+
+| Setting | What it does |
+|---|---|
+| `FELIX_RECORD_HEADERS` *(main)* | Single broker only. `false` refuses publishes that carry headers, which keeps logs at v7 or older. Turning it off later leaves stored headers readable. |
+| `FELIX_MQTT_LISTEN`, `FELIX_MQTT_WS_LISTEN` *(main)* | Bind the MQTT listener, plain and over WebSockets. Unset leaves it off. Related `FELIX_MQTT_*` limits are in [the reference](/reference/environment-variables/). |
+| `FELIX_LEASE_TOKEN_KEY_FILE`, `FELIX_LEASE_TOKEN_MAX_TTL_SECONDS` *(main)* | Key file and longest lifetime for lease tokens. Without the key file a broker neither mints nor accepts them. Every broker needs the same file. |
+| `FELIX_SHARD_ELECTION_HOLD_MS`, `FELIX_SHARD_PENDING_SET_TIMEOUT_MS` | Control-plane timers for `replica_election`, which no broker offers yet. Nothing uses them today. |
+
+In a cluster, headers are refused whatever `FELIX_RECORD_HEADERS` says, because
+the `record_headers` fleet feature is not implemented yet.
+
+## Upgrade order
+
+Before you start, list your RBAC grants for objects with braces (see the first
+breaking change).
+
+The ordinary order applies: control plane, then brokers one at a time, then
+clients. Back up the data directory first if you may use headers or head trim,
+because both write formats 0.6.2 cannot read.
+
+The `head_trim` fleet feature is new. It stays off after the brokers are
+upgraded, and nothing needs it unless you want to trim a stream. To turn it on,
+once every broker runs the new build:
+
+```bash
+felix-controlplane admin features finalize head_trim --dry-run
+felix-controlplane admin features finalize head_trim
+```
+
+The dry run names any live or draining broker that lacks the feature. A broker
+that is down is not counted and is refused later if it returns on the old
+build, so replace or retire it first. After the finalize, watch
+`felix_broker_fleet_feature_enabled{feature="head_trim"}` reach 1 on each
+broker, or read `GET /v1/fleet/features`.
+
+Finalizing is one-way. A cluster created on the new build finalizes it at the
+first broker registration. See [`head_trim`](/deployment/upgrades/#head_trim)
+for what a trim writes and what an older broker does with it, and
+[Rollback](/deployment/upgrades/#rollback) for the limits above.
+
+## Control plane changes
 
 A leader promoted by a failover now reports, for each follower it has not
 reached yet, the storage identity that its own promotion named the follower by.
@@ -52,38 +132,52 @@ yet.
 - With the Raft backend, both need every member at metadata level 21, and so
   does finalizing `replica_election`.
 
+Later control-plane changes are on `main`:
+
+- Every placement write names each member's registered storage id
+  (`member_storage_ids`): Postgres migration `0039`, Raft metadata level 22.
+- A copy whose storage was replaced is a learner until it is re-admitted, and
+  a leader reports where its generation started (`holds_start`): migration
+  `0040`, level 23. Finalizing `joint_fence` needs that level.
+- A stream can carry an MQTT mount: migration `0041`, level 24.
+
+In short, Postgres runs migrations `0037` to `0041` on start (`0039` to
+`0041` are on `main` only), and under Raft these features wait for metadata
+levels 20 to 24. Upgrade every control-plane member before the brokers.
+
 ## Clients
 
-The Rust client is renamed (first change below). The Python, TypeScript, C and
-C# clients are unchanged, and the reconnect options are additive.
+The Rust client has the rename above. The other clients are additive: every
+binding takes four reconnect options (an attempt count, a deadline for one
+retried call, and the backoff and max backoff between attempts), unset values
+keep the Rust defaults, and `trim_before` is new. On `main`, cursor errors in every binding also carry
+the reason, the nearest available offsets and the trim's headers. The
+C struct `FelixConnectOptions` gained `reconnect_attempts`,
+`reconnect_deadline_ms`, `reconnect_backoff_ms` and `reconnect_max_backoff_ms`
+after `token_release`; a program built against the older `felix.h` keeps the
+defaults, since zero means default.
 
-- **Rust only, breaking:** `ClusterClient` is now `Client`, and the old
-  single-connection `Client` is now `Connection`, kept for tools that address
-  one broker. Applications should use `Client`. Rename in this order, or the
-  second rename undoes the first: `Client` to `Connection` first, then
-  `ClusterClient` to `Client`. Code that connected to one address with the old
-  `Client` should move to the new `Client` with that address as its only seed.
+Cache and consumer-group calls on the Rust `Client` now follow
+`ReconnectPolicy`, as publishes already did. The limits bound the whole call,
+and a write is sent again only after a refusal that says nothing was applied.
 
-- Every client binding takes four reconnect options: an attempt count, a
-  deadline for one retried call, and the backoff and max backoff between
-  attempts. When unset they keep the Rust defaults. The C struct
-  `FelixConnectOptions` gained four fields, `reconnect_attempts`,
-  `reconnect_deadline_ms`, `reconnect_backoff_ms` and
-  `reconnect_max_backoff_ms`, after `token_release`. A program built against
-  the older `felix.h` keeps the defaults, since zero means default for all.
-- Cache and consumer-group calls on `Client` now follow
-  `ReconnectPolicy`, as publishes already did. The attempt limit, backoff and
-  deadline bound the whole call, re-routes included. A write is sent again only
-  after a refusal that says nothing was applied.
+A `Connection` opens its pooled connections as its traffic needs them
+*(main)*. A
+subscriber with default settings now holds 5 broker connections instead of 20,
+so about 100 fit under the default `FELIX_MAX_CONNECTIONS_PER_IP=512` instead
+of about 25. No action is needed; the pool sizes are ceilings.
+
+## What else is new
+
+A client can trim a stream's oldest records at the tail it expects
+(`trim_before`, `felixctl stream trim`); a cursor error now says where to resume
+and carries the trim's headers; a single broker accepts and delivers record
+headers; the Rust client has lease tokens; and a broker can serve MQTT (the last
+four are on `main`). See
+[what Felix is for](/getting-started/what-felix-is-for/) for the status of each.
 
 ## Packaging
 
 Each GitHub release now carries prebuilt `libfelix` C libraries, shared and
 static, with `felix.h` and a `LINKING.txt`, for Linux, macOS and Windows on x64
 and arm64. See [the C client](/clients/c/).
-
-## Still to check at release
-
-- Whether 0.7 adds a fleet feature, and so needs a finalize step.
-- Whether it raises `INTERNAL_VERSION` or `FORMAT_VERSION`.
-- Any removed or renamed setting.

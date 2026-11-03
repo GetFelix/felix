@@ -364,8 +364,10 @@ run before `felixd run` wrote the spec again, and is passed over.
 A failed workload stays failed until `felixd run` writes a new spec for it.
 
 A module built against contract 0.1 is a different case. No node claims the
-workload and nothing is marked failed. Each agent logs that the workload needs an
-operator and leaves it alone until its spec changes.
+workload and nothing is marked failed. The workload is recorded once on its output
+stream as needing an operator, and agents leave it alone until its spec changes. A
+module built against a contract version newer than the node knows is treated the same
+way.
 
 ## Replay
 
@@ -437,8 +439,10 @@ imports anything, so a workload has no clock, randomness, files or network, and
 anything from outside arrives as an input record. NaN bit patterns are
 canonicalized and relaxed SIMD is off. Fuel, memory, the Wasm stack, and the
 number of tables, instances and memories are limited identically on every node.
-Every field of a step's input is a function of the input stream and the spec, so
-a live step, a resume, `check` and `replay` pass identical values.
+Every field of a step's input is a function of the input streams, the merge log
+and the spec, so a live step, a resume, `check` and `replay` pass identical values.
+That includes the publisher of a record, which the host reads from the stored record
+and never from the node it runs on.
 
 What breaks determinism:
 
@@ -457,9 +461,12 @@ What breaks determinism:
   second run shows up as a divergence in `felixd replay --diff` and `felixd
   check`, or fails the workload on resume.
 
-Recorded inputs that are not deterministic functions of the input, such as a
-merge order or an effect's response, will rely on the fence alone. Neither exists
-yet.
+A workload with several inputs steps their records in an order the lease holder
+chose, which is not a function of the inputs. The holder appends that order to the
+workload's merge log, `wl.<id>.merge`, before it steps anything, fenced like the
+output stream. A new owner, a replay and `felixd check` read the log and step the
+same records in the same order. An effect's response, which would be a recorded
+input too, does not exist yet.
 
 The model in `specs/` checks the lease, epoch, claim, snapshot and failure paths
 with TLC, in several configurations that each turn one mechanism off and must
