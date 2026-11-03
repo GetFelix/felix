@@ -816,11 +816,16 @@ async fn a_control_request_past_the_limit_is_refused_and_the_stream_reads_on() {
     listener.stop().await;
 }
 
-/// Notes the task that polled each fence, and holds fences for [`PROMOTING`]
-/// until `release` has permits.
+/// The stream [`TaskNoting`] takes a while over before its first await, as a
+/// fence that opens a log from disk does.
+const COLD: &str = "cold";
+
+/// Notes the task that polled each fence, holds fences for [`PROMOTING`]
+/// until `release` has permits, and blocks a few milliseconds on [`COLD`].
 struct TaskNoting {
     polled_on: parking_lot::Mutex<Vec<Option<tokio::task::Id>>>,
     release: tokio::sync::Semaphore,
+    holding: tokio::sync::Notify,
 }
 
 #[async_trait::async_trait]
@@ -829,10 +834,13 @@ impl PeerRequestHandler for TaskNoting {
         let InternalMessage::Fence(fence) = request else {
             panic!("only fences are sent here, got {:?}", request.kind());
         };
-        if fence.shard.stream == PROMOTING {
-            let _ = self.release.acquire().await.expect("open").forget();
-        } else {
-            self.polled_on.lock().push(tokio::task::try_id());
+        match fence.shard.stream.as_str() {
+            PROMOTING => {
+                self.holding.notify_one();
+                let _ = self.release.acquire().await.expect("open").forget();
+            }
+            COLD => std::thread::sleep(Duration::from_millis(5)),
+            _ => self.polled_on.lock().push(tokio::task::try_id()),
         }
         InternalMessage::FenceOk(felix_wire::internal::FenceOk {
             correlation_id: fence.correlation_id,
@@ -859,15 +867,22 @@ fn read_loops_share_the_serving_runtime() -> bool {
 /// (#1796). A read round's fence is, and a task per fence put a spawn and a
 /// wake on every confirmed read. With a fence still running on the stream,
 /// the next ones go to tasks of their own again, so a first poll never holds
-/// up a stream busy with promotions.
+/// up a stream busy with promotions; and for a while after a first poll that
+/// blocked, as one that opens a log from disk does.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_fence_done_on_its_first_poll_is_answered_by_the_read_loop() {
     let handler = Arc::new(TaskNoting {
         polled_on: parking_lot::Mutex::new(Vec::new()),
         release: tokio::sync::Semaphore::new(0),
+        holding: tokio::sync::Notify::new(),
     });
-    let listener = Listener::start(PEER, Arc::clone(&handler) as _).await;
-    let pool = pool(config());
+    // Long enough that the held fence outlasts the checks made under it.
+    let config = PeerTransportConfig {
+        request_timeout: Duration::from_secs(10),
+        ..config()
+    };
+    let listener = Listener::start_on(PEER, Arc::clone(&handler) as _, config.clone()).await;
+    let pool = pool(config);
     pool.capabilities(PEER, listener.addr)
         .await
         .expect("handshake");
@@ -886,17 +901,31 @@ async fn a_fence_done_on_its_first_poll_is_answered_by_the_read_loop() {
         polled_on
     };
     let shared = read_loops_share_the_serving_runtime();
+    // A loaded runner can stall a first poll past the slow mark, which pauses
+    // polling in the read loop for a while; a round that saw that is retried
+    // once the pause is over.
+    let one_task = async |count: usize| {
+        let mut polled_on = Vec::new();
+        for _ in 0..3 {
+            polled_on = fence_round(count).await;
+            if polled_on.iter().all(|task| *task == polled_on[0]) {
+                return polled_on[0];
+            }
+            tokio::time::sleep(Duration::from_millis(1_100)).await;
+        }
+        panic!("answered from tasks of their own: {polled_on:?}");
+    };
 
     // All on the one task that reads the stream, or each on its own where
     // that task runs on the I/O runtime.
-    let idle = fence_round(20).await;
-    let tasks: std::collections::HashSet<_> = idle.iter().collect();
-    let read_loop = idle[0];
-    if shared {
-        assert_eq!(tasks.len(), 1, "answered from tasks of their own: {idle:?}");
+    let read_loop = if shared {
+        one_task(20).await
     } else {
+        let idle = fence_round(20).await;
+        let tasks: std::collections::HashSet<_> = idle.iter().collect();
         assert_eq!(tasks.len(), idle.len(), "{idle:?}");
-    }
+        idle[0]
+    };
 
     // With a promotion fence still running, the next fences are neither held
     // up nor polled by the read loop.
@@ -905,7 +934,7 @@ async fn a_fence_done_on_its_first_poll_is_answered_by_the_read_loop() {
         let addr = listener.addr;
         tokio::spawn(async move { pool.request(PEER, addr, fence_for(PROMOTING, 0)).await })
     };
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    handler.holding.notified().await;
     let busy = fence_round(5).await;
     assert!(
         busy.iter().all(|task| *task != read_loop),
@@ -919,8 +948,17 @@ async fn a_fence_done_on_its_first_poll_is_answered_by_the_read_loop() {
         "{promoted:?}"
     );
     if shared {
-        assert_eq!(fence_round(1).await, vec![read_loop], "idle again");
+        assert_eq!(one_task(3).await, read_loop, "idle again");
     }
+
+    // A first poll that blocked: the next fences go to tasks of their own.
+    let cold = pool.request(PEER, listener.addr, fence_for(COLD, 0)).await;
+    assert!(matches!(cold, Ok(InternalMessage::FenceOk(_))), "{cold:?}");
+    let after_cold = fence_round(5).await;
+    assert!(
+        after_cold.iter().all(|task| *task != read_loop),
+        "polled by the read loop right after a slow first poll: {after_cold:?}"
+    );
     pool.shutdown().await;
     listener.stop().await;
 }

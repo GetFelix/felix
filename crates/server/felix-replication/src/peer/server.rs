@@ -47,6 +47,12 @@ pub(super) const MAX_CONTROLS_PER_STREAM: usize = 1024;
 /// of records until it is written; the rest wait their turn off the stream.
 const MAX_CONCURRENT_FETCHES_PER_STREAM: usize = 16;
 
+/// A first poll of a control request slower than this did more than answer
+/// from memory (opened a log from disk, most likely), so the stream stops
+/// polling requests in its read loop for [`INLINE_PAUSE`].
+const SLOW_FIRST_POLL: std::time::Duration = std::time::Duration::from_millis(1);
+const INLINE_PAUSE: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// What answers a peer's request.
 ///
 /// The broker implements it with `BrokerPeerHandler` (#106). A listener built
@@ -426,6 +432,7 @@ async fn serve_connection(
             // Whether this pump shares the serving runtime, rather than the
             // QUIC I/O thread, where no handler code may run.
             let inline = tokio::runtime::Handle::try_current().is_ok_and(|now| now.id() == app.id());
+            let mut inline_after = std::time::Instant::now();
             loop {
                 let request = tokio::select! {
                     _ = shutdown.cancelled() => break,
@@ -650,25 +657,32 @@ async fn serve_connection(
                         );
                         // A read round's fence is done on its first poll, so
                         // it is answered here without a task of its own: every
-                        // confirmed read waits on one. Only on an idle stream
-                        // and the serving runtime, because a first poll can
-                        // open a new shard's log from disk; behind a promotion
-                        // fence that would hold up the stream again. Fetches
+                        // confirmed read waits on one. Only on the serving
+                        // runtime and an idle stream, and not for a while after
+                        // a slow first poll: one that opens a log from disk
+                        // holds up every frame behind it, as in #1796. Fetches
                         // wait for a slot and can answer 4 MiB, so never.
-                        if inline && idle && fetching.is_none()
-                            && let Some(answered) = (&mut answering).now_or_never()
-                        {
-                            drop(queued);
-                            // Not behind a large fetch answer being written.
-                            if let Ok(mut held) = send.try_lock() {
-                                write_answer(&mut held, answered).await;
-                            } else {
-                                let send = Arc::clone(&send);
-                                app.spawn(async move {
-                                    write_answer(&mut *send.lock().await, answered).await;
-                                });
+                        let now = std::time::Instant::now();
+                        if inline && idle && fetching.is_none() && now >= inline_after {
+                            let first = (&mut answering).now_or_never();
+                            if now.elapsed() > SLOW_FIRST_POLL {
+                                inline_after = std::time::Instant::now() + INLINE_PAUSE;
                             }
-                            continue;
+                            if let Some(answered) = first {
+                                // Not behind a large fetch answer being written.
+                                if let Ok(mut held) = send.try_lock() {
+                                    write_answer(&mut held, answered).await;
+                                } else {
+                                    // The permit goes with it, so the stream's
+                                    // end waits for this answer too.
+                                    let send = Arc::clone(&send);
+                                    app.spawn(async move {
+                                        let _queued = queued;
+                                        write_answer(&mut *send.lock().await, answered).await;
+                                    });
+                                }
+                                continue;
+                            }
                         }
                         let send = Arc::clone(&send);
                         app.spawn(async move {
