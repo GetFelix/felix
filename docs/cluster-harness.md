@@ -642,7 +642,7 @@ It fails when:
 - **A read under load took over 2 s.**
 
 The two bounds differ because the per-PR variant runs debug brokers, which
-keep a 4-vCPU GitHub runner's CPU near 100% for the whole load phase. That
+keep a 4-vCPU GitHub runner's CPU 90% busy or more through the load phase. That
 slows every quorum write, so healthy renewals there take 0.5 to 2.2 s. Reads
 stay under 0.4 s. Starvation looks different: the canary's renewals and reads
 time out at 5 to 6 s, several rounds in a row. Without the fixes, reads queued
