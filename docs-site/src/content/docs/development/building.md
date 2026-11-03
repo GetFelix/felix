@@ -180,7 +180,7 @@ Pushing a `v*` tag runs `release.yml`. A tag with a `-` suffix
 (`v0.6.0-preview`) is a GitHub prerelease, and its images are not tagged
 `latest`. The tag has to match every version field in the tree, and every image tag the
 docs and `compose.yaml` pin (`scripts/check_release_version.py`), and its release notes are its
-`CHANGELOG.md` section. The workflow:
+`CHANGELOG.md` section. The release step that bumps the `compose.yaml` default makes `scripts/check_version_pins.py` (in `task docs:evidence`) list every docs pin to bump. The workflow:
 
 - creates the GitHub release with `felix-<tag>-linux-x86_64.tar.gz` (broker
   and control plane) and `SHA256SUMS`;
@@ -283,8 +283,8 @@ and uploads them to the existing release; it refuses a name that is not a tag
 or has no published release. It defaults to a dry run:
 
 ```bash
-gh workflow run release-capi-archives.yml -f tag=v0.7.0-preview.3            # build and smoke only
-gh workflow run release-capi-archives.yml -f tag=v0.7.0-preview.3 -f dry_run=false
+gh workflow run release-capi-archives.yml -f tag=v0.7.0-preview.2            # build and smoke only
+gh workflow run release-capi-archives.yml -f tag=v0.7.0-preview.2 -f dry_run=false
 ```
 
 Uploading again replaces the files already there.
@@ -459,7 +459,7 @@ it were `tag`, so the rehearsal can run before the tag exists:
 
 ```bash
 gh workflow run release.yml --ref main \
-  -f tag=v0.7.0-preview.3 -f ref=main -f dry_run=true
+  -f tag=v0.7.0-preview.2 -f ref=main -f dry_run=true
 ```
 
 `ref` without `dry_run` fails the run. The felixctl archives are kept as a
