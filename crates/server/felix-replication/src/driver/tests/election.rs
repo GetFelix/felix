@@ -111,19 +111,6 @@ impl WriteFence for Restarted {
     }
 }
 
-/// A broker that opened the shard here once an election fence finished.
-struct OpenedByElection;
-
-impl WriteFence for OpenedByElection {
-    fn quiesced(&self, _key: &crate::ShardKey) -> bool {
-        true
-    }
-
-    fn opened_fenced(&self, _key: &crate::ShardKey, _generation: u64) -> bool {
-        true
-    }
-}
-
 async fn stream_log(broker: &Broker) -> felix_broker::StreamLog {
     broker
         .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
@@ -349,8 +336,8 @@ async fn a_restarted_elected_leader_keeps_the_set_it_was_elected_on() {
 
 /// **An elected leader the control plane adopted keeps the set it was
 /// elected on.** It stood at 4 on the set of 3 and opened once its fence
-/// finished; the control plane then named it at 4, which ends the election
-/// in memory. Keeping the set at 4 would make it the only copy counting 4,
+/// finished; the control plane then named it at 4, which drops the election's
+/// entry. Keeping the set at 4 would make it the only copy counting 4,
 /// so it would refuse the next leader elected on the set of 3 for good.
 #[tokio::test]
 async fn an_adopted_elected_leader_keeps_the_set_it_was_elected_on() {
@@ -365,13 +352,27 @@ async fn an_adopted_elected_leader_keeps_the_set_it_was_elected_on() {
         .expect("its own ballot");
     let followers = Followers::new(true, &["broker-b", "broker-c"]);
 
-    pass_with(
-        &followers,
-        &broker,
-        &follower_ack_marks(),
-        &OpenedByElection,
-    )
-    .await;
+    let marks = follower_ack_marks();
+    let elections = Arc::new(crate::election::Elections::new(
+        LOCAL,
+        Arc::new(tokio::sync::Notify::new()),
+    ));
+    elections.record(
+        key(),
+        crate::election::Elected {
+            leader: LOCAL.to_string(),
+            generation: 4,
+            set: set_of_three(3).current,
+            leaving: None,
+            incarnation: 0,
+        },
+    );
+    elections.opened(&key(), 4);
+    // The control plane adopted it, and the overlay dropped the entry.
+    elections.withdraw(&key(), 4);
+    marks.set_elections(elections);
+
+    pass(&followers, &broker, &marks).await;
 
     assert_eq!(stream_log(&broker).await.set_generation(), 3);
     assert_eq!(
@@ -702,6 +703,10 @@ async fn a_standing_is_kept_until_its_shard_opens() {
     assert!(
         !elections.is_fencing(&key(), 4),
         "the standing is released once the shard has opened"
+    );
+    assert!(
+        elections.opened_elected(&key(), 4, 0),
+        "an adoption must not make the open read as a plain bump"
     );
 }
 

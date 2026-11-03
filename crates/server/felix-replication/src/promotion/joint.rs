@@ -295,7 +295,7 @@ pub(crate) fn set_before(
 /// change was pending at it: the control plane's is the one the leader kept
 /// as leaving, and the shard fails over from it. So that kept set is fenced
 /// too.
-fn logged_besides(
+pub(super) fn logged_besides(
     stored: Option<&ReplicaSet>,
     route: &Route,
     before: &Membership,
@@ -311,8 +311,13 @@ fn logged_besides(
     }
     let stored = stored?;
     let logged = &stored.current;
-    let nodes = |set: &Membership| -> BTreeSet<String> {
-        set.members.iter().map(|m| m.node.clone()).collect()
+    // Learner flags count: the same names voting differently are another
+    // set, whose voter majorities the set before may miss.
+    let nodes = |set: &Membership| -> BTreeSet<(String, bool)> {
+        set.members
+            .iter()
+            .map(|m| (m.node.clone(), m.learner))
+            .collect()
     };
     if logged.generation < route.generation && nodes(logged) != nodes(before) {
         return Some(logged.clone());

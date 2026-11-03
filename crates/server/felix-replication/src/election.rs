@@ -34,6 +34,10 @@ pub struct Elections {
     /// The generation each of this broker's standings is being fenced or
     /// caught up at, while the driver works on it.
     fencing: Mutex<HashMap<ShardKey, u64>>,
+    /// The generation and incarnation each shard last opened at here once
+    /// this broker's standing fenced it. Outlives the entry, which the
+    /// overlay drops when the control plane adopts the leadership.
+    opened: Mutex<HashMap<ShardKey, (u64, u64)>>,
     /// Woken on every change, for the routing feed to lay the new view over
     /// the control plane's.
     changed: Arc<Notify>,
@@ -125,6 +129,7 @@ impl Elections {
             entries: Mutex::new(HashMap::new()),
             recorded: Mutex::new(HashMap::new()),
             fencing: Mutex::new(HashMap::new()),
+            opened: Mutex::new(HashMap::new()),
             changed,
         }
     }
@@ -234,6 +239,29 @@ impl Elections {
                 leaving: elected.leaving.clone(),
             }
         })
+    }
+
+    /// `key` opened here at `generation` on this broker's standing.
+    pub(crate) fn opened(&self, key: &ShardKey, generation: u64) {
+        let Some(incarnation) = self
+            .entries
+            .lock()
+            .get(key)
+            .filter(|elected| elected.generation == generation)
+            .map(|elected| elected.incarnation)
+        else {
+            return;
+        };
+        self.opened
+            .lock()
+            .insert(key.clone(), (generation, incarnation));
+    }
+
+    /// Whether `key` opened here at `generation` and `incarnation` on this
+    /// broker's standing. Its fence left the set at the generation it stood
+    /// on, and no fence since kept a newer one.
+    pub(crate) fn opened_elected(&self, key: &ShardKey, generation: u64, incarnation: u64) -> bool {
+        self.opened.lock().get(key) == Some(&(generation, incarnation))
     }
 
     /// Mark `key`'s standing at `generation` as being fenced until the
