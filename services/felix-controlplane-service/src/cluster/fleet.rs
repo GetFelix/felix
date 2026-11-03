@@ -266,7 +266,7 @@ pub(crate) const JOINT_FENCE_READY: bool = false;
 /// operator's: it grows every record by its publisher's id and keeps
 /// principal ids in the log, an opt-in a lone broker also leaves off unless
 /// `FELIX_RECORD_PUBLISHERS` asks for it.
-pub(crate) const NEW_CLUSTER: [felix_common::fleet::FleetFeature; 12] = [
+pub(crate) const NEW_CLUSTER: [felix_common::fleet::FleetFeature; 10] = [
     felix_common::fleet::GENERATION_START,
     felix_common::fleet::MAJORITY_ACK,
     felix_common::fleet::LEASE_FREE_READS,
@@ -277,10 +277,6 @@ pub(crate) const NEW_CLUSTER: [felix_common::fleet::FleetFeature; 12] = [
     felix_common::fleet::STREAM_INCARNATIONS,
     felix_common::fleet::CACHE_INCARNATIONS,
     felix_common::fleet::HEAD_TRIM,
-    // Refused, and left to the operator, until `JOINT_FENCE_READY` and every
-    // broker offers `ELECTION`.
-    felix_common::fleet::JOINT_FENCE,
-    felix_common::fleet::REPLICA_ELECTION,
 ];
 
 /// Whether `store` is a cluster created on this release, so far untouched: no
@@ -455,10 +451,28 @@ async fn finalize_in_order(
     if !store.every_member_current().await {
         return (enabled, true);
     }
+    let Ok(nodes) = store.list_nodes().await else {
+        return (enabled, true);
+    };
     let mut again = false;
     for feature in NEW_CLUSTER {
         let name = feature.name();
         if enabled.contains(name) || check_prerequisites(&enabled, name).is_err() {
+            continue;
+        }
+        // The operator's readiness gates hold here too; the store does not
+        // check them.
+        if let Err(err) = check_election(
+            &nodes,
+            name,
+            ELECTION_METADATA_LEVEL_READY,
+            JOINT_FENCE_READY,
+        ) {
+            tracing::info!(
+                feature = name,
+                error = %err,
+                "not finalizing a fleet feature for a new cluster",
+            );
             continue;
         }
         match store.finalize_fleet_feature(name).await {
