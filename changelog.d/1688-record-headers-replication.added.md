@@ -10,3 +10,8 @@
   which a new cluster does at its first registration. New peer message kinds 48
   to 50; a batch without headers is byte for byte what it was. See
   `docs/internal-protocol.md` and `docs/replication-design.md`.
+- A broker writes a `record-headers` marker in its data directory before it
+  first stores a record with headers, and refuses to join a fleet that has not
+  finalized `record_headers` while the marker is there. A data directory written
+  by a main or nightly build before this change can hold headers without the
+  marker: do not add it to a fleet that has not finalized `record_headers`.
