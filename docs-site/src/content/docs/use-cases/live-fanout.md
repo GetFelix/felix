@@ -208,7 +208,7 @@ thousands of subscribers per broker with your own payload and queue sizes.
 
 **A full queue drops the new record.** The default `drop_new` policy keeps a
 slow subscriber from ever slowing a publisher. On a durable stream the
-subscriber sees the offset where the drop began and replays from there. On a
+subscriber learns the offset where the drop began and reads the gap from the log. On a
 non-durable stream it cannot know it missed anything, so use a durable stream
 when it must know. It costs disk.
 

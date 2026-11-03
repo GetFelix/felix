@@ -151,7 +151,7 @@ or run a separate Felix cluster for that jurisdiction.
 ship to the replica set the control plane assigned without checking its regions
 themselves, so the control plane's placement is the guard on replication.
 
-**Drain a stray follower.** A follower already outside the region stays there until
+**A stray follower stays until it can be replaced.** A follower already outside the region stays there until
 a broker inside the region can replace it. Keep spare capacity in each region. A
 client that connects straight to a leader is not asked where it is, so where a
 client connects is not checked against the stream's region.
@@ -161,7 +161,7 @@ bridge agent, so permitted cross-region replication is whatever the replica set
 does, with no separate stage that filters or transforms what leaves a region.
 There is no per-region encryption and no audit log of cross-region movement.
 
-**Zone spread works as described.** A broker's zone is read when it registers, so
+**A broker's zone is read at registration.** A broker's zone is read when it registers, so
 changing it takes a restart.
 
 If you need a residency boundary that is a hard network boundary today, or a cache

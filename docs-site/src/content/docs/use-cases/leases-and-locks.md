@@ -351,8 +351,9 @@ along with the work and have the resource refuse a lower one.
 
 **These are leases on a replicated log, not a consensus lock service.** The
 [status page](/getting-started/what-felix-is-for/) lists strongly consistent
-coordination as a weak fit while the multi-node story is 🚧 Partial. Use `Quorum`
-and a fence for the cases above. The conditional calls are in the Rust, Python,
+coordination as a weak fit while the multi-node story is 🚧 Partial. If you need
+strongly consistent coordination today, etcd, Consul or ZooKeeper are the
+purpose-built choice; for leases that tolerate this model, use `Quorum` and a fence. The conditional calls are in the Rust, Python,
 TypeScript and .NET clients.
 
 ## Related

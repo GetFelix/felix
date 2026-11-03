@@ -68,7 +68,10 @@ which say what extra they need.
 
 ## Choosing
 
-Each page ends with its limits and what to do about them. For the wider picture,
+If you need a mature connector ecosystem, stream processing or exactly-once
+pipelines across topics, Kafka is the better choice today. If you need a small,
+strongly consistent store for cluster coordination and no fanout, etcd is simpler
+to run. Each page ends with its limits and what to do about them. For the wider picture,
 [Why Felix?](/getting-started/why-felix/) covers where Felix fits and where another
 system is the better tool, and [What Felix Is For](/getting-started/what-felix-is-for/)
 holds the status of every capability.

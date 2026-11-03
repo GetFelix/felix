@@ -197,11 +197,13 @@ needs. Felix caps each tenant's publish rate (bytes and messages per second) per
 broker, on QUIC and the Kafka listener alike, and queues publishes behind a
 per-tenant fair share, so one tenant flooding a broker is refused with a
 retryable error while the others still get in. Kafka's quotas also cover fetch
-bandwidth and request time, which Felix does not limit.
+bandwidth and request time, which Felix does not limit, so pick Kafka when
+per-client bandwidth quotas are the main requirement.
 
 Against NATS, a Felix tenant is a scope in a shared cluster. Where an account
 carries its own limits on subscriptions, JetStream storage and connections, a
-tenant carries the publish-rate cap and the per-source-address connection cap.
+tenant carries the publish-rate cap and the per-source-address connection cap, so
+pick NATS when hard per-tenant resource limits are the whole requirement.
 Felix puts streams, a cache, counters and consumer groups behind that scope, with
 OIDC exchange and key-level cache grants for a SaaS where end users hold tokens
 directly.

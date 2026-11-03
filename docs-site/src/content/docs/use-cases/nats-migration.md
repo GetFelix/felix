@@ -10,6 +10,11 @@ become consumer groups, KV becomes the cache, and accounts become tenants. What
 you gain is one log and one set of offsets under all of them, with
 high-fanout delivery that keeps a slow subscriber from slowing anyone else.
 
+NATS also covers request-reply, headers, an object store, MQTT and edge
+topologies that Felix does not, or only partly. The
+[limits](#limits-you-can-plan-around) say what to do about each, and for some
+workloads the right answer is to keep NATS.
+
 ## Try it
 
 The [Quickstart](/getting-started/quickstart/) starts a broker and a control

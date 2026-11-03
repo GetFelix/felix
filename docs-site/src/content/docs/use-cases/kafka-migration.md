@@ -11,7 +11,7 @@ address, and which have to change.
 
 Felix runs a Kafka listener. Kafka producers write to durable Felix streams and
 consumers that assign their own partitions read them, with a stored offset
-meaning the same thing on both sides. Stock clients such as kcat work unchanged,
+meaning the same thing on both sides. Stock clients work unchanged (kcat is the client tested here),
 and the same records are also reachable from Felix subscriptions, consumer
 groups and caches.
 
