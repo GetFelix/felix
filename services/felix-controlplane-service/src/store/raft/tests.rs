@@ -628,8 +628,11 @@ async fn a_held_new_cluster_finalize_is_retried_once_every_member_can() {
     let deadline = std::time::Instant::now() + Duration::from_secs(20);
     loop {
         let enabled = store.enabled_fleet_features().await.expect("enabled");
+        // The election features finalize only once brokers offer `ELECTION`,
+        // which these do not.
         if crate::cluster::fleet::NEW_CLUSTER
             .iter()
+            .filter(|feature| felix_common::fleet::IMPLEMENTED.contains(feature))
             .all(|feature| enabled.contains(feature.name()))
         {
             break;

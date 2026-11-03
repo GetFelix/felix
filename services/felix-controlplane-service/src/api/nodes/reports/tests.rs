@@ -867,3 +867,114 @@ async fn a_collision_is_left_alone_when_the_elected_leader_is_outside_the_set() 
         named_y
     );
 }
+
+/// broker-x, broker-y and broker-z with `replica_election` finalized, and
+/// the shard named to broker-y on {x, y}.
+async fn named_y_beside_z() -> (
+    Arc<crate::store::memory::InMemoryStore>,
+    crate::auth::felix_token::TenantSigningKeys,
+    ShardAssignment,
+) {
+    let (store, keys) = one_shard_cluster().await;
+    let mut z = store.get_node("broker-y").await.expect("node");
+    z.node_id = "broker-z".to_string();
+    z.spec.advertise_addr = "10.0.0.4:7102".to_string();
+    store.register_node(z).await.expect("register z");
+    let election = felix_common::fleet::REPLICA_ELECTION.name();
+    for id in ["broker-x", "broker-y", "broker-z"] {
+        let mut node = store.get_node(id).await.expect("node");
+        node.status.features = [election.to_string()].into();
+        store.register_node(node).await.expect("offer the feature");
+    }
+    store
+        .finalize_fleet_feature(election)
+        .await
+        .expect("finalize");
+    let named_y = store
+        .put_shard_assignment(ShardAssignment {
+            key: shard_zero(),
+            leader: "broker-y".to_string(),
+            replicas: vec!["broker-x".to_string()],
+            generation: 0,
+            state: ShardState::Active,
+            successor: None,
+            joining: None,
+            move_started_at_millis: None,
+            move_reason: None,
+            incarnation: 0,
+            fence_storage_ids: Default::default(),
+            member_storage_ids: Default::default(),
+            learners: Default::default(),
+            pending_set: None,
+        })
+        .await
+        .expect("assign");
+    (store, keys, named_y)
+}
+
+/// broker-x's report that it was elected at `at` on {x, z}.
+fn elected_on_x_z(at: u64, set_generation: u64) -> serde_json::Value {
+    let mut shard = shard_json(0, at, 10, &["broker-z"]);
+    shard["elected"] = serde_json::json!({
+        "leader": "broker-x",
+        "generation": at,
+        "replicas": ["broker-z"],
+        "set_generation": set_generation,
+    });
+    shard
+}
+
+/// x leads at `generation` on {x, z}, with the control plane's {x, y}
+/// pending from it.
+fn assert_pending_from_x_z(assignment: &ShardAssignment, generation: u64) {
+    assert_eq!(assignment.generation, generation, "{assignment:?}");
+    assert_eq!(assignment.leader, "broker-x");
+    assert_eq!(assignment.replicas, vec!["broker-z"]);
+    assert_eq!(
+        assignment.pending_set,
+        Some(crate::model::PendingSet {
+            replicas: vec!["broker-y".to_string()],
+            generation,
+        })
+    );
+}
+
+/// **A generation claimed twice on another set moves on with that set
+/// pending.** broker-x was elected on {x, z} while the control plane named
+/// broker-y on {x, y}. The next generation names x on the elected set, the
+/// control plane's own pending from it, so a majority of {x, z} that holds
+/// what x acknowledged is fenced and kept until x reports its start on both.
+#[tokio::test]
+async fn a_collision_on_another_set_moves_on_with_the_recorded_set_pending() {
+    let (store, keys, named_y) = named_y_beside_z().await;
+    let at = named_y.generation;
+    let state = app_state_ready(Arc::clone(&store) as _);
+    let _ = post_report(state, &keys, serde_json::json!([elected_on_x_z(at, at)])).await;
+    let assignment = store
+        .get_shard_assignment(&shard_zero())
+        .await
+        .expect("get");
+    assert_pending_from_x_z(&assignment, at + 1);
+}
+
+/// **An election on another set past the control plane's moves on in the
+/// same report.** Adoption takes only the generation, which leaves broker-y
+/// named at the generation x opened at. Waiting for x's next report would
+/// let a failover in between promote from {x, y} alone.
+#[tokio::test]
+async fn an_election_on_another_set_moves_on_in_the_adopting_report() {
+    let (store, keys, named_y) = named_y_beside_z().await;
+    let at = named_y.generation + 2;
+    let state = app_state_ready(Arc::clone(&store) as _);
+    let _ = post_report(
+        state,
+        &keys,
+        serde_json::json!([elected_on_x_z(at, named_y.generation)]),
+    )
+    .await;
+    let assignment = store
+        .get_shard_assignment(&shard_zero())
+        .await
+        .expect("get");
+    assert_pending_from_x_z(&assignment, at + 1);
+}
