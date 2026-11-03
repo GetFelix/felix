@@ -44,12 +44,15 @@ pub(super) async fn put_shard_assignment_if(
 
 /// [`crate::store::ControlPlaneStore::adopt_elected_leader`]. Deterministic,
 /// as a Raft apply must be: the decision is made from the assignment this
-/// store holds, and the write is conditional on it.
+/// store holds, and the write is conditional on it. `elected_set` applies
+/// [`ShardAssignment::adopting_elected_set`] instead of
+/// [`ShardAssignment::adopting`].
 pub(super) async fn adopt_elected_leader(
     store: &InMemoryStore,
     key: &ShardKey,
     expected_generation: u64,
     elected: &ElectedLeader,
+    elected_set: bool,
 ) -> StoreResult<AssignmentWrite> {
     let current = get_shard_assignment(store, key).await?;
     if current.generation != expected_generation {
@@ -57,18 +60,25 @@ pub(super) async fn adopt_elected_leader(
             current: Some(current.generation),
         });
     }
-    let Some(adopted) = current.adopting(elected) else {
+    let adopted = if elected_set {
+        let nodes = store.nodes.read().await;
+        current.adopting_elected_set(elected, &|node| nodes.records.contains_key(node))
+    } else {
+        current.adopting(elected)
+    };
+    let Some(adopted) = adopted else {
         return Ok(AssignmentWrite::Stale {
             current: Some(current.generation),
         });
     };
+    let generation = adopted.generation;
     write_shard_assignment(
         store,
         adopted,
         Some(Some(expected_generation)),
         None,
         false,
-        Some(elected.generation),
+        Some(generation),
     )
     .await
 }

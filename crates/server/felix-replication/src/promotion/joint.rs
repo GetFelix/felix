@@ -289,10 +289,17 @@ pub(crate) fn set_before(
 /// may hold one that acknowledged. A failover's fence needs a majority of
 /// both, as `Promote` fences the promoted broker's own set. A pending
 /// cut-over leaves only the recorded set.
+///
+/// Without a watch prior, `before` is this log's own set at the generation
+/// before, which is the route's set and not the control plane's when a
+/// change was pending at it: the control plane's is the one the leader kept
+/// as leaving, and the shard fails over from it. So that kept set is fenced
+/// too.
 fn logged_besides(
     stored: Option<&ReplicaSet>,
     route: &Route,
     before: &Membership,
+    prior: Option<&PriorSet>,
 ) -> Option<Membership> {
     if route
         .pending
@@ -302,11 +309,25 @@ fn logged_besides(
     {
         return None;
     }
-    let logged = &stored?.current;
+    let stored = stored?;
+    let logged = &stored.current;
     let nodes = |set: &Membership| -> BTreeSet<String> {
         set.members.iter().map(|m| m.node.clone()).collect()
     };
-    (logged.generation < route.generation && nodes(logged) != nodes(before)).then(|| logged.clone())
+    if logged.generation < route.generation && nodes(logged) != nodes(before) {
+        return Some(logged.clone());
+    }
+    let watched = prior.is_some_and(|prior| prior.generation == route.generation);
+    stored
+        .leaving
+        .as_ref()
+        .filter(|leaving| {
+            !watched
+                && Some(logged.generation) == route.generation.checked_sub(1)
+                && !leaving.members.is_empty()
+                && nodes(leaving) != nodes(before)
+        })
+        .cloned()
 }
 
 /// A pending change's set being left, at generation `before`. The other
@@ -387,7 +408,7 @@ pub(super) async fn sets<R: PeerRequester>(
             members: Vec::new(),
         },
     };
-    let besides = logged_besides(stored.as_ref(), route, &before);
+    let besides = logged_besides(stored.as_ref(), route, &before, joint.prior.as_ref());
     Ok(across(requester, local_node_id, route, set, before, besides, joint).await)
 }
 

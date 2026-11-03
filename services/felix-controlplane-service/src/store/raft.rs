@@ -94,6 +94,11 @@ const LEARNER_LEVEL: u16 = 23;
 /// The metadata level whose members store a stream's MQTT mount (#1690).
 const MOUNT_LEVEL: u16 = 24;
 
+/// The metadata level whose members name a leader elected on another set on
+/// that set when they adopt it, instead of taking only its generation
+/// (#1009).
+const ELECTED_SET_LEVEL: u16 = 26;
+
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
     MetaCommand, MetaError, MetaResponse, decode_result, encode_command,
@@ -898,6 +903,8 @@ impl ControlPlaneStore for RaftStore {
     ) -> StoreResult<AssignmentWrite> {
         // Refused below level 21, before it reaches the log: the generation
         // stays the one every member holds, and the election is not adopted.
+        // Below 26 every member applies the older form, which takes only the
+        // generation of a leader elected on another set.
         let level = self.group_level().await;
         match self
             .propose_at(
@@ -906,6 +913,7 @@ impl ControlPlaneStore for RaftStore {
                     key: key.clone(),
                     expected_generation,
                     elected,
+                    elected_set: level >= ELECTED_SET_LEVEL,
                 },
             )
             .await?

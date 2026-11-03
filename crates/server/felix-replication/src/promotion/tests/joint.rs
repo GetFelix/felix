@@ -511,6 +511,58 @@ async fn a_failover_fences_both_the_recorded_set_and_the_logs() {
     }
 }
 
+/// **Without a watch prior, a failover fences the set the log kept as
+/// leaving.** broker-x led generation 4 on {broker-a, broker-x, broker-z} as a
+/// change pending from {broker-x, broker-a, broker-b}, the control plane's
+/// set, and broker-a's log keeps both. broker-x and broker-b acknowledged
+/// records at generation 3 that broker-z does not hold yet. broker-a's watch
+/// never saw generation 4, so its own set at 4 is all it has as the set
+/// before: with broker-x and broker-b down, broker-a and broker-z alone must
+/// not open the shard.
+#[tokio::test]
+async fn a_failover_without_a_prior_fences_the_set_the_log_kept_as_leaving() {
+    let mut replicas = replicas_with(&["broker-x", "broker-z"]);
+    replicas.get_mut("broker-x").reachable = false;
+    replicas.get_mut("broker-b").reachable = false;
+    replicas.get_mut("broker-c").reachable = false;
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+    let log = leader
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    log.accept_generation(4, Some("broker-x"))
+        .await
+        .expect("ballot");
+    let set = |generation: u64, members: &[&str]| Membership {
+        generation,
+        members: members
+            .iter()
+            .map(|node| Member {
+                node: node.to_string(),
+                storage: None,
+                learner: false,
+                wiped: false,
+            })
+            .collect(),
+    };
+    log.accept_set(ReplicaSet {
+        current: set(4, &[LEADER, "broker-x", "broker-z"]),
+        leaving: Some(set(3, &["broker-x", LEADER, "broker-b"])),
+    })
+    .await
+    .expect("keep the pending set and the one it leaves");
+
+    let outcome = fence_after(&replicas, &leader, true, None).await;
+    let Outcome::Pending { why, .. } = &outcome else {
+        panic!("opened without the set the log kept as leaving: {outcome:?}");
+    };
+    assert!(why.contains("2 of 3 and 1 of 3 voters"), "{why}");
+
+    replicas.get_mut("broker-b").reachable = true;
+    let outcome = fence_after(&replicas, &leader, true, None).await;
+    assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
+}
+
 /// **A pending cut-over leaves the control plane's set, whatever the log
 /// kept.** The control plane recorded an election at generation 4 without
 /// taking it, so its set stayed {broker-a, broker-x, broker-b, broker-c}

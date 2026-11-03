@@ -126,17 +126,28 @@ pub(super) async fn adopt_elected_leader(
             current: Some(current.generation),
         });
     }
-    let Some(adopted) = current.adopting(elected) else {
+    let mut known = std::collections::BTreeSet::new();
+    for node in std::iter::once(&elected.leader).chain(&elected.replicas) {
+        match super::nodes::get_node(store, node).await {
+            Ok(_) => {
+                known.insert(node.as_str());
+            }
+            Err(StoreError::NotFound(_)) => {}
+            Err(err) => return Err(err),
+        }
+    }
+    let Some(adopted) = current.adopting_elected_set(elected, &|node| known.contains(node)) else {
         return Ok(AssignmentWrite::Stale {
             current: Some(current.generation),
         });
     };
+    let generation = adopted.generation;
     write_shard_assignment(
         store,
         adopted,
         Some(Some(expected_generation)),
         None,
-        Some(elected.generation),
+        Some(generation),
     )
     .await
 }

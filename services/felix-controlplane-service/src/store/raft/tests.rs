@@ -1488,13 +1488,110 @@ async fn pending_sets_wait_for_every_member() {
             .contains(election)
     );
 
-    // The log now holds level 21 entries, which a member below would refuse.
+    // The log now holds the finalize, a level 26 entry, which a member
+    // below would refuse.
     let old = stub_member(Arc::new(std::sync::atomic::AtomicU16::new(20))).await;
     let refused = store.handle.add_learner_without_waiting(3, old).await;
     assert!(
-        matches!(&refused, Err(err) if err.to_string().contains("the group is at 21")),
+        matches!(&refused, Err(err) if err.to_string().contains("the group is at 26")),
         "a member below level 21 joined: {refused:?}"
     );
+}
+
+/// **Below level 26 every member applies the older adoption.** A leader
+/// elected on another set has only its generation taken while a member is at
+/// 25, so a member that does not know the newer form never applies an entry
+/// differently from the rest. Once every member is at 26 the leader is named
+/// on the set it was elected on, the control plane's set pending from it.
+#[tokio::test]
+async fn an_adoption_on_another_set_waits_for_every_member() {
+    use crate::model::{ElectedLeader, ShardAssignment, ShardKey, ShardKind, ShardState};
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), 25).await;
+    store
+        .create_stream(routed_stream("orders", Default::default()))
+        .await
+        .expect("stream");
+    for (node_id, port) in [("broker-x", 7121), ("broker-y", 7122), ("broker-z", 7123)] {
+        store
+            .register_node(crate::store::contract::nodes::node(node_id, port))
+            .await
+            .expect("register");
+    }
+    let key = ShardKey {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "orders".to_string(),
+        shard: 0,
+        kind: ShardKind::Stream,
+    };
+    let assigned = store
+        .put_shard_assignment(ShardAssignment {
+            key: key.clone(),
+            leader: "broker-x".to_string(),
+            replicas: vec!["broker-y".to_string(), "broker-z".to_string()],
+            generation: 0,
+            state: ShardState::Assigning,
+            successor: None,
+            joining: None,
+            move_started_at_millis: None,
+            move_reason: None,
+            incarnation: 0,
+            fence_storage_ids: Default::default(),
+            member_storage_ids: Default::default(),
+            learners: Default::default(),
+            pending_set: None,
+        })
+        .await
+        .expect("assign");
+    // y elected on {x, y}, one past whatever the shard is at.
+    let adopt = |current: u64| {
+        store.adopt_elected_leader(
+            &key,
+            current,
+            ElectedLeader {
+                leader: "broker-y".to_string(),
+                generation: current + 1,
+                replicas: vec!["broker-x".to_string()],
+                set_generation: assigned.generation,
+            },
+        )
+    };
+    let recorded = match adopt(assigned.generation).await {
+        Ok(crate::store::AssignmentWrite::Written(written)) => written,
+        other => panic!("not recorded: {other:?}"),
+    };
+    assert_eq!(
+        recorded,
+        ShardAssignment {
+            generation: assigned.generation + 1,
+            ..assigned.clone()
+        },
+        "a member at 25 would have applied the older form"
+    );
+
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let named = loop {
+        let current = store.get_shard_assignment(&key).await.expect("get");
+        match adopt(current.generation).await {
+            Ok(crate::store::AssignmentWrite::Written(written)) if written.leader == "broker-y" => {
+                break written;
+            }
+            other => assert!(
+                std::time::Instant::now() < deadline,
+                "still the older form after every member reported the level: {other:?}"
+            ),
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert_eq!(named.replicas, vec!["broker-x"]);
+    let pending = named.pending_set.expect("the recorded set is pending");
+    assert_eq!(pending.generation, named.generation);
+    assert_eq!(pending.replicas, vec!["broker-x", "broker-z"]);
 }
 
 /// A member before level 20 would drop the identities a report inherits from
