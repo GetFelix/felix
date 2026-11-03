@@ -1993,6 +1993,28 @@ async fn accept_led_generation(
     }
 }
 
+/// Whether the generation beginning at `start` began before the fleet
+/// finalized `generation_start`: its first record is still in the log and is
+/// not a start record. Retention may have dropped the first record, which
+/// says nothing either way, so that reads as false and the caller writes one.
+/// A failed read is an error rather than a guess, since guessing "before"
+/// would skip the record a new stint needs.
+async fn began_before_the_finalize(
+    log: &felix_broker::StreamLog,
+    start: u64,
+) -> anyhow::Result<bool> {
+    if start < log.physical_base() {
+        return Ok(false);
+    }
+    let first = log
+        .read_replicated_from(start, 1)
+        .await
+        .map_err(|err| anyhow::anyhow!("read the generation's first record: {err}"))?;
+    Ok(first
+        .first()
+        .is_some_and(|record| record.offset == start && !record.mark.is_generation_start()))
+}
+
 /// Write this leader's generation-start record, unless an earlier attempt to
 /// open got that far with nothing written since, or the stream is in-memory.
 ///
@@ -2036,15 +2058,17 @@ pub async fn write_generation_start(
         // there and a cut-over names it there again, or it opens again after
         // a restart. Records the earlier stint acknowledged on the old set
         // alone sit past the generation's start, so a flip counted from there
-        // could leave them off a majority of the new set (#1787). Decided from
-        // the history, not by reading the first start record: retention may
-        // have trimmed it. A generation that began before the fleet finalized
-        // `generation_start` gets one too; it costs a round trip and covers
-        // the same records. Skipped when the log holds nothing past its
-        // start record, or already ends with this stint's.
+        // could leave them off a majority of the new set (#1787). Skipped when
+        // the log holds nothing past the start record, already ends with this
+        // stint's, or the generation began before the fleet finalized
+        // `generation_start`: it has had no elections, and every record past
+        // its start is its own.
         Some(epoch) if epoch.generation == generation && epoch.start_offset < tail => {
             let nothing_since = started && tail == epoch.start_offset + 1;
-            if nothing_since || log.stint_start(generation) == Some(tail - 1) {
+            if nothing_since
+                || log.stint_start(generation) == Some(tail - 1)
+                || (!started && began_before_the_finalize(log, epoch.start_offset).await?)
+            {
                 return Ok(());
             }
         }

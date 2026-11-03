@@ -1561,10 +1561,11 @@ gets its first one at its next leadership change.
 **A new stint at the same generation.** A replicated broker opens its shards
 fenced, including after a restart. A fenced open at a generation this broker
 already started, with records past its start record, writes another start
-record at the tail. The generation history decides whether the generation
-started, so this holds when retention has trimmed the first start record, or
-when the generation began before the fleet finalized `generation_start` and
-has none. Once elections ship, the same happens when a broker elected at a
+record at the tail. This holds when retention has dropped the first start
+record too: the generation history says the generation began below what the
+log still holds. A generation that began before the fleet finalized
+`generation_start` still reopens without one, as above; it has had no
+elections. Once elections ship, the same happens when a broker elected at a
 generation is then named there by a cut-over the control plane wrote without
 hearing of the election. Each such open is a new stint, and the leader counts
 from the start record of its current stint (`own_start` in the driver). The
