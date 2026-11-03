@@ -75,6 +75,7 @@ impl Said<'_> {
             given_up: false,
             inherited_storage: Default::default(),
             joint_start_acked: None,
+            refused: None,
             holds_start: self.holds.iter().map(|n| n.to_string()).collect(),
         }
     }
