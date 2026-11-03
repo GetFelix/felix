@@ -583,6 +583,12 @@ async fn fence_one<R: PeerRequester>(
     let candidacy = marks
         .elections()
         .and_then(|elections| elections.candidacy(&key, route.generation));
+    // Held through the fence and the catch-up, so the candidate does not
+    // withdraw a standing that is still opening.
+    let _fencing = marks
+        .elections()
+        .filter(|_| candidacy.is_some())
+        .map(|elections| elections.fencing(&key, route.generation));
     let outcome = promotion::fence_shard_as(
         requester,
         broker,

@@ -677,7 +677,7 @@ fn with_elected(
         by_router_key
             .get(key)
             .and_then(|key| assignments.get(key))
-            .map(|assignment| assignment.generation)
+            .map(|assignment| (assignment.generation, assignment.incarnation))
     });
     for (key, elected) in elected {
         let Some(assignment) = by_router_key
@@ -696,6 +696,7 @@ fn with_elected(
         elections.note_recorded(
             key.clone(),
             felix_replication::election::Recorded {
+                generation: assignment.generation,
                 members: std::iter::once(&assignment.leader)
                     .chain(&assignment.replicas)
                     .map(|node| (node.clone(), ids.get(node).cloned()))

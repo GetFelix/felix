@@ -1047,10 +1047,7 @@ impl ReplicaHandler {
                     leader: leader.to_string(),
                     generation: request.shard.generation,
                     set: crate::replica_set::membership(&election.set),
-                    leaving: election
-                        .leaving
-                        .as_ref()
-                        .map(crate::replica_set::membership),
+                    incarnation: request.shard.incarnation.unwrap_or(0),
                 };
                 (Arc::clone(elections), key, elected)
             });

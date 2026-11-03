@@ -69,7 +69,7 @@ impl PeerRequester for Followers {
     }
 }
 
-async fn pass(followers: &Followers, broker: &Arc<Broker>, marks: &QuorumMarks) {
+async fn pass<R: PeerRequester + Sync>(followers: &R, broker: &Arc<Broker>, marks: &QuorumMarks) {
     let router = router(LOCAL, &["broker-b", "broker-c"], 4);
     replicate_once(
         followers,
@@ -260,4 +260,143 @@ async fn under_joint_fence_a_shipping_leader_keeps_no_set_when_the_one_before_is
     pass(&Followers::new(true, &["broker-b"]), &broker, &marks).await;
 
     assert_eq!(stream_log(&broker).await.set_generation(), 2);
+}
+
+/// Refuses every batch to `behind` as a route that is behind, takes every
+/// fence, and records the batches' stamps and the fences.
+struct BehindFollower {
+    behind: &'static str,
+    stamps: Mutex<Vec<(String, Option<u64>)>>,
+    fences: Mutex<Vec<(String, felix_wire::internal::Fence)>>,
+}
+
+impl PeerRequester for BehindFollower {
+    async fn request(
+        &self,
+        node_id: &str,
+        _addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, PeerError> {
+        let batch = match message {
+            InternalMessage::ReplicateRecords(batch)
+            | InternalMessage::ReplicateMarkedRecords(batch) => batch,
+            InternalMessage::Fence(fence) => {
+                self.fences
+                    .lock()
+                    .expect("lock")
+                    .push((node_id.to_string(), fence));
+                return Ok(InternalMessage::FenceOk(felix_wire::internal::FenceOk {
+                    correlation_id: 0,
+                    log_end: 0,
+                    commit_offset: 0,
+                    last_generation: 0,
+                }));
+            }
+            other => panic!("unexpected {other:?}"),
+        };
+        self.stamps
+            .lock()
+            .expect("lock")
+            .push((node_id.to_string(), batch.set_generation));
+        if node_id == self.behind {
+            return Ok(InternalMessage::ReplicateError(
+                felix_wire::internal::ReplicateError {
+                    correlation_id: 0,
+                    code: felix_wire::internal::ErrorCode::StaleRoute,
+                    expected_offset: 0,
+                    detail: "behind".to_string(),
+                },
+            ));
+        }
+        Ok(InternalMessage::ReplicateOk(ReplicateOk {
+            correlation_id: 0,
+            durable_offset: batch.first_offset + batch.payloads.len() as u64,
+        }))
+    }
+
+    fn recorded_capabilities(&self, _node_id: &str) -> Option<PeerCapabilities> {
+        Some(PeerCapabilities::ELECTION)
+    }
+
+    fn offers_election(&self) -> bool {
+        true
+    }
+}
+
+/// `LOCAL` leading by election at 4, on the set of generation 3.
+fn elected_marks(leader: &str) -> QuorumMarks {
+    use felix_storage::disk_log::{Member, Membership};
+
+    let marks = follower_ack_marks();
+    let elections = Arc::new(crate::election::Elections::new(
+        LOCAL,
+        Arc::new(tokio::sync::Notify::new()),
+    ));
+    elections.record(
+        key(),
+        crate::election::Elected {
+            leader: leader.to_string(),
+            generation: 4,
+            set: Membership {
+                generation: 3,
+                members: [LOCAL, "broker-b", "broker-c"]
+                    .map(|node| Member {
+                        node: node.to_string(),
+                        storage: None,
+                        learner: false,
+                        wiped: false,
+                    })
+                    .to_vec(),
+            },
+            incarnation: 0,
+        },
+    );
+    marks.set_elections(elections);
+    marks
+}
+
+/// **An elected leader stamps the set it stood on, and sends its fence again
+/// to a follower whose route is behind.** No control-plane route carries the
+/// elected generation, so a follower that missed the fence (a leader cut off
+/// during the election) refuses every batch until the fence comes again. A
+/// follower that takes the batches gets no fence, and neither does any
+/// follower of a leader the control plane named.
+#[tokio::test]
+async fn an_elected_leader_fences_a_follower_whose_route_is_behind_again() {
+    for (leader, refenced) in [(LOCAL, true), ("broker-z", false)] {
+        let (broker, _dir) = quorum_leader(3, 4).await;
+        stream_log(&broker)
+            .await
+            .accept_generation(4, Some(LOCAL))
+            .await
+            .expect("own ballot");
+        let followers = BehindFollower {
+            behind: "broker-b",
+            stamps: Mutex::new(Vec::new()),
+            fences: Mutex::new(Vec::new()),
+        };
+        let marks = elected_marks(leader);
+
+        pass(&followers, &broker, &marks).await;
+
+        let stamp = (leader == LOCAL).then_some(3).or(Some(4));
+        let stamps = followers.stamps.lock().expect("lock").clone();
+        assert!(
+            stamps.iter().all(|(_, stamped)| *stamped == stamp),
+            "stamped {stamps:?}, expected {stamp:?}"
+        );
+        let fences = followers.fences.lock().expect("lock").clone();
+        if !refenced {
+            assert!(fences.is_empty(), "{fences:?}");
+            continue;
+        }
+        assert_eq!(fences.len(), 1, "{fences:?}");
+        let (node, fence) = &fences[0];
+        assert_eq!(node, "broker-b");
+        assert_eq!(fence.shard.generation, 4);
+        assert_eq!(fence.log, felix_wire::internal::ReplicaLog::Stream);
+        let election = fence.election.as_ref().expect("a candidate's fence");
+        assert!(election.candidate);
+        assert_eq!(election.set.generation, 3);
+    }
 }

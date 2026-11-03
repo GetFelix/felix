@@ -1379,7 +1379,7 @@ theirs is lost, and the control plane adopts the result
 rule 10). The elected broker reports at the generation it opened at, with
 `elected` in its shard entry: `leader` (itself), `generation`, `replicas`
 (the followers of the set it fenced) and `set_generation`. A report without
-it is unchanged, and no broker sends it yet.
+it is unchanged; only a broker leading by election sends it.
 
 When the report's generation is above the assignment's, the report handler
 adopts before it judges the report, once `replica_election` is finalized.

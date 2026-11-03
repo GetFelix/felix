@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use felix_broker::{Broker, LogKind, StreamLog};
+use felix_common::membership::ELECTION_GENERATION_WINDOW;
 use felix_router::{Route, ShardKey, ShardKind, ShardRouter};
 use felix_storage::disk_log::{GenerationCheck, Membership};
 use felix_wire::internal::{InternalMessage, PreVote, PreVoteRefusal, ReplicaLog};
@@ -36,8 +37,9 @@ const BACKOFF_FIRST_TOP: Duration = Duration::from_millis(800);
 const BACKOFF_TOP: Duration = Duration::from_secs(3);
 /// How long a shard that cannot stand waits before it is looked at again.
 const INELIGIBLE_FOR: Duration = Duration::from_secs(1);
-/// How long a standing may take to open before it is given up. Its ballot
-/// stays on disk, so the next try stands a generation higher.
+/// How long a standing may take to open before it is given up, unless its
+/// fence or catch-up is still running. Its ballot stays on disk, so the next
+/// try stands a generation higher.
 const OPEN_WITHIN: Duration = Duration::from_secs(3);
 /// How long a pre-vote answer is waited for. A silent voter counts as no.
 const PRE_VOTE_WITHIN: Duration = Duration::from_secs(1);
@@ -218,7 +220,20 @@ async fn stand<R: PeerRequester>(ctx: &Ctx<R>, key: &ShardKey, route: &Route) ->
         return Round::Ineligible;
     }
 
-    let generation = log.accepted_generation() + 1;
+    // Above the route's generation too: the control plane may have named
+    // one this replica was never fenced at, and standing there would collide
+    // with that leader's.
+    let generation = log.accepted_generation().max(route.generation) + 1;
+    // The control plane adopts an election only this far past its own
+    // generation, so a standing beyond it could never be handed over and its
+    // route would never drop.
+    if generation
+        > recorded
+            .generation
+            .saturating_add(ELECTION_GENERATION_WINDOW)
+    {
+        return Round::Ineligible;
+    }
     let Some(place) = pre_vote(ctx, key, &log, &kept.current, generation).await else {
         return Round::Failed;
     };
@@ -253,7 +268,7 @@ async fn stand<R: PeerRequester>(ctx: &Ctx<R>, key: &ShardKey, route: &Route) ->
             leader: local.to_string(),
             generation,
             set: kept.current,
-            leaving: None,
+            incarnation: crate::incarnation::of(&ctx.broker, key),
         },
     );
     let deadline = Instant::now() + OPEN_WITHIN;
@@ -269,7 +284,9 @@ async fn stand<R: PeerRequester>(ctx: &Ctx<R>, key: &ShardKey, route: &Route) ->
             ctx.elections.withdraw(key, generation);
             return Round::Failed;
         }
-        if Instant::now() >= deadline {
+        // A fence or catch-up still running is let finish: giving up now
+        // would cost a generation, and the next try would need one more.
+        if Instant::now() >= deadline && !ctx.elections.is_fencing(key, generation) {
             tracing::info!(
                 stream = %key.stream,
                 shard = key.shard,

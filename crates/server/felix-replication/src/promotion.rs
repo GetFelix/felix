@@ -34,7 +34,6 @@ use felix_broker::replication::{self, Divergence};
 use felix_broker::{Broker, LogKind};
 use felix_router::{Route, ShardKey, ShardKind};
 use felix_storage::StorageId;
-use felix_storage::disk_log::Membership;
 use felix_wire::internal::{
     ErrorCode, Fence, FenceElection, FenceOk, InternalMessage, PeerCapabilities, ReplicaLog,
     ReplicaSetView, ReplicateFetch, ShardRef,
@@ -265,18 +264,11 @@ pub(crate) async fn fence_shard_as<R: PeerRequester>(
                 ));
             }
             // Under `joint_fence` a fence whose set being left is unknown
-            // stays pending rather than fence the new set alone.
-            let under_joint = match (joint, set, candidacy) {
-                // A candidate fences the set it keeps and the set that one is
-                // leaving, if a change is pending (`FenceMembers`).
-                (Some(joint), Some(set), Some(candidacy)) => {
-                    let leaving = candidacy.leaving.clone().unwrap_or(Membership {
-                        generation: set.generation,
-                        members: Vec::new(),
-                    });
-                    Some(joint::across(requester, local_node_id, route, set, leaving, joint).await)
-                }
-                (Some(joint), Some(set), None) => {
+            // stays pending rather than fence the new set alone. A candidate
+            // never stands while a change is pending, so it fences only the
+            // set it keeps.
+            let under_joint = match (joint, set) {
+                (Some(joint), Some(set)) if candidacy.is_none() => {
                     match joint::sets(requester, &log, local_node_id, route, set, joint).await {
                         Ok(fenced) => Some(fenced),
                         Err(why) => return Err(Outcome::pending(why, Vec::new())),
@@ -373,6 +365,55 @@ pub(crate) async fn fence_shard_as<R: PeerRequester>(
         },
         Err(outcome) => outcome,
     }
+}
+
+/// Send an elected leader's fence again to one follower that missed it.
+/// Nothing names the elected generation on that broker but this fence, so
+/// until it lands the follower refuses every batch as behind, and a broker
+/// that led before keeps refusing pre-votes as the leader. The leader's own
+/// ballot is on disk, since the shard opened. Returns whether it was taken.
+pub(crate) async fn refence<R: PeerRequester>(
+    requester: &R,
+    node_id: &str,
+    addr: std::net::SocketAddr,
+    shard: &ShardRef,
+    kind: LogKind,
+    candidacy: &crate::election::Candidacy,
+) -> bool {
+    // A follower without `ELECTION` records no elected leader, so the fence
+    // would move nothing.
+    let offered = match requester.recorded_capabilities(node_id) {
+        Some(offered) => Some(offered),
+        None => requester.capabilities(node_id, addr).await.ok(),
+    };
+    if !offered.is_some_and(|offered| offered.contains(PeerCapabilities::ELECTION)) {
+        return false;
+    }
+    let election = FenceElection {
+        candidate: true,
+        set: candidacy.set.clone(),
+        leaving: None,
+    };
+    let (_, _, answer, _) = ask_fence(
+        requester,
+        node_id.to_string(),
+        addr,
+        shard.clone(),
+        crate::ship::replica_log(kind),
+        false,
+        Some(election),
+    )
+    .await;
+    let took = matches!(answer, Ok(InternalMessage::FenceOk(_)));
+    tracing::debug!(
+        node_id,
+        stream = %shard.stream,
+        shard = shard.shard,
+        generation = shard.generation,
+        took,
+        "sent the elected leader's fence again to a follower whose route is behind",
+    );
+    took
 }
 
 /// Fence one of the shard's logs on a majority, and take the log of the

@@ -192,6 +192,14 @@ pub struct ShardReplicaStatus {
     pub elected: Option<ElectedLeadership>,
 }
 
+/// How far past the control plane's generation an election may stand and
+/// still be adopted. An election takes one generation per attempt, and a
+/// leader reports within seconds of winning, so a few failed attempts between
+/// two reports is the most a healthy cluster shows. A generation far past
+/// that is a corrupt or hostile report, and taking it would push every later
+/// write toward the top of the range. Candidates do not stand past it.
+pub const ELECTION_GENERATION_WINDOW: u64 = 16;
+
 /// A leadership a broker won by election (`docs/replication-design.md`,
 /// "Electing without the control plane", rule 10).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

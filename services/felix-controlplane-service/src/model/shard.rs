@@ -818,12 +818,8 @@ pub(crate) fn first_generation(incarnation: u64, change_seq: u64, from_seq: bool
 }
 
 /// How far past the control plane's generation an adopted election may land.
-/// An election takes one generation per attempt, and a leader reports within
-/// seconds of winning, so a few failed attempts between two reports is the
-/// most a healthy cluster shows. A generation far past that is a corrupt or
-/// hostile report, and taking it would push every later write toward the top
-/// of the range.
-pub(crate) const ELECTION_GENERATION_WINDOW: u64 = 16;
+/// Shared with the brokers, which do not stand past it.
+pub(crate) use felix_common::membership::ELECTION_GENERATION_WINDOW;
 
 /// The generation after `current`, or why there is none. Generations are
 /// bound as signed integers by Postgres, so the top is `i64::MAX`; a store

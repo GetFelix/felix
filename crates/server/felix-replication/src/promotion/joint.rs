@@ -271,9 +271,7 @@ pub(super) async fn sets<R: PeerRequester>(
 }
 
 /// The fence for `route` leaving `before`: jointly when the voters differ.
-/// A candidate passes the set it keeps as leaving, since standing changes no
-/// set and the route's generation is one no assignment wrote.
-pub(super) async fn across<R: PeerRequester>(
+async fn across<R: PeerRequester>(
     requester: &R,
     local_node_id: &str,
     route: &Route,

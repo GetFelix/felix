@@ -3293,7 +3293,7 @@ invariant without it; see [`docs/formal/README.md`](formal/README.md),
 | New leader, no client write since | Its log ends in its generation-start record, which never reaches a subscriber. A subscription's `live_offset` stops short of it, so a reader catching up to `live_offset` finishes instead of waiting for the next write. |
 | Leader partitioned from the control plane | Keeps serving until its lease expires, then stops. The lease runs from the last accepted heartbeat, so with the defaults that is 5 to 11 s into the partition; a partition shorter than that costs nothing, a longer one costs availability, not safety. Serving resumes on the first heartbeat accepted afterwards. Silent past the expiry window, the broker is marked down and registers again once it can reach the control plane. With `majority_ack` finalized, a `Quorum` stream keeps taking and acknowledging writes its followers hold until a promoted successor's fence reaches them, and so does a `Quorum` cache with `fenced_caches` too; with `lease_free_reads` too, `Quorum` cache reads its replicas confirm keep being served, and other reads stop with the lease. |
 | Leader partitioned from followers | `Quorum` writes fail, correctly: the majority is unreachable. `Leader` writes succeed and accumulate loss-window exposure, which the lag metric shows. The leader still heartbeats, so the lease never replaces it; a durable `Quorum` stream with `generation_start`, `majority_ack` and `lease_free_reads` finalized is failed over on its followers' word instead. |
-| Control plane unavailable | No new leases are granted. Existing leases run to expiry (5 to 11 s with the defaults), then shards go unavailable. Deliberate: granting without a functioning authority is how split-brain happens. When it comes back, brokers renew within about 3 s. The expiry sweep waits one expiry window after a restart, a Raft leader change, or regaining its store, so the outage does not mark the fleet down. With `majority_ack` finalized, `Quorum` streams go on acknowledging writes a majority of their replicas holds, since nothing on that path asks the control plane, and with `fenced_caches` so do `Quorum` caches; `Leader` streams and caches stop as described, and reads too unless `lease_free_reads` is finalized, when `Quorum` cache reads go on as long as a majority of the shard's replicas answers. A leader that dies meanwhile is not replaced until the control plane is back, whatever its followers say; replicas electing one themselves is designed but not built (see [Electing without the control plane](#electing-without-the-control-plane)). |
+| Control plane unavailable | No new leases are granted. Existing leases run to expiry (5 to 11 s with the defaults), then shards go unavailable. Deliberate: granting without a functioning authority is how split-brain happens. When it comes back, brokers renew within about 3 s. The expiry sweep waits one expiry window after a restart, a Raft leader change, or regaining its store, so the outage does not mark the fleet down. With `majority_ack` finalized, `Quorum` streams go on acknowledging writes a majority of their replicas holds, since nothing on that path asks the control plane, and with `fenced_caches` so do `Quorum` caches; `Leader` streams and caches stop as described, and reads too unless `lease_free_reads` is finalized, when `Quorum` cache reads go on as long as a majority of the shard's replicas answers. A leader that dies meanwhile is replaced by its replicas once the fleet has finalized `replica_election`; without it, it is not replaced until the control plane is back, whatever its followers say (see [Electing without the control plane](#electing-without-the-control-plane)). |
 | Broker suspended past expiry | Refused at the durable-append check on waking. |
 | Stale broker after reassignment | Its lease has expired, so it refuses. This is what closes #239 by construction rather than by racing a watch. |
 
@@ -4195,7 +4195,8 @@ follows whose leader it suspects, and which acknowledges by its followers
 3. waits 300 ms for each voter ahead of it: one whose log is ahead, or one
    that granted with a lower node id;
 4. checks again that the leader is still suspected and nobody stood
-   meanwhile, then writes the ballot for the next generation to disk;
+   meanwhile, then writes the ballot to disk, at one past both its own last
+   ballot and its route's generation;
 5. records the standing, which the routing feed lays over the control
    plane's route. The shard then opens through the promotion path, with a
    fence marked as a candidate's that carries the kept set.
@@ -4204,10 +4205,35 @@ A replica that takes a candidate's fence records the candidate the same way,
 so it takes the candidate's batches and sends clients to it. The elected
 leader stamps its batches with the kept set's generation, below its own,
 which a replica keeping that set takes (`SetCurrent`). Both records are
-dropped once the control plane names that generation or a newer one. A
-standing that has not opened within 3 s is withdrawn, as is one whose
-generation the broker has since promised to someone else; a failed round
-backs off for 200 to 800 ms, the top doubling to 3 s.
+dropped once the control plane names that generation or a newer one, and
+when the stream is deleted or recreated. A standing that has not opened
+within 3 s is withdrawn, unless its fence or catch-up is still running, as is
+one whose generation the broker has since promised to someone else; a failed
+round backs off for 200 to 800 ms, the top doubling to 3 s.
+
+Three rules keep an election from getting stuck:
+
+- **A candidate stands above its route's generation.** The control plane
+  may have named a generation that never fenced this replica. Standing at
+  its own ballot plus one would then collide with that leader's generation,
+  so it stands at one past the larger of the two.
+- **A candidate stays inside the adoption window.** The control plane adopts
+  an elected generation only up to 16 past its own
+  (`ELECTION_GENERATION_WINDOW`, shared with the brokers). Each failed round
+  after a ballot uses up a generation, so a broker does not stand past the
+  window: the control plane could never adopt that leadership and its route
+  would never drop.
+- **The elected leader fences a member that missed it again.** A member cut
+  off during the election, such as the old leader, has no route naming the
+  new generation and answers every batch as behind. The elected leader sends
+  it the candidate's fence again on that answer; once taken, the member
+  records the new leader like any other. A broker refuses a pre-vote as the
+  leader only while the shard is open there at its route's generation, so a
+  stale route naming it cannot block the next election either.
+
+Elections need `joint_fence` finalized first, and the control plane refuses
+to finalize it until learners can be re-admitted (`JOINT_FENCE_READY`). Until
+that changes, no fleet stands for election.
 
 The broker refuses to stand in two cases the model allows, which costs
 availability only: while its kept set has a pending change, and while the
@@ -4218,7 +4244,13 @@ the kept set alone never reaches.
 > `a_granted_pre_vote_puts_the_ballot_on_disk_then_records_the_standing`,
 > `a_refused_pre_vote_writes_nothing`,
 > `a_set_the_control_plane_does_not_record_is_not_stood_on`,
-> `the_leader_refuses_a_pre_vote_against_itself`.
+> `the_leader_refuses_a_pre_vote_against_itself`,
+> `a_candidate_stands_above_the_routes_generation`,
+> `a_candidate_does_not_stand_past_the_adoption_window`,
+> `a_standing_is_kept_while_its_fence_runs`,
+> `only_a_leader_open_at_its_routes_generation_refuses_a_pre_vote`,
+> `a_cut_off_leader_records_the_elected_leader_from_its_fence`,
+> `an_elected_leader_fences_a_follower_whose_route_is_behind_again`.
 
 When only the generation is taken, the control plane names its own leader at
 a generation another broker opened. That leader cannot open there: its fence

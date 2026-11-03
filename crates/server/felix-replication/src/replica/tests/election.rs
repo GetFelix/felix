@@ -398,7 +398,6 @@ fn pre_vote_at(generation: u64) -> felix_wire::internal::PreVote {
 /// equals its own (#1815). A follower that has not heard a leader grants it.
 #[tokio::test]
 async fn the_leader_refuses_a_pre_vote_against_itself() {
-    let (broker, _dir) = broker_with_storage().await;
     for (leader, refusal) in [
         (
             LOCAL,
@@ -406,6 +405,10 @@ async fn the_leader_refuses_a_pre_vote_against_itself() {
         ),
         ("broker-a", None),
     ] {
+        let (broker, _dir) = broker_with_storage().await;
+        if leader == LOCAL {
+            opened_at(&broker, 6).await;
+        }
         let others: Vec<&str> = ["broker-a", LOCAL, "broker-c"]
             .into_iter()
             .filter(|node| *node != leader)
@@ -418,4 +421,154 @@ async fn the_leader_refuses_a_pre_vote_against_itself() {
         };
         assert_eq!(answer.refusal, refusal, "led by {leader}");
     }
+}
+
+/// This broker's log as a leader's that opened at `generation`.
+async fn opened_at(broker: &Broker, generation: u64) {
+    let log = stream_log(broker).await;
+    log.accept_generation(generation, Some(LOCAL))
+        .await
+        .expect("ballot");
+    begin(&log, generation).await;
+    log.append_generation_start(generation)
+        .await
+        .expect("start record");
+}
+
+/// Note where `generation` begins, as the lifecycle's open does.
+async fn begin(log: &felix_broker::StreamLog, generation: u64) {
+    let tail = log.tail_offset().await.expect("tail");
+    log.record_generation(generation, tail).expect("begins");
+}
+
+fn pre_vote_answer(answer: InternalMessage) -> Option<felix_wire::internal::PreVoteRefusal> {
+    let InternalMessage::PreVoteAnswer(answer) = answer else {
+        panic!("expected an answer, got {answer:?}");
+    };
+    answer.refusal
+}
+
+/// **A route naming this broker leader refuses a pre-vote only while the
+/// shard is open here at its generation.** A route can name it long after it
+/// stopped serving, and refusing then keeps a live majority from electing.
+#[tokio::test]
+async fn only_a_leader_open_at_its_routes_generation_refuses_a_pre_vote() {
+    let (broker, _dir) = broker_with_storage().await;
+    let handler = ReplicaHandler::new(
+        Arc::clone(&broker),
+        router_led_by(LOCAL, &["broker-a", "broker-c"], 6),
+    )
+    .with_stickiness(Duration::ZERO);
+    stream_log(&broker)
+        .await
+        .accept_generation(6, Some(LOCAL))
+        .await
+        .expect("ballot");
+    assert_eq!(
+        pre_vote_answer(handler.pre_vote(pre_vote_at(7)).await),
+        None
+    );
+
+    begin(&stream_log(&broker).await, 6).await;
+    assert_eq!(
+        pre_vote_answer(handler.pre_vote(pre_vote_at(7)).await),
+        Some(felix_wire::internal::PreVoteRefusal::LeaderReachable)
+    );
+}
+
+/// **A leader cut off while the others elected takes the elected leader's
+/// fence when it comes again**, records that leader, and then grants a
+/// pre-vote once it goes quiet. Before the fence it refuses the new leader's
+/// batches as behind, since no route names the elected generation, and
+/// refuses pre-votes as the leader its stale route names.
+#[tokio::test]
+async fn a_cut_off_leader_records_the_elected_leader_from_its_fence() {
+    let (broker, _dir) = broker_with_storage().await;
+    let marks = Arc::new(crate::quorum::QuorumMarks::new());
+    let elections = Arc::new(crate::election::Elections::new(
+        LOCAL,
+        Arc::new(tokio::sync::Notify::new()),
+    ));
+    marks.set_elections(Arc::clone(&elections));
+    let handler = ReplicaHandler::new(
+        Arc::clone(&broker),
+        router_led_by(LOCAL, &["broker-a", "broker-c"], 6),
+    )
+    .with_stickiness(Duration::ZERO)
+    .with_fleet(marks);
+    opened_at(&broker, 6).await;
+    let elected = Some("broker-a");
+
+    let answer = handler
+        .apply(
+            elected,
+            stamped(7, 1, &["x"], 6),
+            felix_broker::LogKind::Stream,
+        )
+        .await;
+    assert_eq!(refusal(&answer).code, ErrorCode::StaleRoute);
+    let at_8 = || felix_wire::internal::PreVote {
+        last_generation: 6,
+        log_end: 1,
+        set_generation: 6,
+        ..pre_vote_at(8)
+    };
+    assert_eq!(
+        pre_vote_answer(handler.pre_vote(at_8()).await),
+        Some(felix_wire::internal::PreVoteRefusal::LeaderReachable)
+    );
+
+    ok(&handler
+        .fence(elected, election_fence(7, voters(6), true))
+        .await);
+    let log = stream_log(&broker).await;
+    assert_eq!(log.accepted_generation(), 7);
+    assert_eq!(log.accepted_leader().as_deref(), Some("broker-a"));
+    let recorded = elections.get(&key()).expect("the elected leader");
+    assert_eq!(
+        (
+            recorded.leader.as_str(),
+            recorded.generation,
+            recorded.set.generation
+        ),
+        ("broker-a", 7, 6)
+    );
+    assert_eq!(pre_vote_answer(handler.pre_vote(at_8()).await), None);
+}
+
+/// **Only a candidate's fence that is taken records its sender**: a fence
+/// from a leader the control plane named records nothing, and neither does a
+/// refused candidate.
+#[tokio::test]
+async fn only_a_taken_candidate_fence_records_its_sender() {
+    let (broker, _dir) = broker_with_storage().await;
+    let marks = Arc::new(crate::quorum::QuorumMarks::new());
+    let elections = Arc::new(crate::election::Elections::new(
+        LOCAL,
+        Arc::new(tokio::sync::Notify::new()),
+    ));
+    marks.set_elections(Arc::clone(&elections));
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4))
+        .with_stickiness(Duration::ZERO)
+        .with_fleet(marks);
+
+    ok(&handler
+        .fence(SENDER, election_fence(5, voters(5), false))
+        .await);
+    assert!(elections.get(&key()).is_none(), "a named leader's fence");
+
+    // The set is older than the one this replica now keeps.
+    let answer = handler
+        .fence(Some("broker-c"), election_fence(6, voters(4), true))
+        .await;
+    assert_eq!(refusal(&answer).code, ErrorCode::StaleSet);
+    assert!(elections.get(&key()).is_none(), "a refused candidate");
+
+    ok(&handler
+        .fence(Some("broker-c"), election_fence(6, voters(5), true))
+        .await);
+    assert_eq!(
+        elections.get(&key()).map(|elected| elected.leader),
+        Some("broker-c".to_string())
+    );
 }

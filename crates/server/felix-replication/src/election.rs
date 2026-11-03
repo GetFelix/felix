@@ -31,6 +31,9 @@ pub struct Elections {
     /// The control plane's set for each shard with an entry, which the
     /// overlay hides from the router.
     recorded: Mutex<HashMap<ShardKey, Recorded>>,
+    /// The generation each of this broker's standings is being fenced or
+    /// caught up at, while the driver works on it.
+    fencing: Mutex<HashMap<ShardKey, u64>>,
     /// Woken on every change, for the routing feed to lay the new view over
     /// the control plane's.
     changed: Arc<Notify>,
@@ -43,15 +46,19 @@ pub struct Elected {
     /// The generation it stood at, above any the control plane named.
     pub generation: u64,
     /// The set it was fenced on. Standing changes no set, so this keeps the
-    /// generation of the assignment that wrote it.
+    /// generation of the assignment that wrote it. A candidate never stands
+    /// while a set change is pending, so there is no set being left.
     pub set: Membership,
-    /// While a set change is pending, the set being left, fenced too.
-    pub leaving: Option<Membership>,
+    /// The stream or cache incarnation it stood on. A recreated stream is
+    /// another log, which this leadership says nothing about.
+    pub incarnation: u64,
 }
 
 /// The set the control plane records for a shard, as its route names it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Recorded {
+    /// The generation the control plane named.
+    pub generation: u64,
     /// Each member, with the storage id the route names for it, in hex.
     pub members: BTreeMap<String, Option<String>>,
     /// A set change is pending.
@@ -61,6 +68,7 @@ pub struct Recorded {
 impl Recorded {
     pub(crate) fn of_route(route: &felix_router::Route) -> Self {
         Self {
+            generation: route.generation,
             members: crate::replica_set::view(route, None)
                 .members
                 .into_iter()
@@ -95,7 +103,6 @@ impl Recorded {
 #[derive(Debug, Clone)]
 pub(crate) struct Candidacy {
     pub(crate) set: ReplicaSetView,
-    pub(crate) leaving: Option<Membership>,
 }
 
 impl Elections {
@@ -104,6 +111,7 @@ impl Elections {
             local_node_id: local_node_id.into(),
             entries: Mutex::new(HashMap::new()),
             recorded: Mutex::new(HashMap::new()),
+            fencing: Mutex::new(HashMap::new()),
             changed,
         }
     }
@@ -151,11 +159,20 @@ impl Elections {
     }
 
     /// The leaderships above the generation `named` says the control plane's
-    /// route has. One at or below it is dropped: the control plane adopted it
-    /// or named a newer leader, and its route says which.
-    pub fn overlay(&self, named: impl Fn(&ShardKey) -> Option<u64>) -> Vec<(ShardKey, Elected)> {
+    /// route has, as `(generation, incarnation)`. One at or below it is
+    /// dropped: the control plane adopted it or named a newer leader, and its
+    /// route says which. So is one for a shard with no route, whose stream was
+    /// deleted, or for another incarnation, whose stream was recreated.
+    pub fn overlay(
+        &self,
+        named: impl Fn(&ShardKey) -> Option<(u64, u64)>,
+    ) -> Vec<(ShardKey, Elected)> {
         let mut entries = self.entries.lock();
-        entries.retain(|key, elected| named(key).is_none_or(|named| named < elected.generation));
+        entries.retain(|key, elected| {
+            named(key).is_some_and(|(generation, incarnation)| {
+                generation < elected.generation && incarnation == elected.incarnation
+            })
+        });
         self.recorded
             .lock()
             .retain(|key, _| entries.contains_key(key));
@@ -171,7 +188,7 @@ impl Elections {
     }
 
     /// The control plane's set for `key` while an entry hides its route.
-    pub(crate) fn recorded(&self, key: &ShardKey) -> Option<Recorded> {
+    pub fn recorded(&self, key: &ShardKey) -> Option<Recorded> {
         self.recorded.lock().get(key).cloned()
     }
 
@@ -194,9 +211,24 @@ impl Elections {
         (elected.leader == self.local_node_id && elected.generation == generation).then(|| {
             Candidacy {
                 set: crate::promotion::joint::view(&elected.set),
-                leaving: elected.leaving.clone(),
             }
         })
+    }
+
+    /// Mark `key`'s standing at `generation` as being fenced until the
+    /// returned guard drops, so the candidate does not give it up meanwhile.
+    pub(crate) fn fencing(&self, key: &ShardKey, generation: u64) -> Fencing<'_> {
+        self.fencing.lock().insert(key.clone(), generation);
+        Fencing {
+            elections: self,
+            key: key.clone(),
+            generation,
+        }
+    }
+
+    /// Whether the driver is fencing or catching up `key` at `generation`.
+    pub(crate) fn is_fencing(&self, key: &ShardKey, generation: u64) -> bool {
+        self.fencing.lock().get(key) == Some(&generation)
     }
 
     /// What this broker's report says of `key` at `generation` when it
@@ -222,6 +254,22 @@ impl Elections {
 
     pub fn local_node_id(&self) -> &str {
         &self.local_node_id
+    }
+}
+
+/// A fence for a standing in progress; see [`Elections::fencing`].
+pub(crate) struct Fencing<'a> {
+    elections: &'a Elections,
+    key: ShardKey,
+    generation: u64,
+}
+
+impl Drop for Fencing<'_> {
+    fn drop(&mut self) {
+        let mut fencing = self.elections.fencing.lock();
+        if fencing.get(&self.key) == Some(&self.generation) {
+            fencing.remove(&self.key);
+        }
     }
 }
 
