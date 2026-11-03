@@ -363,7 +363,8 @@ impl StreamState {
     /// A rebuild that keeps the committed records can move the sequence up,
     /// past a batch held here that the mark already covers. Subscribers still
     /// registered were never offered it, so they are ended first, as in
-    /// `advance_to`.
+    /// `advance_to`. A downward reset leaves them registered: ending them at
+    /// the old sequence would skip the records the new log is about to hold.
     pub(crate) fn reset_to(&self, next_seq: u64, to: impl FnOnce() -> ShardHandoff) {
         let mut state = self.log_state.lock();
         if next_seq > state.next_seq {
