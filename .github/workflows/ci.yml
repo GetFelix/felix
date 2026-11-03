@@ -57,8 +57,9 @@ jobs:
         uses: ./.github/actions/code-changed
         with:
           ignore: '^docs/|^docs-site/|\.md$'
-          # The C page's and the tutorials' examples are compiled by tests.
-          keep: '^docs/formal/|^docs-site/src/content/docs/(clients/(c\.md|resilient-clients\.mdx)|tutorials/)'
+          # Tests compile the examples on the client pages and tutorials, and
+          # compare them and the felixctl reference with generated copies.
+          keep: '^docs/formal/|^docs-site/src/content/docs/(clients/|tutorials/|reference/felixctl\.md$)'
       # TLC reads only the spec, so only a change to it (or to how it is
       # checked) can change the model check's result.
       - id: formal
