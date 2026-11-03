@@ -477,11 +477,12 @@ fn elected_marks(leader: &str) -> QuorumMarks {
 /// to a follower whose route is behind.** No control-plane route carries the
 /// elected generation, so a follower that missed the fence (a leader cut off
 /// during the election) refuses every batch until the fence comes again. A
-/// follower that takes the batches gets no fence, and neither does any
-/// follower of a leader the control plane named.
+/// follower that takes the batches gets no fence. A leader the control plane
+/// named sends the set it keeps instead, since a batch teaches no set being
+/// left that the follower's view lacks.
 #[tokio::test]
 async fn an_elected_leader_fences_a_follower_whose_route_is_behind_again() {
-    for (leader, refenced) in [(LOCAL, true), ("broker-z", false)] {
+    for (leader, candidate, set_generation) in [(LOCAL, true, 3), ("broker-z", false, 4)] {
         let (broker, _dir) = quorum_leader(3, 4).await;
         stream_log(&broker)
             .await
@@ -504,18 +505,14 @@ async fn an_elected_leader_fences_a_follower_whose_route_is_behind_again() {
             "stamped {stamps:?}, expected {stamp:?}"
         );
         let fences = followers.fences.lock().expect("lock").clone();
-        if !refenced {
-            assert!(fences.is_empty(), "{fences:?}");
-            continue;
-        }
         assert_eq!(fences.len(), 1, "{fences:?}");
         let (node, fence) = &fences[0];
         assert_eq!(node, "broker-b");
         assert_eq!(fence.shard.generation, 4);
         assert_eq!(fence.log, felix_wire::internal::ReplicaLog::Stream);
-        let election = fence.election.as_ref().expect("a candidate's fence");
-        assert!(election.candidate);
-        assert_eq!(election.set.generation, 3);
+        let election = fence.election.as_ref().expect("a fence naming its set");
+        assert_eq!(election.candidate, candidate);
+        assert_eq!(election.set.generation, set_generation);
     }
 }
 

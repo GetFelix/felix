@@ -167,7 +167,12 @@ impl ReplicaHandler {
             // being left, and whoever stands next fences it. This copy's own
             // older set may not be that one (an elected leader's, say), so
             // only the control plane's is taken, and without it only the
-            // fence teaches the set (`LearnsLeavingSet` in the model).
+            // fence teaches the set (`LearnsLeavingSet` in the model). A
+            // wiped learner neither votes, stands nor leads, and stops being
+            // a learner only once it holds the generation's start record,
+            // which follows everything the set being left held, so it learns
+            // the set without one. A staged learner may lead, and a wiped
+            // voter votes, so neither does.
             Some(true) => {
                 match crate::promotion::set_before(None, route, self.router.prior_set(key).as_ref())
                 {
@@ -177,6 +182,7 @@ impl ReplicaHandler {
                             members: Vec::new(),
                         }));
                     }
+                    Err(_) if self.keeps_wiped_learner(log, &set.current) => {}
                     Err(_) => {
                         metrics::record_replicated(metrics::OUTCOME_REFUSED);
                         return Some(refused(
@@ -263,6 +269,13 @@ impl ReplicaHandler {
         names_own: bool,
     ) -> bool {
         self.replaced_storage && !(generation == 1 && names_own) && log.replica_set().is_none()
+    }
+
+    /// Whether this copy keeps `set` as a wiped learner, as
+    /// [`Self::mark_local`] marks it.
+    fn keeps_wiped_learner(&self, log: &felix_broker::StreamLog, set: &Membership) -> bool {
+        (self.is_learner(log) && self.is_wiped(log))
+            || (self.non_voting_gate() == Some(true) && self.names_other_in(log, set))
     }
 
     fn names_other_in(&self, log: &felix_broker::StreamLog, set: &Membership) -> bool {
