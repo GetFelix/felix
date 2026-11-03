@@ -559,11 +559,25 @@ impl PeerRequester for BehindFollower {
     }
 }
 
-/// `LOCAL` leading by election at 4, on the set of generation 3.
+/// `LOCAL` leading by election at 4, on the set of generation 3, in a fleet
+/// that finalized `replica_election`.
 fn elected_marks(leader: &str) -> QuorumMarks {
+    use felix_common::fleet::{FleetGate, GENERATION_START, MAJORITY_ACK, REPLICA_ELECTION};
+
+    let names = [
+        GENERATION_START.name(),
+        MAJORITY_ACK.name(),
+        REPLICA_ELECTION.name(),
+    ];
+    let fleet = FleetGate::new(names);
+    fleet.restart(names);
+    with_election(leader, QuorumMarks::with_fleet(Arc::new(fleet)))
+}
+
+/// `marks` with `leader` recorded as elected at 4 on the set of 3.
+fn with_election(leader: &str, marks: QuorumMarks) -> QuorumMarks {
     use felix_storage::disk_log::{Member, Membership};
 
-    let marks = follower_ack_marks_adopted(true);
     let elections = Arc::new(crate::election::Elections::new(
         LOCAL,
         Arc::new(tokio::sync::Notify::new()),
@@ -633,6 +647,35 @@ async fn an_elected_leader_fences_a_follower_whose_route_is_behind_again() {
         assert_eq!(election.candidate, candidate);
         assert_eq!(election.set.generation, set_generation);
     }
+}
+
+/// **A fleet that has not finalized `replica_election` sends no kept set
+/// again.** The leader the control plane named leaves a follower whose route
+/// is behind to catch up from the control plane: in a mixed fleet that
+/// follower may be the old leader, which the promotion chose not to fence.
+#[tokio::test]
+async fn without_replica_election_a_route_behind_follower_gets_no_fence() {
+    let (broker, _dir) = quorum_leader(3, 4).await;
+    stream_log(&broker)
+        .await
+        .accept_generation(4, Some(LOCAL))
+        .await
+        .expect("own ballot");
+    let followers = BehindFollower {
+        behind: "broker-b",
+        stamps: Mutex::new(Vec::new()),
+        fences: Mutex::new(Vec::new()),
+    };
+    let marks = with_election("broker-z", follower_ack_marks_adopted(true));
+
+    pass(&followers, &broker, &marks).await;
+
+    let fences = followers.fences.lock().expect("lock").clone();
+    assert!(fences.is_empty(), "fenced in a mixed fleet: {fences:?}");
+    assert!(
+        !followers.stamps.lock().expect("lock").is_empty(),
+        "the follower was shipped to"
+    );
 }
 
 /// Takes every fence, and says it offers `ELECTION`.

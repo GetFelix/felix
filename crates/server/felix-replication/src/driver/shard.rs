@@ -321,6 +321,10 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     let candidacy = marks
         .elections()
         .and_then(|elections| elections.candidacy(&key, route.generation));
+    // Sending a kept set again is election behaviour. In a fleet that has not
+    // finalized it, a stale route catches up from the control plane, and a
+    // fence there would reach brokers the promotion chose not to fence.
+    let refences_kept = marks.fleet_supports(felix_common::fleet::REPLICA_ELECTION);
     let shard_key = key.clone();
     let key = &key;
     // Resolved per pass rather than cached: a cache shard's log is replaced
@@ -1003,7 +1007,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                             candidacy,
                         )
                         .await;
-                    } else {
+                    } else if refences_kept {
                         crate::promotion::refence_kept(
                             requester,
                             &cursor.node_id,
