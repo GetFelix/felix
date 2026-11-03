@@ -611,7 +611,11 @@ async fn the_control_plane_returning_mid_election_leaves_one_leader() {
 struct Writer {
     acked: Arc<Mutex<Vec<String>>>,
     stop: Arc<AtomicBool>,
-    last_error: Arc<Mutex<Option<String>>>,
+    /// Brokers left out of the rotation: a killed one would cost every
+    /// round its full timeout.
+    skipped: Arc<Mutex<BTreeSet<SocketAddr>>>,
+    /// Per broker: publishes acknowledged, failed, and the last failure.
+    tally: Arc<Mutex<BTreeMap<SocketAddr, (usize, usize, Option<String>)>>>,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -627,16 +631,23 @@ impl Writer {
         let token = cluster.client_token();
         let acked = Arc::new(Mutex::new(Vec::new()));
         let stop = Arc::new(AtomicBool::new(false));
-        let last_error = Arc::new(Mutex::new(None));
+        let skipped = Arc::new(Mutex::new(BTreeSet::new()));
+        let tally = Arc::new(Mutex::new(BTreeMap::new()));
         let task = tokio::spawn({
             let acked = Arc::clone(&acked);
             let stop = Arc::clone(&stop);
-            let last_error = Arc::clone(&last_error);
+            let skipped = Arc::clone(&skipped);
+            let tally = Arc::clone(&tally);
             async move {
                 let mut i = 0usize;
+                let mut turn = 0usize;
                 while !stop.load(Ordering::Relaxed) {
+                    let addr = addrs[turn % addrs.len()];
+                    turn += 1;
+                    if skipped.lock().expect("skip lock").contains(&addr) {
+                        continue;
+                    }
                     let payload = format!("w-{i}");
-                    let addr = addrs[i % addrs.len()];
                     let sent = tokio::time::timeout(Duration::from_secs(3), async {
                         let client = felix_cluster::client::connect(addr, &tenant, &token).await?;
                         let publisher = client.publisher().await?;
@@ -652,17 +663,24 @@ impl Writer {
                         anyhow::Ok(())
                     })
                     .await;
-                    match sent {
-                        Ok(Ok(())) => acked.lock().expect("acked lock").push(payload),
-                        Ok(Err(err)) => {
-                            *last_error.lock().expect("error lock") =
-                                Some(format!("via {addr}: {err:#}"));
+                    let failure = match sent {
+                        Ok(Ok(())) => {
+                            acked.lock().expect("acked lock").push(payload);
+                            None
                         }
-                        Err(_) => {
-                            *last_error.lock().expect("error lock") =
-                                Some(format!("via {addr}: no answer within 3s"));
+                        Ok(Err(err)) => Some(format!("{err:#}")),
+                        Err(_) => Some("no answer within 3s".to_string()),
+                    };
+                    let mut tally = tally.lock().expect("tally lock");
+                    let entry = tally.entry(addr).or_insert((0, 0, None));
+                    match failure {
+                        None => entry.0 += 1,
+                        Some(why) => {
+                            entry.1 += 1;
+                            entry.2 = Some(why);
                         }
                     }
+                    drop(tally);
                     i += 1;
                     tokio::time::sleep(Duration::from_millis(20)).await;
                 }
@@ -671,14 +689,26 @@ impl Writer {
         Self {
             acked,
             stop,
-            last_error,
+            skipped,
+            tally,
             task,
         }
     }
 
-    /// The last publish that failed, and why.
-    fn last_error(&self) -> Option<String> {
-        self.last_error.lock().expect("error lock").clone()
+    /// Leave `node` out of the rotation until [`Self::resume`].
+    fn skip(&self, cluster: &Cluster, node: &str) {
+        let addr = cluster.node(node).expect("node").client_addr;
+        self.skipped.lock().expect("skip lock").insert(addr);
+    }
+
+    /// Put every skipped broker back in the rotation.
+    fn resume(&self) {
+        self.skipped.lock().expect("skip lock").clear();
+    }
+
+    /// Per broker: acknowledged, failed, and the last failure.
+    fn tally(&self) -> BTreeMap<SocketAddr, (usize, usize, Option<String>)> {
+        self.tally.lock().expect("tally lock").clone()
     }
 
     fn acked(&self) -> usize {
@@ -718,6 +748,7 @@ async fn the_control_plane_stays_down_across_a_leader_kill_under_load() {
         .crash_control_plane()
         .await
         .expect("crash the control plane");
+    writer.skip(&cluster, &before.leader);
     cluster.kill_node(&before.leader).expect("kill the leader");
     let mut opened = BTreeMap::new();
     let (elected, generation) = elected_above(&cluster, before.generation, &mut opened).await;
@@ -733,8 +764,9 @@ async fn the_control_plane_stays_down_across_a_leader_kill_under_load() {
     .await
     .unwrap_or_else(|err| {
         panic!(
-            "the writer's records are acknowledged after the election: {err:#}; its last failure: {:?}",
-            writer.last_error()
+            "the writer's records are acknowledged after the election: {err:#}; \
+             {elected} was elected; per broker (acked, failed, last failure): {:?}",
+            writer.tally()
         )
     });
 
@@ -748,6 +780,7 @@ async fn the_control_plane_stays_down_across_a_leader_kill_under_load() {
         .restart_node(&before.leader)
         .await
         .expect("restart the old leader");
+    writer.resume();
     tokio::time::sleep(Duration::from_secs(3)).await;
     let acked = writer.stop().await;
 
