@@ -76,6 +76,9 @@ struct Ctx<R> {
     /// Why each shard last could not stand, so the reason is logged once
     /// when it changes rather than every round.
     held_back: std::sync::Mutex<HashMap<ShardKey, &'static str>>,
+    /// Test-only: while this file exists, a pre-vote waits before it asks,
+    /// so a test can release two candidates' rounds together.
+    pre_vote_gate: Option<std::path::PathBuf>,
 }
 
 impl<R> Ctx<R> {
@@ -127,6 +130,7 @@ pub fn spawn<R: PeerRequester + Send + Sync + 'static>(
         elections,
         suspects,
         held_back: Default::default(),
+        pre_vote_gate: pre_vote_gate(),
     });
     Some(tokio::spawn(run(ctx, shutdown)))
 }
@@ -200,6 +204,14 @@ async fn run<R: PeerRequester + Send + Sync + 'static>(
             });
         }
     }
+}
+
+/// `FELIX_TEST_PRE_VOTE_GATE`, honoured in debug builds only.
+fn pre_vote_gate() -> Option<std::path::PathBuf> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    std::env::var_os("FELIX_TEST_PRE_VOTE_GATE").map(std::path::PathBuf::from)
 }
 
 /// Withdraw a standing whose generation this broker has since promised to
@@ -418,7 +430,7 @@ async fn pre_vote<R: PeerRequester + Send + Sync + 'static>(
         .filter(|member| !member.learner)
         .map(|member| member.node.as_str())
         .collect();
-    let answers = futures::future::join_all(
+    let rounds = futures::future::join_all(
         voters
             .iter()
             .filter(|node| **node != local)
@@ -445,8 +457,18 @@ async fn pre_vote<R: PeerRequester + Send + Sync + 'static>(
                     }
                 }
             }),
-    )
-    .await;
+    );
+    if let Some(gate) = ctx.pre_vote_gate.as_ref().filter(|gate| gate.exists()) {
+        tracing::info!(
+            stream = %key.stream,
+            shard = key.shard,
+            "holding the pre-vote at the test gate",
+        );
+        while gate.exists() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+    let answers = rounds.await;
     let mut granted = 1;
     let mut place = 0;
     let heard = answers.iter().flatten().count();

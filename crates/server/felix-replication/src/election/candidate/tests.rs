@@ -181,6 +181,7 @@ fn ctx(broker: &Arc<Broker>, voters: Voters) -> Ctx<Voters> {
         elections,
         suspects,
         held_back: Default::default(),
+        pre_vote_gate: None,
     }
 }
 
@@ -401,6 +402,7 @@ async fn a_slow_dial_carries_over_to_the_next_round() {
         elections,
         suspects,
         held_back: Default::default(),
+        pre_vote_gate: None,
     };
     let log = shard_log(&ctx.broker, &key()).await.expect("log");
 
