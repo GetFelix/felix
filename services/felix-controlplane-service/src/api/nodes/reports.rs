@@ -481,6 +481,13 @@ async fn adopt_if_elected(
                 "an elected leader reported; the control plane took its generation",
             );
             state.placement_wakes.request_pass();
+            // Taken as a generation only, it now names another leader at the
+            // elected one: move past that at once rather than on the next
+            // report, so a failover planned meanwhile does not leave the
+            // elected set unfenced.
+            if !adopted && written.generation == elected.generation {
+                return reissue_past_collision(state, node_id, key, elected, written).await;
+            }
             Ok(written)
         }
         Ok(_) => Ok(assignment),
@@ -502,16 +509,15 @@ async fn adopt_if_elected(
 
 /// Move a shard whose generation the control plane and an election both
 /// claimed to the next one, under the elected leader, so it has a leader that
-/// can open: an ordinary promotion of a member of the control plane's set,
+/// can open: [`ShardAssignment::reissuing`](crate::model::ShardAssignment::reissuing),
 /// with the conditional, placement-fenced write placement uses.
 ///
 /// Only the elected leader is named. It opened at the collided generation, so
 /// its log holds everything acknowledged up to it, whichever set acknowledged
 /// it. Another member fencing only a majority of the control plane's set
 /// could miss records the elected leader acknowledged on its own set when the
-/// two differ. Left alone while a change is pending, a copy is joining, or the
-/// elected leader is not in the control plane's set: those keep their own
-/// leaders and end through their own steps.
+/// two differ, which is also why a differing elected set is written as the
+/// set being left, the control plane's pending from it.
 async fn reissue_past_collision(
     state: &AppState,
     node_id: &str,
@@ -519,30 +525,9 @@ async fn reissue_past_collision(
     elected: &felix_common::membership::ElectedLeadership,
     assignment: crate::model::ShardAssignment,
 ) -> Result<crate::model::ShardAssignment, ApiError> {
-    if assignment.pending_set.is_some()
-        || assignment.joining.is_some()
-        || !assignment.nodes().any(|node| node == node_id)
-    {
-        return Ok(assignment);
-    }
-    // The control plane's set under the elected leader, which is what
-    // adoption names when the sets match.
-    let past = crate::model::ElectedLeader {
-        leader: node_id.to_string(),
-        generation: assignment.generation + 1,
-        replicas: assignment
-            .nodes()
-            .filter(|node| *node != node_id)
-            .cloned()
-            .collect(),
-        set_generation: elected.set_generation,
-    };
-    let Some(next) = assignment.adopting(&past) else {
+    let Some(next) = assignment.reissuing(&elected.clone().into()) else {
         return Ok(assignment);
     };
-    if next.leader != node_id {
-        return Ok(assignment);
-    }
     let token = match state.store.placement_token().await {
         Ok(token) => token,
         Err(err) => {

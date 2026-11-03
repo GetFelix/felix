@@ -1393,11 +1393,11 @@ elected generation itself, not the next one:
   a follower replacement goes on. The report is then that leader's and is
   judged as usual.
 - **Any other set**: only the generation is taken. The leader, the set and
-  any pending set stay as they were, and the report is refused as
-  `not_leader`. A leader elected on the old set while a change is pending is
-  recorded this way: the new set's leader deposes it. Without a pending
-  change, the elected leader's next report finds a generation claimed twice
-  (below).
+  any pending set stay as they were. A leader elected on the old set while a
+  change is pending is recorded this way, and its report is refused as
+  `not_leader`: the new set's leader deposes it. Without a pending change
+  the generation is now claimed twice, and the same report moves the shard
+  past it (below) instead of waiting for the next one.
 
 An election more than 16 generations past the assignment's, or past
 `i64::MAX`, is refused and the report is judged as before: elections run a
@@ -1416,22 +1416,34 @@ returns before the elected leader's first report lands. Ballots let only one
 of the two open there. If the elected leader opened, it keeps leading and
 reporting, and the other never opens. A report at the assignment's own
 generation from a leader the control plane did not name then moves the shard
-to the next generation under that elected leader, with the control plane's
-set and the same conditional, placement-fenced write placement uses. Only the
-elected leader is named: its log holds everything acknowledged up to the
-collision, on whichever set. The shard is left alone while a set change is
-pending, while a copy is joining, or when the elected leader is not in the
-control plane's set. The named leader follows the new one, or stops when its
-route moves on if it is no longer in the set. The elected leader's fence at
-the new generation covers the set it was elected on as well as the control
-plane's, since its log keeps that set: the two can differ when the control
-plane changed the set at the claimed generation, and a majority of the
-elected set could otherwise elect again beside it. A report older than the
-elected leader's deposition can still move the shard to it, but the broker
-does not open a generation older than its ballot, so that write only costs
-the shard a promotion. If the elected leader did not
-open, its candidate withdraws the standing within 3 s and the named leader
-opens as usual.
+to the next generation under that elected leader, with the same conditional,
+placement-fenced write placement uses. Only the elected leader is named: its
+log holds everything acknowledged up to the collision, on whichever set. The
+shard is left alone while a set change is pending, while a copy is joining,
+or when the elected leader is not in the control plane's set. The named
+leader follows the new one, or stops when its route moves on if it is no
+longer in the set.
+
+The write depends on the set the leader was elected on:
+
+- **The control plane's set.** The new generation names that set.
+- **Another set.** The control plane changed the set at the claimed
+  generation, and a majority of the elected set may hold records that no
+  majority of the control plane's set does. The new generation records the
+  elected set as the control plane's and its own set as a pending change
+  from it, as a cut-over does. The leader's fence needs a majority of both,
+  it counts an acknowledgement only once both hold it, and no follower
+  stands for election while the change is pending. A failover meanwhile
+  promotes from the elected set. The control plane takes its set back on
+  the leader's report that its generation's start record is on a majority
+  of both, or drops the change on the pending timeout and keeps the elected
+  set.
+
+A report older than the elected leader's deposition can still move the shard
+to it, but the broker does not open a generation it promised to another
+candidate or one older than its ballot, so that write only costs the shard a
+promotion. If the elected leader did not open, its candidate withdraws the
+standing within 3 s and the named leader opens as usual.
 
 One gap remains: an elected leader that restarts before its first report
 reaches the control plane forgets its standing, so nothing reports the

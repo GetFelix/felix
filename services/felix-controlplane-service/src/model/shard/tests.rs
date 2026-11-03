@@ -627,3 +627,64 @@ fn elected_and_issued_generations_are_bounded() {
     assert!(check_elected_generation(7, 8 + ELECTION_GENERATION_WINDOW).is_err());
     assert!(check_elected_generation(i64::MAX as u64 - 1, i64::MAX as u64 + 1).is_err());
 }
+
+/// **A collided generation moves on under the elected leader, on the set it
+/// was elected on.** broker-b was elected at 7 on {b, d, e} while the control
+/// plane named broker-a there on {a, b, c}. A majority of {b, d, e} may hold
+/// records no majority of {a, b, c} does, so the next generation leaves the
+/// elected set for the control plane's as a pending change: a failover
+/// meanwhile promotes from the elected set, and the control plane's comes
+/// back only once the leader reports its start record on both.
+#[test]
+fn reissuing_over_another_elected_set_leaves_it_as_a_pending_change() {
+    let named_a = assignment();
+    let next = named_a
+        .reissuing(&elected("broker-b", &["broker-d", "broker-e"], 7, 6))
+        .expect("reissued");
+    assert_eq!(next.leader, "broker-b");
+    assert_eq!(next.generation, 8);
+    assert_eq!(next.replicas, vec!["broker-d", "broker-e"]);
+    let pending = next
+        .pending_set
+        .as_ref()
+        .expect("the recorded set is pending");
+    assert_eq!(pending.generation, 8);
+    assert_eq!(
+        pending.replicas.iter().collect::<BTreeSet<_>>(),
+        BTreeSet::from([&"broker-a".to_string(), &"broker-c".to_string()])
+    );
+    assert_eq!(next.validate(), Ok(()));
+    assert_eq!(
+        next.check_pending_generation(Some(&named_a), 8),
+        Ok(()),
+        "the store's next generation is the pending one"
+    );
+
+    // Elected on the recorded set, it is named as is.
+    let same = named_a
+        .reissuing(&elected("broker-b", &["broker-c", "broker-a"], 7, 6))
+        .expect("reissued");
+    assert_eq!(same.leader, "broker-b");
+    assert_eq!(same.pending_set, None);
+    assert_eq!(
+        same.nodes().collect::<BTreeSet<_>>(),
+        named_a.nodes().collect::<BTreeSet<_>>()
+    );
+
+    // Outside the recorded set, or while a change is pending, it is left alone.
+    assert_eq!(
+        named_a.reissuing(&elected("broker-d", &["broker-b", "broker-e"], 7, 6)),
+        None
+    );
+    let pending_change = ShardAssignment {
+        pending_set: Some(PendingSet {
+            replicas: vec!["broker-b".to_string(), "broker-d".to_string()],
+            generation: 7,
+        }),
+        ..assignment()
+    };
+    assert_eq!(
+        pending_change.reissuing(&elected("broker-b", &["broker-d", "broker-e"], 7, 6)),
+        None
+    );
+}

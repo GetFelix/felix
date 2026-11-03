@@ -576,6 +576,59 @@ impl ShardAssignment {
         })
     }
 
+    /// What moving a generation this control plane and `elected` both claimed
+    /// writes: the next one, under the elected leader. `None` leaves it alone:
+    /// a change is pending, a copy is joining, or the elected leader is not in
+    /// this set.
+    ///
+    /// An elected set that is this one is named as is. One that differs is
+    /// written as the set being left and this one as a pending change from
+    /// it, as a cut-over writes one, because a majority of the elected set may
+    /// hold records no majority of this one does. Until the leader reports its
+    /// generation's start record on a majority of both, no follower stands
+    /// and a failover promotes from the elected set.
+    pub fn reissuing(&self, elected: &ElectedLeader) -> Option<ShardAssignment> {
+        if self.pending_set.is_some()
+            || self.joining.is_some()
+            || !self.nodes().any(|node| *node == elected.leader)
+        {
+            return None;
+        }
+        let generation = next_generation(self.generation).ok()?;
+        let next = self.adopting(&ElectedLeader {
+            leader: elected.leader.clone(),
+            generation,
+            replicas: self
+                .nodes()
+                .filter(|node| **node != elected.leader)
+                .cloned()
+                .collect(),
+            set_generation: elected.set_generation,
+        })?;
+        if next.leader != elected.leader {
+            return None;
+        }
+        let mut elected_set: Vec<String> = Vec::new();
+        for node in &elected.replicas {
+            if *node != elected.leader && !elected_set.contains(node) {
+                elected_set.push(node.clone());
+            }
+        }
+        let same = elected_set.len() == next.replicas.len()
+            && elected_set.iter().all(|node| next.replicas.contains(node));
+        if same {
+            return Some(next);
+        }
+        Some(ShardAssignment {
+            replicas: elected_set,
+            pending_set: Some(PendingSet {
+                replicas: next.replicas.clone(),
+                generation,
+            }),
+            ..next
+        })
+    }
+
     /// Every node in the control plane's set, leader first. Not the
     /// members of a pending set.
     pub fn nodes(&self) -> impl Iterator<Item = &String> {
