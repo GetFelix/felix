@@ -637,3 +637,35 @@ async fn forgetting_a_shard_drops_its_timeout_window() {
         "window was dropped"
     );
 }
+
+/// **A copy that answered as a learner counts toward no mark, and stays in
+/// the set's size** (#1762). With three replicas and the other follower
+/// silent, the leader alone is no majority; the learner's answer must not
+/// make one. Once it answers as a voter it counts again.
+#[test]
+fn a_learner_counts_toward_no_mark_and_stays_in_the_size() {
+    let mut learner = follower("b", 5);
+    learner.learner = true;
+    let followers = [learner.clone(), follower("c", 0)];
+    assert_eq!(quorum_offset(9, &followers), 0);
+    assert_eq!(held_at_generation(9, true, &followers, None), 0);
+    assert_eq!(held_in_set(9, true, "a", &followers, &["a", "b", "c"]), 0);
+    assert_eq!(
+        held_by_both(
+            9,
+            9,
+            true,
+            "a",
+            &followers,
+            &["a".into(), "b".into(), "c".into()],
+            None
+        ),
+        0
+    );
+
+    learner.learner = false;
+    let followers = [learner, follower("c", 0)];
+    assert_eq!(quorum_offset(9, &followers), 5);
+    assert_eq!(held_at_generation(9, true, &followers, None), 5);
+    assert_eq!(held_in_set(9, true, "a", &followers, &["a", "b", "c"]), 5);
+}

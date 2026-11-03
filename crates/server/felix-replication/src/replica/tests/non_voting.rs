@@ -547,6 +547,82 @@ async fn a_copy_is_readmitted_only_once_its_counter_log_caught_up() {
     assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
 }
 
+/// **A learner says so in every answer until it is re-admitted**, so the
+/// leader leaves it out of its marks (#1762). The cache log alone does not
+/// re-admit the copy, so that answer is a learner's; the counter batch that
+/// completes the catch-up is answered as a voter's.
+#[tokio::test]
+async fn a_learner_says_so_in_its_answers_until_it_is_readmitted() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let handler = cache_handler(dir.path()).with_replaced_storage(true);
+    let answer = settled(|| {
+        handler.fence(
+            SENDER,
+            on(ReplicaLog::Cache, fence_with(6, set(6, OWN), None, false)),
+        )
+    })
+    .await;
+    assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
+
+    let put = super::fence::cache_put("k", "v");
+    let answer =
+        settled(|| handler.apply(SENDER, stamped(6, 0, &[&put]), felix_broker::LogKind::Cache))
+            .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(ref ok) if ok.learner),
+        "a learner's answer must say so: {answer:?}"
+    );
+
+    let unstamped = ReplicateRecords {
+        set_generation: None,
+        ..stamped(6, 0, &["d1"])
+    };
+    let answer =
+        settled(|| handler.apply(SENDER, unstamped.clone(), felix_broker::LogKind::Counters)).await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(ref ok) if !ok.learner),
+        "re-admitted, it answers as a voter: {answer:?}"
+    );
+}
+
+/// **A copy that cannot read its own log answers as a learner.** Whether it
+/// is one is judged on the shard's own log; unread, counting it as a voter
+/// could count a wiped copy toward a mark.
+#[tokio::test]
+async fn a_copy_whose_own_log_cannot_open_answers_as_a_learner() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = LogConfig {
+        fsync_mode: FsyncMode::None,
+        preallocate_segments: false,
+        ..LogConfig::default()
+    };
+    // A cache with no log behind it: the counter log opens, the cache's does not.
+    let broker = Arc::new(
+        Broker::new(Box::new(felix_storage::EphemeralCache::new())).with_counters(Arc::new(
+            felix_storage::CounterStore::open(dir.path().join("counters"), config)
+                .expect("counters"),
+        )),
+    );
+    let handler = ReplicaHandler::new(broker, super::fence::cache_router(6))
+        .with_fleet(marks(true))
+        .with_local_storage(StorageId::from_bytes(OWN))
+        .with_stickiness(Duration::ZERO)
+        .with_confirmed_routes(ConfirmedAs::new(Confirmed::Assigned {
+            generation: 6,
+            leader: "broker-a".to_string(),
+        }) as _);
+    let batch = ReplicateRecords {
+        set_generation: None,
+        ..stamped(6, 0, &["d1"])
+    };
+    let answer =
+        settled(|| handler.apply(SENDER, batch.clone(), felix_broker::LogKind::Counters)).await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(ref ok) if ok.learner),
+        "an unread own log must not answer as a voter: {answer:?}"
+    );
+}
+
 /// A shard's creation is a set at generation 1, which no copy held before:
 /// a replaced storage id votes in it.
 #[tokio::test]

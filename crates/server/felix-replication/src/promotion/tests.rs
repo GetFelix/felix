@@ -514,6 +514,38 @@ async fn without_a_majority_the_shard_stays_closed() {
     assert!(why.starts_with("0 of 2 replicas took the fence"), "{why}");
 }
 
+/// **A replica the node catalog does not name is still a voter.** A broker
+/// whose first catalog read failed routes with no addresses at all; a fence
+/// counted over the addresses it has would need only this broker and open
+/// with neither follower fenced.
+#[tokio::test]
+async fn a_replica_missing_from_the_catalog_still_counts_toward_the_majority() {
+    let mut replicas = Replicas::new();
+    replicas.get_mut("broker-b").reachable = false;
+    replicas.get_mut("broker-c").reachable = false;
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+    let route = RoutingTable::build(
+        [(
+            key(),
+            LEADER.to_string(),
+            vec!["broker-b".to_string(), "broker-c".to_string()],
+            PROMOTED,
+        )],
+        &HashMap::new(),
+    )
+    .get(&key())
+    .expect("route")
+    .clone();
+
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route, false, None).await;
+
+    let Outcome::Pending { took, why } = outcome else {
+        panic!("opened without a majority: {outcome:?}");
+    };
+    assert!(took.is_empty(), "{took:?}");
+    assert!(why.starts_with("0 of 2 replicas took the fence"), "{why}");
+}
+
 /// A replica's refusal reaches the shard's status, where an operator reads
 /// it: for #1635 it names the staged successor and `abandon`.
 #[tokio::test]

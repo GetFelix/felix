@@ -85,6 +85,7 @@ impl PeerRequester for OneGone {
         Ok(InternalMessage::ReplicateOk(ReplicateOk {
             correlation_id: 0,
             durable_offset: batch.first_offset + batch.payloads.len() as u64,
+            learner: false,
         }))
     }
 }
@@ -463,6 +464,7 @@ impl PeerRequester for SlowCounters {
         Ok(InternalMessage::ReplicateOk(ReplicateOk {
             correlation_id: 0,
             durable_offset,
+            learner: false,
         }))
     }
 }
@@ -634,6 +636,7 @@ impl PeerRequester for Electing {
         Ok(InternalMessage::ReplicateOk(ReplicateOk {
             correlation_id: 0,
             durable_offset: batch.first_offset + batch.payloads.len() as u64,
+            learner: false,
         }))
     }
 
@@ -681,4 +684,106 @@ async fn a_cache_leader_that_answered_a_newer_fence_raises_no_counter_mark() {
         assert_eq!(reached, raised, "newer fence answered: {fenced}");
         driver.stop().await;
     }
+}
+
+/// b's copy is a learner until it stores a cache batch, as a copy whose
+/// cache log completes its catch-up is re-admitted; each answer says what
+/// the copy is once the batch is stored. c is unreachable.
+#[derive(Default)]
+struct ReadmittedByCache {
+    admitted: std::sync::atomic::AtomicBool,
+    /// The copy stays a learner whatever it stores.
+    never: bool,
+    /// Cache batches b was sent.
+    cache_batches: std::sync::atomic::AtomicUsize,
+}
+
+impl PeerRequester for ReadmittedByCache {
+    async fn request(
+        &self,
+        node_id: &str,
+        _addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, PeerError> {
+        use std::sync::atomic::Ordering;
+        let (batch, cache) = match message {
+            InternalMessage::ReplicateCacheRecords(batch) => (batch, true),
+            InternalMessage::ReplicateCounterRecords(batch) => (batch, false),
+            other => panic!("unexpected {:?}", other.kind()),
+        };
+        if node_id != "broker-b" {
+            return Err(PeerError::Unavailable {
+                node_id: node_id.to_string(),
+                detail: "gone".to_string(),
+            });
+        }
+        if cache {
+            self.cache_batches.fetch_add(1, Ordering::SeqCst);
+            if !self.never {
+                self.admitted.store(true, Ordering::SeqCst);
+            }
+        }
+        Ok(InternalMessage::ReplicateOk(ReplicateOk {
+            correlation_id: 0,
+            durable_offset: batch.first_offset + batch.payloads.len() as u64,
+            learner: !self.admitted.load(Ordering::SeqCst),
+        }))
+    }
+}
+
+/// **A copy re-admitted on its cache log counts for the counters too**
+/// (#1762). The counters ship first in an exchange, so b answers them as a
+/// learner and its cache batch then re-admits it. Nothing new lands on the
+/// counter log after that, so only asking b again lets the counter add be
+/// acknowledged.
+#[tokio::test(start_paused = true)]
+async fn a_copy_readmitted_on_its_cache_log_is_asked_again_for_the_counters() {
+    let (broker, router, _dir) = quorum_cache().await;
+    let marks = by_followers(&broker).await;
+    let (driver, marks) = driver(ReadmittedByCache::default(), &broker, &router, marks);
+
+    let tails = write(&broker, 0).await;
+    assert!(
+        prompt(&marks, tails).await,
+        "the counter mark waited for a new counter record"
+    );
+    driver.stop().await;
+}
+
+/// **A copy still a learner is not asked twice for each batch.** Its counter
+/// log is empty, so that cursor has stored nothing and is no evidence the
+/// copy was re-admitted; one put ships one cache batch to b.
+#[tokio::test(start_paused = true)]
+async fn a_learner_with_an_empty_counter_log_is_sent_each_batch_once() {
+    let (broker, router, _dir) = quorum_cache().await;
+    let marks = by_followers(&broker).await;
+    let requester = Arc::new(ReadmittedByCache {
+        never: true,
+        ..Default::default()
+    });
+    let (driver, _marks) = driver(Arc::clone(&requester), &broker, &router, marks);
+
+    broker
+        .cache()
+        .put(
+            TENANT,
+            NAMESPACE,
+            STREAM,
+            0,
+            "k",
+            Bytes::from_static(b"v"),
+            None,
+        )
+        .await
+        .expect("put");
+    mark_appended(&broker);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(
+        requester
+            .cache_batches
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "a learner was asked again with no voter's answer to go on"
+    );
+    driver.stop().await;
 }

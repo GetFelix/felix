@@ -1404,6 +1404,12 @@ pub fn majority_of(replicas: usize) -> usize {
 /// stale position count toward a majority is how an acknowledgement comes to
 /// mean less than it says.
 ///
+/// **Neither does a learner**, a copy whose last answer said it was wiped and
+/// is still catching up ([`FollowerCursor::learner`]). It holds the records,
+/// but before the wipe it may have promised a candidate a newer generation and
+/// then forgotten it, so its answer is no evidence that a later leader holds
+/// them (#1762). Unlike a move's destination it stays in the set's size.
+///
 /// Cursors belong to one generation. The caller passes the set for the
 /// generation it is publishing at, which is what stops an older generation's
 /// acknowledgements satisfying a newer generation's quorum.
@@ -1434,7 +1440,7 @@ pub fn quorum_offset_without(
     let mut held: Vec<u64> = std::iter::once(leader_tail)
         .chain(
             voters()
-                .filter(|follower| follower.halted.is_none())
+                .filter(|follower| follower.counts())
                 .map(|follower| follower.confirmed.min(leader_tail)),
         )
         .collect();
@@ -1472,7 +1478,8 @@ pub(crate) async fn acknowledges_at_quorum(
 /// A follower counts up to its own `ReplicateOk` at this generation
 /// (`confirmed`), and keeps counting after it has taken a newer leader's
 /// fence, which this leader cannot see: the answer came first, so the fence's
-/// answer carries what it confirmed. A halted follower counts for nothing.
+/// answer carries what it confirmed. A halted follower counts for nothing,
+/// and so does a learner (see [`quorum_offset`]).
 ///
 /// The leader counts its own tail only while `leader_current`, when no newer
 /// generation has been accepted on its log. Once it has answered a newer
@@ -1497,7 +1504,7 @@ pub(crate) fn held_at_generation(
         .into_iter()
         .chain(
             voters()
-                .filter(|follower| follower.halted.is_none())
+                .filter(|follower| follower.counts())
                 .map(|follower| follower.confirmed.min(leader_tail)),
         )
         .collect();
@@ -1530,7 +1537,7 @@ pub(crate) fn held_in_set(
             }
             followers
                 .iter()
-                .find(|follower| follower.node_id == *voter && follower.halted.is_none())
+                .find(|follower| follower.node_id == *voter && follower.counts())
                 .map_or(0, |follower| follower.confirmed.min(leader_tail))
         })
         .collect();

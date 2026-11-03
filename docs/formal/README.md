@@ -263,7 +263,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardElectWipeNonVoterPromotes.cfg` | `FelixShardElectWipeNonVoterFailover.cfg` with failover free to name a non-voter (`PromoteNonVoter`) | violate `OneLeaderPerGeneration`: the non-voter forgot its promise to a candidate and is promoted at that generation |
 | `FelixShardElectWipeNonVoterDropsLearners.cfg` | `FelixShardElectWipeNonVoterFailover.cfg` with placement writes that may name no learners (`WriteDropsLearners`), as a write does whose read of the assignment it replaces failed, or one from a control plane that predates learners on Postgres | violate `PlacementKnowsLearners`: a follower is wiped and held a learner, then a placement write drops it while it is still a non-voter (127 distinct states, depth 5) |
 | `FelixShardElectWipeNonVoterCreates.cfg` | `FelixShardElectWipeNonVoter.cfg` starting as the shard is created (`Creates`): the first leader fences at generation 1, no follower holds a promise or a set, and a follower not wiped votes with an empty log; adoption up to generation 3, with no broker promising 3 before the re-admission (`ThreeOnceReadmitted`; unbounded at 3 it passed 137M distinct states unfinished in two hours) | pass, the same invariants and `PlacementKnowsLearners` (2.14M distinct states, depth 35, 2 min on four workers) |
-| `FelixShardElectWipeNonVoterCreatesLearnerAcks.cfg` | the same, the leader counting a non-voter's catch-up answers (`LearnerAcksCount`, on by default only without elections, as the code runs) | violate `AckedHeldByLeader`: c promises candidate b generation 2, is wiped, catches up from a at 1, and a acknowledges on {a, c}; b opens on {b, c} without the write. Before elections ship the leader must leave a learner out |
+| `FelixShardElectWipeNonVoterCreatesLearnerAcks.cfg` | the same, the leader counting a non-voter's catch-up answers (`LearnerAcksCount`, on by default only without elections; the code's leader leaves a learner out) | violate `AckedHeldByLeader`: c promises candidate b generation 2, is wiped, catches up from a at 1, and a acknowledges on {a, c}; b opens on {b, c} without the write. The code's leader leaves a learner out of its marks, so this is the twin that counts it |
 | `FelixShardElectWipeNonVoterCreateCountsEmpty.cfg` | the same, where a copy with no set file votes, wiped or not (`CreateCountsEmpty`) | violate `OneLeaderPerGeneration`: the wiped copy forgot its promise of generation 2 and gives it to a second leader |
 | `FelixShardElectWipeNonVoterCreatesOpens.cfg` | `FelixShardElectWipeNonVoterCreates.cfg` with no write, checking a witness | violate `NoCreationBesideNonVoter`: the new shard opens while a copy wiped before it answered is a non-voter |
 | `FelixShardElectWipeNonVoterEvidenceOnly.cfg` | `FelixShardElectWipeNonVoterFailover.cfg` with only the evidence the code sees in a set (`ReplacedIdLearner` off): a copy is a learner once a set names its old storage id | violate `OneLeaderPerGeneration`: a follower promises 2 to a candidate and is wiped before it hears a set naming its old id; it answers the fence of a failover at 2 that names its new one, with no promise and an empty log |
@@ -1119,16 +1119,16 @@ plane holds failed:
   for both to hold the start record (`ReadmitChecksCounters`;
   `FelixShardElectWipeNonVoterCountersUnchecked.cfg` re-admits on the cache
   log alone).
-- The leader counts a non-voter's answers to its catch-up batches, as the
-  code's leader does (`LearnerAcksCount`), and without elections a non-voter
-  also takes them from a leader the control plane named at that leader's
-  generation after it moved on (`CatchUpFromDeposed`), as the code's
-  confirmed read, reused for 10 s without elections, lets it. That cache is
-  in memory, so its reads came after the wipe: the deposed leader's generation is at least
-  the one at the wipe. Both are on in every configuration without
-  elections; with elections counting a learner loses a write
-  (`FelixShardElectWipeNonVoterCreatesLearnerAcks.cfg`), so the leader must
-  leave it out before they ship (#1762).
+- Without elections the model's leader counts a non-voter's answers to its
+  catch-up batches (`LearnerAcksCount`); the code's leader leaves them out
+  (#1762). A non-voter also takes them from a leader the control plane named
+  at that leader's generation after it moved on (`CatchUpFromDeposed`), as
+  the code's confirmed read, reused for 10 s without elections, lets it. That
+  cache is in memory, so its reads came after the wipe: the deposed leader's
+  generation is at least the one at the wipe. Both are on in every
+  configuration without elections. With elections, counting a learner loses
+  a write (`FelixShardElectWipeNonVoterCreatesLearnerAcks.cfg`), which is why
+  the code's leader does not.
 - A stream's group logs carry no start record, so re-admission does not
   wait for them. The copy keeps a wiped mark (`marked`) past re-admission
   until its group log holds a record of its set's generation

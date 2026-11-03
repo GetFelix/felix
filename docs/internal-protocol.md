@@ -115,6 +115,7 @@ never have dialled the one that shipped to it.
 | `1 << 12` | `LANE_RENEWAL` | offered by a caller: it replaces a request stream it gets no answer on, so the listener may drop a stream whose in-order handler overran (see "The transport") |
 | `1 << 13` | `FORWARD_INCARNATION` | reads a forwarded publish or cache op inside an `Incarnated` frame, and refuses one whose incarnation is not the one its routes name (see "Naming the stream incarnation") |
 | `1 << 14` | `HEAD_TRIM` | reads a head trim's mark (byte `5`) in a records batch and stores the trim record, applying its floor on a `Quorum` stream only once its commit offset passes the record. A batch holding a trim goes only to a peer that offered it |
+| `1 << 15` | `LEARNER_ACKS` | offered by a caller: it reads `ReplicateLearnerOk`, so a follower whose copy is a learner answers it with that kind (see "A learner's answers" under "Replication") |
 
 #### Storage identity
 
@@ -540,6 +541,47 @@ reports buffered data: a follower acknowledging before its own fsync would let
 the leader believe a record had survived a failure it would not have survived,
 and under `Quorum` that belief is the guarantee.
 
+#### A learner's answers
+
+A *learner* is a copy that lost its storage and is catching up before it may
+vote again (see "A copy that lost its storage does not vote" in
+`docs/replication-design.md`). It stores batches like any follower, but the
+leader must not count its answers toward a majority. Before the wipe the copy
+may have promised a candidate a newer generation, and the candidate may open
+with that old answer. Counting the learner's new answer could then acknowledge
+a record the candidate's log does not have.
+
+The leader cannot see that the follower is a learner: the mark is in the
+follower's own copy of the replica set. So the follower says so. It answers a
+batch on any of the shard's logs (stream, cache, counters, group cursors, dead
+letters) with `ReplicateLearnerOk` (kind 47) instead of `ReplicateOk` while
+the shard's own log marks it a learner. The body is the same: the correlation
+id and `durable_offset`.
+
+The leader stores the batch as usual and moves the follower's position, but
+leaves the follower out of the commit mark and the counter mark until an
+answer on that log arrives as plain `ReplicateOk`. The learner still counts
+in the set's size, so in a set of three the leader and the third copy make
+the majority. A follower that cannot open the shard's own log answers as a
+learner, since it cannot tell.
+
+The leader tracks the flag per log. The batch that completes the catch-up
+may be on any of the shard's logs, and only its answer is a voter's. The
+other logs (records, counters, group cursors, dead letters) still hold their
+last learner answer. So when a follower answers a batch as a voter, the
+leader sends the last record again on each of its other logs that still say
+learner, in the same exchange, to get a fresh answer. A pass that finds a
+mark waiting on such a follower asks the same way. Only a voter's answer to
+an actual batch triggers this, so a copy that is still catching up is not
+asked again and again.
+
+Only a caller that offered `LEARNER_ACKS` gets kind 47. To any other the
+listener sends the answer as `ReplicateOk`, byte for byte what that caller
+always read. Such a caller counts the learner, as it did before the kind
+existed. That is safe without elections, where a learner takes batches only
+from the leader the control plane confirms, and that leader fenced without
+it. Every broker that can elect offers the bit.
+
 The batch checksum covers each payload's length as well as its bytes. Without
 the length, a batch resplit in transit hashes the same as the original, and a
 resplit batch is a different set of records, which is exactly the divergence the
@@ -946,8 +988,8 @@ Typed, because they need different responses:
 `ReplicateFetch` 31, `ReplicateLabelledRecords` 32,
 `ReplicateLabelledFetch` 33, `ReplicateTimedRecords` 36,
 `ReplicateTimedFetch` 37, `Incarnated` 40, `ElectionFence` 41,
-`SetStamped` 42, `PreVote` 43, `PreVoteAnswer` 44, `LeaseForwardCacheOp` 45
-and `LeaseForwardCacheOk` 46. A peer
+`SetStamped` 42, `PreVote` 43, `PreVoteAnswer` 44, `LeaseForwardCacheOp` 45,
+`LeaseForwardCacheOk` 46 and `ReplicateLearnerOk` 47. A peer
 that predates any of them rejects the
 kind rather than misreading the body, which is why
 each is a new kind rather than a field on `ReplicateRecords`: this protocol
