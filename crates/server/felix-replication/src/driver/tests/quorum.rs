@@ -627,7 +627,7 @@ async fn a_fenced_leader_does_not_count_its_own_copy() {
 /// **A follower the node catalog does not name still counts toward the
 /// majority (#1845).** Of five copies, the leader and `broker-b` are two, not
 /// a majority; counting only the followers the catalog resolved would make
-/// them one of three.
+/// them two of three.
 #[tokio::test]
 async fn a_follower_missing_from_the_catalog_is_a_voter_that_has_not_answered() {
     let (reporter, shutdown) = unreachable_reporter();

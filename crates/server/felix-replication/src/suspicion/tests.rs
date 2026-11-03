@@ -145,6 +145,32 @@ fn only_the_leaders_of_followed_shards_are_watched() {
     );
 }
 
+/// **A leader the catalog has no address for is not watched (#1845).** With an
+/// empty catalog every route still names this broker as a follower, but the
+/// leader cannot be dialled. Pinging it would only time out and make a healthy
+/// leader a suspect on every shard this broker follows.
+#[test]
+fn a_leader_with_no_address_is_not_watched() {
+    let nodes: Map<String, NodeRef> = Map::new();
+    let router = ShardRouter::new(
+        "broker-a",
+        "us-west-2",
+        RegionRouter::new("us-west-2".to_string()),
+    );
+    let table = RoutingTable::build(
+        [(
+            key(0),
+            "broker-b".to_string(),
+            vec!["broker-a".to_string(), "broker-c".to_string()],
+            1,
+        )],
+        &nodes,
+    );
+    router.publish(table, &nodes);
+
+    assert!(leaders_followed(&router).is_empty());
+}
+
 /// A peer that offers `offered` and answers a ping with `answer`.
 struct Peer {
     offered: Result<PeerCapabilities, ()>,

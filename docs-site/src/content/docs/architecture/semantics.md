@@ -139,8 +139,9 @@ itself**, holds it. On a set of three that is two, so one unreachable replica
 costs nothing. The leader waits for enough of them, not all. The replica set
 is the one the control plane assigned. A replica this broker has no address for
 yet, say because it could not read the cluster's node list at startup, still
-counts as a member that has not answered, so it can only slow an
-acknowledgement down, never make one easier to reach.
+counts as a member that has not answered. It can delay an acknowledgement, or
+hold every one back until the node list loads when a majority is missing, but
+it never makes one easier to reach.
 
 `Quorum` does *not* change how the record is stored. The record is written the same way, to the
 same log, with the same fsync policy. What changes is what the acknowledgement
