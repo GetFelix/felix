@@ -249,6 +249,15 @@ expectations=(
   "FelixShardElectSwapDrop1StoodOneDest pass"
   "FelixShardElectSwapDrop1StoodOneOther pass"
   "FelixShardElectSwapDrop1StoodSeveralOther pass"
+  "FelixShardElectSwapFlipKeep1 pass"
+  "FelixShardElectSwapFlipKeep1StoodOneOther pass"
+  "FelixShardElectSwapFlipKeep0StoodSeveralOther pass"
+  "FelixShardElectSwapFlipKeep1StoodSeveralOther pass"
+  "FelixShardElectSwapFlipDrop1 pass"
+  "FelixShardElectSwapFlipDrop0StoodOneOther pass"
+  "FelixShardElectSwapFlipDrop0StoodSeveralOther pass"
+  "FelixShardElectSwapFlipDrop1StoodOneOther pass"
+  "FelixShardElectSwapFlipDrop1StoodSeveralOther pass"
   "FelixShardElectSwapFlipSkipsBallot violates OneLeaderPerGeneration"
   "FelixShardElectPreVote pass"
   "FelixShardElectNoBallotAcks violates AckedHeldByLeader"
@@ -364,6 +373,11 @@ fi
 # FelixShardElectSwap{Keep0,Keep1,Keep2,Drop2}Stood and
 # FelixShardElectSwapDrop{0,1}StoodSeveralDest run in the nightly exhaustive
 # job (tla-walk.yml).
+# FelixShardElectSwapFlip is checked the same way, in twenty pieces. The nine
+# under 45 minutes are registered above; FelixShardElectSwapFlip{Keep0,Drop0},
+# the four FelixShardElectSwapFlip{Keep,Drop}{0,1}StoodOneDest (each the same
+# states as its unstood twin), FelixShardElectSwapFlipKeep0StoodOneOther and
+# the four FelixShardElectSwapFlip{Keep,Drop}{0,1}StoodSeveralDest run nightly.
 # So are FelixShardElectWipeNonVoter{Twice,Failover,FailoverWipesLeader,
 # WipesLeader,Setless,Groups}: each runs well over an hour on a four-core runner. Their
 # violating twins and witnesses stay registered.
@@ -451,6 +465,11 @@ weights=(
   "FelixShardElectSwapDrop0StoodSeveralOther 1"
   "FelixShardElectSwapDrop1StoodOneDest 12"
   "FelixShardElectSwapDrop1StoodOneOther 3"
+  "FelixShardElectSwapFlipKeep1 15"
+  "FelixShardElectSwapFlipDrop1 20"
+  "FelixShardElectSwapFlipKeep1StoodOneOther 11"
+  "FelixShardElectSwapFlipDrop1StoodOneOther 8"
+  "FelixShardElectSwapFlipDrop0StoodOneOther 41"
 )
 
 weight_of() {
