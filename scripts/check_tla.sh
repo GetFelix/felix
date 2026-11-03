@@ -237,6 +237,7 @@ expectations=(
   "FelixShardElectStaleSet violates AckedHeldByLeader"
   "FelixShardElectAdopt pass"
   "FelixShardElectRenameDue violates NeverRenameDue"
+  "FelixShardElectRenameFencingDue violates NeverRenameWhileFencing"
   "FelixShardElectAdoptPromote pass"
   "FelixShardElectSwapNoJoint violates AckedHeldByLeader"
   "FelixShardElectSwapKeep1 pass"
@@ -250,6 +251,10 @@ expectations=(
   "FelixShardElectSwapDrop1StoodOneDest pass"
   "FelixShardElectSwapDrop1StoodOneOther pass"
   "FelixShardElectSwapDrop1StoodSeveralOther pass"
+  "FelixShardElectRenameKeep0StoodSeveralOther pass"
+  "FelixShardElectRenameKeep1StoodSeveralOther pass"
+  "FelixShardElectRenameDrop0StoodSeveralOther pass"
+  "FelixShardElectRenameDrop1StoodSeveralOther pass"
   "FelixShardElectPreVote pass"
   "FelixShardElectNoBallotAcks violates AckedHeldByLeader"
   "FelixShardElectStepDown pass"
@@ -369,9 +374,10 @@ fi
 # So are FelixShardElectWipeNonVoter{Twice,Failover,FailoverWipesLeader,
 # WipesLeader,Setless,Groups}: each runs well over an hour on a four-core runner. Their
 # violating twins and witnesses stay registered.
-# So is FelixShardElectRename: stopped after four minutes on a laptop at 5.8M
-# distinct states and depth 21, queue still growing, nothing violated. Its witness
-# FelixShardElectRenameDue and the two rename walks stay registered.
+# So is FelixShardElectRename, which is checked in pieces
+# (FelixShardElectRename{Keep,Drop}{0,1}{,Stood...}): the pieces not registered
+# above have not been measured yet. Its witnesses and the two rename walks stay
+# registered.
 
 # Minutes each of the longer configurations takes on a four-core CI runner,
 # from the `Finished in` lines of a CI run (a new one is a guess until it has

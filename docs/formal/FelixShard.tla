@@ -2756,12 +2756,18 @@ PromisedAway(m, b, g) == promised[m] = g /\ ballot[m] /= {} /\ ballot[m] /= {b}
 \* services/felix-broker-service/src/shards/lifecycle.rs), or its fence there
 \* can never reach a majority, since too many of its set did
 \* (`Outcome::Refused` in crates/server/felix-replication/src/promotion.rs).
-\* Read live, as `Reclaim` reads its measurement.
+\* That covers a leader that never took the generation and one that took it
+\* and is still fencing; a joint fence is refused when either set is out of
+\* reach. Read live, as `Reclaim` reads its measurement.
 RenameDue ==
-    /\ Renames
-    /\ bgen[leader] < gen
-    /\ \/ PromisedAway(leader, leader, gen)
-       \/ ~LeaderMajority(leader, { m \in Members(leader) : ~PromisedAway(m, leader, gen) })
+    LET left == { m \in FenceMembers(leader) : ~PromisedAway(m, leader, gen) }
+        stillFencing == bgen[leader] = gen /\ fencing[leader]
+    IN /\ Renames
+       /\ bgen[leader] < gen \/ stillFencing
+       /\ \/ PromisedAway(leader, leader, gen)
+          \/ ~LeaderMajority(leader, left \cap Members(leader))
+          \/ /\ stillFencing /\ JointFence /\ oldSet[leader] /= {}
+             /\ ~MajorityOf(left \cup {leader}, oldSet[leader])
 
 \* Under `Renames`, the control plane names its leader again at the next
 \* generation, the same set and any pending change kept, once that leader
@@ -3392,10 +3398,14 @@ AdoptedMatchesOpened ==
         mine[leader] = IF cpNext /= {} THEN cpNext ELSE CpSet
 
 \* A witness, not a safety property: the control plane never has a leader to
-\* name again (`RenameDue`). TLC finds one under `Renames`
-\* (FelixShardElectRenameDue.cfg), which shows the configuration that passes
-\* with it gets that far.
-NeverRenameDue == ~RenameDue
+\* name again (`RenameDue`) that never took its generation. TLC finds one
+\* under `Renames` (FelixShardElectRenameDue.cfg), which shows the
+\* configuration that passes with it gets that far.
+NeverRenameDue == ~(RenameDue /\ bgen[leader] < gen)
+
+\* The same for a leader that took the control plane's generation and is
+\* still fencing there (FelixShardElectRenameFencingDue.cfg).
+NeverRenameWhileFencing == ~(RenameDue /\ bgen[leader] = gen)
 
 \* Under `SetCheck`, once a set change opened, a majority of the new set and
 \* of the set before it know the new set, so no replica on the old set alone
