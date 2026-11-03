@@ -18,7 +18,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 DOCS = REPO / "docs-site" / "src" / "content" / "docs"
 EXTRA = [REPO / "README.md"]
-EXCLUDED = ("release-notes",)
+# Generated from the changelog, except the hand-written upgrade page.
+HAND_WRITTEN = "upgrading-to-0-7.md"
 SUFFIXES = {".md", ".mdx"}
 ALLOW = "version-pin: allow"
 PREVIEW = re.compile(r"(?<![\d.])(\d+\.\d+\.\d+)-preview\.(\d+)\b")
@@ -52,7 +53,7 @@ def pages() -> list[Path]:
     out = [
         p
         for p in sorted(DOCS.rglob("*"))
-        if p.suffix in SUFFIXES and not any(x in p.relative_to(DOCS).parts for x in EXCLUDED)
+        if p.suffix in SUFFIXES and (p.relative_to(DOCS).parts[0] != "release-notes" or p.name == HAND_WRITTEN)
     ]
     return out + [p for p in EXTRA if p.exists()]
 

@@ -37,8 +37,7 @@ features and rollback.
   does not use these are unchanged.
 - **Storage format 8.** `FORMAT_VERSION` was 6 in 0.6.2 and is 8 now. Version 7
   holds the head-trim record and version 8 holds a record's key and headers.
-  A broker moves a log onto one of them only to hold such a record: v7 at the
-  first trim, v8 at the first publish with headers. Until then the log stays
+  A broker moves a log onto one of them only to hold such a record: v7 at the   first trim, v8 at the first publish with headers. Until then the log stays
   readable by 0.6.2. After that, 0.6.2 refuses to open it and there is no
   rollback except restoring a backup. To keep v8 off, set
   `FELIX_RECORD_HEADERS=false`; it does not affect v7. Headers only work on a
