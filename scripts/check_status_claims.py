@@ -75,7 +75,21 @@ CLAIM = re.compile(
     re.IGNORECASE,
 )
 
-ISSUE = re.compile(r"#(\d{2,5})")
+# A bare #123 is a Felix issue; a GitHub URL names its own repo.
+ISSUE = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)|#(\d{2,5})")
+FELIX_REPO = "GetFelix/felix"
+
+
+LINKED = re.compile(r"\[#\d+\]\((https?://[^)]*)\)")
+
+
+def cited_issues(line: str) -> list[tuple[str, str]]:
+    # A link's label repeats its URL's number; let the URL name the repo.
+    line = LINKED.sub(r"\1", line)
+    return [
+        (repo or FELIX_REPO, url_number or bare)
+        for repo, url_number, bare in ISSUE.findall(line)
+    ]
 
 
 def claims() -> list[tuple[Path, int, str]]:
@@ -96,15 +110,15 @@ def claims() -> list[tuple[Path, int, str]]:
     return found
 
 
-def closed_issues(numbers: set[str]) -> dict[str, str]:
-    """Issue number -> state, for the issues cited by status claims."""
-    if not numbers or not shutil.which("gh"):
+def closed_issues(issues: set[tuple[str, str]]) -> dict[tuple[str, str], str]:
+    """(repo, number) -> state, for the issues cited by status claims."""
+    if not issues or not shutil.which("gh"):
         return {}
-    states: dict[str, str] = {}
-    for number in sorted(numbers):
+    states: dict[tuple[str, str], str] = {}
+    for repo, number in sorted(issues):
         try:
             out = subprocess.run(
-                ["gh", "issue", "view", number, "--json", "state,title"],
+                ["gh", "issue", "view", number, "-R", repo, "--json", "state,title"],
                 capture_output=True,
                 text=True,
                 timeout=20,
@@ -115,7 +129,7 @@ def closed_issues(numbers: set[str]) -> dict[str, str]:
         if out.returncode != 0:
             continue
         try:
-            states[number] = json.loads(out.stdout)["state"]
+            states[(repo, number)] = json.loads(out.stdout)["state"]
         except (json.JSONDecodeError, KeyError):
             continue
     return states
@@ -146,10 +160,10 @@ def main() -> int:
         for path in sorted(by_file):
             print(f"\n{path.relative_to(REPO)}")
             for number, line in by_file[path]:
-                marker = "  " if ISSUE.search(line) else "? "
+                marker = "  " if cited_issues(line) else "? "
                 trimmed = line if len(line) <= 120 else line[:117] + "..."
                 print(f"  {marker}{number:>5}: {trimmed}")
-        anchored = sum(1 for _, _, line in found if ISSUE.search(line))
+        anchored = sum(1 for _, _, line in found if cited_issues(line))
         print(
             f"\n{len(found)} claim(s) that something is not built; "
             f"{anchored} cite an issue, {len(found) - anchored} do not (marked ?)."
@@ -161,9 +175,9 @@ def main() -> int:
 
     if args.check_issues:
         cited = {
-            number
+            issue
             for _, _, line in found
-            for number in ISSUE.findall(line)
+            for issue in cited_issues(line)
         }
         states = closed_issues(cited)
         if not states:
@@ -172,7 +186,7 @@ def main() -> int:
         stale = [
             (path, number, line)
             for path, number, line in found
-            for issue in ISSUE.findall(line)
+            for issue in cited_issues(line)
             if states.get(issue) == "CLOSED"
         ]
         for path, number, line in stale:
