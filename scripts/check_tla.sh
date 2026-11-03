@@ -376,8 +376,10 @@ fi
 # violating twins and witnesses stay registered.
 # So is FelixShardElectRename, which is checked in pieces
 # (FelixShardElectRename{Keep,Drop}{0,1}{,Stood...}): the pieces not registered
-# above have not been measured yet. Its witnesses and the two rename walks stay
-# registered.
+# above have not been measured yet. The four StoodOneDest pieces run nightly
+# (tla-walk.yml): the cut-over overwrites everything the destination's stand
+# wrote, so they reach the same states as the pieces where nobody stood. Its
+# witnesses and the two rename walks stay registered.
 
 # Minutes each of the longer configurations takes on a four-core CI runner,
 # from the `Finished in` lines of a CI run (a new one is a guess until it has
