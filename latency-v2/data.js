@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793674561275,
+  "lastUpdate": 1793676734738,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -54846,6 +54846,72 @@ window.BENCHMARK_DATA = {
             "range": "27.51",
             "unit": "us",
             "extra": "trials: 5\nmedian: 312.00\nmean: 316.20\nstdev: 27.51\ncv: 8.70%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "fb0b0ba7c856f9423b67d53176e8a058ad205726",
+          "message": "docs(formal): model the control plane's flip as a new generation (#1725) (#1789)\n\n* docs(formal): model the flip as a new generation naming the leader again (#1725)\n\nTakePendingSet writes the pending set at the next generation, naming the\ncut-over's leader again, and that leader fences the new set alone. Under\nFlipNewGeneration the model now does the same. A candidate may already\nhold that generation; the ballot keeps the two fences apart, and\nFelixShardElectSwapFlipSkipsBallot.cfg shows two leaders at one\ngeneration without it. The set-change pieces keep the old flip.\n\n* docs(formal): the flip follows a stale report too (#1725)\n\nThe control plane flips on the leader's report alone, so the leader may\nhave promised the next generation to a candidate since it sent it. The\nmodel now flips in that case as well, and the leader refuses the\ngeneration and stays as it is. Also review nits: the FlipFence comment,\nthe set-change wording in replication-design.md.\n\n* docs(formal): flip on a report from a leader that stopped leading, review wording (#1725)\n\nThe stale-report branch now covers any leader that stopped leading its\ngeneration after the joint open (lease lapse, a candidate's fence), and\nthe leader fences at the new generation whenever it may promise it.\nDocs: say who serves after a refusal, fix the replica refusal wording.\n\n* spec: split FelixShardElectSwapFlip at its cut-over\n\n* spec: register the flip pieces that fit a pull request, the rest nightly (#1725)\n\nMeasured on a four-core CI runner. The nine under 45 minutes are\nregistered; Keep0, Drop0, Keep0StoodOneOther, the four StoodOneDest\n(each the same states as its unstood twin) and the four StoodSeveralDest\nrun in the nightly exhaustive job.\n\n* ci(tla): weights from a hosted runner's shard times\n\nA pull request's shard 0 ran out its hour: FelixShardWipeStripped took\n28.5 min against a weight of 10, FelixShardReportFloor 10 against 5 and\nFelixShardElectAdoptPromote 9 against 3. Every configuration that ran over\nits weight by more than a minute now weighs its measured time, so those\nover ten minutes leave the pull-request tier and run on main.\n\n* spec: keep FelixShard in every PR check; the empty cut-over pieces prove they are empty\n\nFelixShard, the base configuration, now runs on every pull request\nwhatever its weight.\n\nThe StoodSeveralOther pieces of FelixShardElectSwap and\nFelixShardElectSwapFlip reach no cut-over: Swap needs the old leader\nstill leading, a leader that answers a fence stops leading, and a spare\nneither stands nor answers, so in a set of three only the third member can\nhave stood besides the destination. Each piece held just the states before\na cut-over (694 and 5,189, the same in every one). They now check that\nthey stay empty (NoCutOverInPiece); a mutated piece that does reach a\ncut-over violates it at depth 8.",
+          "timestamp": "2026-11-02T18:43:44-08:00",
+          "tree_id": "c214e14b268b54c1f3e786ce60bf399b2ec949e2",
+          "url": "https://github.com/GetFelix/felix/commit/fb0b0ba7c856f9423b67d53176e8a058ad205726"
+        },
+        "date": 1793676728072,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 96,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 96.00\nmean: 95.60\nstdev: 0.55\ncv: 0.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 132,
+            "range": "10.04",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 132.00\nmean: 136.60\nstdev: 10.04\ncv: 7.35%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 189,
+            "range": "283.31",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 189.00\nmean: 313.60\nstdev: 283.31\ncv: 90.34%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 131,
+            "range": "1.95",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 131.00\nmean: 131.60\nstdev: 1.95\ncv: 1.48%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 260,
+            "range": "9.70",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 260.00\nmean: 263.00\nstdev: 9.70\ncv: 3.69%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 501,
+            "range": "542.44",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 501.00\nmean: 691.20\nstdev: 542.44\ncv: 78.48%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
