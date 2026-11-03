@@ -455,10 +455,28 @@ async fn finalize_in_order(
     if !store.every_member_current().await {
         return (enabled, true);
     }
+    let Ok(nodes) = store.list_nodes().await else {
+        return (enabled, true);
+    };
     let mut again = false;
     for feature in NEW_CLUSTER {
         let name = feature.name();
         if enabled.contains(name) || check_prerequisites(&enabled, name).is_err() {
+            continue;
+        }
+        // The operator's readiness gates hold here too: the store does not
+        // check them, and a default broker reports both election features.
+        if let Err(err) = check_election(
+            &nodes,
+            name,
+            ELECTION_METADATA_LEVEL_READY,
+            JOINT_FENCE_READY,
+        ) {
+            tracing::info!(
+                feature = name,
+                error = %err,
+                "not finalizing a fleet feature for a new cluster",
+            );
             continue;
         }
         match store.finalize_fleet_feature(name).await {
