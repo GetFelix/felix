@@ -701,9 +701,12 @@ NamedFenceSkipsBallot == FALSE
 \* driver/shard.rs reads the generation's start offset, which a retake
 \* does not move. Records the elected stint acknowledged after that start
 \* need not be on a majority of the new set (#1787).
-\* `JoinLags`: a copy joining in a cut-over holds the destination's log as
-\* the drain check saw it. A destination elected past the old leader can
-\* write more before the cut-over is written. Off, a joining copy holds the
+\* `Readmitted` and `CpAdmit` still accept any start record at the
+\* generation, not the named stint's; the configurations with `StintStarts`
+\* on have no wipes.
+\* `JoinLags`: a copy joining in a cut-over holds any prefix of the
+\* destination's log. A top-up copy (`choose_replicas` in placement/moves.rs)
+\* is not checked for what it holds. Off, a joining copy holds the
 \* destination's whole log at the cut-over.
 StintStarts == FALSE
 JoinLags == FALSE
@@ -827,7 +830,7 @@ VARIABLES
     setGen,     \* under `SetCheck`, the generation of the assignment that wrote each broker's `mine`
     oldSet,     \* under `SetCheck`, the set a pending set change is leaving, kept with `mine`: {} when none is pending
     ackGen,     \* history, where opens are tracked: each <<write, generation>> it was acknowledged at
-    installed,  \* history, under `SetCheck`: each <<set's generation, set, previous set>> a set change opened
+    installed,  \* history, under `SetCheck`: each <<set's generation, set, previous set>> a set change opened, and its generation under `StintStarts`
     cpNext,     \* under `Swaps`, the set a cut-over is moving to while the old one is still the control plane's: {} when none
     cpNextGen,  \* the generation that set was written at
     cutOver,    \* ghost, under `SplitAtCutOver`: <<>>, or what the first cut-over found (CutOverTag)
@@ -1105,14 +1108,6 @@ Same(r, s) == r.g = s.g /\ r.id = s.id
 \* `g`, which `Same` compares.
 StartId == 0
 Start(g) == Record(g, StartId)
-
-\* Whether the start of `b`'s stint at `g` is under its mark: the last start
-\* record at `g` under `StintStarts`, any of them otherwise. A leader opening
-\* at a generation it already started appends another, identical start.
-StartAcked(b, g) ==
-    LET at == { i \in 1..Len(log[b]) : log[b][i] = Start(g) }
-    IN /\ at /= {}
-       /\ IF StintStarts THEN \A i \in at : i <= hwm[b] ELSE \E i \in at : i <= hwm[b]
 
 \* `b`'s log once it starts leading at `g`.
 Opened(b, g) == IF StartRecord THEN Append(log[b], Start(g)) ELSE log[b]
@@ -1472,6 +1467,26 @@ Ship(b, f) ==
 \* Whether `m` holds the first `k` records of `b`'s log.
 HoldsPrefix(m, b, k) ==
     Len(log[m]) >= k /\ Len(log[b]) >= k /\ \A j \in 1..k : Same(log[m][j], log[b][j])
+
+\* Whether `b`'s start at `g` is acknowledged for the flip. Under
+\* `StintStarts`, the last start record at `g` is under `b`'s mark: a leader
+\* opening at a generation it already started appends another, identical
+\* start, and only that one was acknowledged on both sets. Otherwise it is
+\* the generation's first start, which may have been acknowledged on the old
+\* set alone, before the change. Under `JoinLags` that start must be held
+\* now on a majority of the pending set and of the current one, as
+\* `joint_start` in driver/shard.rs counts it live (`held_by_both`).
+\* Without `JoinLags` the mark stands in: every joining copy holds the whole
+\* log, so a start acknowledged before the change is already held on both
+\* sets, and one written at the joint open is under the mark only once it is.
+StartAcked(b, g) ==
+    LET at == { i \in 1..Len(log[b]) : log[b][i] = Start(g) }
+        first == CHOOSE i \in at : \A j \in at : i <= j
+        holders == { m \in Brokers : HoldsPrefix(m, b, first) }
+    IN /\ at /= {}
+       /\ CASE StintStarts -> \A i \in at : i <= hwm[b]
+              [] JoinLags -> MajorityOf(holders, cpNext) /\ MajorityOf(holders, CpSet)
+              [] OTHER -> first <= hwm[b]
 
 \* Whether `b` counts `m` as holding its first `k` records in a report: by
 \* `m`'s log, or with `ReportFromAnswers` by what `m` last answered, as
@@ -2694,11 +2709,12 @@ CutOverPiece ==
 \* destination can hold more than the old leader when it was elected past
 \* it, and a copy that held only the old leader's log then missed what the
 \* destination had acknowledged (FelixShardElectSwap.cfg, AckedOnMajority).
-\* With `JoinLags` the joining copy holds the destination's log only as far
-\* as the drain check saw it: a destination elected past the old leader may
-\* have acknowledged more since, on the old set. The flip must then wait for
-\* the start of the destination's named stint (`StintStarts`), which
-\* reaches the new set only behind those records.
+\* With `JoinLags` the joining copy holds any prefix of the destination's
+\* log: nothing checks how far a top-up copy has got. A destination elected
+\* past the old leader may also have acknowledged records on the old set
+\* alone. The flip must then wait for the start of
+\* the destination's named stint (`StintStarts`), which reaches the new set
+\* only behind those records.
 Swap(v, f, views) ==
     /\ Swaps > 0 /\ moves < Swaps
     /\ v.leader = leader /\ ~v.lapsed
@@ -2713,7 +2729,7 @@ Swap(v, f, views) ==
          /\ f \in S /\ Cardinality(S) = Cardinality(CpSet) /\ S /= CpSet
          /\ mine' = [mine EXCEPT ![f] = S]
          /\ cpNext' = S
-         /\ \E k \in (IF JoinLags THEN Len(log[leader]) ELSE Len(log[f]))..Len(log[f]) :
+         /\ \E k \in (IF JoinLags THEN 0 ELSE Len(log[f]))..Len(log[f]) :
               log' = [m \in Brokers |-> IF m \in S \ CpSet THEN SubSeq(log[f], 1, k) ELSE log[m]]
          /\ cutOver' = IF SplitAtCutOver /\ cutOver = <<>>
                        THEN <<CutOverTag(leader \in S, f)>> ELSE cutOver

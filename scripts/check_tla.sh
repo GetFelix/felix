@@ -362,9 +362,10 @@ fi
 # FelixShardElectSwap is not registered: it does not finish in one run, so
 # it is checked in pieces split at the cut-over. The eleven that take under 45
 # minutes are registered above; FelixShardElectSwapKeep0, the four
-# FelixShardElectSwap{Keep0,Keep1,Keep2,Drop2}Stood and
-# FelixShardElectSwapDrop{0,1}StoodSeveralDest run in the nightly exhaustive
-# job (tla-walk.yml).
+# FelixShardElectSwap{Keep0,Keep1,Keep2,Drop2}Stood,
+# FelixShardElectSwapDrop{0,1}StoodSeveralDest and
+# FelixShardElectSwapFlipJoinLags run in the nightly exhaustive job
+# (tla-walk.yml).
 # So are FelixShardElectWipeNonVoter{Twice,Failover,FailoverWipesLeader,
 # WipesLeader,Setless,Groups}: each runs well over an hour on a four-core runner. Their
 # violating twins and witnesses stay registered.

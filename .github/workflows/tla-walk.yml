@@ -150,6 +150,7 @@ jobs:
           - FelixShardElectSwapDrop0StoodSeveralDest
           - FelixShardElectSwapDrop1StoodSeveralDest
           - FelixShardElectSwapDrop2Stood
+          - FelixShardElectSwapFlipJoinLags
           - FelixShardElectWipeNonVoterWipesLeader
           - FelixShardElectWipeNonVoterTwice
           - FelixShardElectWipeNonVoterFailover
