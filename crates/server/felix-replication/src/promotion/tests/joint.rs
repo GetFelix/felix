@@ -450,6 +450,170 @@ async fn a_leader_whose_log_kept_no_set_still_fences_the_old_majority() {
     assert_eq!(own.leaving.map(|old| old.generation), Some(4));
 }
 
+/// **A failover after a recorded-only adoption fences the recorded set and
+/// the log's.** The control plane recorded an election at generation 4
+/// without taking its set, so the watch saw {broker-x, broker-b, broker-c}
+/// while broker-a's log keeps the elected leader's {broker-a, broker-y,
+/// broker-w}. With broker-x down the two have disjoint majorities, and the
+/// elected leader may have acknowledged on either, so the fence opens only
+/// on a majority of each. A voter of the log's set alone is sent that set as
+/// the one being left, or it would refuse the fence.
+#[tokio::test]
+async fn a_failover_fences_both_the_recorded_set_and_the_logs() {
+    let mut replicas = replicas_with(&["broker-x", "broker-z", "broker-y", "broker-w"]);
+    replicas.get_mut("broker-x").reachable = false;
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+    kept_before(&leader, &[LEADER, "broker-y", "broker-w"], &[]).await;
+    let reach = |replicas: &mut Replicas, up: &[&str]| {
+        for id in ["broker-b", "broker-c", "broker-y", "broker-w"] {
+            replicas.get_mut(id).reachable = up.contains(&id);
+        }
+    };
+
+    reach(&mut replicas, &["broker-b", "broker-c"]);
+    let outcome = fence_after(&replicas, &leader, true, Some(prior_xbc())).await;
+    let Outcome::Pending { why, .. } = &outcome else {
+        panic!("opened on a majority of the recorded set alone: {outcome:?}");
+    };
+    assert!(why.contains("2 of 3 and 1 of 3 voters"), "{why}");
+
+    reach(&mut replicas, &["broker-y", "broker-w"]);
+    let outcome = fence_after(&replicas, &leader, true, Some(prior_xbc())).await;
+    let Outcome::Pending { why, .. } = &outcome else {
+        panic!("opened on a majority of the log's set alone: {outcome:?}");
+    };
+    assert!(why.contains("0 of 3 and 3 of 3 voters"), "{why}");
+
+    reach(&mut replicas, &["broker-b", "broker-c", "broker-y"]);
+    let outcome = fence_after(&replicas, &leader, true, Some(prior_xbc())).await;
+    assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
+    for (id, leaving) in [
+        ("broker-b", ["broker-b", "broker-c", "broker-x"]),
+        ("broker-y", [LEADER, "broker-w", "broker-y"]),
+    ] {
+        let kept = replicas
+            .get(id)
+            .broker
+            .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+            .await
+            .expect("log")
+            .replica_set()
+            .expect("the replica kept the set");
+        let mut kept: Vec<String> = kept
+            .leaving
+            .expect("the set being left rides the fence")
+            .members
+            .into_iter()
+            .map(|member| member.node)
+            .collect();
+        kept.sort();
+        assert_eq!(kept, leaving, "{id}");
+    }
+}
+
+/// **A pending cut-over leaves the control plane's set, whatever the log
+/// kept.** The control plane recorded an election at generation 4 without
+/// taking it, so its set stayed {broker-a, broker-x, broker-b, broker-c}
+/// while the elected leader shipped {broker-a, broker-x, broker-z}, which
+/// broker-a's log keeps. Its watch never saw the step to the cut-over. The
+/// route's pending change still names the set being left: with broker-b and
+/// broker-c down the shard stays closed, and the fence carries the recorded
+/// set.
+#[tokio::test]
+async fn a_pending_cut_over_leaves_the_recorded_set_whatever_the_log_kept() {
+    let mut replicas = replicas_with(&["broker-x", "broker-z"]);
+    replicas.get_mut("broker-b").reachable = false;
+    replicas.get_mut("broker-c").reachable = false;
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+    kept_before(&leader, &[LEADER, "broker-x", "broker-z"], &[]).await;
+
+    let outcome = fence_pending(&replicas, &leader).await;
+
+    let Outcome::Pending { why, .. } = &outcome else {
+        panic!("left the set the log kept, not the recorded one: {outcome:?}");
+    };
+    assert!(why.contains("2 of 4 voters of the set being left"), "{why}");
+
+    replicas.get_mut("broker-b").reachable = true;
+    let outcome = fence_pending(&replicas, &leader).await;
+
+    assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
+    let kept = replicas
+        .get("broker-b")
+        .broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log")
+        .replica_set()
+        .expect("broker-b kept the set");
+    let leaving: Vec<String> = kept
+        .leaving
+        .expect("the set being left rides the fence")
+        .members
+        .into_iter()
+        .map(|member| member.node)
+        .collect();
+    assert_eq!(leaving, [LEADER, "broker-b", "broker-c", "broker-x"]);
+}
+
+/// **With no source naming the recorded members, the route's copies are
+/// kept.** The set being left still counts each member only from the copy
+/// the control plane registered for it, not from any copy of that node.
+#[test]
+fn a_recorded_set_no_source_names_takes_the_routes_copies() {
+    let copy = StorageId::from_bytes([7; 16]);
+    let route = Route {
+        pending: Some(Arc::new(felix_router::PendingChange {
+            generation: PROMOTED,
+            leaving: vec![LEADER.into(), "broker-b".into()],
+        })),
+        member_storage_ids: Some(Arc::new([("broker-b".to_string(), copy.to_hex())].into())),
+        ..swapped()
+    };
+
+    let before = crate::promotion::set_before(None, &route, None)
+        .expect("the recorded set")
+        .expect("a set before");
+
+    assert_eq!(before.generation, PROMOTED - 1);
+    let named: Vec<_> = before
+        .members
+        .iter()
+        .map(|member| (member.node.as_str(), member.storage))
+        .collect();
+    assert_eq!(named, [(LEADER, None), ("broker-b", Some(copy))]);
+}
+
+/// [`fence`] on [`swapped`] as a cut-over the control plane holds pending,
+/// leaving {broker-a, broker-x, broker-b, broker-c}, with no step seen by the
+/// watch.
+async fn fence_pending(replicas: &Replicas, leader: &Arc<Broker>) -> Outcome {
+    let route = Route {
+        pending: Some(Arc::new(felix_router::PendingChange {
+            generation: PROMOTED,
+            leaving: vec![
+                LEADER.into(),
+                "broker-x".into(),
+                "broker-b".into(),
+                "broker-c".into(),
+            ],
+        })),
+        ..swapped()
+    };
+    let addr_of = addr_of;
+    let joint = Joint::new(&addr_of, None);
+    fence_shard(
+        replicas,
+        leader,
+        LEADER,
+        &key(),
+        &route,
+        false,
+        Some(&joint),
+    )
+    .await
+}
+
 /// **A set before that is not known keeps the shard closed.** Neither the
 /// watch nor the leader's log knows the set at generation 4, so the fence
 /// does not fall back to the new set alone. A first assignment, with nothing
@@ -659,4 +823,69 @@ fn joint_fence_marks(finalized: bool) -> crate::quorum::QuorumMarks {
     // As a registration answers, so the gate is read.
     fleet.restart(finalized.then_some(JOINT_FENCE.name()));
     crate::quorum::QuorumMarks::with_fleet(Arc::new(fleet))
+}
+
+/// **A log set that differs from the set before only in who votes is fenced
+/// beside it.** The log keeps broker-y and broker-w as learners where the
+/// set before has them voting. broker-a, broker-y and broker-w are a
+/// majority of the set before, of its names and of the new set, yet miss
+/// every voter majority of the log's set, which broker-b and broker-c may
+/// have acknowledged on.
+#[test]
+fn a_log_set_differing_only_in_learners_is_fenced_beside_the_one_before() {
+    let set = |learners: &[&str]| Membership {
+        generation: 4,
+        members: [LEADER, "broker-b", "broker-c", "broker-y", "broker-w"]
+            .map(|node| Member {
+                node: node.to_string(),
+                storage: None,
+                learner: learners.contains(&node),
+                wiped: false,
+            })
+            .to_vec(),
+    };
+    let stored = ReplicaSet {
+        current: set(&["broker-y", "broker-w"]),
+        leaving: None,
+    };
+
+    let besides = crate::promotion::joint::logged_besides(Some(&stored), &swapped(), &set(&[]));
+
+    assert_eq!(besides, Some(stored.current));
+}
+
+/// **A log set naming another copy of a member is fenced beside the set
+/// before, and each counts only the copy it names.** The watch saw
+/// {broker-x, broker-b, broker-c} with broker-b's current copy, while
+/// broker-a's log keeps the same names with an older copy of broker-b, which
+/// may have acknowledged with broker-c. With broker-c down, broker-x and
+/// broker-b's current copy are a majority of the set before but hold none of
+/// the log set's records, so the fence stays closed until broker-c answers.
+#[tokio::test]
+async fn a_log_set_naming_another_copy_is_fenced_beside_the_one_before() {
+    let mut replicas = replicas_with(&["broker-x", "broker-z"]);
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+    kept_naming(
+        &leader,
+        &["broker-x", "broker-b", "broker-c"],
+        &[],
+        &[("broker-b", storage_of("broker-old"))],
+    )
+    .await;
+    let mut prior = prior_xbc();
+    if let Some(before) = prior.before.as_mut() {
+        Arc::make_mut(before).member_storage_ids =
+            [("broker-b".to_string(), storage_of("broker-b").to_hex())].into();
+    }
+
+    replicas.get_mut("broker-c").reachable = false;
+    let outcome = fence_after(&replicas, &leader, true, Some(prior.clone())).await;
+    let Outcome::Pending { why, .. } = &outcome else {
+        panic!("opened without a voter majority of the log's copies: {outcome:?}");
+    };
+    assert!(why.contains("2 of 3 and 1 of 3 voters"), "{why}");
+
+    replicas.get_mut("broker-c").reachable = true;
+    let outcome = fence_after(&replicas, &leader, true, Some(prior)).await;
+    assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
 }
