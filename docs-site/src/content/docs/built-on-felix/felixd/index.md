@@ -68,7 +68,7 @@ not built, a page says so and links the felixd issue.
   without failing the workload, chunked snapshots and the authenticated
   publisher of each input. felixd runs contract 0.3 and still runs 0.2; the
   pages here describe 0.2, which is enough to write and run a workload.
-- **Release binaries and operator docs.** It has builds for Linux and
+- **Release binaries and operator docs.** Releases have builds for Linux and
   macOS, a compose file starts a three-node cluster, and
   [`docs/operating.md`](https://github.com/GetFelix/felixd/blob/main/docs/operating.md)
   covers running one.
