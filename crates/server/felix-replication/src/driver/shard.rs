@@ -67,8 +67,8 @@ pub struct ShardCursors {
     /// A move's destination this broker saw added to the replica set, still
     /// copying: left out of the quorum. See [`staged_learner`].
     pub(super) learner: Option<String>,
-    /// The generation this leader leads at, and where it begins. See
-    /// [`own_start`].
+    /// The generation this leader leads at, and where the history says it
+    /// begins. See [`own_start`].
     pub(super) own_start: Option<(u64, u64)>,
     /// The storage identity the assignment that promoted this leader named
     /// for each replica, read at the generation's first pass. A report names
@@ -128,9 +128,16 @@ fn inherited_names(route: &Route) -> BTreeMap<String, String> {
         .collect()
 }
 
-/// Where this leader's generation begins in a stream log, for
-/// [`crate::quorum::counted_offset`]: the offset of its first record, the
-/// generation-start record when it wrote one.
+/// Where this leader's current stint at its generation begins in a stream
+/// log, for [`crate::quorum::counted_offset`]: the offset of its first
+/// record, the generation-start record when it wrote one.
+///
+/// A broker can open again at a generation it already started, as when it
+/// was elected there and a cut-over then names it there. Its new stint
+/// writes a start record of its own, and this is that record. Counting from
+/// the generation's first start instead, a joint start could be reported
+/// while a record the earlier stint acknowledged on the old set alone is
+/// still missing from a majority of the new one (#1787).
 ///
 /// `u64::MAX` while the generation has no recorded start, which counts
 /// nothing: every record in the log is then one this leader inherited.
@@ -139,23 +146,24 @@ fn own_start(
     generation: u64,
     known: &mut Option<(u64, u64)>,
 ) -> u64 {
-    if let Some((at, start)) = *known
-        && at == generation
-    {
-        return start;
-    }
-    match log
-        .generations()
-        .iter()
-        .rev()
-        .find(|epoch| epoch.generation == generation)
-    {
-        Some(epoch) => {
-            *known = Some((generation, epoch.start_offset));
-            epoch.start_offset
-        }
-        None => u64::MAX,
-    }
+    let first = match *known {
+        Some((at, start)) if at == generation => start,
+        _ => match log
+            .generations()
+            .iter()
+            .rev()
+            .find(|epoch| epoch.generation == generation)
+        {
+            Some(epoch) => {
+                *known = Some((generation, epoch.start_offset));
+                epoch.start_offset
+            }
+            None => return u64::MAX,
+        },
+    };
+    // Not cached: a stint begins while the generation stays the same.
+    log.stint_start(generation)
+        .map_or(first, |stint| stint.max(first))
 }
 
 /// What a pass does with exchanges still under way once its mark is out.
@@ -587,7 +595,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
             promised.max(inherited.min(tail))
         }
     };
-    // The pending set's generation, once this generation's start record is
+    // The pending set's generation, once this stint's start record is
     // acknowledged: on both majorities, since `held_offset` counts both.
     let joint_start = |tail: u64, followers: &[FollowerCursor]| {
         let change = pending?;

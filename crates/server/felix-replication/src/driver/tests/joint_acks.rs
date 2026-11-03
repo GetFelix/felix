@@ -283,3 +283,85 @@ async fn a_report_lists_the_followers_holding_the_generations_start() {
         assert_eq!(report.holds_start, expected, "identified: {identified}");
     }
 }
+
+/// Answers every batch, but `lagging` nodes hold the log only up to `upto`.
+struct Lagging {
+    lagging: &'static [&'static str],
+    upto: u64,
+}
+
+impl PeerRequester for Lagging {
+    async fn request(
+        &self,
+        node_id: &str,
+        _addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, PeerError> {
+        let (InternalMessage::ReplicateRecords(batch)
+        | InternalMessage::ReplicateMarkedRecords(batch)) = message
+        else {
+            panic!("the driver sent something other than a replication batch");
+        };
+        let end = batch.first_offset + batch.payloads.len() as u64;
+        Ok(InternalMessage::ReplicateOk(ReplicateOk {
+            correlation_id: 0,
+            durable_offset: if self.lagging.contains(&node_id) {
+                end.min(self.upto)
+            } else {
+                end
+            },
+            learner: false,
+        }))
+    }
+
+    fn recorded_capabilities(&self, _node_id: &str) -> Option<PeerCapabilities> {
+        Some(PeerCapabilities::ELECTION)
+    }
+
+    fn offers_election(&self) -> bool {
+        true
+    }
+}
+
+/// **The joint start counts from the current stint's start record (#1787).**
+/// The leader was elected at generation 4 and wrote its start record at 0,
+/// then a write at 3 that its earlier passes acknowledged on {a, b} of the
+/// old set. A cut-over named it at 4 again with the set {a, c, d}, and its
+/// new stint wrote a start record at 4. `c` and `d` joined holding the log
+/// up to, not including, the write at 3. `b` is outside the new set, so this leader no
+/// longer ships to it and counts nothing for it here. The first start is on
+/// both majorities and the write is not on the new one, so no joint start
+/// may be reported: the flip would leave the write on one copy of the new
+/// set.
+#[tokio::test]
+async fn the_joint_start_waits_for_the_current_stints_start() {
+    let router = route(&["broker-c", "broker-d"], Some(OLD));
+    for (lagging, expected) in [(&["broker-c", "broker-d"][..], None), (&[][..], Some(5))] {
+        let (broker, _dir) = quorum_leader(0, 4).await;
+        let log = broker
+            .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+            .await
+            .expect("log");
+        assert_eq!(log.append_generation_start(4).await.expect("start"), 0);
+        for record in ["r1", "r2", "w"] {
+            log.append(&[Bytes::from(record)]).await.expect("append");
+        }
+        assert_eq!(log.append_generation_start(4).await.expect("start"), 4);
+
+        let pass = replicate_once(
+            &Lagging { lagging, upto: 3 },
+            &broker,
+            &router,
+            &marks(true),
+            None,
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+        )
+        .await;
+
+        let report = pass.reports.first().expect("a report");
+        assert_eq!(report.joint_start_acked, expected, "lagging: {lagging:?}");
+    }
+}
