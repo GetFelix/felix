@@ -262,7 +262,7 @@ the poll interval and a burst of requests whenever many consumers start at once.
 
 ### How Felix differs
 
-etcd has multi-key transactions, linearizable reads by default, a global revision across all keys and years of Kubernetes production use. If a change must commit atomically across several keys, or you already run etcd for a few hundred watchers, use etcd. Felix is built for the other end of the problem: many watchers of a small keyspace. Each watcher has a bounded queue, and a slow one is ended with a resume offset instead of holding up the writer. The measured numbers are in the section above. Counts above 500 watchers have not been measured.
+etcd has multi-key transactions, linearizable reads by default, a global revision across all keys and years of Kubernetes production use. If a change must commit atomically across several keys, or you already run etcd for a few hundred watchers, use etcd. Felix is built for the other end of the problem: many watchers of a small keyspace. Each watcher has a bounded queue, and a slow one is ended with a resume offset instead of holding up the writer. The measured numbers are in the example earlier on this page. Counts above 500 watchers have not been measured.
 
 Consul's watches are blocking queries: the client long-polls with the last index it saw and makes a new request per change. They work well through the local agent and suit service discovery. A Felix watch is one stream per consumer that carries each change as it happens and resumes at an offset, so a change costs no new request.
 
