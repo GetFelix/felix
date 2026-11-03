@@ -1,12 +1,16 @@
 ---
 title: "felixd example workloads"
-description: "Six complete felixd workloads that compile against contract 0.2: usage metering, an order lifecycle, idempotency keys, fraud scoring, a tumbling-window aggregate and a simulation. Each has its spec, its code, and how to submit it and read its outputs."
+description: "Six complete felixd workloads that compile against contract 0.3: usage metering, an order lifecycle, idempotency keys, fraud scoring, a tumbling-window aggregate and a simulation. Each has its spec, its code, and how to submit it and read its outputs."
 ---
 
 Each example below is a whole workload: the code, the spec it runs under, and the
-commands to submit it and read what it produces. They are in the
-`workloads/` directory of the [felixd repository](https://github.com/GetFelix/felixd)
-and build against [contract 0.2](/built-on-felix/felixd/contract/). Read
+commands to submit it and read what it produces. They build against
+[contract 0.3](/built-on-felix/felixd/contract/); each compiles as written. The
+tumbling-window example is `workloads/window` in the
+[felixd repository](https://github.com/GetFelix/felixd), whose copy is built against 0.2,
+and the bindings path here, `wit/0.3`, is the only change. The other five are written for
+this page. To build one, make a crate like `workloads/counter` (a `cdylib` that depends on
+`wit-bindgen`) in the `workloads/` directory, add it to `members` in `workloads/Cargo.toml`, and put the code in its `src/lib.rs`. Read
 [Submitting work](/built-on-felix/felixd/submitting-work/) first for what `felixd run`
 does step by step.
 
@@ -106,7 +110,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 wit_bindgen::generate!({
-    path: "../../wit",
+    path: "../../wit/0.3",
     world: "workload",
 });
 
@@ -278,7 +282,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 wit_bindgen::generate!({
-    path: "../../wit",
+    path: "../../wit/0.3",
     world: "workload",
 });
 
@@ -481,7 +485,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeSet, VecDeque};
 
 wit_bindgen::generate!({
-    path: "../../wit",
+    path: "../../wit/0.3",
     world: "workload",
 });
 
@@ -654,7 +658,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
 
 wit_bindgen::generate!({
-    path: "../../wit",
+    path: "../../wit/0.3",
     world: "workload",
 });
 
@@ -854,7 +858,7 @@ felixd run --id window --input readings --snapshot-every 100 --replication-facto
 use std::cell::RefCell;
 
 wit_bindgen::generate!({
-    path: "../../wit",
+    path: "../../wit/0.3",
     world: "workload",
 });
 
@@ -1114,7 +1118,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 wit_bindgen::generate!({
-    path: "../../wit",
+    path: "../../wit/0.3",
     world: "workload",
 });
 
