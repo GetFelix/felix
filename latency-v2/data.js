@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793662630159,
+  "lastUpdate": 1793671153540,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -54648,6 +54648,72 @@ window.BENCHMARK_DATA = {
             "range": "748.56",
             "unit": "us",
             "extra": "trials: 5\nmedian: 566.00\nmean: 904.00\nstdev: 748.56\ncv: 82.80%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5dfb5b11dbe2d951b86ec4177f964f6c2628c241",
+          "message": "test(cluster): a shard-starvation guard for lease renewals at scale (#1760) (#1803)\n\n* test(cluster): a lease canary under bulk shard creation and steady appends (#1760)\n\nWIP: the nightly workflow still carries a temporary push trigger for the proof runs.\n\n* docs: what the shard-starvation test guards and how to read a failure (#1760)\n\n* test(cluster): size the per-PR canary past the driver's pass slots (#1760)\n\n* test(cluster): calibrate the canary's bound and hold the per-PR size until the fixes land (#1760)\n\n* test(cluster): review fixes for the starvation guard (#1760)\n\nStart the baseline after every key is claimed, fail on a panicked renewer\nor a load that never applied, bound the control-plane requests, give the\nnightly steps their own timeouts so a hang is reported, move the cron off\nthe TLA walk's minute, and define the terms the docs used.\n\n* test(cluster): run the starvation guard on every PR now that its fixes are on main (#1760)",
+          "timestamp": "2026-11-02T17:51:03-08:00",
+          "tree_id": "651cb8c25a54bee824d5c041404fa8d8f2968b5a",
+          "url": "https://github.com/GetFelix/felix/commit/5dfb5b11dbe2d951b86ec4177f964f6c2628c241"
+        },
+        "date": 1793671145771,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 111,
+            "range": "1.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 111.00\nmean: 111.80\nstdev: 1.64\ncv: 1.47%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 161,
+            "range": "4.95",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 161.00\nmean: 163.00\nstdev: 4.95\ncv: 3.04%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 215,
+            "range": "285.83",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 215.00\nmean: 334.00\nstdev: 285.83\ncv: 85.58%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 125,
+            "range": "8.43",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 125.00\nmean: 128.00\nstdev: 8.43\ncv: 6.58%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 258,
+            "range": "601.85",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 258.00\nmean: 526.40\nstdev: 601.85\ncv: 114.33%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 386,
+            "range": "1090.15",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 386.00\nmean: 857.40\nstdev: 1090.15\ncv: 127.15%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
