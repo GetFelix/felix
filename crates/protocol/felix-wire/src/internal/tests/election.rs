@@ -493,6 +493,7 @@ fn replicate_ok() -> InternalMessage {
     InternalMessage::ReplicateOk(ReplicateOk {
         correlation_id: 42,
         durable_offset: 1,
+        learner: false,
     })
 }
 

@@ -86,6 +86,7 @@ impl PeerRequester for AcceptingFollower {
                 return Ok(InternalMessage::ReplicateOk(ReplicateOk {
                     correlation_id: 0,
                     durable_offset: batch.first_offset + batch.payloads.len() as u64,
+                    learner: false,
                 }));
             }
             _ => panic!("the driver sent something other than a replication batch"),
@@ -98,6 +99,7 @@ impl PeerRequester for AcceptingFollower {
         Ok(InternalMessage::ReplicateOk(ReplicateOk {
             correlation_id: 0,
             durable_offset,
+            learner: false,
         }))
     }
 }

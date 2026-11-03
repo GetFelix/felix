@@ -144,6 +144,7 @@ mod correlation {
             InternalMessage::ReplicateOk(ReplicateOk {
                 correlation_id: 7,
                 durable_offset: 13,
+                learner: false,
             }),
             InternalMessage::ReplicateError(ReplicateError {
                 correlation_id: 7,

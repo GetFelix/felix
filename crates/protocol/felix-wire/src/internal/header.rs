@@ -206,6 +206,10 @@ pub enum Kind {
     /// The conditional write's outcome and the lease token, or why there is
     /// none.
     LeaseForwardCacheOk = 46,
+    /// `ReplicateOk` from a follower whose copy is a learner. Same body; a
+    /// separate kind so an answer that does not say it is one stays byte for
+    /// byte what an older leader reads.
+    ReplicateLearnerOk = 47,
 }
 
 impl Kind {
@@ -259,6 +263,7 @@ impl Kind {
             44 => Ok(Kind::PreVoteAnswer),
             45 => Ok(Kind::LeaseForwardCacheOp),
             46 => Ok(Kind::LeaseForwardCacheOk),
+            47 => Ok(Kind::ReplicateLearnerOk),
             other => Err(Error::UnsupportedInternalKind(other)),
         }
     }

@@ -53,6 +53,7 @@ impl PeerRequester for Followers {
         Ok(InternalMessage::ReplicateOk(ReplicateOk {
             correlation_id: 0,
             durable_offset: batch.first_offset + batch.payloads.len() as u64,
+            learner: false,
         }))
     }
 
@@ -497,6 +498,7 @@ impl PeerRequester for BehindFollower {
         Ok(InternalMessage::ReplicateOk(ReplicateOk {
             correlation_id: 0,
             durable_offset: batch.first_offset + batch.payloads.len() as u64,
+            learner: false,
         }))
     }
 
@@ -603,6 +605,7 @@ impl PeerRequester for FenceTaker {
                 return Ok(InternalMessage::ReplicateOk(ReplicateOk {
                     correlation_id: 0,
                     durable_offset: batch.first_offset + batch.payloads.len() as u64,
+                    learner: false,
                 }));
             }
             other => panic!("unexpected {other:?}"),

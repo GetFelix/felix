@@ -324,7 +324,7 @@ fn readers_and_writers_do_not_interfere() {
 }
 
 #[test]
-fn replicas_resolve_to_known_nodes_only() {
+fn a_replica_missing_from_the_catalog_keeps_its_place_in_the_route() {
     let nodes = catalog(&[
         node("broker-a", 7001, "us-west-2", true),
         node("broker-b", 7002, "us-west-2", true),
@@ -339,13 +339,32 @@ fn replicas_resolve_to_known_nodes_only() {
         &nodes,
     );
 
+    // Quorums are sized from the route's replicas, so a replica the catalog
+    // does not name must still be counted, just with nowhere to send to.
     let replicas = &table.get(&key(0)).expect("route").replicas;
-    assert_eq!(
-        replicas.len(),
-        1,
-        "an unknown replica has no address to use"
+    let named: Vec<&str> = replicas.iter().map(|r| r.node_id.as_str()).collect();
+    assert_eq!(named, ["broker-b", "broker-ghost"]);
+    assert_eq!(replicas[0].advertise_addr.port(), 7002);
+    assert_eq!(replicas[1].advertise_addr.port(), 0, "no address to dial");
+    assert!(!replicas[1].live);
+}
+
+#[test]
+fn an_empty_catalog_keeps_every_replica() {
+    // The feed publishes before its first catalog read succeeds.
+    let table = RoutingTable::build(
+        [(
+            key(0),
+            "broker-a".to_string(),
+            vec!["broker-b".to_string(), "broker-c".to_string()],
+            1,
+        )],
+        &HashMap::new(),
     );
-    assert_eq!(replicas[0].node_id, "broker-b");
+
+    let route = table.get(&key(0)).expect("route");
+    assert_eq!(route.replicas.len(), 2);
+    assert!(route.replicas.iter().all(|r| r.advertise_addr.port() == 0));
 }
 
 #[test]

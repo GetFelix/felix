@@ -266,6 +266,84 @@ async fn a_batch_shipped_again_after_the_hold_was_dropped_does_not_wedge_publish
     assert_eq!(outcome.offsets, Some((2, 2)));
 }
 
+/// **A move tells its readers to resume at the first batch they were not
+/// offered, even when a generation-start record follows it.** A batch held for
+/// the mark stays on disk and ships to the next owner, which commits it. A
+/// generation change on the same leader writes a start record behind it before
+/// the mark gets there. Told to resume past that record, a reader skips the
+/// batch for good.
+#[tokio::test]
+async fn a_move_resumes_readers_at_a_held_batch_below_a_generation_start() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (broker, _bounds) = broker_with(dir.path(), ReadBound::Committed(1)).await;
+    let mut live = broker
+        .subscribe("t1", "ns", "quorum", 0)
+        .await
+        .expect("subscribe");
+    publish(&broker, "quorum", b"seen").await;
+    assert_eq!(&next(&mut live).await[..], b"seen");
+    let held = publish(&broker, "quorum", b"held").await;
+    assert_eq!(held.offsets, Some((1, 1)));
+
+    let start = broker
+        .append_generation_start("t1", "ns", "quorum", 0, 2)
+        .await
+        .expect("generation start");
+    assert_eq!(start, 2);
+    let handoff = crate::ShardHandoff {
+        node_id: Some("next".to_string()),
+        addr: None,
+        generation: 3,
+    };
+    assert_eq!(
+        broker
+            .end_subscriptions("t1", "ns", "quorum", 0, Some(handoff))
+            .await,
+        1
+    );
+    assert_eq!(broker.discard_uncommitted("t1", "ns", "quorum", 0).await, 1);
+
+    let ended = tokio::time::timeout(Duration::from_secs(5), live.recv())
+        .await
+        .expect("ended in time");
+    assert!(ended.is_none(), "delivered past the mark: {ended:?}");
+    assert_eq!(
+        live.receiver.moved().and_then(|moved| moved.resume_from),
+        Some(1),
+        "the held batch was never offered, so a reader resumes at it"
+    );
+}
+
+/// **A batch held across a generation-start record still goes out, and the
+/// stream carries on past the record.** The record takes its own offset in
+/// the commit order, so the next publish lands after it.
+#[tokio::test]
+async fn a_batch_held_across_a_generation_start_is_released_and_publishes_follow_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (broker, bounds) = broker_with(dir.path(), ReadBound::Committed(0)).await;
+    let mut live = broker
+        .subscribe("t1", "ns", "quorum", 0)
+        .await
+        .expect("subscribe");
+    publish(&broker, "quorum", b"held").await;
+    broker
+        .append_generation_start("t1", "ns", "quorum", 0, 2)
+        .await
+        .expect("generation start");
+
+    bounds.set(ReadBound::Committed(2));
+    release(&broker, "quorum").await;
+    assert_eq!(&next(&mut live).await[..], b"held");
+
+    bounds.set(ReadBound::Unbounded);
+    let outcome =
+        tokio::time::timeout(Duration::from_secs(5), publish(&broker, "quorum", b"after"))
+            .await
+            .expect("the publish waited on a turn nobody holds");
+    assert_eq!(outcome.offsets, Some((2, 2)));
+    assert_eq!(&next(&mut live).await[..], b"after");
+}
+
 /// **A resume joins at the committed mark, not at the tail**, and history is
 /// read only up to the mark, waiting for it to move.
 #[tokio::test]

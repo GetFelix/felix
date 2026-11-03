@@ -62,6 +62,12 @@ pub struct FollowerCursor {
     /// generation. An elected leader sends it the candidate fence again, since
     /// no control-plane route will carry that generation to it.
     pub(crate) route_behind: bool,
+    /// The follower's last stored answer said its copy is a learner
+    /// ([`ReplicateOk::learner`]): it lost what it promised before a wipe, so
+    /// it counts toward no mark until an answer without the flag arrives.
+    ///
+    /// [`ReplicateOk::learner`]: felix_wire::internal::ReplicateOk::learner
+    pub learner: bool,
 }
 
 impl FollowerCursor {
@@ -80,7 +86,14 @@ impl FollowerCursor {
             storage_id: None,
             incarnation: Incarnation::Unsent,
             route_behind: false,
+            learner: false,
         }
+    }
+
+    /// Whether this follower's `confirmed` counts toward a mark: not while it
+    /// is halted, nor while its copy is a learner.
+    pub fn counts(&self) -> bool {
+        self.halted.is_none() && !self.learner
     }
 
     /// The identity this cursor's positions were learned under.

@@ -150,6 +150,7 @@ async fn control_loop_cache_get_missing_scope_with_request_id_continues() -> Res
 }
 
 #[tokio::test]
+#[serial]
 async fn control_loop_cache_put_records_timing_and_ack() -> Result<()> {
     let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
     broker.register_tenant("t1").await?;

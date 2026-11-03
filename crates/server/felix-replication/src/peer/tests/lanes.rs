@@ -10,7 +10,7 @@ use crate::peer::codec::{Incoming, read_frame, write_frame};
 /// The `first_offset` that makes [`Stalls`] never answer.
 const STALL: u64 = 999;
 
-fn record(correlation_id: u64, first_offset: u64) -> InternalMessage {
+pub(super) fn record(correlation_id: u64, first_offset: u64) -> InternalMessage {
     InternalMessage::ReplicateRecords(ReplicateRecords {
         times: None,
         correlation_id,
@@ -41,6 +41,7 @@ impl PeerRequestHandler for Stalls {
         InternalMessage::ReplicateOk(ReplicateOk {
             correlation_id: request.correlation_id(),
             durable_offset: 1,
+            learner: false,
         })
     }
 }
@@ -98,7 +99,7 @@ async fn a_stalled_handler_does_not_wedge_replication_on_its_connection() {
 
 /// Connect to `listener` and say hello offering `capabilities`, the way a
 /// requester of either age does.
-async fn greet(
+pub(super) async fn greet(
     connection: &felix_transport::QuicConnection,
     capabilities: Option<PeerCapabilities>,
 ) -> (quinn::SendStream, quinn::RecvStream) {
@@ -116,7 +117,7 @@ async fn greet(
     (send, recv)
 }
 
-async fn connect(listener: &Listener) -> felix_transport::QuicConnection {
+pub(super) async fn connect(listener: &Listener) -> felix_transport::QuicConnection {
     let client = QuicClient::bind(
         "127.0.0.1:0".parse().expect("addr"),
         crate::peer::tls::client_config(None).expect("client config"),
@@ -149,6 +150,7 @@ impl PeerRequestHandler for Slow {
         InternalMessage::ReplicateOk(ReplicateOk {
             correlation_id: request.correlation_id(),
             durable_offset: 1,
+            learner: false,
         })
     }
 }
