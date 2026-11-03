@@ -335,6 +335,54 @@ async fn a_restarted_elected_leader_keeps_the_set_it_was_elected_on() {
     );
 }
 
+/// A broker whose shard waits for the promotion fence of a lease takeover.
+struct Promoting;
+
+impl WriteFence for Promoting {
+    fn quiesced(&self, _key: &crate::ShardKey) -> bool {
+        true
+    }
+
+    fn opened_since(&self, _key: &crate::ShardKey, _generation: u64) -> bool {
+        false
+    }
+
+    fn promoting(&self, _key: &crate::ShardKey, _generation: u64) -> bool {
+        true
+    }
+}
+
+/// **A leader promoted on the lease does not stamp the set it took over.**
+/// It holds the old leader's set of 3 on the same members while its fence at
+/// 4 runs, and its gate has not opened. That is not a restarted elected
+/// leader: stamping 3 would send the old set to the old leader as a fence.
+#[tokio::test]
+async fn a_leader_promoted_on_the_lease_does_not_stamp_the_set_below() {
+    let (broker, _dir) = quorum_leader(3, 4).await;
+    let log = stream_log(&broker).await;
+    log.accept_generation(3, Some("broker-b"))
+        .await
+        .expect("ballot");
+    log.accept_set(set_of_three(3))
+        .await
+        .expect("the old leader's set");
+    log.accept_generation(4, Some(LOCAL))
+        .await
+        .expect("its own ballot");
+    let followers = Followers::new(true, &["broker-b", "broker-c"]);
+
+    pass_with(&followers, &broker, &follower_ack_marks(), &Promoting).await;
+
+    assert!(
+        followers
+            .stamps()
+            .iter()
+            .all(|(_, stamp)| *stamp != Some(3)),
+        "a lease promotion stamped an older set: {:?}",
+        followers.stamps()
+    );
+}
+
 /// **An elected leader the control plane adopted keeps the set it was
 /// elected on.** It stood at 4 on the set of 3 and opened once its fence
 /// finished; the control plane then named it at 4, which drops the election's

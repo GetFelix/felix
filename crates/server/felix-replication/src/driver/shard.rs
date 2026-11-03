@@ -495,14 +495,16 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     // elected on them before a restart: a fence at this generation would have
     // kept the set at it, and the election lived in memory. So was one opened
     // here on this broker's standing that the control plane has since
-    // adopted. A promotion that opened on the lease is neither, and keeps
-    // the route's set below. That set is kept and stamped as it is, or this broker
-    // alone would count a newer set and refuse the next leader elected on the
-    // old one. A shard opened here unfenced at the route's generation is a
-    // plain bump on the same members and keeps the new set, or no later
-    // promotee could fence it.
+    // adopted. That set is kept and stamped as it is, or this broker alone
+    // would count a newer set and refuse the next leader elected on the old
+    // one. A promotion on the lease is neither: its gate stays shut until its
+    // fence finishes, so it has not opened at the route's generation either,
+    // and it never stamps the set below. A shard opened here unfenced at the
+    // route's generation is a plain bump on the same members and keeps the
+    // new set, or no later promotee could fence it.
     let elected_on_route_set = elected.is_none()
-        && (!fence.opened_since(mark_key, route.generation)
+        && ((!fence.opened_since(mark_key, route.generation)
+            && !fence.promoting(mark_key, route.generation))
             || marks.elections().is_some_and(|elections| {
                 elections.opened_elected(key, route.generation, route.incarnation)
             }))
