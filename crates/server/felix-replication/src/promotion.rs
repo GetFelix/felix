@@ -423,9 +423,10 @@ pub(crate) async fn refence<R: PeerRequester>(
 /// Send a named leader's joint fence again to one follower that missed it.
 /// A batch teaches no set being left that the follower cannot read from its
 /// own routing view, so without this a follower that was down for the fence
-/// refuses every batch until the next generation. The set this leader keeps at
-/// the shard's generation is sent as it is, with or without a set being left,
-/// so the follower keeps what the leader keeps.
+/// refuses every batch until the next generation. The set this leader keeps is
+/// sent as it is, with or without a set being left, so the follower keeps what
+/// the leader keeps. It may be older than the shard's generation: an elected
+/// leader that restarted keeps the set it was fenced on and no standing.
 pub(crate) async fn refence_kept<R: PeerRequester>(
     requester: &R,
     node_id: &str,
@@ -434,7 +435,7 @@ pub(crate) async fn refence_kept<R: PeerRequester>(
     kind: LogKind,
     kept: Option<&felix_storage::disk_log::ReplicaSet>,
 ) -> bool {
-    let Some(kept) = kept.filter(|kept| kept.current.generation == shard.generation) else {
+    let Some(kept) = kept.filter(|kept| kept.current.generation <= shard.generation) else {
         return false;
     };
     let election = FenceElection {
