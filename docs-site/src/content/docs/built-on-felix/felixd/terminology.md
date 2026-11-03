@@ -41,7 +41,7 @@ A component as stored. Its sha256 in hex is its identity, and it is kept in the
 
 The WebAssembly Interface Type language that describes a component's imports and
 exports. The workload contract is written in WIT, in
-[`wit/workload.wit`](https://github.com/GetFelix/felixd/blob/main/wit/workload.wit).
+[`wit/workload.wit`](https://github.com/GetFelix/felixd/blob/main/wit/0.2/workload.wit).
 
 ### Contract
 
@@ -105,8 +105,8 @@ an error code and detail. See
 
 The result of a step that returns `poison`, which says the workload cannot go on.
 The word also names the class of failure that comes from an input the workload
-deterministically fails on. It fails the workload and is not retried. A recorded
-way past a poison input is not built ([#98](https://github.com/GetFelix/felixd/issues/98)).
+deterministically fails on. It fails the workload and is not retried. There is no recorded
+way past a poison input ([#98](https://github.com/GetFelix/felixd/issues/98)).
 
 ### Contract failure
 
@@ -124,16 +124,16 @@ out of bounds access. A trap fails the workload. Running out of fuel is a trap.
 
 A workload that no node can run through no fault of its own and that a person has to
 fix: a module built against contract 0.1, or a restore that ran out of
-`snapshot_fuel`. It is not marked failed. Today it is a logged error on the agent,
-and the agent leaves the workload alone until its spec changes. It is not yet a
-recorded state ([#112](https://github.com/GetFelix/felixd/issues/112)).
+`snapshot_fuel`. It is not marked failed. The node writes a needs-operator
+record, with a reason, to the output stream and releases the lease. `felixd ps`
+shows it, and no node runs the workload until its spec changes.
 
 ### Failed and degraded
 
 `failed` is a value of a spec's `state`. A holder writes it after the failure is
 recorded on the output stream, and it stays until `felixd run` writes a new spec.
-`degraded` is a design idea for a workload that keeps failing on every node, to be
-recorded after a bounded number of takeovers. It does not exist
+`degraded` is recorded when a node keeps failing on a transient error and releases
+the workload so another node can try. Counting that across the cluster is not built
 ([#99](https://github.com/GetFelix/felixd/issues/99)). See
 [When a workload fails](/built-on-felix/felixd/how-it-works/#when-a-workload-fails).
 
@@ -363,7 +363,8 @@ workload that returns a request fails
 
 The component that would perform an effect and answer it. It would use the request's
 id, which is the output header, as an idempotency key, and refuse a request whose
-epoch is below the highest it has seen. Not built.
+epoch is below the highest it has seen. No executor exists yet
+([#71](https://github.com/GetFelix/felixd/issues/71)).
 
 ### NineLives
 

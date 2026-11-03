@@ -9,9 +9,13 @@ takes 24 minutes. Everything that happens is written to Felix, so you can drag
 the timeline back to any moment the log still holds, see the city exactly as it
 was, and let it play forward until it catches up with live.
 
-It is in design. The [style frame](https://github.com/GetFelix/felix-metro/blob/main/prototype/style-frame.html)
-fixes the look, and nothing is simulated yet. The sections below describe the
-design.
+It is playable. A simulator steps the city and the browser draws it live. You
+can drag the timeline back through the hours the log still holds, play the past
+forward and rejoin live with no gap, follow one resident through their day, and
+sign in as a builder to put up buildings and lay roads. Zones are not built yet,
+and the page has no way to fork a city yet, although the simulator can. The
+[README](https://github.com/GetFelix/felix-metro#readme) has the controls and a
+quick start. The sections below describe how it works.
 
 | Day | Night |
 |---|---|
@@ -65,10 +69,9 @@ flowchart LR
   EV -- "range reads to go back, subscribe to play forward" --> G
 ```
 
-Browsers reach Felix through [felix-gateway](/clients/browsers/), which already
-offers `read` and `state_get`. Seeking by time would be one lookup per district
-if the gateway exposed `offset_for_time`; that is on the project's list for
-felix-gateway.
+Browsers reach Felix through [felix-gateway](/clients/browsers/), which offers
+`read`, `state_get` and `offset_for_time`, so seeking by time is one lookup per
+district.
 
 ## What it demonstrates
 
@@ -76,10 +79,10 @@ felix-gateway.
 - **Seeking that stays fast.** A keyframe every city hour bounds a seek to one keyframe and an hour of events per district.
 - **Rewind, then follow live with no gap**, across many shards at once.
 - **One writer per city**, fenced at the broker by expected-offset commits.
-- **Forks from the past.** A branch timeline starts from a keyframe of the parent and owes it nothing after that.
+- **Forks from the past.** A branch timeline starts from a keyframe of the parent and owes it nothing after that. The simulator forks a city this way; the page does not offer it yet.
 
 ## More
 
 - [README](https://github.com/GetFelix/felix-metro#readme)
-- [Design](https://github.com/GetFelix/felix-metro/blob/main/docs/design.md): the data model, seeking, branching and the build order
+- [Design](https://github.com/GetFelix/felix-metro/blob/main/docs/design.md): the data model, seeking, branching and what is still to build
 - [Art direction](https://github.com/GetFelix/felix-metro/blob/main/docs/art.md): the asset packs and the style frame

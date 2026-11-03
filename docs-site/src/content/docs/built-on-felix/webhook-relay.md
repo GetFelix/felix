@@ -40,9 +40,9 @@ lapses stays with the task that holds it. Because a lapsed claim goes back to
 the group, a delivery worker waits out the group's visibility timeout before
 its first poll after starting.
 
-The relay is built on Felix 0.6.0-preview.2. Felix 0.6.0-preview.3 added
-[extending a claim and nacking with a delay](/features/queues/#long-work-backoff-and-giving-up-yourself),
-which would let a consumer like this hand backoff to the broker.
+The relay keeps retry timing itself instead of using Felix's
+[claim extension and delayed nack](/features/queues/#long-work-backoff-and-giving-up-yourself),
+which would let the broker hold the backoff.
 
 A record the endpoint refuses for good is appended to the relay's own `dead`
 stream and then acked. Records Felix itself dead-letters after
