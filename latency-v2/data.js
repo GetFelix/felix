@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793713455540,
+  "lastUpdate": 1793716902839,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -55440,6 +55440,72 @@ window.BENCHMARK_DATA = {
             "range": "40.23",
             "unit": "us",
             "extra": "trials: 5\nmedian: 521.00\nmean: 533.60\nstdev: 40.23\ncv: 7.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "56150009c6e89fb002564d96a3e4f982b4d200fb",
+          "message": "docs(formal): the flip waits for the named stint's start (#1787) (#1840)\n\nSpec half of #1787; the code fix is #1831. Merge after #1831: the two new configurations cite tests it adds\n(`the_joint_start_waits_for_the_current_stints_start`, `a_new_stint_at_a_started_generation_writes_its_own_start`),\nso `docs:evidence` fails here until it lands.\n\nA broker elected at a generation and then named at that same generation by a cut-over opens there twice. The\nflip (`joint_start`) used to take the generation's first start record, which is the elected stint's. So it could\nfire before the named stint's start was held on both majorities, and a write acknowledged in the elected stint\ncould end up on only the destination in the new set.\n\n## What changed\n- `JoinLags`: a copy joining in a cut-over holds any prefix of the destination's log, not necessarily all of it. A\n  top-up copy (`choose_replicas` in placement/moves.rs) is not checked for what it holds. This is what makes the\n  gap reachable. With the old atomic copy, the existing configurations pass.\n- `FelixShardElectSwapFlipJoinLagsFirstStart.cfg` (the flip takes the generation's first start) violates\n  `AckedOnMajority` (about 132K distinct states, a few seconds). It is registered.\n- `StintStarts`: opening again at a generation already started begins a new stint with its own start record.\n  The flip waits for that stint's start, as `own_start` in driver/shard.rs counts from the current stint's start.\n  Under `JoinLags` the first start must be held on majorities of both the pending and the recorded set\n  (`StartAcked`), as `joint_start` checks.\n- `FelixShardElectSwapFlipJoinLags.cfg` is the pass. It is not exhaustive in 5 minutes (3.28M distinct, depth 25,\n  clean), so it runs in the nightly exhaustive job (`tla-walk.yml`).\n- docs/formal/README.md rows and the switch descriptions.\n\nWithout `StintStarts` and `JoinLags`, `StartAcked` is the old guard (first start under the hwm), so every other\nconfiguration keeps its state counts (checked: Elect 312,474; ElectSwapFlip `StoodSeveralOther` 694).\n\n## Design calls\n- `StintStarts` is used only where `JoinLags` is on. Turning it on elsewhere changed state counts without\n  finding anything.\n- `Readmitted` and `CpAdmit` still accept any start record at the generation. The configurations with\n  `StintStarts` have no wipes.",
+          "timestamp": "2026-11-03T06:38:01-08:00",
+          "tree_id": "bb76008d6d78607879352011299277def7755253",
+          "url": "https://github.com/GetFelix/felix/commit/56150009c6e89fb002564d96a3e4f982b4d200fb"
+        },
+        "date": 1793716897128,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 66,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 66.00\nmean: 65.80\nstdev: 0.45\ncv: 0.68%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 94,
+            "range": "9.86",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 94.00\nmean: 99.60\nstdev: 9.86\ncv: 9.90%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 154,
+            "range": "350.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 154.00\nmean: 302.20\nstdev: 350.55\ncv: 116.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 84,
+            "range": "1.48",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 84.00\nmean: 84.20\nstdev: 1.48\ncv: 1.76%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 174,
+            "range": "5.77",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 174.00\nmean: 176.60\nstdev: 5.77\ncv: 3.27%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 272,
+            "range": "6.04",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 272.00\nmean: 274.00\nstdev: 6.04\ncv: 2.20%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
