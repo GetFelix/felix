@@ -4141,7 +4141,8 @@ acknowledgement is the one it was.
   new set where only the leader holds them
   (`a_flip_waits_for_the_counter_log_on_both_majorities` and
   `a_pending_change_counts_counters_on_both_majorities` in
-  `driver/tests/joint_acks.rs`).
+  `driver/tests/joint_acks.rs`). The model's set-change configurations have
+  no counter log yet.
 - This leader ships to the new set's followers only. A majority of the set
   being left that needs a member outside the new set therefore does not form,
   and the change times out (`FELIX_SHARD_PENDING_SET_TIMEOUT_MS`) and is

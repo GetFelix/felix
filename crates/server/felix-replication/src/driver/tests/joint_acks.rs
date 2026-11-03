@@ -3,7 +3,7 @@
 //! set (rule 8 of "Electing without the control plane"), and the leader
 //! reports its generation-start record once that is so.
 
-use felix_common::fleet::{FleetGate, GENERATION_START, JOINT_FENCE, MAJORITY_ACK};
+use felix_common::fleet::{FENCED_CACHES, FleetGate, GENERATION_START, JOINT_FENCE, MAJORITY_ACK};
 use felix_router::PendingChange;
 use felix_wire::internal::PeerCapabilities;
 
@@ -49,9 +49,17 @@ impl PeerRequester for Answers {
 }
 
 fn marks(joint_fence: bool) -> QuorumMarks {
+    marks_for_caches(joint_fence, false)
+}
+
+/// [`marks`], and with `fenced_caches` when `by_followers` says so: a cache's
+/// marks are then decided by its followers' answers, as in a fleet where a
+/// cache can have a pending set at all.
+fn marks_for_caches(joint_fence: bool, by_followers: bool) -> QuorumMarks {
     let names: Vec<&str> = [GENERATION_START, MAJORITY_ACK]
         .iter()
         .chain(joint_fence.then_some(&JOINT_FENCE))
+        .chain(by_followers.then_some(&FENCED_CACHES))
         .map(|feature| feature.name())
         .collect();
     let fleet = FleetGate::new(names.clone());
@@ -448,27 +456,30 @@ async fn cache_cut_over(marks: &QuorumMarks) -> (Arc<Broker>, tempfile::TempDir)
 /// take {a, c, d}, where only `a` holds the updates.
 #[tokio::test]
 async fn a_flip_waits_for_the_counter_log_on_both_majorities() {
-    let marks = marks(true);
-    let (broker, _dir) = cache_cut_over(&marks).await;
-    let router = cache_route(&["broker-c", "broker-d"], 5, Some(OLD));
+    for by_followers in [false, true] {
+        let marks = marks_for_caches(true, by_followers);
+        let (broker, _dir) = cache_cut_over(&marks).await;
+        let router = cache_route(&["broker-c", "broker-d"], 5, Some(OLD));
 
-    let (mark, _, started) = cache_pass(
-        CacheAnswers {
-            cache: &["broker-c", "broker-d"],
-            counters: &[],
-        },
-        &broker,
-        &router,
-        &marks,
-        5,
-    )
-    .await;
+        let (mark, _, started) = cache_pass(
+            CacheAnswers {
+                cache: &["broker-c", "broker-d"],
+                counters: &[],
+            },
+            &broker,
+            &router,
+            &marks,
+            5,
+        )
+        .await;
 
-    assert_eq!(
-        started, None,
-        "the start was reported with the counter log on no follower of the new set"
-    );
-    assert_eq!(mark, 0);
+        assert_eq!(
+            started, None,
+            "the start was reported with the counter log on no follower of the new set \
+             (by_followers: {by_followers})"
+        );
+        assert_eq!(mark, 0, "by_followers: {by_followers}");
+    }
 }
 
 /// **Counter updates wait for both majorities while a change is pending**, as
@@ -476,51 +487,55 @@ async fn a_flip_waits_for_the_counter_log_on_both_majorities() {
 /// only.
 #[tokio::test]
 async fn a_pending_change_counts_counters_on_both_majorities() {
-    let marks = marks(true);
-    let (broker, _dir) = cache_cut_over(&marks).await;
-    let router = cache_route(&["broker-c", "broker-d"], 5, Some(OLD));
+    for by_followers in [false, true] {
+        let marks = marks_for_caches(true, by_followers);
+        let (broker, _dir) = cache_cut_over(&marks).await;
+        let router = cache_route(&["broker-c", "broker-d"], 5, Some(OLD));
 
-    let (mark, tail, started) = cache_pass(
-        CacheAnswers {
-            cache: &["broker-c", "broker-d"],
-            counters: &["broker-d"],
-        },
-        &broker,
-        &router,
-        &marks,
-        5,
-    )
-    .await;
+        let (mark, tail, started) = cache_pass(
+            CacheAnswers {
+                cache: &["broker-c", "broker-d"],
+                counters: &["broker-d"],
+            },
+            &broker,
+            &router,
+            &marks,
+            5,
+        )
+        .await;
 
-    assert!(
-        mark < tail,
-        "a counter update was acknowledged on the new set alone"
-    );
-    assert_eq!(started, None);
+        assert_eq!(
+            mark, 0,
+            "a counter update was acknowledged on the new set alone ({tail} in the log, by_followers: {by_followers})"
+        );
+        assert_eq!(started, None, "by_followers: {by_followers}");
+    }
 }
 
 /// **With the counters on both majorities the start is reported.** `c` is in
 /// both sets and holds both logs.
 #[tokio::test]
 async fn a_flip_follows_the_counter_log_on_both_majorities() {
-    let marks = marks(true);
-    let (broker, _dir) = cache_cut_over(&marks).await;
-    let router = cache_route(&["broker-c", "broker-d"], 5, Some(OLD));
+    for by_followers in [false, true] {
+        let marks = marks_for_caches(true, by_followers);
+        let (broker, _dir) = cache_cut_over(&marks).await;
+        let router = cache_route(&["broker-c", "broker-d"], 5, Some(OLD));
 
-    let (mark, tail, started) = cache_pass(
-        CacheAnswers {
-            cache: &["broker-c"],
-            counters: &["broker-c"],
-        },
-        &broker,
-        &router,
-        &marks,
-        5,
-    )
-    .await;
+        let (mark, tail, started) = cache_pass(
+            CacheAnswers {
+                cache: &["broker-c"],
+                counters: &["broker-c"],
+            },
+            &broker,
+            &router,
+            &marks,
+            5,
+        )
+        .await;
 
-    assert_eq!(mark, tail);
-    assert_eq!(started, Some(5));
+        assert_eq!(mark, tail, "by_followers: {by_followers}");
+        assert_eq!(started, Some(5), "by_followers: {by_followers}");
+    }
 }
 
 /// **A pending change a leader cannot count acknowledges no counter update.**
@@ -528,21 +543,23 @@ async fn a_flip_follows_the_counter_log_on_both_majorities() {
 /// the counters either.
 #[tokio::test]
 async fn without_joint_fence_a_pending_change_acknowledges_no_counter_update() {
-    let marks = marks(false);
-    let (broker, _dir) = cache_cut_over(&marks).await;
-    let router = cache_route(&["broker-c", "broker-d"], 5, Some(OLD));
+    for by_followers in [false, true] {
+        let marks = marks_for_caches(false, by_followers);
+        let (broker, _dir) = cache_cut_over(&marks).await;
+        let router = cache_route(&["broker-c", "broker-d"], 5, Some(OLD));
 
-    let (mark, _, _) = cache_pass(
-        CacheAnswers {
-            cache: &["broker-c", "broker-d"],
-            counters: &["broker-c", "broker-d"],
-        },
-        &broker,
-        &router,
-        &marks,
-        5,
-    )
-    .await;
+        let (mark, _, _) = cache_pass(
+            CacheAnswers {
+                cache: &["broker-c", "broker-d"],
+                counters: &["broker-c", "broker-d"],
+            },
+            &broker,
+            &router,
+            &marks,
+            5,
+        )
+        .await;
 
-    assert_eq!(mark, 0);
+        assert_eq!(mark, 0, "by_followers: {by_followers}");
+    }
 }
