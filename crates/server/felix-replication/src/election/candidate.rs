@@ -75,7 +75,7 @@ struct Ctx<R> {
     suspects: Arc<Suspects>,
     /// Why each shard last could not stand, so the reason is logged once
     /// when it changes rather than every round.
-    held_back: std::sync::Mutex<HashMap<ShardKey, &'static str>>,
+    held_back: std::sync::Mutex<HashMap<ShardKey, (&'static str, String)>>,
     /// Test-only: while this file exists, a pre-vote waits before it asks,
     /// so a test can release two candidates' rounds together.
     pre_vote_gate: Option<std::path::PathBuf>,
@@ -88,12 +88,13 @@ impl<R> Ctx<R> {
     }
 
     fn held_back(&self, key: &ShardKey, why: &'static str, answers: &str) {
+        let seen = (why, answers.to_string());
         let changed = self
             .held_back
             .lock()
             .expect("held_back lock")
-            .insert(key.clone(), why)
-            != Some(why);
+            .insert(key.clone(), seen.clone())
+            != Some(seen);
         if changed {
             tracing::info!(
                 stream = %key.stream,
@@ -156,6 +157,7 @@ async fn run<R: PeerRequester + Send + Sync + 'static>(
                     match round {
                         Round::Opened => {
                             backoff.remove(&key);
+                            ctx.held_back.lock().expect("held_back lock").remove(&key);
                         }
                         Round::Failed => backoff.entry(key).or_default().failed(),
                         Round::Ineligible => backoff.entry(key).or_default().wait(INELIGIBLE_FOR),
@@ -175,6 +177,8 @@ async fn run<R: PeerRequester + Send + Sync + 'static>(
         let now = Instant::now();
         backoff.retain(|_, backoff| !backoff.idle(now));
         if names.is_empty() {
+            // The next outage says again why a shard does not stand.
+            ctx.held_back.lock().expect("held_back lock").clear();
             continue;
         }
         let local = ctx.router.local_node_id();
@@ -235,7 +239,10 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
 ) -> Round {
     let local = ctx.router.local_node_id();
     let Some(log) = eligible_log(ctx, key).await else {
-        return ctx.ineligible(key, "the shard does not acknowledge on its followers");
+        return ctx.ineligible(
+            key,
+            "the shard does not acknowledge on its followers, or its log is not open here",
+        );
     };
     let Some(kept) = log.replica_set() else {
         return ctx.ineligible(key, "this copy keeps no replica set");
