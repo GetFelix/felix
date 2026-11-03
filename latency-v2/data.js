@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793671678293,
+  "lastUpdate": 1793674561275,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -54780,6 +54780,72 @@ window.BENCHMARK_DATA = {
             "range": "652.81",
             "unit": "us",
             "extra": "trials: 5\nmedian: 560.00\nmean: 984.60\nstdev: 652.81\ncv: 66.30%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c4066158de9ea4d106a497ec36dfdb174cf5a649",
+          "message": "docs: split the Rust client guide, add error and auth pages, fix client examples (#1822)\n\n* docs: split the Rust client guide, add error and auth pages, fix client examples\n\nRename the leftover cluster variable to client in the Rust and resilient-client\nexamples, and in the harness that compiles them. Split rust.md into topic pages\nand teach the examples harness to read a page made of several files. Add\nErrors Across Clients and Auth and TLS pages, a browser-gateway comparison,\nreplay and record-header notes, mTLS-is-Rust-only notes, the Python reconnect\noptions, and preview install notes.\n\n* test: let auto-deref pass the file name\n\n* docs: address review of the client pages\n\n* test: discover the Rust guide pages instead of listing them\n\n* docs: address review of the client pages (install pins, API table, errors wording, sidebar order)\n\n* docs: one link list on the Rust setup page and the API table inside Quick Start\n\n* test: re-bless the Rust client doc snippets after the page split",
+          "timestamp": "2026-11-02T18:40:03-08:00",
+          "tree_id": "c2904ed5e545b57908ce64a74944fc1498db456e",
+          "url": "https://github.com/GetFelix/felix/commit/c4066158de9ea4d106a497ec36dfdb174cf5a649"
+        },
+        "date": 1793674555314,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 89,
+            "range": "2.39",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 89.00\nmean: 89.80\nstdev: 2.39\ncv: 2.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 120,
+            "range": "3.56",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 120.00\nmean: 120.80\nstdev: 3.56\ncv: 2.95%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 152,
+            "range": "45.82",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 152.00\nmean: 170.80\nstdev: 45.82\ncv: 26.82%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 106,
+            "range": "3.27",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 106.00\nmean: 107.20\nstdev: 3.27\ncv: 3.05%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 220,
+            "range": "9.15",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 220.00\nmean: 221.20\nstdev: 9.15\ncv: 4.14%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 312,
+            "range": "27.51",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 312.00\nmean: 316.20\nstdev: 27.51\ncv: 8.70%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
