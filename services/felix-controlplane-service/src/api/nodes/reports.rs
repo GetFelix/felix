@@ -501,10 +501,17 @@ async fn adopt_if_elected(
 }
 
 /// Move a shard whose generation the control plane and an election both
-/// claimed to the next one, so it has a leader that can open: the elected
-/// leader on the set it stood on, as adoption would name it, or else the
-/// leader already named. An ordinary promotion with the usual conditional
-/// write; the elected leader steps down on its fence if it is not the one.
+/// claimed to the next one, under the elected leader, so it has a leader that
+/// can open: an ordinary promotion of a member of the control plane's set,
+/// with the conditional, placement-fenced write placement uses.
+///
+/// Only the elected leader is named. It opened at the collided generation, so
+/// its log holds everything acknowledged up to it, whichever set acknowledged
+/// it. Another member fencing only a majority of the control plane's set
+/// could miss records the elected leader acknowledged on its own set when the
+/// two differ. Left alone while a change is pending, a copy is joining, or the
+/// elected leader is not in the control plane's set: those keep their own
+/// leaders and end through their own steps.
 async fn reissue_past_collision(
     state: &AppState,
     node_id: &str,
@@ -512,13 +519,29 @@ async fn reissue_past_collision(
     elected: &felix_common::membership::ElectedLeadership,
     assignment: crate::model::ShardAssignment,
 ) -> Result<crate::model::ShardAssignment, ApiError> {
-    let mut past: crate::model::ElectedLeader = elected.clone().into();
-    past.generation = assignment.generation + 1;
-    let Some(mut next) = assignment.adopting(&past) else {
+    if assignment.pending_set.is_some()
+        || assignment.joining.is_some()
+        || !assignment.nodes().any(|node| node == node_id)
+    {
+        return Ok(assignment);
+    }
+    // The control plane's set under the elected leader, which is what
+    // adoption names when the sets match.
+    let past = crate::model::ElectedLeader {
+        leader: node_id.to_string(),
+        generation: assignment.generation + 1,
+        replicas: assignment
+            .nodes()
+            .filter(|node| *node != node_id)
+            .cloned()
+            .collect(),
+        set_generation: elected.set_generation,
+    };
+    let Some(next) = assignment.adopting(&past) else {
         return Ok(assignment);
     };
-    if next.leader == assignment.leader {
-        next.fence_storage_ids = assignment.fence_storage_ids.clone();
+    if next.leader != node_id {
+        return Ok(assignment);
     }
     let token = match state.store.placement_token().await {
         Ok(token) => token,

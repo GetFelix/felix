@@ -42,8 +42,8 @@ const INELIGIBLE_FOR: Duration = Duration::from_secs(1);
 /// try stands a generation higher.
 const OPEN_WITHIN: Duration = Duration::from_secs(3);
 /// How long a pre-vote answer is waited for. A silent voter counts as no.
-/// The request itself runs on, so a connection still being dialled is there
-/// for the next round.
+/// A dial still running when it ends goes on, so the next round finds the
+/// connection.
 const PRE_VOTE_WITHIN: Duration = Duration::from_secs(1);
 /// How often a standing is checked for having opened.
 const OPEN_POLL: Duration = Duration::from_millis(50);
@@ -383,17 +383,20 @@ async fn pre_vote<R: PeerRequester + Send + Sync + 'static>(
             .filter_map(|node| Some((*node, ctx.router.node_addr(node)?)))
             .map(|(node, addr)| {
                 let message = InternalMessage::PreVote(request.clone());
-                // Spawned, not awaited in place: a first request to a voter
-                // dials it, and a slow link can take longer than the wait.
-                // Cancelling would drop the dial, and every later round would
-                // start it over and time out the same way.
+                // The dial is warmed apart from the request: a first request to
+                // a voter dials it, and on a slow link that can take longer
+                // than the wait. Cancelled with the request, every later round
+                // would start it over and time out the same way. The pool
+                // bounds the dial and dials a peer once at a time.
                 let requester = Arc::clone(&ctx.requester);
                 let to = node.to_string();
-                let asked =
-                    tokio::spawn(async move { requester.request(&to, addr, message).await });
+                tokio::spawn(async move {
+                    let _ = requester.capabilities(&to, addr).await;
+                });
+                let asked = ctx.requester.request(node, addr, message);
                 async move {
                     match tokio::time::timeout(PRE_VOTE_WITHIN, asked).await {
-                        Ok(Ok(Ok(InternalMessage::PreVoteAnswer(answer)))) => {
+                        Ok(Ok(InternalMessage::PreVoteAnswer(answer))) => {
                             Some((node, answer.refusal))
                         }
                         _ => None,

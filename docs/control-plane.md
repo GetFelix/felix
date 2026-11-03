@@ -1395,7 +1395,9 @@ elected generation itself, not the next one:
 - **Any other set**: only the generation is taken. The leader, the set and
   any pending set stay as they were, and the report is refused as
   `not_leader`. A leader elected on the old set while a change is pending is
-  recorded this way: the new set's leader deposes it.
+  recorded this way: the new set's leader deposes it. Without a pending
+  change, the elected leader's next report finds a generation claimed twice
+  (below).
 
 An election more than 16 generations past the assignment's, or past
 `i64::MAX`, is refused and the report is judged as before: elections run a
@@ -1403,21 +1405,31 @@ few generations at most between two reports, and a far generation would push
 every later write toward the top of the range. A store whose generation is
 the last it can issue refuses further writes instead of repeating one.
 
-**A generation claimed twice.** The control plane can name a leader at the
-generation an election took, for example by promoting a follower when it
-returns before the elected leader's first report lands. Ballots let only one
-of the two open there. The elected leader keeps leading and reporting, and a
-report at the assignment's own generation from a leader it did not name moves
-the shard to the next generation, with the same conditional, placement-fenced
-write placement uses. The next generation names the elected leader if its
-set is the control plane's, and otherwise the leader already named, so the
-shard is never left with a leader that cannot open. The leader that is not
-named steps down on the new leader's fence.
-
 Either way every later write, whoever makes it, is above the elected
 generation, because the store gives each write the one after the stored
 generation. A store error during adoption is logged and the report is judged
 against the assignment as it was, like a lost write.
+
+**A generation claimed twice.** The control plane can name a leader at the
+generation an election took, for example by promoting a follower when it
+returns before the elected leader's first report lands. Ballots let only one
+of the two open there. If the elected leader opened, it keeps leading and
+reporting, and the other never opens. A report at the assignment's own
+generation from a leader the control plane did not name then moves the shard
+to the next generation under that elected leader, with the control plane's
+set and the same conditional, placement-fenced write placement uses. Only the
+elected leader is named: its log holds everything acknowledged up to the
+collision, on whichever set. The shard is left alone while a set change is
+pending, while a copy is joining, or when the elected leader is not in the
+control plane's set. The named leader follows the new one, or stops when its
+route moves on if it is no longer in the set. If the elected leader did not
+open, its candidate withdraws the standing within 3 s and the named leader
+opens as usual.
+
+One gap remains: an elected leader that restarts before its first report
+reaches the control plane forgets its standing, so nothing reports the
+collision, and the shard serves nothing until the control plane writes it
+again.
 
 A joining follower (a replacement in progress) elected leader is recorded
 only: the copy it replaces is not named in the assignment, so naming the

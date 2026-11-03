@@ -795,7 +795,7 @@ async fn an_elected_leader_reporting_a_collided_generation_moves_the_shard_on() 
     });
     let state = app_state_ready(Arc::clone(&store) as _);
     // Judged against the new assignment, the report itself is stale.
-    let _ = post_report(state, &keys, serde_json::json!([shard])).await;
+    let _ = post_report(state.clone(), &keys, serde_json::json!([shard.clone()])).await;
     let assignment = store
         .get_shard_assignment(&shard_zero())
         .await
@@ -803,4 +803,67 @@ async fn an_elected_leader_reporting_a_collided_generation_moves_the_shard_on() 
     assert_eq!(assignment.generation, at + 1, "{assignment:?}");
     assert_eq!(assignment.leader, "broker-x");
     assert_eq!(assignment.replicas, vec!["broker-y"]);
+
+    // The same report again moves nothing: the generations no longer match.
+    let _ = post_report(state, &keys, serde_json::json!([shard])).await;
+    let again = store
+        .get_shard_assignment(&shard_zero())
+        .await
+        .expect("get");
+    assert_eq!(again, assignment);
+}
+
+/// **A collided generation whose elected leader is not in the control
+/// plane's set is left alone.** Naming another member at the next generation
+/// would fence only a majority of the control plane's set, which may miss
+/// what the elected leader acknowledged on its own.
+#[tokio::test]
+async fn a_collision_is_left_alone_when_the_elected_leader_is_outside_the_set() {
+    let (store, keys) = one_shard_cluster().await;
+    let election = felix_common::fleet::REPLICA_ELECTION.name();
+    for id in ["broker-x", "broker-y"] {
+        let mut node = store.get_node(id).await.expect("node");
+        node.status.features = [election.to_string()].into();
+        store.register_node(node).await.expect("offer the feature");
+    }
+    store
+        .finalize_fleet_feature(election)
+        .await
+        .expect("finalize");
+    let named_y = store
+        .put_shard_assignment(ShardAssignment {
+            key: shard_zero(),
+            leader: "broker-y".to_string(),
+            replicas: Vec::new(),
+            generation: 0,
+            state: ShardState::Active,
+            successor: None,
+            joining: None,
+            move_started_at_millis: None,
+            move_reason: None,
+            incarnation: 0,
+            fence_storage_ids: Default::default(),
+            member_storage_ids: Default::default(),
+            learners: Default::default(),
+            pending_set: None,
+        })
+        .await
+        .expect("assign");
+    let at = named_y.generation;
+    let mut shard = shard_json(0, at, 10, &["broker-y"]);
+    shard["elected"] = serde_json::json!({
+        "leader": "broker-x",
+        "generation": at,
+        "replicas": ["broker-y"],
+        "set_generation": at,
+    });
+    let state = app_state_ready(Arc::clone(&store) as _);
+    let _ = post_report(state, &keys, serde_json::json!([shard])).await;
+    assert_eq!(
+        store
+            .get_shard_assignment(&shard_zero())
+            .await
+            .expect("get"),
+        named_y
+    );
 }
