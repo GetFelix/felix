@@ -99,6 +99,7 @@ impl ReplicaHandler {
         log: &felix_broker::StreamLog,
         election: &FenceElection,
     ) -> Option<InternalMessage> {
+        let _scratch = crate::metrics::Scratch::start("felix_scratch_keep_fence_set_seconds");
         let set = ReplicaSet {
             current: crate::replica_set::membership(&election.set),
             leaving: election
@@ -165,6 +166,7 @@ impl ReplicaHandler {
             return Some(refusal);
         }
         let was_learner = self.is_learner(log);
+        let _scratch = crate::metrics::Scratch::start("felix_scratch_batch_set_keep_seconds");
         if let Some(refusal) = keep(correlation_id, key, log, self.mark_local(log, set)).await {
             return Some(refusal);
         }

@@ -218,3 +218,18 @@ pub fn record_quorum_wait(waited: std::time::Duration) {
 pub fn record_quorum(reason: &'static str) {
     metrics::counter!(QUORUM_FAILED_TOTAL, "reason" => reason).increment(1);
 }
+
+/// Scratch profiling only: records the time from construction to drop.
+pub(crate) struct Scratch(std::time::Instant, &'static str);
+
+impl Scratch {
+    pub(crate) fn start(name: &'static str) -> Self {
+        Self(std::time::Instant::now(), name)
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        metrics::histogram!(self.1).record(self.0.elapsed().as_secs_f64());
+    }
+}

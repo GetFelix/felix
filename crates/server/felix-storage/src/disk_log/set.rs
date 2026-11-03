@@ -510,6 +510,7 @@ pub(super) fn load(dir: &Path) -> Result<Option<Kept>> {
 pub(super) fn store(dir: &Path, set: &ReplicaSet, wiped: Option<&WipedMark>) -> Result<()> {
     use std::io::Write;
 
+    let started = std::time::Instant::now();
     let bytes = set.encode(wiped)?;
     let path = path_in(dir);
     let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -521,6 +522,7 @@ pub(super) fn store(dir: &Path, set: &ReplicaSet, wiped: Option<&WipedMark>) -> 
     }
     std::fs::rename(&temporary, &path).map_err(StorageError::Io)?;
     sync_dir(dir).map_err(StorageError::Io)?;
+    metrics::histogram!("felix_scratch_set_write_seconds").record(started.elapsed().as_secs_f64());
     Ok(())
 }
 

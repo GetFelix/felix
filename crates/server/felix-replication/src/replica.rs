@@ -1060,6 +1060,7 @@ impl ReplicaHandler {
     }
 
     async fn fence_once(&self, sender: Option<&str>, request: Fence) -> InternalMessage {
+        let _scratch = crate::metrics::Scratch::start("felix_scratch_follower_fence_seconds");
         let correlation_id = request.correlation_id;
         let generation = request.shard.generation;
         let log_kind = log_kind(request.log);

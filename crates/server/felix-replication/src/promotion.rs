@@ -165,6 +165,7 @@ pub(crate) async fn fence_shard_as<R: PeerRequester>(
     joint: Option<&Joint<'_>>,
     candidacy: Option<&crate::election::Candidacy>,
 ) -> Outcome {
+    let _scratch = metrics::Scratch::start("felix_scratch_fence_shard_seconds");
     let replicas: Vec<_> = route
         .replicas
         .iter()
@@ -966,6 +967,7 @@ async fn keep_own_set(
     route: &Route,
     leaving: Option<&felix_storage::disk_log::Membership>,
 ) -> Result<(), Outcome> {
+    let _scratch = metrics::Scratch::start("felix_scratch_keep_own_set_seconds");
     match log
         .accept_generation(route.generation, Some(local_node_id))
         .await

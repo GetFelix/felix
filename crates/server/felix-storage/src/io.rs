@@ -214,6 +214,10 @@ pub(crate) fn preallocate(file: &File, offset: u64, len: u64) -> io::Result<()> 
 /// The measured cost is the same either way (~4ms per flush on APFS), which is
 /// itself the evidence that the flush is reaching the device.
 pub(crate) fn sync_data(file: &File) -> io::Result<()> {
+    let _scratch = ScratchFsync(
+        std::time::Instant::now(),
+        "felix_scratch_fsync_data_seconds",
+    );
     before_sync(file, SyncKind::Data)?;
     #[cfg(target_os = "macos")]
     {
@@ -244,6 +248,7 @@ pub(crate) fn sync_data(file: &File) -> io::Result<()> {
 /// entry is durable too; without this a crash can leave a segment that exists in
 /// the page cache but not in the directory after reboot.
 pub(crate) fn sync_dir(path: &std::path::Path) -> io::Result<()> {
+    let _scratch = ScratchFsync(std::time::Instant::now(), "felix_scratch_fsync_dir_seconds");
     before_sync_dir(path)?;
     #[cfg(unix)]
     {
@@ -361,6 +366,7 @@ pub(crate) fn devices_under(
 /// renamed into place (indexes, generation history), where the extra metadata
 /// round trip does not matter.
 pub(crate) fn sync_all(file: &File) -> io::Result<()> {
+    let _scratch = ScratchFsync(std::time::Instant::now(), "felix_scratch_fsync_all_seconds");
     before_sync(file, SyncKind::All)?;
     file.sync_all()
 }
@@ -448,3 +454,12 @@ fn injected_fault() -> io::Result<()> {
 
 #[cfg(test)]
 mod tests;
+
+/// Scratch profiling only.
+struct ScratchFsync(std::time::Instant, &'static str);
+
+impl Drop for ScratchFsync {
+    fn drop(&mut self) {
+        metrics::histogram!(self.1).record(self.0.elapsed().as_secs_f64());
+    }
+}
