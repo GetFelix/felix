@@ -1,7 +1,7 @@
 name: Perf scratch (S9 election driver)
 
 # Temporary: RF 3 cluster A/B for the S9 election driver, election off.
-# a = main, b = feat/1009-s9-election-driver with FELIX_INTERNAL_ELECTION=false, c = b with the variable unset (now on by default).
+# a = main, b = S9 head (election on, instrumented), c = b plus the concurrent own-ballot fix.
 # The test harness comes from this branch; only the broker binary differs by side.
 # Deleted with the branch.
 
@@ -17,7 +17,8 @@ env:
   A_SHA: 15004f5354ecec6b160a6f4b22237486df26d80a
   B_SHA: aa8c0e4baf3010a89b5e026906f3e5792e0dd2b0
   BENCH_STEADY_SECS: "20"
-  BUILD_SIDES: "b"
+  C_SHA: d666093975f75ccb37bb53400c54d71693f7e2ec
+  BUILD_SIDES: "a b c"
 
 jobs:
   build:
@@ -43,7 +44,7 @@ jobs:
             | jq -r 'select(.profile.test == true and .executable != null) | .executable' | tail -1 > /tmp/exe
           cp "$(cat /tmp/exe)" $out/replicated_bench
           for side in ${BUILD_SIDES:-a b}; do
-            case $side in a) sha=$A_SHA;; b) sha=$B_SHA;; esac
+            case $side in a) sha=$A_SHA;; b) sha=$B_SHA;; c) sha=$C_SHA;; esac
             git checkout --detach -q "$sha"
             cargo build --release -p felix-broker-service --bin felix-broker
             cp target/release/felix-broker $out/felix-broker-$side
@@ -64,9 +65,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        shard: [1, 2, 3, 4]
     env:
-      ROUNDS: "3"
+      ROUNDS: "6"
     steps:
       - uses: actions/download-artifact@v7
         with:
@@ -82,13 +83,13 @@ jobs:
           cp /tmp/perf-bin/replicated_bench $p/bin/replicated_bench
           cp /tmp/perf-bin/felix-broker-b $p/bin/felix-broker
           printf '#!/bin/bash\nshift\nexec /tmp/perf-bin/felix-broker-a "$@"\n' > $p/wrap-a.sh
-          printf '#!/bin/bash\nshift\nexport FELIX_INTERNAL_ELECTION=false\nexec /tmp/perf-bin/felix-broker-b "$@"\n' > $p/wrap-b.sh
-          printf '#!/bin/bash\nshift\nexec /tmp/perf-bin/felix-broker-b "$@"\n' > $p/wrap-c.sh
+          printf '#!/bin/bash\nshift\nexec /tmp/perf-bin/felix-broker-b "$@"\n' > $p/wrap-b.sh
+          printf '#!/bin/bash\nshift\nexec /tmp/perf-bin/felix-broker-c "$@"\n' > $p/wrap-c.sh
           chmod +x $p/wrap-*.sh
           for round in $(seq 1 "$ROUNDS"); do
-            sides=(b c); k=$(( (round + ${{ matrix.shard }}) % 2 ))
-            for i in 0 1; do
-              side=${sides[$(( (i + k) % 2 ))]}
+            sides=(a b c); k=$(( (round + ${{ matrix.shard }}) % 3 ))
+            for i in 0 1 2; do
+              side=${sides[$(( (i + k) % 3 ))]}
               r=${{ matrix.shard }}-$round
               echo "::group::round $r side $side"
               FELIX_BROKER_WRAPPER=$p/wrap-$side.sh BENCH_SIDE=$side BENCH_ROUND=$r \
