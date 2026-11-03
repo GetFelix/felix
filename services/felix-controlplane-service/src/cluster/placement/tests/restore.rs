@@ -1171,6 +1171,49 @@ fn replacing_b(leader: &str) -> ShardAssignment {
     }
 }
 
+/// A zone reseat that has caught up does not fence the leader while a broker
+/// is down; it seats once the broker is long gone, or on a draining node.
+#[test]
+fn a_zone_reseat_waits_to_fence_while_a_broker_is_down() {
+    let zoned = |down_for: u64, draining: bool| {
+        let mut nodes = vec![
+            node("broker-a", NodeLifecycle::Live, None),
+            node("broker-b", NodeLifecycle::Live, None),
+            node("broker-c", NodeLifecycle::Live, None),
+            gone("broker-d", down_for),
+        ];
+        for (n, zone) in nodes.iter_mut().zip(["x", "x", "y", "z"]) {
+            n.spec.zone = Some(zone.to_string());
+        }
+        if draining {
+            nodes[1].status.lifecycle = NodeLifecycle::Draining;
+        }
+        nodes
+    };
+    let joined = replacing_b("broker-a");
+    let reports = level_at_100(&["broker-b", "broker-c"]);
+    let decide = |nodes: &[Node]| decide(rf2("orders"), nodes, joined.clone(), &reports).0;
+
+    assert_eq!(
+        decide(&zoned(MINUTE, false)),
+        Decision::Waiting(Blocked::Recovering)
+    );
+    assert!(
+        matches!(
+            decide(&zoned(10 * MINUTE, false)),
+            Decision::Move(MoveStep::SeatFence { .. }, _)
+        ),
+        "past the restore window the seat goes ahead"
+    );
+    assert!(
+        matches!(
+            decide(&zoned(MINUTE, true)),
+            Decision::Move(MoveStep::SeatFence { .. }, _)
+        ),
+        "a draining follower's seat is not held"
+    );
+}
+
 /// **RF 2 seat after the report (#1616).** A report at the joining
 /// generation has broker-c level at 100. Seated then, broker-a and broker-b
 /// can still acknowledge 101 before broker-a takes the seat's generation,

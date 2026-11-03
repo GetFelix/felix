@@ -172,6 +172,50 @@ fn a_staged_balance_move_is_dropped_while_a_broker_is_down() {
     );
 }
 
+/// A follower crowding a zone is balance, so its reseat waits while a broker
+/// is down; once the broker is long gone, or when the follower is draining,
+/// the reseat goes ahead.
+#[test]
+fn a_crowded_zone_reseat_is_held_while_a_broker_is_down() {
+    let zoned_nodes = |down_for| {
+        let mut nodes = live(&["a1", "a2", "b1"]);
+        for node in &mut nodes {
+            node.spec.zone = Some(node.node_id[..1].to_string());
+        }
+        let mut c1 = node("c1", NodeLifecycle::Down, None);
+        c1.status.last_heartbeat_at_millis = NOW - down_for;
+        nodes.push(c1);
+        nodes
+    };
+    let existing = [assigned("orders", "a1", &["a2"])];
+    let streams = [replicated_stream("orders", 1, 2)];
+
+    let decided = decisions(&zoned_nodes(10_000), &existing, &streams);
+    assert_eq!(
+        decided,
+        vec![Decision::Waiting(Blocked::Recovering)],
+        "a reseat for a crowded zone must wait"
+    );
+
+    let decided = decisions(
+        &zoned_nodes(DEFAULT_RESTORE_AFTER_MILLIS),
+        &existing,
+        &streams,
+    );
+    assert!(
+        matches!(&decided[..], [Decision::Move(MoveStep::Reseat { from, to }, _)] if from == "a2" && to == "b1"),
+        "{decided:?}"
+    );
+
+    let mut nodes = zoned_nodes(10_000);
+    nodes[1].status.lifecycle = NodeLifecycle::Draining;
+    let decided = decisions(&nodes, &existing, &streams);
+    assert!(
+        matches!(&decided[..], [Decision::Move(MoveStep::Reseat { from, to }, _)] if from == "a2" && to == "b1"),
+        "a draining follower is not held: {decided:?}"
+    );
+}
+
 /// A fenced move whose destination is down gives the shard back to its
 /// leader in the next pass, not at the fence timeout: the leader serves again
 /// at a new generation and the destination's staged copy is dropped.

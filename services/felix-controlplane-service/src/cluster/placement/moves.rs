@@ -1152,6 +1152,18 @@ fn replacement_step(
     if moves.ready_to_fence(caught_up, &existing.key, joining)
         && (!fenced || holds_what_the_set_held(existing, joining, caught_up))
     {
+        // A zone reseat is balance: its seat would fence a live leader that
+        // may be busy failing over. Waiting is safe, the copy is still a
+        // follower; undoing it would need the same fence.
+        if moves.recovering
+            && fenced
+            && existing.move_reason == Some(MoveReason::Replace)
+            && existing.nodes().count() % 2 == 1
+            && !is_draining(departing.as_str())
+            && is_live(&existing.leader)
+        {
+            return Decision::Waiting(Blocked::Recovering);
+        }
         return seat_or_fence(
             existing,
             joining,

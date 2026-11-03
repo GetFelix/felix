@@ -1529,7 +1529,10 @@ minutes when that is `0`), or any restore is copying a shard back, placement
 starts no move for balance: not for a stream's spread, not for the cluster's
 totals, and not to spread a zone. A balance move already staged is dropped
 (`abandon`) before it fences, which also frees its move slot for a drain or a
-restore. `admin plan` lists the held shards as waiting for the recovery. Failover is not held: a dead
+restore. A zone reseat already staged and caught up on a stream that
+fences its seats waits too, instead of fencing a leader that is busy; it
+stays a follower meanwhile. `admin plan` lists the held shards as waiting
+for the recovery. Failover is not held: a dead
 broker's shards get new leaders in the same pass as always. Drains,
 restores and an operator's moves go on too. The reason is what a fence costs
 during a failover. The brokers left are opening the dead broker's shards,
