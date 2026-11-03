@@ -67,8 +67,8 @@ pub struct ShardCursors {
     /// A move's destination this broker saw added to the replica set, still
     /// copying: left out of the quorum. See [`staged_learner`].
     pub(super) learner: Option<String>,
-    /// The generation this leader leads at, and where it begins. See
-    /// [`own_start`].
+    /// The generation this leader leads at, and where the history says it
+    /// begins. See [`own_start`].
     pub(super) own_start: Option<(u64, u64)>,
     /// The storage identity the assignment that promoted this leader named
     /// for each replica, read at the generation's first pass. A report names
@@ -128,9 +128,16 @@ fn inherited_names(route: &Route) -> BTreeMap<String, String> {
         .collect()
 }
 
-/// Where this leader's generation begins in a stream log, for
-/// [`crate::quorum::counted_offset`]: the offset of its first record, the
-/// generation-start record when it wrote one.
+/// Where this leader's current stint at its generation begins in a stream
+/// log, for [`crate::quorum::counted_offset`]: the offset of its first
+/// record, the generation-start record when it wrote one.
+///
+/// A broker can open again at a generation it already started, as when it
+/// was elected there and a cut-over then names it there. Its new stint
+/// writes a start record of its own, and this is that record. Counting from
+/// the generation's first start instead, a joint start could be reported
+/// while a record the earlier stint acknowledged on the old set alone is
+/// still missing from a majority of the new one (#1787).
 ///
 /// `u64::MAX` while the generation has no recorded start, which counts
 /// nothing: every record in the log is then one this leader inherited.
@@ -139,23 +146,24 @@ fn own_start(
     generation: u64,
     known: &mut Option<(u64, u64)>,
 ) -> u64 {
-    if let Some((at, start)) = *known
-        && at == generation
-    {
-        return start;
-    }
-    match log
-        .generations()
-        .iter()
-        .rev()
-        .find(|epoch| epoch.generation == generation)
-    {
-        Some(epoch) => {
-            *known = Some((generation, epoch.start_offset));
-            epoch.start_offset
-        }
-        None => u64::MAX,
-    }
+    let first = match *known {
+        Some((at, start)) if at == generation => start,
+        _ => match log
+            .generations()
+            .iter()
+            .rev()
+            .find(|epoch| epoch.generation == generation)
+        {
+            Some(epoch) => {
+                *known = Some((generation, epoch.start_offset));
+                epoch.start_offset
+            }
+            None => return u64::MAX,
+        },
+    };
+    // Not cached: a stint begins while the generation stays the same.
+    log.stint_start(generation)
+        .map_or(first, |stint| stint.max(first))
 }
 
 /// What a pass does with exchanges still under way once its mark is out.
@@ -196,10 +204,31 @@ impl RideAlong {
     }
 
     fn may_rebuild(&self) -> bool {
+        self.cursors()
+            .any(|cursor| cursor.halted.is_some() || cursor.rebuilding)
+    }
+
+    /// Bytes each of `main` and these cursors has stored, and whether its
+    /// last answer was a voter's, in a fixed order.
+    fn stored(&self, main: &FollowerCursor) -> [Option<(u64, bool)>; 4] {
+        [
+            Some(main),
+            self.group.as_ref(),
+            self.dead_letters.as_ref(),
+            self.counters.as_ref(),
+        ]
+        .map(|cursor| {
+            cursor.map(|cursor| {
+                let voter = cursor.halted.is_none() && !cursor.stalled && !cursor.learner;
+                (cursor.shipped_bytes, voter)
+            })
+        })
+    }
+
+    fn cursors(&self) -> impl Iterator<Item = &FollowerCursor> {
         [&self.group, &self.dead_letters, &self.counters]
             .into_iter()
             .flatten()
-            .any(|cursor| cursor.halted.is_some() || cursor.rebuilding)
     }
 }
 
@@ -566,13 +595,6 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
             promised.max(inherited.min(tail))
         }
     };
-    // The pending set's generation, once this generation's start record is
-    // acknowledged: on both majorities, since `held_offset` counts both.
-    let joint_start = |tail: u64, followers: &[FollowerCursor]| {
-        let change = pending?;
-        (acks_at_quorum && inherited != u64::MAX && held_offset(tail, followers) > inherited)
-            .then_some(change.generation)
-    };
     // The logs that ride the shard ride each follower's exchange too, so a
     // follower that does not answer holds up none of them: it is handed off
     // like any other straggler, rather than waited on at the end of the pass.
@@ -637,7 +659,11 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 .iter()
                 .rev()
                 .find(|epoch| epoch.generation == route.generation)
-                .map(|epoch| epoch.start_offset);
+                .map(|epoch| {
+                    counter_log
+                        .stint_start(route.generation)
+                        .map_or(epoch.start_offset, |stint| stint.max(epoch.start_offset))
+                });
             (view(counters), start)
         });
         crate::reporter::holders_of_start(
@@ -665,9 +691,33 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 learner.as_deref(),
                 by_followers,
                 election_active,
+                pending,
             )
             .await
         }
+    };
+    // The pending set's generation, once this stint's start record is
+    // acknowledged: on both majorities, since `held_offset` counts both. A
+    // cache's counter log too: the counter updates acknowledged before the
+    // cut-over are behind its own start record, not the cache log's, and the
+    // new set alone keeps them after the flip.
+    // A counter log that would not open this pass holds the flip back too:
+    // read as absent, the start would be reported on the cache log alone.
+    let counters_unread = key.kind == felix_router::ShardKind::Cache
+        && broker.counters().is_some()
+        && counter_log.is_none();
+    let joint_start = |tail: u64, followers: &[FollowerCursor], counters: Option<&CounterLevel>| {
+        let change = pending?;
+        let counters_started = if counter_mark.is_some() || counters_unread {
+            counters.is_some_and(|level| level.start_held)
+        } else {
+            true
+        };
+        (acks_at_quorum
+            && inherited != u64::MAX
+            && held_offset(tail, followers) > inherited
+            && counters_started)
+            .then_some(change.generation)
     };
     // Group state is not acknowledged at a mark, but a follower short of what
     // a majority holds of it would lose that if it led, so on a `Quorum`
@@ -722,6 +772,30 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         Some(log) if acks_at_quorum && leading && !stepped_down() => log.tail_offset().await.ok(),
         _ => None,
     };
+    // A copy is re-admitted by whichever of the shard's logs completes its
+    // catch-up, and only that log's answer says so. Another log's cursor
+    // keeps the learner answer it got before until it is asked again, which
+    // on a level log nothing else does. A voter's answer to a batch on any
+    // log is what makes asking worth it, so a copy still a learner everywhere
+    // is not re-asked every pass. An empty log's cursor and a new one have
+    // confirmed nothing, and a log not open here keeps its cursor stalled.
+    let answered_as_voter = |node: &str| {
+        [
+            &entry.followers,
+            &aux.group.followers,
+            &aux.dead_letters.followers,
+            &aux.counters.followers,
+        ]
+        .into_iter()
+        .flatten()
+        .any(|cursor| {
+            cursor.node_id == node
+                && cursor.halted.is_none()
+                && !cursor.stalled
+                && !cursor.learner
+                && cursor.confirmed > 0
+        })
+    };
     let would_raise = |node: &str,
                        followers: &[FollowerCursor],
                        held: &dyn Fn(&[FollowerCursor]) -> u64,
@@ -730,7 +804,10 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         if !quorum_shard || !leading || learner.as_deref() == Some(node) {
             return false;
         }
-        if !mine.is_some_and(|cursor| cursor.confirmed > mark && cursor.halted.is_none()) {
+        let askable = |cursor: &FollowerCursor| {
+            cursor.halted.is_none() && (!cursor.learner || answered_as_voter(node))
+        };
+        if !mine.is_some_and(|cursor| cursor.confirmed > mark && askable(cursor)) {
             return false;
         }
         let hopeful: Vec<FollowerCursor> = followers
@@ -739,6 +816,9 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 let mut cursor = cursor.clone();
                 if cursor.stalled && cursor.node_id != node {
                     cursor.confirmed = 0;
+                }
+                if cursor.node_id == node {
+                    cursor.learner = false;
                 }
                 cursor
             })
@@ -825,6 +905,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 if let Ok(seen) = requester.identity(&cursor.node_id, cursor.addr).await {
                     restart_copy(&mut cursor, &mut rode, seen, base, &shard, rebuilds);
                 }
+                let stored_before = rode.stored(&cursor);
                 let RideAlong {
                     group,
                     dead_letters,
@@ -929,6 +1010,63 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                         .await;
                     }
                 }
+                // A batch on one log can re-admit the copy while another log
+                // still holds the learner answer it gave before, here or in
+                // an earlier exchange. Asked again, that log counts toward
+                // its marks now rather than at its next record. Only a voter's
+                // answer to a batch in this exchange is evidence: an empty
+                // log's cursor and a new one say nothing about the copy.
+                let stale = |cursor: &FollowerCursor| {
+                    cursor.halted.is_none() && !cursor.stalled && cursor.learner
+                };
+                let readmitted =
+                    quorum_shard
+                        && leading
+                        && (stale(&cursor) || rode.cursors().any(stale))
+                        && rode.stored(&cursor).into_iter().zip(stored_before).any(
+                            |(now, before)| {
+                                now.is_some_and(|(bytes, voter)| {
+                                    voter && bytes > before.map_or(0, |(bytes, _)| bytes)
+                                })
+                            },
+                        );
+                if readmitted {
+                    if stale(&cursor) {
+                        reship_last(
+                            requester,
+                            &log,
+                            &shard,
+                            log_kind,
+                            &mut cursor,
+                            rebuilds,
+                            Some(mark_now),
+                        )
+                        .await;
+                    }
+                    for (log, aux, kind) in [
+                        (
+                            &counter_log,
+                            &mut rode.counters,
+                            felix_broker::LogKind::Counters,
+                        ),
+                        (
+                            &group_log,
+                            &mut rode.group,
+                            felix_broker::LogKind::GroupCursors,
+                        ),
+                        (
+                            &dead_letter_log,
+                            &mut rode.dead_letters,
+                            felix_broker::LogKind::GroupDeadLetters,
+                        ),
+                    ] {
+                        if let (Some(log), Some(aux)) = (log, aux.as_mut())
+                            && stale(aux)
+                        {
+                            reship_last(requester, log, &shard, kind, aux, rebuilds, None).await;
+                        }
+                    }
+                }
                 // Counted only on answers, every one of them from the copy
                 // the cursor now describes. One from another copy starts the
                 // cursor over, as a new identity in the probe would.
@@ -991,6 +1129,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         let counted = view(&positions);
         let offset = held_offset(tail, &counted);
         if offset > 0 {
+            let counters = counters_of(&aux.counters.followers).await;
             majority = Some((
                 with_counter_offsets(
                     shard_report(
@@ -1004,12 +1143,12 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                     )
                     .at_incarnation(incarnation)
                     .serving_by_round(by_round)
-                    .with_joint_start(joint_start(tail, &counted))
+                    .with_joint_start(joint_start(tail, &counted, counters.as_ref()))
                     .with_holds_start(holders(&counted, &aux.counters.followers)),
                     &aux.counters.followers,
                 ),
                 offset,
-                counters_of(&aux.counters.followers).await,
+                counters,
                 groups_of(&aux).await,
             ));
         }
@@ -1151,7 +1290,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                     )
                     .at_incarnation(incarnation)
                     .serving_by_round(by_round)
-                    .with_joint_start(joint_start(tail, &counted))
+                    .with_joint_start(joint_start(tail, &counted, counters.as_ref()))
                     .with_holds_start(holders(&counted, &aux.counters.followers)),
                     &aux.counters.followers,
                 ),
@@ -1339,6 +1478,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     let tail = log.tail_offset().await.unwrap_or(tail);
     let counted = view(&entry.followers);
     let drained = quiesced && drain_ready(key, route, &caught_up(tail, &counted), &aux_behind);
+    let counters = counters_of(&aux.counters.followers).await;
     let mut settled = with_counter_offsets(
         shard_report(
             key,
@@ -1351,7 +1491,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         )
         .at_incarnation(incarnation)
         .serving_by_round(by_round)
-        .with_joint_start(joint_start(tail, &counted))
+        .with_joint_start(joint_start(tail, &counted, counters.as_ref()))
         .with_holds_start(holders(&counted, &aux.counters.followers)),
         &aux.counters.followers,
     );
@@ -1360,7 +1500,6 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     settled
         .caught_up
         .retain(|node| !aux_behind.iter().any(|(_, behind)| behind == node));
-    let counters = counters_of(&aux.counters.followers).await;
     if let Some(counters) = &counters {
         counters.limit(&mut settled);
     }
@@ -1458,7 +1597,9 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         || entry.followers.iter().any(|cursor| {
             absorbed.contains(&cursor.node_id)
                 && cursor.halted.is_none()
-                && ((checked.lock().contains(&cursor.node_id) && cursor.confirmed > mark)
+                && ((!cursor.learner
+                    && checked.lock().contains(&cursor.node_id)
+                    && cursor.confirmed > mark)
                     || (!cursor.stalled && cursor.next_offset < tail))
         });
 
@@ -1493,6 +1634,9 @@ pub(super) struct CounterLevel {
     /// The followers decided the mark, as for the cache log: it moves without
     /// waiting on the report.
     by_followers: bool,
+    /// A majority holds the counter log's start record for this stint,
+    /// of both sets while a change is pending.
+    start_held: bool,
 }
 
 impl CounterLevel {
@@ -1555,7 +1699,7 @@ pub(super) async fn group_level(
             .iter()
             .find(|cursor| cursor.node_id == node)
             .map_or(Some(0), |cursor| {
-                cursor.halted.is_none().then(|| cursor.confirmed.min(tail))
+                cursor.counts().then(|| cursor.confirmed.min(tail))
             })
     };
     // Each follower's pair, `None` for one halted on either log. A move's
@@ -1629,10 +1773,11 @@ async fn aux_cursors(
 /// tail cannot be read.
 ///
 /// Counted under the shard's own rules: only past where this leader's
-/// generation begins once the fleet finalized `generation_start`, and on the
-/// followers' answers at this generation with `by_followers`. The mark counts
-/// `counted`, the followers whose identity the pass has checked; the
-/// candidates are drawn from all of `followers`.
+/// generation begins once the fleet finalized `generation_start`, on the
+/// followers' answers at this generation with `by_followers`, and on both sets
+/// while a change is `pending`. The mark counts `counted`, the followers whose
+/// identity the pass has checked; the candidates are drawn from all of
+/// `followers`.
 #[allow(clippy::too_many_arguments)]
 async fn counter_level(
     marks: &QuorumMarks,
@@ -1645,6 +1790,7 @@ async fn counter_level(
     learner: Option<&str>,
     by_followers: bool,
     election_active: bool,
+    pending: Option<&felix_router::PendingChange>,
 ) -> Option<CounterLevel> {
     let tail = log.tail_offset().await.ok()?;
     // Rule 5, as for the shard's own mark: a newer ballot or set means the
@@ -1654,17 +1800,33 @@ async fn counter_level(
             held.accepted_generation() > route.generation
                 || held.set_generation() > route.generation
         });
-    let majority = if stepped_down {
+    // As for the shard's own log: a change this leader cannot count on both
+    // sets acknowledges nothing.
+    let unreadable = route.pending.is_some() && pending.is_none();
+    // Read after the tail. A newer leader fences the cache log before the
+    // counter log, and once either has answered it, what this broker writes
+    // next is in no fence answer.
+    let current = !by_followers
+        || (cache_log.accepted_generation() <= route.generation
+            && log.accepted_generation() <= route.generation);
+    let majority = if stepped_down || unreadable {
         0
     } else if by_followers {
-        // Read after the tail. A newer leader fences the cache log before the
-        // counter log, and once either has answered it, what this broker
-        // writes next is in no fence answer.
-        let current = cache_log.accepted_generation() <= route.generation
-            && log.accepted_generation() <= route.generation;
         crate::quorum::held_at_generation(tail, current, counted, learner)
     } else {
         quorum_offset_without(tail, counted, learner)
+    };
+    let majority = match pending {
+        Some(change) => crate::quorum::held_by_both(
+            majority,
+            tail,
+            current,
+            &route.leader.node_id,
+            counted,
+            &change.leaving,
+            learner,
+        ),
+        None => majority,
     };
     let start = log
         .generations()
@@ -1695,11 +1857,19 @@ async fn counter_level(
     } else {
         acknowledged.max(inherited)
     };
+    // The joint start counts from this stint's start record, as `own_start`
+    // does for the shard's own log: an earlier stint at this generation may
+    // have acknowledged updates on the old set alone.
+    let stint = start.map(|first| {
+        log.stint_start(route.generation)
+            .map_or(first, |stint| stint.max(first))
+    });
     Some(CounterLevel {
         acknowledged,
         level: caught_up(floor, followers),
         whole: majority >= tail,
         by_followers,
+        start_held: stint.is_some_and(|stint| majority > stint),
     })
 }
 

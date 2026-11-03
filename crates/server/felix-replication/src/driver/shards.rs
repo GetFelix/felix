@@ -14,6 +14,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use felix_broker::{Appended, AppendedShards, Broker};
+use felix_common::membership::RefusedGeneration;
 use felix_router::{ShardKey, ShardRouter};
 use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
@@ -159,6 +160,9 @@ pub(super) struct FenceAttempt {
     /// did: the attempt stops listening then.
     took: Option<Vec<String>>,
     why: Option<String>,
+    /// So many replicas promised the generation to another node that no
+    /// majority was left to take it.
+    refused: Option<RefusedGeneration>,
 }
 
 /// An exchange handed back by a pass, ended.
@@ -247,6 +251,9 @@ struct ShardState {
     /// Fence attempts in a row that left the shard closed, and the generation
     /// they were at: a new promotion starts from [`FENCE_RETRY`] again.
     fence_failures: (u64, u32),
+    /// The last fence attempt found the generation promised to another node
+    /// by too many replicas to open. Reported each tick, as a refused open is.
+    fence_refused: Option<RefusedGeneration>,
     /// What its last pass left.
     last: Option<LastPass>,
 }
@@ -344,6 +351,41 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
     fn leads(&self, key: &ShardKey, route: &felix_router::Route) -> bool {
         route.leader.node_id == self.cx.router.local_node_id()
             && !self.cx.fence.withheld(&watch_key(key), route.generation)
+            && self.refused_open(key, route).is_none()
+    }
+
+    /// The refused open that keeps this broker from leading `route`'s
+    /// generation, if it refused that one. An older refusal says nothing
+    /// about it.
+    fn refused_open(
+        &self,
+        key: &ShardKey,
+        route: &felix_router::Route,
+    ) -> Option<RefusedGeneration> {
+        if route.leader.node_id != self.cx.router.local_node_id() {
+            return None;
+        }
+        self.cx
+            .fence
+            .refused_at(&watch_key(key))
+            .filter(|refused| refused.generation == route.generation)
+    }
+
+    /// What to report as refused at `route`'s generation: an open refused
+    /// there, or a fence a majority answered with a promise to another node.
+    /// The shard still fences again after the second, in case the set has
+    /// changed since.
+    fn refusal(&self, key: &ShardKey, route: &felix_router::Route) -> Option<RefusedGeneration> {
+        self.refused_open(key, route).or_else(|| {
+            self.states
+                .get(key)?
+                .fence_refused
+                .clone()
+                .filter(|refused| {
+                    refused.generation == route.generation
+                        && route.leader.node_id == self.cx.router.local_node_id()
+                })
+        })
     }
 
     /// Give the shards led here that want one a pass, and forget the ones no
@@ -368,10 +410,19 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             })
             .map(|(key, route)| (key.clone(), route.clone()))
             .collect();
-        self.probed
-            .retain(|key, _| given_up.iter().any(|(given, _)| given == key));
+        let refused: Vec<(ShardKey, RefusedGeneration)> = table
+            .iter()
+            .filter_map(|(key, route)| Some((key.clone(), self.refusal(key, route)?)))
+            .collect();
+        self.probed.retain(|key, _| {
+            given_up.iter().any(|(given, _)| given == key)
+                || refused.iter().any(|(refused, _)| refused == key)
+        });
         for (key, route) in given_up {
             self.probe(key, route);
+        }
+        for (key, refused) in refused {
+            self.report_refusal(key, refused);
         }
         for key in &live {
             let Some(route) = table.get(key) else {
@@ -581,8 +632,17 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                 let (key, generation, outcome) =
                     fence_one(cx.requester, cx.broker, cx.router, key, route, cx.marks).await;
                 let (took, why) = match &outcome {
-                    Outcome::Pending { why, took } => (Some(took.clone()), Some(why.clone())),
+                    Outcome::Pending { why, took } | Outcome::Refused { why, took, .. } => {
+                        (Some(took.clone()), Some(why.clone()))
+                    }
                     Outcome::Fenced { .. } | Outcome::Lease { .. } => (None, None),
+                };
+                let refused = match &outcome {
+                    Outcome::Refused { promised_to, .. } => Some(RefusedGeneration {
+                        generation,
+                        promised_to: promised_to.clone(),
+                    }),
+                    _ => None,
                 };
                 let opened = open_fenced(cx.gate, &key, generation, outcome).await;
                 let why = why.or_else(|| {
@@ -595,6 +655,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                     replicas,
                     took,
                     why,
+                    refused,
                 }
             }));
             return;
@@ -832,6 +893,25 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         }));
     }
 
+    /// Tell the control plane, each tick, that this broker refused to lead a
+    /// shard at the generation it names. See `crate::reclaim::refusal_report`.
+    fn report_refusal(&mut self, key: ShardKey, refused: RefusedGeneration) {
+        let Some(reporter) = self.cx.reporter else {
+            return;
+        };
+        let now = tokio::time::Instant::now();
+        if self
+            .probed
+            .get(&key)
+            .is_some_and(|at| now.duration_since(*at) < self.cx.refresh / 2)
+        {
+            return;
+        }
+        self.probed.insert(key.clone(), now);
+        let incarnation = crate::incarnation::of(self.cx.broker, &key);
+        reporter.submit(crate::reclaim::refusal_report(&key, refused).at_incarnation(incarnation));
+    }
+
     /// Keep a shard's reported tail, so the next report does not go back.
     pub(super) fn reported(&mut self, reported: Reported) {
         if let Some(last) = self.alone.get_mut(&reported.key)
@@ -927,7 +1007,8 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             .followers
             .iter()
             .map(|cursor| {
-                let learner = cursors.learner.as_deref() == Some(cursor.node_id.as_str());
+                let learner =
+                    cursor.learner || cursors.learner.as_deref() == Some(cursor.node_id.as_str());
                 let busy = unanswered(&cursor.node_id);
                 FollowerStatus {
                     busy,
@@ -1033,12 +1114,14 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             replicas,
             took,
             why,
+            refused,
         } = attempt;
         let scan = self.scan;
         let Some(state) = self.states.get_mut(&key) else {
             self.fill();
             return;
         };
+        state.fence_refused = refused.clone();
         if let Some(next) = state.running.take() {
             state.held.append(&mut next.answered.lock());
         }
@@ -1080,6 +1163,9 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         );
         if opened || std::mem::take(&mut state.again) {
             self.want(&key, true, false);
+        }
+        if let Some(refused) = refused {
+            self.report_refusal(key, refused);
         }
         self.fill();
     }
@@ -1234,8 +1320,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             .streams
             .get(&key)
             .is_some_and(|e| (e.generation, e.incarnation) == (generation, incarnation));
-        let counts_for_more =
-            current && checked && cursor.halted.is_none() && cursor.confirmed > mark;
+        let counts_for_more = current && checked && cursor.counts() && cursor.confirmed > mark;
         let owed = current
             && cursor.halted.is_none()
             && !cursor.stalled
@@ -1307,7 +1392,11 @@ fn put_back(
     else {
         return false;
     };
-    let moved = slot.next_offset != cursor.next_offset || slot.halted != cursor.halted;
+    // A learner answer cleared counts the follower toward the marks again,
+    // which a waiting write may need.
+    let moved = slot.next_offset != cursor.next_offset
+        || slot.halted != cursor.halted
+        || (slot.learner && !cursor.learner);
     // The route may have moved the follower to a new address meanwhile.
     let addr = slot.addr;
     *slot = cursor;

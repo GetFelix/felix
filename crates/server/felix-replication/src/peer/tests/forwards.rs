@@ -58,6 +58,7 @@ impl PeerRequestHandler for QuorumOwner {
                 InternalMessage::ReplicateOk(ReplicateOk {
                     correlation_id,
                     durable_offset: 1,
+                    learner: false,
                 })
             }
         }
@@ -213,6 +214,7 @@ impl PeerRequestHandler for WaitsForRecord {
                 InternalMessage::ReplicateOk(ReplicateOk {
                     correlation_id,
                     durable_offset: 1,
+                    learner: false,
                 })
             }
         }

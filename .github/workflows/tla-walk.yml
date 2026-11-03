@@ -74,6 +74,8 @@ jobs:
             configs: FelixShardWalkElect FelixShardWalkElectStaleSet
           - family: swap
             configs: FelixShardWalkElectSwap FelixShardWalkElectSwapNoJoint
+          - family: rename
+            configs: FelixShardWalkElectRename FelixShardWalkElectRenameUnfenced
           # Inherited names with promotions on suspicion: too big to finish
           # exhaustively, so sampled. Each family's witness stands in for a twin: it
           # must still reach an inherited count at the same bounds.
@@ -161,6 +163,7 @@ jobs:
           - FelixShardElectSwapFlipKeep1StoodSeveralDest
           - FelixShardElectSwapFlipDrop0StoodSeveralDest
           - FelixShardElectSwapFlipDrop1StoodSeveralDest
+          - FelixShardElectSwapFlipJoinLags
           - FelixShardElectWipeNonVoterWipesLeader
           - FelixShardElectWipeNonVoterTwice
           - FelixShardElectWipeNonVoterFailover
@@ -169,6 +172,14 @@ jobs:
           - FelixShardElectWipeNonVoterGroups
           - FelixShardElectHandoff
           - FelixShardElectAdoptTwoWrites
+          - FelixShardElectRenameKeep0StoodOneDest
+          - FelixShardElectRenameKeep1StoodOneDest
+          - FelixShardElectRenameDrop0StoodOneDest
+          - FelixShardElectRenameDrop1StoodOneDest
+          - FelixShardElectRenameDrop0StoodSeveralDest
+          - FelixShardElectRenameKeep1StoodSeveralDest
+          - FelixShardElectRenameKeep0StoodSeveralDest
+          - FelixShardElectRenameDrop0StoodOneOther
           - FelixShardFencedAckTwoPromotions
           - FelixShardFencedAckSeatLonger
           - FelixShardFencedAckMove

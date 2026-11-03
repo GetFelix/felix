@@ -643,7 +643,14 @@ impl StreamLog {
             .append(std::slice::from_ref(&record))
             .await
             .map_err(BrokerError::from)?;
+        self.log.note_stint_start(generation, appended.first_offset);
         Ok(appended.first_offset)
+    }
+
+    /// Where the start record this broker last wrote for `generation` sits,
+    /// while the log has stayed open. See `DiskLog::stint_start`.
+    pub fn stint_start(&self, generation: u64) -> Option<Offset> {
+        self.log.stint_start(generation)
     }
 
     /// Where readers must stop once the log is poisoned: its durable offset.

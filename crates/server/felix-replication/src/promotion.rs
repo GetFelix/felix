@@ -94,6 +94,15 @@ pub enum Outcome {
     Fenced { caught_up_from: Option<String> },
     /// Some replica did not offer the fence, so the shard opens on the lease.
     Lease { lacking: String },
+    /// Not yet, and not in this attempt: so many replicas promised this
+    /// generation to `promised_to` that no majority is left to take it. The
+    /// shard stays closed, and this broker reports the refusal so the
+    /// control plane names it again above the generation (#1730).
+    Refused {
+        promised_to: String,
+        why: String,
+        took: Vec<String>,
+    },
     /// Not yet: no majority answered, or the catch-up did not finish. The
     /// shard stays closed and the next pass tries again.
     Pending {
@@ -364,9 +373,12 @@ async fn fence_log<R: PeerRequester>(
     let took = |answered: &[(String, std::net::SocketAddr, FenceOk)]| {
         answered.iter().map(|(node, _, _)| node.clone()).collect()
     };
-    let settled = |answered: &[(String, std::net::SocketAddr, FenceOk)]| match joint {
-        None => answered.len() + 1 >= needed,
-        Some(joint) => joint.has_majorities(answered.iter().map(|(node, _, _)| node.as_str())),
+    // Each answer's node with the copy its handshake named, which a joint
+    // fence counts per set being left.
+    let mut seen: Vec<(String, Option<StorageId>)> = Vec::new();
+    let settled = |seen: &[(String, Option<StorageId>)]| match joint {
+        None => seen.len() + 1 >= needed,
+        Some(joint) => joint.has_majorities(seen.iter().map(|(node, id)| (node.as_str(), *id))),
     };
     // Answers from a copy the report did not name: they took the promise,
     // which still refuses the old leader, but count for nothing here.
@@ -374,6 +386,20 @@ async fn fence_log<R: PeerRequester>(
     // Why the replicas that refused did, for the shard's status: a refusal
     // that no retry gets past names its way out there.
     let mut refusals: Vec<String> = Vec::new();
+    // Replicas that promised this generation to another node. Each is a vote
+    // that node holds, so once a majority can no longer be made without
+    // them, no answer still to come opens the shard.
+    let mut promised_away: Vec<(String, String)> = Vec::new();
+    let reachable = |promised_away: &[(String, String)]| {
+        let left = replicas
+            .iter()
+            .map(|replica| replica.node_id.as_str())
+            .filter(|node| !promised_away.iter().any(|(away, _)| away == node));
+        match joint {
+            None => left.count() + 1 >= needed,
+            Some(joint) => joint.can_reach(left),
+        }
+    };
     let mut asks = futures::stream::FuturesUnordered::new();
     for replica in replicas {
         let (node_id, addr) = (replica.node_id.clone(), replica.advertise_addr);
@@ -388,7 +414,7 @@ async fn fence_log<R: PeerRequester>(
                 (Some(joint), Some(set)) => Some(FenceElection {
                     candidate: false,
                     set: set.clone(),
-                    leaving: Some(joint.leaving.clone()),
+                    leaving: Some(joint.leaving_for(&node_id).clone()),
                 }),
                 (None, Some(set)) => {
                     let offered = match requester.recorded_capabilities(&node_id) {
@@ -417,7 +443,7 @@ async fn fence_log<R: PeerRequester>(
             .await
         });
     }
-    while !settled(&answered) {
+    while !settled(&seen) {
         let Some((node_id, addr, answer, identity)) = asks.next().await else {
             break;
         };
@@ -429,7 +455,36 @@ async fn fence_log<R: PeerRequester>(
                 other_copies += 1;
                 uncounted(key, kind, &node_id, reported_ids, identity);
             }
-            Ok(InternalMessage::FenceOk(ok)) => answered.push((node_id, addr, ok)),
+            Ok(InternalMessage::FenceOk(ok)) => {
+                seen.push((node_id.clone(), identity));
+                answered.push((node_id, addr, ok));
+            }
+            Ok(InternalMessage::ReplicateError(err))
+                if err.code == ErrorCode::FencedEpoch
+                    && crate::replica::promised_to(&err.detail, shard.generation).is_some() =>
+            {
+                let other = crate::replica::promised_to(&err.detail, shard.generation)
+                    .unwrap_or_default()
+                    .to_string();
+                refusals.push(format!("{node_id} refused: {}", err.detail));
+                promised_away.push((node_id, other));
+                if !reachable(&promised_away) {
+                    let mut why = format!(
+                        "{} of the replicas promised generation {} to another node",
+                        promised_away.len(),
+                        shard.generation
+                    );
+                    for refusal in &refusals {
+                        why.push_str("; ");
+                        why.push_str(refusal);
+                    }
+                    return Err(Outcome::Refused {
+                        promised_to: promised_away[0].1.clone(),
+                        why,
+                        took: took(&answered),
+                    });
+                }
+            }
             Ok(InternalMessage::ReplicateError(err)) if err.code == ErrorCode::FencedEpoch => {
                 // A replica has taken a newer leader: this promotion is over.
                 return Err(Outcome::pending(
@@ -468,7 +523,7 @@ async fn fence_log<R: PeerRequester>(
         }
     }
     drop(asks);
-    if !settled(&answered) {
+    if !settled(&seen) {
         let mut why = match joint {
             None => format!(
                 "{} of {} replicas took the fence on the {kind:?} log, {} needed with this broker",
@@ -478,7 +533,7 @@ async fn fence_log<R: PeerRequester>(
             ),
             Some(joint) => format!(
                 "on the {kind:?} log, {}",
-                joint.shortfall(answered.iter().map(|(node, _, _)| node.as_str()))
+                joint.shortfall(seen.iter().map(|(node, id)| (node.as_str(), *id)))
             ),
         };
         if other_copies > 0 {

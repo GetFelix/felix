@@ -56,6 +56,15 @@ pub trait CaughtUp {
         false
     }
 
+    /// Whether `leader` reported at `generation` that it refused to open the
+    /// shard there because it had promised that generation to another node,
+    /// which the control plane recorded as elected without adopting. Only a
+    /// fresh report of exactly `generation` says so; a refusal of an older
+    /// one is not evidence about this one.
+    fn leader_refused(&self, _key: &ShardKey, _generation: u64, _leader: &str) -> bool {
+        false
+    }
+
     /// Whether `leader`, which gave the shard up, may lead it again from its
     /// copy: a fresh report it made since it last registered, under the
     /// storage identity it registered with, measures every one of

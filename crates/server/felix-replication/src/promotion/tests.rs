@@ -237,6 +237,9 @@ struct Replicas {
     sent: Mutex<Vec<(String, Kind)>>,
     /// Whether the promoted leader offers `ELECTION`.
     electing: bool,
+    /// Whether the replicas check ballots: the fence then names the leader
+    /// as its sender, as a connection's `Hello` does.
+    ballots: bool,
 }
 
 impl Replicas {
@@ -248,6 +251,7 @@ impl Replicas {
                 .collect(),
             sent: Mutex::new(Vec::new()),
             electing: false,
+            ballots: false,
         }
     }
 
@@ -319,7 +323,10 @@ impl PeerRequester for Replicas {
             ));
         }
         match message {
-            InternalMessage::Fence(fence) => Ok(replica.handler.fence(None, fence).await),
+            InternalMessage::Fence(fence) => Ok(replica
+                .handler
+                .fence(self.ballots.then_some(LEADER), fence)
+                .await),
             InternalMessage::ReplicateFetch(fetch) => Ok(replica.handler.fetch(None, fetch).await),
             other => panic!("the promoted leader sent {:?}", other.kind()),
         }
@@ -507,6 +514,38 @@ async fn without_a_majority_the_shard_stays_closed() {
     assert!(why.starts_with("0 of 2 replicas took the fence"), "{why}");
 }
 
+/// **A replica the node catalog does not name is still a voter.** A broker
+/// whose first catalog read failed routes with no addresses at all; a fence
+/// counted over the addresses it has would need only this broker and open
+/// with neither follower fenced.
+#[tokio::test]
+async fn a_replica_missing_from_the_catalog_still_counts_toward_the_majority() {
+    let mut replicas = Replicas::new();
+    replicas.get_mut("broker-b").reachable = false;
+    replicas.get_mut("broker-c").reachable = false;
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+    let route = RoutingTable::build(
+        [(
+            key(),
+            LEADER.to_string(),
+            vec!["broker-b".to_string(), "broker-c".to_string()],
+            PROMOTED,
+        )],
+        &HashMap::new(),
+    )
+    .get(&key())
+    .expect("route")
+    .clone();
+
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route, false, None).await;
+
+    let Outcome::Pending { took, why } = outcome else {
+        panic!("opened without a majority: {outcome:?}");
+    };
+    assert!(took.is_empty(), "{took:?}");
+    assert!(why.starts_with("0 of 2 replicas took the fence"), "{why}");
+}
+
 /// A replica's refusal reaches the shard's status, where an operator reads
 /// it: for #1635 it names the staged successor and `abandon`.
 #[tokio::test]
@@ -524,6 +563,69 @@ async fn a_refusal_says_why_in_the_pending_fence() {
     assert!(
         why.ends_with("; broker-c refused: names broker-d; see abandon"),
         "{why}"
+    );
+}
+
+/// Promise `node_id`'s log of the shard to `to` at the promoted generation,
+/// as a vote for a candidate there does.
+async fn promised_to(replicas: &Replicas, node_id: &str, to: &str) {
+    replicas
+        .get(node_id)
+        .broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log")
+        .accept_generation(PROMOTED, Some(to))
+        .await
+        .expect("promise");
+}
+
+/// **A fence a majority promised to another node is refused, naming it.**
+/// The control plane recorded that node's election without adopting it and
+/// still names this broker, which opened its own copy first; no retry gets
+/// a majority at this generation, so the refusal is what it reports.
+#[tokio::test]
+async fn a_fence_a_majority_promised_away_is_refused() {
+    let mut replicas = Replicas::new();
+    replicas.ballots = true;
+    for id in ["broker-b", "broker-c"] {
+        replicas.get(id).holds(id, 4, 0, &["a"]).await;
+        promised_to(&replicas, id, "broker-d").await;
+    }
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route(), true, None).await;
+
+    let Outcome::Refused {
+        promised_to, took, ..
+    } = outcome
+    else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!(promised_to, "broker-d");
+    assert!(took.is_empty(), "{took:?}");
+}
+
+/// One replica's promise to another node leaves a majority with this broker
+/// and the other replica: the ballot already keeps that node from one, so
+/// the fence opens.
+#[tokio::test]
+async fn one_promise_to_another_node_still_leaves_a_majority() {
+    let mut replicas = Replicas::new();
+    replicas.ballots = true;
+    for id in ["broker-b", "broker-c"] {
+        replicas.get(id).holds(id, 4, 0, &["a"]).await;
+    }
+    promised_to(&replicas, "broker-b", "broker-d").await;
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route(), true, None).await;
+
+    assert_eq!(
+        outcome,
+        Outcome::Fenced {
+            caught_up_from: None
+        }
     );
 }
 

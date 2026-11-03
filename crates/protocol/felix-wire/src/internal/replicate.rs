@@ -132,6 +132,13 @@ pub enum ProducerMark {
 pub struct ReplicateOk {
     pub correlation_id: u64,
     pub durable_offset: u64,
+    /// The follower's copy is a learner: re-admitted after a wipe and still
+    /// catching up, so it may have lost a promise it made before the wipe.
+    /// The leader leaves it out of every mark until an answer without this
+    /// arrives. `false` travels as the original kind, byte for byte; `true`
+    /// as `ReplicateLearnerOk`, sent only to a caller that offered
+    /// [`PeerCapabilities::LEARNER_ACKS`](super::PeerCapabilities::LEARNER_ACKS).
+    pub learner: bool,
 }
 
 /// The follower refused, and where it stands.

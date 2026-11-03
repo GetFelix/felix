@@ -845,10 +845,11 @@ impl InternalMessage {
                     _ => Self::ReplicateRecords(message),
                 })
             }
-            Kind::ReplicateOk => {
+            Kind::ReplicateOk | Kind::ReplicateLearnerOk => {
                 let message = ReplicateOk {
                     correlation_id: take_u64(&mut body)?,
                     durable_offset: take_u64(&mut body)?,
+                    learner: kind == Kind::ReplicateLearnerOk,
                 };
                 expect_empty(&body)?;
                 Ok(Self::ReplicateOk(message))
