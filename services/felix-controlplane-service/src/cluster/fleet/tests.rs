@@ -130,7 +130,8 @@ fn follower_features_wait_for_generation_start() {
 }
 
 /// A new cluster starts with every feature this build implements but
-/// `publisher_principal`; a feature added later fails this until it picks.
+/// `publisher_principal`, and the election features a broker reports when it
+/// offers `ELECTION`; a feature added later fails this until it picks.
 #[test]
 fn a_new_cluster_leaves_only_publisher_principal_to_the_operator() {
     let manual: Vec<_> = felix_common::fleet::IMPLEMENTED
@@ -138,9 +139,16 @@ fn a_new_cluster_leaves_only_publisher_principal_to_the_operator() {
         .filter(|feature| !NEW_CLUSTER.contains(feature))
         .collect();
     assert_eq!(manual, [&felix_common::fleet::PUBLISHER_PRINCIPAL]);
+    let election: Vec<_> = NEW_CLUSTER
+        .iter()
+        .filter(|feature| !felix_common::fleet::IMPLEMENTED.contains(feature))
+        .collect();
     assert_eq!(
-        NEW_CLUSTER.len() + 1,
-        felix_common::fleet::IMPLEMENTED.len()
+        election,
+        [
+            &felix_common::fleet::JOINT_FENCE,
+            &felix_common::fleet::REPLICA_ELECTION
+        ]
     );
 }
 
@@ -157,8 +165,8 @@ fn a_new_cluster_finalizes_prerequisites_first() {
     }
 }
 
-/// Nothing reports the election features yet, so a fleet running this build
-/// cannot finalize them even with every prerequisite enabled.
+/// A fleet whose brokers do not report the election features cannot finalize
+/// them, even with every prerequisite enabled.
 #[test]
 fn the_election_features_cannot_be_finalized_yet() {
     let reported: Vec<&str> = felix_common::fleet::IMPLEMENTED
@@ -175,7 +183,6 @@ fn the_election_features_cannot_be_finalized_yet() {
             matches!(&refused, Err(StoreError::Conflict(message)) if message.contains("do not support it")),
             "{feature}: {refused:?}"
         );
-        assert!(!NEW_CLUSTER.iter().any(|f| f.name() == feature));
     }
     // The prerequisites are still enforced in order.
     let refused = check_prerequisites(&set(&["generation_start"]), "replica_election");

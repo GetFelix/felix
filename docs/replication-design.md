@@ -1238,9 +1238,10 @@ replica the new leader fenced: `after_a_cut_over_the_drained_leader_is_refused`,
 
 ### Electing without the control plane
 
-**Status: built, off by default.** This is the last step of issue #1009.
-The model checks it (below). A broker stands for election only when it
-offers `ELECTION` (the test switch `FELIX_INTERNAL_ELECTION`) and the fleet
+**Status: built, on for a new cluster once `joint_fence` may be finalized.**
+This is the last step of issue #1009. The model checks it (below). A broker
+stands for election only when it offers `ELECTION` (on unless
+`FELIX_INTERNAL_ELECTION=false`) and the fleet
 has finalized `replica_election`, which needs `joint_fence` first (see "What
 is implemented so far"). Without both, a leader that dies while the control
 plane is down is not replaced until the control plane is back.
@@ -1429,7 +1430,8 @@ control plane.
   missing set generation means what it means today: no check
   (`docs/internal-protocol.md`, "Electing without the control plane"). The
   fence, the stamped batch and the pre-vote are sent and checked only
-  under the test switch `FELIX_INTERNAL_ELECTION`.
+  between brokers that offer `ELECTION` (`FELIX_INTERNAL_ELECTION`, on by
+  default).
 - *Control plane.* Adoption, the pending set a cut-over records beside the
   current one, and the flip to it after the joint fence are new store
   writes, so under Raft they need metadata level 21 on every member, and a
@@ -3985,10 +3987,9 @@ successor does not hold.
 The steps, their triggers and the policy that bounds them are in
 [control-plane.md](control-plane.md#moving-a-shard).
 
-The replica's half of electing without the control plane is built and
-dormant (#1009). It runs only between brokers that offer `ELECTION`, which a
-broker does only with the test switch `FELIX_INTERNAL_ELECTION` on, so no
-production broker sends or reads a set yet. With it on:
+The replica's half of electing without the control plane is built (#1009).
+It runs only between brokers that offer `ELECTION`, which a broker does
+unless `FELIX_INTERNAL_ELECTION=false` or the fence is off. Between them:
 
 - A replica keeps the set it answers at in the `replica-set` file, written
   after the ballot and before the answer, so a restart cannot forget a set it
