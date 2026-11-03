@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793676734738,
+  "lastUpdate": 1793680513043,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -54912,6 +54912,72 @@ window.BENCHMARK_DATA = {
             "range": "542.44",
             "unit": "us",
             "extra": "trials: 5\nmedian: 501.00\nmean: 691.20\nstdev: 542.44\ncv: 78.48%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "73f81e21b65f591d552fdd87a8f7616b6d7f096d",
+          "message": "test(cluster): judge the starvation guard's renewals per variant (#1760) (#1834)\n\nTest and docs only.\n\n- The lease canary's renewal bound is now per variant. The per-PR run (debug brokers, healthy renewals up to about 2.2 s) keeps 4 s, the lease's slack (6 s TTL minus 2 s renewal interval). The nightly run (release build, healthy about 0.33 s) uses 2 s, so the nightly guard is not loosened. `Load` carries the bound and the report prints it.\n- `docs/cluster-harness.md` (\"Shard starvation\"): the failure list is one list, the per-variant bounds are documented, and the 4 s claim is stated as holding only when the previous round finished inside its tick (`MissedTickBehavior::Delay`), with the lapse check covering the rest. Read numbers are attributed: 2.5-2.7 s without #1799/#1800, 5-6 s without #1801.\n- Nits: history narration removed from the doc and changelog fragment, changelog wrap fixed, \"baseline\" replaced by \"idle phase\" in the test.",
+          "timestamp": "2026-11-02T20:07:54-08:00",
+          "tree_id": "f1558436f02698fa9701e7aea3bc0a8296d17aaa",
+          "url": "https://github.com/GetFelix/felix/commit/73f81e21b65f591d552fdd87a8f7616b6d7f096d"
+        },
+        "date": 1793680505968,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 121,
+            "range": "1.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 121.00\nmean: 121.20\nstdev: 1.10\ncv: 0.90%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 165,
+            "range": "2.61",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 165.00\nmean: 165.40\nstdev: 2.61\ncv: 1.58%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 211,
+            "range": "490.73",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 211.00\nmean: 433.20\nstdev: 490.73\ncv: 113.28%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 169,
+            "range": "1.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 169.00\nmean: 168.20\nstdev: 1.10\ncv: 0.65%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 333,
+            "range": "3.54",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 333.00\nmean: 332.00\nstdev: 3.54\ncv: 1.06%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 468,
+            "range": "120.39",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 468.00\nmean: 501.80\nstdev: 120.39\ncv: 23.99%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
