@@ -586,8 +586,15 @@ impl ShardAssignment {
     /// it, as a cut-over writes one, because a majority of the elected set may
     /// hold records no majority of this one does. Until the leader reports its
     /// generation's start record on a majority of both, no follower stands
-    /// and a failover promotes from the elected set.
-    pub fn reissuing(&self, elected: &ElectedLeader) -> Option<ShardAssignment> {
+    /// and a failover promotes from the elected set. An elected set naming a
+    /// node `known` (the catalog) does not hold cannot be written, so then
+    /// the elected leader is named on this set, as [`Self::adopting_elected_set`]
+    /// falls back to the old form.
+    pub fn reissuing(
+        &self,
+        elected: &ElectedLeader,
+        known: &dyn Fn(&str) -> bool,
+    ) -> Option<ShardAssignment> {
         if self.pending_set.is_some()
             || self.joining.is_some()
             || !self.nodes().any(|node| *node == elected.leader)
@@ -616,7 +623,7 @@ impl ShardAssignment {
         }
         let same = elected_set.len() == next.replicas.len()
             && elected_set.iter().all(|node| next.replicas.contains(node));
-        if same {
+        if same || !elected_set.iter().all(|node| known(node)) {
             return Some(next);
         }
         // The leader ships to the pending set only, and counts an
@@ -729,7 +736,7 @@ impl ShardAssignment {
                 generation: elected.generation,
                 ..self.clone()
             }
-            .reissuing(elected)
+            .reissuing(elected, known)
             .filter(|next| check_elected_generation(self.generation, next.generation).is_ok());
             return Some(reissued.unwrap_or(adopted));
         }

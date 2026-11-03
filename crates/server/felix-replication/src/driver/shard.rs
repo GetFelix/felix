@@ -468,8 +468,24 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     // it, so a fence that runs after this still knows the set being left. A
     // set before that is not known here is left for the fence, which then
     // stays pending, rather than kept without it.
+    //
+    // A log that counts the route's members at an older generation was
+    // elected on them: a fence at this generation would have kept the set at
+    // it. The election is in memory only, so after a restart the route still
+    // naming this broker looks like an open. That set is kept and stamped as
+    // it is, or this broker would refuse the next leader elected on it.
+    let elected_on_route_set = elected.is_none()
+        && log.replica_set().is_some_and(|stored| {
+            stored.current.generation < route.generation
+                && same_nodes(
+                    &stored.current,
+                    &crate::replica_set::kept(route, entry.learner.as_deref()).current,
+                )
+        });
+    let set_stamp = set_stamp.or(elected_on_route_set.then(|| log.set_generation()));
     let kept = (electing
         && elected.is_none()
+        && !elected_on_route_set
         && log.set_generation() < route.generation
         && log.accepted_generation() >= route.generation)
         .then(|| {
@@ -2496,6 +2512,20 @@ async fn release_readers(broker: &Broker, key: &ShardKey) {
         handle.release_committed();
         handle.appended().notify_waiters();
     }
+}
+
+/// Whether `a` and `b` name the same nodes.
+fn same_nodes(
+    a: &felix_storage::disk_log::Membership,
+    b: &felix_storage::disk_log::Membership,
+) -> bool {
+    let nodes = |set: &felix_storage::disk_log::Membership| {
+        set.members
+            .iter()
+            .map(|member| member.node.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    nodes(a) == nodes(b)
 }
 
 /// The route's set as this leader keeps it. Under `joint_fence` (`joint`

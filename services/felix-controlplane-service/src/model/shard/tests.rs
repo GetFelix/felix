@@ -641,7 +641,10 @@ fn elected_and_issued_generations_are_bounded() {
 fn reissuing_over_another_elected_set_leaves_it_as_a_pending_change() {
     let named_a = assignment();
     let next = named_a
-        .reissuing(&elected("broker-b", &["broker-c", "broker-d"], 7, 6))
+        .reissuing(
+            &elected("broker-b", &["broker-c", "broker-d"], 7, 6),
+            &|_| true,
+        )
         .expect("reissued");
     assert_eq!(next.leader, "broker-b");
     assert_eq!(next.generation, 8);
@@ -663,7 +666,10 @@ fn reissuing_over_another_elected_set_leaves_it_as_a_pending_change() {
     );
 
     let apart = named_a
-        .reissuing(&elected("broker-b", &["broker-d", "broker-e"], 7, 6))
+        .reissuing(
+            &elected("broker-b", &["broker-d", "broker-e"], 7, 6),
+            &|_| true,
+        )
         .expect("reissued");
     assert_eq!(apart.leader, "broker-b");
     assert_eq!(apart.replicas, vec!["broker-d", "broker-e"]);
@@ -672,7 +678,10 @@ fn reissuing_over_another_elected_set_leaves_it_as_a_pending_change() {
 
     // Elected on the recorded set, it is named as is.
     let same = named_a
-        .reissuing(&elected("broker-b", &["broker-c", "broker-a"], 7, 6))
+        .reissuing(
+            &elected("broker-b", &["broker-c", "broker-a"], 7, 6),
+            &|_| true,
+        )
         .expect("reissued");
     assert_eq!(same.leader, "broker-b");
     assert_eq!(same.pending_set, None);
@@ -683,7 +692,10 @@ fn reissuing_over_another_elected_set_leaves_it_as_a_pending_change() {
 
     // Outside the recorded set, or while a change is pending, it is left alone.
     assert_eq!(
-        named_a.reissuing(&elected("broker-d", &["broker-b", "broker-e"], 7, 6)),
+        named_a.reissuing(
+            &elected("broker-d", &["broker-b", "broker-e"], 7, 6),
+            &|_| true
+        ),
         None
     );
     let pending_change = ShardAssignment {
@@ -694,7 +706,33 @@ fn reissuing_over_another_elected_set_leaves_it_as_a_pending_change() {
         ..assignment()
     };
     assert_eq!(
-        pending_change.reissuing(&elected("broker-b", &["broker-d", "broker-e"], 7, 6)),
+        pending_change.reissuing(
+            &elected("broker-b", &["broker-d", "broker-e"], 7, 6),
+            &|_| true
+        ),
         None
+    );
+}
+
+/// **A collided generation still moves on when an elected member left the
+/// catalog.** broker-b was elected at 7 on {b, c, d}, and broker-d has since
+/// been deleted. A write naming it would be refused on every report, leaving
+/// the shard on a leader that never opens, so broker-b is named on the
+/// control plane's set instead.
+#[test]
+fn reissuing_names_the_recorded_set_when_an_elected_member_is_unknown() {
+    let named_a = assignment();
+    let next = named_a
+        .reissuing(
+            &elected("broker-b", &["broker-c", "broker-d"], 7, 6),
+            &|node| node != "broker-d",
+        )
+        .expect("reissued");
+    assert_eq!(next.leader, "broker-b");
+    assert_eq!(next.generation, 8);
+    assert_eq!(next.pending_set, None);
+    assert_eq!(
+        next.nodes().collect::<BTreeSet<_>>(),
+        named_a.nodes().collect::<BTreeSet<_>>()
     );
 }

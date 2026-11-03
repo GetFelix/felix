@@ -1454,6 +1454,9 @@ The write depends on the set the leader was elected on:
   set, the leader included, to hold a majority of the elected set. When it
   does not, the change could never complete, and the new generation names
   the elected set alone.
+- **Another set naming a node the catalog no longer holds.** No write can
+  name that node, so the new generation names the control plane's set, as
+  adoption takes only the generation in that case.
 
 A report older than the elected leader's deposition can still move the shard
 to it, but the broker does not open a generation it promised to another

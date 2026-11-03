@@ -222,12 +222,15 @@ async fn reissued_past_a_collision() -> (InMemoryStore, ShardAssignment) {
         .await
         .expect("assign");
     let next = named_a
-        .reissuing(&ElectedLeader {
-            leader: "broker-b".to_string(),
-            generation: named_a.generation,
-            replicas: vec!["broker-c".to_string(), "broker-d".to_string()],
-            set_generation: named_a.generation,
-        })
+        .reissuing(
+            &ElectedLeader {
+                leader: "broker-b".to_string(),
+                generation: named_a.generation,
+                replicas: vec!["broker-c".to_string(), "broker-d".to_string()],
+                set_generation: named_a.generation,
+            },
+            &|_| true,
+        )
         .expect("reissued");
     let token = store.placement_token().await.expect("token");
     let written = store
