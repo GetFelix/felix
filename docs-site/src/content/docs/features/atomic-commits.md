@@ -104,8 +104,9 @@ A few more limits apply today:
 
 - [Semantics](/architecture/semantics/) states what Felix guarantees about
   delivery, ordering and durability, including how a commit fits in.
-- [Kafka compatibility](/features/kafka/) says how Kafka producers and consumers
-  
+- [Kafka compatibility](/features/kafka/) says how Kafka producers write to
+  durable streams and how Kafka consumers that assign their own partitions
+  read from them.
 
 ## Checked, not just claimed
 
