@@ -11,7 +11,7 @@ asks where the data is, and the answer has to be something the system enforces.
 
 Create a stream with a region and the control plane keeps its leader and every
 replica on brokers in that region, through first placement, rebalancing, drains
-and failover. A copy that ends up outside is moved back. Inside a region, replicas
+and failover. A copy that ends up outside is moved back once a broker in the region can take its place. Inside a region, replicas
 spread across failure zones. One control plane, one set of clients and one
 operations team serve every region.
 
@@ -133,7 +133,7 @@ wired the clusters, not in a per-stream property.
 
 ### How Felix differs
 
-A separate cluster per jurisdiction is the strongest boundary available, because it is a network boundary, and it covers every kind of data including caches and counters, which Felix cannot pin today. It costs N sets of operations and credentials, and application code that knows which cluster holds which tenant. Felix puts the region on the stream and has the control plane enforce it across placement, drains and failover, so the clients and operations stay single. Pick separate clusters when the requirement is a hard network boundary or covers caches.
+Felix pins streams to a region. A separate cluster per jurisdiction is a network boundary and also covers caches and counters, which Felix does not pin. It costs N sets of operations and credentials, and application code that knows which cluster holds which tenant. Felix puts the region on the stream and has the control plane enforce it across placement, drains and failover, so the clients and operations stay single. Pick separate clusters when the requirement is a hard network boundary or covers caches.
 
 Felix does the equivalent of Kafka's rack awareness with `FELIX_NODE_ZONE`, and the region limit is part of the stream's definition, not a replicator's topic list. Against NATS placement tags, the region is checked by the control plane on every later placement decision (failover, rebalancing, drains) and a stray copy is moved back.
 

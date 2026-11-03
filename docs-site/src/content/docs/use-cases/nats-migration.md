@@ -4,11 +4,12 @@ description: "How NATS subjects, queue groups, JetStream, KV and accounts map on
 ---
 A team runs NATS for service messaging. Core NATS carries live updates and
 fire-and-forget events, JetStream holds the events that must not be lost, and a
-KV bucket holds configuration. Each has a direct home on Felix: subjects become
-streams, JetStream streams become durable streams, queue groups and consumers
-become consumer groups, KV becomes the cache, and accounts become tenants. What
-you gain is one log and one set of offsets under all of them, with
-high-fanout delivery that keeps a slow subscriber from slowing anyone else.
+KV bucket holds configuration. Each has a direct home on Felix.
+
+Subjects become streams, JetStream streams become durable streams, queue groups
+and consumers become consumer groups, KV becomes the cache, and accounts become
+tenants. All of them share one log and one set of offsets, and high-fanout
+delivery keeps a slow subscriber from slowing anyone else.
 
 NATS also covers request-reply, headers, an object store, MQTT and edge
 topologies that Felix does not, or only partly. The
@@ -38,6 +39,16 @@ docker compose run --rm felixctl group poll orders workers-1 --max 1 --wait-ms 5
 
 [Work queues](/use-cases/work-queues/) finishes the walk-through with `ack` and
 `nack`, and the sections below show how to create streams of the other kinds.
+
+## Why Felix fits
+
+Streams, consumer groups, the cache and counters run on the same log and
+offsets, so a queue and a key-value bucket do not need a second system that must
+agree with the stream. A Felix subscriber gets its own bounded queue, so a slow
+one reaches its own bound and does not hold the others back, and each event on a
+durable stream carries its offset, so a drop shows as a jump. Accounts become
+tenants, and tokens are scoped to a tenant and can be narrowed by action and
+resource.
 
 ## How it maps
 
@@ -221,16 +232,14 @@ Move the workloads that gain from the log first, and leave RPC on NATS.
 
 ## Compared with NATS
 
-NATS has a mature server, a very wide set of client libraries, a flexible
-subject model, request-reply, and a topology that reaches edge devices. It is
-the better fit for service-to-service messaging, RPC and edge connectivity.
-JetStream is a capable log, and per-key TTL and watches make KV a good fit for
-configuration.
+Felix is built for very high fanout to many live subscribers with isolation
+between them, and for a durable log, work queues, caches and counters that share
+one log and one set of offsets, so you do not run a second system for state.
 
-Felix is aimed at a different spread of work: very high fanout to many live
-subscribers with isolation between them, and a durable log, work queues, caches
-and counters that share one log and one set of offsets, so you do not run a
-second system for state. Felix is pre-1.0, while NATS has years in production. Latency and throughput figures, with their conditions, are on
+Request-reply, RPC, a very wide set of client libraries and edge topologies stay
+on NATS, which has years in production where Felix is pre-1.0. JetStream is a
+capable log, and per-key TTL and watches make KV a good fit for configuration.
+Latency and throughput figures, with their conditions, are on
 [Benchmarks](/features/benchmarks/). Do not compare them with a NATS number from
 another setup.
 

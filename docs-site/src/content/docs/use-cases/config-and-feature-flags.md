@@ -281,12 +281,12 @@ Config sets are small, which fits. For millions of keys, use a durable stream.
 
 **Conditional writes are per key.** There is no transaction across keys, so put
 a change that must land atomically into one value. Conditional writes are
-available in the Rust, Python, TypeScript and .NET clients.
+available in every client.
 
-**Watch a multi-shard cache one shard at a time.** In Rust,
-`Client::watch_cache_sharded` merges the shards. In Python and TypeScript, and
-with `Client::watch_cache`, you open one watch per shard, and a prefix watch that
-names no shard on a multi-shard cache is refused. A one-shard cache avoids the
+**Watch a multi-shard cache with the sharded call.** In Rust, Python and
+TypeScript, `watch_cache_sharded` (`watchCacheSharded` in TypeScript) merges the
+shards into one prefix watch. `watch_cache` opens one watch per shard, and a prefix
+watch that names no shard on a multi-shard cache is refused. A one-shard cache avoids the
 question for config.
 
 **`Quorum` reads depend on a fleet feature.** By default a `Quorum` read

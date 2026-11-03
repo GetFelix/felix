@@ -173,7 +173,7 @@ loop {
 A single-shard consumer can long-poll instead with `group_poll_wait`, which
 asks the broker to hold the request until work arrives or the wait elapses.
 
-The Python binding has the same calls per shard (`group_poll`, `group_ack`,
+The Python and TypeScript bindings have the same calls per shard (`group_poll`, `group_ack`,
 `group_nack`, `group_dead_letters`, `group_redrive`, `group_discard`):
 
 ```python
@@ -247,8 +247,7 @@ JetStream when you want acknowledged messages gone.
 
 **A group is bound to one shard.** The broker serves one shard's group at a time
 and nothing assigns shards to workers. Give a queue one shard, or have each worker
-poll every shard, which `ShardedGroup` does for you in Rust. The Python binding
-has no sharded helper.
+poll every shard, which `ShardedGroup` does for you in Rust, Python and TypeScript.
 
 **Timeouts and retry limits are broker settings.** The default visibility timeout
 and the attempt bound are not per stream or per group. Size your handlers to the

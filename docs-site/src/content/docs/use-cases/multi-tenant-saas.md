@@ -228,8 +228,7 @@ database. Durable log segments are plaintext on disk and the broker sees plainte
 payloads, so encrypt sensitive fields in the application. There is no
 per-tenant encryption or audit log.
 
-**Publisher identity is opt-in.** It is recorded only when enabled, and the Python
-and TypeScript bindings do not expose it yet. Client certificates are not
+**Publisher identity is opt-in.** It is recorded only when enabled. Client certificates are not
 available from the Python, TypeScript, C or C# clients.
 
 ## Related
