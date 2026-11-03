@@ -348,6 +348,7 @@ fn elected_marks(leader: &str) -> QuorumMarks {
                     })
                     .to_vec(),
             },
+            leaving: None,
             incarnation: 0,
         },
     );

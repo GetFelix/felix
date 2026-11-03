@@ -46,9 +46,12 @@ pub struct Elected {
     /// The generation it stood at, above any the control plane named.
     pub generation: u64,
     /// The set it was fenced on. Standing changes no set, so this keeps the
-    /// generation of the assignment that wrote it. A candidate never stands
-    /// while a set change is pending, so there is no set being left.
+    /// generation of the assignment that wrote it.
     pub set: Membership,
+    /// The set kept beside it, which the fence covers too. A candidate stands
+    /// only when it names the same copies as `set`; a follower records what
+    /// the candidate's fence carried.
+    pub leaving: Option<Membership>,
     /// The stream or cache incarnation it stood on. A recreated stream is
     /// another log, which this leadership says nothing about.
     pub incarnation: u64,
@@ -111,6 +114,8 @@ pub struct Named {
 #[derive(Debug, Clone)]
 pub(crate) struct Candidacy {
     pub(crate) set: ReplicaSetView,
+    /// The set being left, fenced jointly with `set`.
+    pub(crate) leaving: Option<Membership>,
 }
 
 impl Elections {
@@ -226,6 +231,7 @@ impl Elections {
         (elected.leader == self.local_node_id && elected.generation == generation).then(|| {
             Candidacy {
                 set: crate::promotion::joint::view(&elected.set),
+                leaving: elected.leaving.clone(),
             }
         })
     }
