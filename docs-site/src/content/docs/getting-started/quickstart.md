@@ -3,10 +3,9 @@ title: "Quickstart"
 ---
 
 The shortest path to a running Felix cluster with something happening on it.
-This page targets the `main` branch, the 0.7 line, so the compose file and the
-Rust example below match the code you build from a clone. On 0.6.2 or earlier,
-the stable docs are at <https://docs.getfelix.dev/>; this page is the `/next/`
-version.
+This page targets `main` (the 0.7 line), so the compose file and the Rust
+example below match the code you build from a clone. For 0.6.2 or earlier, use
+the stable docs at <https://docs.getfelix.dev/>.
 
 A broker on its own is not a working system: it authenticates every connection
 against a control plane, so it needs one to talk to and a credential to present.
@@ -16,7 +15,7 @@ come first here rather than last.
 ## Try it in one command
 
 With Docker or Podman and nothing else, this runs a control plane, a broker and
-development credentials from the images for the current preview:
+development credentials from the 0.7 preview images:
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/GetFelix/felix/main/compose.yaml
@@ -270,7 +269,6 @@ async fn main() -> anyhow::Result<()> {
     config.auth_token = Some("<felix token>".to_string());
 
     // One broker is enough; the client discovers the rest of a cluster.
-    // Use a client address from the session file instead of this one.
     let seeds: Vec<SocketAddr> = vec!["127.0.0.1:5000".parse()?];
     let client = Arc::new(Client::connect(&seeds, "localhost", config).await?);
 
@@ -290,10 +288,11 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
-Replace `127.0.0.1:5000` with a client address from the session file: each
+Replace `127.0.0.1:5000` with a client address from the session file
+(`${TMPDIR:-/tmp}/felix-cluster.json`, written by `felix-cluster up`): each
 entry of `nodes` has a `client_addr`. Replace `<felix token>` with its top-level
-`client_token`. For the certificate, copy the `cert_file` of one entry (a
-`felix-cluster` broker writes `broker-cert.pem` into its data directory) to
+`client_token`. A `felix-cluster` broker writes its certificate to `broker-cert.pem` in its
+data directory, and the `cert_file` of each entry names it. Copy one to
 `broker-cert.pem` in the crate, or change the path in the code.
 
 The stream must already exist in the control plane. `felix-cluster up`

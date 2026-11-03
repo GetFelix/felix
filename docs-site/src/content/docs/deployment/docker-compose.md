@@ -241,8 +241,9 @@ volumes:
 ```
 
 Without `FELIX_CONTROLPLANE_POSTGRES_URL` the control plane keeps its metadata
-in memory and loses it on restart. Outside Compose, give the broker its token
-file with a read-only mount, such as
+in memory and loses it on restart.
+
+Outside Compose, mount the token file read-only, for example
 `-v /path/to/node.token:/etc/felix/node.token:ro` with
 `FELIX_NODE_TOKEN_FILE=/etc/felix/node.token`.
 
