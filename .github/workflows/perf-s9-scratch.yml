@@ -15,7 +15,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   A_SHA: 15004f5354ecec6b160a6f4b22237486df26d80a
-  B_SHA: bdc6e431d2ab618ab1de26c668609afbcff952af
+  B_SHA: 2cde21ce1ffe3097e3b50b7e6ba6c06f5c70a9a1
   BENCH_STEADY_SECS: "40"
 
 jobs:
@@ -63,9 +63,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4]
     env:
-      ROUNDS: "7"
+      ROUNDS: "8"
     steps:
       - uses: actions/download-artifact@v7
         with:
