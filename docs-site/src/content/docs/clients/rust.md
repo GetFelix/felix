@@ -2,10 +2,6 @@
 title: "Rust Client SDK"
 ---
 
-:::note
-The old single-page guide is now split. Jump to [Publishing](/clients/rust/publishing/), [Subscribing](/clients/rust/subscribing/), [Cache Operations](/clients/rust/cache/), [Consumer Groups and Commits](/clients/rust/groups-and-commits/) or [Clusters and Operations](/clients/rust/operations/).
-:::
-
 `felix-client` is the Rust SDK: publish, subscribe, cache, consumer groups,
 and the cluster client, over multiplexed QUIC connections. This page covers
 setup and configuration; the topic pages below cover the rest.
@@ -99,6 +95,19 @@ match client.cache_get("acme", "prod", "sessions", "user-123").await? {
     None => println!("not found or expired"),
 }
 ```
+
+### API at a glance
+
+| To do this | Call | Details |
+|------------|------|---------|
+| Connect to one broker or a cluster | `Client::connect()` | [Setup](#client-configuration) |
+| Publish records | `Client::publish()`, `publish_batch()` | [Publishing](/clients/rust/publishing/) |
+| Read a stream | `subscribe()` | [Subscribing](/clients/rust/subscribing/) |
+| Store keys with a TTL | `cache_put()`, `cache_get()` | [Cache Operations](/clients/rust/cache/) |
+| Share work between consumers | `group_poll()`, `group_ack()` | [Consumer Groups and Commits](/clients/rust/groups-and-commits/) |
+| Attach headers to a record | `publish_with_headers()` | [Publishing](/clients/rust/publishing/) |
+
+For complete API documentation, see the [rustdoc](https://docs.rs/felix-client).
 
 ### Which client to use
 
@@ -267,19 +276,6 @@ client; the client keeps the last token until it expires.
 
 A gateway gives each user's handle a provider of its own; see [Acting for many
 users](#acting-for-many-users).
-
-## API at a glance
-
-| To do this | Call | Details |
-|------------|------|---------|
-| Connect to one broker or a cluster | `Client::connect()` | [Setup](#client-configuration) |
-| Publish records | `Client::publish()`, `publish_batch()` | [Publishing](/clients/rust/publishing/) |
-| Read a stream | `subscribe()` | [Subscribing](/clients/rust/subscribing/) |
-| Store keys with a TTL | `cache_put()`, `cache_get()` | [Cache Operations](/clients/rust/cache/) |
-| Share work between consumers | `group_poll()`, `group_ack()` | [Consumer Groups and Commits](/clients/rust/groups-and-commits/) |
-| Attach headers to a record | `publish_with_headers()` | [Publishing](/clients/rust/publishing/) |
-
-For complete API documentation, see the [rustdoc](https://docs.rs/felix-client).
 
 ## Client Configuration
 
