@@ -301,18 +301,26 @@ pub(crate) async fn fence_shard_as<R: PeerRequester>(
                 set,
                 joint,
                 candidacy.is_some(),
-            )
-            .await;
+            );
+            // This broker's own ballot and set go to disk while the replicas
+            // take theirs, not after: `Promote` keeps them first, and the
+            // shard opens only once both are done.
+            let kept = async {
+                if set.is_some() && candidacy.is_none() {
+                    keep_own_set(
+                        &log,
+                        local_node_id,
+                        route,
+                        under_joint.as_ref().map(|fenced| &fenced.before),
+                    )
+                    .await
+                } else {
+                    Ok(())
+                }
+            };
+            let (fenced, kept) = futures::join!(fenced, kept);
             caught_up_from = caught_up_from.or(fenced?);
-            if set.is_some() && candidacy.is_none() {
-                keep_own_set(
-                    &log,
-                    local_node_id,
-                    route,
-                    under_joint.as_ref().map(|fenced| &fenced.before),
-                )
-                .await?;
-            }
+            kept?;
         }
         Ok(caught_up_from)
     };
