@@ -292,30 +292,14 @@ Delivery latency runs from the publish to when the subscriber receives it.
 
 ### Reproduce it
 
-The driver is committed. It starts the run, runs the preflight, records the
-system facts, runs the gate, the matrix, the latency cells, the NATS comparisons and
-the sweeps, then deallocates the VMs:
-
-```bash
-cd scripts/perf/azure
-SESSION=<name> BUILD_SHA=88a9168148f6fab3245712ea8dee3dc110c9f778 ./campaign-final.sh --dry-run
-SESSION=<name> BUILD_SHA=88a9168148f6fab3245712ea8dee3dc110c9f778 nohup ./campaign-final.sh &
-```
-
-The dry run lists every cell, the expected hours and the cost. The README in
-that directory describes the cell format and `summarize.py`, which turns a
-results directory into `cells.csv` and `summary.md`, or prints one cell with
-`--cell <dir>`. This run was trimmed to fit its time limit: 64 KiB batch-1
-cells, plain-key batch-64 cells, listener counts 1 and 8, the 64 MiB window arm,
-the 4-in-flight arm of the latency curve and the second trial of the sweeps were
-dropped.
-
-`scripts/perf/azure/v060_tables.py <results-dir>` prints the tables on this
-page from the cell directories: median of the finished trials, the min to max
-spread, and how many trials finished. `scripts/perf/azure/v060_charts.py
---single <results-dir> --rf3-release <rf3-results-dir>` draws the charts from the same
-cells into `docs-site/public/charts/v060/`. Bars are medians, and whiskers span
-the trials' minimum to maximum.
+The driver for these measurements lives under `scripts/perf/azure/`, and the
+README there describes the result format and the summary tools. It provisions
+the VMs, runs the preflight, records the system facts, runs the gate, the
+throughput matrix, the latency measurements, the NATS comparisons and the
+sweeps, then deallocates the VMs. This run was trimmed to fit its time limit:
+64 KiB batch-1 measurements, plain-key batch-64 measurements, listener counts 1
+and 8, the 64 MiB window arm, the 4-in-flight arm of the latency curve and the
+second trial of the sweeps were dropped.
 
 ## Single broker results
 

@@ -48,7 +48,7 @@ Dependencies point one way. `sdk` and `server` depend on `protocol`, `testing`
 depends on whatever it exercises, `tools` depends on `sdk`, and `protocol`
 depends on nothing else in the repository. The release workflow publishes five
 crates to crates.io: `felix-wire`, `felix-transport`, `felix-client`,
-`felix-loadgen` and `felixctl`. Every other crate sets `publish = false`.
+`felix-loadgen` and `felixctl`. Every other crate sets `publish = false`, except the Python and Node bindings, which ship as a wheel and an npm package.
 
 **Protocol**
 
