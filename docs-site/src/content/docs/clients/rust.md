@@ -671,6 +671,10 @@ while let Some(event) = orders.next_event().await? {
 - **Opting out.** `record_headers` in the `ClientConfig` is on by default. Set
   it to `false` and the client neither offers nor accepts headers.
 - Idempotent producers and routing keys do not carry headers.
+- **Where headers do not reach.** A clustered broker does not accept them
+  because replication does not ship headers. Consumer groups do not deliver
+  them, the Kafka listener still drops Kafka keys and headers, and only the
+  Rust client sends and reads them.
 
 ### Publisher API
 
