@@ -339,16 +339,8 @@ impl Broker {
         let handle = self
             .resolve_stream_handle(tenant_id, namespace, stream, shard)
             .await?;
-        let durable = handle.state.durable.as_ref();
-        handle
-            .state
-            .advance_to(durable_offset, || crate::ShardHandoff {
-                node_id: durable
-                    .and_then(crate::StreamLog::accepted_leader)
-                    .map(|leader| leader.to_string()),
-                addr: None,
-                generation: durable.map_or(0, crate::StreamLog::accepted_generation),
-            });
+        let state = &handle.state;
+        state.advance_to(durable_offset, || accepted_leader(state));
         Ok(())
     }
 
@@ -419,7 +411,8 @@ impl Broker {
         let handle = self
             .resolve_stream_handle(tenant_id, namespace, stream, shard)
             .await?;
-        handle.state.reset_to(base_offset);
+        let state = &handle.state;
+        state.reset_to(base_offset, || accepted_leader(state));
         Ok(())
     }
 
@@ -472,5 +465,18 @@ impl Broker {
                 Ok(())
             }
         }
+    }
+}
+
+/// Where readers ended by another leader's records are sent: the leader this
+/// shard's log last accepted. A hint, like every handoff.
+fn accepted_leader(state: &crate::stream::StreamState) -> crate::ShardHandoff {
+    let log = state.durable.as_ref();
+    crate::ShardHandoff {
+        node_id: log
+            .and_then(StreamLog::accepted_leader)
+            .map(|leader| leader.to_string()),
+        addr: None,
+        generation: log.map_or(0, StreamLog::accepted_generation),
     }
 }

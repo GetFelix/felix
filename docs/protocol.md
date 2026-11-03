@@ -2267,13 +2267,6 @@ before one of these endings, and registered just after it, is refused
 (`shard_unavailable`, reason `fenced` for a lapse or `moving` for the rest)
 instead of being left with a feed nothing will write to or end.
 
-A broker can also take a newer leader's records as a follower before its own
-release has ended its readers. It ends them as soon as those records reach its
-log, naming the leader its log accepted, so `resume_from` stays below records
-it never offered. A subscription still reading its history when the shard goes
-gets no `shard_moved`: its event stream is reset, and the client resumes after
-the last record it received.
-
 - `resume_from` is the first offset this broker did not offer the reader. For a
   stream subscription every record below it was sent to the subscriber or dropped
   by the subscriber's own queue, and none at or above it was. It is the stream's
@@ -2294,6 +2287,18 @@ before the move can still reach the subscriber, so the last offset it saw may be
 past `resume_from`; and records its queue dropped stay dropped, exactly as they
 would have without the move. Resumed that way, nothing is repeated and nothing
 is skipped that the subscriber would otherwise have received.
+
+A leader that loses a shard usually stays one of its replicas, and the new
+leader starts shipping to it at once. Those records can reach its log before it
+has ended its readers. It then ends them right away, as for a move to the
+leader its log accepted, with `resume_from` below the records it never offered.
+The same goes for a rebuild the new leader asks of it.
+
+A subscription still reading its history from disk on a `Quorum` stream waits
+at the committed mark. If the broker stops serving the shard before the mark
+reaches the end of that history, the event stream is reset rather than ended
+with `shard_moved`. The client then resumes after the last record it received,
+or where it asked to start if it received none.
 
 The Rust `Client` does this on its own: a subscription from
 `Client::subscribe` and a cache watch from `Client::watch_cache`

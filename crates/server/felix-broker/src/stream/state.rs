@@ -341,16 +341,7 @@ impl StreamState {
         if next_seq <= state.next_seq.max(self.commit_sequencer.next_offset()) {
             return;
         }
-        if !self.subscribers.lock().senders.is_empty() {
-            let ended = self.end_locked(&state, Some(Ending::Moved(to())));
-            tracing::info!(
-                stream = self.held.shard().map(|(stream, _)| stream),
-                shard = self.held.shard().map(|(_, shard)| shard),
-                ended,
-                resume_from = state.next_seq,
-                "ended readers of a shard whose log took another leader's records",
-            );
-        }
+        self.end_passed_over(&state, to);
         state.log.clear();
         state.next_seq = next_seq;
         state.generation_start_run = None;
@@ -368,8 +359,16 @@ impl StreamState {
     /// For a follower whose log was just rebuilt: the ring and the sequence
     /// described records that are gone, and `advance_to` only ever moves
     /// forward.
-    pub(crate) fn reset_to(&self, next_seq: u64) {
+    ///
+    /// A rebuild that keeps the committed records can move the sequence up,
+    /// past a batch held here that the mark already covers. Subscribers still
+    /// registered were never offered it, so they are ended first, as in
+    /// `advance_to`.
+    pub(crate) fn reset_to(&self, next_seq: u64, to: impl FnOnce() -> ShardHandoff) {
         let mut state = self.log_state.lock();
+        if next_seq > state.next_seq {
+            self.end_passed_over(&state, to);
+        }
         state.log.clear();
         state.next_seq = next_seq;
         state.generation_start_run = None;
@@ -757,6 +756,23 @@ impl StreamState {
     pub(crate) fn end_subscribers(&self, ending: Option<Ending>) -> usize {
         let log = self.log_state.lock();
         self.end_locked(&log, ending)
+    }
+
+    /// End the subscribers still registered as for a move to `to()`, at the
+    /// sequence as it stands, before it moves past records they were never
+    /// offered. Under the log lock.
+    fn end_passed_over(&self, log: &LogState, to: impl FnOnce() -> ShardHandoff) {
+        if self.subscribers.lock().senders.is_empty() {
+            return;
+        }
+        let ended = self.end_locked(log, Some(Ending::Moved(to())));
+        tracing::info!(
+            stream = self.held.shard().map(|(stream, _)| stream),
+            shard = self.held.shard().map(|(_, shard)| shard),
+            ended,
+            resume_from = log.next_seq,
+            "ended readers of a shard whose log another leader rewrote",
+        );
     }
 
     /// [`Self::end_subscribers`] with the log lock already held.

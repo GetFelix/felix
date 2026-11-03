@@ -2186,13 +2186,14 @@ history is read. A broker that just took a shard has no mark for its
 generation yet (`Settling`): a `Latest` subscribe is refused as retryable until
 the first mark. Held batches are dropped when the shard is released (never
 delivered as committed); subscribers are ended with where to resume and pick
-up on the next leader. If the old leader's log takes the new leader's records
-before its release ends them, they are ended then, at the position they had
-reached, so the resume is below those records and below anything it held.
-A reader whose history is still waiting for the mark has seen nothing past
-it: its stream is reset and it resumes after its last record. While the lease is lapsed the bound is `Refused`: new
+up on the next leader. While the lease is lapsed the bound is `Refused`: new
 subscribes, watches and cache reads are refused (`felix_broker_lease_refusals_total{boundary="read"}`),
 and the readers of every led shard are ended as for a move.
+If the old leader's log takes the new leader's records, or is rebuilt at its
+request, before its release ends its readers, they are ended then, at the
+position they had reached. The resume is below those records and below
+anything it held. A reader whose history is still waiting for the mark has
+seen nothing past it: its stream is reset and it resumes after its last record.
 
 ### Storage identities
 
