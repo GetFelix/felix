@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793671682142,
+  "lastUpdate": 1793674563748,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -43160,6 +43160,58 @@ window.BENCHMARK_DATA = {
             "range": "35585.42",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 811057.06\nmean: 798812.48\nstdev: 35585.42\ncv: 4.45%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c4066158de9ea4d106a497ec36dfdb174cf5a649",
+          "message": "docs: split the Rust client guide, add error and auth pages, fix client examples (#1822)\n\n* docs: split the Rust client guide, add error and auth pages, fix client examples\n\nRename the leftover cluster variable to client in the Rust and resilient-client\nexamples, and in the harness that compiles them. Split rust.md into topic pages\nand teach the examples harness to read a page made of several files. Add\nErrors Across Clients and Auth and TLS pages, a browser-gateway comparison,\nreplay and record-header notes, mTLS-is-Rust-only notes, the Python reconnect\noptions, and preview install notes.\n\n* test: let auto-deref pass the file name\n\n* docs: address review of the client pages\n\n* test: discover the Rust guide pages instead of listing them\n\n* docs: address review of the client pages (install pins, API table, errors wording, sidebar order)\n\n* docs: one link list on the Rust setup page and the API table inside Quick Start\n\n* test: re-bless the Rust client doc snippets after the page split",
+          "timestamp": "2026-11-02T18:40:03-08:00",
+          "tree_id": "c2904ed5e545b57908ce64a74944fc1498db456e",
+          "url": "https://github.com/GetFelix/felix/commit/c4066158de9ea4d106a497ec36dfdb174cf5a649"
+        },
+        "date": 1793674563193,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 486111.01,
+            "range": "25627.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 486111.01\nmean: 487330.85\nstdev: 25627.12\ncv: 5.26%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 486111.01,
+            "range": "25627.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 486111.01\nmean: 487330.85\nstdev: 25627.12\ncv: 5.26%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 116844.23,
+            "range": "1623.49",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 116844.23\nmean: 116186.63\nstdev: 1623.49\ncv: 1.40%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1168442.33,
+            "range": "16234.87",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1168442.33\nmean: 1161866.25\nstdev: 16234.87\ncv: 1.40%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
