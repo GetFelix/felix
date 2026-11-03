@@ -1,16 +1,38 @@
 ---
 title: "Coming from NATS"
-description: "How NATS subjects, queue groups, JetStream, KV and accounts map onto Felix streams, consumer groups, the cache and tenants, and the NATS features Felix does not have."
+description: "How NATS subjects, queue groups, JetStream, KV and accounts map onto Felix streams, consumer groups, the cache and tenants, and what to do about the NATS features Felix does not have."
 ---
-
 A team runs NATS for service messaging. Core NATS carries live updates and
 fire-and-forget events, JetStream holds the events that must not be lost, and a
-KV bucket holds configuration. The question is what each of those becomes on
-Felix, and which parts of the NATS model have no counterpart.
+KV bucket holds configuration. Each has a direct home on Felix: subjects become
+streams, JetStream streams become durable streams, queue groups and consumers
+become consumer groups, KV becomes the cache, and accounts become tenants. What
+you gain is one log and one set of offsets under all of them, with
+high-fanout delivery that keeps a slow subscriber from slowing anyone else.
 
-NATS covers request-reply, headers, an object store, MQTT and edge topologies
-that Felix does not. Read the last two sections before planning a move. For some
-workloads the right answer is to keep NATS.
+## Try it
+
+The [Quickstart](/getting-started/quickstart/) starts a broker and a control
+plane with a durable stream named `orders`. From the directory holding
+`compose.yaml`, subscribe in one terminal and publish from another, the Felix
+equivalent of `nats sub` and `nats pub`:
+
+```bash
+docker compose run --rm felixctl sub orders
+docker compose run --rm felixctl pub orders 'hello'
+```
+
+The same stream also works as a JetStream-style queue. Create a group, publish a
+job and claim it:
+
+```bash
+docker compose run --rm felixctl group create orders workers-1 --from latest
+docker compose run --rm felixctl pub orders 'job-1'
+docker compose run --rm felixctl group poll orders workers-1 --max 1 --wait-ms 5000
+```
+
+[Work queues](/use-cases/work-queues/) finishes the walk-through with `ack` and
+`nack`, and the sections below show how to create streams of the other kinds.
 
 ## How it maps
 
@@ -175,45 +197,6 @@ browsers cannot, so browsers go through [felix-gateway](/clients/browsers/): a
 WebSocket relay that signs the user in, holds a token narrowed to one scope, and
 forwards JSON messages. It is a separate process you run, and it is pre-1.0.
 
-## What Felix does not have
-
-- **Request-reply.** There is no built-in request pattern, no reply subject, and
-  no scatter-gather. You can build one from two streams and a correlation id in
-  the payload, but the latency and the setup cost are not those of a NATS
-  request. Keep NATS for RPC-style traffic.
-- **Message headers.** A Felix record is a payload and, on durable streams, an
-  offset and append time. Metadata goes in the payload.
-- **Subject wildcards and subject mapping.** Described above. There is no
-  server-side rewriting or weighted routing of subjects.
-- **Object store.** Felix has no large-object store. Keep blobs elsewhere and
-  publish a reference.
-- **MQTT.** Felix has no MQTT listener. It has a Kafka listener for producers
-  and self-assigning consumers; see [Coming from Kafka](/use-cases/kafka-migration/).
-- **Leaf nodes and superclusters.** Felix brokers form one cluster. Pinning a
-  stream's replicas to a region is possible, and gives data residency, but
-  there is no leaf topology for edge sites and no gateway between independent
-  clusters. See [Data residency](/use-cases/data-residency/).
-- **Mirrors and sources.** There is no stream mirroring between clusters.
-- **Follower reads.** Every read goes to the shard's leader.
-- **A single-binary deployment.** A Felix deployment has brokers and
-  a control plane, backed by Postgres or its Raft backend. NATS is simpler to
-  run, and is lighter on a small machine.
-
-## Compared with NATS
-
-NATS has a mature server, a very wide set of client libraries, a flexible
-subject model, request-reply, and a topology that reaches edge devices. It is
-the better fit for service-to-service messaging, RPC and edge connectivity.
-JetStream is a capable log, and per-key TTL and watches make KV a good fit for
-configuration.
-
-Felix is aimed at a different spread of work: very high fanout to many live
-subscribers with isolation between them, and a durable log, work queues, caches
-and counters that share one log and one set of offsets, so you do not run a
-second system for state. Felix is pre-1.0, while NATS has years in production. Latency and throughput figures, with their conditions, are on
-[Benchmarks](/features/benchmarks/). Do not compare them with a NATS number from
-another setup.
-
 ## A migration path
 
 Move the workloads that gain from the log first, and leave RPC on NATS.
@@ -231,11 +214,54 @@ Move the workloads that gain from the log first, and leave RPC on NATS.
 5. Leave request-reply, headers-dependent flows and edge or MQTT connectivity on
    NATS.
 
-## Try it
+## Compared with NATS
 
-The [Quickstart](/getting-started/quickstart/) starts a broker and a control
-plane, and [felixctl](/getting-started/felixctl/) creates streams, publishes,
-subscribes and works a consumer group.
+NATS has a mature server, a very wide set of client libraries, a flexible
+subject model, request-reply, and a topology that reaches edge devices. It is
+the better fit for service-to-service messaging, RPC and edge connectivity.
+JetStream is a capable log, and per-key TTL and watches make KV a good fit for
+configuration.
+
+Felix is aimed at a different spread of work: very high fanout to many live
+subscribers with isolation between them, and a durable log, work queues, caches
+and counters that share one log and one set of offsets, so you do not run a
+second system for state. Felix is pre-1.0, while NATS has years in production. Latency and throughput figures, with their conditions, are on
+[Benchmarks](/features/benchmarks/). Do not compare them with a NATS number from
+another setup.
+
+## Limits you can plan around
+
+**Request-reply.** There is no built-in request pattern, reply subject or
+scatter-gather. Build one from two streams and a correlation id in the payload,
+accepting that latency and setup cost are not those of a NATS request. Keep NATS for
+RPC-style traffic.
+
+**Message headers.** A record is a payload and, on durable streams, an offset and
+append time. A single broker can carry a key and named headers with each record for
+the Rust client; a clustered broker, consumer groups and the other clients do not
+yet (see [What Felix Is For](/getting-started/what-felix-is-for/)). Elsewhere, put
+metadata in the payload.
+
+**Subject wildcards and subject mapping.** Described above. Use namespaces,
+one stream per kind, or routing keys. There is no server-side rewriting or weighted
+routing of subjects.
+
+**Object store.** Keep blobs elsewhere and publish a reference.
+
+**MQTT.** A broker can accept MQTT connections on a listener with token
+authentication, but publish and subscribe over it are not built yet, so keep MQTT
+traffic on NATS for now ([MQTT](/features/mqtt/)). A Kafka listener serves producers
+and self-assigning consumers; see [Coming from Kafka](/use-cases/kafka-migration/).
+
+**Leaf nodes, superclusters and mirrors.** Felix brokers form one cluster, and there
+is no leaf topology for edge sites, no gateway between independent clusters and no
+stream mirroring between clusters. Pinning a stream's replicas to a region is
+possible; see [Data residency](/use-cases/data-residency/).
+
+**Follower reads.** Every read goes to the shard's leader.
+
+**Deployment.** A Felix deployment has brokers and a control plane, backed by
+Postgres or its Raft backend, so it takes more to run than a single NATS binary.
 
 ## Related
 

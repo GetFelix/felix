@@ -10,30 +10,28 @@ read, write or even learn about another customer's data, that an engineer can
 give a service account access to exactly one customer's cache keys, and that
 one customer's import job cannot starve the rest.
 
-## How this is usually built
+On Felix the tenant is part of every request and every token. The broker refuses
+an operation outside the caller's tenant, a token can be narrowed to one stream or
+one cache key, and a per-tenant publish cap and fair queue keep a noisy customer
+from crowding out the others.
 
-Kafka has no tenancy in the data model, so the convention is a topic prefix
-per tenant (`acme.orders`), ACLs with prefixed resource patterns that grant a
-principal access to `acme.*`, and quotas per user or client id for bandwidth
-and request rate. It works and is widely deployed. The scoping is a naming
-convention that the ACLs enforce, so a mistake in a prefix rule is a leak, and
-topic counts grow with tenants. Kafka's quotas are broader than what Felix
-has, as they limit produce and fetch bandwidth and request time.
+## Try it
 
-NATS is the strongest of the common options. An account is a separate
-namespace for subjects, with its own users, JetStream storage limits and
-connection limits, and accounts see each other only through explicit exports
-and imports. Isolation is enforced by the server and does not depend on
-naming. If hard tenant isolation inside a messaging system is the whole
-requirement, NATS accounts are a strong fit.
+Start the stack from the
+[Quickstart](/getting-started/quickstart/#try-it-in-one-command) (it covers Podman
+too) and run these from the directory holding `compose.yaml`.
 
-Redis has key prefixes and ACLs that can restrict a user to keys matching a
-pattern. That keeps honest clients in their lane, but Redis does not give a
-tenant its own namespace, quotas or identity provider, and one tenant's
-`KEYS` or large value affects the others.
+The stack's credentials belong to tenant `dev`. Ask for another tenant with the
+same token:
 
-In all three, the application usually does its own mapping from end user to
-tenant, and its own check on every call.
+```bash
+docker compose run --rm felixctl pub orders 'hello'
+docker compose run --rm felixctl --tenant acme pub orders 'hello'
+```
+
+The first publish succeeds. The second fails with `auth rejected`, because the
+token was minted for `dev` and the broker will not accept it for `acme`. The [cross-tenant demo](/demos/overview/) goes further, with two
+tenants of its own and RBAC changes taking effect while it runs.
 
 ## Why Felix fits
 
@@ -168,60 +166,68 @@ broker's decision change without a restart. See [Demos](/demos/overview/).
 
 ## Compared with Kafka, NATS and Redis
 
+### How it is usually built
+
+Kafka has no tenancy in the data model, so the convention is a topic prefix
+per tenant (`acme.orders`), ACLs with prefixed resource patterns that grant a
+principal access to `acme.*`, and quotas per user or client id for bandwidth
+and request rate. It works and is widely deployed. The scoping is a naming
+convention that the ACLs enforce, so a mistake in a prefix rule is a leak, and
+topic counts grow with tenants. Kafka's quotas limit produce and fetch bandwidth
+and request time per user or client id.
+
+NATS uses accounts. An account is a separate namespace for subjects, with its
+own users, JetStream storage limits and connection limits, and accounts see each
+other only through explicit exports and imports. The server enforces the
+isolation, so it does not depend on naming.
+
+Redis has key prefixes and ACLs that can restrict a user to keys matching a
+pattern. That keeps honest clients in their lane, but Redis does not give a
+tenant its own namespace, quotas or identity provider, and one tenant's
+`KEYS` or large value affects the others.
+
+In all three, the application usually does its own mapping from end user to
+tenant, and its own check on every call.
+
+### How Felix differs
+
 Against Kafka, tenancy is in the model and not in topic names, so a prefix ACL
 mistake is not a leak, and a token can be narrowed to what one browser session
-needs. Kafka's quotas cover more, with bandwidth and request rate for producers
-and consumers per user or client, and Felix limits only publish rate today.
-Pick Kafka when per-client bandwidth quotas are the main requirement.
+needs. Felix caps each tenant's publish rate (bytes and messages per second) per
+broker, on QUIC and the Kafka listener alike, and queues publishes behind a
+per-tenant fair share, so one tenant flooding a broker is refused with a
+retryable error while the others still get in. Kafka's quotas also cover fetch
+bandwidth and request time, which Felix does not limit.
 
-Against NATS, accounts are the stronger isolation unit. They carry limits on
-subscriptions, JetStream storage and connections, and share data only through
-exports and imports under the account owner's control. A Felix tenant is a scope
-in a shared cluster, with no per-tenant limits beyond the publish rate and the
-per-source-address connection cap. Felix puts streams, a cache, counters and
-consumer groups behind that scope, with OIDC exchange and key-level cache
-grants for a SaaS where end users hold tokens directly. Pick NATS when hard
-per-tenant resource limits are the whole requirement.
+Against NATS, a Felix tenant is a scope in a shared cluster. Where an account
+carries its own limits on subscriptions, JetStream storage and connections, a
+tenant carries the publish-rate cap and the per-source-address connection cap.
+Felix puts streams, a cache, counters and consumer groups behind that scope, with
+OIDC exchange and key-level cache grants for a SaaS where end users hold tokens
+directly.
 
 Against Redis key prefixes, the tenant is part of every request and the cache
 is scoped to it. Credentials come from your identity provider through token
 exchange and not from static ACL users. Pick Redis when you need only a fast
 cache for one trusted application.
 
-## Try it
+## Limits you can plan around
 
-Start the stack from the
-[Quickstart](/getting-started/quickstart/#try-it-in-one-command) (it covers Podman
-too) and run these from the directory holding `compose.yaml`.
-
-The stack's credentials belong to tenant `dev`. Ask for another tenant with the
-same token:
-
-```bash
-docker compose run --rm felixctl pub orders 'hello'
-docker compose run --rm felixctl --tenant acme pub orders 'hello'
-```
-
-The first publish succeeds. The second fails with `auth rejected`, because the
-token was minted for `dev` and the broker will not accept it for `acme`. The [cross-tenant demo](/demos/overview/) goes further, with two
-tenants of its own and RBAC changes taking effect while it runs.
-
-## Where it stops
-
-Per-tenant quotas are partial. The publish rate, in bytes and messages per
-second, is capped per broker through an environment variable, across QUIC and
-Kafka. Not built: quotas on subscriptions, cache memory or storage, and quotas
-stored in the control plane rather than each broker's environment. A tenant can
-subscribe to, cache and store without a bound, so a hostile or buggy tenant
-can still fill disk or memory. One source address may hold only a bounded
+**Per-tenant quotas cover publishes.** The rate, in bytes and messages per second,
+is set per broker through an environment variable, not in the control plane. Quotas
+on subscriptions, cache memory and storage are not built, so a hostile or buggy
+tenant can still fill disk or memory. Size brokers for the worst tenant, and cap
+tenants you do not trust at the edge. One source address may hold only a bounded
 number of connections.
 
-Tenant isolation is enforced by the broker's checks, not by separate
-processes or keys: tenants share brokers, logs on disk and the control
-plane's database. Durable log segments are plaintext on disk, and there is no
-per-tenant encryption or audit log. The broker sees plaintext payloads.
-Publisher identity is recorded only when enabled, and the Python and
-TypeScript bindings do not expose it yet. Client certificates are not
+**Tenants share brokers.** The broker's checks enforce isolation, not separate
+processes or keys: tenants share brokers, logs on disk and the control plane's
+database. Durable log segments are plaintext on disk and the broker sees plaintext
+payloads, so encrypt sensitive fields in the application. There is no
+per-tenant encryption or audit log.
+
+**Publisher identity is opt-in.** It is recorded only when enabled, and the Python
+and TypeScript bindings do not expose it yet. Client certificates are not
 available from the Python, TypeScript, C or C# clients.
 
 ## Related
