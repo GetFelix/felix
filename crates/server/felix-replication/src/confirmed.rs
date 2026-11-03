@@ -6,9 +6,9 @@
 //! such a copy also asks for a read the control plane's leader confirmed
 //! (#1332).
 //!
-//! The read never runs on the peer lane ([`ConfirmedReads`]): the peer
-//! server answers a lane's requests one at a time, so a control-plane round
-//! trip there would hold up every other shard queued behind it (#1791).
+//! The read never runs on the peer lane ([`ConfirmedReads`]): a fence
+//! waiting on a control-plane round trip would outlast the leader's request
+//! timeout and hold one of its stream's control slots meanwhile (#1791).
 
 use std::collections::HashMap;
 use std::sync::Arc;
