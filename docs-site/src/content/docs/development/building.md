@@ -134,20 +134,19 @@ docs-only change gets both within a minute or two.
 `coverage` itself runs only on pushes to main, where it publishes the badge;
 on a pull request it is skipped and `Coverage ok` passes.
 
-Its jobs:
+Its jobs, in [`ci.yml`](https://github.com/GetFelix/felix/blob/main/.github/workflows/ci.yml),
+which is the authority for what each one runs:
 
-| Job | Runs |
-| --- | --- |
-| `test` | `task test:workspace` (every crate but `felix-cluster`), then `task test:stress` |
-| `cluster` | `task test:cluster SUITE=…`, one job each for `routing`, `failures` and `history`, and one for the rest of `felix-cluster`'s suites |
-| `checks` | `task lint`, `task deny`, `task publish:check`, `task ci:toolchains`, `task ci:timeouts`, `task docs:evidence`, `task changelog:check`, `scripts/check_release_version.py`, `task demo:check` (then fails if a demo lockfile changed), `task deny:rsa:default` |
-| `images` | Builds `docker/broker.Dockerfile` and `docker/controlplane.Dockerfile`, then checks each image starts, serves `/ready` and does not run as root |
-| `compose` | Loads the images `images` built, brings up `compose.yaml` with them and does one `felixctl` publish/subscribe round trip (`scripts/ci/compose_smoke.sh`) |
-| `chart` | `scripts/check_chart.py`, the same as `task chart:check` |
-| `python`, `typescript` | Builds each binding and runs its client conformance suite, then verifies the results with `felix-conformance verify` |
-| `spec-pairing` | `scripts/check_spec_pairing.py` against the PR base, on pull requests that change code |
-| `formal` | `scripts/check_tla.sh` (`task tla:check`), only when `docs/formal/`, `scripts/check_tla.sh` or `ci.yml` changes. A pull request checks the configurations of ten minutes or less (`TLA_QUICK=1`) and the ones whose `.cfg` it changes, each one over 30 minutes in a `formal-heavy` job of its own; main checks all of them |
-| `fuzz` | `task fuzz` with `FUZZ_SECONDS=30` |
+- `test`: the workspace tests except `felix-cluster`, then the stress tests.
+- `cluster`: the `felix-cluster` suites, split into `routing`, `failures`, `history` and the rest.
+- `checks`: lint, `cargo-deny`, publish and toolchain checks, `task docs:evidence`, the changelog and release-version checks, and `task demo:check`.
+- `images`: builds the broker and control-plane images and checks each starts, serves `/ready` and does not run as root.
+- `compose`: brings up `compose.yaml` with those images and does one `felixctl` round trip.
+- `chart`: `task chart:check`.
+- `python`, `typescript`: build each binding and run its client conformance suite.
+- `spec-pairing`: on pull requests that change code, checks that a change to a modelled area names its spec.
+- `formal`: the TLA+ checks, when `docs/formal/` or the check script changes. A pull request runs the short configurations and any it changes; main runs all of them.
+- `fuzz`: `task fuzz` for 30 seconds per target.
 
 `task deny` runs `cargo-deny check` against
 [deny.toml](https://github.com/GetFelix/felix/blob/main/deny.toml), then checks

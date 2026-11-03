@@ -3,6 +3,8 @@ title: "Quickstart"
 ---
 
 The shortest path to a running Felix cluster with something happening on it.
+This page targets the `main` branch, the 0.7 line, so the compose file and the
+Rust example below match the code you build from a clone.
 
 A broker on its own is not a working system: it authenticates every connection
 against a control plane, so it needs one to talk to and a credential to present.
@@ -16,17 +18,21 @@ development credentials from the released images:
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/GetFelix/felix/main/compose.yaml
-docker compose up
+docker compose up -d
+docker compose logs felix-dev-ready
 ```
 
-With Podman, use `PODMAN_COMPOSE_PROVIDER=docker-compose podman compose up`;
+With Podman, use `PODMAN_COMPOSE_PROVIDER=docker-compose podman compose up -d`;
 `podman-compose` does not run this file correctly.
 
-When the broker is ready it prints its connection settings. Then, from the
-same directory, subscribe in one terminal and publish in another:
+The last command prints the connection settings once the broker is ready. Then,
+from the same directory, subscribe in one terminal and publish in a second one:
 
 ```bash
 docker compose run --rm felixctl sub orders
+```
+
+```bash
 docker compose run --rm felixctl pub orders 'hello'
 ```
 
@@ -40,6 +46,9 @@ to use an installed `felixctl` instead. See
 [Docker Compose](/deployment/docker-compose/#try-it-in-one-command) for what
 the stack runs and why its credentials are safe locally. The rest of this page
 builds Felix from source.
+
+**Stop here if you only want to try Felix.** The [tutorials](/tutorials/overview/)
+build on this stack and take you from a first stream to a small app.
 
 ## Prerequisites
 
@@ -83,12 +92,12 @@ placeable: broker-0, broker-1, broker-2
 shard ownership:
   stream/t1/ns/orders/0 -> broker-2
 
-session   /tmp/felix-cluster.json
+session   ${TMPDIR:-/tmp}/felix-cluster.json
 
 holding the cluster. press Ctrl-C to tear it down.
 ```
 
-The session file sits in your system temp directory. It records the tenant
+The session file sits in your system temp directory (`$TMPDIR`, or `/tmp`). It records the tenant
 (`t1`), namespace (`ns`), a client token and every broker's address, and it is
 how the other commands find the cluster.
 
@@ -224,6 +233,17 @@ broker's certificate. Where each comes from:
 
 ### Publish and subscribe
 
+Make a crate for the example. The client API below is the 0.7 one, so depend on
+`felix-client` from your clone of the repository (the path here assumes the
+clone sits next to the new crate):
+
+```bash
+cargo new orders-demo && cd orders-demo
+cargo add felix-client --path ../felix/crates/sdk/felix-client
+cargo add tokio --features macros,rt-multi-thread
+cargo add anyhow bytes rustls@0.23
+```
+
 ```rust
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -291,163 +311,16 @@ if let Some(value) = client.cache_get("t1", "ns", "users", "user:123").await? {
 The cache must exist in the control plane too. `felix-cluster up` creates one
 named `users`. [Rust client](/clients/rust/) covers the rest of the API.
 
-## Performance Testing
+## Benchmarks, configuration and troubleshooting
 
-### Latency Benchmark
-
-Run the latency demo with various configurations:
-
-```bash
-# Basic run with defaults
-cargo run --release -p felix-broker-service --features demo --bin latency-demo
-
-# Custom configuration
-cargo run --release -p felix-broker-service --features demo --bin latency-demo -- \
-    --binary \
-    --fanout 10 \
-    --batch 64 \
-    --payload 4096 \
-    --total 10000 \
-    --warmup 500
-```
-
-**Parameters:**
-
-- `--binary`: Use binary batch format (higher throughput)
-- `--fanout N`: Number of concurrent subscribers
-- `--batch N`: Batch size for publishing
-- `--payload N`: Payload size in bytes
-- `--total N`: Total messages to send
-- `--warmup N`: Warmup messages before measurement
-
-### Cache Benchmark
-
-```bash
-cargo run --release -p felix-broker-service --features demo --bin cache-demo
-```
-
-Measures put, get-hit and get-miss latency across payload sizes. Variables such as `FELIX_CACHE_BENCH_CONCURRENCY` and `FELIX_CACHE_BENCH_PAYLOADS` shape the run.
-
-## Configuration
-
-The broker and the Rust client each read `FELIX_*` environment variables, and
-the broker also reads a YAML file.
-
-### Environment Variables
-
-On the broker, event batching trades latency for throughput:
-
-```bash
-export FELIX_EVENT_BATCH_MAX_EVENTS=64
-export FELIX_EVENT_BATCH_MAX_DELAY_US=250
-```
-
-On the client, `ClientConfig::from_env_or_yaml` reads the connection pools:
-
-```bash
-export FELIX_EVENT_CONN_POOL=8
-export FELIX_CACHE_CONN_POOL=8
-export FELIX_CACHE_STREAMS_PER_CONN=4
-```
-
-### Config File
-
-Create `/tmp/felix-config.yml`:
-
-```yaml
-quic_bind: "0.0.0.0:5000"
-metrics_bind: "0.0.0.0:8080"
-event_batch_max_events: 64
-event_batch_max_delay_us: 250
-pub_conn_recv_window: 16777216
-```
-
-Point the broker at it with `FELIX_BROKER_CONFIG=/tmp/felix-config.yml`. It
-still needs `FELIX_CONTROLPLANE_URL` and a node credential. See [Running a
-broker yourself](#running-a-broker-yourself).
-
-See [Configuration Reference](/reference/configuration/) for all options.
-
-## Using Task
-
-If you have [Task](https://taskfile.dev/) installed, you can use convenience commands:
-
-```bash
-# Build
-task build
-
-# Run tests
-task test
-
-# Format code
-task fmt
-
-# Run linter
-task lint
-
-# Run demos
-task demo:pubsub
-task demo:cache
-task demo:latency
-task demo:queues
-task demo:notifications
-task demo:orders
-task demo:slow-consumer
-task demo:state-divergence
-task demo:rbac-live
-task demo:cross-tenant-isolation
-```
-
-See `Taskfile.yml` in the repository root for all available tasks.
-
-## Troubleshooting
-
-### Port Already in Use
-
-If port 5000 or 8080 is in use:
-
-```bash
-export FELIX_QUIC_BIND="0.0.0.0:5001"
-export FELIX_BROKER_METRICS_BIND="0.0.0.0:8081"
-```
-
-The metrics variable is prefixed because the control plane has one of its own.
-Set `FELIX_METRICS_BIND` and the broker warns that nothing reads it rather than
-silently keeping the default.
-
-`felix-cluster up` picks free ports for every process, so it has nothing to
-collide with.
-
-### Build Errors
-
-Ensure you have Rust 1.97 or later (the repo pins 1.99.1, and rustup fetches it):
-
-```bash
-rustc --version
-# Should show: rustc 1.97 or higher
-```
-
-Update if needed:
-
-```bash
-rustup update
-```
-
-### Connection Refused
-
-Make sure the broker is running and listening:
-
-```bash
-lsof -i :5000
-```
-
-A broker that exits right after logging `broker started` is missing its
-control-plane configuration, not failing to bind. Read the line after it.
-
-See [Troubleshooting Guide](/reference/troubleshooting/) for more help.
+- **Benchmarks.** `latency-demo` and current numbers are on [Benchmarks](/features/benchmarks/); `cache-demo` is covered in the [Performance Guide](/features/performance/).
+- **Configuration.** The broker and the Rust client read `FELIX_*` environment variables, and the broker also reads a YAML file. Every option is in the [Configuration Reference](/reference/configuration/).
+- **Task shortcuts.** `task --list` shows the build, test, lint and demo shortcuts.
+- **Troubleshooting.** Port clashes and a refused connection are in [Troubleshooting](/reference/troubleshooting/).
 
 ## Where next
 
+- [Tutorials](/tutorials/overview/): from a first stream to a small app
 - [felixctl](/getting-started/felixctl/): create streams and publish from the terminal
 - [Demos](/demos/overview/): runnable examples of isolation, queues and failover
 - [Pub/Sub Streaming](/features/pubsub/), [Queues and Consumer Groups](/features/queues/) and [Distributed Cache](/features/cache/): the three ways to use the log

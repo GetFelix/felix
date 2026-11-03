@@ -281,29 +281,16 @@ Native Windows support is not currently tested.
 
 ## Docker (Alternative)
 
-Released images are on GHCR and pull without credentials. The commands work
+Released images are on GHCR (`ghcr.io/getfelix`) and pull without credentials. The commands work
 with Podman as written once `docker` is replaced with `podman`, except where
-[Docker or Podman](/getting-started/containers/) says otherwise. Releases before 0.6.0-preview.2 are under `ghcr.io/gabloe`, the project's previous owner; later releases publish under `ghcr.io/getfelix`.
+[Docker or Podman](/getting-started/containers/) says otherwise.
 
-```bash
-docker run -p 5000-5003:5000-5003/udp -p 8080:8080 \
-  -e FELIX_CONTROLPLANE_URL=http://<control-plane-host>:8443 \
-  -e FELIX_NODE_TOKEN_FILE=/etc/felix/node.token \
-  -v /path/to/node.token:/etc/felix/node.token:ro \
-  ghcr.io/getfelix/felix-broker:0.7.0-preview.2
-```
-
-The broker binds up to four client ports from `5000`, depending on its cores
-(see [`FELIX_QUIC_LISTENERS`](/reference/environment-variables/#felix_quic_listeners)),
-and tells clients to use all of them, so publish the whole range.
-
-A broker authenticates every client against its tenant's signing keys, which it
-fetches from the control plane, and it reads its streams from there with a
-node credential. Without `FELIX_CONTROLPLANE_URL` it logs `broker started` and
-exits on the next line. Without the credential it runs but serves no streams.
-[Docker Compose](/deployment/docker-compose/) wires the pair together; for
-a local cluster with nothing to configure, `felix-cluster up` is quicker (see
-the [Quickstart](/getting-started/quickstart/)).
+A broker needs a control plane to talk to and a node credential, so running the
+broker image on its own does not get you far. [Docker Compose](/deployment/docker-compose/)
+wires the images together, and the [Quickstart](/getting-started/quickstart/#try-it-in-one-command)
+runs that stack with one command. For a local cluster built from source,
+`felix-cluster up` is quicker. The broker binds up to four client ports from `5000`,
+so publish the whole range, as the compose file does.
 
 Each release publishes the full version (`0.7.0-preview.2`). A release without a
 pre-release suffix also publishes the minor series (`0.6`) and `latest`. Use a
@@ -311,15 +298,8 @@ full version tag in anything you keep; the other two move. Images are
 signed by digest. See [Kubernetes](/deployment/kubernetes/) for the
 `cosign verify` invocation.
 
-To build one instead, for a change you have not released:
-
-```bash
-# Build the broker image
-docker build -t felix-broker -f docker/broker.Dockerfile .
-
-# Run what you built, with the same variables and mount as above
-docker run -p 5000-5003:5000-5003/udp -p 8080:8080 -e FELIX_CONTROLPLANE_URL=... felix-broker
-```
+To build an image from your own tree, use `docker/broker.Dockerfile` and
+`docker/controlplane.Dockerfile` from the repository root.
 
 ### Nightly builds
 
@@ -337,20 +317,6 @@ The binaries, Python wheels and Node addons are on the
 which is replaced each time. A nightly has passed CI and one publish and
 subscribe through its images, nothing more. Use it to try what is coming, not
 in production. Dated tags are kept for about two weeks.
-
-### Control Plane Container
-
-The same, for the control plane:
-
-```bash
-# Or build it: docker build -t felix-controlplane -f docker/controlplane.Dockerfile .
-
-# Without a Postgres URL it keeps its metadata in memory. Under Podman the
-# host is host.containers.internal.
-docker run -p 8443:8443 \
-  -e FELIX_CONTROLPLANE_POSTGRES_URL=postgres://postgres:postgres@host.docker.internal:55432/postgres \
-  ghcr.io/getfelix/felix-controlplane:0.7.0-preview.2
-```
 
 See [Docker Compose Guide](/deployment/docker-compose/) for orchestrated deployments.
 

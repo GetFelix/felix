@@ -3,7 +3,7 @@ title: "Diagnosing a Cluster"
 description: "What to look at, in order, when a shard will not serve, a follower falls behind, a subscriber misses records or lags, a client is refused, local disk fills while offload is on, or a broker will not start."
 ---
 
-This page is organised by what you see. Each section says what to run, in
+This page is for a live cluster that is misbehaving. [Troubleshooting](/reference/troubleshooting/) covers the failures people hit getting a broker or client running. This page is organised by what you see. Each section says what to run, in
 order, how to read the answer, what usually causes it and what to do. Errors
 and log lines are quoted as Felix prints them. For problems getting a broker
 or a client set up in the first place, see the

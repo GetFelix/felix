@@ -1,6 +1,6 @@
 ---
 title: "Data Residency"
-description: "Pin a stream's data to a region with placement the control plane enforces, spread copies across failure zones, and see exactly which residency guarantees Felix does not yet make."
+description: "Pin a stream's leader and replicas to a region, with placement the control plane enforces through rebalancing, drains and failover, and spread copies across failure zones."
 ---
 
 A European customer's order events must stay on brokers in the EU. The same
@@ -9,23 +9,29 @@ of clients and one operations team for both. Inside each region, the three
 copies of a shard should not share a rack or an availability zone. A regulator
 asks where the data is, and the answer has to be something the system enforces.
 
-This page covers a capability that is 🚧 Partial in
-[What Felix Is For](/getting-started/what-felix-is-for/). Zone-aware placement is
-✅ Today. Region pinning works for streams and has gaps, listed under
-[Where it stops](#where-it-stops).
+Create a stream with a region and the control plane keeps its leader and every
+replica on brokers in that region, through first placement, rebalancing, drains
+and failover. A copy that ends up outside is moved back. Inside a region, replicas
+spread across failure zones. One control plane, one set of clients and one
+operations team serve every region.
 
-## How this is usually built
+Region pinning covers streams. Caches and streams created without a region are
+placed anywhere, as the [limits](#limits-you-can-plan-around) say. It is marked
+🚧 Partial in [What Felix Is For](/getting-started/what-felix-is-for/), and zone
+spread is ✅ Today.
 
-The common answer is one cluster per jurisdiction. Each region runs its own
-Kafka or NATS cluster, and an application routes each tenant's traffic to the
-right one. It is easy to audit, because the boundary is a network boundary, and
-it costs you N sets of operations, N sets of credentials and application code
-that knows the map. Kafka can place replicas by rack with `broker.rack`, and
-cross-region copying is a separate tool (MirrorMaker or a replicator) that you
-configure to move only what you intend to. NATS has superclusters and leaf nodes,
-and JetStream streams can be placed on a named cluster or tagged servers. These
-are real and mature. What they ask is that the residency boundary lives in how you
-wired the clusters, not in a per-stream property.
+## Try it
+
+Placement by region needs brokers that report one, and the one-command stack runs
+a single broker with none. Start brokers in two regions as shown in the
+[example](#example) below, then pin a stream to the EU and see where its shards
+landed:
+
+```bash
+felixctl stream create orders-eu --shards 4 --replication 3 --consistency quorum \
+  --region eu-west-1
+felixctl stream info orders-eu
+```
 
 ## Why Felix fits
 
@@ -112,48 +118,54 @@ bridge and checks that each refuses the other's stream.
 
 ## Compared with a cluster per region, Kafka and NATS
 
+### How it is usually built
+
+The common answer is one cluster per jurisdiction. Each region runs its own
+Kafka or NATS cluster, and an application routes each tenant's traffic to the
+right one. It is easy to audit, because the boundary is a network boundary, and
+it costs you N sets of operations, N sets of credentials and application code
+that knows the map. Kafka can place replicas by rack with `broker.rack`, and
+cross-region copying is a separate tool (MirrorMaker or a replicator) that you
+configure to move only what you intend to. NATS has superclusters and leaf nodes,
+and JetStream streams can be placed on a named cluster or tagged servers. These
+are real and mature. What they ask is that the residency boundary lives in how you
+wired the clusters, not in a per-stream property.
+
+### How Felix differs
+
 A separate cluster per jurisdiction is the strongest boundary available, because it is a network boundary, and it covers every kind of data including caches and counters, which Felix cannot pin today. It costs N sets of operations and credentials, and application code that knows which cluster holds which tenant. Felix puts the region on the stream and has the control plane enforce it across placement, drains and failover, so the clients and operations stay single. Pick separate clusters when the requirement is a hard network boundary or covers caches.
 
-Kafka places replicas by rack with `broker.rack`, and moving data between regions is a separate tool such as MirrorMaker that you configure to move only what you intend. Felix does the equivalent of rack awareness with `FELIX_NODE_ZONE`, and the region limit is part of the stream's definition, not a replicator's topic list.
+Felix does the equivalent of Kafka's rack awareness with `FELIX_NODE_ZONE`, and the region limit is part of the stream's definition, not a replicator's topic list. Against NATS placement tags, the region is checked by the control plane on every later placement decision (failover, rebalancing, drains) and a stray copy is moved back.
 
-NATS has superclusters and leaf nodes, and JetStream streams can be placed on a named cluster or on servers matching tags. Those are mature. Felix's difference is that the region is checked by the control plane on every later placement decision (failover, rebalancing, drains) and a stray copy is moved back. Felix lacks a bridge agent, per-region encryption and a cross-region audit log, as listed below.
+## Limits you can plan around
 
-## Try it
+Each item below is a way a residency claim can fail today, with what to do about it.
 
-Placement by region needs brokers that report one, and the one-command stack runs
-a single broker with none. The example above starts brokers in two regions and
-creates the pinned stream; `felixctl stream info orders-eu` then shows where its
-shards landed.
+**Pin streams, not caches.** A stream created without a region is placed anywhere,
+and every cache and counter is placed anywhere because caches take no region.
+Keep config or session data that must stay in a jurisdiction out of Felix's cache,
+or run a separate Felix cluster for that jurisdiction.
 
-## Where it stops
+**Give the control plane and every broker the same bridge list.** The allowlist
+`FELIX_REGION_BRIDGES` is per process and nothing checks that they agree. Brokers
+ship to the replica set the control plane assigned without checking its regions
+themselves, so the control plane's placement is the guard on replication.
 
-This is the list the status table gives, and each item is a way a residency claim
-can fail today.
+**A stray follower stays until it can be replaced.** A follower already outside the region stays there until
+a broker inside the region can replace it. Keep spare capacity in each region. A
+client that connects straight to a leader is not asked where it is, so where a
+client connects is not checked against the stream's region.
 
-A stream created without a region is placed anywhere. Every cache is placed
-anywhere, because caches take no region. Config or session data that must stay
-in a jurisdiction cannot be pinned with this feature, and neither can counters.
+**You can show where data was placed, not every border crossing.** Felix has no
+bridge agent, so permitted cross-region replication is whatever the replica set
+does, with no separate stage that filters or transforms what leaves a region.
+There is no per-region encryption and no audit log of cross-region movement.
 
-The allowlist is per process. The control plane and each broker have to be given
-the same `FELIX_REGION_BRIDGES`, and nothing checks that they agree. Brokers ship
-to the replica set the control plane assigned without checking its regions
-themselves, so the control plane's placement is the only guard on replication.
+**A broker's zone is read at registration.** A broker's zone is read when it registers, so
+changing it takes a restart.
 
-A follower already outside the region stays there until a broker inside the
-region can replace it. A client that connects straight to a leader is not asked
-where it is, so where a client connects is not checked against the stream's region.
-
-Felix has no bridge agent, so permitted cross-region replication is whatever the
-replica set does, with no separate stage that filters or transforms what leaves a
-region. There is no per-region encryption and no audit log of cross-region
-movement. Without those you can show where the control plane placed the data,
-and you cannot produce a log of every time it crossed a border.
-
-Zone spread inside a region works as described, with one limit: a broker's zone is
-read when it registers, so changing it takes a restart.
-
-If you need a residency boundary that is a hard network boundary today, or a
-cache pinned to a region, run a separate Felix cluster per jurisdiction.
+If you need a residency boundary that is a hard network boundary today, or a cache
+pinned to a region, run a separate Felix cluster per jurisdiction.
 
 ## Related
 

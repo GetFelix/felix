@@ -10,25 +10,33 @@ Every subscriber wants the same recent updates quickly. Nobody wants one phone
 on a bad connection to slow down the other 1,999 sessions or back up the
 publisher, and when a subscriber does fall behind, it has to be able to tell.
 
-## How this is usually built
+Felix encodes each publish once and hands the same frame to every subscriber.
+Each subscriber has its own bounded queue, so a slow one never slows the
+publisher or anyone else. On a durable stream, a subscriber that falls behind
+is told the offset where it did, so it resumes there instead of refetching
+everything.
 
-For small payloads and low latency, teams use NATS core or Redis pub/sub. Both
-are fire-and-forget: the server holds a bounded buffer per client and a client
-that cannot keep up is cut off. NATS core disconnects a client whose pending
-data exceeds its limit (a "slow consumer"), and a subscription can also be given
-its own pending limits so that it drops messages and reports an error. Redis
-disconnects a pub/sub client once its output buffer passes the
-`client-output-buffer-limit` for the pubsub class. Both protect the server and the
-other subscribers, which is the right instinct. What the subscriber gets
-afterward is a closed connection and no record of what it missed, so a page that
-mirrors state has to reconnect and refetch everything from somewhere else.
+## Try it
 
-Kafka solves the missed-data problem the other way. Consumers pull from a log, so
-a slow consumer just lags, and nothing is dropped until retention removes it.
-Fanout is where it hurts. Each consumer group reads the log independently, so
-2,000 independent dashboards mean 2,000 groups' worth of fetches, so broker work
-grows with the number of groups. Teams then add a relay tier that consumes from Kafka once
-and pushes to clients over WebSockets, which is another system to run and size.
+Start the stack from the
+[Quickstart](/getting-started/quickstart/#try-it-in-one-command) (it covers Podman
+too) and run these from the directory holding `compose.yaml`.
+
+Start a subscriber in each of two terminals:
+
+```bash
+docker compose run --rm felixctl sub orders
+```
+
+Then publish from a third:
+
+```bash
+docker compose run --rm felixctl pub orders --count 3 'tick'
+```
+
+Both subscribers print all three records. To see a subscriber that falls behind
+while the others carry on, run the
+[slow-consumer demo](/demos/slow-consumer-isolation/).
 
 ## Why Felix fits
 
@@ -161,6 +169,28 @@ single-process loopback run at fanout 3, in
 
 ## Compared with NATS core, Kafka and Redis pub/sub
 
+### How it is usually built
+
+For small payloads and low latency, teams use NATS core or Redis pub/sub. Both
+are fire-and-forget: the server holds a bounded buffer per client and a client
+that cannot keep up is cut off. NATS core disconnects a client whose pending
+data exceeds its limit (a "slow consumer"), and a subscription can also be given
+its own pending limits so that it drops messages and reports an error. Redis
+disconnects a pub/sub client once its output buffer passes the
+`client-output-buffer-limit` for the pubsub class. Both protect the server and the
+other subscribers, which is the right instinct. What the subscriber gets
+afterward is a closed connection and no record of what it missed, so a page that
+mirrors state has to reconnect and refetch everything from somewhere else.
+
+Kafka solves the missed-data problem the other way. Consumers pull from a log, so
+a slow consumer just lags, and nothing is dropped until retention removes it.
+Fanout is where it hurts. Each consumer group reads the log independently, so
+2,000 independent dashboards mean 2,000 groups' worth of fetches, so broker work
+grows with the number of groups. Teams then add a relay tier that consumes from Kafka once
+and pushes to clients over WebSockets, which is another system to run and size.
+
+### How Felix differs
+
 NATS core has the lowest overhead of the three and a subject model with wildcards that Felix does not have. If your feed is fire-and-forget and a reconnect with a full refetch is cheap, NATS core is simpler and more mature. Felix differs in what a lagging subscriber gets: its connection stays up, its queue is bounded per subscription, and on a durable stream it learns exactly where it fell behind and reads the gap from the log. JetStream adds durability to NATS with pull and push consumers; a Felix durable stream with resumable subscriptions is the comparable piece.
 
 Kafka is the better system when consumers may be minutes or hours behind, when you need replay of a long retained history, or when the work is stream processing. For pushing the same data to many readers, each Felix subscriber receives a frame the broker has already encoded once, while each Kafka consumer group re-reads the log, so broker work grows with the number of groups. In the same Azure rig Redpanda served about 912,000 messages a second to 8 consumer groups, but the Kafka-protocol client machines saturated first, so that figure is a floor for Redpanda and the comparison does not settle which scales further.
@@ -169,47 +199,30 @@ Redis pub/sub is the simplest to adopt and shares NATS core's trade: the output 
 
 At fanout 10 on an M4 Max over loopback, Felix measured 237 microseconds p50 and 327 microseconds p99 for a 256 B payload with a per-message ack ([benchmarks](/features/benchmarks/)). Those numbers are for a single host.
 
-## Try it
+## Limits you can plan around
 
-Start the stack from the
-[Quickstart](/getting-started/quickstart/#try-it-in-one-command) (it covers Podman
-too) and run these from the directory holding `compose.yaml`.
+**Measured scale.** Loopback benchmarks stop at fanout 10, and the largest measured
+fanout is 500 subscribers on a real network. The isolation numbers in this page come from three subscribers on loopback,
+not from one slow subscriber inside a large healthy fleet. Plan on testing
+thousands of subscribers per broker with your own payload and queue sizes.
 
-Start a subscriber in each of two terminals:
+**A full queue drops the new record.** The default `drop_new` policy keeps a
+slow subscriber from ever slowing a publisher. On a durable stream the
+subscriber learns the offset where the drop began and reads the gap from the log. On a
+non-durable stream it cannot know it missed anything, so use a durable stream
+when it must know. It costs disk.
 
-```bash
-docker compose run --rm felixctl sub orders
-```
+**A plain subscription is at-most-once.** When someone must handle each record
+exactly once, use a consumer group (see [Queues](/features/queues/)). Felix does
+not offer exactly-once delivery.
 
-Then publish from a third:
+**The overflow policy belongs to the broker.** A subscriber cannot pick `block`
+and stall every publisher by reading slowly. An operator can choose `block`, and
+then one stalled subscriber that stays connected holds every publisher on its
+shard until it reads or disconnects, with no timeout.
 
-```bash
-docker compose run --rm felixctl pub orders --count 3 'tick'
-```
-
-Both subscribers print all three records. To see a subscriber that falls behind
-while the others carry on, run the
-[slow-consumer demo](/demos/slow-consumer-isolation/).
-
-## Where it stops
-
-Fanout above 10 has not been benchmarked on loopback, and the largest measured
-fanout is 500 subscribers on a real network. A deliberately slow subscriber inside
-a large healthy fleet has not been measured on one; the isolation numbers above are
-from three subscribers on loopback. Treat thousands of subscribers per broker as
-something to test with your own payload and queue sizes.
-
-`drop_new` means a subscriber on a non-durable stream cannot know it missed
-anything. If you need that knowledge, use a durable stream, which costs disk. If
-you need every record handled exactly once by someone, use a consumer group
-(see [Queues](/features/queues/)); a plain subscription is at-most-once.
-Exactly-once delivery is not offered.
-
-The overflow policy is a broker setting, not a per-subscriber choice. A
-`block` policy lets a single stalled subscriber that stays connected hold every
-publisher on its shard until it reads or disconnects, with no timeout.
-
-Browsers cannot connect directly, since Felix clients speak QUIC. See
+**Browsers go through the gateway.** Felix clients speak QUIC, so browsers
+connect through the WebSocket gateway. See
 [Browsers and mobile clients](/use-cases/browser-realtime/).
 
 ## Related

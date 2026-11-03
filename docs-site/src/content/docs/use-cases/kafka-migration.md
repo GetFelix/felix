@@ -1,6 +1,6 @@
 ---
 title: "Coming from Kafka"
-description: "Which Kafka producers and consumers can point at Felix today, which cannot, and how to move a system over in steps."
+description: "Point Kafka producers and self-assigning consumers at Felix by changing a bootstrap address, then move fanout, queues and caches onto Felix clients in steps."
 ---
 
 A team has a few dozen services producing to Kafka and a handful of consumers
@@ -9,18 +9,37 @@ instance to see every event. Some feed warehouses through Kafka Connect. The
 question is which of those can point at a Felix broker by changing a bootstrap
 address, and which have to change.
 
-## What works and what does not
+Felix runs a Kafka listener. Kafka producers write to durable Felix streams and
+consumers that assign their own partitions read them, with a stored offset
+meaning the same thing on both sides. Stock clients work unchanged (kcat is the client tested here),
+and the same records are also reachable from Felix subscriptions, consumer
+groups and caches.
 
-Felix serves Kafka producers, and Kafka consumers that
-assign their own partitions and keep their own offsets. It does not serve
-consumer groups or transactions. A consumer that sets `group.id` and calls
-`subscribe()` is refused, and so is a producer that sets `transactional.id`.
+## Try it
 
-That rules out anything built on groups today: Kafka Connect, Kafka Streams,
-ksqlDB, Debezium and MirrorMaker. If your pipeline depends on one of them for a
-stage, that stage stays on Kafka. The protocol reference is
-[`docs/kafka-compatibility.md`](https://github.com/GetFelix/felix/blob/main/docs/kafka-compatibility.md)
-and the user guide is [Kafka compatibility](/features/kafka/).
+Start a development broker with the Kafka listener and no authentication (see
+[Kafka compatibility](/features/kafka/#anonymous-access-for-development) for
+what that implies), create a durable stream, and use kcat:
+
+```bash
+export FELIX_DURABLE_STORAGE_DIR=/var/lib/felix
+export FELIX_KAFKA_LISTEN=127.0.0.1:9092
+export FELIX_KAFKA_TLS=false
+export FELIX_KAFKA_ANONYMOUS_TENANT=t1
+felix-broker
+
+felixctl -n orders stream create created --shards 4
+echo '{"id":42}' | kcat -b 127.0.0.1:9092 -P -t orders.created -p 0
+kcat -b 127.0.0.1:9092 -C -t orders.created -o beginning -e -q -f '%p:%o:%s\n'
+```
+
+`-n orders` puts the stream in the `orders` namespace, so the topic is
+`orders.created`. The stream is durable by default. In production use
+SASL_SSL with a Felix token as the password and the tenant as the username.
+
+The one-command stack does not turn on the Kafka listener, so this starts a
+development broker with it. [Kafka compatibility](/features/kafka/) covers
+authentication, client settings and what else is supported.
 
 ## How it maps
 
@@ -69,49 +88,26 @@ kinds of client use the same tokens, so one place sets who can read what.
 
 ## Example
 
-Start a development broker with the Kafka listener and no authentication (see
-[Kafka compatibility](/features/kafka/#anonymous-access-for-development) for
-what that implies), create a durable stream, and use kcat:
+The listener speaks the Kafka wire protocol, so stock producers and consumers
+connect to it in the usual way. A consumer must assign its own partitions and
+store its own offsets, and it must not set `group.id`. [Kafka
+compatibility](/features/kafka/#feeding-an-existing-kafka-consuming-program) has
+client settings and caveats for kcat, librdkafka and Java.
 
-```bash
-export FELIX_DURABLE_STORAGE_DIR=/var/lib/felix
-export FELIX_KAFKA_LISTEN=127.0.0.1:9092
-export FELIX_KAFKA_TLS=false
-export FELIX_KAFKA_ANONYMOUS_TENANT=t1
-felix-broker
+Resuming a Felix client from a stored offset looks like this. The offset is the
+same one a Kafka consumer sees:
 
-felixctl -n orders stream create created --shards 4
-echo '{"id":42}' | kcat -b 127.0.0.1:9092 -P -t orders.created -p 0
-kcat -b 127.0.0.1:9092 -C -t orders.created -o beginning -e -q -f '%p:%o:%s\n'
+```rust
+use felix_client::StartPosition;
+
+let mut events = client
+    .subscribe_from("t1", "orders", "created", Some(StartPosition::Offset(saved + 1)))
+    .await?;
+while let Some(event) = events.next_event().await? {
+    handle(&event.payload);
+    saved = event.offset.unwrap_or(saved);
+}
 ```
-
-`-n orders` puts the stream in the `orders` namespace, so the topic is
-`orders.created`. The stream is durable by default. In production use
-SASL_SSL with a Felix token as the password and the tenant as the username.
-
-A consumer that assigns its own partitions and stores its own offsets is the
-only shape Felix serves. kcat 1.7.1 is the tested client. This confluent-kafka
-configuration is an untested sketch, and `confluent_kafka.Consumer` normally
-wants a `group.id`, which librdkafka answers by asking for a group coordinator
-that Felix refuses. [Kafka compatibility](/features/kafka/#feeding-an-existing-kafka-consuming-program)
-has the caveats:
-
-```python
-from confluent_kafka import Consumer, TopicPartition
-
-consumer = Consumer({
-    "bootstrap.servers": "broker-1.internal:9092",
-    "security.protocol": "SASL_SSL",
-    "ssl.ca.location": "felix-ca.pem",
-    "sasl.mechanisms": "PLAIN",
-    "sasl.username": "t1",
-    "sasl.password": felix_token,
-    "enable.auto.commit": False,
-})
-start = load_offsets()
-consumer.assign([TopicPartition("orders.created", p, o) for p, o in start.items()])
-```
-
 
 ## A migration path
 
@@ -128,18 +124,6 @@ the others back. Watches on a cache cover the case where consumers were building
 a table from a compacted topic to hold current values. Consumers that need work
 split between workers move to a Felix consumer group through a Felix client,
 which gives acknowledgement, redelivery and dead letters.
-
-```rust
-use felix_client::StartPosition;
-
-let mut events = client
-    .subscribe_from("t1", "orders", "created", Some(StartPosition::Offset(saved + 1)))
-    .await?;
-while let Some(event) = events.next_event().await? {
-    handle(&event.payload);
-    saved = event.offset.unwrap_or(saved);
-}
-```
 
 Stages that need Connect, Streams or ksqlDB stay on Kafka until you replace
 them. Mirroring a Kafka topic into Felix with MirrorMaker is not possible, since
@@ -158,21 +142,31 @@ throughput figures, with their conditions, are on
 [Benchmarks](/features/benchmarks/). Do not compare them with a Kafka number
 from another setup.
 
-## Try it
+## Limits you can plan around
 
-The one-command stack does not turn on the Kafka listener. The example above
-starts a development broker with it and gives the `kcat` produce and consume
-commands, and [Kafka compatibility](/features/kafka/) covers authentication
-and what else is supported.
+**No consumer groups or transactions.** A consumer that sets `group.id` and calls
+`subscribe()` is refused, and so is a producer that sets `transactional.id`. That
+means Kafka Connect, Kafka Streams, ksqlDB, Debezium and MirrorMaker cannot point at
+Felix. Keep those stages on Kafka, or replace them: a Felix consumer group through
+a Felix client covers work split between workers. Mirroring a topic into Felix is a
+producer you write.
 
-## Where it stops
+**Keys, headers and producer timestamps are not kept.** The record key picks the
+partition and is then dropped, headers are dropped, and the timestamp is the
+broker's append time. Put anything a consumer needs into the value.
 
-No consumer groups, no transactions, no admin APIs, no log compaction or Kafka
-retention settings, and only SASL/PLAIN. Keys, headers and producer timestamps
-are not kept. A tombstone is stored as an empty payload and deletes nothing.
-Only durable streams are visible. A connection's produces are answered one at a
-time, so spread load across partitions. See the Limits section of
-[Kafka compatibility](/features/kafka/#limits) for the full list.
+**Streams, not topics.** Only durable streams are visible. Create the stream
+through the control plane or `felixctl`, because topics cannot be created from
+Kafka tools. There are no admin APIs, no log compaction or Kafka retention
+settings, and a tombstone is stored as an empty payload and deletes nothing.
+
+**SASL/PLAIN only.** Use SASL_SSL with a Felix token as the password.
+
+**Produces on one connection are answered one at a time.** Spread load across
+partitions. See the Limits section of [Kafka compatibility](/features/kafka/#limits)
+and the protocol reference
+[`docs/kafka-compatibility.md`](https://github.com/GetFelix/felix/blob/main/docs/kafka-compatibility.md)
+for the full list.
 
 ## Related
 
