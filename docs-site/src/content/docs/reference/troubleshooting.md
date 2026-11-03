@@ -229,7 +229,7 @@ of unread data per connection, 16 MiB by default.
 ### Image and version
 
 Images are `ghcr.io/getfelix/felix-broker:<version>` and
-`ghcr.io/getfelix/felix-controlplane:<version>` (`ghcr.io/gabloe` for 0.6.0-preview and earlier). The binary has no `--version`
+`ghcr.io/getfelix/felix-controlplane:<version>`. The binary has no `--version`
 flag; the image tag is the version.
 
 ### Health check failing
