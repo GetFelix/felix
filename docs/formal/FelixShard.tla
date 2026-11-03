@@ -730,6 +730,11 @@ StandsAboveKeptSet == FALSE
 \* keeps the newer set the refusal names. The code only stops standing
 \* (promotion.rs keeps no set from a refusal); learning it adds behaviours.
 RefusalLearnsSet == TRUE
+\* `LearnsLeavingSet`: a follower learning a leader's set during a change
+\* takes the leader's set being left. Off, it keeps the set it held before
+\* the change as the one being left, as the brokers do: a follower in the recorded set never
+\* learns the elected set the control plane wrote as being left.
+LearnsLeavingSet == TRUE
 \* `DetectorMisfires`: a candidate may suspect a leader it still hears, as a
 \* failure detector can be wrong. Only its own yes is affected.
 DetectorMisfires == FALSE
@@ -1031,7 +1036,9 @@ LearnSet(f, b) ==
     IF SetCheck
     THEN /\ setGen' = [setGen EXCEPT ![f] = setGen[b]]
          /\ mine' = [mine EXCEPT ![f] = mine[b]]
-         /\ oldSet' = [oldSet EXCEPT ![f] = oldSet[b]]
+         /\ oldSet' = [oldSet EXCEPT ![f] = IF LearnsLeavingSet \/ oldSet[b] = {} THEN oldSet[b]
+                                             ELSE IF setGen[f] < setGen[b] THEN mine[f]
+                                             ELSE oldSet[f]]
     ELSE UNCHANGED << setGen, mine, oldSet >>
 
 \* Whether a broker is a candidate rather than the leader the control plane
