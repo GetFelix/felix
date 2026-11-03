@@ -950,6 +950,35 @@ async fn a_collision_on_another_set_moves_on_with_the_elected_set() {
     assert_named_on_x_z(&assignment, at + 1);
 }
 
+/// **An election past the control plane's that it can take only as a
+/// generation moves on in the same report.** broker-x was elected on
+/// {x, w}, and w is not in the catalog, so adoption takes the generation
+/// alone and leaves broker-y named at the generation x opened at. Waiting
+/// for x's next report would let a failover in between promote y, which
+/// ballots will never let open there.
+#[tokio::test]
+async fn an_election_taken_as_a_generation_only_moves_on_in_the_same_report() {
+    let (store, keys, named_y) = named_y_beside_z().await;
+    let at = named_y.generation + 2;
+    let mut shard = shard_json(0, at, 10, &["broker-w"]);
+    shard["elected"] = serde_json::json!({
+        "leader": "broker-x",
+        "generation": at,
+        "replicas": ["broker-w"],
+        "set_generation": named_y.generation,
+    });
+    let state = app_state_ready(Arc::clone(&store) as _);
+    let _ = post_report(state, &keys, serde_json::json!([shard])).await;
+    let assignment = store
+        .get_shard_assignment(&shard_zero())
+        .await
+        .expect("get");
+    assert_eq!(assignment.generation, at + 1, "{assignment:?}");
+    assert_eq!(assignment.leader, "broker-x");
+    assert_eq!(assignment.replicas, vec!["broker-y"]);
+    assert_eq!(assignment.pending_set, None);
+}
+
 /// **An election on another set past the control plane's is named on it.**
 /// Taking only the generation would leave broker-y named at the generation x
 /// opened at, and a failover could then promote from {x, y} alone.

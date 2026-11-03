@@ -4119,11 +4119,15 @@ Once it is finalized on a broker that offers `ELECTION`:
   the same, so a fence tried again at that generation, after a restart too,
   knows it. Every replica that took a joint fence keeps both. A leader that
   keeps its set while shipping keeps the old one beside it the same way, and
-  keeps nothing when it does not know it. A leader whose log already keeps
-  the route's members at an older generation was elected on them, since a
-  fence at the route's generation would have kept the set there. It keeps
-  that set and stamps its batches with it, so after a restart, which loses
-  the election, it does not refuse the next leader elected on the same set.
+  keeps nothing when it does not know it. A leader that has not opened the
+  shard at the route's generation since it started, and whose log keeps the
+  route's members at an older generation, was elected on them before a
+  restart, since a fence at the route's generation would have kept the set
+  there. It keeps that set and stamps its batches with it, so it does not
+  refuse the next leader elected on the same set. A leader that did open at
+  the route's generation keeps the route's set even on the same members, as
+  after a pending set is taken: otherwise every copy stays at the older
+  generation and no later promotee could fence the shard.
   A set kept at the route's
   generation without the one it leaves (kept before the feature was
   finalized) is not read as no change.

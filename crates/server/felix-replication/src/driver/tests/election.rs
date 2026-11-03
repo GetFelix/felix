@@ -70,19 +70,45 @@ impl PeerRequester for Followers {
 }
 
 async fn pass<R: PeerRequester + Sync>(followers: &R, broker: &Arc<Broker>, marks: &QuorumMarks) {
+    pass_with(followers, broker, marks, &Unfenced).await;
+}
+
+async fn pass_with<R: PeerRequester + Sync>(
+    followers: &R,
+    broker: &Arc<Broker>,
+    marks: &QuorumMarks,
+    fence: &dyn WriteFence,
+) {
     let router = router(LOCAL, &["broker-b", "broker-c"], 4);
-    replicate_once(
+    replicate_once_with(
         followers,
         broker,
         &router,
+        fence,
+        &NoGate,
         marks,
         None,
         &mut HashMap::new(),
         &mut HashMap::new(),
         &mut HashMap::new(),
         &mut HashMap::new(),
+        &Rebuilds::disabled(),
+        &MoveThrottle::unlimited(),
     )
     .await;
+}
+
+/// A broker that has not opened any shard since it started.
+struct Restarted;
+
+impl WriteFence for Restarted {
+    fn quiesced(&self, _key: &crate::ShardKey) -> bool {
+        true
+    }
+
+    fn opened_since(&self, _key: &crate::ShardKey, _generation: u64) -> bool {
+        false
+    }
 }
 
 async fn stream_log(broker: &Broker) -> felix_broker::StreamLog {
@@ -265,9 +291,9 @@ async fn under_joint_fence_a_shipping_leader_keeps_no_set_when_the_one_before_is
 /// **A leader elected on the route's members keeps that set at the
 /// generation it was elected on, even after a restart.** It was elected at 4
 /// on the set of generation 3, and the control plane named it at 4 on the
-/// same members. A restart lost the election, which lives in memory. Keeping
-/// the set at 4 would refuse the next leader elected on the set of 3, so the
-/// set stays at 3 and batches carry 3.
+/// same members. A restart lost the election, which lives in memory, and the
+/// shard has not opened since. Keeping the set at 4 would refuse the next
+/// leader elected on the set of 3, so the set stays at 3 and batches carry 3.
 #[tokio::test]
 async fn a_restarted_elected_leader_keeps_the_set_it_was_elected_on() {
     use felix_storage::disk_log::{Member, Membership, ReplicaSet};
@@ -296,7 +322,7 @@ async fn a_restarted_elected_leader_keeps_the_set_it_was_elected_on() {
         .expect("its own ballot");
     let followers = Followers::new(true, &["broker-b", "broker-c"]);
 
-    pass(&followers, &broker, &follower_ack_marks()).await;
+    pass_with(&followers, &broker, &follower_ack_marks(), &Restarted).await;
 
     assert_eq!(stream_log(&broker).await.set_generation(), 3);
     assert_eq!(
@@ -304,6 +330,51 @@ async fn a_restarted_elected_leader_keeps_the_set_it_was_elected_on() {
         vec![
             ("broker-b".to_string(), Some(3)),
             ("broker-c".to_string(), Some(3)),
+        ]
+    );
+}
+
+/// **A leader that opened the next generation on the same members keeps
+/// the set at it.** The control plane bumped the shard from 3 to 4 without
+/// changing its members (a pending set taken, a reissue) and this broker
+/// opened it at 4 unfenced. Keeping the set at 3 would leave every copy at 3,
+/// and a later promotee with no record of 3 could never fence the shard.
+#[tokio::test]
+async fn a_leader_opened_at_a_bump_on_the_same_members_keeps_the_new_set() {
+    use felix_storage::disk_log::{Member, Membership, ReplicaSet};
+
+    let (broker, _dir) = quorum_leader(3, 4).await;
+    let log = stream_log(&broker).await;
+    log.accept_generation(3, Some(LOCAL)).await.expect("ballot");
+    log.accept_set(ReplicaSet {
+        current: Membership {
+            generation: 3,
+            members: [LOCAL, "broker-b", "broker-c"]
+                .map(|node| Member {
+                    node: node.to_string(),
+                    storage: None,
+                    learner: false,
+                    wiped: false,
+                })
+                .to_vec(),
+        },
+        leaving: None,
+    })
+    .await
+    .expect("the set of 3");
+    log.accept_generation(4, Some(LOCAL))
+        .await
+        .expect("the open's ballot");
+    let followers = Followers::new(true, &["broker-b", "broker-c"]);
+
+    pass(&followers, &broker, &follower_ack_marks()).await;
+
+    assert_eq!(stream_log(&broker).await.set_generation(), 4);
+    assert_eq!(
+        followers.stamps(),
+        vec![
+            ("broker-b".to_string(), Some(4)),
+            ("broker-c".to_string(), Some(4)),
         ]
     );
 }
