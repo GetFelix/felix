@@ -37,12 +37,24 @@ const ELECTED_WITHIN: Duration = Duration::from_secs(20);
 const OPENED: &str = "a majority took the fence; opening the shard for writes";
 /// What a candidate logs once its ballot is on disk.
 const STOOD: &str = "standing for election";
+/// What a candidate logs while `FELIX_TEST_PRE_VOTE_GATE` holds its pre-vote.
+const HELD: &str = "holding the pre-vote at the test gate";
 
 /// `nodes` brokers, one `Quorum` stream at `rf`, and every feature
 /// `replica_election` needs finalized. The set is then written again so its
 /// leader fences and keeps it: the first placement ran before the features
 /// were on, and a set nobody keeps is one nobody can stand on.
 async fn start(nodes: usize, rf: u32, proxy_links: bool) -> Cluster {
+    start_with(nodes, rf, proxy_links, Vec::new()).await
+}
+
+/// [`start`], with more environment for every broker.
+async fn start_with(
+    nodes: usize,
+    rf: u32,
+    proxy_links: bool,
+    env: Vec<(String, String)>,
+) -> Cluster {
     let reported = fleet::IMPLEMENTED
         .iter()
         .chain(&[
@@ -57,7 +69,7 @@ async fn start(nodes: usize, rf: u32, proxy_links: bool) -> Cluster {
     let cluster = Cluster::start(ClusterConfig {
         nodes,
         streams: vec![StreamSpec::quorum(STREAM, 1, rf)],
-        broker_env: vec![
+        broker_env: [
             ("FELIX_INTERNAL_ELECTION".to_string(), "true".to_string()),
             ("FELIX_TEST_FLEET_FEATURES".to_string(), reported),
             (
@@ -68,7 +80,10 @@ async fn start(nodes: usize, rf: u32, proxy_links: bool) -> Cluster {
                 "FELIX_LEADER_SUSPECT_AFTER_MS".to_string(),
                 SUSPECT_AFTER_MS.to_string(),
             ),
-        ],
+        ]
+        .into_iter()
+        .chain(env)
+        .collect(),
         proxy_links,
         inherit_output: std::env::var("FELIX_TEST_BROKER_OUTPUT").is_ok(),
         ..Default::default()
@@ -196,6 +211,22 @@ fn read_logged(cluster: &Cluster, message: &str, seen: &mut BTreeMap<u64, BTreeS
             }
         }
     }
+}
+
+/// The brokers whose log has `message` for the stream.
+fn logged_by(cluster: &Cluster, message: &str) -> BTreeSet<String> {
+    cluster
+        .node_ids()
+        .into_iter()
+        .filter(|id| {
+            let dir = &cluster.node(id).expect("node").data_dir;
+            std::fs::read_to_string(dir.join("broker.log"))
+                .unwrap_or_default()
+                .lines()
+                .map(strip_ansi)
+                .any(|line| line.contains(message) && line.contains(&format!("stream={STREAM}")))
+        })
+        .collect()
 }
 
 fn field(line: &str, name: &str) -> Option<u64> {
@@ -343,6 +374,32 @@ async fn missing_on(cluster: &Cluster, node: &str, wanted: &[String]) -> Vec<Str
     }
 }
 
+/// The leader's report names every one of `followers` caught up at
+/// `generation` or later. A follower does not serve reads, so this is how
+/// its copy is checked.
+async fn caught_up(cluster: &Cluster, followers: &[String], generation: u64) {
+    let last = Mutex::new(None);
+    let done = felix_cluster::wait::until(
+        Duration::from_secs(30),
+        "the followers to catch up with the elected leader",
+        || async {
+            let report = cluster.replica_report(STREAM, 0).await.ok().flatten();
+            let done = report.as_ref().is_some_and(|report| {
+                report.generation >= generation
+                    && followers.iter().all(|id| report.caught_up.contains(id))
+            });
+            *last.lock().expect("lock") = report;
+            done
+        },
+    )
+    .await;
+    assert!(
+        done.is_ok(),
+        "{followers:?} are not all caught up at {generation}: the last report is {:?}",
+        last.lock().expect("lock")
+    );
+}
+
 /// The control plane names `leader` at `generation`, by adopting it.
 async fn adopted(cluster: &Cluster, leader: &str, generation: u64) {
     let last = Mutex::new(None);
@@ -406,32 +463,13 @@ async fn a_follower_is_elected_while_the_control_plane_is_down() {
         .expect("recover the control plane");
     adopted(&cluster, &elected, generation).await;
     acked.extend(publish_acked(&cluster, &elected, "adopted", 5).await);
-    let survivor = before
+    let survivor: Vec<String> = before
         .replicas
         .iter()
-        .find(|id| **id != elected)
-        .expect("the other follower");
-    // A follower does not serve reads, so its copy is checked through the
-    // leader's report: caught up at the elected generation.
-    let last = Mutex::new(None);
-    let caught_up = felix_cluster::wait::until(
-        Duration::from_secs(30),
-        "the other follower to catch up with the elected leader",
-        || async {
-            let report = cluster.replica_report(STREAM, 0).await.ok().flatten();
-            let done = report.as_ref().is_some_and(|report| {
-                report.generation >= generation && report.caught_up.contains(survivor)
-            });
-            *last.lock().expect("lock") = report;
-            done
-        },
-    )
-    .await;
-    assert!(
-        caught_up.is_ok(),
-        "the other follower {survivor} is not caught up at {generation}: the last report is {:?}",
-        last.lock().expect("lock")
-    );
+        .filter(|id| **id != elected)
+        .cloned()
+        .collect();
+    caught_up(&cluster, &survivor, generation).await;
     read_logged(&cluster, OPENED, &mut opened);
     assert_one_leader_per_generation(&opened, before.generation);
     cluster.shutdown().await;
@@ -440,14 +478,27 @@ async fn a_follower_is_elected_while_the_control_plane_is_down() {
 /// **Two followers stand at once and exactly one opens.** Five brokers,
 /// RF 5. The two lowest-id followers cannot reach each other, so neither
 /// counts the other ahead of it, and the other two cannot ask for votes at
-/// all. What the two send the others arrives late, so each one's pre-vote
-/// lands before the other's fence: both put a ballot for the same generation
-/// on disk and fence the same two voters. Those voters' ballots let only one
-/// of them open there. Without the ballot check both would.
+/// all. A test gate holds both candidates' pre-votes until each is waiting,
+/// then lets them go together, and what the two send the others arrives
+/// late, so each one's pre-vote lands before the other's fence: both put a
+/// ballot for the same generation on disk and fence the same two voters.
+/// Those voters' ballots let only one of them open there. Without the
+/// ballot check both would.
 #[serial]
 #[tokio::test]
 async fn two_followers_stand_at_once_and_one_opens() {
-    let mut cluster = start(5, 5, true).await;
+    let gate_dir = tempfile::tempdir().expect("a directory for the gate");
+    let gate = gate_dir.path().join("pre-vote-gate");
+    let mut cluster = start_with(
+        5,
+        5,
+        true,
+        vec![(
+            "FELIX_TEST_PRE_VOTE_GATE".to_string(),
+            gate.display().to_string(),
+        )],
+    )
+    .await;
     let before = assignment(&cluster).await;
     let mut acked = publish_acked(&cluster, &before.leader, "before", 10).await;
     let mut followers = before.replicas.clone();
@@ -496,7 +547,24 @@ async fn two_followers_stand_at_once_and_one_opens() {
         }
     }
 
+    std::fs::write(&gate, b"").expect("close the gate");
     cluster.kill_node(&before.leader).expect("kill the leader");
+    let both: BTreeSet<String> = candidates.iter().cloned().collect();
+    let held = felix_cluster::wait::until(ELECTED_WITHIN, "both candidates at the gate", || {
+        let held = logged_by(&cluster, HELD);
+        let all = held.is_superset(&both);
+        async move { all }
+    })
+    .await;
+    assert!(
+        held.is_ok(),
+        "both candidates must wait at the gate; only {:?} did",
+        logged_by(&cluster, HELD)
+    );
+    // Long enough for each candidate's dial to its voters to finish over the
+    // late links, so both requests go out the moment the gate opens.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    std::fs::remove_file(&gate).expect("open the gate");
     let mut opened = BTreeMap::new();
     let (elected, _) = elected_above(&cluster, before.generation, &mut opened).await;
     let mut stood = BTreeMap::new();
@@ -734,7 +802,8 @@ impl Writer {
 /// the leader is killed, and a follower is elected and takes the writer's
 /// records, all before the control plane is back. It then adopts the elected
 /// leader, and the old leader restarts and catches up. Every acknowledged
-/// record survives on every broker, and no generation has two leaders.
+/// record reads back from the elected leader, every other broker is caught
+/// up with it, and no generation has two leaders.
 #[serial]
 #[tokio::test]
 async fn the_control_plane_stays_down_across_a_leader_kill_under_load() {
@@ -788,16 +857,20 @@ async fn the_control_plane_stays_down_across_a_leader_kill_under_load() {
     tokio::time::sleep(Duration::from_secs(3)).await;
     let acked = writer.stop().await;
 
-    for id in cluster.node_ids() {
-        let missing = missing_on(&cluster, &id, &acked).await;
-        assert!(
-            missing.is_empty(),
-            "{id} lacks {} of {} acknowledged records, first {:?}",
-            missing.len(),
-            acked.len(),
-            missing.first()
-        );
-    }
+    let missing = missing_on(&cluster, &elected, &acked).await;
+    assert!(
+        missing.is_empty(),
+        "{elected} lacks {} of {} acknowledged records, first {:?}",
+        missing.len(),
+        acked.len(),
+        missing.first()
+    );
+    let followers: Vec<String> = cluster
+        .node_ids()
+        .into_iter()
+        .filter(|id| *id != elected)
+        .collect();
+    caught_up(&cluster, &followers, generation).await;
     read_logged(&cluster, OPENED, &mut opened);
     assert_one_leader_per_generation(&opened, before.generation);
     cluster.shutdown().await;
