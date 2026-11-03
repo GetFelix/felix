@@ -3,9 +3,10 @@ title: "Running felixd"
 description: "The felixd subcommands and flags, the environment variables that point it at Felix, what it needs from a Felix cluster, and a quickstart that starts a broker, submits a workload and checks it."
 ---
 
-felixd is one binary with four subcommands. There are no release binaries yet
-([#23](https://github.com/GetFelix/felixd/issues/23)), so build it from source with
-Rust 1.97 or later:
+felixd is one binary. Each release on the
+[releases page](https://github.com/GetFelix/felixd/releases) has builds for Linux
+and macOS with a signed checksum file; the repository's README shows how to verify
+one. To build from source you need the Rust version in `rust-toolchain.toml`:
 
 ```bash
 git clone https://github.com/GetFelix/felixd
@@ -22,9 +23,11 @@ cargo build --release -p felixd      # target/release/felixd
 | `felixd check` | Replays each workload over its input and reports what is wrong with its output stream |
 | `felixd replay` | Rebuilds a workload's state at an input offset or time, or compares a replay with the recorded outputs |
 
-`felixd ps` and `felixd drain` are in the design and do not exist
-([#17](https://github.com/GetFelix/felixd/issues/17)). `felixd --version` prints the
-version.
+Four more commands are not covered on this page: `felixd ps` shows every
+workload and node, `felixd drain` and `felixd undrain` hand a node's workloads over
+before maintenance, and `felixd init` sets up a namespace. They are described in
+[docs/operating.md](https://github.com/GetFelix/felixd/blob/main/docs/operating.md).
+`felixd --version` prints the version.
 
 ### Connection
 
@@ -80,7 +83,7 @@ felixd agent --node-id node-a
 
 It watches the `workloads` and `leases` caches, claims the lease of each running
 workload nobody holds, runs it while the lease holds, and writes itself to the
-`nodes` cache. It runs until Ctrl-C, then releases its leases.
+`nodes` cache. It runs until Ctrl-C or SIGTERM, then releases its leases.
 
 | Flag | Variable | Default | Meaning |
 |---|---|---|---|
@@ -148,8 +151,8 @@ grants on the streams it reads, as `check` does.
   `leases`, `epochs` and `nodes`, reads every input stream, and reads and publishes
   to `wl.*.out` and `wl.*.snap`. It also writes `workloads`, to record a failure.
   Grants are [RBAC](/features/security/) on the node's token. Today any node may
-  write any workload's output, and fencing keeps that correct. Per-lease
-  credentials are not built yet ([#74](https://github.com/GetFelix/felixd/issues/74)).
+  write any workload's output, and fencing keeps that correct. Credentials
+  are per node, not per lease ([#74](https://github.com/GetFelix/felixd/issues/74)).
 - **A shared felixd build.** Every node of a cluster has to run the same build,
   and nothing enforces it.
 

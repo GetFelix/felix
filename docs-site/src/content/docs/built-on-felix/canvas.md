@@ -87,6 +87,10 @@ sed -i.bak \
 docker compose up -d        # or: podman compose up -d
 ```
 
+The commands use v0.3.2. To install a newer release, take its version from the
+[releases page](https://github.com/GetFelix/felix-canvas/releases) and replace
+`0.3.2` in the first two commands.
+
 Open <http://localhost:8787> in two windows and sign in as `ana` or `ben`. The
 images are `ghcr.io/getfelix/felix-canvas`, `ghcr.io/getfelix/felix-canvas-snapshotter`,
 `ghcr.io/getfelix/felix-broker` and `ghcr.io/getfelix/felix-controlplane`.
