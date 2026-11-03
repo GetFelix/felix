@@ -154,6 +154,7 @@ fn stored(durable_offset: u64) -> InternalMessage {
     InternalMessage::ReplicateOk(ReplicateOk {
         correlation_id: 0,
         durable_offset,
+        learner: false,
     })
 }
 

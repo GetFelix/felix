@@ -57,6 +57,7 @@ impl PeerRequester for Follower {
         Ok(InternalMessage::ReplicateOk(ReplicateOk {
             correlation_id: 0,
             durable_offset,
+            learner: false,
         }))
     }
 }

@@ -331,7 +331,9 @@ once, never behind a slow fence, from its serving runtime
 A leader that has not answered for the whole window is named in the
 follower's next heartbeat, which goes at once rather than an interval later.
 A leader first watched gets a whole window, and a peer that did not offer
-`PING` is not watched, so an upgrade does not read as a death.
+`PING` is not watched, so an upgrade does not read as a death. A leader the
+follower's node list has no address for yet is not watched either: not being
+able to reach it says nothing about whether it is up.
 
 **The control plane's half.** It keeps the names as soft state, like a
 heartbeat: in the store under the memory and Postgres backends, and in the
@@ -424,6 +426,18 @@ quorum. Where this
 leadership begins is recorded only then, so the records it took keep their
 own generation. Answers that arrive after the majority are not waited for,
 as in the model.
+
+**The voters are the assignment's set, not the addresses the leader has.** A
+broker learns where each node is from the control plane's node catalog
+(`/v1/nodes`), separately from the assignments, and its routes can be built
+before that read succeeds or after a node joined that the last read did not
+include. A replica the catalog does not name stays in the route with no
+address (`NodeRef::unresolved`), and the peer pool refuses to dial it, so it
+counts as a replica that has not answered. Dropping it instead would shrink
+every majority counted over the route: with an empty catalog a promoted
+leader of three would need only itself and open with neither follower fenced
+(#1845). The same list sizes the acknowledgement count, the read round, and
+the set the fence carries.
 
 **An answer counts only from the copy the failover's report named.** A
 follower that crashed under `FsyncMode::Periodic` or `None` comes back under a
@@ -1044,6 +1058,14 @@ from a broker that predates storage ids is evidence.
   coming, and after a refused request for up to 5 s, so a retry spaced out
   by backoff finds it.
   Taking a batch records that leader's ballot, as it does for any follower.
+- Its answers to those batches say it is a learner (`ReplicateLearnerOk` in
+  `docs/internal-protocol.md`), and the leader leaves it out of its commit
+  and counter marks until an answer does not. Counting it loses a write once
+  elections run: the copy promised a candidate a newer generation before the
+  wipe, catches up from the old leader, which acknowledges a write on itself
+  and the copy, and the candidate opens on the copy's pre-wipe answer without
+  that write (`FelixShardElectWipeNonVoterCreatesLearnerAcks.cfg`,
+  [#1762](https://github.com/GetFelix/felix/issues/1762)).
 - It is never promoted. A broker whose kept set marks it a wiped learner,
   or a learner under another storage id, refuses to open as leader before it
   fences or writes anything, so the mark survives. So does a copy that holds
@@ -1126,14 +1148,12 @@ Not covered yet, and needed before elections (#1009 S9):
   one log beside the records, not the dead-letter and cursor pair, and the
   model waits for a majority where the code, short of answers, takes the
   furthest one it has.
-- The leader still counts a learner's acknowledgements, and a learner takes
-  a batch from a leader the control plane confirmed at that generation even
-  after it moved on (a reused read, or one just before a failover).
-  The model explores both without elections (`LearnerAcksCount`,
-  `CatchUpFromDeposed`) and finds nothing. With elections counting a learner
-  loses a write (`FelixShardElectWipeNonVoterCreatesLearnerAcks.cfg`), so
-  the leader must leave learners' acknowledgements out before they ship
-  ([#1762](https://github.com/GetFelix/felix/issues/1762)).
+- A learner takes a batch from a leader the control plane confirmed at that
+  generation even after it moved on (a reused read, or one just before a
+  failover). The model explores this without elections (`CatchUpFromDeposed`)
+  and finds nothing. The leader leaves a learner's acknowledgements out of
+  its marks, as above. The model's twin that counts them, with elections,
+  loses a write (`FelixShardElectWipeNonVoterCreatesLearnerAcks.cfg`).
 - A candidate's generation can be above anything the control plane has
   written, and a copy wiped after promising one cannot know it. With three
   copies that is safe: the set that re-admits it was fenced by both other
@@ -1549,18 +1569,49 @@ stream shard at a new generation and its log is not empty: after a promotion,
 at a fresh placement over an existing log, at either end of a move, and on a
 hand-back. The control plane bumps the generation at each step of a move, so
 the leader that stays writes one at the staging and the fence too; they cost
-an offset each and nothing else. A reopen that finds the generation already
-has records writes none, fenced or not: the leader led at this generation
-before and comes back to it after a restart or a lost lease, the mark already
+an offset each and nothing else. A cache shard writes one on its cache log and
+one on its counter log, at the same points, since its fence can take a longer
+log on either; each mark counts only past a record in its own log
+(`a_cache_leader_counts_only_its_own_generation`). Cache replay, watches and
+counter sums skip the record.
+
+An open that does not fence writes none when the generation already has
+records. That is a broker that does not fence its shards, or the old leader's
+end of a move, coming back to a generation it led before: the mark already
 counts from the generation's recorded start, and every record past that start
-is the generation's own, so there is nothing inherited to cover. This is also
-how a shard whose generation began before the fleet finalized
-`generation_start` keeps serving: it has records at that generation and no
-start record, and it gets its first one at its next leadership change. A cache
-shard writes one on its cache log and one on its counter log, at the same
-points, since its fence can take a longer log on either; each mark counts only
-past its own log's record (`a_cache_leader_counts_only_its_own_generation`).
-Cache replay, watches and counter sums skip the record.
+is the generation's own, so there is nothing inherited to cover. A shard whose
+generation began before the fleet finalized `generation_start` keeps serving
+the same way: it has records at that generation and no start record, and it
+gets its first one at its next leadership change.
+
+**A new stint at the same generation.** A replicated broker opens its shards
+fenced, including after a restart. A fenced open at a generation this broker
+already started, with records past its start record, writes another start
+record at the tail. This holds when retention has dropped the first start
+record too: the generation history says the generation began below what the
+log still holds. A generation that began before the fleet finalized
+`generation_start` still reopens without one: it has had no elections, so
+every record past its start is its own, as for an open that does not fence.
+If retention has dropped its first record too, the broker cannot tell it from
+a trimmed start record and writes one, which costs an offset and nothing
+else. Once elections ship, a broker also writes a stint record when it was
+elected at a generation and is then named there by a cut-over the control
+plane wrote without hearing of the election. Each such open is a new stint, and the leader counts
+from the start record of its current stint (`own_start` in the driver). The
+generation history still says where the generation began.
+
+The difference matters for a set change. Records the elected stint
+acknowledged on the old set alone sit between the two start records, and a
+copy joining in the cut-over may not hold them. If the joint start were
+counted from the first record, the control plane could flip to the new set
+while such a record is on one copy of it
+(`FelixShardElectSwapFlipJoinLagsFirstStart.cfg`, #1787). The current stint's
+start reaches a majority of the new set only behind those records
+(`the_joint_start_waits_for_the_current_stints_start`). The log remembers its
+current stint's start in memory only; after a restart the next fenced open
+writes a new one, even when the log already ends with an earlier stint's. A
+cache shard's counter log still counts from the start the generation history
+records.
 
 An in-memory stream writes none either. Its publishes never reach the shard's
 log: they take no offsets, nothing ships, the fence has nothing to take, and a
@@ -1598,6 +1649,9 @@ code. The report and the lease leave the write's path:
   has answered a newer leader's fence, what it writes next is in no fence
   answer. The generation-start rule still applies on top, so the mark moves
   only once the majority reaches a record of the leader's own generation.
+  Every follower the assignment names is counted, including one the node
+  catalog has no address for yet, which holds nothing (see
+  [Fencing a promotion](#fencing-a-promotion)).
 - **The mark moves first.** The report still goes to the control plane every
   pass, for placement and promotion, but it is sent behind the mark and
   nothing waits for it to land.
@@ -2202,9 +2256,16 @@ history is read. A broker that just took a shard has no mark for its
 generation yet (`Settling`): a `Latest` subscribe is refused as retryable until
 the first mark. Held batches are dropped when the shard is released (never
 delivered as committed); subscribers are ended with where to resume and pick
-up on the next leader. While the lease is lapsed the bound is `Refused`: new
+up on the next leader. The resume position is at or below the first held
+batch, since the batch stays on disk and the next leader can commit it. A
+generation-start record written behind a held batch does not move it. While the lease is lapsed the bound is `Refused`: new
 subscribes, watches and cache reads are refused (`felix_broker_lease_refusals_total{boundary="read"}`),
 and the readers of every led shard are ended as for a move.
+If the old leader's log takes the new leader's records, or is rebuilt at its
+request, before its release ends its readers, they are ended then, at the
+position they had reached. The resume is below those records and below
+anything it held. A reader whose history is still waiting for the mark has
+seen nothing past it: its stream is reset and it resumes after its last record.
 
 ### Storage identities
 
@@ -4150,7 +4211,8 @@ acknowledgement is the one it was.
   electing, the leader acknowledges nothing: it cannot count both sets, and
   the new set alone could lose a record if failover is placed from the old
   one. A stream that does not acknowledge at quorum reports no joint start.
-- The count is the least of the two, so the generation-start record is
+- The count is the least of the two, so the start record of the leader's
+  current stint (see "A new stint at the same generation" above) is
   acknowledged on both majorities exactly when the mark passes it. The
   leader's report then carries `joint_start_acked`, the pending set's
   generation, beside the generation it measured at. The control plane takes

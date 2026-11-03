@@ -107,6 +107,15 @@ async fn nothing(sub: &mut Subscription) {
     assert!(got.is_err(), "delivered past the committed mark: {got:?}");
 }
 
+/// Where a reader ended by a move is told to resume, once its feed closes.
+async fn resumes_at(sub: &mut Subscription) -> Option<u64> {
+    let ended = tokio::time::timeout(Duration::from_secs(5), sub.recv())
+        .await
+        .expect("ended in time");
+    assert!(ended.is_none(), "delivered past the mark: {ended:?}");
+    sub.receiver.moved().and_then(|moved| moved.resume_from)
+}
+
 /// **A batch past the committed mark reaches no subscriber and not the ring
 /// until the mark passes it, and then in offset order.** Delivered at
 /// durability instead, a subscriber could hold an offset a failover gives to a
@@ -264,6 +273,84 @@ async fn a_batch_shipped_again_after_the_hold_was_dropped_does_not_wedge_publish
         .await
         .expect("the publish waited on a turn nobody holds");
     assert_eq!(outcome.offsets, Some((2, 2)));
+}
+
+/// **A move tells its readers to resume at the first batch they were not
+/// offered, even when a generation-start record follows it.** A batch held for
+/// the mark stays on disk and ships to the next owner, which commits it. A
+/// generation change on the same leader writes a start record behind it before
+/// the mark gets there. Told to resume past that record, a reader skips the
+/// batch for good.
+#[tokio::test]
+async fn a_move_resumes_readers_at_a_held_batch_below_a_generation_start() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (broker, _bounds) = broker_with(dir.path(), ReadBound::Committed(1)).await;
+    let mut live = broker
+        .subscribe("t1", "ns", "quorum", 0)
+        .await
+        .expect("subscribe");
+    publish(&broker, "quorum", b"seen").await;
+    assert_eq!(&next(&mut live).await[..], b"seen");
+    let held = publish(&broker, "quorum", b"held").await;
+    assert_eq!(held.offsets, Some((1, 1)));
+
+    let start = broker
+        .append_generation_start("t1", "ns", "quorum", 0, 2)
+        .await
+        .expect("generation start");
+    assert_eq!(start, 2);
+    let handoff = crate::ShardHandoff {
+        node_id: Some("next".to_string()),
+        addr: None,
+        generation: 3,
+    };
+    assert_eq!(
+        broker
+            .end_subscriptions("t1", "ns", "quorum", 0, Some(handoff))
+            .await,
+        1
+    );
+    assert_eq!(broker.discard_uncommitted("t1", "ns", "quorum", 0).await, 1);
+
+    let ended = tokio::time::timeout(Duration::from_secs(5), live.recv())
+        .await
+        .expect("ended in time");
+    assert!(ended.is_none(), "delivered past the mark: {ended:?}");
+    assert_eq!(
+        live.receiver.moved().and_then(|moved| moved.resume_from),
+        Some(1),
+        "the held batch was never offered, so a reader resumes at it"
+    );
+}
+
+/// **A batch held across a generation-start record still goes out, and the
+/// stream carries on past the record.** The record takes its own offset in
+/// the commit order, so the next publish lands after it.
+#[tokio::test]
+async fn a_batch_held_across_a_generation_start_is_released_and_publishes_follow_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (broker, bounds) = broker_with(dir.path(), ReadBound::Committed(0)).await;
+    let mut live = broker
+        .subscribe("t1", "ns", "quorum", 0)
+        .await
+        .expect("subscribe");
+    publish(&broker, "quorum", b"held").await;
+    broker
+        .append_generation_start("t1", "ns", "quorum", 0, 2)
+        .await
+        .expect("generation start");
+
+    bounds.set(ReadBound::Committed(2));
+    release(&broker, "quorum").await;
+    assert_eq!(&next(&mut live).await[..], b"held");
+
+    bounds.set(ReadBound::Unbounded);
+    let outcome =
+        tokio::time::timeout(Duration::from_secs(5), publish(&broker, "quorum", b"after"))
+            .await
+            .expect("the publish waited on a turn nobody holds");
+    assert_eq!(outcome.offsets, Some((2, 2)));
+    assert_eq!(&next(&mut live).await[..], b"after");
 }
 
 /// **A resume joins at the committed mark, not at the tail**, and history is
@@ -436,4 +523,99 @@ async fn a_range_read_stops_at_the_mark_and_does_not_wait() {
             ..
         })
     ));
+}
+
+/// **Readers of a deposed leader resume below the records a newer leader
+/// ships to it.** Until its readers are ended, a deposed leader can take the
+/// new leader's records as a follower. Those were offered to none of its
+/// readers, and neither was the batch it held for the mark, which the new
+/// leader may commit. Told to resume past them when the move ends them, a
+/// reader skips them for good.
+#[tokio::test]
+async fn readers_resume_below_records_a_newer_leader_ships() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (broker, _bounds) = broker_with(dir.path(), ReadBound::Committed(1)).await;
+    let mut live = broker
+        .subscribe("t1", "ns", "quorum", 0)
+        .await
+        .expect("subscribe");
+    publish(&broker, "quorum", b"seen").await;
+    assert_eq!(&next(&mut live).await[..], b"seen");
+    let held = publish(&broker, "quorum", b"held").await;
+    assert_eq!(held.offsets, Some((1, 1)));
+
+    // The newer leader's batch lands, ending at 4.
+    broker
+        .adopt_replicated("t1", "ns", "quorum", 0, 4)
+        .await
+        .expect("adopt");
+    // A reader that joins after them starts past them.
+    let mut joined = broker
+        .subscribe("t1", "ns", "quorum", 0)
+        .await
+        .expect("subscribe");
+    let handoff = crate::ShardHandoff {
+        node_id: Some("next".to_string()),
+        addr: None,
+        generation: 3,
+    };
+    broker
+        .end_subscriptions("t1", "ns", "quorum", 0, Some(handoff))
+        .await;
+
+    assert_eq!(resumes_at(&mut live).await, Some(1));
+    assert_eq!(resumes_at(&mut joined).await, Some(4));
+}
+
+/// **A rebuild that keeps the committed records ends readers below a held
+/// batch it moves past.** The mark can cover a held batch before the release
+/// gets to it. A newer leader that asks this broker to rebuild keeps the log
+/// up to the commit offset, past that batch, and the new leader has it.
+#[tokio::test]
+async fn readers_resume_below_a_held_batch_a_rebuild_moves_past() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (broker, _bounds) = broker_with(dir.path(), ReadBound::Committed(1)).await;
+    let mut live = broker
+        .subscribe("t1", "ns", "quorum", 0)
+        .await
+        .expect("subscribe");
+    publish(&broker, "quorum", b"seen").await;
+    assert_eq!(&next(&mut live).await[..], b"seen");
+    publish(&broker, "quorum", b"held").await;
+
+    broker
+        .reset_log(crate::LogKind::Stream, "t1", "ns", "quorum", 0, 2)
+        .await
+        .expect("reset");
+    broker
+        .end_subscriptions(
+            "t1",
+            "ns",
+            "quorum",
+            0,
+            Some(crate::ShardHandoff::default()),
+        )
+        .await;
+    assert_eq!(resumes_at(&mut live).await, Some(1));
+}
+
+/// **A batch shipped again leaves readers where they are.** The sequence does
+/// not move, so nothing was passed over and the readers carry on.
+#[tokio::test]
+async fn a_batch_shipped_again_does_not_end_readers() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (broker, _bounds) = broker_with(dir.path(), ReadBound::Unbounded).await;
+    let mut live = broker
+        .subscribe("t1", "ns", "quorum", 0)
+        .await
+        .expect("subscribe");
+    publish(&broker, "quorum", b"first").await;
+    assert_eq!(&next(&mut live).await[..], b"first");
+
+    broker
+        .adopt_replicated("t1", "ns", "quorum", 0, 1)
+        .await
+        .expect("adopt");
+    publish(&broker, "quorum", b"second").await;
+    assert_eq!(&next(&mut live).await[..], b"second");
 }

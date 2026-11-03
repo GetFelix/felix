@@ -263,6 +263,7 @@ expectations=(
   "FelixShardElectSwapFlipDrop1StoodOneOther pass"
   "FelixShardElectSwapFlipDrop1StoodSeveralOther pass"
   "FelixShardElectSwapFlipSkipsBallot violates OneLeaderPerGeneration"
+  "FelixShardElectSwapFlipJoinLagsFirstStart violates AckedOnMajority"
   "FelixShardElectLive pass"
   "FelixShardElectLiveLoosePreVote violates NoStandAgainstHeardLeader"
   "FelixShardElectLiveNoBackoff violates liveness"
@@ -389,6 +390,7 @@ fi
 # the four FelixShardElectSwapFlip{Keep,Drop}{0,1}StoodOneDest (each the same
 # states as its unstood twin), FelixShardElectSwapFlipKeep0StoodOneOther and
 # the four FelixShardElectSwapFlip{Keep,Drop}{0,1}StoodSeveralDest run nightly.
+# So is FelixShardElectSwapFlipJoinLags.
 # So are FelixShardElectWipeNonVoter{Twice,Failover,FailoverWipesLeader,
 # WipesLeader,Setless,Groups}: each runs well over an hour on a four-core runner. Their
 # violating twins and witnesses stay registered.
