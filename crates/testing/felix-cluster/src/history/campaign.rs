@@ -7,17 +7,20 @@
 //! and the brokers, so a failing seed makes a failure likely to recur rather
 //! than certain to.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 
-use super::model::{Consistency, History, ListSpec, millis};
-use super::nemesis::{ClusterView, Nemesis, ShardView};
+use super::model::{Consistency, History, ListSpec, Opened, millis};
+use super::nemesis::{ClusterView, Fault, Nemesis, ShardView};
 use super::rng::Rng;
 use super::subscriber::Subscribers;
 use super::workload::{ClientKind, Workload};
 use crate::{CacheSpec, Cluster, ClusterConfig, StreamSpec, wait};
+use felix_common::fleet;
+use felix_controlplane_service::store::ControlPlaneStore;
 
 /// The seed, as a number or `random`.
 pub const SEED_VAR: &str = "FELIX_HISTORY_SEED";
@@ -44,6 +47,15 @@ pub const LEASE_FREE_FEATURES: &[&str] = &[
 /// Finalized in every mode, so the workload can commit. It changes no
 /// acknowledgement or read path, only whether a commit is accepted.
 pub const ATOMIC_COMMIT: &str = "atomic_commit";
+
+/// What a nemesis that needs elections finalizes on top of
+/// [`LEASE_FREE_FEATURES`].
+const ELECTION_FEATURES: &[fleet::FleetFeature] = &[fleet::JOINT_FENCE, fleet::REPLICA_ELECTION];
+
+/// How long a follower takes to suspect a silent leader when brokers elect.
+/// Short, so a campaign spends its time on elections rather than on the
+/// detector.
+const SUSPECT_AFTER_MS: &str = "1000";
 
 /// How long every broker has to turn the finalized features on.
 const FEATURES_TIMEOUT: Duration = Duration::from_secs(30);
@@ -186,6 +198,34 @@ impl Campaign {
                 broker_env.push((name.to_string(), value.to_string()));
             }
         }
+        if nemesis.needs_election() {
+            // The brokers report the election features only when told to,
+            // and offer ELECTION only with the internal switch on.
+            let reported = fleet::IMPLEMENTED
+                .iter()
+                .chain(&[
+                    fleet::JOINT_FENCE,
+                    fleet::START_HOLDERS,
+                    fleet::PEER_ELECTION,
+                    fleet::REPLICA_ELECTION,
+                ])
+                .map(|feature| feature.name())
+                .collect::<Vec<_>>()
+                .join(",");
+            for (name, value) in [
+                ("FELIX_INTERNAL_ELECTION", "true".to_string()),
+                ("FELIX_TEST_FLEET_FEATURES", reported),
+                (
+                    "FELIX_LEADER_SUSPECT_AFTER_MS",
+                    SUSPECT_AFTER_MS.to_string(),
+                ),
+                // A publish waiting on the dead leader's quorum gives up soon
+                // enough for the client to try the elected one.
+                ("FELIX_PUBLISH_QUORUM_TIMEOUT_MS", "2000".to_string()),
+            ] {
+                broker_env.push((name.to_string(), value));
+            }
+        }
         ClusterConfig {
             nodes: self.nodes,
             streams: self
@@ -202,14 +242,58 @@ impl Campaign {
     }
 
     /// Start the cluster for `nemesis` and finalize the mode's fleet
-    /// features, returning once every broker has turned them on.
+    /// features, returning once every broker has turned them on. A nemesis
+    /// that needs elections also gets `replica_election`, lease-free only.
     pub async fn start(&self, nemesis: &impl Nemesis) -> Result<Cluster> {
+        let election = nemesis.needs_election();
+        if election && self.mode == Mode::Lease {
+            bail!("electing among replicas needs the lease-free mode");
+        }
         let cluster = Cluster::start(self.cluster_config(nemesis)).await?;
+        let mut features = self.mode.features().to_vec();
+        if election {
+            features.extend(ELECTION_FEATURES.iter().map(|feature| feature.name()));
+        }
         cluster
-            .finalize_fleet_features(self.mode.features(), FEATURES_TIMEOUT)
+            .finalize_fleet_features(&features, FEATURES_TIMEOUT)
             .await
             .with_context(|| format!("mode {}: the fleet features did not turn on", self.mode))?;
+        if election {
+            self.keep_sets(&cluster).await?;
+        }
         Ok(cluster)
+    }
+
+    /// Write each of the workload's assignments again, so its leader fences
+    /// and keeps the set at a new generation. The first placement ran before
+    /// the election features were on, and a follower stands only on a set its
+    /// leader kept.
+    async fn keep_sets(&self, cluster: &Cluster) -> Result<()> {
+        let control_plane = cluster
+            .control_plane
+            .as_ref()
+            .ok_or_else(|| anyhow!("control plane is not running"))?;
+        let mut placed = Vec::new();
+        for assignment in control_plane.store.list_shard_assignments().await? {
+            if self
+                .shard_names()
+                .any(|(_, name)| name == assignment.key.stream)
+            {
+                placed.push((assignment.key.stream.clone(), assignment.generation));
+                control_plane.store.put_shard_assignment(assignment).await?;
+            }
+        }
+        wait::until(SETTLE_TIMEOUT, "each set to be written again", || async {
+            let Ok(statuses) = cluster.shard_statuses().await else {
+                return false;
+            };
+            placed.iter().all(|(name, generation)| {
+                statuses
+                    .iter()
+                    .any(|status| status.name == *name && status.generation > *generation)
+            })
+        })
+        .await
     }
 
     /// Run the campaign against `cluster` and return what happened.
@@ -249,6 +333,8 @@ impl Campaign {
     ) -> Result<History> {
         let mut rng = Rng::new(self.seed);
         cluster.run_placement(PLACEMENT_INTERVAL);
+        let election = nemesis.needs_election();
+        let mut opens = BTreeSet::new();
 
         let mut lists = std::collections::BTreeMap::new();
         for list in &self.lists {
@@ -284,7 +370,9 @@ impl Campaign {
             })
             .collect();
 
-        let result = self.unleash(cluster, nemesis, workload, &mut rng).await;
+        let result = self
+            .unleash(cluster, nemesis, workload, &mut rng, &mut opens)
+            .await;
         workload.stop();
         for client in clients {
             client.await.context("a client task panicked")?;
@@ -302,6 +390,9 @@ impl Campaign {
             .collect();
         subscribers.catch_up(&ends, SETTLE_TIMEOUT).await;
         let subscriptions = subscribers.stop().await;
+        if election {
+            super::leaders::read(cluster, &mut opens);
+        }
         let (ops, registers, faults) = workload.take();
         let (commit_values, commit_reads) = workload.take_commits();
         Ok(History {
@@ -313,16 +404,20 @@ impl Campaign {
             commit_reads,
             faults,
             subscriptions,
+            opens,
         })
     }
 
-    /// Inject and heal faults until the duration is up.
+    /// Inject and heal faults until the duration is up. When the nemesis
+    /// needs elections, the broker logs are read into `opens` after every
+    /// fault, before a later restart can drop one.
     async fn unleash(
         &self,
         cluster: &mut Cluster,
         nemesis: &mut impl Nemesis,
         workload: &Workload,
         rng: &mut Rng,
+        opens: &mut BTreeSet<Opened>,
     ) -> Result<()> {
         let deadline = tokio::time::Instant::now() + self.duration;
         loop {
@@ -337,6 +432,18 @@ impl Campaign {
             let Some(fault) = nemesis.next_fault(rng, &view) else {
                 continue;
             };
+            let led = match &fault {
+                Fault::ElectWithoutControlPlane { node, .. } => {
+                    match super::liveness::ready_to_elect(cluster, self, node).await {
+                        Ok(led) => led,
+                        Err(err) => {
+                            workload.fault(format!("could not {fault}: {err:#}"));
+                            continue;
+                        }
+                    }
+                }
+                _ => Vec::new(),
+            };
             workload.fault(format!("start {fault}"));
             if let Err(err) = fault.inject(cluster).await {
                 // A pause that timed out waiting for the stop may still take
@@ -345,6 +452,20 @@ impl Campaign {
                 let _ = fault.heal(cluster).await;
                 workload.set_addrs(cluster.broker_addrs());
             } else {
+                if let Fault::ElectWithoutControlPlane { node, .. } = &fault {
+                    let elected =
+                        super::liveness::await_election(cluster, self, workload, node, &led, opens)
+                            .await;
+                    match elected {
+                        Ok(lines) => lines.into_iter().for_each(|line| workload.fault(line)),
+                        Err(err) => {
+                            // Healed first so the state dump can ask the
+                            // control plane.
+                            let _ = fault.heal(cluster).await;
+                            return Err(err.context(format!("after {fault}")));
+                        }
+                    }
+                }
                 tokio::time::sleep(rng.between(self.hold.0, self.hold.1)).await;
                 fault
                     .heal(cluster)
@@ -359,6 +480,9 @@ impl Campaign {
                 .await
                 .with_context(|| format!("after {fault}"))?;
             workload.fault(format!("every shard serving {} later", millis_of(took)));
+            if nemesis.needs_election() {
+                super::leaders::read(cluster, opens);
+            }
         }
     }
 

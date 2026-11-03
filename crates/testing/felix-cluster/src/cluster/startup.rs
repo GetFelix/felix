@@ -55,7 +55,7 @@ impl Cluster {
             nodes.push(
                 spawn_broker(
                     &binary,
-                    &control_plane,
+                    &control_plane.base_url,
                     &credentials,
                     &config,
                     root.path(),
@@ -158,13 +158,10 @@ impl Cluster {
     /// another go, not a different one, and a durable log it already wrote must
     /// still be there.
     pub(super) fn respawn(&mut self, index: usize) -> Result<()> {
-        let control_plane = self
-            .control_plane
-            .as_ref()
-            .ok_or_else(|| anyhow!("control plane is gone"))?;
+        let control_plane_url = self.control_plane_base_url()?;
         let replacement = spawn_broker(
             &self.binary,
-            control_plane,
+            &control_plane_url,
             &self.credentials,
             &self.config,
             self._root.path(),

@@ -78,6 +78,9 @@ pub enum Rule {
     ///     nor visibly dropped: it sat under a skip the subscriber was told
     ///     holds no event, or past where the subscriber stopped.
     MissingDelivery,
+    /// 12. Two brokers opened one shard for writes at the same generation,
+    ///     as their logs record it.
+    OneLeaderPerGeneration,
     /// The final read has a hole, so the lost-write rule cannot be trusted.
     IncompleteFinalRead,
     /// The history itself is malformed: the recorder is wrong, not the broker.
@@ -156,6 +159,7 @@ impl Rule {
             Rule::DeliveryOrder => "9 delivery-order",
             Rule::LostDelivery => "10 lost-delivery",
             Rule::MissingDelivery => "11 missing-delivery",
+            Rule::OneLeaderPerGeneration => "12 one-leader-per-generation",
             Rule::IncompleteFinalRead => "incomplete-final-read",
             Rule::MalformedHistory => "malformed-history",
         }
@@ -197,6 +201,7 @@ pub fn check(history: &History) -> Report {
         &mut violations,
     );
     delivery::check(history, &mut violations);
+    super::leaders::check(&history.opens, &mut violations);
     Report {
         violations,
         faults: history.faults.clone(),

@@ -13,6 +13,8 @@
 //! - [`nemesis`]: which fault next, and how to inject and heal it.
 //! - [`campaign`]: the run itself, configured from the environment, and
 //!   the state dump a failing run prints.
+//! - `leaders`: rule 12, one leader per generation, read from the broker
+//!   logs.
 //! - `liveness`: after every heal, the check that each shard serves again.
 //! - `subscriber`: one live subscriber per list for the whole run, for the
 //!   delivery rules.
@@ -24,6 +26,7 @@ pub mod campaign;
 pub mod checker;
 pub mod commit;
 mod dump;
+mod leaders;
 mod liveness;
 pub mod model;
 pub mod nemesis;

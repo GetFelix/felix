@@ -16,7 +16,9 @@ name: History checker (nightly)
 # time, on three brokers; `adversarial` injects the compound ones (overlapping
 # faults, a partition that forces a failover, moves cut short, restart loops,
 # torn writes, drains that change replica sets) on four. The nightly run does
-# both, as two jobs with their own seeds.
+# both, as two jobs with their own seeds. A manual run can also pick `election`:
+# leaders killed while the control plane is down, with replica_election on, so
+# every failover is an election among the replicas.
 
 on:
   schedule:
@@ -48,6 +50,7 @@ on:
           - both
           - all
           - adversarial
+          - election
         default: both
 
 permissions:

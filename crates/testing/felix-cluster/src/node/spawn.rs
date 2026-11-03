@@ -9,12 +9,12 @@ use super::{
     BrokerNode, boot_id_file, clock_fault_file, partition_file, storage_dir, storage_fault_file,
 };
 use crate::proxy::Links;
-use crate::{ClusterConfig, ControlPlane, Credentials, pki, ports};
+use crate::{ClusterConfig, Credentials, pki, ports};
 
 /// Start one broker process, behind `links` when the cluster proxies them.
 pub(crate) fn spawn_broker(
     binary: &PathBuf,
-    control_plane: &ControlPlane,
+    control_plane_url: &str,
     credentials: &Credentials,
     config: &ClusterConfig,
     root: &Path,
@@ -37,7 +37,7 @@ pub(crate) fn spawn_broker(
             let route = links.route(&node_id, internal_addr)?;
             (route.advertise, route.control_plane_url)
         }
-        None => (internal_addr, control_plane.base_url.clone()),
+        None => (internal_addr, control_plane_url.to_string()),
     };
     let metrics_addr = ports::free_tcp()?;
     let data_dir = root.join(&node_id);

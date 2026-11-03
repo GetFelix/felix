@@ -38,6 +38,20 @@ pub struct History {
     pub faults: Vec<FaultEvent>,
     /// What each list's live subscriber was delivered over the whole run.
     pub subscriptions: Vec<Subscription>,
+    /// Every time a broker opened a shard for writes, read from the broker
+    /// logs. Only collected when the brokers elect leaders among themselves.
+    pub opens: BTreeSet<Opened>,
+}
+
+/// One broker opening one shard for writes at a generation, once a majority
+/// took its fence.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Opened {
+    /// The stream or cache name.
+    pub name: String,
+    pub shard: u32,
+    pub generation: u64,
+    pub node: String,
 }
 
 /// What the checker may assume of one list.

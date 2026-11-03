@@ -320,3 +320,32 @@ fn the_new_compound_faults_say_what_they_do() {
     assert_eq!(crash.kind(), FaultKind::ControlPlaneCrash);
     assert_eq!(crash.family(), FaultFamily::Compound);
 }
+
+#[test]
+fn an_election_kills_a_leader_and_needs_elections() {
+    let mut nemesis = RandomNemesis::election();
+    assert!(nemesis.needs_election());
+    assert!(!nemesis.needs_proxy_links());
+    assert!(!RandomNemesis::adversarial().needs_election());
+    let view = view();
+    let mut rng = Rng::new(7);
+    let mut restarted = (false, false);
+    for _ in 0..50 {
+        let fault = nemesis.next_fault(&mut rng, &view).expect("a fault");
+        let Fault::ElectWithoutControlPlane {
+            node,
+            restart_while_down,
+        } = &fault
+        else {
+            panic!("not an election: {fault}");
+        };
+        assert!(view.leaders.contains(node), "{fault}");
+        assert_eq!(fault.family(), FaultFamily::Compound);
+        if *restart_while_down {
+            restarted.0 = true;
+        } else {
+            restarted.1 = true;
+        }
+    }
+    assert_eq!(restarted, (true, true), "both heals should be drawn");
+}
