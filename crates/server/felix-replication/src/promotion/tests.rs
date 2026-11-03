@@ -987,3 +987,63 @@ async fn set_generation(broker: &Broker) -> u64 {
         .expect("log")
         .set_generation()
 }
+
+/// **A candidate's fence carries the set it keeps, at that set's own
+/// generation, and the candidate keeps no new set.** Standing changes no set,
+/// and the route's generation is one no assignment wrote, so a set stamped
+/// with it would be one the control plane never recorded.
+#[tokio::test]
+async fn a_candidates_fence_carries_the_set_it_keeps() {
+    use felix_storage::disk_log::{Member, Membership};
+
+    let electing = PeerCapabilities::from_bits(REQUIRED.bits()).union(PeerCapabilities::ELECTION);
+    let mut replicas = Replicas::new();
+    replicas.electing = true;
+    replicas.get_mut("broker-c").reachable = false;
+    replicas.get_mut("broker-b").capabilities = electing;
+    replicas
+        .get("broker-b")
+        .holds("broker-b", 4, 0, &["a"])
+        .await;
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+    let kept = Membership {
+        generation: 3,
+        members: [LEADER, "broker-b", "broker-c"]
+            .map(|node| Member {
+                node: node.to_string(),
+                storage: None,
+                learner: false,
+                wiped: false,
+            })
+            .to_vec(),
+    };
+    let candidacy = crate::election::Candidacy {
+        set: crate::promotion::joint::view(&kept),
+    };
+
+    let outcome = fence_shard_as(
+        &replicas,
+        &leader,
+        LEADER,
+        &key(),
+        &route(),
+        false,
+        None,
+        Some(&candidacy),
+    )
+    .await;
+
+    assert_eq!(
+        outcome,
+        Outcome::Fenced {
+            caught_up_from: None
+        }
+    );
+    assert_eq!(replicas.sent(Kind::ElectionFence), vec!["broker-b"]);
+    assert_eq!(set_generation(&replicas.get("broker-b").broker).await, 3);
+    assert_eq!(
+        set_generation(&leader).await,
+        0,
+        "the candidate keeps no set"
+    );
+}

@@ -243,7 +243,10 @@ ran an older release has nothing to roll back to, so at its first broker
 registration it finalizes every feature its brokers report except
 `publisher_principal` (`cluster::fleet::NEW_CLUSTER`). That puts a `Quorum`
 write on `majority_ack` from the first stream: without it the leader waits
-for a replica report to reach the control plane before it acknowledges.
+for a replica report to reach the control plane before it acknowledges. It
+includes `joint_fence` and `replica_election`, so replicas elect a leader
+while the control plane is down, once this control plane may finalize
+`joint_fence` (until then both are refused and stay the operator's).
 
 The registration handler checks that the cluster is new: no stream or cache
 was ever created (the change feeds and snapshots are empty) and every node
@@ -1376,7 +1379,7 @@ theirs is lost, and the control plane adopts the result
 rule 10). The elected broker reports at the generation it opened at, with
 `elected` in its shard entry: `leader` (itself), `generation`, `replicas`
 (the followers of the set it fenced) and `set_generation`. A report without
-it is unchanged, and no broker sends it yet.
+it is unchanged; only a broker leading by election sends it.
 
 When the report's generation is above the assignment's, the report handler
 adopts before it judges the report, once `replica_election` is finalized.

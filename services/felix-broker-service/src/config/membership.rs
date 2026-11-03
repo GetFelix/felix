@@ -167,7 +167,7 @@ fn reported_features() -> std::collections::BTreeSet<String> {
                 .ok()
                 .map(|value| value.trim().to_ascii_lowercase())
                 .as_deref(),
-            Some("1" | "true" | "yes")
+            None | Some("" | "1" | "true" | "yes")
         );
     let mut features = features_for(fences, reads_by_lease);
     if election {
@@ -177,10 +177,13 @@ fn reported_features() -> std::collections::BTreeSet<String> {
 }
 
 /// What a broker offering `ELECTION` adds to its report: that it offers it,
-/// and that it stands for election once `replica_election` is finalized.
+/// that it fences set changes jointly once `joint_fence` is finalized, and
+/// that it stands for election once `replica_election` is. A broker uses a
+/// finalized feature only if it reported it.
 fn election_features() -> impl Iterator<Item = String> {
     [
         felix_common::fleet::PEER_ELECTION,
+        felix_common::fleet::JOINT_FENCE,
         felix_common::fleet::REPLICA_ELECTION,
     ]
     .into_iter()

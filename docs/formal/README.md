@@ -124,11 +124,11 @@ One shard, three brokers, one control plane, discrete time.
   never does. With `Ballots` each promise names the leader it was made to
   (`ballot`), and a replica answers a fence, a batch or a read round at the
   generation it promised only from that leader. The first leader starts with
-  its set's promise, as an elected one would. Nothing in the broker elects
-  yet; the ballot is in the code now so that a later change can.
+  its set's promise, as an elected one would. The broker's election driver
+  (`felix-replication`, `election/candidate.rs`) is what elects.
 - **The set check and adoption.** The design for electing without the
   control plane (`docs/replication-design.md`, "Electing without the control
-  plane"), not built yet. With `SetCheck` each replica keeps the set it last
+  plane"), built behind `replica_election`. With `SetCheck` each replica keeps the set it last
   learned and the generation of the assignment that wrote it (`setGen`). A
   batch and a fence carry the sender's pair; a replica that knows a newer one
   refuses, and otherwise learns it. A refused candidate learns the newer set

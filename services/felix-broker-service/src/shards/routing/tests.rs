@@ -768,3 +768,78 @@ fn only_newly_named_followers_are_read_early() {
     };
     assert_eq!(named(&before, &map(vec![staged, recreated])), [0, 1]);
 }
+
+/// **An elected leadership is laid over the control plane's assignment**
+/// until the control plane names its generation: the elected leader at its
+/// generation, on the set it stood on, with nothing pending or moving. The
+/// control plane's own set is kept aside for a later candidate to compare
+/// with. One for a shard with no assignment is dropped.
+#[test]
+fn an_elected_leadership_is_laid_over_the_assignment_until_named() {
+    use felix_replication::election::{Elected, Elections};
+    use felix_storage::StorageId;
+    use felix_storage::disk_log::{Member, Membership};
+
+    let copy = StorageId::from_bytes([7; 16]);
+    let elections = Elections::new("broker-b", Arc::new(tokio::sync::Notify::new()));
+    let elected = || Elected {
+        leader: "broker-b".to_string(),
+        generation: 6,
+        set: Membership {
+            generation: 5,
+            members: ["broker-a", "broker-b", "broker-c"]
+                .into_iter()
+                .map(|node| Member {
+                    node: node.to_string(),
+                    storage: (node == "broker-a").then_some(copy),
+                    learner: false,
+                    wiped: false,
+                })
+                .collect(),
+        },
+        incarnation: 0,
+    };
+    for shard in [0, 1] {
+        elections.record(to_router_key(&key(shard)), elected());
+    }
+    let mut named = assignment(0, "broker-a", 5);
+    named.replicas = vec!["broker-b".to_string(), "broker-c".to_string()];
+    named.successor = Some("broker-c".to_string());
+    named.fence_storage_ids = [("broker-c".to_string(), "00".to_string())].into();
+    let assignments: HashMap<ShardKey, ShardAssignment> = [(key(0), named)].into();
+
+    let laid = with_elected(assignments.clone(), &elections);
+    let route = &laid[&key(0)];
+    assert_eq!(route.leader, "broker-b");
+    assert_eq!(route.generation, 6);
+    assert_eq!(route.replicas, ["broker-a", "broker-c"]);
+    assert_eq!(
+        route.member_storage_ids,
+        [("broker-a".to_string(), copy.to_hex())].into()
+    );
+    assert!(route.fence_storage_ids.is_empty());
+    assert_eq!(route.successor, None);
+    assert_eq!(route.state, "active");
+    let recorded = elections
+        .recorded(&to_router_key(&key(0)))
+        .expect("the control plane's set");
+    assert_eq!(recorded.generation, 5);
+    assert_eq!(
+        recorded
+            .members
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["broker-a", "broker-b", "broker-c"]
+    );
+    assert!(
+        elections.get(&to_router_key(&key(1))).is_none(),
+        "no assignment"
+    );
+
+    let mut caught_up = assignments;
+    caught_up.get_mut(&key(0)).expect("assigned").generation = 6;
+    let laid = with_elected(caught_up, &elections);
+    assert_eq!(laid[&key(0)].leader, "broker-a");
+    assert!(elections.is_empty());
+}

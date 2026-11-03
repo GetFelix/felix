@@ -289,3 +289,114 @@ fn the_backoff_doubles_to_its_cap() {
     }
     assert_eq!(backoff.failures, 10);
 }
+
+/// Stand for `key()` on the route `ctx` has, and return the round with the
+/// standing it recorded.
+async fn stand_and_watch(ctx: &Ctx<Voters>) -> (Round, Elected) {
+    let route = ctx.router.snapshot().get(&key()).expect("route").clone();
+    let watched = async {
+        loop {
+            if let Some(elected) = ctx.elections.get(&key()) {
+                return elected;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
+    let shard = key();
+    tokio::join!(stand(ctx, &shard, &route), watched)
+}
+
+/// **A candidate stands above the route's generation as well as its own
+/// ballot.** The control plane named generation 5, which never fenced this
+/// replica; standing at 4 would lose every vote to that leader's ballot, and
+/// one generation more would collide with it.
+#[tokio::test(start_paused = true)]
+async fn a_candidate_stands_above_the_routes_generation() {
+    let (broker, _dir) = follower().await;
+    let mut ctx = ctx(&broker, voters(None));
+    ctx.router = router(5);
+
+    let (_, elected) = stand_and_watch(&ctx).await;
+    assert_eq!(elected.generation, 6);
+}
+
+/// **A candidate does not stand past the control plane's adoption window**:
+/// the control plane would refuse to adopt the leadership, so its route would
+/// never drop. At the edge of the window it still stands.
+#[tokio::test(start_paused = true)]
+async fn a_candidate_does_not_stand_past_the_adoption_window() {
+    let (broker, _dir) = follower().await;
+    let log = shard_log(&broker, &key()).await.expect("log");
+    log.accept_generation(2 + ELECTION_GENERATION_WINDOW, Some("broker-a"))
+        .await
+        .expect("ballot");
+    let (_, elected) = stand_and_watch(&ctx(&broker, voters(None))).await;
+    assert_eq!(elected.generation, 3 + ELECTION_GENERATION_WINDOW);
+
+    let (broker, _dir) = follower().await;
+    let log = shard_log(&broker, &key()).await.expect("log");
+    log.accept_generation(3 + ELECTION_GENERATION_WINDOW, Some("broker-a"))
+        .await
+        .expect("ballot");
+    let past = ctx(&broker, voters(None));
+    let route = past.router.snapshot().get(&key()).expect("route").clone();
+    assert_eq!(stand(&past, &key(), &route).await, Round::Ineligible);
+    assert!(past.requester.asked.lock().expect("lock").is_empty());
+    assert_eq!(log.accepted_generation(), 3 + ELECTION_GENERATION_WINDOW);
+}
+
+/// **A standing whose fence is still running is not withdrawn** when it
+/// takes longer than [`OPEN_WITHIN`]: a fence or catch-up can, and giving up
+/// would burn the generation. Once the fence ends without opening, it is.
+#[tokio::test(start_paused = true)]
+async fn a_standing_is_kept_while_its_fence_runs() {
+    let (broker, _dir) = follower().await;
+    let ctx = ctx(&broker, voters(None));
+    let route = ctx.router.snapshot().get(&key()).expect("route").clone();
+    let fencing = async {
+        let generation = loop {
+            if let Some(elected) = ctx.elections.get(&key()) {
+                break elected.generation;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        let fence = ctx.elections.fencing(&key(), generation);
+        tokio::time::sleep(OPEN_WITHIN * 2).await;
+        let kept = ctx.elections.get(&key()).is_some();
+        drop(fence);
+        kept
+    };
+    let shard = key();
+    let (round, kept) = tokio::join!(stand(&ctx, &shard, &route), fencing);
+    assert!(kept, "withdrawn while its fence ran");
+    assert_eq!(round, Round::Failed);
+    assert!(ctx.elections.get(&key()).is_none());
+}
+
+/// **A standing whose generation this broker has since promised to another
+/// leader is withdrawn** (rule 5); one it has not promised past stays.
+#[tokio::test]
+async fn a_standing_promised_away_is_withdrawn() {
+    let (broker, _dir) = follower().await;
+    let ctx = ctx(&broker, voters(None));
+    let log = shard_log(&broker, &key()).await.expect("log");
+    log.accept_generation(4, Some(LOCAL)).await.expect("ballot");
+    ctx.elections.record(
+        key(),
+        Elected {
+            leader: LOCAL.to_string(),
+            generation: 4,
+            set: set(3),
+            incarnation: 0,
+        },
+    );
+
+    step_down_promised_away(&ctx).await;
+    assert!(ctx.elections.get(&key()).is_some(), "not promised past");
+
+    log.accept_generation(5, Some("broker-c"))
+        .await
+        .expect("a newer fence");
+    step_down_promised_away(&ctx).await;
+    assert!(ctx.elections.get(&key()).is_none());
+}

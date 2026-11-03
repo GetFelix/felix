@@ -297,6 +297,9 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         .elections()
         .and_then(|elections| elections.reported(&key, route.generation));
     let set_stamp = elected.as_ref().map(|elected| elected.set_generation);
+    let candidacy = marks
+        .elections()
+        .and_then(|elections| elections.candidacy(&key, route.generation));
     let shard_key = key.clone();
     let key = &key;
     // Resolved per pass rather than cached: a cache shard's log is replaced
@@ -817,6 +820,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 counter_log.clone(),
             );
             let generation = route.generation;
+            let candidacy = candidacy.clone();
             let exchange: Exchange<'a> = Box::pin(async move {
                 // Every request below goes through this, so the pass counts
                 // the follower only on an answer from the copy its cursor
@@ -905,6 +909,21 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                     cut
                 };
                 let (cut, ()) = futures::future::join(records, groups).await;
+                // A follower that missed the candidate fence has no route at
+                // this generation, so only the fence moves it (#1009).
+                if cursor.route_behind
+                    && let Some(candidacy) = &candidacy
+                {
+                    crate::promotion::refence(
+                        requester,
+                        &cursor.node_id,
+                        cursor.addr,
+                        &shard,
+                        log_kind,
+                        candidacy,
+                    )
+                    .await;
+                }
                 // A follower level with the tail was sent nothing, so nothing
                 // vouches for a position the mark still has to count. Its
                 // last record goes again for an answer; once the mark has

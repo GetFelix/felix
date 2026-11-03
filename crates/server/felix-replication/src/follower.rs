@@ -58,6 +58,10 @@ pub struct FollowerCursor {
     /// different one is another process, which may not hold what this one
     /// did, so the cursor starts over on it too.
     pub incarnation: Incarnation,
+    /// The follower's last answer was that its routing view is behind this
+    /// generation. An elected leader sends it the candidate fence again, since
+    /// no control-plane route will carry that generation to it.
+    pub(crate) route_behind: bool,
 }
 
 impl FollowerCursor {
@@ -75,6 +79,7 @@ impl FollowerCursor {
             legacy_frames: false,
             storage_id: None,
             incarnation: Incarnation::Unsent,
+            route_behind: false,
         }
     }
 

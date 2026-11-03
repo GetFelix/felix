@@ -160,9 +160,10 @@ pub struct PeerTransportConfig {
     /// replicates keeps the lease alone.
     pub fence: bool,
     /// `FELIX_INTERNAL_ELECTION`: whether this broker offers `ELECTION` and
-    /// checks the replica set on fences and batches that carry one. Off by
-    /// default, and only takes effect with `fence`. A test switch until the
-    /// `replica_election` fleet feature ships.
+    /// checks the replica set on fences and batches that carry one. On when
+    /// the variable is unset (the struct's own default stays off), and only
+    /// takes effect with `fence`. A new cluster needs every broker to offer it
+    /// to finalize `joint_fence` and `replica_election`.
     pub election: bool,
 }
 
@@ -331,8 +332,8 @@ impl PeerTransportConfig {
             .map(|value| value.trim().to_ascii_lowercase())
             .as_deref()
         {
-            None | Some("" | "0" | "false" | "no") => false,
-            Some("1" | "true" | "yes") => true,
+            None | Some("" | "1" | "true" | "yes") => true,
+            Some("0" | "false" | "no") => false,
             Some(other) => {
                 return Err(std::io::Error::new(
                     ErrorKind::InvalidInput,

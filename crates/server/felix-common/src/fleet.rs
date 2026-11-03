@@ -161,16 +161,16 @@ pub const RECORD_HEADERS: FleetFeature = FleetFeature::new("record_headers");
 /// opens for a replacement, is fenced jointly: a majority of the set being
 /// left and of the one replacing it must take the fence before the new set
 /// serves. A prerequisite of [`REPLICA_ELECTION`], finalized first so no shard
-/// elects while another still changes sets without it. Declared before any
-/// broker reports it, so a finalize is refused. See
+/// elects while another still changes sets without it. A broker reports it
+/// when it offers `ELECTION`. See
 /// `docs/replication-design.md` ("Electing without the control plane").
 pub const JOINT_FENCE: FleetFeature = FleetFeature::new("joint_fence");
 
 /// Replicas elect a leader themselves when the leader is lost, without the
 /// control plane, which adopts the result. Needs every broker to offer the
 /// `ELECTION` peer capability and check replica sets, and the control plane
-/// to keep the pending set and adoption. Declared before any broker reports
-/// it, so a finalize is refused. Cache shards elect only once
+/// to keep the pending set and adoption. A broker reports it when it offers
+/// `ELECTION`. Cache shards elect only once
 /// [`FENCED_CACHES`] is finalized; otherwise they stay on the lease. See
 /// `docs/replication-design.md` ("Electing without the control plane").
 pub const REPLICA_ELECTION: FleetFeature = FleetFeature::new("replica_election");

@@ -412,6 +412,10 @@ async fn ship_batch<R: PeerRequester>(
 
     let progress = read_answer(&answer);
     cursor.stalled = progress == Progress::Retry;
+    cursor.route_behind = matches!(
+        &answer,
+        InternalMessage::ReplicateError(err) if err.code == ErrorCode::StaleRoute
+    );
     match progress {
         Progress::Stored { durable_offset } => {
             // The follower's own account of where it is, since it did the
