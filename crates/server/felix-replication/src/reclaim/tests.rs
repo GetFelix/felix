@@ -246,3 +246,21 @@ fn a_follower_behind_on_the_cache_log_is_never_named() {
     let behind_everywhere = [at(false, &["broker-b"]), at(false, &["broker-b"])];
     assert!(caught_up(&behind_everywhere).is_empty());
 }
+
+/// **A refused shard's report carries the refusal and nothing measured.** The
+/// broker never opened the shard, so there is no tail and no follower
+/// position to send; the report replaces the previous one whatever its tail.
+#[test]
+fn a_refusal_report_carries_the_refusal_and_no_positions() {
+    let refused = RefusedGeneration {
+        generation: 6,
+        promised_to: "broker-d".to_string(),
+    };
+
+    let report = refusal_report(&key(), refused.clone());
+
+    assert_eq!(report.generation, 6);
+    assert_eq!(report.refused, Some(refused));
+    assert!(report.caught_up.is_empty() && report.offsets.is_empty());
+    assert!(!report.given_up && !report.drained);
+}

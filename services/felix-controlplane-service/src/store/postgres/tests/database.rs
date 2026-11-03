@@ -1989,6 +1989,7 @@ async fn an_older_members_report_does_not_keep_by_round() -> anyhow::Result<()> 
         follower_storage: Default::default(),
         inherited_storage: Default::default(),
         joint_start_acked: None,
+        refused: None,
         holds_start: Default::default(),
     };
     store
@@ -2099,6 +2100,7 @@ async fn an_older_members_write_does_not_keep_a_storage_id() -> anyhow::Result<(
         follower_storage: [("broker-y".to_string(), id.clone())].into(),
         inherited_storage: [("broker-z".to_string(), id.clone())].into(),
         joint_start_acked: Some(generation),
+        refused: None,
         holds_start: ["broker-y".to_string()].into(),
     };
     store

@@ -46,21 +46,24 @@ const FEATURES: [&str; 4] = [
     "fenced_caches",
 ];
 
-/// The slowest a renewal under load may be: one that takes longer lands after
-/// the lease it renews has run out. A starved shard's renewals take 5 to 6 s.
-/// A debug build saturates the per-PR runner's CPU, which slows every quorum
-/// write, and healthy renewals there reached 2.2 s.
-const RENEWAL_BOUND: Duration = TTL.saturating_sub(RENEW_EVERY);
+/// The slowest a renewal under load may be on the per-PR runner: one that takes
+/// longer lands after the lease it renews has run out. Debug brokers saturate
+/// that runner's CPU, which slows every quorum write, and healthy renewals
+/// there reached 2.2 s. A starved shard's renewals take 5 to 6 s.
+const RENEWAL_BOUND_PER_PR: Duration = TTL.saturating_sub(RENEW_EVERY);
+/// The same on the nightly runner. Release brokers leave CPU to spare and
+/// healthy renewals take about 0.33 s, so the guard stays tight there.
+const RENEWAL_BOUND_NIGHTLY: Duration = Duration::from_secs(2);
 /// The slowest a read under load may be. Reads stay under 0.4 s on a saturated
-/// runner, and reads queued behind other shards' fences took 2.5 to 6 s.
-/// `docs/cluster-harness.md` has the runs.
+/// runner. Without the #1799 and #1800 fixes they took 2.5 to 2.7 s, and
+/// without the #1801 fix 5 to 6 s. `docs/cluster-harness.md` has the runs.
 const READ_BOUND: Duration = Duration::from_secs(2);
 
 /// How much load a run applies.
 #[derive(Clone, Copy, Debug)]
 struct Load {
     /// Single-shard `Quorum` streams with three replicas, created after the
-    /// baseline. Each broker leads about a third, many times the replication
+    /// idle phase. Each broker leads about a third, many times the replication
     /// driver's 16 pass slots.
     streams: usize,
     /// How many of those take an append every [`APPEND_EVERY`] from the
@@ -70,6 +73,8 @@ struct Load {
     appended: usize,
     /// How long the appends go on after the last stream is created.
     hold: Duration,
+    /// The slowest a renewal under load may be.
+    renewal_bound: Duration,
 }
 
 impl Load {
@@ -90,6 +95,7 @@ impl Load {
             appended: read("FELIX_SCALE_APPENDED").unwrap_or(default.appended),
             hold: read("FELIX_SCALE_HOLD_SECS")
                 .map_or(default.hold, |secs| Duration::from_secs(secs as u64)),
+            renewal_bound: default.renewal_bound,
         }
     }
 }
@@ -103,6 +109,7 @@ async fn a_lease_cache_renews_on_time_while_shards_are_created_in_bulk() {
         streams: 600,
         appended: 96,
         hold: Duration::from_secs(30),
+        renewal_bound: RENEWAL_BOUND_PER_PR,
     }))
     .await;
 }
@@ -117,6 +124,7 @@ async fn a_lease_cache_renews_on_time_at_felixd_scale() {
         streams: 1_500,
         appended: 96,
         hold: Duration::from_secs(60),
+        renewal_bound: RENEWAL_BOUND_NIGHTLY,
     }))
     .await;
 }
@@ -164,7 +172,7 @@ async fn run(load: Load) {
         cluster.namespace.clone(),
     ));
     let stop = Arc::new(AtomicBool::new(false));
-    // The baseline starts once every key is claimed, so a slow first leader
+    // The idle phase starts once every key is claimed, so a slow first leader
     // election does not eat into it.
     let claimed = Arc::new(Barrier::new(KEYS + 1));
     let mut renewers = JoinSet::new();
@@ -213,7 +221,7 @@ async fn run(load: Load) {
         done.expect("appender");
     }
 
-    let report = canary.report();
+    let report = canary.report(load.renewal_bound);
     let summary = format!(
         "{load:?}: created in {created_in:.1?}; appends {} ok, {} failed; {report}",
         appends.ok.load(Ordering::Relaxed),
@@ -383,7 +391,7 @@ struct Canary {
     client: Client,
     tenant_id: String,
     namespace: String,
-    /// Set once the baseline is taken; each sample records it as it starts.
+    /// Set once the idle phase is over; each sample records it as it starts.
     loaded: AtomicBool,
     samples: Mutex<Vec<Sample>>,
     /// Renewals refused because the entry had expired.
@@ -516,7 +524,7 @@ impl Canary {
             .push(format!("{key} renewal {seq} ({how})"));
     }
 
-    fn report(&self) -> Report {
+    fn report(&self, renewal_bound: Duration) -> Report {
         let samples = self.samples.lock().expect("samples");
         let latencies = |op: Op, loaded: bool| {
             let mut took: Vec<Duration> = samples
@@ -533,6 +541,7 @@ impl Canary {
             read_idle: latencies(Op::Read, false),
             read_loaded: latencies(Op::Read, true),
             lapses: self.lapses.lock().expect("lapses").clone(),
+            renewal_bound,
         }
     }
 }
@@ -544,6 +553,7 @@ struct Report {
     read_idle: Vec<Duration>,
     read_loaded: Vec<Duration>,
     lapses: Vec<String>,
+    renewal_bound: Duration,
 }
 
 impl Report {
@@ -562,7 +572,7 @@ impl Report {
                 "renewal",
                 &self.renew_idle,
                 &self.renew_loaded,
-                RENEWAL_BOUND,
+                self.renewal_bound,
             ),
             ("read", &self.read_idle, &self.read_loaded, READ_BOUND),
         ] {
@@ -596,9 +606,10 @@ impl std::fmt::Display for Report {
         };
         write!(
             f,
-            "renewals idle [{}] loaded [{}] bound {RENEWAL_BOUND:.1?}; reads idle [{}] loaded [{}] bound {READ_BOUND:.1?}; {} lapse(s)",
+            "renewals idle [{}] loaded [{}] bound {:.1?}; reads idle [{}] loaded [{}] bound {READ_BOUND:.1?}; {} lapse(s)",
             line(&self.renew_idle),
             line(&self.renew_loaded),
+            self.renewal_bound,
             line(&self.read_idle),
             line(&self.read_loaded),
             self.lapses.len(),
