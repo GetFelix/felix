@@ -177,6 +177,7 @@ fn every_body_begins_with_its_correlation_id() {
         InternalMessage::ReplicateOk(ReplicateOk {
             correlation_id: id,
             durable_offset: 11,
+            learner: false,
         }),
         InternalMessage::ReplicateError(ReplicateError {
             correlation_id: id,

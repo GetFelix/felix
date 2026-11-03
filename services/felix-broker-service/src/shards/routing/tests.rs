@@ -705,6 +705,34 @@ fn a_pending_set_change_routes_the_new_set_and_keeps_the_one_being_left() {
     assert_eq!(change.leaving, ["broker-a", "broker-b", "broker-c"]);
 }
 
+/// **A shard is replicated whatever the node catalog says (#1845).** The
+/// feed publishes routes before its first catalog read has succeeded. A
+/// shard read as unreplicated acknowledges a `Quorum` write on its leader
+/// alone, so a follower with no address must still count.
+#[tokio::test]
+async fn a_shard_whose_followers_have_no_address_is_still_replicated() {
+    let mut led = assignment(0, "broker-a", 3);
+    led.replicas = vec!["broker-b".to_string(), "broker-c".to_string()];
+    let owned: HashMap<ShardKey, ShardAssignment> = [(led.key.clone(), led.clone())].into();
+    let router = Arc::new(ShardRouter::new(
+        "broker-a",
+        "us-west-2",
+        RegionRouter::new("us-west-2".to_string()),
+    ));
+    let empty = HashMap::new();
+    router.publish(routing_table_from(&owned, &empty), &empty);
+    let mut lifecycle = ShardLifecycle::new("broker-a");
+    lifecycle.observe(&led.key, Some(&led));
+    lifecycle.opened(&led.key, led.generation);
+    let ingress = IngressRouter::new(router, Arc::clone(lifecycle.fence()));
+    ingress.publish_servable(lifecycle.servable());
+
+    assert!(ingress.replicated(&key(0)));
+    let route = ingress.route(&key(0)).expect("routed");
+    let followers: Vec<&str> = route.replicas.iter().map(|n| n.node_id.as_str()).collect();
+    assert_eq!(followers, ["broker-b", "broker-c"]);
+}
+
 /// **The feed names a copy for an early confirmed read only when it is new
 /// (#1791):** a move's destination or a follower just added, not the routes
 /// a broker starts with, not a copy it already followed, and not a shard's

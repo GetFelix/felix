@@ -647,6 +647,7 @@ impl PeerRequester for StaleConnection {
         let answer = InternalMessage::ReplicateOk(ReplicateOk {
             correlation_id: 0,
             durable_offset: batch.first_offset + batch.payloads.len() as u64,
+            learner: false,
         });
         Ok((answer, PeerIdentity::storage(id(2))))
     }
@@ -751,6 +752,7 @@ impl PeerRequester for CountingFollower {
         Ok(InternalMessage::ReplicateOk(ReplicateOk {
             correlation_id: 0,
             durable_offset: batch.first_offset + batch.payloads.len() as u64,
+            learner: false,
         }))
     }
 

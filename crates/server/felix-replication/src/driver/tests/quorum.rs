@@ -24,6 +24,7 @@ impl PeerRequester for OneSlowFollower {
         Ok(InternalMessage::ReplicateOk(ReplicateOk {
             correlation_id: 0,
             durable_offset: batch.first_offset + batch.payloads.len() as u64,
+            learner: false,
         }))
     }
 }
@@ -197,6 +198,7 @@ impl PeerRequester for HoldUpTo {
         Ok(InternalMessage::ReplicateOk(ReplicateOk {
             correlation_id: 0,
             durable_offset: end,
+            learner: false,
         }))
     }
 }
@@ -521,6 +523,7 @@ impl PeerRequester for OnlyB {
         Ok(InternalMessage::ReplicateOk(ReplicateOk {
             correlation_id: 0,
             durable_offset: batch.first_offset + batch.payloads.len() as u64,
+            learner: false,
         }))
     }
 }
@@ -634,6 +637,29 @@ async fn a_fenced_leader_does_not_count_its_own_copy() {
     shutdown.cancel();
 }
 
+/// **A follower the node catalog does not name still counts toward the
+/// majority (#1845).** Of five copies, the leader and `broker-b` are two, not
+/// a majority; counting only the followers the catalog resolved would make
+/// them two of three.
+#[tokio::test]
+async fn a_follower_missing_from_the_catalog_is_a_voter_that_has_not_answered() {
+    let (reporter, shutdown) = unreachable_reporter();
+    // `broker-e` and `broker-f` are not in the catalog.
+    let router = router(LOCAL, &["broker-b", "broker-c", "broker-e", "broker-f"], 4);
+    let watched = watch_key(&key());
+    let (broker, _dir) = quorum_leader(3, 4).await;
+    let marks = follower_ack_marks();
+
+    pass_with_reporter(&OnlyB, &broker, &router, &marks, &reporter).await;
+
+    assert_eq!(
+        marks.offset(&watched, 4).unwrap_or(0),
+        0,
+        "acknowledged on two of five copies",
+    );
+    shutdown.cancel();
+}
+
 struct Confirms;
 
 #[async_trait::async_trait]
@@ -721,6 +747,7 @@ impl PeerRequester for CacheOnlyB {
         Ok(InternalMessage::ReplicateOk(ReplicateOk {
             correlation_id: 0,
             durable_offset: batch.first_offset + batch.payloads.len() as u64,
+            learner: false,
         }))
     }
 }
@@ -1024,6 +1051,7 @@ impl PeerRequester for HoldAt {
         Ok(InternalMessage::ReplicateOk(ReplicateOk {
             correlation_id: message.correlation_id(),
             durable_offset: self.0,
+            learner: false,
         }))
     }
 }
@@ -1067,4 +1095,111 @@ async fn a_leader_on_an_emptied_log_is_not_left_settling() {
         .await
         .expect("an emptied log is served, not settling");
     assert!(page.records.is_empty());
+}
+
+/// `learner` answers as a learner while `wiped` is set; every other node is
+/// unreachable.
+struct OneLearner {
+    learner: &'static str,
+    wiped: std::sync::atomic::AtomicBool,
+}
+
+impl PeerRequester for OneLearner {
+    async fn request(
+        &self,
+        node_id: &str,
+        _addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, PeerError> {
+        let InternalMessage::ReplicateRecords(batch) = message else {
+            panic!("the driver sent something other than a replication batch");
+        };
+        if node_id != self.learner {
+            return Err(PeerError::Unavailable {
+                node_id: node_id.to_string(),
+                detail: "connection refused".to_string(),
+            });
+        }
+        Ok(InternalMessage::ReplicateOk(ReplicateOk {
+            correlation_id: 0,
+            durable_offset: batch.first_offset + batch.payloads.len() as u64,
+            learner: self.wiped.load(std::sync::atomic::Ordering::SeqCst),
+        }))
+    }
+}
+
+/// **A learner's answer does not move the mark; its answer once re-admitted
+/// does** (#1762). A learner lost what it promised before its wipe, so a
+/// candidate may already hold its earlier answer: counting it toward this
+/// leader's majority could acknowledge a record that candidate opens without
+/// (`FelixShardElectWipeNonVoterCreatesLearnerAcks.cfg`).
+#[tokio::test(start_paused = true)]
+async fn a_learners_answer_does_not_move_the_mark_until_it_is_readmitted() {
+    let (broker, _dir) = leader_with(3).await;
+    let router = router(LOCAL, &["broker-b", "broker-c"], 4);
+    let follower = OneLearner {
+        learner: "broker-b",
+        wiped: std::sync::atomic::AtomicBool::new(true),
+    };
+    let marks = QuorumMarks::new();
+    let watched = watch_key(&key());
+    let (mut cursors, mut group, mut dead, mut counters) = (
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+    );
+
+    let pass = replicate_once(
+        &follower,
+        &broker,
+        &router,
+        &marks,
+        None,
+        &mut cursors,
+        &mut group,
+        &mut dead,
+        &mut counters,
+    )
+    .await;
+    let stored = cursors[&key()]
+        .followers
+        .iter()
+        .find(|cursor| cursor.node_id == "broker-b")
+        .map(|cursor| (cursor.confirmed, cursor.learner));
+    assert_eq!(stored, Some((3, true)), "the learner stored the batch");
+    assert_eq!(
+        marks.offset(&watched, 4).unwrap_or(0),
+        0,
+        "a learner's answer counted toward the majority"
+    );
+    assert!(pass.reports[0].caught_up.contains(&"broker-b".to_string()));
+
+    follower
+        .wiped
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log")
+        .append(&[Bytes::from_static(b"d")])
+        .await
+        .expect("append");
+    replicate_once(
+        &follower,
+        &broker,
+        &router,
+        &marks,
+        None,
+        &mut cursors,
+        &mut group,
+        &mut dead,
+        &mut counters,
+    )
+    .await;
+    assert_eq!(
+        marks.offset(&watched, 4),
+        Some(4),
+        "the re-admitted copy's answer counts"
+    );
 }

@@ -3,6 +3,7 @@
 use super::*;
 use crate::serving::quic::handlers::subscribe::egress::EgressBytes;
 use crate::serving::quic::handlers::subscribe::writer::ConnectionWriterConfig;
+use serial_test::serial;
 
 fn writer_config() -> ConnectionWriterConfig {
     ConnectionWriterConfig {
@@ -13,6 +14,7 @@ fn writer_config() -> ConnectionWriterConfig {
 }
 
 #[tokio::test]
+#[serial]
 async fn run_connection_writer_coalesces_multiple_deliveries() -> Result<()> {
     // Bounded broker-wide, which covers a frame until it is written, so the
     // test can see the writer give the bytes back.
@@ -131,6 +133,7 @@ async fn run_connection_writer_coalesces_multiple_deliveries() -> Result<()> {
 }
 
 #[tokio::test]
+#[serial]
 async fn run_connection_writer_handles_write_error() -> Result<()> {
     let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
     broker.register_tenant("t1").await?;
@@ -194,6 +197,7 @@ async fn run_connection_writer_handles_write_error() -> Result<()> {
 }
 
 #[tokio::test]
+#[serial]
 async fn run_connection_writer_unregister_drops_late_deliveries() -> Result<()> {
     let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
     broker.register_tenant("t1").await?;
@@ -309,6 +313,7 @@ async fn run_connection_writer_unregister_drops_late_deliveries() -> Result<()> 
 /// before letting the stream go -- the last one is what tells a client whose
 /// shard moved where to resume.
 #[tokio::test]
+#[serial]
 async fn run_connection_writer_writes_queued_frames_before_an_unregister() -> Result<()> {
     let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
     broker.register_tenant("t1").await?;
@@ -405,6 +410,7 @@ async fn run_connection_writer_writes_queued_frames_before_an_unregister() -> Re
 /// wait for every write in it, so one flow-controlled stream parked the whole
 /// writer and nothing queued behind it was ever written.
 #[tokio::test]
+#[serial]
 async fn a_stalled_subscription_does_not_stop_the_others_on_its_connection() -> Result<()> {
     let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
     broker.register_tenant("t1").await?;
@@ -527,6 +533,7 @@ async fn a_stalled_subscription_does_not_stop_the_others_on_its_connection() -> 
 /// subscriber's bound; it stops taking commands instead. A batch taken in one
 /// go can overshoot the bound, and those frames must still be written.
 #[tokio::test]
+#[serial]
 async fn block_policy_writes_a_batch_that_overshoots_the_bound() -> Result<()> {
     let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
     broker.register_tenant("t1").await?;

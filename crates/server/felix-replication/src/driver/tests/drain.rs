@@ -147,6 +147,7 @@ impl PeerRequester for AuxRefusingFollower {
         Ok(InternalMessage::ReplicateOk(ReplicateOk {
             correlation_id: 0,
             durable_offset: batch.first_offset + batch.payloads.len() as u64,
+            learner: false,
         }))
     }
 }

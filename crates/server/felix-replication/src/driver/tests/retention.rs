@@ -58,6 +58,7 @@ impl PeerRequester for StoppableFollowers {
                     InternalMessage::ReplicateOk(ReplicateOk {
                         correlation_id: 0,
                         durable_offset: *tail,
+                        learner: false,
                     })
                 }
             }
@@ -71,6 +72,7 @@ impl PeerRequester for StoppableFollowers {
                     InternalMessage::ReplicateOk(ReplicateOk {
                         correlation_id: 0,
                         durable_offset: *tail,
+                        learner: false,
                     })
                 } else {
                     refusal(ErrorCode::LogConflict, *tail)
@@ -81,6 +83,7 @@ impl PeerRequester for StoppableFollowers {
                 InternalMessage::ReplicateOk(ReplicateOk {
                     correlation_id: 0,
                     durable_offset: request.base_offset,
+                    learner: false,
                 })
             }
             other => panic!("unexpected {:?}", other.kind()),
