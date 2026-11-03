@@ -1307,7 +1307,11 @@ fn put_back(
     else {
         return false;
     };
-    let moved = slot.next_offset != cursor.next_offset || slot.halted != cursor.halted;
+    // A learner answer cleared counts the follower toward the marks again,
+    // which a waiting write may need.
+    let moved = slot.next_offset != cursor.next_offset
+        || slot.halted != cursor.halted
+        || (slot.learner && !cursor.learner);
     // The route may have moved the follower to a new address meanwhile.
     let addr = slot.addr;
     *slot = cursor;

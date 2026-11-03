@@ -407,7 +407,7 @@ impl ReplicaHandler {
     ///
     /// Returns whether the copy is still a learner, which the answer to the
     /// batch says ([`ReplicateOk::learner`]) so the leader leaves it out of
-    /// its marks.
+    /// its marks. True as well when the shard's own log cannot be opened.
     ///
     /// [`ReplicateOk::learner`]: felix_wire::internal::ReplicateOk::learner
     pub(super) async fn admit_when_caught_up(
@@ -424,9 +424,11 @@ impl ReplicaHandler {
                     .broker
                     .shard_log(kind, &key.tenant_id, &key.namespace, &key.stream, key.shard)
                     .await;
+                // Unread, the copy may be a learner, and a learner counted as
+                // a voter is the unsafe mistake.
                 match &opened {
                     Some(own) => own,
-                    None => return false,
+                    None => return true,
                 }
             }
         };

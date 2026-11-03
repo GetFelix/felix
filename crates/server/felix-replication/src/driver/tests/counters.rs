@@ -685,3 +685,60 @@ async fn a_cache_leader_that_answered_a_newer_fence_raises_no_counter_mark() {
         driver.stop().await;
     }
 }
+
+/// b's copy is a learner until it stores a cache batch, as a copy whose
+/// cache log completes its catch-up is re-admitted; each answer says what
+/// the copy is once the batch is stored. c is unreachable.
+#[derive(Default)]
+struct ReadmittedByCache {
+    admitted: std::sync::atomic::AtomicBool,
+}
+
+impl PeerRequester for ReadmittedByCache {
+    async fn request(
+        &self,
+        node_id: &str,
+        _addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, PeerError> {
+        use std::sync::atomic::Ordering;
+        let (batch, cache) = match message {
+            InternalMessage::ReplicateCacheRecords(batch) => (batch, true),
+            InternalMessage::ReplicateCounterRecords(batch) => (batch, false),
+            other => panic!("unexpected {:?}", other.kind()),
+        };
+        if node_id != "broker-b" {
+            return Err(PeerError::Unavailable {
+                node_id: node_id.to_string(),
+                detail: "gone".to_string(),
+            });
+        }
+        if cache {
+            self.admitted.store(true, Ordering::SeqCst);
+        }
+        Ok(InternalMessage::ReplicateOk(ReplicateOk {
+            correlation_id: 0,
+            durable_offset: batch.first_offset + batch.payloads.len() as u64,
+            learner: !self.admitted.load(Ordering::SeqCst),
+        }))
+    }
+}
+
+/// **A copy re-admitted on its cache log counts for the counters too**
+/// (#1762). The counters ship first in an exchange, so b answers them as a
+/// learner and its cache batch then re-admits it. Nothing new lands on the
+/// counter log after that, so only asking b again lets the counter add be
+/// acknowledged.
+#[tokio::test(start_paused = true)]
+async fn a_copy_readmitted_on_its_cache_log_is_asked_again_for_the_counters() {
+    let (broker, router, _dir) = quorum_cache().await;
+    let marks = by_followers(&broker).await;
+    let (driver, marks) = driver(ReadmittedByCache::default(), &broker, &router, marks);
+
+    let tails = write(&broker, 0).await;
+    assert!(
+        prompt(&marks, tails).await,
+        "the counter mark waited for a new counter record"
+    );
+    driver.stop().await;
+}

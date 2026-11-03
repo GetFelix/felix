@@ -560,9 +560,18 @@ id and `durable_offset`.
 
 The leader stores the batch as usual and moves the follower's position, but
 leaves the follower out of the commit mark and the counter mark until an
-answer arrives as plain `ReplicateOk`. The learner still counts in the set's
-size, so in a set of three the leader and the third copy make the majority.
-The answer to the batch that completes the catch-up is already a voter's.
+answer on that log arrives as plain `ReplicateOk`. The learner still counts
+in the set's size, so in a set of three the leader and the third copy make
+the majority. A follower that cannot open the shard's own log answers as a
+learner, since it cannot tell.
+
+The leader tracks the flag per log. The batch that completes the catch-up
+may be on any of the shard's logs, and only its answer is a voter's. The
+other logs still hold their last learner answer. When a mark waits on the
+follower and nothing new is due on such a log, the leader sends its last
+record again to get a fresh answer. It does this only once the follower
+has answered as a voter on some log, so a copy that is still catching up
+is not asked on every pass.
 
 Only a caller that offered `LEARNER_ACKS` gets kind 47. To any other the
 listener sends the answer as `ReplicateOk`, byte for byte what that caller
