@@ -258,6 +258,54 @@ pub(crate) fn sync_dir(path: &std::path::Path) -> io::Result<()> {
     }
 }
 
+/// Scratch experiment: FELIX_SCRATCH_META_CAP bounds, process-wide, the
+/// metadata writes that fsync (log directory creates and opens, ballot and
+/// replica state). Re-entrant on one thread. Unset means no bound.
+pub(crate) fn metadata_gate<T>(work: impl FnOnce() -> T) -> T {
+    use std::cell::Cell;
+    use std::sync::{Condvar, Mutex, OnceLock};
+    struct Gate {
+        cap: usize,
+        held: Mutex<usize>,
+        freed: Condvar,
+    }
+    static GATE: OnceLock<Option<Gate>> = OnceLock::new();
+    thread_local! { static DEPTH: Cell<usize> = const { Cell::new(0) }; }
+    let gate = GATE.get_or_init(|| {
+        std::env::var("FELIX_SCRATCH_META_CAP")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|n| *n > 0)
+            .map(|cap| Gate {
+                cap,
+                held: Mutex::new(0),
+                freed: Condvar::new(),
+            })
+    });
+    let Some(gate) = gate else { return work() };
+    if DEPTH.with(Cell::get) > 0 {
+        return work();
+    }
+    {
+        let mut held = gate.held.lock().unwrap_or_else(|e| e.into_inner());
+        while *held >= gate.cap {
+            held = gate.freed.wait(held).unwrap_or_else(|e| e.into_inner());
+        }
+        *held += 1;
+    }
+    struct Release<'a>(&'a Gate);
+    impl Drop for Release<'_> {
+        fn drop(&mut self) {
+            DEPTH.with(|d| d.set(d.get() - 1));
+            *self.0.held.lock().unwrap_or_else(|e| e.into_inner()) -= 1;
+            self.0.freed.notify_one();
+        }
+    }
+    DEPTH.with(|d| d.set(d.get() + 1));
+    let _release = Release(gate);
+    work()
+}
+
 /// Create `path` and any missing ancestors, and make each new directory entry
 /// durable.
 ///
@@ -266,6 +314,10 @@ pub(crate) fn sync_dir(path: &std::path::Path) -> io::Result<()> {
 /// flushes `path`'s parent, which makes a directory that a crashed earlier run
 /// created but never flushed durable now.
 pub(crate) fn create_dir_all_durable(path: &std::path::Path) -> io::Result<()> {
+    metadata_gate(|| create_dir_all_durable_inner(path))
+}
+
+fn create_dir_all_durable_inner(path: &std::path::Path) -> io::Result<()> {
     let mut created = Vec::new();
     let mut next = Some(path);
     while let Some(dir) = next.filter(|dir| !dir.as_os_str().is_empty() && !dir.is_dir()) {

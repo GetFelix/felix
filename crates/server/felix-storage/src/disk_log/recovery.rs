@@ -108,6 +108,15 @@ pub(super) fn recover_shard(
 /// A plan that refuses still has its steps made first, as startup always has:
 /// they are the repairs decided before the damage was found.
 fn apply(dir: &Path, label: &str, config: &LogConfig, plan: RecoveryPlan) -> Result<Recovered> {
+    crate::io::metadata_gate(|| apply_inner(dir, label, config, plan))
+}
+
+fn apply_inner(
+    dir: &Path,
+    label: &str,
+    config: &LogConfig,
+    plan: RecoveryPlan,
+) -> Result<Recovered> {
     // The directory entry itself must be durable, or a crash could lose a shard
     // that already reported successful writes.
     create_dir_all_durable(dir)?;

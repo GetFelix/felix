@@ -260,6 +260,10 @@ pub(super) fn load(dir: &Path) -> Result<Option<Ballot>> {
 /// Write a shard's ballot durably, as `replica_state::store` writes its state:
 /// a crash leaves the old ballot or the new one.
 pub(super) fn store(dir: &Path, ballot: &Ballot) -> Result<()> {
+    crate::io::metadata_gate(|| store_inner(dir, ballot))
+}
+
+fn store_inner(dir: &Path, ballot: &Ballot) -> Result<()> {
     use std::io::Write;
 
     if ballot.leader.len() > MAX_LEADER_LEN {

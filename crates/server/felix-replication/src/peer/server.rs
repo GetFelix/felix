@@ -616,7 +616,10 @@ async fn serve_connection(
                     // left unread behind them.
                     request @ (InternalMessage::Fence(_)
                     | InternalMessage::PreVote(_)
-                    | InternalMessage::ReplicateFetch(_)) => {
+                    | InternalMessage::ReplicateFetch(_))
+                        if !(scratch_fence_inline()
+                            && matches!(request, InternalMessage::Fence(_))) =>
+                    {
                         let Ok(queued) = Arc::clone(&controls).try_acquire_owned() else {
                             metrics::record_served(metrics::OUTCOME_REFUSED);
                             let refusal = InternalMessage::ReplicateError(ReplicateError {
@@ -742,6 +745,13 @@ async fn serve_connection(
             let _ = send.lock().await.finish();
         });
     }
+}
+
+/// Scratch experiment: FELIX_SCRATCH_FENCE_INLINE=1 answers fences in turn
+/// again, as before #1800, while fetches, pre-votes and pings stay out of order.
+fn scratch_fence_inline() -> bool {
+    static INLINE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *INLINE.get_or_init(|| std::env::var("FELIX_SCRATCH_FENCE_INLINE").is_ok_and(|v| v == "1"))
 }
 
 /// Write the answer to a request handed off so its stream could read on.

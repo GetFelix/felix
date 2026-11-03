@@ -109,6 +109,10 @@ pub(super) fn load(dir: &Path) -> Result<ReplicaState> {
 /// the old file, and the directory synced, so a crash leaves the old state or
 /// the new one and never neither.
 pub(super) fn store(dir: &Path, state: &ReplicaState) -> Result<()> {
+    crate::io::metadata_gate(|| store_inner(dir, state))
+}
+
+fn store_inner(dir: &Path, state: &ReplicaState) -> Result<()> {
     use std::io::Write;
 
     let started = std::time::Instant::now();

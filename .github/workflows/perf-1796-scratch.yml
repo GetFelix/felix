@@ -1,7 +1,7 @@
 name: Perf scratch (#1796 listener)
 
 # Temporary: control-path microbench and RF 3 cluster A/B for the #1796
-# follow-up. Three sides: p = main before #1800, m = main after #1800,
+# follow-up. Sides: p = main before #1800, m = main after #1800, f = META_CAP 2, g = FENCE_INLINE,
 # f/g = #1800 with fences that may write capped at 2/8 per broker. Deleted with the branch.
 
 on:
@@ -103,8 +103,8 @@ jobs:
             printf '#!/bin/bash\nshift\nexec /tmp/perf-bin/felix-broker-%s "$@"\n' "$side" > $p/wrap-$side.sh
             chmod +x $p/wrap-$side.sh
           done
-          printf '#!/bin/bash\nshift\nFELIX_SCRATCH_FENCE_CAP=2 exec /tmp/perf-bin/felix-broker-f "$@"\n' > $p/wrap-f.sh
-          printf '#!/bin/bash\nshift\nFELIX_SCRATCH_FENCE_CAP=8 exec /tmp/perf-bin/felix-broker-f "$@"\n' > $p/wrap-g.sh
+          printf '#!/bin/bash\nshift\nFELIX_SCRATCH_META_CAP=2 exec /tmp/perf-bin/felix-broker-f "$@"\n' > $p/wrap-f.sh
+          printf '#!/bin/bash\nshift\nFELIX_SCRATCH_FENCE_INLINE=1 exec /tmp/perf-bin/felix-broker-f "$@"\n' > $p/wrap-g.sh
           chmod +x $p/wrap-f.sh $p/wrap-g.sh
           for round in $(seq 1 "$ROUNDS"); do
             sides=(p m f g); k=$(( (round + ${{ matrix.shard }}) % 4 ))
