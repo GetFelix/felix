@@ -50,7 +50,7 @@ The host never fills in a field from the node it runs on.
 | Field | Meaning |
 |---|---|
 | `source.stream` | the input stream's name, as the spec records it |
-| `source.incarnation` | which Felix incarnation the name resolved to. Always 0 today, because Felix does not expose incarnations to clients yet ([#133](https://github.com/GetFelix/felixd/issues/133)). A spec does record the input's name, and a node refuses to resume a workload whose recorded incarnation has changed |
+| `source.incarnation` | which Felix incarnation the name resolved to. Always 0 today, because Felix does not expose incarnations to clients yet ([#133](https://github.com/GetFelix/felixd/issues/133)). |
 | `offset` | the record's offset in the input stream |
 | `timestamp-micros` | the broker's append time for the record, in microseconds since the Unix epoch. 0 if the broker keeps no time |
 | `body` | `record` with an optional `key`, a `payload` and a `publisher`, or `response`, the answer to an effect request. No version of felixd delivers a response yet |
@@ -60,7 +60,7 @@ workload that needs "now" uses this field, or a clock record written into its
 input.
 
 When the input is another workload's output stream, `step` gets the output's key
-and payload, not the record around it, and its `publisher` is `none`. It receives only outputs addressed to the
+and payload, not the record around it. Its `publisher` is `none`. It receives only outputs addressed to the
 name `out`. Claims, failures, rejections and outputs under other names are passed
 over. Reading several output names at once waits for the determinism work in
 [#62](https://github.com/GetFelix/felixd/issues/62).
@@ -88,8 +88,8 @@ live, after a takeover, in `felixd check` and in `felixd replay`.
 ### Several inputs
 
 A spec may name several input streams. The node holding the lease merges their
-records as they arrive and appends the order it chose to the workload's merge log,
-`wl.<id>.merge`, before it steps any of them. Each step gets the record's own
+records as they arrive and appends the order it chose to the workload's
+[merge log](/built-on-felix/felixd/terminology/#merge-log), `wl.<id>.merge`, before it steps any of them. Each step gets the record's own
 `source.stream`, `offset`, `timestamp-micros` and `publisher`, so `source.stream`
 tells a step its inputs apart. Within one input the records come in offset order.
 Across inputs the order is whatever the holder recorded, and the workload must not
@@ -274,8 +274,8 @@ is reported as built against `felixd:workload@0.1.0` and told to rebuild against
 `felixd run` refuses it before storing anything. An agent that finds one in a spec
 does not claim the workload and does not mark it failed. It records once on the output
 stream that an operator has to act. The fix is a new module under a new id. A contract
-version newer than the node knows is handled the same way, so upgrade every node and the
-`felixd` command line before you submit a 0.3 module.
+version newer than the node knows is handled the same way. Upgrade every node before you submit a
+0.3 module.
 
 There is no shim. A 0.1 workload's outputs would need a name, its snapshots a
 chunk layout and its errors a class it never stated, and a shim that chose them
@@ -284,7 +284,8 @@ would be a second contract to keep deterministic.
 ## Still on 0.2
 
 A 0.2 workload keeps running as it is. It never sees the publisher, and everything
-else on this page applies to it as written. To read the publisher, rebuild against
+else on this page applies to it as written. A 0.2 module can declare a snapshot layout,
+and a 0.2 workload can have several inputs, because neither is part of the contract version. To read the publisher, rebuild against
 0.3:
 
 1. Point the bindings at `wit/0.3` instead of `wit/0.2`. With `wit-bindgen` that is

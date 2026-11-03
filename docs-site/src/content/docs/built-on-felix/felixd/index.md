@@ -64,9 +64,8 @@ something is not built, a page says so and links the felixd issue.
   submitters and a workload called admission, which decides who may run what by the
   publisher of each request. Without it an operator submits directly.
 - **Trimming history.** Old snapshots, merge log records and inputs can be
-  deleted below every reader's floor. It needs a fleet that has finalized
-  `head_trim` and node tokens with `stream.trim`, which `felixd init
-  --grant-trim` grants. Without them everything is kept.
+  deleted below every reader's floor. See
+  [Running felixd](/built-on-felix/felixd/running/#trimming-history) for what it needs.
 - **Workload contract.** Named and keyed outputs, rejection of a single input
   without failing the workload, chunked snapshots and the authenticated
   publisher of each input. These pages teach contract 0.3, and felixd still runs 0.2.

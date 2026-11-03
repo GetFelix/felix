@@ -1,6 +1,6 @@
 ---
 title: "Running felixd"
-description: "The felixd subcommands and flags, the environment variables that point it at Felix, what it needs from a Felix cluster, and a quickstart that starts a broker, submits a workload and checks it."
+description: "The felixd subcommands and flags, roles and admission, metrics, upgrading a node, the environment variables that point it at Felix, what it needs from a Felix cluster, and a quickstart that starts a broker, submits a workload and checks it."
 ---
 
 felixd is one binary. Releases are previews, so expect changes between them. Each
@@ -33,7 +33,7 @@ cargo build --release -p felixd      # target/release/felixd
 | `felixd init` | Sets up a namespace with admission and roles |
 
 `felixd --version` prints the version, and `felixd <command> --help` lists every flag.
-The full operator guide is
+To try it on one machine, go to the [quickstart](#quickstart). The full operator guide is
 [docs/operating.md](https://github.com/GetFelix/felixd/blob/main/docs/operating.md).
 
 ### Connection
@@ -219,7 +219,8 @@ one at a time, and let `felixd ps` show every workload running before you move t
 A build leaves a workload alone when it meets a record from a newer build instead of
 failing it, so upgrade every node before you rely on a feature of the new build. This
 holds from the builds after 0.1.0-preview.1; a node on 0.1.0-preview.1 fails such a
-workload as poison.
+workload as poison. While any such node is left, start the new agents with
+`--stuck-after-ms 0`, and drop the flag once every node is new.
 
 ## Trimming history
 

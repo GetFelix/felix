@@ -5,12 +5,13 @@ description: "Six complete felixd workloads that compile against contract 0.3: u
 
 Each example below is a whole workload: the code, the spec it runs under, and the
 commands to submit it and read what it produces. They build against
-[contract 0.3](/built-on-felix/felixd/contract/); each compiles as written. The
+[contract 0.3](/built-on-felix/felixd/contract/). All six compile against it. The
 tumbling-window example is `workloads/window` in the
 [felixd repository](https://github.com/GetFelix/felixd), whose copy is built against 0.2,
 and the bindings path here, `wit/0.3`, is the only change. The other five are written for
-this page. To build one, make a crate like `workloads/counter` (a `cdylib` that depends on
-`wit-bindgen`) in the `workloads/` directory, add it to `members` in `workloads/Cargo.toml`, and put the code in its `src/lib.rs`. Read
+this page. To build one, make a crate like `workloads/counter` in the `workloads/`
+directory. It is a `cdylib` that depends on `wit-bindgen`. Add it to `members` in
+`workloads/Cargo.toml` and put the code in its `src/lib.rs`. Read
 [Submitting work](/built-on-felix/felixd/submitting-work/) first for what `felixd run`
 does step by step.
 
