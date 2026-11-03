@@ -53,7 +53,7 @@ build on this stack and take you from a first stream to a small app.
 
 ## Prerequisites
 
-- **Rust** 1.97 or later ([rustup](https://rustup.rs/))
+- **Rust** 1.97 or later; the repo pins 1.99.1 and rustup fetches it ([rustup](https://rustup.rs/))
 - **Git**
 - Optional: [Task](https://taskfile.dev/), for the shortcuts CI uses
 
