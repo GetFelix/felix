@@ -1994,8 +1994,7 @@ async fn accept_led_generation(
 }
 
 /// Write this leader's generation-start record, unless an earlier attempt to
-/// open got that far with nothing written since, the generation already has
-/// records of its own and no start record, or the stream is in-memory.
+/// open got that far with nothing written since, or the stream is in-memory.
 ///
 /// A new generation's goes at its recorded start, before any client write, so
 /// the quorum mark can cover records this leader inherited once a majority
@@ -2028,34 +2027,33 @@ pub async fn write_generation_start(
         .tail_offset()
         .await
         .map_err(|err| anyhow::anyhow!("read shard tail: {err}"))?;
-    let last = log.generations().last().copied();
-    if let Some(start) = felix_replication::quorum::generation_start(log, generation).await {
-        // A new stint at a generation this broker started before: it was
-        // elected there and a cut-over names it there again, or it opens
-        // again after a restart. Records the earlier stint acknowledged on
-        // the old set alone sit past the first start record, so a flip
-        // counted from it could leave them off a majority of the new set
-        // (#1787). Skipped when the log already ends with this stint's.
-        let new_stint = tail > start + 1
-            && log.stint_start(generation) != Some(tail - 1)
-            && last.is_some_and(|epoch| epoch.generation == generation);
-        if !new_stint {
-            return Ok(());
-        }
-    } else {
-        match last {
-            Some(epoch) if epoch.generation == generation && epoch.start_offset == tail => {}
-            // This broker led at this generation before the fleet finalized
-            // `generation_start` and reopens it. The mark already counts from
-            // the recorded start and every record past it is this
-            // generation's own, so there is nothing inherited to cover.
-            Some(epoch) if epoch.generation == generation && epoch.start_offset < tail => {
+    let started = felix_replication::quorum::generation_start(log, generation)
+        .await
+        .is_some();
+    match log.generations().last() {
+        Some(epoch) if epoch.generation == generation && epoch.start_offset == tail => {}
+        // A new stint at a generation this broker led before: it was elected
+        // there and a cut-over names it there again, or it opens again after
+        // a restart. Records the earlier stint acknowledged on the old set
+        // alone sit past the generation's start, so a flip counted from there
+        // could leave them off a majority of the new set (#1787). Decided from
+        // the history, not by reading the first start record: retention may
+        // have trimmed it. A generation that began before the fleet finalized
+        // `generation_start` gets one too; it costs a round trip and covers
+        // the same records. Skipped when the log holds nothing past its
+        // start record, or already ends with this stint's.
+        Some(epoch) if epoch.generation == generation && epoch.start_offset < tail => {
+            let nothing_since = started && tail == epoch.start_offset + 1;
+            if nothing_since || log.stint_start(generation) == Some(tail - 1) {
                 return Ok(());
             }
-            // Anywhere else, the records before it would not be this
-            // generation's, and the mark would count them as if they were.
-            _ => anyhow::bail!("generation {generation} does not begin at the tail {tail}"),
         }
+        // An earlier attempt to open wrote it, and a newer generation has
+        // begun since.
+        _ if started => return Ok(()),
+        // Anywhere else, the records before it would not be this
+        // generation's, and the mark would count them as if they were.
+        _ => anyhow::bail!("generation {generation} does not begin at the tail {tail}"),
     }
     match key.kind {
         // Through the broker, so the stream's commit order and its

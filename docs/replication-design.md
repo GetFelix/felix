@@ -1549,10 +1549,13 @@ generation began before the fleet finalized `generation_start` keeps serving
 the same way: it has records at that generation and no start record, and it
 gets its first one at its next leadership change.
 
-**A new stint at the same generation.** A replicated broker reopens a shard
-fenced, after a restart too. A fenced open at a generation this broker already
-started, with records past its start record, writes another start record at
-the tail. Once elections ship, the same happens when a broker elected at a
+**A new stint at the same generation.** A replicated broker opens its shards
+fenced, including after a restart. A fenced open at a generation this broker
+already started, with records past its start record, writes another start
+record at the tail. The generation history decides whether the generation
+started, so this holds when retention has trimmed the first start record, or
+when the generation began before the fleet finalized `generation_start` and
+has none. Once elections ship, the same happens when a broker elected at a
 generation is then named there by a cut-over the control plane wrote without
 hearing of the election. Each such open is a new stint, and the leader counts
 from the start record of its current stint (`own_start` in the driver). The
@@ -1567,7 +1570,7 @@ while such a record is on one copy of it
 start reaches a majority of the new set only behind those records
 (`the_joint_start_waits_for_the_current_stints_start`). The log remembers its
 current stint's start in memory only; after a restart the next fenced open
-writes a new one. A cache shard's counter log still counts from the start the
+writes a new one, even when the log already ends with an earlier stint's. A cache shard's counter log still counts from the start the
 generation history records.
 
 An in-memory stream writes none either. Its publishes never reach the shard's

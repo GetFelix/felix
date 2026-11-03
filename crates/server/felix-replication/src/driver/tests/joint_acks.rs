@@ -326,7 +326,7 @@ impl PeerRequester for Lagging {
 /// then a write at 3 that its earlier passes acknowledged on {a, b} of the
 /// old set. A cut-over named it at 4 again with the set {a, c, d}, and its
 /// new stint wrote a start record at 4. `c` and `d` joined holding the log
-/// only up to the write. `b` is outside the new set, so this leader no
+/// up to, not including, the write at 3. `b` is outside the new set, so this leader no
 /// longer ships to it and counts nothing for it here. The first start is on
 /// both majorities and the write is not on the new one, so no joint start
 /// may be reported: the flip would leave the write on one copy of the new

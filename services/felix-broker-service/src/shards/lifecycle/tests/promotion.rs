@@ -262,6 +262,36 @@ mod generation_start {
             "the history still starts the generation at the first",
         );
     }
+
+    /// The same when the generation's first start record cannot be read:
+    /// retention trimmed it, or the generation began before the fleet
+    /// finalized `generation_start` and has none. The history says the
+    /// generation began earlier, and that decides it.
+    #[tokio::test]
+    async fn a_new_stint_without_a_readable_first_start_writes_its_own() {
+        let promoted = promoted(true).await;
+        let log = promoted
+            .storage
+            .open_stream("t1", "ns", "orders", 0)
+            .expect("log");
+        log.record_generation(3, 1).expect("history");
+        promoted
+            .broker
+            .publish("t1", "ns", "orders", "first stint".into())
+            .await
+            .expect("publish");
+        assert_eq!(
+            felix_replication::quorum::generation_start(&log, 3).await,
+            None
+        );
+
+        crate::shards::lifecycle::write_generation_start(&promoted.broker, &log, &key(0), 3)
+            .await
+            .expect("second stint");
+
+        assert_eq!(log.tail_offset().await.expect("tail"), 3);
+        assert_eq!(log.stint_start(3), Some(2));
+    }
 }
 
 /// A stream leader's dead-letter and cursor logs carry the generation it
