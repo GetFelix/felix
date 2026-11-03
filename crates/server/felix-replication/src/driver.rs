@@ -339,6 +339,12 @@ pub trait WriteFence: Send + Sync {
     fn opened_since(&self, _key: &crate::ShardKey, _generation: u64) -> bool {
         true
     }
+
+    /// Whether this process opened `key` at `generation` once a promotion or
+    /// election fence finished there, rather than on a plain bump.
+    fn opened_fenced(&self, _key: &crate::ShardKey, _generation: u64) -> bool {
+        false
+    }
 }
 
 /// A fence that holds nothing back: every shard is quiet.
