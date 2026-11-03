@@ -13,7 +13,7 @@ mod prelude {
     pub(crate) use std::time::Duration;
 }
 
-/// resilient-clients.mdx line 47: "Connecting to a cluster", block 1.
+/// resilient-clients.mdx line 62: "Connecting to a cluster", block 1.
 mod connecting_to_a_cluster_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -38,7 +38,7 @@ mod connecting_to_a_cluster_1 {
     }
 }
 
-/// resilient-clients.mdx line 210: "Reconnection", block 1.
+/// resilient-clients.mdx line 225: "Reconnection", block 1.
 mod reconnection_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -59,7 +59,7 @@ mod reconnection_1 {
     }
 }
 
-/// resilient-clients.mdx line 333: "Authentication that lasts", block 1.
+/// resilient-clients.mdx line 348: "Authentication that lasts", block 1.
 mod authentication_that_lasts_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -80,7 +80,7 @@ mod authentication_that_lasts_1 {
     }
 }
 
-/// resilient-clients.mdx line 470: "When a broker rejects the token", block 1.
+/// resilient-clients.mdx line 485: "When a broker rejects the token", block 1.
 mod when_a_broker_rejects_the_token_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -106,12 +106,12 @@ mod when_a_broker_rejects_the_token_1 {
     }
 }
 
-/// resilient-clients.mdx line 614: "Errors and retry classes", block 1.
+/// resilient-clients.mdx line 629: "Errors and retry classes", block 1.
 mod errors_and_retry_classes_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
-    async fn example(cluster: &Client, payload: Vec<u8>) -> Result<()> {
+    async fn example(client: &Client, payload: Vec<u8>) -> Result<()> {
         use felix_client::{AckMode, BrokerError, RetryClass};
 
         enum Verdict {
@@ -142,7 +142,7 @@ mod errors_and_retry_classes_1 {
 
         let mut attempt = 1;
         let offset = loop {
-            match cluster
+            match client
                 .publish("acme", "prod", "orders", payload.clone(), AckMode::PerMessage)
                 .await
             {
@@ -163,15 +163,15 @@ mod errors_and_retry_classes_1 {
     }
 }
 
-/// resilient-clients.mdx line 827: "Writes whose outcome is unknown", block 1.
+/// resilient-clients.mdx line 842: "Writes whose outcome is unknown", block 1.
 mod writes_whose_outcome_is_unknown_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
-    async fn example(cluster: &Arc<Client>, payload: Vec<u8>) -> Result<()> {
+    async fn example(client: &Arc<Client>, payload: Vec<u8>) -> Result<()> {
         use felix_client::PublishRefused;
 
-        let producer = cluster.idempotent_producer().await?;
+        let producer = client.idempotent_producer().await?;
         let mut attempt = 1;
         let offset = loop {
             match producer.publish("acme", "prod", "orders", payload.clone()).await {
@@ -196,18 +196,18 @@ mod writes_whose_outcome_is_unknown_1 {
     }
 }
 
-/// resilient-clients.mdx line 1004: "Conditional publish", block 1.
+/// resilient-clients.mdx line 1019: "Conditional publish", block 1.
 mod conditional_publish_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
-    async fn example(cluster: &Client, ticks: Vec<Vec<u8>>) -> Result<()> {
+    async fn example(client: &Client, ticks: Vec<Vec<u8>>) -> Result<()> {
         use felix_client::ConditionalWrite;
 
         // The offset this writer expects to write next.
         let mut next = 0;
         for tick in ticks {
-            match cluster
+            match client
                 .publish_if("acme", "games", "match-7", None, vec![tick], next)
                 .await?
             {
@@ -221,7 +221,7 @@ mod conditional_publish_1 {
     }
 }
 
-/// resilient-clients.mdx line 1142: "Resume one shard", block 1.
+/// resilient-clients.mdx line 1157: "Resume one shard", block 1.
 mod resume_one_shard_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -233,7 +233,7 @@ mod resume_one_shard_1 {
     }
     async fn handle(_: &Bytes) -> Result<()> { Ok(()) }
 
-    async fn example(cluster: &Arc<Client>, checkpoint: Checkpoint) -> Result<()> {
+    async fn example(client: &Arc<Client>, checkpoint: Checkpoint) -> Result<()> {
         use felix_client::{AuthError, BrokerError, CursorErrorReason, RetryClass};
         use felix_client::{StartPosition, SubscribeCursorError};
 
@@ -272,7 +272,7 @@ mod resume_one_shard_1 {
         let mut expected: Option<u64> = None;
 
         loop {
-            let mut subscription = match cluster
+            let mut subscription = match client
                 .subscribe_from("acme", "prod", "events", Some(start))
                 .await
             {
@@ -329,7 +329,7 @@ mod resume_one_shard_1 {
     }
 }
 
-/// resilient-clients.mdx line 1490: "Resume a sharded stream", block 1.
+/// resilient-clients.mdx line 1505: "Resume a sharded stream", block 1.
 mod resume_a_sharded_stream_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -341,17 +341,17 @@ mod resume_a_sharded_stream_1 {
     }
     async fn handle(_: u32, _: &Event) -> Result<()> { Ok(()) }
 
-    async fn example(cluster: &Arc<Client>, checkpoint: Positions) -> Result<()> {
+    async fn example(client: &Arc<Client>, checkpoint: Positions) -> Result<()> {
         use felix_client::{ShardEvent, StartPosition};
 
         let mut stream = match checkpoint.load().await? {
             Some(positions) => {
-                cluster
+                client
                     .resubscribe_sharded("acme", "prod", "orders", positions, Some(StartPosition::Earliest))
                     .await?
             }
             None => {
-                cluster
+                client
                     .subscribe_sharded("acme", "prod", "orders", Some(StartPosition::Earliest))
                     .await?
             }
@@ -374,7 +374,7 @@ mod resume_a_sharded_stream_1 {
     }
 }
 
-/// resilient-clients.mdx line 1755: "Slow consumers", block 1.
+/// resilient-clients.mdx line 1770: "Slow consumers", block 1.
 mod slow_consumers_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -413,7 +413,7 @@ mod slow_consumers_1 {
     }
 }
 
-/// resilient-clients.mdx line 1946: "Consumer groups under failure", block 1.
+/// resilient-clients.mdx line 1961: "Consumer groups under failure", block 1.
 mod consumer_groups_under_failure_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -477,7 +477,7 @@ mod consumer_groups_under_failure_1 {
     }
 }
 
-/// resilient-clients.mdx line 2275: "Shutting down cleanly", block 1.
+/// resilient-clients.mdx line 2290: "Shutting down cleanly", block 1.
 mod shutting_down_cleanly_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
