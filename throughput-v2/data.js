@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793732721959,
+  "lastUpdate": 1793733190919,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -43836,6 +43836,58 @@ window.BENCHMARK_DATA = {
             "range": "3817.47",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 805810.29\nmean: 806271.41\nstdev: 3817.47\ncv: 0.47%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "db57a64fee2893816d332340841269a2bf482159",
+          "message": "docs(formal): election liveness with the control plane down (#1331) (#1841)\n\nSpec for the election driver's liveness (#1331): with the control plane down, elections settle on one leader.\n\n## What changed\n- New switches in `docs/formal/FelixShard.tla`, all off by default:\n  - `CpDown`: the control plane takes no step.\n  - `FailStops`: replicas that stop for good.\n  - `PreVoteAsked`: a pre-vote that the leader refuses too.\n  - `Backoff` with `Splits`: candidates back off, and a split vote can happen at most `Splits` times\n    (`GiveUpRound`, tracked by the ghost `splits`).\n- `LiveSpec` (`Spec` plus `Fairness`) and two properties:\n  - `ElectionSettles`: `<>[]LeaderSettled`.\n  - `NoStandAgainstHeardLeader`: an action property. No replica stands while a majority of its set still hears\n    a leader. It covers every stand, including a candidate standing again.\n- Three configurations:\n  - `FelixShardElectLive.cfg`: passes (3,000 distinct states, 1 s).\n  - `FelixShardElectLiveLoosePreVote.cfg`: violates `NoStandAgainstHeardLeader`.\n  - `FelixShardElectLiveNoBackoff.cfg`: violates liveness. Without backoff, split votes go on forever.\n- `scripts/check_tla.sh`: `violates <Name>` also matches action properties, and `violates liveness` expects a\n  temporal property to fail.\n- docs/formal/README.md rows, and the liveness paragraph in docs/replication-design.md.\n\nExisting configurations keep their state counts.\n\n## Design calls\n- Backoff is modelled as a bound on split votes, not as timing. Most split votes are resolved by randomized\n  backoff, and a bound is the finite-state version of that. The action property stops the bound from hiding a\n  candidate that stands while it still hears a leader.\n- Not covered: liveness with writes, and with a wiped voter (#1331's non-voter rule). Also not covered: the\n  property that a control-plane generation whose leader cannot open is superseded (for the S9 collision fix).\n  That one is next on this lane.",
+          "timestamp": "2026-11-03T10:59:05-08:00",
+          "tree_id": "95bee2ca204517aa40c3f50bf7b1c8aba776503b",
+          "url": "https://github.com/GetFelix/felix/commit/db57a64fee2893816d332340841269a2bf482159"
+        },
+        "date": 1793733177715,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 344239.63,
+            "range": "7569.77",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 344239.63\nmean: 346282.92\nstdev: 7569.77\ncv: 2.19%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 344239.63,
+            "range": "7569.77",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 344239.63\nmean: 346282.92\nstdev: 7569.77\ncv: 2.19%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80893.6,
+            "range": "3632.64",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80893.60\nmean: 79167.77\nstdev: 3632.64\ncv: 4.59%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 808935.95,
+            "range": "36326.45",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 808935.95\nmean: 791677.66\nstdev: 36326.45\ncv: 4.59%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
