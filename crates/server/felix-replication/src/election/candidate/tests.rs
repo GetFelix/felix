@@ -262,6 +262,54 @@ async fn a_set_the_control_plane_does_not_record_is_not_stood_on() {
     assert!(ctx.requester.asked.lock().expect("lock").is_empty());
 }
 
+/// **No standing while a set change is pending**, on the kept set or on the
+/// control plane's: a candidate fences one set, so it would miss a majority
+/// of the other, and with it the counter updates and records acknowledged
+/// there (#1830).
+#[tokio::test(start_paused = true)]
+async fn a_pending_set_change_is_not_stood_on() {
+    let (broker, _dir) = follower().await;
+    let recorded_pending = ctx(&broker, voters(None));
+    let route = recorded_pending
+        .router
+        .snapshot()
+        .get(&key())
+        .expect("route")
+        .clone();
+    let mut recorded = Recorded::of_route(&route);
+    recorded.pending = true;
+    recorded_pending.elections.note_recorded(key(), recorded);
+    assert_eq!(
+        stand(&recorded_pending, &key(), &route).await,
+        Round::Ineligible
+    );
+    assert!(
+        recorded_pending
+            .requester
+            .asked
+            .lock()
+            .expect("lock")
+            .is_empty()
+    );
+
+    // The kept set's members match the route; only its leaving set differs.
+    let (broker, _dir) = follower().await;
+    let ctx = ctx(&broker, voters(None));
+    let log = shard_log(&broker, &key()).await.expect("log");
+    let mut leaving = set(3);
+    leaving.members[2].node = "broker-d".to_string();
+    log.accept_set(ReplicaSet {
+        current: set(4),
+        leaving: Some(leaving),
+    })
+    .await
+    .expect("set");
+    assert_eq!(stand(&ctx, &key(), &route).await, Round::Ineligible);
+
+    assert!(ctx.requester.asked.lock().expect("lock").is_empty());
+    assert_eq!(log.accepted_generation(), 3, "no ballot");
+}
+
 /// The place counts voters with a log ahead and granting voters with a
 /// lower node id.
 #[tokio::test]
