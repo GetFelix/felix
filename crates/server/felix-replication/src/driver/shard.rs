@@ -595,13 +595,6 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
             promised.max(inherited.min(tail))
         }
     };
-    // The pending set's generation, once this stint's start record is
-    // acknowledged: on both majorities, since `held_offset` counts both.
-    let joint_start = |tail: u64, followers: &[FollowerCursor]| {
-        let change = pending?;
-        (acks_at_quorum && inherited != u64::MAX && held_offset(tail, followers) > inherited)
-            .then_some(change.generation)
-    };
     // The logs that ride the shard ride each follower's exchange too, so a
     // follower that does not answer holds up none of them: it is handed off
     // like any other straggler, rather than waited on at the end of the pass.
@@ -666,7 +659,11 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 .iter()
                 .rev()
                 .find(|epoch| epoch.generation == route.generation)
-                .map(|epoch| epoch.start_offset);
+                .map(|epoch| {
+                    counter_log
+                        .stint_start(route.generation)
+                        .map_or(epoch.start_offset, |stint| stint.max(epoch.start_offset))
+                });
             (view(counters), start)
         });
         crate::reporter::holders_of_start(
@@ -694,9 +691,33 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 learner.as_deref(),
                 by_followers,
                 election_active,
+                pending,
             )
             .await
         }
+    };
+    // The pending set's generation, once this stint's start record is
+    // acknowledged: on both majorities, since `held_offset` counts both. A
+    // cache's counter log too: the counter updates acknowledged before the
+    // cut-over are behind its own start record, not the cache log's, and the
+    // new set alone keeps them after the flip.
+    // A counter log that would not open this pass holds the flip back too:
+    // read as absent, the start would be reported on the cache log alone.
+    let counters_unread = key.kind == felix_router::ShardKind::Cache
+        && broker.counters().is_some()
+        && counter_log.is_none();
+    let joint_start = |tail: u64, followers: &[FollowerCursor], counters: Option<&CounterLevel>| {
+        let change = pending?;
+        let counters_started = if counter_mark.is_some() || counters_unread {
+            counters.is_some_and(|level| level.start_held)
+        } else {
+            true
+        };
+        (acks_at_quorum
+            && inherited != u64::MAX
+            && held_offset(tail, followers) > inherited
+            && counters_started)
+            .then_some(change.generation)
     };
     // Group state is not acknowledged at a mark, but a follower short of what
     // a majority holds of it would lose that if it led, so on a `Quorum`
@@ -1108,6 +1129,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         let counted = view(&positions);
         let offset = held_offset(tail, &counted);
         if offset > 0 {
+            let counters = counters_of(&aux.counters.followers).await;
             majority = Some((
                 with_counter_offsets(
                     shard_report(
@@ -1121,12 +1143,12 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                     )
                     .at_incarnation(incarnation)
                     .serving_by_round(by_round)
-                    .with_joint_start(joint_start(tail, &counted))
+                    .with_joint_start(joint_start(tail, &counted, counters.as_ref()))
                     .with_holds_start(holders(&counted, &aux.counters.followers)),
                     &aux.counters.followers,
                 ),
                 offset,
-                counters_of(&aux.counters.followers).await,
+                counters,
                 groups_of(&aux).await,
             ));
         }
@@ -1268,7 +1290,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                     )
                     .at_incarnation(incarnation)
                     .serving_by_round(by_round)
-                    .with_joint_start(joint_start(tail, &counted))
+                    .with_joint_start(joint_start(tail, &counted, counters.as_ref()))
                     .with_holds_start(holders(&counted, &aux.counters.followers)),
                     &aux.counters.followers,
                 ),
@@ -1456,6 +1478,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     let tail = log.tail_offset().await.unwrap_or(tail);
     let counted = view(&entry.followers);
     let drained = quiesced && drain_ready(key, route, &caught_up(tail, &counted), &aux_behind);
+    let counters = counters_of(&aux.counters.followers).await;
     let mut settled = with_counter_offsets(
         shard_report(
             key,
@@ -1468,7 +1491,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         )
         .at_incarnation(incarnation)
         .serving_by_round(by_round)
-        .with_joint_start(joint_start(tail, &counted))
+        .with_joint_start(joint_start(tail, &counted, counters.as_ref()))
         .with_holds_start(holders(&counted, &aux.counters.followers)),
         &aux.counters.followers,
     );
@@ -1477,7 +1500,6 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     settled
         .caught_up
         .retain(|node| !aux_behind.iter().any(|(_, behind)| behind == node));
-    let counters = counters_of(&aux.counters.followers).await;
     if let Some(counters) = &counters {
         counters.limit(&mut settled);
     }
@@ -1612,6 +1634,9 @@ pub(super) struct CounterLevel {
     /// The followers decided the mark, as for the cache log: it moves without
     /// waiting on the report.
     by_followers: bool,
+    /// A majority holds the counter log's start record for this stint,
+    /// of both sets while a change is pending.
+    start_held: bool,
 }
 
 impl CounterLevel {
@@ -1748,10 +1773,11 @@ async fn aux_cursors(
 /// tail cannot be read.
 ///
 /// Counted under the shard's own rules: only past where this leader's
-/// generation begins once the fleet finalized `generation_start`, and on the
-/// followers' answers at this generation with `by_followers`. The mark counts
-/// `counted`, the followers whose identity the pass has checked; the
-/// candidates are drawn from all of `followers`.
+/// generation begins once the fleet finalized `generation_start`, on the
+/// followers' answers at this generation with `by_followers`, and on both sets
+/// while a change is `pending`. The mark counts `counted`, the followers whose
+/// identity the pass has checked; the candidates are drawn from all of
+/// `followers`.
 #[allow(clippy::too_many_arguments)]
 async fn counter_level(
     marks: &QuorumMarks,
@@ -1764,6 +1790,7 @@ async fn counter_level(
     learner: Option<&str>,
     by_followers: bool,
     election_active: bool,
+    pending: Option<&felix_router::PendingChange>,
 ) -> Option<CounterLevel> {
     let tail = log.tail_offset().await.ok()?;
     // Rule 5, as for the shard's own mark: a newer ballot or set means the
@@ -1773,17 +1800,33 @@ async fn counter_level(
             held.accepted_generation() > route.generation
                 || held.set_generation() > route.generation
         });
-    let majority = if stepped_down {
+    // As for the shard's own log: a change this leader cannot count on both
+    // sets acknowledges nothing.
+    let unreadable = route.pending.is_some() && pending.is_none();
+    // Read after the tail. A newer leader fences the cache log before the
+    // counter log, and once either has answered it, what this broker writes
+    // next is in no fence answer.
+    let current = !by_followers
+        || (cache_log.accepted_generation() <= route.generation
+            && log.accepted_generation() <= route.generation);
+    let majority = if stepped_down || unreadable {
         0
     } else if by_followers {
-        // Read after the tail. A newer leader fences the cache log before the
-        // counter log, and once either has answered it, what this broker
-        // writes next is in no fence answer.
-        let current = cache_log.accepted_generation() <= route.generation
-            && log.accepted_generation() <= route.generation;
         crate::quorum::held_at_generation(tail, current, counted, learner)
     } else {
         quorum_offset_without(tail, counted, learner)
+    };
+    let majority = match pending {
+        Some(change) => crate::quorum::held_by_both(
+            majority,
+            tail,
+            current,
+            &route.leader.node_id,
+            counted,
+            &change.leaving,
+            learner,
+        ),
+        None => majority,
     };
     let start = log
         .generations()
@@ -1814,11 +1857,19 @@ async fn counter_level(
     } else {
         acknowledged.max(inherited)
     };
+    // The joint start counts from this stint's start record, as `own_start`
+    // does for the shard's own log: an earlier stint at this generation may
+    // have acknowledged updates on the old set alone.
+    let stint = start.map(|first| {
+        log.stint_start(route.generation)
+            .map_or(first, |stint| stint.max(first))
+    });
     Some(CounterLevel {
         acknowledged,
         level: caught_up(floor, followers),
         whole: majority >= tail,
         by_followers,
+        start_held: stint.is_some_and(|stint| majority > stint),
     })
 }
 
