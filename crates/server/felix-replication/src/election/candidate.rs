@@ -259,13 +259,15 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
     {
         return ctx.ineligible(key, "the kept replica set has a change pending");
     }
-    // A start record at or past the kept set's generation means a leader
-    // opened on it, so its joint fence already took a majority of the set
-    // being left. Fencing that set again would need its dead members too.
+    // A start record at the kept set's generation is written only by the
+    // leader that kept the set being left, once its joint fence took a
+    // majority of it. Fencing that set again would need its dead members too.
+    // A later start proves less: a leader the control plane named may have
+    // fenced the kept set alone.
     let leaving = kept.leaving.clone().filter(|_| {
         !log.generations()
             .iter()
-            .any(|epoch| epoch.generation >= kept.current.generation)
+            .any(|epoch| epoch.generation == kept.current.generation)
     });
     // Its fence would stay pending, after the ballot took a generation.
     if leaving.is_some() && !ctx.marks.fleet_supports(felix_common::fleet::JOINT_FENCE) {
