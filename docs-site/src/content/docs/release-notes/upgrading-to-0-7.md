@@ -6,8 +6,8 @@ description: What an operator moving a cluster from 0.6.2 to the 0.7 line needs 
 :::caution[0.7 is not released]
 This page covers `main`, which is ahead of the newest preview,
 `0.7.0-preview.2`. Items marked *(main)* are not in a preview yet. The page is
-finalized when 0.7.0 is tagged. Do not plan a production upgrade from it yet. The released versions are in the
-[release notes](/release-notes/).
+finalized when 0.7.0 is tagged. Do not plan a production upgrade from it yet.
+The released versions are in the [release notes](/release-notes/).
 :::
 
 Read [Upgrades and compatibility](/deployment/upgrades/) for the rules these
@@ -36,17 +36,20 @@ features and rollback.
   literals and exhaustive matches need them. The wire bytes for a client that
   does not use these are unchanged.
 - **Storage format 7 and 8.** `FORMAT_VERSION` was 6 in 0.6.2, is 7 in
-  preview.2 and is 8 on `main` *(v8: main)*. Version 7 holds the head-trim
-  record and version 8 holds a record's key and headers. A broker moves a log
-  onto one of them only to hold such a record: v7 at the first trim (in a
-  cluster, once `head_trim` is finalized), v8 at the first publish with
-  headers. Until then the log stays readable by 0.6.2. After that, 0.6.2
-  refuses to open it and there is no rollback except restoring a backup. To
-  keep v8 off, set `FELIX_RECORD_HEADERS=false`; it does not affect v7. Headers
-  only work on a single broker for now, since replication does not ship them.
-  A single broker allows trims from the start and writes a `head-trimmed`
-  marker, so that data directory cannot join a cluster until the cluster has
-  finalized `head_trim` (see [`head_trim`](/deployment/upgrades/#head_trim)).
+  preview.2 and is 8 on `main` *(v8: main)*.
+  - Version 7 holds the head-trim record. Version 8 holds a record's key and
+    headers.
+  - A broker moves a log onto a version only to hold such a record: v7 at the
+    first trim (in a cluster, once `head_trim` is finalized), v8 at the first
+    publish with headers. Until then the log stays readable by 0.6.2.
+  - After that, 0.6.2 refuses to open the log. There is no rollback except
+    restoring a backup.
+  - `FELIX_RECORD_HEADERS=false` keeps v8 off. It does not affect v7.
+  - Headers work on a single broker only for now, since replication does not
+    ship them.
+  - A single broker allows trims from the start and writes a `head-trimmed`
+    marker. That data directory cannot join a cluster until the cluster has
+    finalized `head_trim` (see [`head_trim`](/deployment/upgrades/#head_trim)).
 
 ## Wire protocol *(main)*
 
@@ -63,10 +66,13 @@ None of these is required. Each default keeps the 0.6.2 behavior.
 
 | Setting | What it does |
 |---|---|
-| `FELIX_RECORD_HEADERS` *(main)* | Single broker only. `false` refuses publishes that carry headers, which keeps logs at v7 or older. Turning it off later leaves stored headers readable. In a cluster headers are refused regardless, because the `record_headers` fleet feature is not implemented yet. |
+| `FELIX_RECORD_HEADERS` *(main)* | Single broker only. `false` refuses publishes that carry headers, which keeps logs at v7 or older. Turning it off later leaves stored headers readable. |
 | `FELIX_MQTT_LISTEN`, `FELIX_MQTT_WS_LISTEN` *(main)* | Bind the MQTT listener, plain and over WebSockets. Unset leaves it off. Related `FELIX_MQTT_*` limits are in [the reference](/reference/environment-variables/). |
 | `FELIX_LEASE_TOKEN_KEY_FILE`, `FELIX_LEASE_TOKEN_MAX_TTL_SECONDS` *(main)* | Key file and longest lifetime for lease tokens. Without the key file a broker neither mints nor accepts them. Every broker needs the same file. |
 | `FELIX_SHARD_ELECTION_HOLD_MS`, `FELIX_SHARD_PENDING_SET_TIMEOUT_MS` | Control-plane timers for `replica_election`, which no broker offers yet. Nothing uses them today. |
+
+In a cluster, headers are refused whatever `FELIX_RECORD_HEADERS` says, because
+the `record_headers` fleet feature is not implemented yet.
 
 ## Upgrade order
 
@@ -135,9 +141,9 @@ Later control-plane changes are on `main`:
   `0040`, level 23. Finalizing `joint_fence` needs that level.
 - A stream can carry an MQTT mount: migration `0041`, level 24.
 
-In short, Postgres runs migrations `0037` to `0041` on start, and under Raft
-these features wait for metadata levels 20 to 24, so upgrade every
-control-plane member before the brokers.
+In short, Postgres runs migrations `0037` to `0041` on start (`0039` to
+`0041` are on `main` only), and under Raft these features wait for metadata
+levels 20 to 24. Upgrade every control-plane member before the brokers.
 
 ## Clients
 
