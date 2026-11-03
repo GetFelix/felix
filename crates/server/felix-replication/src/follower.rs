@@ -58,6 +58,12 @@ pub struct FollowerCursor {
     /// different one is another process, which may not hold what this one
     /// did, so the cursor starts over on it too.
     pub incarnation: Incarnation,
+    /// The follower's last stored answer said its copy is a learner
+    /// ([`ReplicateOk::learner`]): it lost what it promised before a wipe, so
+    /// it counts toward no mark until an answer without the flag arrives.
+    ///
+    /// [`ReplicateOk::learner`]: felix_wire::internal::ReplicateOk::learner
+    pub learner: bool,
 }
 
 impl FollowerCursor {
@@ -75,7 +81,14 @@ impl FollowerCursor {
             legacy_frames: false,
             storage_id: None,
             incarnation: Incarnation::Unsent,
+            learner: false,
         }
+    }
+
+    /// Whether this follower's `confirmed` counts toward a mark: not while it
+    /// is halted, nor while its copy is a learner.
+    pub fn counts(&self) -> bool {
+        self.halted.is_none() && !self.learner
     }
 
     /// The identity this cursor's positions were learned under.
