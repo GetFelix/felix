@@ -42,6 +42,8 @@ const INELIGIBLE_FOR: Duration = Duration::from_secs(1);
 /// try stands a generation higher.
 const OPEN_WITHIN: Duration = Duration::from_secs(3);
 /// How long a pre-vote answer is waited for. A silent voter counts as no.
+/// The request itself runs on, so a connection still being dialled is there
+/// for the next round.
 const PRE_VOTE_WITHIN: Duration = Duration::from_secs(1);
 /// How often a standing is checked for having opened.
 const OPEN_POLL: Duration = Duration::from_millis(50);
@@ -185,7 +187,11 @@ async fn step_down_promised_away<R>(ctx: &Ctx<R>) {
 }
 
 /// One round for `key`, whose leader in `route` this broker suspects.
-async fn stand<R: PeerRequester>(ctx: &Ctx<R>, key: &ShardKey, route: &Route) -> Round {
+async fn stand<R: PeerRequester + Send + Sync + 'static>(
+    ctx: &Ctx<R>,
+    key: &ShardKey,
+    route: &Route,
+) -> Round {
     let local = ctx.router.local_node_id();
     let Some(log) = eligible_log(ctx, key).await else {
         return Round::Ineligible;
@@ -344,7 +350,7 @@ async fn shard_log(broker: &Broker, key: &ShardKey) -> Option<StreamLog> {
 /// The place counts voters ahead of it: those that refused because their
 /// log is ahead, and those that granted with a lower node id, which may hold
 /// an equal log.
-async fn pre_vote<R: PeerRequester>(
+async fn pre_vote<R: PeerRequester + Send + Sync + 'static>(
     ctx: &Ctx<R>,
     key: &ShardKey,
     log: &StreamLog,
@@ -377,10 +383,17 @@ async fn pre_vote<R: PeerRequester>(
             .filter_map(|node| Some((*node, ctx.router.node_addr(node)?)))
             .map(|(node, addr)| {
                 let message = InternalMessage::PreVote(request.clone());
+                // Spawned, not awaited in place: a first request to a voter
+                // dials it, and a slow link can take longer than the wait.
+                // Cancelling would drop the dial, and every later round would
+                // start it over and time out the same way.
+                let requester = Arc::clone(&ctx.requester);
+                let to = node.to_string();
+                let asked =
+                    tokio::spawn(async move { requester.request(&to, addr, message).await });
                 async move {
-                    let asked = ctx.requester.request(node, addr, message);
                     match tokio::time::timeout(PRE_VOTE_WITHIN, asked).await {
-                        Ok(Ok(InternalMessage::PreVoteAnswer(answer))) => {
+                        Ok(Ok(Ok(InternalMessage::PreVoteAnswer(answer)))) => {
                             Some((node, answer.refusal))
                         }
                         _ => None,
