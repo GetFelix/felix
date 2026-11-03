@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793680516789,
+  "lastUpdate": 1793687347563,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -43316,6 +43316,58 @@ window.BENCHMARK_DATA = {
             "range": "45583.54",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 820947.64\nmean: 805691.91\nstdev: 45583.54\ncv: 5.66%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6e1a17b38374495015524e20749f75cc648d578f",
+          "message": "fix(controlplane): name the leader again after a recorded election it cannot serve (#1730) (#1809)\n\n* fix(controlplane): bound the wait after an election is recorded and not adopted (#1730)\n\nThe leader the control plane still names at an elected generation promised\nthat generation to the elected node, so its open fails and nothing reached\nthe control plane. The leader now records the refusal in its fence state\n(the generation and the node it promised it to) and reports it in place of\nthe usual measurements (`refused`, optional, absent on the wire when unset).\nThe control plane stores it like `given_up` (Raft metadata level 22,\nPostgres migration 0040) and, when the assignment's leader reports a refusal\nof exactly the assignment's generation, writes the next generation naming\nthe same leader on the same set, pending change kept. Not during a fenced\nmove.\n\n* fix(replication): report a refusal at the stream's incarnation, and a fence promised away (#1730)\n\nThe refusal report went out at incarnation 0, which the control plane\nanswers as stale for any stream created since incarnations, so it was never\nacted on. It now names the incarnation the shard's logs open at, as the\ngiven-up probe's report does.\n\nA leader that persisted its own ballot before the elected node's fence\nreached it opens locally and then fences, and a majority answers that it\npromised the generation to that node. That fence can never reach a\nmajority, and nothing told the control plane. The fence now tells a promise\nat its own generation apart from a newer leader (`Outcome::Refused`), keeps\ncounting answers while a majority is still possible, and the driver reports\nthe refusal each tick, as it does for a refused open. The shard still\nfences again with backoff.\n\n* fix(broker): clear a refused generation once the shard opens above it (#1730)\n\nA refusal at or below the generation a shard opens at no longer holds it\nback, so it is dropped rather than kept until a later route compares it\naway.\n\n* docs: when a recorded election is named again, and when placement skips it (#1730)\n\nBoth ways the named leader cannot serve the recorded generation, a refused\nopen and a fence a majority promised away. Placement skips the step while a\nmove has a successor or the leader drains, and takes it mid-replacement.\nThe design note is in the present tense and points at CpRename.\n\n* spec: the control plane names its leader again after a recorded election (#1730)\n\nCpRename, behind `Renames` (default off, so every existing configuration\nkeeps its state count): once the control plane records an election without\nadopting it, and its leader cannot serve the recorded generation because it\nor a majority of its set promised it to the elected replica, the control\nplane names that leader again one generation up, on its own set with any\npending change kept, and the leader fences there, jointly while a change is\npending.\n\nFelixShardElectRename.cfg checks it after a cut-over (nightly, too big to\nfinish locally); FelixShardElectRenameDue.cfg is its witness (violates\nNeverRenameDue at depth 11). The walks FelixShardWalkElectRename.cfg (pass)\nand FelixShardWalkElectRenameUnfenced.cfg (violates AckedHeldByLeader with\nthe renamed leader opening unfenced) sample the larger space.\n\n* docs: placement renames on any refusal at the assignment's generation (#1730)\n\nThe step does not check that an election was recorded, and the model covers\nonly a leader that never took the generation. Say both.\n\n* spec: the unfenced rename walk checks only AckedHeldByLeader (#1730)\n\nWithout the fence, a candidate can also win an election at the renamed\nleader's generation, so a walk may violate OneLeaderPerGeneration first\n(seed 1607241939). The other walks' twins check only their target too.\n\n* docs: a refused flip is renamed one generation up, not left to the candidate (#1730)",
+          "timestamp": "2026-11-02T22:10:25-08:00",
+          "tree_id": "d43165f493e2c5c38471ee451a5cc690e5faa3d4",
+          "url": "https://github.com/GetFelix/felix/commit/6e1a17b38374495015524e20749f75cc648d578f"
+        },
+        "date": 1793687346670,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 333851.08,
+            "range": "15791.15",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 333851.08\nmean: 332730.55\nstdev: 15791.15\ncv: 4.75%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 333851.08,
+            "range": "15791.15",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 333851.08\nmean: 332730.55\nstdev: 15791.15\ncv: 4.75%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79653.37,
+            "range": "3727.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79653.37\nmean: 78281.67\nstdev: 3727.76\ncv: 4.76%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 796533.69,
+            "range": "37277.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 796533.69\nmean: 782816.72\nstdev: 37277.58\ncv: 4.76%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
