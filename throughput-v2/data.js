@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793733190919,
+  "lastUpdate": 1793736732693,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -43888,6 +43888,58 @@ window.BENCHMARK_DATA = {
             "range": "36326.45",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 808935.95\nmean: 791677.66\nstdev: 36326.45\ncv: 4.59%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "52e219bcb239db37b7bce61dc643989f92ca8169",
+          "message": "test(cluster): the adversarial history schedule always includes the faults it asserts on (#1858) (#1859)\n\nFixes #1858.\n\nSeed 1592590337 is the default per-PR seed (0x5eed_0001), not a branch-specific one. The adversarial test goes round the kinds in a fixed order (RestartLoop is sixth) and the seed only varies quiet/hold timings and targets. On a slow runner the 150 s budget ends before the sixth fault, so the coverage assertion fails; a faster attempt passes with the same seed.\n\nThe three asserted kinds (Isolate, KillTwo, RestartLoop) now come first in the order, from one shared constant that the assertion also reads. The assertion is unchanged. A unit test checks the order; it fails with the old order.\n\nDesign calls\n- Reorder rather than force-insert: the seed never chose kinds, so there is nothing to patch after the draw.\n- Duration unchanged.\n\nSpec-Unaffected: test-only change",
+          "timestamp": "2026-11-03T12:03:48-08:00",
+          "tree_id": "d89fbef8c3af2afd57b17d58c96bec9215b4adab",
+          "url": "https://github.com/GetFelix/felix/commit/52e219bcb239db37b7bce61dc643989f92ca8169"
+        },
+        "date": 1793736731961,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 534676.06,
+            "range": "14399.30",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 534676.06\nmean: 539874.03\nstdev: 14399.30\ncv: 2.67%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 534676.06,
+            "range": "14399.30",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 534676.06\nmean: 539874.03\nstdev: 14399.30\ncv: 2.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 124212.04,
+            "range": "899.22",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 124212.04\nmean: 124086.43\nstdev: 899.22\ncv: 0.72%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1242120.41,
+            "range": "8992.18",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1242120.41\nmean: 1240864.27\nstdev: 8992.18\ncv: 0.72%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
