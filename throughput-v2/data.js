@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793671156365,
+  "lastUpdate": 1793671682142,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -43108,6 +43108,58 @@ window.BENCHMARK_DATA = {
             "range": "6571.52",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 973864.35\nmean: 972445.62\nstdev: 6571.52\ncv: 0.68%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a627b25afbc255c880b0f6d6788234e6fe3a523d",
+          "message": "test(cluster): judge the lease canary on the lease's slack, not its idle p99 (#1760) (#1833)\n\n* test(cluster): judge the lease canary on the lease's slack, not a ratio to its idle p99 (#1760)\n\n* docs(cluster): state the measured CPU load behind the per-PR renewal bound (#1760)",
+          "timestamp": "2026-11-02T17:58:22-08:00",
+          "tree_id": "55fc12573ef8c84a29b426c2f30cedc1a72ceca5",
+          "url": "https://github.com/GetFelix/felix/commit/a627b25afbc255c880b0f6d6788234e6fe3a523d"
+        },
+        "date": 1793671681309,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 362503.71,
+            "range": "3663.50",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 362503.71\nmean: 362185.00\nstdev: 3663.50\ncv: 1.01%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 362503.71,
+            "range": "3663.50",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 362503.71\nmean: 362185.00\nstdev: 3663.50\ncv: 1.01%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81105.71,
+            "range": "3558.54",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81105.71\nmean: 79881.25\nstdev: 3558.54\ncv: 4.45%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 811057.06,
+            "range": "35585.42",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 811057.06\nmean: 798812.48\nstdev: 35585.42\ncv: 4.45%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
