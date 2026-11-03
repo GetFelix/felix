@@ -2162,6 +2162,8 @@ Elect(f) ==
     /\ ~WipeWaits(f) /\ WipeFloor(f, f, promised[f] + 1) /\ ~NonVoter(f)
     \* Pre-vote: a majority of its set, itself included, no longer hears a leader.
     \* Under `DetectorMisfires` the candidate's own suspicion may be wrong.
+    \* The candidate need not be in that majority, so one that still hears may
+    \* stand: more than the code allows, which only widens the safety checks.
     /\ PreVote => MajorityOf({ m \in Members(f) : (DetectorMisfires /\ m = f) \/
                                 IF PreVoteAsked THEN PreVoteYes(m, f)
                                 ELSE ~Hears(m) /\ (FailStops > 0 => m \notin halted) },
@@ -3411,11 +3413,12 @@ LeaderSettled ==
 ElectionSettles == <>[]LeaderSettled
 
 \* Nobody stands against an open leader that a majority of its set hears:
-\* pre-vote keeps a working leader in place. With the control plane down,
-\* a broker starts fencing only by standing.
+\* pre-vote keeps a working leader in place. With the control plane down, a
+\* broker takes a new generation and fences only by standing, so this covers
+\* a candidate standing again higher too.
 NoStandAgainstHeardLeader ==
     [][\A f \in Brokers :
-          ~fencing[f] /\ fencing'[f] =>
+          fencing'[f] /\ bgen'[f] /= bgen[f] =>
               ~\E l \in Brokers \ halted :
                   /\ bgen[l] > 0 /\ ~fencing[l]
                   /\ MajorityOf({ m \in Members(l) : Hears(m) } \cup {l}, Members(l))]_vars
