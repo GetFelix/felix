@@ -339,12 +339,6 @@ pub trait WriteFence: Send + Sync {
     fn opened_since(&self, _key: &crate::ShardKey, _generation: u64) -> bool {
         true
     }
-
-    /// Whether this process opened `key` at `generation` once a promotion or
-    /// election fence finished there, rather than on a plain bump.
-    fn opened_fenced(&self, _key: &crate::ShardKey, _generation: u64) -> bool {
-        false
-    }
 }
 
 /// A fence that holds nothing back: every shard is quiet.
@@ -662,7 +656,14 @@ async fn open_promoted<R: PeerRequester>(
     .await;
     let mut pending = false;
     for (key, generation, outcome, fencing) in outcomes {
-        pending |= !open_fenced(gate, &key, generation, outcome).await;
+        let opened = open_fenced(gate, &key, generation, outcome).await;
+        if opened
+            && fencing.is_some()
+            && let Some(elections) = marks.elections()
+        {
+            elections.opened(&key, generation);
+        }
+        pending |= !opened;
         drop(fencing);
     }
     pending
