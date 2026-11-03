@@ -30,6 +30,14 @@ fn set(generation: u64) -> Membership {
     }
 }
 
+fn named(generation: u64, incarnation: u64, leader: &str) -> Option<Named> {
+    Some(Named {
+        generation,
+        incarnation,
+        leader: leader.to_string(),
+    })
+}
+
 fn elected(leader: &str, generation: u64) -> Elected {
     Elected {
         leader: leader.to_string(),
@@ -56,9 +64,27 @@ fn only_a_newer_generation_replaces_a_record() {
 fn the_overlay_drops_what_the_control_plane_caught_up_with() {
     let elections = Elections::new("a", Arc::new(Notify::new()));
     elections.record(key(), elected("a", 5));
-    assert_eq!(elections.overlay(|_| Some((4, 0))).len(), 1);
-    assert!(elections.overlay(|_| Some((5, 0))).is_empty());
+    assert_eq!(elections.overlay(|_| named(4, 0, "z")).len(), 1);
+    assert!(elections.overlay(|_| named(5, 0, "a")).is_empty());
     assert!(elections.get(&key()).is_none());
+}
+
+/// The control plane named another broker at this broker's own elected
+/// generation. This broker may be the one that opened there, which the other
+/// then never can, so its standing stays until a newer generation is named
+/// and its reports can tell the control plane. A follower's record of
+/// another's standing goes, as does one the control plane adopted.
+#[test]
+fn a_standing_the_control_plane_collided_with_stays_until_a_newer_generation() {
+    let elections = Elections::new("a", Arc::new(Notify::new()));
+    elections.record(key(), elected("a", 5));
+    assert_eq!(elections.overlay(|_| named(5, 0, "b")).len(), 1);
+    assert!(elections.reported(&key(), 5).is_some());
+    assert!(elections.overlay(|_| named(6, 0, "b")).is_empty());
+
+    let follower = Elections::new("c", Arc::new(Notify::new()));
+    follower.record(key(), elected("a", 5));
+    assert!(follower.overlay(|_| named(5, 0, "b")).is_empty());
 }
 
 /// The overlay drops a leadership whose shard has no route, since its stream
@@ -71,7 +97,7 @@ fn the_overlay_drops_a_deleted_or_recreated_streams_leadership() {
     assert!(elections.get(&key()).is_none());
 
     elections.record(key(), elected("a", 5));
-    assert!(elections.overlay(|_| Some((4, 1))).is_empty());
+    assert!(elections.overlay(|_| named(4, 1, "z")).is_empty());
     assert!(elections.get(&key()).is_none());
 }
 

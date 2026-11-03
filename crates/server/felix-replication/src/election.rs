@@ -99,6 +99,14 @@ impl Recorded {
     }
 }
 
+/// What the control plane's route names for a shard.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Named {
+    pub generation: u64,
+    pub incarnation: u64,
+    pub leader: String,
+}
+
 /// What a candidate's fence carries in place of the route's own set.
 #[derive(Debug, Clone)]
 pub(crate) struct Candidacy {
@@ -159,18 +167,25 @@ impl Elections {
     }
 
     /// The leaderships above the generation `named` says the control plane's
-    /// route has, as `(generation, incarnation)`. One at or below it is
-    /// dropped: the control plane adopted it or named a newer leader, and its
-    /// route says which. So is one for a shard with no route, whose stream was
-    /// deleted, or for another incarnation, whose stream was recreated.
-    pub fn overlay(
-        &self,
-        named: impl Fn(&ShardKey) -> Option<(u64, u64)>,
-    ) -> Vec<(ShardKey, Elected)> {
+    /// route has. One at or below it is dropped: the control plane adopted it
+    /// or named a newer leader, and its route says which. So is one for a
+    /// shard with no route, whose stream was deleted, or for another
+    /// incarnation, whose stream was recreated.
+    ///
+    /// Except this broker's own standing when the route names another leader
+    /// at that same generation. The two collided, and ballots let at most one
+    /// of them open there. If this broker did, the other never can, so it
+    /// keeps leading and reports the collision until the control plane names
+    /// a newer generation. If it did not, the candidate withdraws it.
+    pub fn overlay(&self, named: impl Fn(&ShardKey) -> Option<Named>) -> Vec<(ShardKey, Elected)> {
         let mut entries = self.entries.lock();
         entries.retain(|key, elected| {
-            named(key).is_some_and(|(generation, incarnation)| {
-                generation < elected.generation && incarnation == elected.incarnation
+            named(key).is_some_and(|named| {
+                let collided = named.generation == elected.generation
+                    && named.leader != elected.leader
+                    && elected.leader == self.local_node_id;
+                (named.generation < elected.generation || collided)
+                    && named.incarnation == elected.incarnation
             })
         });
         self.recorded

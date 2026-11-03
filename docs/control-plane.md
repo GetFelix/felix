@@ -1403,6 +1403,17 @@ few generations at most between two reports, and a far generation would push
 every later write toward the top of the range. A store whose generation is
 the last it can issue refuses further writes instead of repeating one.
 
+**A generation claimed twice.** The control plane can name a leader at the
+generation an election took, for example by promoting a follower when it
+returns before the elected leader's first report lands. Ballots let only one
+of the two open there. The elected leader keeps leading and reporting, and a
+report at the assignment's own generation from a leader it did not name moves
+the shard to the next generation, with the same conditional, placement-fenced
+write placement uses. The next generation names the elected leader if its
+set is the control plane's, and otherwise the leader already named, so the
+shard is never left with a leader that cannot open. The leader that is not
+named steps down on the new leader's fence.
+
 Either way every later write, whoever makes it, is above the elected
 generation, because the store gives each write the one after the stored
 generation. A store error during adoption is logged and the report is judged
