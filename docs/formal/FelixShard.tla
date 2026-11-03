@@ -427,8 +427,9 @@ ASSUME AckByFollowers => Quorum /\ ~CheckAtCommit /\ ~AckChecksLease
 \* Cache shards are checked with follower acks and failover alone, the only
 \* way the broker acknowledges a cache write without the lease.
 ASSUME Counters \in BOOLEAN /\ CounterCatchUp \in BOOLEAN
-\* A spare joins a cache shard only through a cut-over (`Swap`), which waits
-\* for the destination to hold the counter log; no other step copies it.
+\* Spares are allowed only where they join through a cut-over (`Swap`). The
+\* cut-over waits for its destination to hold the old leader's counter log;
+\* a joining spare gets the counter log only through `ShipCounter`.
 ASSUME Counters => /\ AckByFollowers /\ ~LabelOnReceipt /\ ~Resends
                    /\ ~Handoff /\ ~Cancel /\ ~StageMove /\ MaxMoves = 0
                    /\ (Spares = {} \/ (Swaps > 0 /\ ~ReplaceOnPromote /\ ~Grow))
@@ -2177,7 +2178,9 @@ CommitCounter(b) ==
 ShipCounter(b, f) ==
     /\ Counters
     /\ bgen[b] > 0 /\ f /= b
-    \* While a change is pending it ships to the old set too, as `Ship` does.
+    \* While a change is pending the model ships to the old set too, which
+    \* only widens the check: the code ships a counter log to the route's set
+    \* alone (`shard.rs`).
     /\ f \in FenceMembers(b)
     \* A non-voter copies the counter log in `CatchUp`, which counts nothing.
     /\ ~NonVoter(f)
@@ -2737,6 +2740,9 @@ Swap(v, f, views) ==
     /\ fencing' = [fencing EXCEPT ![f] = TRUE]
     /\ answered' = [answered EXCEPT ![f] = {}]
     /\ confirmed' = [confirmed EXCEPT ![f] = [m \in Brokers |-> 0]]
+    \* The counter fence's answers and cursors belong to a generation too.
+    /\ canswered' = [canswered EXCEPT ![f] = {}]
+    /\ cconfirmed' = [cconfirmed EXCEPT ![f] = [m \in Brokers |-> 0]]
     /\ moves' = moves + 1
     /\ UNCHANGED << now, clock, inflight, hbOut, hbAt, hwm, halted, acked, writes,
                     staleCommit, draining, successor, staged, joining, leaving, joinedAt,
@@ -2861,8 +2867,10 @@ Decide(v, f, views) ==
           \/ Reseat(v, f, views) \/ GrowSet(v, f, views) \/ Seat(v, f, views)
           \/ SeatFence(v, f, views) \/ TrimFence(v, views) \/ TrimSet(v, f, views)
           \/ UndoFence(v, f, views) \/ Undo(v, f, views)
-          \/ Swap(v, f, views) \/ CpAdopt(v, f, views) \/ Reclaim(v, views)
+          \/ CpAdopt(v, f, views) \/ Reclaim(v, views)
        /\ UNCHANGED << counterVars, expect, inherited, seen, seenInc, fenceIds >>
+    \/ /\ Swap(v, f, views)
+       /\ UNCHANGED << clog, chwm, cacked, expect, inherited, seen, seenInc, fenceIds >>
 
 -----------------------------------------------------------------------------
 (* Wipes. A follower loses its data directory and comes back empty, under *)
@@ -3542,8 +3550,8 @@ CountersHeldByLeader ==
         \A id \in cacked : \E i \in 1..Len(clog[b]) : clog[b][i].id = id
 
 \* Every acknowledged counter update is on a majority of the set the control
-\* plane records, as AckedOnMajority for the cache log: after a flip the new
-\* set, after a dropped change the old one.
+\* plane records, as AckedOnMajority for the cache log: the old set while a
+\* change is pending, the new set after the flip.
 CountersOnSetMajority ==
     Quorum =>
         \A id \in cacked :

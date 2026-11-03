@@ -195,7 +195,7 @@ newcomer as a top-up instead of undoing it; that case is a unit test only.
 | `OneLeaderPerGeneration` | No two brokers open for writes at one generation. Checked where replicas elect themselves and where placement promotes on suspicion. |
 | `AdoptedMatchesOpened` | The control plane's leader, once open at the control plane's generation and while it still holds it, leads the set the control plane records, an adopted leader included: the pending set while a cut-over's change is pending. Checked where the control plane adopts. |
 | `SetChangesJoint` | Once a set change opened, a majority of the new set and of the set before it know the new set. A history invariant over consecutive sets, checked under `SetCheck`. |
-| `CountersOnSetMajority` | Under `Counters`, every acknowledged counter update is on a majority of the set the control plane records, as `AckedOnMajority` for the cache log: the old set while a change is pending or after it is dropped, the new set after the flip. |
+| `CountersOnSetMajority` | Under `Counters`, every acknowledged counter update is on a majority of the set the control plane records, as `AckedOnMajority` for the cache log: the old set while a change is pending, the new set after the flip. |
 | `QuorumReportNamesASuccessor` | Under `Quorum`, a report from a leader still serving names a follower that may take over, whenever a majority is still replicating. A liveness property in invariant form, checked in `FelixShard.cfg`. |
 
 ## The configurations, and what each must do
@@ -651,8 +651,8 @@ changes several members at once. Three rules keep every acknowledged counter
 update on a majority of the set the control plane records:
 
 - The cut-over waits until the destination holds the old leader's counter log.
-- While the change is pending, the counter log ships to both sets, and its
-  mark needs a majority of each, as the cache log's does (`CountersJoint`).
+- While the change is pending, the counter mark needs a majority of both
+  sets, as the cache log's does (`CountersJoint`).
 - The control plane takes the new set only once the counter log's start
   record is held too, not just the cache log's (`FlipChecksCounters`).
 

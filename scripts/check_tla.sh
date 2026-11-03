@@ -442,7 +442,7 @@ weights=(
   "FelixShardElectAdopt 11"
   "FelixShardElectPreVote 1"
   "FelixShardElectAdoptPromote 10"
-  "FelixShardSwapCounters 10"
+  "FelixShardSwapCounters 40"
   "FelixShardSessionsSubscriber 2"
   "FelixShardSuspicion 2"
   "FelixShardSuspicionWipeRoutes 3"
