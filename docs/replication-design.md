@@ -1134,14 +1134,12 @@ Not covered yet, and needed before elections (#1009 S9):
   one log beside the records, not the dead-letter and cursor pair, and the
   model waits for a majority where the code, short of answers, takes the
   furthest one it has.
-- The leader still counts a learner's acknowledgements, and a learner takes
-  a batch from a leader the control plane confirmed at that generation even
-  after it moved on (a reused read, or one just before a failover).
-  The model explores both without elections (`LearnerAcksCount`,
-  `CatchUpFromDeposed`) and finds nothing. With elections counting a learner
-  loses a write (`FelixShardElectWipeNonVoterCreatesLearnerAcks.cfg`), so
-  the leader must leave learners' acknowledgements out before they ship
-  ([#1762](https://github.com/GetFelix/felix/issues/1762)).
+- A learner takes a batch from a leader the control plane confirmed at that
+  generation even after it moved on (a reused read, or one just before a
+  failover). The model explores this without elections (`CatchUpFromDeposed`)
+  and finds nothing. The leader leaves a learner's acknowledgements out of
+  its marks, as above. The model's twin that counts them, with elections,
+  loses a write (`FelixShardElectWipeNonVoterCreatesLearnerAcks.cfg`).
 - A candidate's generation can be above anything the control plane has
   written, and a copy wiped after promising one cannot know it. With three
   copies that is safe: the set that re-admits it was fenced by both other
