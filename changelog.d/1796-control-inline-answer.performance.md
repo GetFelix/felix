@@ -1,1 +1,1 @@
-- A follower answers a fence or pre-vote that finishes at once straight from the control stream's read loop, without a task per request, so the fence behind each confirmed cache read skips a task spawn and a wake. ([#1796](https://github.com/GetFelix/felix/issues/1796))
+- A follower answers a fence or pre-vote that finishes on its first poll straight from the control stream's read loop, without a task per request, so the fence behind each confirmed cache read skips a task spawn and a wake. ([#1796](https://github.com/GetFelix/felix/issues/1796))
