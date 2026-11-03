@@ -318,6 +318,16 @@ pub trait WriteFence: Send + Sync {
         None
     }
 
+    /// The generation this broker refused to open `key` at because it had
+    /// promised it to another node, and that node. Such a shard is reported
+    /// as refused instead of shipped (`crate::reclaim::refusal_report`).
+    fn refused_at(
+        &self,
+        _key: &crate::ShardKey,
+    ) -> Option<felix_common::membership::RefusedGeneration> {
+        None
+    }
+
     /// A probe of every follower at `generation`, the one `key` was given
     /// up at, found none ahead of this broker's copy (`reclaimable`), or
     /// found one ahead.
@@ -663,6 +673,19 @@ async fn open_fenced(
                 generation,
                 why = %why,
                 "the promoted shard is not fenced yet; it does not serve until it is",
+            );
+            false
+        }
+        Outcome::Refused {
+            promised_to, why, ..
+        } => {
+            tracing::warn!(
+                stream = %key.stream,
+                shard = key.shard,
+                generation,
+                promised_to = %promised_to,
+                why = %why,
+                "a majority promised the generation to another node; reporting the refusal",
             );
             false
         }

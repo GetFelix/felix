@@ -429,6 +429,19 @@ impl ReplicaPositions {
             && self.same_incarnation(report, leader)
     }
 
+    /// Whether `leader` reported at `generation` that it refused that
+    /// generation, in a report still within its TTL.
+    fn refused(&self, key: &ShardKey, generation: u64, leader: &str) -> bool {
+        self.fresh(key).is_some_and(|report| {
+            report.leader.as_deref() == Some(leader)
+                && report.generation == generation
+                && report
+                    .refused
+                    .as_ref()
+                    .is_some_and(|refused| refused.generation == generation)
+        })
+    }
+
     /// Whether the given-up leader's probe names `node_id` caught up, on the
     /// evidence a reclaim needs: fresh, made at the assignment's generation
     /// by the leader registered now under the identity it reported, with
@@ -598,6 +611,10 @@ impl CaughtUp for ReplicaPositions {
                         .get(*follower)
                         .is_some_and(|offset| offset <= own)
             })
+    }
+
+    fn leader_refused(&self, key: &ShardKey, generation: u64, leader: &str) -> bool {
+        self.refused(key, generation, leader)
     }
 
     fn is_caught_up(&self, key: &ShardKey, node_id: &str) -> bool {

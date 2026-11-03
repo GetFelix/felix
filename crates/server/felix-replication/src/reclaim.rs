@@ -17,6 +17,7 @@
 use std::sync::Arc;
 
 use felix_broker::{Broker, LogKind};
+use felix_common::membership::RefusedGeneration;
 use felix_router::{Route, ShardKey, ShardKind};
 use felix_storage::StorageId;
 use felix_wire::internal::{Fence, InternalMessage};
@@ -179,6 +180,33 @@ fn caught_up(positions: &[LogPosition]) -> Vec<String> {
     }
 }
 
+/// The report for a shard this broker was named leader of and refused to open
+/// at `refused.generation`, having promised it to another node. It measures
+/// nothing: the broker never opened the shard, and placement needs only the
+/// refusal. Without it the control plane, which still names this broker at
+/// that generation, would wait on silence.
+pub fn refusal_report(key: &ShardKey, refused: RefusedGeneration) -> ShardReport {
+    ShardReport {
+        key: key.clone(),
+        generation: refused.generation,
+        caught_up: Vec::new(),
+        offsets: Vec::new(),
+        tail: 0,
+        drained: false,
+        halted: Vec::new(),
+        counter_offsets: Vec::new(),
+        incarnation: 0,
+        by_round: false,
+        storage_ids: Vec::new(),
+        node_incarnations: Vec::new(),
+        given_up: false,
+        inherited_storage: Vec::new(),
+        joint_start_acked: None,
+        holds_start: Vec::new(),
+        refused: Some(refused),
+    }
+}
+
 /// The report on a probe, naming nobody caught up; the caller fills that in.
 fn given_up_report(
     key: &ShardKey,
@@ -215,6 +243,7 @@ fn given_up_report(
         // Every follower answered the probe, so each is named by its answer.
         inherited_storage: Vec::new(),
         joint_start_acked: None,
+        refused: None,
         holds_start: Vec::new(),
     }
 }
