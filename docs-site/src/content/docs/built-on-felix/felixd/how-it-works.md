@@ -111,7 +111,7 @@ never a second owner, because only the broker decides that a lease is gone.
 
 **Restart and shutdown.** An agent never adopts a lease it finds under its own
 node id. A restarted agent waits for its old leases to expire, so two processes
-configured with the same id cannot both believe they hold a workload. On Ctrl-C
+configured with the same id cannot both believe they hold a workload. On Ctrl-C or SIGTERM
 an agent deletes its leases with `cache_delete_if`, waiting up to two seconds
 for its workloads to let go, so other nodes can claim at once.
 

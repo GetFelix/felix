@@ -83,7 +83,7 @@ felixd agent --node-id node-a
 
 It watches the `workloads` and `leases` caches, claims the lease of each running
 workload nobody holds, runs it while the lease holds, and writes itself to the
-`nodes` cache. It runs until Ctrl-C, then releases its leases.
+`nodes` cache. It runs until Ctrl-C or SIGTERM, then releases its leases.
 
 | Flag | Variable | Default | Meaning |
 |---|---|---|---|

@@ -132,8 +132,8 @@ shows it, and no node runs the workload until its spec changes.
 
 `failed` is a value of a spec's `state`. A holder writes it after the failure is
 recorded on the output stream, and it stays until `felixd run` writes a new spec.
-`degraded` is a design idea for a workload that keeps failing on every node, to be
-recorded after a bounded number of takeovers. It does not exist
+`degraded` is recorded when a node keeps failing on a transient error and releases
+the workload so another node can try. Counting that across the cluster is not built
 ([#99](https://github.com/GetFelix/felixd/issues/99)). See
 [When a workload fails](/built-on-felix/felixd/how-it-works/#when-a-workload-fails).
 

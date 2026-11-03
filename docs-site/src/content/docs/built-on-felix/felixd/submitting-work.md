@@ -23,8 +23,7 @@ workload's two streams. Without that token it cannot get as far as writing the s
 
 There is no intake stream with an admission step yet. Nothing reviews a submission
 before it takes effect: the spec in the `workloads` cache is the workload, and the
-cache holds only its latest value, not a history of specs. Keeping specs as records
-on a log is part of [#72](https://github.com/GetFelix/felixd/issues/72).
+cache holds only its latest value. felixd also keeps spec records on a log.
 
 ## What a unit of work is
 
@@ -258,8 +257,7 @@ and snapshot settings can change freely.
 The module and the input cannot change once `wl.<id>.out` or `wl.<id>.snap` holds a
 record: `felixd run` refuses with a message to submit the change under a new id,
 because the new code would not reproduce what is already written. A new module
-needs a new id until [#64](https://github.com/GetFelix/felixd/issues/64) and
-[#72](https://github.com/GetFelix/felixd/issues/72) land. Running it again also
+needs a new id until [#64](https://github.com/GetFelix/felixd/issues/64) lands. Running it again also
 puts a `failed` workload back to `running`.
 
 **Stopping and removing.** There is no `felixd stop` or `felixd rm`. The agents act
@@ -286,7 +284,7 @@ is running, and `felixd drain` moves a node's workloads away.
 | The step returns `reject` for an input | A rejection record on `wl.<id>.out` for that input. The workload keeps running | Look at the record's error code and detail. The input is skipped and nothing else is needed |
 | The step returns `poison`, traps, runs out of fuel or breaks the contract | A failure record on the output stream, then `state` `failed` and a `failure` reason in the spec | Fix the module and submit it under a new id. There is no recorded way past a poison input ([#98](https://github.com/GetFelix/felixd/issues/98)) |
 | Fuel or memory is too low, but the code is right | The same failure | Raise `--fuel` or `--max-memory` and run `felixd run` again for the same id |
-| The module is built for contract 0.1, or a restore runs out of `snapshot_fuel` | [Needs operator](/built-on-felix/felixd/terminology/#needs-operator). The node records a needs-operator reason on the output stream and releases the lease if it held one; `felixd ps` shows it. Nothing is marked failed | Rebuild against 0.2, or raise `--snapshot-fuel` and run `felixd run` again for the same id. The agent starts the workload when the spec changes |
+| The module is built for contract 0.1, or a restore runs out of `snapshot_fuel` | [Needs operator](/built-on-felix/felixd/terminology/#needs-operator). The node records a needs-operator reason on the output stream and releases the lease if it held one; `felixd ps` shows it. Nothing is marked failed | Rebuild against 0.2 or 0.3, or raise `--snapshot-fuel` and run `felixd run` again for the same id. The agent starts the workload when the spec changes |
 
 Needs-operator is a recorded state, so `felixd ps` shows the reason. A workload
 that never starts producing, with no failure record, is worth looking up there

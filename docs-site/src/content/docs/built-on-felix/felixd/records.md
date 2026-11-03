@@ -68,7 +68,7 @@ A chunk is held by its offset on `.snap` for now. The manifest already records e
 chunk's sha256, so a move to a content-addressed chunk store
 ([#77](https://github.com/GetFelix/felixd/issues/77)) is a storage swap and not a
 format change. Retention ([#63](https://github.com/GetFelix/felixd/issues/63)) must
-keep every chunk the live manifest references; nothing is trimmed today.
+keep every chunk the live manifest references; nothing is trimmed unless the fleet has finalized `head_trim`.
 
 ## Versions still read
 

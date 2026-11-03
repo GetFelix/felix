@@ -6,9 +6,9 @@ description: "Workload contract 0.2: the WIT interfaces a felixd workload export
 The contract is the interface between felixd and a workload, and what each side
 promises. This page describes version 0.2. felixd runs 0.2 and the current 0.3, which
 adds the authenticated publisher of each input, snapshot layouts and several
-inputs; the full note below covers 0.3. The WIT is in
-[`wit/workload.wit`](https://github.com/GetFelix/felixd/blob/main/wit/0.2/workload.wit)
-and the full note, with the decisions behind it, is
+inputs. The WIT for this page is
+[`wit/0.2/workload.wit`](https://github.com/GetFelix/felixd/blob/main/wit/0.2/workload.wit);
+`wit/0.3/` is the current one. The full note for 0.3, with the decisions behind it, is
 [docs/contract.md](https://github.com/GetFelix/felixd/blob/main/docs/contract.md).
 For how the contract is used, see [How it works](/built-on-felix/felixd/how-it-works/).
 
@@ -133,9 +133,9 @@ node. A trap that depends on the host is not retried on another node
 get past a poison input. Today the way out is a new spec: fix the module under a
 new id.
 
-A `degraded` state, for a workload that fails everywhere, is only in the design
-([#99](https://github.com/GetFelix/felixd/issues/99)). There is `failed` and
-nothing between it and `running`.
+A workload that keeps failing on a transient error is recorded as `degraded`, and
+another node takes it. Counting those failures across the whole cluster is not
+built ([#99](https://github.com/GetFelix/felixd/issues/99)).
 
 ## Limits and fuel
 
