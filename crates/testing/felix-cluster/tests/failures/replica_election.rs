@@ -260,36 +260,84 @@ async fn elected_above(
     .expect("a follower is elected while the control plane is down")
 }
 
-/// Every record of `wanted` that `node` does not hold, replaying the stream
-/// from the start. Waits a while for a follower still catching up.
-async fn missing_on(cluster: &Cluster, node: &str, wanted: &[String]) -> Vec<String> {
-    let deadline =
-        tokio::time::Instant::now() + felix_cluster::wait::budget(Duration::from_secs(20));
-    loop {
-        let mut held = BTreeSet::new();
-        let ended = match cluster.replay_on(node, STREAM).await {
-            Ok((_client, mut replay)) => loop {
-                match tokio::time::timeout(Duration::from_secs(2), replay.next_event()).await {
-                    Ok(Ok(Some(event))) => {
-                        held.insert(String::from_utf8_lossy(&event.payload).into_owned());
-                    }
-                    Ok(Ok(None)) => break "the broker ended the replay".to_string(),
-                    Ok(Err(err)) => break format!("delivery error: {err:#}"),
-                    Err(_) => break "no event within 2s".to_string(),
-                }
-            },
-            Err(err) => format!("{err:#}"),
-        };
-        let missing: Vec<String> = wanted
-            .iter()
-            .filter(|record| !held.contains(*record))
-            .cloned()
-            .collect();
-        if missing.is_empty() || tokio::time::Instant::now() >= deadline {
-            if !missing.is_empty() {
-                eprintln!("replaying {STREAM} on {node} ended with: {ended}");
+/// What one replay of the stream from the start came to.
+enum ReadBack {
+    /// The broker answered and the replay ran to the end of what it holds.
+    Held(BTreeSet<String>),
+    /// The broker refused, is still opening, or went quiet or dropped the
+    /// replay before the end. Nothing can be said about what it holds.
+    Refused(String),
+}
+
+/// What `read` says about `wanted`. A refusal is never a missing record.
+enum Verdict {
+    Complete,
+    Unreadable(String),
+    Missing(Vec<String>),
+}
+
+fn judge(wanted: &[String], read: ReadBack) -> Verdict {
+    match read {
+        ReadBack::Refused(why) => Verdict::Unreadable(why),
+        ReadBack::Held(held) => {
+            let missing: Vec<String> = wanted
+                .iter()
+                .filter(|record| !held.contains(*record))
+                .cloned()
+                .collect();
+            if missing.is_empty() {
+                Verdict::Complete
+            } else {
+                Verdict::Missing(missing)
             }
-            return missing;
+        }
+    }
+}
+
+/// Replay the stream from the start on `node` until it has nothing more to
+/// send. Only an idle replay counts as a read: a refusal, an error or an
+/// early end leaves the broker's contents unknown.
+async fn read_back(cluster: &Cluster, node: &str) -> ReadBack {
+    let (_client, mut replay) = match cluster.replay_on(node, STREAM).await {
+        Ok(opened) => opened,
+        Err(err) => return ReadBack::Refused(format!("{err:#}")),
+    };
+    let mut held = BTreeSet::new();
+    loop {
+        match tokio::time::timeout(Duration::from_secs(2), replay.next_event()).await {
+            Ok(Ok(Some(event))) => {
+                held.insert(String::from_utf8_lossy(&event.payload).into_owned());
+            }
+            Ok(Ok(None)) => return ReadBack::Refused("the broker ended the replay".to_string()),
+            Ok(Err(err)) => return ReadBack::Refused(format!("delivery error: {err:#}")),
+            Err(_) => return ReadBack::Held(held),
+        }
+    }
+}
+
+/// Every record of `wanted` that `node` does not hold, replaying the stream
+/// from the start. Waits a while for a follower still catching up, and for a
+/// broker that cannot be read yet. A broker that stays unreadable fails as
+/// not serving, not as having lost records.
+async fn missing_on(cluster: &Cluster, node: &str, wanted: &[String]) -> Vec<String> {
+    let within = felix_cluster::wait::budget(Duration::from_secs(20));
+    let deadline = tokio::time::Instant::now() + within;
+    loop {
+        match judge(wanted, read_back(cluster, node).await) {
+            Verdict::Complete => return Vec::new(),
+            Verdict::Unreadable(why) => {
+                if tokio::time::Instant::now() >= deadline {
+                    panic!(
+                        "no broker serving {STREAM} within {}s; last refusal from {node}: {why}",
+                        within.as_secs()
+                    );
+                }
+            }
+            Verdict::Missing(missing) => {
+                if tokio::time::Instant::now() >= deadline {
+                    return missing;
+                }
+            }
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
@@ -810,4 +858,23 @@ async fn a_broker_restarted_while_the_control_plane_is_down_does_not_vote() {
     read_logged(&cluster, OPENED, &mut opened);
     assert_one_leader_per_generation(&opened, before.generation);
     cluster.shutdown().await;
+}
+
+#[test]
+fn a_refused_read_is_not_a_lost_record() {
+    let wanted = vec!["a".to_string(), "b".to_string()];
+    let refused = ReadBack::Refused("still opening the shard".to_string());
+    assert!(matches!(judge(&wanted, refused), Verdict::Unreadable(_)));
+}
+
+#[test]
+fn a_read_that_succeeds_without_a_record_is_a_loss() {
+    let wanted = vec!["a".to_string(), "b".to_string()];
+    let held = ReadBack::Held(BTreeSet::from(["a".to_string()]));
+    match judge(&wanted, held) {
+        Verdict::Missing(missing) => assert_eq!(missing, vec!["b".to_string()]),
+        _ => panic!("an absent record on a successful read must be reported as missing"),
+    }
+    let all = ReadBack::Held(wanted.iter().cloned().collect());
+    assert!(matches!(judge(&wanted, all), Verdict::Complete));
 }
