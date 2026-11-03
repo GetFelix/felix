@@ -777,9 +777,9 @@ that still hears its leader refuses a candidate's fence. Safety does not rest
 on it; every other election configuration runs without it.
 `FelixShardElectPreVote.cfg` runs with it, time moving so leases lapse.
 
-Nothing in the broker elects yet; these check the design in
-`docs/replication-design.md`, "Electing without the control plane", before
-any of it is built.
+These check the design in `docs/replication-design.md`, "Electing without
+the control plane", which the broker now follows once `replica_election` is
+finalized.
 
 The ballot lives in the replica's `ballot` file, written and fsynced before
 the generation it names is answered (`DiskLog::accept_generation`); see

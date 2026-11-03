@@ -686,6 +686,23 @@ fn with_elected(
         else {
             continue;
         };
+        // The route below hides the control plane's set, which a candidate
+        // must still compare its own with.
+        let ids = if assignment.member_storage_ids.is_empty() {
+            &assignment.fence_storage_ids
+        } else {
+            &assignment.member_storage_ids
+        };
+        elections.note_recorded(
+            key.clone(),
+            felix_replication::election::Recorded {
+                members: std::iter::once(&assignment.leader)
+                    .chain(&assignment.replicas)
+                    .map(|node| (node.clone(), ids.get(node).cloned()))
+                    .collect(),
+                pending: assignment.pending_set.is_some(),
+            },
+        );
         assignment.replicas = elected
             .set
             .members

@@ -11,7 +11,7 @@ fn key() -> ShardKey {
         namespace: "ns".into(),
         stream: "orders".into(),
         shard: 0,
-        kind: crate::ShardKind::Stream,
+        kind: felix_router::ShardKind::Stream,
     }
 }
 

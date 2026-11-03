@@ -474,6 +474,17 @@ pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
                     replication::suspicion::SuspicionConfig::from_env(),
                     sync_shutdown.clone(),
                 ));
+                // Standing for election on those suspicions, once the fleet
+                // finalized `replica_election`.
+                drop(replication::election::spawn(
+                    Arc::clone(pool),
+                    Arc::clone(broker),
+                    Arc::clone(router),
+                    Arc::clone(quorum_marks),
+                    Arc::clone(suspects),
+                    replication::suspicion::SuspicionConfig::from_env(),
+                    sync_shutdown.clone(),
+                ));
             }
             Some(ShardTasks {
                 watch,

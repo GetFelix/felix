@@ -382,3 +382,40 @@ async fn a_batch_stamped_with_the_set_this_replica_keeps_is_taken() {
     assert_eq!(stream_log(&broker).await.set_generation(), 5);
     assert_eq!(held(&broker).await, vec!["a", "b"]);
 }
+
+fn pre_vote_at(generation: u64) -> felix_wire::internal::PreVote {
+    felix_wire::internal::PreVote {
+        correlation_id: 3,
+        shard: batch(generation, 0, &[]).shard,
+        log: ReplicaLog::Stream,
+        last_generation: 0,
+        log_end: 0,
+        set_generation: 0,
+    }
+}
+
+/// **The leader refuses a pre-vote against itself** from a follower whose log
+/// equals its own (#1815). A follower that has not heard a leader grants it.
+#[tokio::test]
+async fn the_leader_refuses_a_pre_vote_against_itself() {
+    let (broker, _dir) = broker_with_storage().await;
+    for (leader, refusal) in [
+        (
+            LOCAL,
+            Some(felix_wire::internal::PreVoteRefusal::LeaderReachable),
+        ),
+        ("broker-a", None),
+    ] {
+        let others: Vec<&str> = ["broker-a", LOCAL, "broker-c"]
+            .into_iter()
+            .filter(|node| *node != leader)
+            .collect();
+        let handler = ReplicaHandler::new(Arc::clone(&broker), router_led_by(leader, &others, 6))
+            .with_stickiness(Duration::ZERO);
+        let answer = handler.pre_vote(pre_vote_at(7)).await;
+        let InternalMessage::PreVoteAnswer(answer) = answer else {
+            panic!("expected an answer, got {answer:?}");
+        };
+        assert_eq!(answer.refusal, refusal, "led by {leader}");
+    }
+}

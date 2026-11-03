@@ -1,4 +1,4 @@
-use super::{features_for, is_host_port};
+use super::{election_features, features_for, is_host_port};
 
 #[test]
 fn a_client_advertise_address_is_a_host_and_a_port() {
@@ -43,5 +43,18 @@ fn a_broker_reports_that_it_names_start_holders() {
     let start_holders = felix_common::fleet::START_HOLDERS.name();
     for (fences, by_lease) in [(true, false), (true, true), (false, false)] {
         assert!(features_for(fences, by_lease).contains(start_holders));
+    }
+}
+
+/// A broker offering `ELECTION` says so, and that it stands for election;
+/// one that does not reports neither.
+#[test]
+fn a_broker_offering_election_reports_it() {
+    let added: Vec<String> = election_features().collect();
+    assert!(added.contains(&felix_common::fleet::PEER_ELECTION.name().to_string()));
+    assert!(added.contains(&felix_common::fleet::REPLICA_ELECTION.name().to_string()));
+    for fences in [false, true] {
+        let reported = features_for(fences, false);
+        assert!(added.iter().all(|feature| !reported.contains(feature)));
     }
 }

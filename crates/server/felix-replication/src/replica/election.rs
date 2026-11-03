@@ -551,7 +551,10 @@ impl ReplicaHandler {
         if log.accepted_generation() >= request.shard.generation {
             return answer(Some(PreVoteRefusal::StaleGeneration));
         }
-        if self.heard_leader_within(&key) {
+        // The leader itself refuses: it hears its own leadership, and a yes
+        // from it lets one follower whose detector misfired win a majority
+        // against it (#1815, `NoStandAgainstHeardLeader`).
+        if self.heard_leader_within(&key) || self.leads(&key, &log) {
             return answer(Some(PreVoteRefusal::LeaderReachable));
         }
         let Ok(end) = log.tail_offset().await else {
@@ -569,6 +572,15 @@ impl ReplicaHandler {
     /// broker without `ELECTION` takes no lock here.
     pub(super) fn heard_leader(&self, key: &felix_router::ShardKey) {
         self.heard.lock().insert(key.clone(), Instant::now());
+    }
+
+    /// Whether this broker leads `key` at a generation its log has not
+    /// promised past.
+    fn leads(&self, key: &felix_router::ShardKey, log: &felix_broker::StreamLog) -> bool {
+        self.router.snapshot().get(key).is_some_and(|route| {
+            route.leader.node_id == self.router.local_node_id()
+                && route.generation >= log.accepted_generation()
+        })
     }
 
     fn heard_leader_within(&self, key: &felix_router::ShardKey) -> bool {

@@ -246,11 +246,10 @@ where
     Ok(())
 }
 
-/// Whether `replica_election` may be finalized. The metadata it needs (the
-/// pending replica set and adoption) is in, but the election driver (#1009
-/// S9) flips this only once joint fences (S5), two-majority acks (S6b) and
-/// the wiped-voter guard (S8) are in too.
-pub(crate) const ELECTION_METADATA_LEVEL_READY: bool = false;
+/// Whether `replica_election` may be finalized: the control plane keeps the
+/// pending replica set and adopts elected leaders, and brokers that report
+/// the feature stand for election. `joint_fence` must be finalized first.
+pub(crate) const ELECTION_METADATA_LEVEL_READY: bool = true;
 
 /// Whether `joint_fence` may be finalized. A finalize is irreversible. The
 /// control plane now re-admits a replaced copy and keeps placement off a

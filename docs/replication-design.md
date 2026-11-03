@@ -1238,12 +1238,12 @@ replica the new leader fenced: `after_a_cut_over_the_drained_leader_is_refused`,
 
 ### Electing without the control plane
 
-**Status: design, partly built and dormant.** This is the last step of
-issue #1009. The model checks it (below). The replica's set checks exist
-behind a test switch, and joint fences behind `joint_fence`, which no fleet
-can finalize yet (see "What is implemented so far"); nothing in the broker
-elects yet, and the rest describes the change to come. Today a leader that dies while the
-control plane is down is not replaced until the control plane is back.
+**Status: built, off by default.** This is the last step of issue #1009.
+The model checks it (below). A broker stands for election only when it
+offers `ELECTION` (the test switch `FELIX_INTERNAL_ELECTION`) and the fleet
+has finalized `replica_election`, which needs `joint_fence` first (see "What
+is implemented so far"). Without both, a leader that dies while the control
+plane is down is not replaced until the control plane is back.
 
 **Which shards.** The ones failover on the followers' word already covers: a
 durable `Quorum` stream with `majority_ack` and `lease_free_reads` finalized,
@@ -1259,7 +1259,9 @@ elected leader waits for the lease until the control plane is back (issue
    default) is gone as far as that follower is concerned.
 2. *Pre-vote.* Before it persists anything, a follower that suspects the
    leader asks its set whether it would get the next generation. A replica
-   says yes only if it has not heard its own leader within S, the asker's
+   says yes only if it has not heard its own leader within S, it does not
+   lead the shard itself (a leader hears itself, so its yes would let one
+   follower with a wrong detector depose it), the asker's
    log is at least as far ahead as its own by (last generation, length), and
    the asker's set is no older than the one it knows. Nobody persists
    anything for a pre-vote. The follower stands only on a majority of yeses,
@@ -1426,8 +1428,8 @@ control plane.
   generation) are new kinds sent only to a peer that offered it, and a
   missing set generation means what it means today: no check
   (`docs/internal-protocol.md`, "Electing without the control plane"). The
-  fence and the stamped batch are sent and checked only under the test
-  switch `FELIX_INTERNAL_ELECTION`; the pre-vote is declared and not sent.
+  fence, the stamped batch and the pre-vote are sent and checked only
+  under the test switch `FELIX_INTERNAL_ELECTION`.
 - *Control plane.* Adoption, the pending set a cut-over records beside the
   current one, and the flip to it after the joint fence are new store
   writes, so under Raft they need metadata level 21 on every member, and a
@@ -4089,8 +4091,8 @@ Without `joint_fence` finalized, the fence and what it sends are exactly what
 they were. The counter log of a cache shard and a stream's group logs are
 still fenced on the new set alone, as the model's counters are.
 
-Not built yet: the pre-vote and the election driver, and shipping to a member
-only the set being left names (below).
+The election driver is built too; see "Standing for election" below. Not
+built yet: shipping to a member only the set being left names (below).
 
 **Acknowledging while a change is pending.** Behind the same feature, a
 leader whose route carries a pending change acknowledges a record only when a
@@ -4173,7 +4175,47 @@ issue. An election more than 16 generations past the control plane's is
 refused, and a joining follower elected leader is recorded only. Placement's
 promotion on the followers' word waits 2×S under `replica_election`
 (`FELIX_SHARD_ELECTION_HOLD_MS`, 10 s), and promotion on a lapsed lease is
-unchanged. No broker sends `elected` yet.
+unchanged. A broker leading by election sends `elected` in its report
+(below).
+
+**Standing for election.** A broker that offers `ELECTION`, in a fleet that
+finalized `replica_election`, runs a candidate task beside its leader
+detector (`felix-replication`, `election/candidate.rs`). For each shard it
+follows whose leader it suspects, and which acknowledges by its followers
+(a `Quorum` stream with `lease_free_reads`, or a `Quorum` cache with
+`fenced_caches`), it:
+
+1. checks that it votes in the set its log keeps, that the set has no change
+   pending, and that the control plane records that same set;
+2. sends a pre-vote to the set's other voters and needs a majority, itself
+   included;
+3. waits 300 ms for each voter ahead of it: one whose log is ahead, or one
+   that granted with a lower node id;
+4. checks again that the leader is still suspected and nobody stood
+   meanwhile, then writes the ballot for the next generation to disk;
+5. records the standing, which the routing feed lays over the control
+   plane's route. The shard then opens through the promotion path, with a
+   fence marked as a candidate's that carries the kept set.
+
+A replica that takes a candidate's fence records the candidate the same way,
+so it takes the candidate's batches and sends clients to it. The elected
+leader stamps its batches with the kept set's generation, below its own,
+which a replica keeping that set takes (`SetCurrent`). Both records are
+dropped once the control plane names that generation or a newer one. A
+standing that has not opened within 3 s is withdrawn, as is one whose
+generation the broker has since promised to someone else; a failed round
+backs off for 200 to 800 ms, the top doubling to 3 s.
+
+The broker refuses to stand in two cases the model allows, which costs
+availability only: while its kept set has a pending change, and while the
+control plane records a set other than the kept one. In the second case a
+majority of the recorded set may hold acknowledged records that a fence of
+the kept set alone never reaches.
+
+> `a_granted_pre_vote_puts_the_ballot_on_disk_then_records_the_standing`,
+> `a_refused_pre_vote_writes_nothing`,
+> `a_set_the_control_plane_does_not_record_is_not_stood_on`,
+> `the_leader_refuses_a_pre_vote_against_itself`.
 
 When only the generation is taken, the control plane names its own leader at
 a generation another broker opened. That leader cannot open there: its fence
