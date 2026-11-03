@@ -2,7 +2,7 @@
 //!
 //! This reads `docs-site/src/content/docs/clients/rust.md` and
 //! `resilient-clients.mdx`, wraps every ```` ```rust ```` block in the harness
-//! listed for its page in [`PAGES`], and checks the result against
+//! listed for its page in [`pages`], and checks the result against
 //! `docs_examples/rust_md.rs` or `resilient_clients_mdx.rs`, which the
 //! `docs_examples` test target compiles. An edit to the page that is not regenerated fails here; a
 //! regenerated example that does not build fails there. To regenerate:
@@ -119,7 +119,7 @@ const RUST_MD_EXAMPLES: &[Example] = &[
         "The routing key decides the shard",
         1,
         Body {
-            params: "cluster: &Client, payload: Vec<u8>, customer_id: String",
+            params: "client: &Client, payload: Vec<u8>, customer_id: String",
             context: "",
         },
     ),
@@ -127,7 +127,7 @@ const RUST_MD_EXAMPLES: &[Example] = &[
         "Naming the shard",
         1,
         Body {
-            params: "cluster: &Client, tick: Vec<u8>",
+            params: "client: &Client, tick: Vec<u8>",
             context: "",
         },
     ),
@@ -135,7 +135,7 @@ const RUST_MD_EXAMPLES: &[Example] = &[
         "At-least-once may duplicate",
         1,
         Body {
-            params: "cluster: &Client, payload: Vec<u8>",
+            params: "client: &Client, payload: Vec<u8>",
             context: "",
         },
     ),
@@ -151,7 +151,7 @@ const RUST_MD_EXAMPLES: &[Example] = &[
         "Batches through a Client",
         1,
         Body {
-            params: "cluster: &Client, key: Bytes, payloads: Vec<Vec<u8>>, \
+            params: "client: &Client, key: Bytes, payloads: Vec<Vec<u8>>, \
                      records: Vec<(Bytes, Vec<u8>)>",
             context: "",
         },
@@ -184,7 +184,7 @@ const RUST_MD_EXAMPLES: &[Example] = &[
         "Errors you can act on",
         1,
         Body {
-            params: "cluster: &Client, payload: Vec<u8>",
+            params: "client: &Client, payload: Vec<u8>",
             context: "",
         },
     ),
@@ -200,7 +200,7 @@ const RUST_MD_EXAMPLES: &[Example] = &[
         "Idempotent producers",
         1,
         Body {
-            params: "cluster: Client, payload: Vec<u8>",
+            params: "client: Client, payload: Vec<u8>",
             context: "",
         },
     ),
@@ -225,7 +225,7 @@ const RUST_MD_EXAMPLES: &[Example] = &[
         "Idempotent producers",
         4,
         Body {
-            params: "cluster: &Arc<Client>, mut producer: IdempotentProducer, payload: Vec<u8>",
+            params: "client: &Arc<Client>, mut producer: IdempotentProducer, payload: Vec<u8>",
             context: "",
         },
     ),
@@ -294,7 +294,7 @@ const RUST_MD_EXAMPLES: &[Example] = &[
         "A consumer that survives a restart",
         1,
         Body {
-            params: "cluster: &Arc<Client>, checkpoint: Checkpoint",
+            params: "client: &Arc<Client>, checkpoint: Checkpoint",
             context: "struct Checkpoint;\n\
                       impl Checkpoint {\n\
                       async fn load(&self) -> Result<Option<u64>> { Ok(None) }\n\
@@ -469,7 +469,7 @@ const RUST_MD_EXAMPLES: &[Example] = &[
         "Atomic commits",
         1,
         Body {
-            params: "cluster: &Client",
+            params: "client: &Client",
             context: "",
         },
     ),
@@ -477,7 +477,7 @@ const RUST_MD_EXAMPLES: &[Example] = &[
         "Atomic commits",
         2,
         Body {
-            params: "cluster: &Client, ticks: Vec<Vec<u8>>",
+            params: "client: &Client, ticks: Vec<Vec<u8>>",
             context: "",
         },
     ),
@@ -485,7 +485,7 @@ const RUST_MD_EXAMPLES: &[Example] = &[
         "Atomic commits",
         3,
         Body {
-            params: "cluster: &Client, district: u32, tick: Bytes, state: Bytes, next: u64",
+            params: "client: &Client, district: u32, tick: Bytes, state: Bytes, next: u64",
             context: "",
         },
     ),
@@ -493,7 +493,7 @@ const RUST_MD_EXAMPLES: &[Example] = &[
         "Trimming a shard's head",
         1,
         Body {
-            params: "cluster: &Client, floor: u64, mut next: u64",
+            params: "client: &Client, floor: u64, mut next: u64",
             context: "",
         },
     ),
@@ -598,7 +598,7 @@ const RESILIENT_EXAMPLES: &[Example] = &[
         "Errors and retry classes",
         1,
         Body {
-            params: "cluster: &Client, payload: Vec<u8>",
+            params: "client: &Client, payload: Vec<u8>",
             context: "",
         },
     ),
@@ -606,7 +606,7 @@ const RESILIENT_EXAMPLES: &[Example] = &[
         "Writes whose outcome is unknown",
         1,
         Body {
-            params: "cluster: &Arc<Client>, payload: Vec<u8>",
+            params: "client: &Arc<Client>, payload: Vec<u8>",
             context: "",
         },
     ),
@@ -614,7 +614,7 @@ const RESILIENT_EXAMPLES: &[Example] = &[
         "Conditional publish",
         1,
         Body {
-            params: "cluster: &Client, ticks: Vec<Vec<u8>>",
+            params: "client: &Client, ticks: Vec<Vec<u8>>",
             context: "",
         },
     ),
@@ -622,7 +622,7 @@ const RESILIENT_EXAMPLES: &[Example] = &[
         "Resume one shard",
         1,
         Body {
-            params: "cluster: &Arc<Client>, checkpoint: Checkpoint",
+            params: "client: &Arc<Client>, checkpoint: Checkpoint",
             context: "struct Checkpoint;\n\
                       impl Checkpoint {\n\
                       async fn load(&self) -> Result<Option<u64>> { Ok(None) }\n\
@@ -634,7 +634,7 @@ const RESILIENT_EXAMPLES: &[Example] = &[
         "Resume a sharded stream",
         1,
         Body {
-            params: "cluster: &Arc<Client>, checkpoint: Positions",
+            params: "client: &Arc<Client>, checkpoint: Positions",
             context: "struct Positions;\n\
                       impl Positions {\n\
                       async fn load(&self) -> Result<Option<ShardOffsets>> { Ok(None) }\n\
@@ -672,25 +672,46 @@ const RESILIENT_EXAMPLES: &[Example] = &[
 /// A docs page whose Rust blocks are compiled, and the file they are
 /// generated into.
 struct Page {
-    /// The page's file name under `docs-site/src/content/docs/clients/`.
-    file: &'static str,
+    /// The page's file names under `docs-site/src/content/docs/clients/`, in
+    /// reading order. A page split across files is one list of examples.
+    files: Vec<String>,
     /// The generated file under `tests/docs_examples/`.
     generated: &'static str,
     examples: &'static [Example],
 }
 
-const PAGES: &[Page] = &[
-    Page {
-        file: "rust.md",
-        generated: "rust_md.rs",
-        examples: RUST_MD_EXAMPLES,
-    },
-    Page {
-        file: "resilient-clients.mdx",
-        generated: "resilient_clients_mdx.rs",
-        examples: RESILIENT_EXAMPLES,
-    },
-];
+/// `rust.md` plus every page under `rust/`, sorted, so a new topic page is
+/// compiled without anyone having to remember to list it.
+fn rust_guide_files() -> Vec<String> {
+    let dir = page_path("rust");
+    let mut files: Vec<String> = std::fs::read_dir(&dir)
+        .map(|entries| {
+            entries
+                .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+                .filter(|name| name.ends_with(".md"))
+                .map(|name| format!("rust/{name}"))
+                .collect()
+        })
+        .unwrap_or_default();
+    files.sort();
+    files.insert(0, "rust.md".to_string());
+    files
+}
+
+fn pages() -> Vec<Page> {
+    vec![
+        Page {
+            files: rust_guide_files(),
+            generated: "rust_md.rs",
+            examples: RUST_MD_EXAMPLES,
+        },
+        Page {
+            files: vec!["resilient-clients.mdx".to_string()],
+            generated: "resilient_clients_mdx.rs",
+            examples: RESILIENT_EXAMPLES,
+        },
+    ]
+}
 
 /// What every generated file starts with, after its own two lines.
 const HEADER_BODY: &str = "\
@@ -712,7 +733,7 @@ fn header(page: &Page) -> String {
     format!(
         "// @generated by tests/docs_examples_sync.rs from\n\
          // docs-site/src/content/docs/clients/{}. Do not edit; regenerate with\n{HEADER_BODY}",
-        page.file
+        page.files.join(", ")
     )
 }
 
@@ -723,16 +744,17 @@ const ALLOW: &str = "#![allow(dead_code, unused_variables, unused_assignments, \
                      unreachable_code, unreachable_pub)]";
 
 struct Block {
+    file: String,
     heading: String,
     nth: usize,
     line: usize,
     code: String,
 }
 
-fn page_path(page: &Page) -> PathBuf {
+fn page_path(file: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../../docs-site/src/content/docs/clients")
-        .join(page.file)
+        .join(file)
 }
 
 fn docs_site_dir() -> PathBuf {
@@ -747,6 +769,10 @@ fn generated_path(page: &Page) -> PathBuf {
 
 /// Every ```` ```rust ```` block with the heading it sits under.
 fn rust_blocks(page: &str) -> Vec<Block> {
+    rust_blocks_of("", page)
+}
+
+fn rust_blocks_of(file: &str, page: &str) -> Vec<Block> {
     let mut blocks: Vec<Block> = Vec::new();
     let mut heading = String::new();
     let mut fence: Option<bool> = None; // Some(is_rust) inside a fence
@@ -757,6 +783,7 @@ fn rust_blocks(page: &str) -> Vec<Block> {
                 if is_rust {
                     let nth = 1 + blocks.iter().filter(|b| b.heading == heading).count();
                     blocks.push(Block {
+                        file: file.to_string(),
                         heading: heading.clone(),
                         nth,
                         line: index + 1,
@@ -805,9 +832,15 @@ fn indent(code: &str, by: &str) -> String {
         .collect()
 }
 
-fn generate(spec: &Page, page: &str) -> Result<String, String> {
-    let file = spec.file;
-    let blocks = rust_blocks(page);
+fn generate(spec: &Page, pages: &[String]) -> Result<String, String> {
+    let file = spec.files.join(", ");
+    let mut blocks: Vec<Block> = Vec::new();
+    for (name, page) in spec.files.iter().zip(pages) {
+        for mut block in rust_blocks_of(name, page) {
+            block.nth = 1 + blocks.iter().filter(|b| b.heading == block.heading).count();
+            blocks.push(block);
+        }
+    }
     let mut problems = Vec::new();
     for block in &blocks {
         if !spec
@@ -816,8 +849,8 @@ fn generate(spec: &Page, page: &str) -> Result<String, String> {
             .any(|e| e.heading == block.heading && e.nth == block.nth)
         {
             problems.push(format!(
-                "{file} line {}: block {} under \"{}\" has no entry in the page's examples",
-                block.line, block.nth, block.heading
+                "{} line {}: block {} under \"{}\" has no entry in the page's examples",
+                block.file, block.line, block.nth, block.heading
             ));
         }
     }
@@ -847,8 +880,8 @@ fn generate(spec: &Page, page: &str) -> Result<String, String> {
         writeln!(out).unwrap();
         writeln!(
             out,
-            "/// {file} line {}: \"{}\", block {}.",
-            block.line, block.heading, block.nth
+            "/// {} line {}: \"{}\", block {}.",
+            block.file, block.line, block.heading, block.nth
         )
         .unwrap();
         writeln!(out, "mod {name} {{\n    {ALLOW}").unwrap();
@@ -878,15 +911,21 @@ fn generate(spec: &Page, page: &str) -> Result<String, String> {
 
 #[test]
 fn generated_examples_match_the_page() {
-    for spec in PAGES {
+    for spec in &pages() {
         // A packaged crate has no docs site next to it. With the site present, a
         // missing page is a failure, not something to skip.
         if !docs_site_dir().is_dir() {
             continue;
         }
-        let page = std::fs::read_to_string(page_path(spec))
-            .unwrap_or_else(|err| panic!("read {}: {err}", spec.file));
-        let expected = generate(spec, &page).unwrap_or_else(|problems| panic!("{problems}"));
+        let pages: Vec<String> = spec
+            .files
+            .iter()
+            .map(|file| {
+                std::fs::read_to_string(page_path(file))
+                    .unwrap_or_else(|err| panic!("read {file}: {err}"))
+            })
+            .collect();
+        let expected = generate(spec, &pages).unwrap_or_else(|problems| panic!("{problems}"));
         let path = generated_path(spec);
         if std::env::var_os("FELIX_BLESS_DOCS").is_some() {
             std::fs::write(&path, &expected).expect("write the generated examples");
@@ -898,7 +937,7 @@ fn generated_examples_match_the_page() {
             "{} is out of date with {}; regenerate it with\n\
              FELIX_BLESS_DOCS=1 cargo test -p felix-client --test docs_examples_sync",
             path.display(),
-            spec.file
+            spec.files.join(", ")
         );
     }
 }

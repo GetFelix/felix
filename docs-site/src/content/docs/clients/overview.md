@@ -82,7 +82,7 @@ language that means the client:
 Every client exposes four reconnect options, the attempt count, a deadline for
 one call, and the backoff and max backoff between attempts, and each page has a
 "Reconnecting" section for them. The
-[Rust page](/clients/rust/#clusters) and
+[Rust page](/clients/rust/operations/#clusters) and
 [Multi-node client](https://github.com/GetFelix/felix/blob/main/docs/multi-node-client.md)
 cover the behaviour in full, and each client's page has a "Connecting to a
 cluster" section with its connect call.
@@ -381,6 +381,13 @@ scenario in the catalogue, and CI is gated on each. That includes the `commit.*`
 scenarios: every client offers [atomic commits](/features/atomic-commits/) with the same typed
 refusals. Each leaves a couple of optional scenarios unclaimed
 rather than passing over them in silence; their pages say which.
+
+## What every client shares
+
+Two pages compare the clients side by side:
+
+- [Auth and TLS](/clients/auth-and-tls/): where each client takes a token, a token provider, a CA file and a server name, and which clients can present a client certificate.
+- [Errors Across Clients](/clients/errors/): every broker error code and retry class, and the exception or status each client turns it into.
 
 ## Other languages
 

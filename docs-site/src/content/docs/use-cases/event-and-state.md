@@ -229,4 +229,4 @@ partial on the status page for the limits above.
 - [Atomic commits](/features/atomic-commits/)
 - [Queues](/features/queues/)
 - [Publish/Subscribe](/features/pubsub/#conditional-publishes)
-- [Rust client](/clients/rust/#atomic-commits) and [Python client](/clients/python/#atomic-commits)
+- [Rust client](/clients/rust/groups-and-commits/#atomic-commits) and [Python client](/clients/python/#atomic-commits)
