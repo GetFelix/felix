@@ -215,4 +215,4 @@ Ephemeral streams refuse commits, and in a cluster an operator must finalize the
 - [Atomic commits](/features/atomic-commits/)
 - [Queues](/features/queues/)
 - [Publish/Subscribe](/features/pubsub/#conditional-publishes)
-- [Rust client](/clients/rust/#atomic-commits) and [Python client](/clients/python/#atomic-commits)
+- [Rust client](/clients/rust/groups-and-commits/#atomic-commits) and [Python client](/clients/python/#atomic-commits)

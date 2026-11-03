@@ -577,6 +577,8 @@ TLS is always on. `server_name` is the name the broker's certificate carries
 (`"localhost"` when null), and `ca_file` is a PEM file of CAs to trust, or null
 for the system store. `addrs` is a `host:port` string.
 
+Client certificates (mutual TLS) are Rust only: this library trusts the broker's certificate but cannot present one of its own. [Auth and TLS](/clients/auth-and-tls/) compares the options across clients.
+
 ## Publishing
 
 `felix_client_publish` sends one record. A non-null `key` routes it, so records
@@ -1079,8 +1081,7 @@ returned, and they do not wait for each other's answers.
 
 ## Connecting to a cluster
 
-In every language the client is a cluster client; see
-[Choosing a Client](/clients/overview/#every-client-is-a-cluster-client).
+See [Every client is a cluster client](/clients/overview/#every-client-is-a-cluster-client).
 `felix_client_connect_with` builds a Rust `Client` from `addrs`, which holds
 one `host:port` or several separated by commas:
 
@@ -1148,7 +1149,7 @@ static bool connect_bounded(void) {
 
 A deadline shorter than one attempt's own timeout means no retry happens: the first attempt spends the whole budget and the call returns after trying once. Set it to cover at least one attempt plus the backoff you can afford, and leave it off if you would rather wait out a failover.
 
-The Rust page covers [clusters](/clients/rust/#clusters) in full. [Building Resilient Clients](/clients/resilient-clients/) shows reconnection, token refresh, retries, resuming and shutdown side by side in every language.
+The Rust page covers [clusters](/clients/rust/operations/#clusters) in full. [Building Resilient Clients](/clients/resilient-clients/) shows reconnection, token refresh, retries, resuming and shutdown side by side in every language.
 
 ### Brokers the client knows
 
@@ -1157,6 +1158,8 @@ would try, including the ones it discovered from its seeds. The strings are
 valid while the callback runs.
 
 ## Status codes
+
+[Errors Across Clients](/clients/errors/) maps every broker code and retry class to the type each client raises.
 
 | Code | Value | Meaning | Retry? |
 | --- | --- | --- | --- |

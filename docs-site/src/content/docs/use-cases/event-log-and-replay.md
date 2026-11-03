@@ -233,5 +233,5 @@ compacted by key, so a stream grows until retention trims it.
 
 - [Durable storage](/architecture/durable-storage/)
 - [Publish/Subscribe](/features/pubsub/)
-- [Rust client: replaying from a time](/clients/rust/#when-an-event-was-written-and-replaying-from-a-time)
+- [Rust client: replaying from a time](/clients/rust/subscribing/#when-an-event-was-written-and-replaying-from-a-time)
 - [Kafka compatibility](/features/kafka/)

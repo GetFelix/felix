@@ -231,5 +231,5 @@ available from the Python, TypeScript, C or C# clients.
 - [Token exchange](/features/security/#token-exchange-oidc--felix)
 - [Control plane API](/api/control-plane-api/)
 - [Acting for many users](/clients/rust/#acting-for-many-users)
-- [Who published an event](/clients/rust/#who-published-an-event)
+- [Who published an event](/clients/rust/subscribing/#who-published-an-event)
 - [Demos](/demos/overview/)

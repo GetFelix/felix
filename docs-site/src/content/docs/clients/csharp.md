@@ -31,6 +31,8 @@ against a broker run on Linux x64 only.
 dotnet add package Felix.Client
 ```
 
+This page describes the 0.7 API. While 0.7 is in preview, add `--prerelease` to install it: `dotnet add package Felix.Client --prerelease`.
+
 The package carries the native library for each row above, built for glibc, and finds it
 automatically. Alpine and other musl systems get a clear error; build `felix-capi` yourself
 and set `FELIX_NATIVE_LIB`, as below.
@@ -191,6 +193,9 @@ await foreach (var ev in sub)
 }
 ```
 
+TLS is always on. `ServerName` is the name the broker's certificate must carry (`localhost` when
+null), and `CaFile` is a PEM file of CA certificates to trust instead of the system store. Client certificates (mutual TLS) are Rust only: this client trusts the broker's certificate but cannot present one of its own. [Auth and TLS](/clients/auth-and-tls/) compares the options across clients.
+
 `PublishAsync` returns the record's log offset, or null when the stream has no log,
 the ack mode is `AckMode.None`, or the broker acknowledged before writing. A `key`
 routes the record: records sharing a key share a shard and stay in order.
@@ -257,16 +262,28 @@ shard does not stop the others, so it returns a `PublishResult` per record with 
 `Status` and `Message`; check `Accepted`. With `Delivery.AtLeastOnce` a batch whose outcome is
 in doubt is sent again, which can write it twice.
 
-`OffsetForTimeAsync` gives the first offset on a shard appended at or after a time, by the
-leading broker's clock, or null when nothing is that recent. Subscribe with
-`StartPosition.FromOffset` at it to replay from a time. `GetEndpointsAsync` lists the brokers
-the client would try, the seeds and the ones it learned from them; a client given one seed that
-lists more has discovered the cluster.
+`GetEndpointsAsync` lists the brokers the client would try, the seeds and the ones it learned
+from them; a client given one seed that lists more has discovered the cluster.
+
+### Replay from an offset or a time
+
+To replay from an offset, subscribe with `StartPosition.FromOffset`. `StartPosition.Earliest`
+replays everything the shard still holds. To replay from a time, `OffsetForTimeAsync` gives the
+first offset on a shard appended at or after a time, by the leading broker's clock, or null when
+nothing is that recent. A time older than every record answers with the oldest.
+
+```csharp
+var since = DateTimeOffset.UtcNow.AddHours(-1);
+long? from = await client.OffsetForTimeAsync("t1", "default", "orders", shard: 0, since);
+
+await using var replay = await client.SubscribeAsync(
+    "t1", "default", "orders", shard: 0,
+    from is { } offset ? StartPosition.FromOffset((ulong)offset) : StartPosition.Latest);
+```
 
 ## Connecting to a cluster
 
-In every language the client is a cluster client; see
-[Choosing a Client](/clients/overview/#every-client-is-a-cluster-client).
+See [Every client is a cluster client](/clients/overview/#every-client-is-a-cluster-client).
 `FelixClientOptions.Addrs` is a list, and `ConnectAsync` passes it to the C ABI's
 `felix_client_connect_with`, which builds a Rust `Client`:
 
@@ -333,7 +350,7 @@ catch (FelixException e)
 
 A deadline shorter than one attempt's own timeout means no retry happens: the first attempt spends the whole budget and the call returns after trying once. Set it to cover at least one attempt plus the backoff you can afford, and leave it off if you would rather wait out a failover.
 
-The Rust page covers [clusters](/clients/rust/#clusters) in full. [Building Resilient Clients](/clients/resilient-clients/) shows reconnection, token refresh, retries, resuming and shutdown side by side in every language.
+The Rust page covers [clusters](/clients/rust/operations/#clusters) in full. [Building Resilient Clients](/clients/resilient-clients/) shows reconnection, token refresh, retries, resuming and shutdown side by side in every language.
 
 ## Consumer groups
 
@@ -597,6 +614,10 @@ await producer.PublishBatchesAsync("t1", "default", "orders", [[payloadA, payloa
   not wait, pending calls fail as cancelled, and batches already handed over may still be sent. Both are
   safe to call more than once. A producer keeps working after its client is disposed, until it is disposed.
 
+## Record headers
+
+Record headers, the named byte values a record can carry next to its payload, are Rust only. This binding publishes the payload and a routing `key`; a `FelixEvent` has no headers. Use the [Rust client](/clients/rust/publishing/#keys-and-headers) when you need them.
+
 ## Publisher and timestamp
 
 Brokers send a record's publisher and append time only when asked:
@@ -631,7 +652,7 @@ Failures are `FelixException`s whose `Status` is the C ABI's status code (`Auth`
 `IsRetryable` is true for `Connection`, `ShardUnavailable` and `Overloaded`, where
 nothing was applied. `OutcomeUnknown` means a write may have landed, so resend only if
 it is idempotent. Cancellation is an `OperationCanceledException`, not a
-`FelixException`. See [Status codes](/clients/c/#status-codes).
+`FelixException`. See [Status codes](/clients/c/#status-codes). [Errors Across Clients](/clients/errors/) maps every broker code and retry class to the type each client raises.
 
 ### When a start offset is refused
 

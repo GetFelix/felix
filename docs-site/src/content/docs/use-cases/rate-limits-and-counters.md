@@ -215,7 +215,7 @@ publishes are limited, and the rates live in each broker's environment. See
 ## Related
 
 - [Counters in the cache features](/features/cache/#8-counters)
-- [Rust client counters](/clients/rust/#counters)
+- [Rust client counters](/clients/rust/cache/#counters)
 - [Python cache and counters](/clients/python/#cache-and-counters)
 - [felixctl counters](/getting-started/felixctl/#counters)
 - [Consistency levels](/features/cache/#6-consistency-levels)
