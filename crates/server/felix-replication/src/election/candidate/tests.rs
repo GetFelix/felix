@@ -277,11 +277,24 @@ async fn the_place_counts_the_voters_ahead() {
     assert_eq!(place(Some(PreVoteRefusal::LogBehind)).await, None);
 }
 
-/// A voter whose first request has to dial it first, which takes longer than
-/// a pre-vote waits. Only a dial that runs to the end leaves a connection.
+/// A voter that takes longer to dial than a pre-vote waits. Only a dial
+/// that runs to the end leaves a connection; a request dials if there is
+/// none.
 struct SlowToDial {
     dial: Duration,
     connected: Mutex<BTreeSet<String>>,
+}
+
+impl SlowToDial {
+    async fn dial(&self, node_id: &str) {
+        if !self.connected.lock().expect("lock").contains(node_id) {
+            tokio::time::sleep(self.dial).await;
+            self.connected
+                .lock()
+                .expect("lock")
+                .insert(node_id.to_string());
+        }
+    }
 }
 
 impl PeerRequester for SlowToDial {
@@ -291,18 +304,21 @@ impl PeerRequester for SlowToDial {
         _addr: SocketAddr,
         _message: InternalMessage,
     ) -> Result<InternalMessage, PeerError> {
-        if !self.connected.lock().expect("lock").contains(node_id) {
-            tokio::time::sleep(self.dial).await;
-            self.connected
-                .lock()
-                .expect("lock")
-                .insert(node_id.to_string());
-        }
+        self.dial(node_id).await;
         let refusal = (node_id == "broker-a").then_some(PreVoteRefusal::LeaderReachable);
         Ok(InternalMessage::PreVoteAnswer(PreVoteAnswer {
             correlation_id: 0,
             refusal,
         }))
+    }
+
+    async fn capabilities(
+        &self,
+        node_id: &str,
+        _addr: SocketAddr,
+    ) -> Result<felix_wire::internal::PeerCapabilities, PeerError> {
+        self.dial(node_id).await;
+        Ok(felix_wire::internal::PeerCapabilities::NONE)
     }
 
     fn offers_election(&self) -> bool {
@@ -311,9 +327,9 @@ impl PeerRequester for SlowToDial {
 }
 
 /// **A dial slower than the pre-vote wait still serves the next round.** The
-/// first round times out on it, but the request runs on, so the second finds
-/// the voter connected and wins. A round that cancelled its requests would
-/// start the dial over each time and never get a vote.
+/// first round times out on it, but the dial runs on, so the second finds
+/// the voter connected and wins. A round whose dial went with its request
+/// would start it over each time and never get a vote.
 #[tokio::test(start_paused = true)]
 async fn a_slow_dial_carries_over_to_the_next_round() {
     let (broker, _dir) = follower().await;
