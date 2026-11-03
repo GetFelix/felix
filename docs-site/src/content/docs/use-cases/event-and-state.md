@@ -16,14 +16,16 @@ crash leaves both or neither, so there is no outbox table to poll.
 
 ## Try it
 
+To see the event half alone on the one-command stack, run
+`docker compose run --rm felixctl sub orders` in one terminal and
+`docker compose run --rm felixctl pub orders 'order placed'` in another.
+
 `felixctl` has no commit command, so the atomic write is shown by the Rust
 snippet in the example below: the `cluster.commit` call that enqueues the event,
 puts the state and deletes the cart as one record, and the `state_get` that reads
 it back. Run it against the local cluster from the
 [Quickstart](/getting-started/quickstart/#a-cluster-in-one-command), started with
-`--nodes 3` for the replicated stream. To see the event half alone on the
-one-command stack, run `docker compose run --rm felixctl sub orders` in one terminal and
-`docker compose run --rm felixctl pub orders 'order placed'` in another.
+`--nodes 3` for the replicated stream.
 
 ## Why Felix fits
 
