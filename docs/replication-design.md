@@ -1279,7 +1279,8 @@ elected leader waits for the lease until the control plane is back (issue
    default) is gone as far as that follower is concerned.
 2. *Pre-vote.* Before it persists anything, a follower that suspects the
    leader asks its set whether it would get the next generation. A replica
-   says yes only if it has not heard its own leader within S, the asker's
+   says yes only if it leads no open generation itself (#1815: the code does
+   not check this yet), it has not heard its own leader within S, the asker's
    log is at least as far ahead as its own by (last generation, length), and
    the asker's set is no older than the one it knows. Nobody persists
    anything for a pre-vote. The follower stands only on a majority of yeses,
@@ -1403,7 +1404,12 @@ move, so a flapping link does not churn leaders. A leader that a majority of
 its set cannot reach loses stickiness at those replicas after S, and they can
 elect. Order by log and node id makes one candidate usual; randomised backoff
 breaks the remaining ties within a round or two. With no majority able to
-talk, nobody is elected, by design.
+talk, nobody is elected, by design. The model checks that an election
+finishes with the control plane down and any one broker stopped, given pre-vote
+and backoff, and that it does not without backoff
+(`FelixShardElectLive.cfg`, docs/formal/README.md). Against a candidate whose
+own detector is wrong, that needs the open leader to refuse the pre-vote too,
+which `pre_vote` does not do yet (#1815).
 
 **Decisions** (from the discussion on issue #1009):
 
