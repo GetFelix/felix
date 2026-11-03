@@ -271,7 +271,7 @@ pub(super) async fn sets<R: PeerRequester>(
 }
 
 /// The fence for `route` leaving `before`: jointly when the voters differ.
-async fn across<R: PeerRequester>(
+pub(super) async fn across<R: PeerRequester>(
     requester: &R,
     local_node_id: &str,
     route: &Route,

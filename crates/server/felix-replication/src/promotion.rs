@@ -265,14 +265,29 @@ pub(crate) async fn fence_shard_as<R: PeerRequester>(
             }
             // Under `joint_fence` a fence whose set being left is unknown
             // stays pending rather than fence the new set alone. A candidate
-            // never stands while a change is pending, so it fences only the
-            // set it keeps.
-            let under_joint = match (joint, set) {
-                (Some(joint), Some(set)) if candidacy.is_none() => {
+            // fences the set it keeps, and jointly the one kept beside it.
+            let leaving = candidacy.and_then(|candidacy| candidacy.leaving.as_ref());
+            let under_joint = match (joint, set, candidacy) {
+                (Some(joint), Some(set), None) => {
                     match joint::sets(requester, &log, local_node_id, route, set, joint).await {
                         Ok(fenced) => Some(fenced),
                         Err(why) => return Err(Outcome::pending(why, Vec::new())),
                     }
+                }
+                (Some(joint), Some(set), Some(_)) => match leaving {
+                    Some(leaving) => Some(
+                        joint::across(requester, local_node_id, route, set, leaving.clone(), joint)
+                            .await,
+                    ),
+                    None => None,
+                },
+                // A set kept beside the candidate's was written by a joint
+                // fence; fencing without it could miss a majority of it.
+                (None, Some(_), Some(_)) if leaving.is_some() => {
+                    return Err(Outcome::pending(
+                        "the kept set has a set being left, and joint fences are not on",
+                        Vec::new(),
+                    ));
                 }
                 _ => None,
             };
@@ -392,7 +407,7 @@ pub(crate) async fn refence<R: PeerRequester>(
     let election = FenceElection {
         candidate: true,
         set: candidacy.set.clone(),
-        leaving: None,
+        leaving: candidacy.leaving.as_ref().map(joint::view),
     };
     let (_, _, answer, _) = ask_fence(
         requester,

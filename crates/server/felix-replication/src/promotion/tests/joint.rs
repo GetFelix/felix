@@ -660,3 +660,67 @@ fn joint_fence_marks(finalized: bool) -> crate::quorum::QuorumMarks {
     fleet.restart(finalized.then_some(JOINT_FENCE.name()));
     crate::quorum::QuorumMarks::with_fleet(Arc::new(fleet))
 }
+
+/// **A candidate fences the set kept beside its own too.** A move's cut-over
+/// leaves {broker-a, broker-b, broker-c} at 3 beside the same members at 2,
+/// where broker-b was the staged successor and so a learner. broker-b's
+/// answer is a majority of the new set, but of the old set's voters only
+/// this broker has the fence, so the candidate does not open until broker-c
+/// answers. The fence carries the set being left.
+#[tokio::test]
+async fn a_candidate_fences_the_set_a_move_left_jointly() {
+    let set = |generation, learner: Option<&str>| Membership {
+        generation,
+        members: [LEADER, "broker-b", "broker-c"]
+            .map(|node| Member {
+                node: node.to_string(),
+                storage: None,
+                learner: learner == Some(node),
+                wiped: false,
+            })
+            .to_vec(),
+    };
+    let candidacy = crate::election::Candidacy {
+        set: crate::promotion::joint::view(&set(3, None)),
+        leaving: Some(set(2, Some("broker-b"))),
+    };
+    let mut replicas = replicas_with(&[]);
+    replicas.get_mut("broker-c").reachable = false;
+    let addr_of = addr_of;
+    let joint = Joint::new(&addr_of, None);
+    let stand = async |replicas: &Replicas| {
+        let (leader, dir) = leader_holding(4, &["a"]).await;
+        let outcome = fence_shard_as(
+            replicas,
+            &leader,
+            LEADER,
+            &key(),
+            &route(),
+            false,
+            Some(&joint),
+            Some(&candidacy),
+        )
+        .await;
+        (outcome, dir)
+    };
+
+    let (outcome, _dir) = stand(&replicas).await;
+    let Outcome::Pending { why, .. } = &outcome else {
+        panic!("opened without a majority of the set being left: {outcome:?}");
+    };
+    assert!(why.contains("1 of 2 voters of the set being left"), "{why}");
+
+    replicas.get_mut("broker-c").reachable = true;
+    let (outcome, _dir) = stand(&replicas).await;
+    assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
+    let kept = replicas
+        .get("broker-c")
+        .broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log")
+        .replica_set()
+        .expect("broker-c kept the set");
+    assert_eq!(kept.current.generation, 3);
+    assert_eq!(kept.leaving.map(|old| old.generation), Some(2));
+}

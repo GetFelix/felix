@@ -797,6 +797,7 @@ fn an_elected_leadership_is_laid_over_the_assignment_until_named() {
                 })
                 .collect(),
         },
+        leaving: None,
         incarnation: 0,
     };
     for shard in [0, 1] {

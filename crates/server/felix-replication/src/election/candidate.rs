@@ -249,8 +249,14 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
     };
     // A change pending on the kept set is left to the control plane: an
     // elected route names one set, so the followers' would not know which
-    // set to leave. Costs availability only.
-    if kept.leaving.is_some() {
+    // set to leave. Costs availability only. A set being left with the same
+    // copies is the one a move's cut-over leaves, its successor flagged a
+    // learner; that is stood on, and fenced jointly.
+    if kept
+        .leaving
+        .as_ref()
+        .is_some_and(|leaving| !same_copies(&kept.current, leaving))
+    {
         return ctx.ineligible(key, "the kept replica set has a change pending");
     }
     if kept.current.generation == 0 {
@@ -332,6 +338,7 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
             leader: local.to_string(),
             generation,
             set: kept.current,
+            leaving: kept.leaving,
             incarnation: crate::incarnation::of(&ctx.broker, key),
         },
     );
@@ -362,6 +369,18 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
         }
         tokio::time::sleep(OPEN_POLL).await;
     }
+}
+
+/// Whether `leaving` names the same members on the same copies as `current`,
+/// so the two differ in learner flags at most.
+fn same_copies(current: &Membership, leaving: &Membership) -> bool {
+    current.members.len() == leaving.members.len()
+        && current.members.iter().all(|member| {
+            leaving
+                .members
+                .iter()
+                .any(|left| left.node == member.node && left.storage == member.storage)
+        })
 }
 
 /// The shard's own log, if the shard may elect: acknowledged at quorum, by

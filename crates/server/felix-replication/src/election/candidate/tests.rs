@@ -312,6 +312,34 @@ async fn a_pending_set_change_is_not_stood_on() {
     assert_eq!(log.accepted_generation(), 3, "no ballot");
 }
 
+/// **The set a move's cut-over leaves is stood on**: it names the same
+/// copies, the staged successor (here broker-a, the leader now suspected)
+/// flagged a learner. Refusing it would leave a moved shard unable to elect
+/// until the control plane is back. The standing carries the set being left,
+/// so its fence covers that set's voters too.
+#[tokio::test(start_paused = true)]
+async fn the_set_a_move_left_is_stood_on_jointly() {
+    let (broker, _dir) = follower().await;
+    let ctx = ctx(&broker, voters(None));
+    let log = shard_log(&broker, &key()).await.expect("log");
+    let mut leaving = set(3);
+    leaving.members[0].learner = true;
+    log.accept_set(ReplicaSet {
+        current: set(4),
+        leaving: Some(leaving.clone()),
+    })
+    .await
+    .expect("set");
+
+    let (_, elected) = tokio::time::timeout(Duration::from_secs(30), stand_and_watch(&ctx))
+        .await
+        .expect("never stood");
+
+    assert_eq!(elected.leader, LOCAL);
+    assert_eq!(elected.set.generation, 4);
+    assert_eq!(elected.leaving, Some(leaving));
+}
+
 /// The place counts voters with a log ahead and granting voters with a
 /// lower node id.
 #[tokio::test]
@@ -521,6 +549,7 @@ async fn a_standing_promised_away_is_withdrawn() {
             leader: LOCAL.to_string(),
             generation: 4,
             set: set(3),
+            leaving: None,
             incarnation: 0,
         },
     );
