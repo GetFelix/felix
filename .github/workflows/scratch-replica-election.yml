@@ -1,11 +1,10 @@
 name: Scratch (replica_election cluster tests)
 
-# Temporary: runs only failures::replica_election on this branch. Removed
-# before the branch becomes a PR.
+# Temporary: runs only failures::replica_election on a scratch branch.
 
 on:
   push:
-    branches: ["test/1009-s10-replica-election"]
+    branches: ["scratch/1009-s10-replica-election"]
 
 permissions:
   contents: read
@@ -39,7 +38,8 @@ jobs:
           FELIX_TEST_TIMEOUT_SCALE: "3"
           FELIX_TEST_CLUSTER_LOG_DIR: ${{ runner.temp }}/cluster-logs
         shell: bash
-        run: cargo test -p felix-cluster --test failures replica_election:: -- --nocapture 2>&1 | tee "$RUNNER_TEMP/test-output.log"
+        run: |
+          cargo test -p felix-cluster --test failures replica_election:: -- --nocapture 2>&1 | tee "$RUNNER_TEMP/test-output.log"
 
       - name: Pack logs
         if: failure()
