@@ -238,11 +238,12 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardElectLive.cfg` | three brokers with the control plane down (`CpDown`), no writes, no symmetry, up to four generations of elections, one broker (the leader or not) allowed to stop for good (`FailStops = 1`), a candidate whose own detector may be wrong (`DetectorMisfires`), a pre-vote the open leader refuses (`PreVoteAsked`), and backoff with at most two split rounds (`Backoff`, `Splits = 2`), under fairness (`LiveSpec`) | pass `ElectionSettles` and `NoStandAgainstHeardLeader` (3,000 distinct states, 1 s locally) |
 | `FelixShardElectLiveLoosePreVote.cfg` | the same with the pre-vote the code asks today: any live member that hears no leader says yes, the open leader included | violate `NoStandAgainstHeardLeader`: a follower whose detector misfires gets the leader's yes and its own and deposes a leader the rest of the set hears (#1815) |
 | `FelixShardElectLiveNoBackoff.cfg` | the same without backoff | violate `ElectionSettles`: candidates split, stand again at once and split again until every generation the model allows is used, and nobody leads |
-| `FelixShardElectLiveReissue.cfg` | `FelixShardElectLive.cfg` with the control plane up: promotion on the followers' word up to generation 2, adoption up to generation 3, two generations of elections, no broker stopping, and the control plane moving past a generation claimed twice (`Reissues`, CpReissue), with adoption and the reissue taken once they stay possible (`ReissueSpec`) | pass `CollisionSuperseded` (392K distinct states, 3 min locally) |
+| `FelixShardElectLiveReissue.cfg` | `FelixShardElectLive.cfg` with the control plane up: promotion on the followers' word up to generation 2, adoption up to generation 3, two generations of elections, no broker stopping, and the control plane moving past a generation claimed twice (`Reissues`, CpReissue), with adoption and the reissue taken once they stay possible (`ReissueSpec`) | pass `CollisionSuperseded` (503K distinct states, 4 min locally) |
 | `FelixShardElectLiveNoReissue.cfg` | the same without the reissue | violate `CollisionSuperseded`: placement names one broker at the generation another is elected at and opens, and the control plane keeps naming the one that cannot open |
 | `FelixShardElectNoBallotAcks.cfg` | `FelixShardElect.cfg` without ballots, two generations of elections and two writes, the set check on so the first leader can follow a candidate | violate `AckedHeldByLeader`, checked per generation |
 | `FelixShardElectAdoptPromote.cfg` | `FelixShardElect.cfg` with one write, the set check, adoption up to generation 2 and promotion on suspicion up to generation 2 | pass, the same invariants (186K distinct states without the write; not yet measured with it) |
-| `FelixShardElectReissue.cfg` | `FelixShardElectAdoptPromote.cfg` with the control plane moving past a generation it named one leader at while another was elected and opened there: the next generation, under the elected leader, on the control plane's set (`Reissues`, CpReissue) | pass, the same invariants (186K distinct states without the write; not yet measured with it) |
+| `FelixShardElectReissue.cfg` | `FelixShardElectAdoptPromote.cfg` with promotion on suspicion up to generation 1 and the control plane moving past a generation it named one leader at while another was elected and opened there: the next generation, under the elected leader, on the control plane's set (`Reissues`, CpReissue) | pass, the same invariants (130,796 distinct states, 6 s locally) |
+| `FelixShardElectReissueReplace.cfg` | `FelixShardElectReissue.cfg` with four brokers, a spare that promotion puts in place of the old leader (`ReplaceOnPromote`), no write, and adoption up to generation 2: the elected leader's set differs from the control plane's when they collide, so the reissued leader fences both (`ReissueFencesElected`) | pass, the same invariants (24,096 distinct states, 1 s locally) |
 | `FelixShardElectStepDown.cfg` | `FelixShardElect.cfg` with time to 2, `L = 2` and `Margin = 2` (so no promotion), one write and one generation of elections: an elected leader acknowledges a write and then steps down when its own lease lapses, leaving the control plane's leader at an older generation it has promised away | pass the same invariants (1.49M distinct states, under a minute). Found by `FelixShardWalkElect.cfg`: before `Newest` counted promises, `AckedHeldByLeader` took that deposed leader for the newest one |
 | `FelixShardElectHandoff.cfg` | `FelixShardElect.cfg` with a planned move and a cancel, every change fenced (`FenceEveryChange`), the set check on, one generation of elections, one write, reports flowing so a move can start | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (111.2M distinct states, 2 h 23 min on a four-core CI runner; nightly) |
 | `FelixShardElectHandoffLeaders.cfg` | the same without the write, for every pull request | pass `OneLeaderPerGeneration` and the rest, which hold trivially without a write (5.05M distinct states, 5.9 min on a CI runner, with the set check's step-down) |
@@ -820,17 +821,22 @@ voter.
 
 With the control plane up, placement can name a leader at the generation a
 candidate is elected at. Ballots let only one of the two open there. When the
-elected one opens, the control plane's leader never will, and nothing else
-moves the generation on while the elected leader serves. On the elected
-leader's report the control plane writes the next generation with it as
-leader, on the control plane's set, and it fences there (CpReissue,
-`reissue_past_collision`). `FelixShardElectReissue.cfg` checks that this
+elected one opens, the control plane's leader never will. Short of another
+promotion or election, the generation stays there. On the elected leader's
+report the control plane writes the next generation with it as leader, on
+the control plane's set (CpReissue, `reissue_past_collision`). The leader
+fences that set, and jointly the set it was elected on when the two differ.
+The report may be old, so the leader takes the generation only if it has not
+promised it to another; otherwise it never opens there. `FelixShardElectReissue.cfg` checks that this
 keeps one leader per generation and every acknowledged record.
 `FelixShardElectLiveReissue.cfg` checks that the control plane then moves on
 (`CollisionSuperseded`); without the reissue it does not
 (`FelixShardElectLiveNoReissue.cfg`). The property is stated while the
 elected leader still leads: once it is deposed, a later election moves the
-generation on, and the model bounds elections.
+generation on, and the model bounds elections. It is close to the reissue's
+own enabling condition, since the liveness configurations have no set
+changes or joining copies to hold it back; what it adds is that adoption and
+the reissue are taken at all.
 
 Nothing in the broker elects yet; these check the design in
 `docs/replication-design.md`, "Electing without the control plane", before
