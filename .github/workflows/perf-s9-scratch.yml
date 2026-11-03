@@ -7,7 +7,7 @@ name: Perf scratch (S9 election driver)
 
 on:
   push:
-    branches: [scratch/perf-s9]
+    branches: [scratch/perf-s9-open]
 
 permissions:
   contents: read
@@ -15,8 +15,9 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   A_SHA: 15004f5354ecec6b160a6f4b22237486df26d80a
-  B_SHA: 2cde21ce1ffe3097e3b50b7e6ba6c06f5c70a9a1
-  BENCH_STEADY_SECS: "40"
+  B_SHA: aa8c0e4baf3010a89b5e026906f3e5792e0dd2b0
+  BENCH_STEADY_SECS: "20"
+  BUILD_SIDES: "b"
 
 jobs:
   build:
@@ -41,7 +42,7 @@ jobs:
           cargo test --release -p felix-cluster --test replicated_bench --no-run --message-format=json \
             | jq -r 'select(.profile.test == true and .executable != null) | .executable' | tail -1 > /tmp/exe
           cp "$(cat /tmp/exe)" $out/replicated_bench
-          for side in a b; do
+          for side in ${BUILD_SIDES:-a b}; do
             case $side in a) sha=$A_SHA;; b) sha=$B_SHA;; esac
             git checkout --detach -q "$sha"
             cargo build --release -p felix-broker-service --bin felix-broker
@@ -63,9 +64,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2]
     env:
-      ROUNDS: "8"
+      ROUNDS: "3"
     steps:
       - uses: actions/download-artifact@v7
         with:
@@ -85,9 +86,9 @@ jobs:
           printf '#!/bin/bash\nshift\nexec /tmp/perf-bin/felix-broker-b "$@"\n' > $p/wrap-c.sh
           chmod +x $p/wrap-*.sh
           for round in $(seq 1 "$ROUNDS"); do
-            sides=(a b c); k=$(( (round + ${{ matrix.shard }}) % 3 ))
-            for i in 0 1 2; do
-              side=${sides[$(( (i + k) % 3 ))]}
+            sides=(b c); k=$(( (round + ${{ matrix.shard }}) % 2 ))
+            for i in 0 1; do
+              side=${sides[$(( (i + k) % 2 ))]}
               r=${{ matrix.shard }}-$round
               echo "::group::round $r side $side"
               FELIX_BROKER_WRAPPER=$p/wrap-$side.sh BENCH_SIDE=$side BENCH_ROUND=$r \

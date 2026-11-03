@@ -212,7 +212,21 @@ fn parse_summary(body: &str, name: &str, filter: &str) -> Summary {
     summary
 }
 
-const METRICS: [(&str, &str, &str); 4] = [
+const METRICS: [(&str, &str, &str); 14] = [
+    ("fsync_data", "felix_scratch_fsync_data_seconds", ""),
+    ("fsync_dir", "felix_scratch_fsync_dir_seconds", ""),
+    ("fsync_all", "felix_scratch_fsync_all_seconds", ""),
+    ("set_write", "felix_scratch_set_write_seconds", ""),
+    ("fence_shard", "felix_scratch_fence_shard_seconds", ""),
+    ("keep_own_set", "felix_scratch_keep_own_set_seconds", ""),
+    ("follower_fence", "felix_scratch_follower_fence_seconds", ""),
+    ("keep_fence_set", "felix_scratch_keep_fence_set_seconds", ""),
+    ("batch_set_keep", "felix_scratch_batch_set_keep_seconds", ""),
+    (
+        "slot_wait_fence",
+        "felix_broker_replication_slot_wait_seconds",
+        "queue=\"fence\"",
+    ),
     (
         "replica_state_write",
         "felix_storage_replica_state_write_duration_seconds",
