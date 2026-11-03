@@ -1422,7 +1422,12 @@ move, so a flapping link does not churn leaders. A leader that a majority of
 its set cannot reach loses stickiness at those replicas after S, and they can
 elect. Order by log and node id makes one candidate usual; randomised backoff
 breaks the remaining ties within a round or two. With no majority able to
-talk, nobody is elected, by design.
+talk, nobody is elected, by design. The model checks that an election
+finishes with the control plane down and any one broker stopped, given pre-vote
+and backoff, and that it does not without backoff
+(`FelixShardElectLive.cfg`, docs/formal/README.md). Against a candidate whose
+own detector is wrong, that needs the open leader to refuse the pre-vote too,
+as `pre_vote` does (#1815).
 
 **Decisions** (from the discussion on issue #1009):
 
