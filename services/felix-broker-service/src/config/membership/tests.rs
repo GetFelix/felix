@@ -36,12 +36,16 @@ fn a_broker_reading_on_the_lease_does_not_report_lease_free_reads() {
     assert!(!features_for(false, false).contains(lease_free));
 }
 
-/// Every broker of this build names start holders in its reports, which the
-/// control plane needs before it finalizes `joint_fence`.
+/// Every broker of this build names start holders in its reports and keeps
+/// a wiped copy from voting, which the control plane needs before it
+/// finalizes `joint_fence`.
 #[test]
-fn a_broker_reports_that_it_names_start_holders() {
+fn a_broker_reports_what_joint_fences_need() {
     let start_holders = felix_common::fleet::START_HOLDERS.name();
+    let non_voting = felix_common::fleet::NON_VOTING.name();
     for (fences, by_lease) in [(true, false), (true, true), (false, false)] {
-        assert!(features_for(fences, by_lease).contains(start_holders));
+        let reported = features_for(fences, by_lease);
+        assert!(reported.contains(start_holders));
+        assert!(reported.contains(non_voting));
     }
 }

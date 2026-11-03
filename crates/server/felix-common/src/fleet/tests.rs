@@ -146,7 +146,13 @@ fn a_view_is_adopted_only_after_a_registration_answer() {
 /// reports them yet: a finalize finds no broker that has them and is refused.
 #[test]
 fn election_features_are_declared_and_not_implemented() {
-    for feature in [JOINT_FENCE, REPLICA_ELECTION, PEER_ELECTION, START_HOLDERS] {
+    for feature in [
+        JOINT_FENCE,
+        REPLICA_ELECTION,
+        PEER_ELECTION,
+        START_HOLDERS,
+        NON_VOTING,
+    ] {
         assert!(!IMPLEMENTED.contains(&feature), "{feature}");
         assert!(
             !FleetGate::for_this_build()

@@ -1,5 +1,4 @@
-//! With joint fences on (`FELIX_INTERNAL_ELECTION`, and `joint_fence`
-//! reported through `FELIX_TEST_FLEET_FEATURES` and finalized), a set change
+//! With joint fences on (`ClusterConfig::joint_fence`), a set change
 //! that swaps two members does not serve until a majority of the set it
 //! leaves has taken its fence.
 //!
@@ -13,36 +12,19 @@ use serial_test::serial;
 const STREAM: &str = "orders";
 
 async fn start() -> Cluster {
-    let features = felix_common::fleet::IMPLEMENTED
-        .iter()
-        .map(|feature| feature.name())
-        .chain([felix_common::fleet::JOINT_FENCE.name()])
-        .collect::<Vec<_>>()
-        .join(",");
-    let cluster = Cluster::start(ClusterConfig {
+    Cluster::start(ClusterConfig {
         nodes: 5,
         streams: vec![StreamSpec::quorum(STREAM, 1, 3)],
-        broker_env: vec![
-            ("FELIX_INTERNAL_ELECTION".to_string(), "true".to_string()),
-            ("FELIX_TEST_FLEET_FEATURES".to_string(), features),
-            (
-                "FELIX_PUBLISH_QUORUM_TIMEOUT_MS".to_string(),
-                "2000".to_string(),
-            ),
-        ],
+        broker_env: vec![(
+            "FELIX_PUBLISH_QUORUM_TIMEOUT_MS".to_string(),
+            "2000".to_string(),
+        )],
         inherit_output: std::env::var("FELIX_TEST_BROKER_OUTPUT").is_ok(),
+        joint_fence: true,
         ..Default::default()
     })
     .await
-    .expect("start cluster");
-    cluster
-        .finalize_fleet_features(
-            &["generation_start", "majority_ack", "joint_fence"],
-            Duration::from_secs(20),
-        )
-        .await
-        .expect("every broker enables joint_fence");
-    cluster
+    .expect("start cluster with joint_fence")
 }
 
 async fn assignment(cluster: &Cluster) -> felix_cluster::Assignment {

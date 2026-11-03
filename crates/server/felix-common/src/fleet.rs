@@ -192,6 +192,14 @@ pub const PEER_ELECTION: FleetFeature = FleetFeature::new("peer_election");
 /// adds it to its report.
 pub const START_HOLDERS: FleetFeature = FleetFeature::new("start_holders");
 
+/// Not a feature: how a broker reports that, under [`JOINT_FENCE`], it marks
+/// a wiped copy of its own a learner and its leaders leave a learner's
+/// answers out of their marks. A build that does not would let a wiped copy
+/// vote and count, so the control plane finalizes [`JOINT_FENCE`] only when
+/// every serving broker reports this. Kept out of [`IMPLEMENTED`], like
+/// [`PEER_ELECTION`].
+pub const NON_VOTING: FleetFeature = FleetFeature::new("non_voting");
+
 /// The most features one gate tracks. A report longer than this is cut, which
 /// only ever leaves features off.
 pub const MAX_FEATURES: usize = 64;

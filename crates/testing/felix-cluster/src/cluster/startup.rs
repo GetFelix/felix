@@ -86,7 +86,17 @@ impl Cluster {
         // from "already exited"; the rest only observes the cluster.
         let ready = async {
             cluster.await_brokers_ready().await?;
-            cluster.await_cluster_ready(&config).await
+            cluster.await_cluster_ready(&config).await?;
+            if config.joint_fence {
+                cluster
+                    .finalize_fleet_features(
+                        &["generation_start", "majority_ack", "joint_fence"],
+                        Duration::from_secs(20),
+                    )
+                    .await
+                    .context("enable joint_fence")?;
+            }
+            anyhow::Ok(())
         }
         .await;
         // The cluster is dropped here without a panic, so its `Drop` prints
