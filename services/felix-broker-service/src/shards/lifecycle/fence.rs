@@ -184,10 +184,6 @@ impl ShardFence {
         gate.open_at.store(generation, SeqCst);
         gate.opened_below
             .fetch_max(generation.saturating_add(1), SeqCst);
-        if self.promotions.read().get(key) == Some(&generation) {
-            gate.fenced_below
-                .fetch_max(generation.saturating_add(1), SeqCst);
-        }
     }
 
     /// Refuse every write to `key` that has not entered yet. Writes already in
@@ -414,13 +410,6 @@ impl felix_replication::driver::WriteFence for ShardFence {
             .is_some_and(|gate| gate.opened_below.load(SeqCst) > generation)
     }
 
-    fn opened_fenced(&self, key: &ShardKey, generation: u64) -> bool {
-        self.gates
-            .read()
-            .get(key)
-            .is_some_and(|gate| gate.fenced_below.load(SeqCst) == generation.saturating_add(1))
-    }
-
     fn withheld(&self, key: &ShardKey, generation: u64) -> bool {
         self.gave_up.read().get(key) == Some(&generation)
             || self
@@ -549,9 +538,6 @@ struct Gate {
     /// One past the newest generation this process opened the shard at, or
     /// 0 if it never has. Closing leaves it.
     opened_below: AtomicU64,
-    /// One past the newest generation this process opened the shard at once
-    /// its promotion fence finished, or 0.
-    fenced_below: AtomicU64,
     in_flight: AtomicUsize,
     idle: Notify,
 }
@@ -565,7 +551,6 @@ impl Default for Gate {
             passed_at: AtomicU64::new(CLOSED),
             deposed_at: AtomicU64::new(CLOSED),
             opened_below: AtomicU64::new(0),
-            fenced_below: AtomicU64::new(0),
             in_flight: AtomicUsize::new(0),
             idle: Notify::new(),
         }

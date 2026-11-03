@@ -737,27 +737,3 @@ fn a_new_incarnation_opens_at_a_lower_generation() {
     assert_eq!(own.observe(&key(0), Some(&at(9, 1))), Action::None);
     assert!(own.may_serve(&key(0)));
 }
-
-/// **A shard opened by its fence says so to replication; one opened
-/// unfenced does not.** An elected leader's fence leaves the set at the
-/// generation it stood on, and the driver must not restamp it at the
-/// route's generation once the control plane adopts that leadership.
-#[test]
-fn replication_learns_which_opens_followed_a_fence() {
-    use felix_replication::driver::WriteFence;
-
-    let mut fenced = fencing_lifecycle();
-    fenced.observe(&key(0), Some(&assigned_to("broker-a", 3)));
-    assert_eq!(fenced.opened(&key(0), 3), Opened::Fencing);
-    assert!(!fenced.fence().opened_fenced(&key(0), 3));
-    assert!(fenced.fenced(&key(0), 3));
-    assert!(fenced.fence().opened_since(&key(0), 3));
-    assert!(fenced.fence().opened_fenced(&key(0), 3));
-    assert!(!fenced.fence().opened_fenced(&key(0), 2));
-
-    let mut plain = lifecycle();
-    plain.observe(&key(0), Some(&assigned_to("broker-a", 3)));
-    assert_eq!(plain.opened(&key(0), 3), Opened::Activated);
-    assert!(plain.fence().opened_since(&key(0), 3));
-    assert!(!plain.fence().opened_fenced(&key(0), 3));
-}
