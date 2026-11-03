@@ -646,6 +646,14 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                     _ => None,
                 };
                 let opened = open_fenced(cx.gate, &key, generation, outcome).await;
+                // Survives the adoption that drops the standing, which the
+                // set-keeping rule reads (see `opened_elected`).
+                if opened
+                    && fencing.is_some()
+                    && let Some(elections) = cx.marks.elections()
+                {
+                    elections.opened(&key, generation);
+                }
                 drop(fencing);
                 let why = why.or_else(|| {
                     (!opened).then(|| "the fence was taken but the shard stayed closed".into())
