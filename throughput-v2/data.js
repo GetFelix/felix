@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793710247708,
+  "lastUpdate": 1793713458687,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -43628,6 +43628,58 @@ window.BENCHMARK_DATA = {
             "range": "32993.20",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 796064.63\nmean: 783359.46\nstdev: 32993.20\ncv: 4.21%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f360ad11b30ef1483f810503685bb74a5aa5e057",
+          "message": "fix(replication): the joint start counts from the current stint's start record (#1787) (#1831)\n\nFixes #1787. Stacked on #1809 (#1730); retarget to main once #1809 merges. The model is A1's spec PR (branch `spec/1787-stint-start`, `StintStarts` and `JoinLags`); this is the code side.\n\n## Problem\n\nA broker elected at a generation and then named there by a cut-over keeps the elected stint's start. `own_start` in the driver reads the generation's first start from the history, so `joint_start` (the report that lets the control plane flip to the pending set) fires once that first start record is on both majorities. A record the elected stint acknowledged on the old set alone sits past it and need not be on a majority of the new set. `FelixShardElectSwapFlipJoinLagsFirstStart.cfg` finds the lost write.\n\n## Change\n\n- A fenced open at a generation this broker already started, with records past its start record, writes another start record at the tail: the new stint's (`write_generation_start`). Whether the generation started is read from the epoch history, not from its first start record, which retention may have trimmed (or which a generation begun before `generation_start` was finalized never had). An unfenced reopen still writes none, so `retaking_the_same_generation_does_not_move_its_start` holds. Within one process, opening again with nothing written since the stint's record writes none; after a restart the next fenced open always writes one.\n- The log keeps, in memory, where its leader last wrote a start record (`DiskLog::stint_start`, set by `StreamLog::append_generation_start`). After a restart the fenced open writes a new one, so nothing has to survive one.\n- The driver's `own_start` is the later of the history's start and the current stint's. That feeds `joint_start`, the mark's `counted_offset`, the report floor and `holds_start`; each only gets stricter.\n\n## Tests\n\n- `driver::tests::joint_acks::the_joint_start_waits_for_the_current_stints_start`: the model's twin. Start at 0, a write at 3 acknowledged on {a, b}, the named stint's start at 4, joining copies c and d holding up to 3. No joint start; with c and d caught up, the joint start is reported. Fails with `own_start` reading the history alone (`left: Some(5)`).\n- `shards::lifecycle::tests::promotion::generation_start::a_new_stint_at_a_started_generation_writes_its_own_start`: a second open at generation 3 after a write appends a start record at the tail, a third with nothing since appends none, and the history still starts the generation at the first. Fails with the old `write_generation_start`.\n- `...::generation_start::a_new_stint_without_a_readable_first_start_writes_its_own`: the history starts generation 3 at 1, the record there is not a start record, and the open still writes the stint's start at the tail. Fails when the decision reads the first start record (tail stays 2).\n\n## Perf\n\nRF 3 A/B in Actions (run 41562775581): `replicated_bench`, 3 brokers, 16 closed-loop publishers on one quorum stream, 60 s steady phase then a promotion burst. Sides alternate within each round: a = #1809's head (b87fe9815), f = this change (362d9c601; the later review fix only touches the fenced-open decision, off the publish path). 6 runners x 10 rounds = 60 pairs. Ratio f/a, geometric mean of per-round ratios, with a 95% interval:\n\n| steady | f/a | 95% interval | medians a / f |\n|---|---|---|---|\n| msgs/s | 0.995 | 0.988 to 1.002 | 5692 / 5646 |\n| p50 | 1.007 | 1.001 to 1.014 | 2.597 / 2.621 ms |\n| p99 | 1.001 | 0.992 to 1.010 | 6.439 / 6.452 ms |\n| p999 | 0.984 | 0.950 to 1.020 | 8.70 / 8.62 ms |\n| read p99 | 0.996 | 0.984 to 1.009 | 3.01 / 3.02 ms |\n\np99 is flat to within 1%. p999 has a per-round spread of 14%, so 60 pairs resolve it to about 3.5%, not 1-2%; it shows no change. p50 reads 0.7% higher, at the edge of the interval, and read p50 is about the same. The only new work on the publish path is one uncontended mutex read per driver pass (`own_start`), tens of nanoseconds against a 2.6 ms p50, so I read that as noise among the six metrics, not a cost. Burst phase (50 pairs): msgs/s 0.975 (0.938 to 1.014), p99 1.03 (0.90 to 1.17), first-ack p99 0.990 (0.972 to 1.007), all 300 probes acknowledged on both sides. No change.\n\n## Design calls\n\n1. Every fenced reopen of an already-started generation with records past its start writes a new start record, restarts included, not only the elected-then-named case. Code has no election yet to tell the two apart, and the extra record costs one offset and one round trip before the mark moves. It is what the model does: every `OpenForWrites` appends `Start(g)`.\n2. The stint's start is held in memory on the log, not persisted. The epoch history keeps one start per generation, since replication's divergence repair compares by it.\n3. A cache shard's counter log still counts from its history start, and the flip guard reads only the shard's own log. The model has no counter log in its set-change configurations, so that is unchecked, not shown safe; it predates this change. Tracked in #1830: the flip does not wait for counter updates acknowledged on the old set alone.\n4. For S9: an elected broker that a cut-over names at the same generation must go through the fenced open (`LifecycleGate::open`) for the named stint, as the model's `Swap` sets `fencing`. It must also set `awaiting` before the router publishes the route with the pending change: otherwise a driver pass on that route reports `joint_start_acked` counted from the elected stint's start, and the control plane keeps that report without checking its freshness. Today the lifecycle treats an assignment at the generation it serves as a no-op; elections are not wired into it yet.\n5. Every fenced restart of a replicated leader now adds one start record. Subscribers that negotiated `skipped_before` are told; older clients see one more false drop per restart. docs/protocol.md and the client pages say so.",
+          "timestamp": "2026-11-03T05:39:22-08:00",
+          "tree_id": "38e6c1258d74f7747012e97690793edd42c3f90b",
+          "url": "https://github.com/GetFelix/felix/commit/f360ad11b30ef1483f810503685bb74a5aa5e057"
+        },
+        "date": 1793713457917,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 342621.29,
+            "range": "5730.21",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 342621.29\nmean: 344568.06\nstdev: 5730.21\ncv: 1.66%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 342621.29,
+            "range": "5730.21",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 342621.29\nmean: 344568.06\nstdev: 5730.21\ncv: 1.66%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 78000.37,
+            "range": "2604.43",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 78000.37\nmean: 77896.17\nstdev: 2604.43\ncv: 3.34%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 780003.75,
+            "range": "26044.32",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 780003.75\nmean: 778961.70\nstdev: 26044.32\ncv: 3.34%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
