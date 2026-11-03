@@ -2685,19 +2685,75 @@ CpHoldsSetOf(b) ==
     IF cpNext = {} THEN mine[b] = CpSet
     ELSE mine[b] = cpNext /\ setGen[b] = cpNextGen
 
+\* What a broker takes when the control plane names it at a new generation.
+takeVars == << bgen, bexpiry, queued, pending, stopped, promised, ballot, fencing,
+               answered, confirmed, mine, setGen, oldSet >>
+
+\* The write naming `b`, elected at `g` on `E`, at `g + 1` in the control
+\* plane's set `S` (`reissuing` in services/felix-controlplane-service/src/
+\* model/shard.rs). With `pends` and `E /= S`, a majority of `E` may hold
+\* records no majority of `S` does, so `E` becomes the recorded set and `S`
+\* the pending one, as a cut-over writes them (Swap). The leader ships to
+\* the pending set alone, so that change completes only if `S` and `b` hold
+\* a majority of `E`; otherwise `E` is named alone. Without `pends` the
+\* control plane keeps `S` and `b` fences `E` beside it (`logged_besides` in
+\* crates/server/felix-replication/src/promotion/joint.rs).
+\* `b` takes the new generation only if it may still promise it
+\* (`accept_led_generation` in services/felix-broker-service/src/shards/
+\* lifecycle.rs); otherwise it never opens there.
+ReissueAt(b, g, E, S, pends) ==
+    LET joint == pends /\ E /= S /\ 2 * Cardinality(E \cap (S \cup {b})) > Cardinality(E)
+        alone == pends /\ E /= S /\ ~joint
+    IN
+    /\ gen' = g + 1
+    /\ leader' = b
+    /\ cpExpiry' = now + L
+    /\ report' = NoReport
+    /\ draining' = FALSE
+    /\ IF pends /\ E /= S THEN out' = Brokers \ (E \cup staged) ELSE UNCHANGED out
+    /\ IF joint THEN cpNext' = S /\ cpNextGen' = g + 1 /\ UNCHANGED << cutOver, splits >>
+       ELSE UNCHANGED nextVars
+    /\ IF MayPromise(b, b, g + 1)
+       THEN /\ bgen' = [bgen EXCEPT ![b] = g + 1]
+            /\ bexpiry' = [bexpiry EXCEPT ![b] = clock[b] + L]
+            /\ queued' = [queued EXCEPT ![b] = 0]
+            /\ pending' = [pending EXCEPT ![b] = 0]
+            /\ stopped' = [stopped EXCEPT ![b] = FALSE]
+            /\ Promise(b, b, g + 1)
+            /\ fencing' = [fencing EXCEPT ![b] = TRUE]
+            /\ answered' = [answered EXCEPT ![b] = {}]
+            /\ confirmed' = [confirmed EXCEPT ![b] = [m \in Brokers |-> 0]]
+            /\ IF SetCheck
+               THEN /\ mine' = [mine EXCEPT ![b] = IF alone THEN E ELSE S]
+                    /\ setGen' = [setGen EXCEPT ![b] = g + 1]
+                    /\ oldSet' = [oldSet EXCEPT ![b] = IF E /= S /\ ~alone THEN E ELSE {}]
+               ELSE UNCHANGED << mine, setGen, oldSet >>
+       ELSE UNCHANGED takeVars
+
 \* Under `Adopt`, the control plane hears from a leader that opened above the
-\* generation it read, one it never named. With `AdoptMatch`, if the leader's
-\* set is the one the control plane records, it becomes the control plane's
-\* leader at that generation; otherwise only the generation is taken, so every
-\* later one the control plane issues is above it. While a cut-over is
-\* pending, the set that matches is the pending one: a leader on the old set
-\* would be fenced by the new set's higher set generation, so the control
-\* plane takes only its generation. A pending-set leader adopted here keeps
-\* the change pending until CpFlip; after the flip it matches `CpSet`.
-\* Without `AdoptMatch` it adopts whatever set the leader has. A conditional
-\* write like any other (`Cas`), so a planner acting on an old read loses to
-\* a newer write.
+\* generation it read, one it never named, in one conditional write (`Cas`)
+\* (`adopting_elected_set` in services/felix-controlplane-service/src/model/
+\* shard.rs). With `AdoptMatch`:
+\* - if the leader's set is the one the control plane records, or while a
+\*   cut-over is pending the pending set at its generation, it becomes the
+\*   control plane's leader at that generation, the change staying pending
+\*   until CpFlip;
+\* - if it is the control plane's own leader, elected on the set being left
+\*   while a change is pending, it opened past the change, which only it
+\*   could take, so the change is dropped;
+\* - if it is in the recorded set but was elected on another, that set is
+\*   written as the set being left and the recorded one as pending from it,
+\*   at the next generation (ReissueAt), because a majority of the elected
+\*   set may hold records no majority of the recorded one does;
+\* - if it is outside the recorded set, its set becomes the recorded set at
+\*   its generation.
+\* Otherwise (the control plane's leader on another set, a change pending or
+\* a copy joining) only the generation is taken, so every later one the
+\* control plane issues is above it. A leader on the old set of a pending
+\* change would be fenced by the new set's higher set generation.
+\* Without `AdoptMatch` it adopts whatever set the leader has.
 \* Bounded by `Adopt`, or elections and adoptions never end.
+
 CpAdopt(v, b, views) ==
     /\ bgen[b] > v.gen /\ bgen[b] <= Adopt
     /\ ~fencing[b]
@@ -2705,92 +2761,74 @@ CpAdopt(v, b, views) ==
     /\ Cas(v)
     /\ ver' = ver + 1
     /\ cpView' = views
-    /\ gen' = bgen[b]
-    /\ IF AdoptMatch => CpHoldsSetOf(b)
-       THEN /\ leader' = b
+    /\ LET g == bgen[b]
+           E == mine[b]
+           S == CpSet
+           \* The control plane's own leader opened past a pending change on
+           \* the set being left. Only it could take the change, so the
+           \* change is dropped.
+           skipped == cpNext /= {} /\ leader = b /\ joining = {} /\ E = S
+           recordedOnly == \/ leader = b \/ cpNext /= {} \/ joining /= {}
+                           \/ ~SetCheck \/ E \cap staged /= {}
+       IN
+       IF AdoptMatch => CpHoldsSetOf(b)
+       THEN /\ gen' = g
+            /\ leader' = b
             /\ cpExpiry' = now + L
             /\ report' = NoReport
             /\ draining' = FALSE
             \* Without `AdoptMatch` the adopted set replaces a pending one.
             /\ (IF AdoptMatch THEN UNCHANGED nextVars
                 ELSE cpNext' = {} /\ cpNextGen' = 0 /\ UNCHANGED << cutOver, splits >>)
-       ELSE UNCHANGED << leader, cpExpiry, report, draining, nextVars >>
-    /\ UNCHANGED << now, clock, inflight, bgen, bexpiry, hbOut, hbAt, log, hwm, halted,
-                    queued, pending, acked, writes, staleCommit >>
-    /\ UNCHANGED << successor, stopped, moves, staged, out, mine,
-                    joining, leaving, joinedAt >>
-    /\ UNCHANGED << promised, fencing, answered, confirmed, ballot, opened, setGen, oldSet,
-                    installed, ackGen >>
+            /\ UNCHANGED << out, takeVars >>
+       ELSE IF skipped
+       THEN /\ gen' = g
+            /\ cpNext' = {} /\ cpNextGen' = 0 /\ UNCHANGED << cutOver, splits >>
+            /\ UNCHANGED << leader, cpExpiry, report, draining, out, takeVars >>
+       ELSE IF recordedOnly
+       THEN /\ gen' = g
+            /\ UNCHANGED << leader, cpExpiry, report, draining, nextVars, out, takeVars >>
+       ELSE IF b \in S
+       THEN ReissueAt(b, g, E, S, TRUE)
+       ELSE /\ gen' = g
+            /\ leader' = b
+            /\ cpExpiry' = now + L
+            /\ report' = NoReport
+            /\ draining' = FALSE
+            /\ out' = Brokers \ (E \cup staged)
+            /\ UNCHANGED << nextVars, takeVars >>
+    /\ UNCHANGED << now, clock, inflight, hbOut, hbAt, log, hwm, halted,
+                    acked, writes, staleCommit >>
+    /\ UNCHANGED << successor, moves, staged, joining, leaving, joinedAt >>
+    /\ UNCHANGED << opened, installed, ackGen >>
 
 \* Under `Reissues`, the control plane named a leader at the generation `b`
 \* was elected at, and `b` opened there. Ballots let only one of the two open,
 \* so the named one never will. On `b`'s report the control plane writes the
-\* next generation with `b` as leader, a conditional write like a promotion
-\* (`reissue_past_collision` in
+\* next generation with `b` as leader (ReissueAt), a conditional write like a
+\* promotion (`reissue_past_collision` in
 \* services/felix-controlplane-service/src/api/nodes/reports.rs). Only `b` is
 \* named: it opened at the collided generation, so it holds everything
 \* acknowledged up to it, on whichever set. Not while a change is pending or a
-\* copy is joining, nor when `b` is outside the control plane's set.
-\* When `b` was elected on another set `E`, a majority of `E` may hold
-\* records the control plane's set never saw. Under `ReissuePending` the
-\* write is then a set change from `E` to the control plane's set, at the
-\* new generation, shaped as a cut-over (Swap): `E` becomes the recorded set
-\* and the control plane's set the pending one, so a candidate refuses to
-\* stand, a failover promotes from `E`, and the change completes only once
-\* `b` opened jointly on both (CpFlip, CpFlipNamed). The model takes `E` to
-\* be the set `b` knows when the report is read; the report says the set
-\* `b` opened on at the collided generation, which differs only if `b`
-\* learned a set since.
-\* The report may be old: the write checks only the generation, so `b` may
-\* since have stood again or stepped down. `b` takes the new generation only
-\* if it may still promise it (`accept_led_generation` in
-\* services/felix-broker-service/src/shards/lifecycle.rs); otherwise it
-\* never opens there. When it does, it fences the control plane's set, and
-\* jointly `E` when that names other members. Without `ReissuePending` it
-\* fences `E` on its own (`logged_besides`), and the control plane keeps its
-\* set with nothing pending.
-\* Nothing bounds these but `Elections` and `Suspicions`, which bound the
-\* generations that can collide. Successor and move fields are left as they
-\* are: they mean something only while draining, which this ends.
+\* copy is joining, nor when `b` is outside the control plane's set. The
+\* model takes `b`'s elected set to be the set it knows when the report is
+\* read; the report says the set `b` opened on at the collided generation,
+\* which differs only if `b` learned a set since. The report may be old: the
+\* write checks only the generation, so `b` may since have stood again or
+\* stepped down. Nothing bounds these but `Elections` and `Suspicions`, which
+\* bound the generations that can collide. Successor and move fields are left
+\* as they are: they mean something only while draining, which this ends.
+
 CpReissue(v, b, views) ==
     /\ Reissues
     /\ v.leader /= b /\ v.gen = gen
     /\ <<gen, b>> \in opened
     /\ cpNext = {} /\ joining = {} /\ b \in CpSet
+    /\ ReissuePending /\ SetCheck /\ mine[b] /= CpSet => mine[b] \cap staged = {}
     /\ Cas(v)
-    /\ LET E == mine[b]
-           S == CpSet
-           pends == ReissuePending /\ SetCheck /\ E /= S
-       IN
-       /\ pends => E \cap staged = {}
-       /\ ver' = ver + 1
-       /\ cpView' = views
-       /\ gen' = gen + 1
-       /\ leader' = b
-       /\ cpExpiry' = now + L
-       /\ report' = NoReport
-       /\ draining' = FALSE
-       /\ IF pends
-          THEN /\ out' = Brokers \ (E \cup staged)
-               /\ cpNext' = S /\ cpNextGen' = gen + 1 /\ UNCHANGED << cutOver, splits >>
-          ELSE UNCHANGED << out, nextVars >>
-       /\ IF MayPromise(b, b, gen + 1)
-          THEN /\ bgen' = [bgen EXCEPT ![b] = gen + 1]
-               /\ bexpiry' = [bexpiry EXCEPT ![b] = clock[b] + L]
-               /\ queued' = [queued EXCEPT ![b] = 0]
-               /\ pending' = [pending EXCEPT ![b] = 0]
-               /\ stopped' = [stopped EXCEPT ![b] = FALSE]
-               /\ Promise(b, b, gen + 1)
-               /\ fencing' = [fencing EXCEPT ![b] = TRUE]
-               /\ answered' = [answered EXCEPT ![b] = {}]
-               /\ confirmed' = [confirmed EXCEPT ![b] = [m \in Brokers |-> 0]]
-               /\ IF SetCheck
-                  THEN /\ mine' = [mine EXCEPT ![b] = S]
-                       /\ setGen' = [setGen EXCEPT ![b] = gen + 1]
-                       /\ oldSet' = [oldSet EXCEPT ![b] = IF E /= S THEN E ELSE {}]
-                  ELSE UNCHANGED << mine, setGen, oldSet >>
-          ELSE UNCHANGED << bgen, bexpiry, queued, pending, stopped, promised, ballot, fencing,
-                            answered, confirmed, mine, setGen, oldSet >>
+    /\ ver' = ver + 1
+    /\ cpView' = views
+    /\ ReissueAt(b, gen, mine[b], CpSet, ReissuePending /\ SetCheck)
     /\ UNCHANGED << now, clock, inflight, hbOut, hbAt, log, hwm, halted,
                     acked, writes, staleCommit >>
     /\ UNCHANGED << successor, moves, staged, joining, leaving, joinedAt >>
