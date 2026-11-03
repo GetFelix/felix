@@ -1334,9 +1334,10 @@ elected leader waits for the lease until the control plane is back (issue
     leader on the old set is passed over while a change is pending: the new
     set's leader, carrying a newer set generation, deposes it. If the
     control plane already named someone else at the elected generation, only
-    one of the two can open there. The elected leader keeps leading, and its
-    report moves the shard to the next generation, under the elected leader
-    when its set matches and under the named one otherwise.
+    one of the two can open there. If the elected leader opened, it keeps
+    leading, and its report moves the shard to the next generation under it,
+    an ordinary fenced promotion on the control plane's set (see "Adopting an
+    elected leader" in `docs/control-plane.md`).
 
 **Why it is safe.** Ballots give one leader per generation: each generation
 is fenced on one set, any two majorities of one set share a replica, and
