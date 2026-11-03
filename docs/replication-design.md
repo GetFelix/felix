@@ -2224,6 +2224,11 @@ batch, since the batch stays on disk and the next leader can commit it. A
 generation-start record written behind a held batch does not move it. While the lease is lapsed the bound is `Refused`: new
 subscribes, watches and cache reads are refused (`felix_broker_lease_refusals_total{boundary="read"}`),
 and the readers of every led shard are ended as for a move.
+If the old leader's log takes the new leader's records, or is rebuilt at its
+request, before its release ends its readers, they are ended then, at the
+position they had reached. The resume is below those records and below
+anything it held. A reader whose history is still waiting for the mark has
+seen nothing past it: its stream is reset and it resumes after its last record.
 
 ### Storage identities
 
