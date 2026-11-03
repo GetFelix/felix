@@ -241,7 +241,7 @@ clone sits next to the new crate):
 cargo new orders-demo && cd orders-demo
 cargo add felix-client --path ../felix/crates/sdk/felix-client
 cargo add tokio --features macros,rt-multi-thread
-cargo add anyhow bytes rustls
+cargo add anyhow bytes rustls@0.23
 ```
 
 ```rust
@@ -313,10 +313,10 @@ named `users`. [Rust client](/clients/rust/) covers the rest of the API.
 
 ## Benchmarks, configuration and troubleshooting
 
-- **Benchmarks.** `latency-demo` and `cache-demo` are covered, with current numbers, on [Benchmarks](/features/benchmarks/).
+- **Benchmarks.** `latency-demo` and current numbers are on [Benchmarks](/features/benchmarks/); `cache-demo` is covered in the [Performance Guide](/features/performance/).
 - **Configuration.** The broker and the Rust client read `FELIX_*` environment variables, and the broker also reads a YAML file. Every option is in the [Configuration Reference](/reference/configuration/).
 - **Task shortcuts.** `task --list` shows the build, test, lint and demo shortcuts.
-- **Troubleshooting.** Port clashes, build errors and a refused connection are in [Troubleshooting](/reference/troubleshooting/).
+- **Troubleshooting.** Port clashes and a refused connection are in [Troubleshooting](/reference/troubleshooting/).
 
 ## Where next
 
