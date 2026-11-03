@@ -31,7 +31,8 @@ const KEYS: usize = 4;
 /// sees more renewals.
 const TTL: Duration = Duration::from_secs(6);
 const RENEW_EVERY: Duration = Duration::from_secs(2);
-/// How long the canary runs on a quiet cluster to set its baseline.
+/// How long the canary runs on a quiet cluster first. The idle samples are
+/// reported next to the loaded ones but not judged.
 const IDLE: Duration = Duration::from_secs(12);
 const APPEND_EVERY: Duration = Duration::from_millis(50);
 const CREATES_IN_FLIGHT: usize = 16;
@@ -45,16 +46,15 @@ const FEATURES: [&str; 4] = [
     "fenced_caches",
 ];
 
-/// The loaded p99 may be this many times the quiet one before the test fails.
-/// Idle p99s are a few milliseconds, so on a healthy runner the floor below
-/// sets the bound; the multiple only takes over when the runner is slow even
-/// at rest.
-const BASELINE_MULTIPLE: u32 = 20;
-/// The least the bound is. At the per-PR size the loaded p99 was 5 to 6 s
-/// without the #1760 fixes and under 0.85 s with them, so 2 s is about 2.5
-/// times from each and runner noise does not flip the result.
+/// The slowest a renewal under load may be: one that takes longer lands after
+/// the lease it renews has run out. A starved shard's renewals take 5 to 6 s.
+/// A debug build saturates the per-PR runner's CPU, which slows every quorum
+/// write, and healthy renewals there reached 2.2 s.
+const RENEWAL_BOUND: Duration = TTL.saturating_sub(RENEW_EVERY);
+/// The slowest a read under load may be. Reads stay under 0.4 s on a saturated
+/// runner, and reads queued behind other shards' fences took 2.5 to 6 s.
 /// `docs/cluster-harness.md` has the runs.
-const BOUND_FLOOR: Duration = Duration::from_secs(2);
+const READ_BOUND: Duration = Duration::from_secs(2);
 
 /// How much load a run applies.
 #[derive(Clone, Copy, Debug)]
@@ -557,21 +557,25 @@ impl Report {
                 self.lapses.join(", ")
             ));
         }
-        for (what, idle, loaded) in [
-            ("renewal", &self.renew_idle, &self.renew_loaded),
-            ("read", &self.read_idle, &self.read_loaded),
+        for (what, idle, loaded, bound) in [
+            (
+                "renewal",
+                &self.renew_idle,
+                &self.renew_loaded,
+                RENEWAL_BOUND,
+            ),
+            ("read", &self.read_idle, &self.read_loaded, READ_BOUND),
         ] {
             assert!(
                 !idle.is_empty() && !loaded.is_empty(),
                 "the canary took no {what} samples"
             );
-            let bound = bound(p99(idle));
-            if p99(loaded) > bound {
+            let slow = loaded.iter().filter(|took| **took > bound).count();
+            if slow > 0 {
                 problems.push(format!(
-                    "{what} p99 {:.1?} under load is over {bound:.1?} \
-                     ({BASELINE_MULTIPLE}x the quiet p99 {:.1?}, at least {BOUND_FLOOR:.1?})",
-                    p99(loaded),
-                    p99(idle)
+                    "{slow} of {} {what}s under load took over {bound:.1?}, the slowest {:.1?}",
+                    loaded.len(),
+                    loaded.last().copied().unwrap_or_default()
                 ));
             }
         }
@@ -592,20 +596,14 @@ impl std::fmt::Display for Report {
         };
         write!(
             f,
-            "renewals idle [{}] loaded [{}] bound {:.1?}; reads idle [{}] loaded [{}] bound {:.1?}; {} lapse(s)",
+            "renewals idle [{}] loaded [{}] bound {RENEWAL_BOUND:.1?}; reads idle [{}] loaded [{}] bound {READ_BOUND:.1?}; {} lapse(s)",
             line(&self.renew_idle),
             line(&self.renew_loaded),
-            bound(p99(&self.renew_idle)),
             line(&self.read_idle),
             line(&self.read_loaded),
-            bound(p99(&self.read_idle)),
             self.lapses.len(),
         )
     }
-}
-
-fn bound(idle_p99: Duration) -> Duration {
-    (idle_p99 * BASELINE_MULTIPLE).max(BOUND_FLOOR)
 }
 
 fn p99(sorted: &[Duration]) -> Duration {
