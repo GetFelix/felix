@@ -15,6 +15,7 @@ mod pacing;
 mod pending_set;
 mod readmit;
 mod reconciler;
+mod recovering;
 mod refused;
 mod regions;
 mod rendezvous;

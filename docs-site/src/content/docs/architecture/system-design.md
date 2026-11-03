@@ -295,52 +295,11 @@ started with `FELIX_QUORUM_READS=lease` keeps its reads on the lease.
 - **Exactly-once:** not implemented, and not planned. See
   [Semantics](/architecture/semantics/)
 
-## Multi-Region Architecture (Planned)
+## Regions
 
-:::caution[Not yet implemented]
-Everything in this section describes a target design, not current
-behavior. What exists today is narrower: a stream created with a `region`
-is placed only on brokers in that region or in one the directional
-allowlist `FELIX_REGION_BRIDGES` bridges it to, and a broker forwards a
-request only to a leader in a region it has a bridge to. There is no bridge
-agent, encryption-boundary enforcement, audit logging, or metadata-level
-isolation. No compliance claim should be inferred until this actually lands.
-:::
-The target design has Felix enforce regional isolation with explicit bridges:
+A stream created with a `region` is placed only on brokers in that region, or in a region that the directional allowlist `FELIX_REGION_BRIDGES` bridges it to. A broker forwards a request only to a leader in a region it has a bridge to. See [Data residency](/use-cases/data-residency/) for how to set this up.
 
-```mermaid
-flowchart LR
-    subgraph Region1["Region: US-EAST"]
-        B1["Brokers<br/>US-EAST"]
-        CONTROLPLANE1["Control Plane<br/>US-EAST"]
-    end
-    
-    subgraph Region2["Region: EU-WEST"]
-        B2["Brokers<br/>EU-WEST"]
-        CONTROLPLANE2["Control Plane<br/>EU-WEST"]
-    end
-    
-    subgraph Bridge["Explicit Bridge"]
-        BridgeAgent["Bridge Agent<br/>• Allowlist<br/>• Encryption<br/>• Audit Log"]
-    end
-    
-    B1 <-->|"Explicit config only"| BridgeAgent
-    BridgeAgent <-->|"Explicit config only"| B2
-    
-    style Region1 fill:#e1f5ff,stroke:#334155,color:#111827
-    style Region2 fill:#fff4e1,stroke:#334155,color:#111827
-    style Bridge fill:#ffe1e1,stroke:#334155,color:#111827
-```
-
-**Target bridge characteristics (not yet built):**
-
-- **Explicit Configuration:** No implicit data movement
-- **Stream Allowlist:** Only specified streams replicate
-- **Independent Encryption:** Per-region key contexts
-- **Audit Trail:** Complete log of cross-region data movement
-
-None of this has been implemented or audited; do not rely on it for
-regulatory or compliance purposes until it ships.
+That is all Felix enforces today. It has no bridge agent, no per-region encryption boundary, no audit log of cross-region movement and no metadata-level isolation, so do not make a compliance claim from it. The target design is in [`docs/design.md`](https://github.com/GetFelix/felix/blob/main/docs/design.md).
 
 ## Scalability Considerations
 
