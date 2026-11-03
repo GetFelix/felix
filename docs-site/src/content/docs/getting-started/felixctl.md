@@ -16,9 +16,8 @@ Its data-plane commands use only the public API of the Rust client
 
 ## Install
 
-Each release publishes felixctl as a crate, prebuilt archives and a
-container image. Releases after 0.6.0-preview.2 also publish a Homebrew
-formula.
+Each release publishes felixctl as a crate, prebuilt archives, a Homebrew
+formula and a container image.
 
 With Homebrew, on macOS or Linux:
 
@@ -74,8 +73,6 @@ docker run --rm --user "$(id -u):$(id -g)" \
 With rootless Podman, use `--userns=keep-id` in place of `--user`, so the
 container runs as your uid.
 
-Releases before 0.6.0-preview.2 are under `ghcr.io/gabloe`, the project's previous owner.
-
 A preview tag is never `latest`.
 
 From a checkout of the repository:
@@ -96,9 +93,14 @@ session file in your temp directory. Start one and leave it running:
 cargo run --release -p felix-cluster -- up --nodes 3
 ```
 
-In a second terminal, turn the session file into a context. The brokers
-generate their own certificates, and the session names each one so the CLI can
-check them:
+In a second terminal, turn the session file into a context. The context tells
+`felixctl` which brokers, tenant and token to use.
+
+<details>
+<summary>Build the context from the session file (copy and paste)</summary>
+
+The brokers generate their own certificates, and the session names each one so
+the CLI can check them:
 
 ```bash
 S=${TMPDIR:-/tmp}/felix-cluster.json
@@ -114,6 +116,8 @@ felixctl context add local \
   --controlplane-url "$(jq -r .control_plane "$S")" \
   --controlplane-token "$(jq -r .admin_token "$S")"
 ```
+
+</details>
 
 The tokens in the session file last an hour, and `up` rewrites the file with
 fresh ones every half hour. If a context stops authenticating, rerun the commands
@@ -679,11 +683,11 @@ felixctl man --out-dir ~/.local/share/man/man1
 State reads are planned. See
 [issue #1005](https://github.com/GetFelix/felix/issues/1005). More of
 `felixctl inspect` is coming: connections, the control plane's placement
-decisions, a data directory's records decoded offline, and where one
-record is held ([issue #1077](https://github.com/GetFelix/felix/issues/1077)).
+decisions, and where one record is held on each replica ([issue #1077](https://github.com/GetFelix/felix/issues/1077)).
 
 ## Where next
 
+- [Tutorials](/tutorials/overview/): build a small app with these commands and the Rust client
 - [Pub/Sub Streaming](/features/pubsub/): what streams and subscriptions guarantee
 - [Queues and Consumer Groups](/features/queues/): the group commands in context
 - [Use Cases](/use-cases/overview/): scenarios built from these commands

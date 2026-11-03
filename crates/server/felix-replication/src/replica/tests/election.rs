@@ -82,6 +82,101 @@ fn ok(answer: &InternalMessage) {
     );
 }
 
+/// A router at `generation` led by broker-a with `LOCAL` following, whose
+/// watch saw `before` (leader first) as the set right before it, or saw
+/// nothing before it when `before` is `None`.
+fn router_after(generation: u64, before: Option<&[&str]>) -> Arc<ShardRouter> {
+    let router = router_with(&[LOCAL], generation);
+    let nodes: HashMap<String, NodeRef> = ["broker-a", LOCAL, "broker-c"]
+        .iter()
+        .zip(7001..)
+        .map(|(id, port)| (id.to_string(), node(id, port)))
+        .collect();
+    let priors = before.map(|before| {
+        let prior = felix_router::PriorSet {
+            generation,
+            before: Some(Arc::new(felix_router::PlacedSet {
+                leader: before[0].to_string(),
+                replicas: before[1..].iter().map(|id| id.to_string()).collect(),
+                successor: None,
+                storage_ids: Default::default(),
+                member_storage_ids: Default::default(),
+            })),
+        };
+        (key(), prior)
+    });
+    let table = RoutingTable::build(
+        [(
+            key(),
+            "broker-a".to_string(),
+            vec![LOCAL.to_string()],
+            generation,
+        )],
+        &nodes,
+    )
+    .with_priors(priors.into_iter().collect());
+    router.publish(table, &nodes);
+    router
+}
+
+fn joint_marks() -> Arc<crate::quorum::QuorumMarks> {
+    let fleet = felix_common::fleet::FleetGate::new([felix_common::fleet::JOINT_FENCE.name()]);
+    fleet.restart(Some(felix_common::fleet::JOINT_FENCE.name()));
+    Arc::new(crate::quorum::QuorumMarks::with_fleet(Arc::new(fleet)))
+}
+
+/// **Under `joint_fence` a batch teaches a set only with the control plane's
+/// set before it**, kept as the one being left, as the leader keeps it. The
+/// copy's own older set may be an elected leader's, so a follower that missed
+/// the joint fence and took its own as the set being left could stand on a
+/// set holding none of the leader's records. Without the set before, the
+/// batch is refused until a fence carries it. `LearnsLeavingSet`.
+#[tokio::test]
+async fn a_batch_under_joint_fence_learns_the_set_being_left_only_from_the_control_plane() {
+    let (broker, _dir) = broker_with_storage().await;
+    knows_set(&broker, 3).await;
+    let unknown =
+        ReplicaHandler::new(Arc::clone(&broker), router_after(4, None)).with_fleet(joint_marks());
+    let answer = unknown
+        .apply(
+            SENDER,
+            stamped(4, 0, &["a"], 4),
+            felix_broker::LogKind::Stream,
+        )
+        .await;
+    assert_eq!(refusal(&answer).code, ErrorCode::StaleRoute);
+    assert_eq!(
+        stream_log(&broker).await.set_generation(),
+        3,
+        "nothing is learned from a refused batch"
+    );
+
+    let watched = ReplicaHandler::new(
+        Arc::clone(&broker),
+        router_after(4, Some(&["broker-a", LOCAL, "broker-c"])),
+    )
+    .with_fleet(joint_marks());
+    let answer = watched
+        .apply(
+            SENDER,
+            stamped(4, 0, &["a"], 4),
+            felix_broker::LogKind::Stream,
+        )
+        .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    let set = stream_log(&broker).await.replica_set().expect("a set");
+    assert_eq!(set.current.generation, 4);
+    let leaving = set
+        .leaving
+        .expect("the set before is kept as the one being left");
+    assert_eq!(leaving.generation, 3);
+    let nodes: Vec<&str> = leaving.members.iter().map(|m| m.node.as_str()).collect();
+    assert_eq!(nodes, vec!["broker-a", LOCAL, "broker-c"]);
+}
+
 /// **A fence counting an older set is refused, naming the newer one**, and
 /// takes no ballot: a sender that has not seen the latest set must not gather
 /// a majority from replicas that have. `RefuseStaleSet`.

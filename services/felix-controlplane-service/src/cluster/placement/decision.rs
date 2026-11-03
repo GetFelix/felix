@@ -40,7 +40,8 @@ pub enum MoveStep {
     /// The leader has stopped. `to` leads from the next generation.
     CutOver { from: String, to: String },
     /// A move's destination, or a follower being copied in, stopped being
-    /// live before it finished; its staging is undone.
+    /// live before it finished, or a staged balance move met a broker down;
+    /// its staging is undone. After the fence, the leader serves again.
     Abandon { successor: String },
     /// A move's destination, or a follower being copied in, stopped
     /// following: its leader reported it halted for `reason`. Undone as for
@@ -102,6 +103,11 @@ pub enum MoveStep {
     /// `MovePolicy::pending_set_timeout_millis`: the change is dropped and
     /// the control plane's own set stays, at a new generation.
     PendingSetTimedOut,
+    /// The leader reported that it refused to open its generation, having
+    /// promised it to a node whose election the control plane recorded
+    /// without adopting. It is named again at a new generation, above the
+    /// one it promised away, on the same set.
+    ElectionRefused,
     /// The shard no longer elects (its consistency changed), so a pending
     /// set can never be reported: the change is dropped.
     PendingSetDropped,
@@ -137,6 +143,7 @@ impl MoveStep {
             Self::Discard { .. } => "discard",
             Self::TakePendingSet => "take_pending_set",
             Self::PendingSetTimedOut => "pending_set_timed_out",
+            Self::ElectionRefused => "election_refused",
             Self::PendingSetDropped => "pending_set_dropped",
             Self::PendingSetCancelled => "pending_set_cancelled",
             Self::Readmit { .. } => "readmit",
@@ -166,6 +173,9 @@ pub enum Blocked {
     DestinationHalted { node: String, reason: String },
     /// A move is wanted, and placement is paused.
     Paused,
+    /// A move for balance is wanted, and a broker is down or a copy is being
+    /// restored. It starts once that is over.
+    Recovering,
     /// The set is above the replication factor, and no follower can go yet:
     /// a report at this generation does not show the rest caught up without
     /// one of them.
@@ -198,6 +208,10 @@ impl std::fmt::Display for Blocked {
                 "no live node can take this shard: the copy on {node} is halted ({reason})"
             ),
             Self::Paused => write!(f, "placement is paused"),
+            Self::Recovering => write!(
+                f,
+                "a broker is down or a copy is being restored; moves for balance wait until that is over"
+            ),
             Self::OverFactor => write!(
                 f,
                 "waiting for the replicas to catch up before dropping one above the replication factor"

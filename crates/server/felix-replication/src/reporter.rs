@@ -17,8 +17,8 @@
 use std::collections::BTreeMap;
 
 use felix_common::membership::{
-    HaltedReplicaStatus, ReplicaOffset, ReplicaStatusRequest, ReplicaStatusResponse,
-    ShardKind as WireShardKind, ShardReplicaStatus,
+    HaltedReplicaStatus, RefusedGeneration, ReplicaOffset, ReplicaStatusRequest,
+    ReplicaStatusResponse, ShardKind as WireShardKind, ShardReplicaStatus,
 };
 use felix_router::ShardKey;
 use felix_storage::StorageId;
@@ -168,6 +168,11 @@ pub struct ShardReport {
     /// majority of the set being left and of the new one. The control plane
     /// takes the new set on a report that names it for this generation.
     pub joint_start_acked: Option<u64>,
+    /// This broker, named leader at `generation`, refused to open it because
+    /// it had promised the generation to another node. Sent without a tail
+    /// or any measured position; the control plane names this broker again at
+    /// a generation above the refused one.
+    pub refused: Option<RefusedGeneration>,
     /// The followers whose copy held this generation's start record when
     /// this pass answered them, and for a cache its counter log's too. Only
     /// a follower that gave a storage identity is listed.
@@ -267,6 +272,7 @@ pub(super) fn shard_report(
             .collect(),
         given_up: false,
         joint_start_acked: None,
+        refused: None,
         holds_start: Vec::new(),
         elected: None,
         inherited_storage: followers
@@ -393,7 +399,8 @@ async fn send_reports(to: &ReportTo, reports: &[ShardReport]) -> Vec<bool> {
                 generation: report.generation,
                 caught_up: report.caught_up.to_vec(),
                 drained: report.drained,
-                leader_offset: (!report.given_up).then_some(report.tail),
+                leader_offset: (!report.given_up && report.refused.is_none())
+                    .then_some(report.tail),
                 replica_offsets: report
                     .offsets
                     .iter()
@@ -432,6 +439,7 @@ async fn send_reports(to: &ReportTo, reports: &[ShardReport]) -> Vec<bool> {
                 joint_start_acked: report.joint_start_acked,
                 holds_start: report.holds_start.iter().cloned().collect(),
                 elected: report.elected.clone(),
+                refused: report.refused.clone(),
             })
             .collect(),
     };

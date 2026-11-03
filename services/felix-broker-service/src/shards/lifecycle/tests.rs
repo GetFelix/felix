@@ -4,6 +4,7 @@ use super::*;
 mod cache_incarnation;
 mod every_change;
 mod promotion;
+mod refused;
 mod unclean;
 
 fn key(shard: u32) -> ShardKey {

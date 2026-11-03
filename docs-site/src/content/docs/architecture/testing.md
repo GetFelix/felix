@@ -210,6 +210,26 @@ tell how many brokers there are or which one it reached.
 
 Detail: [`docs/cluster-harness.md`](https://github.com/GetFelix/felix/blob/main/docs/cluster-harness.md).
 
+### Shard starvation
+
+Some failures need size, not faults. felixd, a workload runner built on Felix,
+keeps its leases in a Felix cache. In its scale test (1000 workloads, about 2000
+replicated streams) the lease renewals waited longer than the lease TTL while
+every broker stayed up and nothing was logged at ERROR. Each broker ships at
+most 16 shards at a time and kept picking the same busy ones, and lease reads
+waited behind other shards' work on the broker-to-broker connections.
+
+The `scale` suite rebuilds that load on three brokers. A canary renews four
+keys in a one-shard `Quorum` cache every 2 s with a 6 s TTL while the test
+creates hundreds of single-shard streams with three replicas and appends
+steadily to some of them. It fails if any lease lapses, if a renewal under
+load takes over 4 s (the TTL minus the interval, after which the lease has run
+out), or if a read under load takes over 2 s. The 600-stream
+size runs on every pull request. `scale-nightly.yml` runs it at 1500 streams on a
+release build and opens an issue labelled `scale-nightly` when it fails.
+[`docs/cluster-harness.md`](https://github.com/GetFelix/felix/blob/main/docs/cluster-harness.md#shard-starvation)
+says how to read a failure.
+
 ## TLA+ models
 
 The models in `docs/formal/` cover one shard: three brokers, one control plane

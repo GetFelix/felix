@@ -41,6 +41,7 @@ fn status(
     felix_common::membership::ShardReplicaStatus {
         inherited_storage_ids: Default::default(),
         joint_start_acked: None,
+        refused: None,
         holds_start: Default::default(),
         elected: None,
         given_up: false,
@@ -598,6 +599,40 @@ async fn a_report_is_stamped_with_its_leader_and_the_registered_incarnations() {
         !positions().await.is_caught_up(&shard_zero(), "broker-y"),
         "a report from before broker-y registered again still counted it"
     );
+}
+
+/// **A leader's refusal travels from the wire to the stored report**, and
+/// placement reads it from there only for the generation it names. The
+/// refusal is the evidence it names the leader again on.
+#[tokio::test]
+async fn a_refusal_is_stored_and_read_by_placement() {
+    let (store, keys) = one_shard_cluster().await;
+    let generation = led_by_x(&store, 0).await;
+    let state = app_state_ready(Arc::clone(&store) as _);
+    let mut shard = shard_json(0, generation, 10, &[]);
+    shard["leader_offset"] = serde_json::Value::Null;
+    shard["refused"] = serde_json::json!({ "generation": generation, "promised_to": "broker-d" });
+
+    let (status, _) = post_report(state, &keys, serde_json::json!([shard])).await;
+
+    assert_eq!(status, StatusCode::OK);
+    let held = store.list_replica_reports().await.expect("list");
+    assert_eq!(
+        held[0].refused,
+        Some(felix_common::membership::RefusedGeneration {
+            generation,
+            promised_to: "broker-d".to_string(),
+        })
+    );
+    use crate::cluster::placement::CaughtUp;
+    let positions = crate::cluster::placement::ReplicaPositions::load(
+        store.as_ref(),
+        &crate::config::NodeLivenessConfig::default(),
+    )
+    .await
+    .expect("positions");
+    assert!(positions.leader_refused(&shard_zero(), generation, "broker-x"));
+    assert!(!positions.leader_refused(&shard_zero(), generation + 1, "broker-x"));
 }
 
 /// Post a report naming broker-y caught up, measured at `measured`, and say

@@ -100,6 +100,14 @@ A few more limits apply today:
 - In a cluster, an operator finalizes the `atomic_commit` fleet feature once
   every broker is upgraded, and commits are refused until then.
 
+## Related
+
+- [Semantics](/architecture/semantics/) states what Felix guarantees about
+  delivery, ordering and durability, including how a commit fits in.
+- [Kafka compatibility](/features/kafka/) says how Kafka producers write to
+  durable streams and how Kafka consumers that assign their own partitions
+  read from them.
+
 ## Checked, not just claimed
 
 The TLA+ model `FelixAtomicCommit` shows a commit is all-or-nothing across a

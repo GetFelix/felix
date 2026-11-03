@@ -25,6 +25,21 @@ call, and `on_connect`, `on_publish`, `on_subscribe`, `on_event` and `on_done`
 are the one-line callbacks that pass their result to `finish`. A production C
 client would drive the callbacks from its own event loop instead.
 
+## Pick a scenario
+
+Pick your language in any tab below and the whole page switches with it.
+
+- A broker restarts or a shard moves: [Connecting to a cluster](#connecting-to-a-cluster) and [Reconnection](#reconnection).
+- A token expires while the process runs: [Authentication that lasts](#authentication-that-lasts).
+- A call fails and you must decide whether to retry: [Errors and retry classes](#errors-and-retry-classes).
+- A publish's acknowledgement was lost: [Writes whose outcome is unknown](#writes-whose-outcome-is-unknown).
+- A consumer restarts and must not lose or repeat work: [Reading without losing your place](#reading-without-losing-your-place).
+- A consumer cannot keep up: [Slow consumers](#slow-consumers).
+- A work queue worker crashes mid-job: [Consumer groups under failure](#consumer-groups-under-failure).
+- The process is stopping: [Shutting down cleanly](#shutting-down-cleanly).
+
+For which error maps to which type in your language, see [Errors Across Clients](/clients/errors/). For tokens and TLS options side by side, see [Auth and TLS](/clients/auth-and-tls/).
+
 ## Connecting to a cluster
 
 Give the client more than one seed. It asks whichever seed answers which
@@ -89,16 +104,16 @@ import { Client } from "felix-client";
 const token = process.env.FELIX_TOKEN;
 if (!token) throw new Error("set FELIX_TOKEN");
 
-const cluster = await Client.connect(
+const client = await Client.connect(
   ["felix-0.felix.svc:5000", "felix-1.felix.svc:5000", "felix-2.felix.svc:5000"],
   "acme",
   { token, serverName: "felix.example.com" },
 );
 try {
   // The seeds plus every broker they named.
-  console.log(await cluster.endpoints());
+  console.log(await client.endpoints());
 } finally {
-  cluster.close();
+  client.close();
 }
 ```
 
@@ -108,7 +123,7 @@ try {
 ```csharp
 using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
 
-await using var cluster = await FelixClient.ConnectAsync(new FelixClientOptions
+await using var client = await FelixClient.ConnectAsync(new FelixClientOptions
 {
     Addrs = ["felix-0.felix.svc:5000", "felix-1.felix.svc:5000", "felix-2.felix.svc:5000"],
     TenantId = "acme",
@@ -117,7 +132,7 @@ await using var cluster = await FelixClient.ConnectAsync(new FelixClientOptions
 }, timeout.Token);
 
 // The seeds plus every broker they named.
-Console.WriteLine(string.Join(", ", await cluster.GetEndpointsAsync(timeout.Token)));
+Console.WriteLine(string.Join(", ", await client.GetEndpointsAsync(timeout.Token)));
 ```
 
 </TabItem>
@@ -642,7 +657,7 @@ fn judge(err: &anyhow::Error) -> Verdict {
 
 let mut attempt = 1;
 let offset = loop {
-    match cluster
+    match client
         .publish("acme", "prod", "orders", payload.clone(), AckMode::PerMessage)
         .await
     {
@@ -697,11 +712,11 @@ def publish_with_retry(client, payload, attempts=4):
 import { setTimeout as sleep } from "node:timers/promises";
 import { type Client, FelixError } from "felix-client";
 
-async function publishWithRetry(cluster: Client, body: Buffer, attempts = 4): Promise<bigint | null> {
+async function publishWithRetry(client: Client, body: Buffer, attempts = 4): Promise<bigint | null> {
   let delayMs = 200;
   for (let attempt = 1; ; attempt++) {
     try {
-      return await cluster.publish("acme", "prod", "orders", body);
+      return await client.publish("acme", "prod", "orders", body);
     } catch (err) {
       // Resend only what the broker says it did not apply. `retryable` is also
       // true for a connection error, which on a write is ambiguous, so test the class.
@@ -726,14 +741,14 @@ long? published = await PublishWithRetryAsync(client, payload, timeout.Token);
 Console.WriteLine($"published at {published}");
 
 static async Task<long?> PublishWithRetryAsync(
-    FelixClient cluster, ReadOnlyMemory<byte> payload, CancellationToken ct)
+    FelixClient client, ReadOnlyMemory<byte> payload, CancellationToken ct)
 {
     var delay = TimeSpan.FromMilliseconds(200);
     for (var attempt = 1; ; attempt++)
     {
         try
         {
-            return await cluster.PublishAsync("acme", "prod", "orders", payload, cancellationToken: ct);
+            return await client.PublishAsync("acme", "prod", "orders", payload, cancellationToken: ct);
         }
         // Resend only what the broker refused without applying. A connection
         // error (which IsRetryable also covers) and OutcomeUnknown propagate:
@@ -827,7 +842,7 @@ the shard no longer knowing the producer, ends the producer on that stream.
 ```rust
 use felix_client::PublishRefused;
 
-let producer = cluster.idempotent_producer().await?;
+let producer = client.idempotent_producer().await?;
 let mut attempt = 1;
 let offset = loop {
     match producer.publish("acme", "prod", "orders", payload.clone()).await {
@@ -1007,7 +1022,7 @@ use felix_client::ConditionalWrite;
 // The offset this writer expects to write next.
 let mut next = 0;
 for tick in ticks {
-    match cluster
+    match client
         .publish_if("acme", "games", "match-7", None, vec![tick], next)
         .await?
     {
@@ -1178,7 +1193,7 @@ let mut start = match checkpoint.load().await? {
 let mut expected: Option<u64> = None;
 
 loop {
-    let mut subscription = match cluster
+    let mut subscription = match client
         .subscribe_from("acme", "prod", "events", Some(start))
         .await
     {
@@ -1293,7 +1308,7 @@ interface Checkpoint {
 }
 
 async function run(
-  cluster: Client,
+  client: Client,
   checkpoint: Checkpoint,
   apply: (payload: Buffer) => Promise<void>,
   allowGap = false,
@@ -1305,7 +1320,7 @@ async function run(
   for (;;) {
     let events: SubscriptionHandle | undefined;
     try {
-      events = await cluster.subscribe("acme", "prod", "events", start);
+      events = await client.subscribe("acme", "prod", "events", start);
       for (let event = await events.nextEvent(); event !== null; event = await events.nextEvent()) {
         if (event.offset !== null) {
           const first = event.offset - event.skippedBefore;
@@ -1352,7 +1367,7 @@ Console.CancelKeyPress += (_, e) =>
 };
 await RunAsync(client, stop.Token);
 
-static async Task RunAsync(FelixClient cluster, CancellationToken ct, bool allowGap = false)
+static async Task RunAsync(FelixClient client, CancellationToken ct, bool allowGap = false)
 {
     long? last = await LoadCheckpointAsync();
     var start = last is { } seen ? StartPosition.FromOffset((ulong)(seen + 1)) : StartPosition.Earliest;
@@ -1362,7 +1377,7 @@ static async Task RunAsync(FelixClient cluster, CancellationToken ct, bool allow
     {
         try
         {
-            await using var events = await cluster.SubscribeAsync(
+            await using var events = await client.SubscribeAsync(
                 "acme", "prod", "events", shard: 0, start, ct);
             await foreach (var ev in events.WithCancellation(ct))
             {
@@ -1492,12 +1507,12 @@ use felix_client::{ShardEvent, StartPosition};
 
 let mut stream = match checkpoint.load().await? {
     Some(positions) => {
-        cluster
+        client
             .resubscribe_sharded("acme", "prod", "orders", positions, Some(StartPosition::Earliest))
             .await?
     }
     None => {
-        cluster
+        client
             .subscribe_sharded("acme", "prod", "orders", Some(StartPosition::Earliest))
             .await?
     }

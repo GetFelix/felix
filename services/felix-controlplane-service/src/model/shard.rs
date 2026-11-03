@@ -730,15 +730,15 @@ impl ShardAssignment {
             return Some(adopted);
         }
         if self.nodes().any(|node| *node == elected.leader) {
-            // Beyond the window the store would refuse the write: recorded
-            // only, as before.
-            let reissued = ShardAssignment {
+            // Beyond the window the store would refuse the write, and taking
+            // only the generation would name this set's leader where the
+            // elected one opened. Not adopted: the report is judged as before.
+            return ShardAssignment {
                 generation: elected.generation,
                 ..self.clone()
             }
             .reissuing(elected, known)
             .filter(|next| check_elected_generation(self.generation, next.generation).is_ok());
-            return Some(reissued.unwrap_or(adopted));
         }
         Some(adopted.on_elected_set(elected))
     }
@@ -877,6 +877,13 @@ pub struct ReplicaReport {
     /// Raft, until every member can apply it; the change then stays pending.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub joint_start_acked: Option<u64>,
+    /// The leader refused to open the generation it was named at because it
+    /// had promised that generation to another node. Placement names it again
+    /// at a generation above the refused one. Absent from brokers that
+    /// predate it and, under Raft, until every member can apply it; the shard
+    /// then waits as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refused: Option<felix_common::membership::RefusedGeneration>,
     /// The followers the leader saw holding the start record of its own
     /// generation (and, for a cache, of its counter log). Placement
     /// re-admits a replaced member on it. Empty from brokers that predate it

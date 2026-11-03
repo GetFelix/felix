@@ -27,6 +27,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering::SeqCst};
 use std::sync::{Arc, OnceLock};
 
+use felix_common::membership::RefusedGeneration;
 use parking_lot::RwLock;
 use tokio::sync::Notify;
 
@@ -68,6 +69,9 @@ pub struct ShardFence {
     /// Shards whose open was refused because this broker gave up the
     /// generation, and the generation.
     gave_up: RwLock<HashMap<ShardKey, u64>>,
+    /// Shards whose open was refused because the generation was promised to
+    /// another node, with the generation and that node.
+    refused: RwLock<HashMap<ShardKey, (u64, String)>>,
     /// Given-up shards whose last probe found no follower ahead of this
     /// broker's copy, and the generation they were given up at.
     reclaimable: RwLock<HashMap<ShardKey, u64>>,
@@ -90,6 +94,23 @@ impl ShardFence {
     /// generation up.
     pub(crate) fn gave_up(&self, key: &ShardKey, generation: u64) {
         self.gave_up.write().insert(key.clone(), generation);
+    }
+
+    /// `key`'s open at `generation` was refused: this broker had promised it
+    /// to `promised_to`.
+    pub(crate) fn refused(&self, key: &ShardKey, generation: u64, promised_to: &str) {
+        self.refused
+            .write()
+            .insert(key.clone(), (generation, promised_to.to_string()));
+    }
+
+    /// `key` opened at `generation`, so a refusal at or below it no longer
+    /// holds the shard back and is not reported again.
+    pub(crate) fn opened_at(&self, key: &ShardKey, generation: u64) {
+        let mut refused = self.refused.write();
+        if refused.get(key).is_some_and(|(at, _)| *at <= generation) {
+            refused.remove(key);
+        }
     }
 
     /// The generation `key` was given up at, if its last probe found no
@@ -362,6 +383,16 @@ impl felix_replication::driver::WriteFence for ShardFence {
 
     fn gave_up_at(&self, key: &ShardKey) -> Option<u64> {
         self.gave_up.read().get(key).copied()
+    }
+
+    fn refused_at(&self, key: &ShardKey) -> Option<RefusedGeneration> {
+        self.refused
+            .read()
+            .get(key)
+            .map(|(generation, promised_to)| RefusedGeneration {
+                generation: *generation,
+                promised_to: promised_to.clone(),
+            })
     }
 
     fn probed(&self, key: &ShardKey, generation: u64, reclaimable: bool) {
