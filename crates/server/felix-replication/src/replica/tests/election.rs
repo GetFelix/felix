@@ -480,9 +480,11 @@ async fn only_a_leader_open_at_its_routes_generation_refuses_a_pre_vote() {
 /// fence when it comes again**, records that leader, and then grants a
 /// pre-vote once it goes quiet. Before the fence it refuses the new leader's
 /// batches as behind, since no route names the elected generation, and
-/// refuses pre-votes as the leader its stale route names.
+/// refuses pre-votes as the leader its stale route names. This is the
+/// follower's side; the leader sending the fence again is tested in the
+/// driver.
 #[tokio::test]
-async fn a_cut_off_leader_records_the_elected_leader_from_its_fence() {
+async fn a_cut_off_leader_takes_the_elected_leaders_fence() {
     let (broker, _dir) = broker_with_storage().await;
     let marks = Arc::new(crate::quorum::QuorumMarks::new());
     let elections = Arc::new(crate::election::Elections::new(

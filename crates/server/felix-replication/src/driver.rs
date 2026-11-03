@@ -541,14 +541,19 @@ pub async fn replicate_once_with<R: PeerRequester + Sync>(
     }
 }
 
-async fn fence_one<R: PeerRequester>(
+/// A fenced shard: its key, the generation fenced at, and how the fence went.
+/// The guard keeps the candidate from withdrawing the standing, and rides
+/// along until the shard has opened.
+type Fenced<'a> = (ShardKey, u64, Outcome, Option<crate::election::Fencing<'a>>);
+
+async fn fence_one<'a, R: PeerRequester>(
     requester: &R,
     broker: &Arc<Broker>,
     router: &ShardRouter,
     key: ShardKey,
     route: felix_router::Route,
-    marks: &QuorumMarks,
-) -> (ShardKey, u64, Outcome) {
+    marks: &'a QuorumMarks,
+) -> Fenced<'a> {
     // Before registration answers, the fleet view is empty for want of an
     // answer and every feature reads as off, so the lease would stand in for
     // a fence the fleet may already require.
@@ -561,6 +566,7 @@ async fn fence_one<R: PeerRequester>(
                 why: why.into(),
                 took: Vec::new(),
             },
+            None,
         );
     }
     // Once the followers decide acknowledgements, a shard never opens on the
@@ -583,9 +589,9 @@ async fn fence_one<R: PeerRequester>(
     let candidacy = marks
         .elections()
         .and_then(|elections| elections.candidacy(&key, route.generation));
-    // Held through the fence and the catch-up, so the candidate does not
-    // withdraw a standing that is still opening.
-    let _fencing = marks
+    // Held until the shard has opened, which is after every shard in the pass
+    // has fenced, so the candidate does not withdraw a standing still opening.
+    let fencing = marks
         .elections()
         .filter(|_| candidacy.is_some())
         .map(|elections| elections.fencing(&key, route.generation));
@@ -610,7 +616,7 @@ async fn fence_one<R: PeerRequester>(
             took: Vec::new(),
         }
     };
-    (key, route.generation, outcome)
+    (key, route.generation, outcome, fencing)
 }
 
 /// Fence each shard this broker was just promoted to lead, and open the ones
@@ -623,7 +629,7 @@ async fn open_promoted<R: PeerRequester>(
     promoted: Vec<(ShardKey, felix_router::Route)>,
     marks: &QuorumMarks,
 ) -> bool {
-    let outcomes: Vec<(ShardKey, u64, Outcome)> = futures::stream::iter(
+    let outcomes: Vec<Fenced<'_>> = futures::stream::iter(
         promoted
             .into_iter()
             .map(|(key, route)| fence_one(requester, broker, router, key, route, marks)),
@@ -632,8 +638,9 @@ async fn open_promoted<R: PeerRequester>(
     .collect()
     .await;
     let mut pending = false;
-    for (key, generation, outcome) in outcomes {
+    for (key, generation, outcome, fencing) in outcomes {
         pending |= !open_fenced(gate, &key, generation, outcome).await;
+        drop(fencing);
     }
     pending
 }
