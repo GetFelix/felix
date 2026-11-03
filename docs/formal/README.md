@@ -195,6 +195,7 @@ newcomer as a top-up instead of undoing it; that case is a unit test only.
 | `OneLeaderPerGeneration` | No two brokers open for writes at one generation. Checked where replicas elect themselves and where placement promotes on suspicion. |
 | `AdoptedMatchesOpened` | The control plane's leader, once open at the control plane's generation and while it still holds it, leads the set the control plane records, an adopted leader included: the pending set while a cut-over's change is pending. Checked where the control plane adopts. |
 | `SetChangesJoint` | Once a set change opened, a majority of the new set and of the set before it know the new set. A history invariant over consecutive sets, checked under `SetCheck`. |
+| `CountersOnSetMajority` | Under `Counters`, every acknowledged counter update is on a majority of the set the control plane records, as `AckedOnMajority` for the cache log: the old set while a change is pending, the new set after the flip. |
 | `QuorumReportNamesASuccessor` | Under `Quorum`, a report from a leader still serving names a follower that may take over, whenever a majority is still replicating. A liveness property in invariant form, checked in `FelixShard.cfg`. |
 | `ElectionSettles` | With the control plane down, elections end with a live leader that stays open and that no live broker has promised past. A temporal property (`<>[]LeaderSettled`), checked under `LiveSpec` in `FelixShardElectLive.cfg`. |
 | `NoStandAgainstHeardLeader` | Nobody starts fencing against an open leader that a majority of its set still hears. An action property, checked with the liveness configurations. |
@@ -245,6 +246,9 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardElectLiveNoBackoff.cfg` | the same without backoff | violate `ElectionSettles`: candidates split, stand again at once and split again until every generation the model allows is used, and nobody leads |
 | `FelixShardElectNoBallotAcks.cfg` | `FelixShardElect.cfg` without ballots, two generations of elections and two writes, the set check on so the first leader can follow a candidate | violate `AckedHeldByLeader`, checked per generation |
 | `FelixShardElectAdoptPromote.cfg` | `FelixShardElect.cfg` with one write, the set check, adoption up to generation 2 and promotion on suspicion up to generation 2 | pass, the same invariants (186K distinct states without the write; not yet measured with it) |
+| `FelixShardSwapCounters.cfg` | `FelixShardElectSwapFlip.cfg` on a cache shard (`Counters`), one write, no elections: the cut-over waits for the destination's counter log, the counter mark needs both majorities while the change is pending (`CountersJoint`), and the flip waits for the counter log's start record (`FlipChecksCounters`) | pass the same invariants and `CountersOnSetMajority` (not yet measured; over 4M distinct states) |
+| `FelixShardSwapCountersFlipUnchecked.cfg` | the same with the flip on the cache log's start alone | violate `CountersOnSetMajority`: an update acknowledged on {a, b}, the cut-over to b on {b, c, d}, and after the flip only b holds it (#1830) |
+| `FelixShardSwapCountersNewSetOnly.cfg` | the same with the counter mark on the new set alone while the change is pending | violate `CountersOnSetMajority`: the update is acknowledged on a majority of the new set, and the old set the control plane still records holds it on one replica (#1830) |
 | `FelixShardElectStepDown.cfg` | `FelixShardElect.cfg` with time to 2, `L = 2` and `Margin = 2` (so no promotion), one write and one generation of elections: an elected leader acknowledges a write and then steps down when its own lease lapses, leaving the control plane's leader at an older generation it has promised away | pass the same invariants (1.49M distinct states, under a minute). Found by `FelixShardWalkElect.cfg`: before `Newest` counted promises, `AckedHeldByLeader` took that deposed leader for the newest one |
 | `FelixShardElectHandoff.cfg` | `FelixShardElect.cfg` with a planned move and a cancel, every change fenced (`FenceEveryChange`), the set check on, one generation of elections, one write, reports flowing so a move can start | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (111.2M distinct states, 2 h 23 min on a four-core CI runner; nightly) |
 | `FelixShardElectHandoffLeaders.cfg` | the same without the write, for every pull request | pass `OneLeaderPerGeneration` and the rest, which hold trivially without a write (5.05M distinct states, 5.9 min on a CI runner, with the set check's step-down) |
@@ -651,6 +655,26 @@ that holds the counters; the fence's catch-up is what brings them.
 put without the fence, and `FelixShardFencedCacheNoCounterCatchUp.cfg`, which
 fences the counter log but does not take it, loses a counter update the old
 leader acknowledged on itself and the follower the new leader fenced.
+
+A set change on a cache shard has to carry the counter log across as well
+(#1830). `FelixShardSwapCounters.cfg` adds the counter log to a cut-over that
+changes several members at once. Three rules keep every acknowledged counter
+update on a majority of the set the control plane records:
+
+- The cut-over waits until the destination holds the old leader's counter log.
+- While the change is pending, the counter mark needs a majority of both
+  sets, as the cache log's does (`CountersJoint`).
+- The control plane takes the new set only once the counter log's start
+  record is held too, not just the cache log's (`FlipChecksCounters`).
+
+Without the third, an update held by the old leader and the destination is on
+one replica of the new set after the flip
+(`FelixShardSwapCountersFlipUnchecked.cfg`). Without the second, an update the
+leader acknowledges on the new set alone is on one replica of the old set,
+which is still the control plane's (`FelixShardSwapCountersNewSetOnly.cfg`).
+The fence still takes the counter log on the new set alone, as `promotion.rs`
+does. These configurations have no elections, so a candidate standing while a
+change is pending is not checked against it.
 
 ### Ballots: one leader per generation
 
