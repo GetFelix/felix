@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793732717903,
+  "lastUpdate": 1793733161328,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -55638,6 +55638,72 @@ window.BENCHMARK_DATA = {
             "range": "976.01",
             "unit": "us",
             "extra": "trials: 5\nmedian: 513.00\nmean: 1117.80\nstdev: 976.01\ncv: 87.31%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "db57a64fee2893816d332340841269a2bf482159",
+          "message": "docs(formal): election liveness with the control plane down (#1331) (#1841)\n\nSpec for the election driver's liveness (#1331): with the control plane down, elections settle on one leader.\n\n## What changed\n- New switches in `docs/formal/FelixShard.tla`, all off by default:\n  - `CpDown`: the control plane takes no step.\n  - `FailStops`: replicas that stop for good.\n  - `PreVoteAsked`: a pre-vote that the leader refuses too.\n  - `Backoff` with `Splits`: candidates back off, and a split vote can happen at most `Splits` times\n    (`GiveUpRound`, tracked by the ghost `splits`).\n- `LiveSpec` (`Spec` plus `Fairness`) and two properties:\n  - `ElectionSettles`: `<>[]LeaderSettled`.\n  - `NoStandAgainstHeardLeader`: an action property. No replica stands while a majority of its set still hears\n    a leader. It covers every stand, including a candidate standing again.\n- Three configurations:\n  - `FelixShardElectLive.cfg`: passes (3,000 distinct states, 1 s).\n  - `FelixShardElectLiveLoosePreVote.cfg`: violates `NoStandAgainstHeardLeader`.\n  - `FelixShardElectLiveNoBackoff.cfg`: violates liveness. Without backoff, split votes go on forever.\n- `scripts/check_tla.sh`: `violates <Name>` also matches action properties, and `violates liveness` expects a\n  temporal property to fail.\n- docs/formal/README.md rows, and the liveness paragraph in docs/replication-design.md.\n\nExisting configurations keep their state counts.\n\n## Design calls\n- Backoff is modelled as a bound on split votes, not as timing. Most split votes are resolved by randomized\n  backoff, and a bound is the finite-state version of that. The action property stops the bound from hiding a\n  candidate that stands while it still hears a leader.\n- Not covered: liveness with writes, and with a wiped voter (#1331's non-voter rule). Also not covered: the\n  property that a control-plane generation whose leader cannot open is superseded (for the S9 collision fix).\n  That one is next on this lane.",
+          "timestamp": "2026-11-03T10:59:05-08:00",
+          "tree_id": "95bee2ca204517aa40c3f50bf7b1c8aba776503b",
+          "url": "https://github.com/GetFelix/felix/commit/db57a64fee2893816d332340841269a2bf482159"
+        },
+        "date": 1793733112869,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 151,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 151.00\nmean: 151.40\nstdev: 0.55\ncv: 0.36%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 218,
+            "range": "8.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 218.00\nmean: 219.00\nstdev: 8.00\ncv: 3.65%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 272,
+            "range": "248.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 272.00\nmean: 388.40\nstdev: 248.10\ncv: 63.88%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 196,
+            "range": "1.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 196.00\nmean: 195.80\nstdev: 1.10\ncv: 0.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 384,
+            "range": "6.60",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 384.00\nmean: 384.00\nstdev: 6.60\ncv: 1.72%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 544,
+            "range": "24.80",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 544.00\nmean: 539.20\nstdev: 24.80\ncv: 4.60%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
