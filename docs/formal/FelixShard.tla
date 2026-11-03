@@ -698,13 +698,20 @@ NamedFenceSkipsBallot == FALSE
 \* `CpDown`: the control plane takes no step. `FailStops`: how many brokers
 \* may stop for good, as `halted` ones. `PreVoteAsked`: the pre-vote counts
 \* a yes only from a live member that leads nothing open, hears no leader and
-\* holds no log ahead of the asker's, as the driver asks it; off, any member
-\* that hears no leader, which admits more elections. `Backoff`: a candidate
-\* whose round failed gives it up (`GiveUpRound`), and at most `Splits`
-\* times does a candidate stand while another's round is open. That is the
-\* randomised backoff, which separates candidates within a few rounds; the
-\* model cannot say how few, so it takes a bound.
+\* holds no log ahead of the asker's. `pre_vote` in felix-replication's
+\* replica/election.rs lacks the first: the open leader answers yes (#1815).
+\* Off, any live member that hears no leader, the leader itself included, as
+\* the code does today. The code's refusals on a stale generation or set are
+\* not modelled. `Backoff`: a candidate whose round failed gives it up
+\* (`GiveUpRound`), and at most `Splits` times in a whole behaviour does a
+\* candidate stand while another's round is open. That is the randomised
+\* backoff, which separates candidates within a few rounds; the model cannot
+\* say how few, so it takes a bound below the generations `Elections`
+\* allows.
 CpDown == FALSE
+\* `DetectorMisfires`: a candidate may suspect a leader it still hears, as a
+\* failure detector can be wrong. Only its own yes is affected.
+DetectorMisfires == FALSE
 FailStops == 0
 PreVoteAsked == FALSE
 Backoff == FALSE
@@ -2154,7 +2161,10 @@ Elect(f) ==
     /\ SetCheck => f \in mine[f] /\ setGen[f] > 0
     /\ ~WipeWaits(f) /\ WipeFloor(f, f, promised[f] + 1) /\ ~NonVoter(f)
     \* Pre-vote: a majority of its set, itself included, no longer hears a leader.
-    /\ PreVote => MajorityOf({ m \in Members(f) : IF PreVoteAsked THEN PreVoteYes(m, f) ELSE ~Hears(m) },
+    \* Under `DetectorMisfires` the candidate's own suspicion may be wrong.
+    /\ PreVote => MajorityOf({ m \in Members(f) : (DetectorMisfires /\ m = f) \/
+                                IF PreVoteAsked THEN PreVoteYes(m, f)
+                                ELSE ~Hears(m) /\ (FailStops > 0 => m \notin halted) },
                              Members(f))
     /\ Backoff /\ StandsBeside(f) => splits < Splits
     /\ splits' = IF Backoff /\ StandsBeside(f) THEN splits + 1 ELSE splits
