@@ -111,6 +111,19 @@ impl WriteFence for Restarted {
     }
 }
 
+/// A broker that opened the shard here once an election fence finished.
+struct OpenedByElection;
+
+impl WriteFence for OpenedByElection {
+    fn quiesced(&self, _key: &crate::ShardKey) -> bool {
+        true
+    }
+
+    fn opened_fenced(&self, _key: &crate::ShardKey, _generation: u64) -> bool {
+        true
+    }
+}
+
 async fn stream_log(broker: &Broker) -> felix_broker::StreamLog {
     broker
         .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
@@ -332,6 +345,61 @@ async fn a_restarted_elected_leader_keeps_the_set_it_was_elected_on() {
             ("broker-c".to_string(), Some(3)),
         ]
     );
+}
+
+/// **An elected leader the control plane adopted keeps the set it was
+/// elected on.** It stood at 4 on the set of 3 and opened once its fence
+/// finished; the control plane then named it at 4, which ends the election
+/// in memory. Keeping the set at 4 would make it the only copy counting 4,
+/// so it would refuse the next leader elected on the set of 3 for good.
+#[tokio::test]
+async fn an_adopted_elected_leader_keeps_the_set_it_was_elected_on() {
+    let (broker, _dir) = quorum_leader(3, 4).await;
+    let log = stream_log(&broker).await;
+    log.accept_generation(3, Some(LOCAL)).await.expect("ballot");
+    log.accept_set(set_of_three(3))
+        .await
+        .expect("the set it was elected on");
+    log.accept_generation(4, Some(LOCAL))
+        .await
+        .expect("its own ballot");
+    let followers = Followers::new(true, &["broker-b", "broker-c"]);
+
+    pass_with(
+        &followers,
+        &broker,
+        &follower_ack_marks(),
+        &OpenedByElection,
+    )
+    .await;
+
+    assert_eq!(stream_log(&broker).await.set_generation(), 3);
+    assert_eq!(
+        followers.stamps(),
+        vec![
+            ("broker-b".to_string(), Some(3)),
+            ("broker-c".to_string(), Some(3)),
+        ]
+    );
+}
+
+fn set_of_three(generation: u64) -> felix_storage::disk_log::ReplicaSet {
+    use felix_storage::disk_log::{Member, Membership, ReplicaSet};
+
+    ReplicaSet {
+        current: Membership {
+            generation,
+            members: [LOCAL, "broker-b", "broker-c"]
+                .map(|node| Member {
+                    node: node.to_string(),
+                    storage: None,
+                    learner: false,
+                    wiped: false,
+                })
+                .to_vec(),
+        },
+        leaving: None,
+    }
 }
 
 /// **A leader that opened the next generation on the same members keeps

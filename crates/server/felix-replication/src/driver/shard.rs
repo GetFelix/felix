@@ -472,13 +472,16 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     // A log that counts the route's members at an older generation, on a
     // shard this process has not opened at the route's generation, was
     // elected on them before a restart: a fence at this generation would have
-    // kept the set at it, and the election lived in memory. That set is kept
-    // and stamped as it is, or this broker would refuse the next leader
-    // elected on it. A shard opened here at the route's generation is a plain
-    // bump on the same members and keeps the new set, or no later promotee
-    // could fence it.
+    // kept the set at it, and the election lived in memory. So was one opened
+    // here by a fence that left the set older: an election the control plane
+    // has since adopted. That set is kept and stamped as it is, or this broker
+    // alone would count a newer set and refuse the next leader elected on the
+    // old one. A shard opened here unfenced at the route's generation is a
+    // plain bump on the same members and keeps the new set, or no later
+    // promotee could fence it.
     let elected_on_route_set = elected.is_none()
-        && !fence.opened_since(mark_key, route.generation)
+        && (!fence.opened_since(mark_key, route.generation)
+            || fence.opened_fenced(mark_key, route.generation))
         && log.replica_set().is_some_and(|stored| {
             stored.current.generation < route.generation
                 && same_nodes(
