@@ -159,7 +159,7 @@ under [When not to use Felix](#when-not-to-use-felix), and the details are in
   with an optional expiry, plus counters. No lists, sets, sorted sets, hashes,
   streams, scripting or pub/sub channels. If you use Redis for anything beyond
   "remember this value," Felix is not a replacement for it.
-- **You need stream processing or exactly-once.** Joins, windowing, transactional guarantees and exactly-once processing are not here; use Flink or Kafka Streams for the first, and deduplicate on the consumer for the last.
+- **You need stream processing or exactly-once.** Felix has no joins or windowing; use Flink or Kafka Streams for those. It has no transactions or exactly-once processing either; deduplicate on the consumer.
 - **You need long-term history.** Sealed segments can be copied to a directory
   before retention deletes them, but nothing reads the copies back. What clients
   can read is bounded by the disks you give the brokers.

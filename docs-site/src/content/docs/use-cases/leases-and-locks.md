@@ -353,7 +353,8 @@ along with the work and have the resource refuse a lower one.
 [status page](/getting-started/what-felix-is-for/) lists strongly consistent
 coordination as a weak fit while the multi-node story is 🚧 Partial. If you need
 strongly consistent coordination today, etcd, Consul or ZooKeeper are the
-purpose-built choice; for leases that tolerate this model, use `Quorum` and a fence. The conditional calls are in every client.
+purpose-built choice; for leases that tolerate this model, use `Quorum` and a
+fence. The conditional calls are in every client.
 
 ## Related
 

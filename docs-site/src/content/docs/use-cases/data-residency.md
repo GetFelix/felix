@@ -134,7 +134,13 @@ wired the clusters, not in a per-stream property.
 
 ### How Felix differs
 
-Felix pins streams to a region. A separate cluster per jurisdiction is a network boundary and also covers caches and counters, which Felix does not pin. It costs N sets of operations and credentials, and application code that knows which cluster holds which tenant. Felix puts the region on the stream and has the control plane enforce it across placement, drains and failover, so the clients and operations stay single. Pick separate clusters when the requirement is a hard network boundary or covers caches.
+Felix pins streams to a region. A separate cluster per jurisdiction is a network
+boundary and also covers caches and counters, which Felix does not pin. It costs N
+sets of operations and credentials, and application code that knows which cluster
+holds which tenant. Felix puts the region on the stream and has the control plane
+enforce it across placement, drains and failover, so the clients and operations
+stay single. Pick separate clusters when the requirement is a hard network
+boundary or covers caches.
 
 Felix does the equivalent of Kafka's rack awareness with `FELIX_NODE_ZONE`, and the region limit is part of the stream's definition, not a replicator's topic list. Against NATS placement tags, the region is checked by the control plane on every later placement decision (failover, rebalancing, drains) and a stray copy is moved back.
 
