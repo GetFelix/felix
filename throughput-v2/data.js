@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793728029624,
+  "lastUpdate": 1793732721959,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -43784,6 +43784,58 @@ window.BENCHMARK_DATA = {
             "range": "5087.73",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1278515.77\nmean: 1279101.78\nstdev: 5087.73\ncv: 0.40%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9c23e4979fc49bcdb37dcb1b24daf4f5e7fcd352",
+          "message": "spec: rename on a refused fence, and the rename check in pieces (#1809) (#1849)\n\nSpec follow-up to #1809 (#1730).\n\n## What changes\n\n- `RenameDue` now also covers a leader that took the control plane's generation and is still fencing, when its fence is refused on its own set or, for a joint fence, on the set being left. This matches what `promotion.rs` reports. The old `bgen < gen` case is still covered by `NeverRenameDue`. A new witness, `FelixShardElectRenameFencingDue`, violates `NeverRenameWhileFencing` (170 states, depth 6, through the joint path).\n- `FelixShardElectRename` didn't finish in one run, so it is now checked in 20 cut-over pieces, `FelixShardElectRename{Keep,Drop}{0,1}{,Stood{One,Several}{Dest,Other}}`, split the same way as `FelixShardElectSwap`.\n  - The four `StoodOneDest` pieces run nightly. The cut-over overwrites everything the destination's stand wrote, so they should reach the same states as the pieces where nobody stood; that is argued, not measured.\n  - The four `StoodSeveralOther` pieces are registered (37,646 distinct states, 2 s). They hold no cut-over at all (37,646 is the count of states before one): in a set of three, only the third member can have stood besides the destination. They check that they stay empty (`NoCutOverInPiece`), as the `FelixShardElectSwap` ones do.\n  - The other 12 were measured on a four-core CI runner (dispatch 41560991406, all pass): 3 to 39 min, 1.1M to 25.1M distinct states. Eight are registered with their weights. `Keep0StoodSeveralDest` (38 min, then 1 h 16 min in PR run 41588434044), `Keep1StoodSeveralDest` (51 min), `Drop0StoodSeveralDest` (1 h 21 min) and `Drop0StoodOneOther` (6 to 10 min, moved off the per-PR quick shards) run nightly. `Drop1` weighs 14, as it took in that run, so it leaves the quick shards too. Figures are in each header.\n- `FelixShardElectRename` comes off the nightly list.\n- `FelixShardElectRenameFencingDue` says `Evidence: none yet`: no test covers a joint fence refused on the set being left (#1856).\n\n## Review notes\n\n- Code gap: no promotion test covers a joint fence that is refused on the set being left. The model now renames on it, the same way `promotion.rs` reports it.\n- Spec only. No code changes.",
+          "timestamp": "2026-11-03T10:58:09-08:00",
+          "tree_id": "acbb71f96d2979367867e04f494fc31cd12260ca",
+          "url": "https://github.com/GetFelix/felix/commit/9c23e4979fc49bcdb37dcb1b24daf4f5e7fcd352"
+        },
+        "date": 1793732721216,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 348606.92,
+            "range": "14746.18",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 348606.92\nmean: 346530.50\nstdev: 14746.18\ncv: 4.26%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 348606.92,
+            "range": "14746.18",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 348606.92\nmean: 346530.50\nstdev: 14746.18\ncv: 4.26%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80581.03,
+            "range": "381.75",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80581.03\nmean: 80627.14\nstdev: 381.75\ncv: 0.47%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 805810.29,
+            "range": "3817.47",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 805810.29\nmean: 806271.41\nstdev: 3817.47\ncv: 0.47%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
