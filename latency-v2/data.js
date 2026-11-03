@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793680513043,
+  "lastUpdate": 1793687343281,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -54978,6 +54978,72 @@ window.BENCHMARK_DATA = {
             "range": "120.39",
             "unit": "us",
             "extra": "trials: 5\nmedian: 468.00\nmean: 501.80\nstdev: 120.39\ncv: 23.99%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6e1a17b38374495015524e20749f75cc648d578f",
+          "message": "fix(controlplane): name the leader again after a recorded election it cannot serve (#1730) (#1809)\n\n* fix(controlplane): bound the wait after an election is recorded and not adopted (#1730)\n\nThe leader the control plane still names at an elected generation promised\nthat generation to the elected node, so its open fails and nothing reached\nthe control plane. The leader now records the refusal in its fence state\n(the generation and the node it promised it to) and reports it in place of\nthe usual measurements (`refused`, optional, absent on the wire when unset).\nThe control plane stores it like `given_up` (Raft metadata level 22,\nPostgres migration 0040) and, when the assignment's leader reports a refusal\nof exactly the assignment's generation, writes the next generation naming\nthe same leader on the same set, pending change kept. Not during a fenced\nmove.\n\n* fix(replication): report a refusal at the stream's incarnation, and a fence promised away (#1730)\n\nThe refusal report went out at incarnation 0, which the control plane\nanswers as stale for any stream created since incarnations, so it was never\nacted on. It now names the incarnation the shard's logs open at, as the\ngiven-up probe's report does.\n\nA leader that persisted its own ballot before the elected node's fence\nreached it opens locally and then fences, and a majority answers that it\npromised the generation to that node. That fence can never reach a\nmajority, and nothing told the control plane. The fence now tells a promise\nat its own generation apart from a newer leader (`Outcome::Refused`), keeps\ncounting answers while a majority is still possible, and the driver reports\nthe refusal each tick, as it does for a refused open. The shard still\nfences again with backoff.\n\n* fix(broker): clear a refused generation once the shard opens above it (#1730)\n\nA refusal at or below the generation a shard opens at no longer holds it\nback, so it is dropped rather than kept until a later route compares it\naway.\n\n* docs: when a recorded election is named again, and when placement skips it (#1730)\n\nBoth ways the named leader cannot serve the recorded generation, a refused\nopen and a fence a majority promised away. Placement skips the step while a\nmove has a successor or the leader drains, and takes it mid-replacement.\nThe design note is in the present tense and points at CpRename.\n\n* spec: the control plane names its leader again after a recorded election (#1730)\n\nCpRename, behind `Renames` (default off, so every existing configuration\nkeeps its state count): once the control plane records an election without\nadopting it, and its leader cannot serve the recorded generation because it\nor a majority of its set promised it to the elected replica, the control\nplane names that leader again one generation up, on its own set with any\npending change kept, and the leader fences there, jointly while a change is\npending.\n\nFelixShardElectRename.cfg checks it after a cut-over (nightly, too big to\nfinish locally); FelixShardElectRenameDue.cfg is its witness (violates\nNeverRenameDue at depth 11). The walks FelixShardWalkElectRename.cfg (pass)\nand FelixShardWalkElectRenameUnfenced.cfg (violates AckedHeldByLeader with\nthe renamed leader opening unfenced) sample the larger space.\n\n* docs: placement renames on any refusal at the assignment's generation (#1730)\n\nThe step does not check that an election was recorded, and the model covers\nonly a leader that never took the generation. Say both.\n\n* spec: the unfenced rename walk checks only AckedHeldByLeader (#1730)\n\nWithout the fence, a candidate can also win an election at the renamed\nleader's generation, so a walk may violate OneLeaderPerGeneration first\n(seed 1607241939). The other walks' twins check only their target too.\n\n* docs: a refused flip is renamed one generation up, not left to the candidate (#1730)",
+          "timestamp": "2026-11-02T22:10:25-08:00",
+          "tree_id": "d43165f493e2c5c38471ee451a5cc690e5faa3d4",
+          "url": "https://github.com/GetFelix/felix/commit/6e1a17b38374495015524e20749f75cc648d578f"
+        },
+        "date": 1793687335919,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 152,
+            "range": "4.16",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 152.00\nmean: 153.60\nstdev: 4.16\ncv: 2.71%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 217,
+            "range": "18.38",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 217.00\nmean: 225.20\nstdev: 18.38\ncv: 8.16%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 262,
+            "range": "775.04",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 262.00\nmean: 605.60\nstdev: 775.04\ncv: 127.98%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 200,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 200.00\nmean: 199.60\nstdev: 0.55\ncv: 0.27%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 385,
+            "range": "8.79",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 385.00\nmean: 389.60\nstdev: 8.79\ncv: 2.26%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 535,
+            "range": "47.80",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 535.00\nmean: 547.20\nstdev: 47.80\ncv: 8.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
