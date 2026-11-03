@@ -635,11 +635,11 @@ ReplacedIdLearner == TRUE
 \* `ReadmitChecksCounters`: re-admission also waits for the counter log to
 \* hold the start record of the set's generation.
 \* `LearnerAcksCount`: the leader counts a non-voter's answers to its catch-up
-\* batches toward its marks, as the code's leader does: it ships a learner
-\* the batches it ships any follower. The code runs without elections, where
-\* that holds; with them the leader must leave a learner out, since its wipe
-\* took a promise to a candidate (#1762; twin
-\* `FelixShardElectWipeNonVoterCreatesLearnerAcks.cfg`).
+\* batches toward its marks. The code's leader leaves them out (#1762): with
+\* elections a learner's wipe took a promise to a candidate (twin
+\* `FelixShardElectWipeNonVoterCreatesLearnerAcks.cfg`). Without elections
+\* counting them is safe, and the model keeps it there because it only adds
+\* acknowledgements the code would not make.
 \* `CatchUpFromDeposed`: a non-voter takes a catch-up batch from a leader the
 \* control plane named at that leader's generation after it moved on, as
 \* the code's confirmed read, reused for 10 s or answered just before a
