@@ -740,10 +740,10 @@ StandsAboveKeptSet == FALSE
 \* (promotion.rs keeps no set from a refusal); learning it adds behaviours.
 RefusalLearnsSet == TRUE
 \* `LearnsLeavingSet`: a follower learning a leader's set during a change
-\* takes the leader's set being left, as a broker does from a fence
-\* (replica/election.rs). Off, it keeps the set it held before the change as
-\* the one being left, as a broker learning a set from a batch did; that
-\* loses acknowledged writes (FelixShardElectReissueReplaceBatchSet.cfg).
+\* takes the leader's set being left, as a broker does from a fence, or from
+\* a batch with the control plane's set being left (replica/election.rs). Off,
+\* it keeps its own old set as the one being left, which loses acknowledged
+\* writes (FelixShardElectReissueReplaceBatchSet.cfg).
 LearnsLeavingSet == TRUE
 \* `DetectorMisfires`: a candidate may suspect a leader it still hears, as a
 \* failure detector can be wrong. Only its own yes is affected.
