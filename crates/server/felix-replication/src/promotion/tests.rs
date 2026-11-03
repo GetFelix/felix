@@ -1175,7 +1175,14 @@ async fn a_leader_refences_with_a_kept_set_below_its_generation() {
     let mut shard = batch(7, 0, &[]).shard;
     shard.generation = 7;
     let addr: SocketAddr = "127.0.0.1:1".parse().expect("addr");
-    for (generation, sent) in [(5, true), (7, true), (8, false)] {
+    // Only a set the leader stamps its batches with goes out below the
+    // generation; an older set left by a promotion on the lease does not.
+    for (generation, stamp, sent) in [
+        (5, Some(5), true),
+        (5, None, false),
+        (7, None, true),
+        (8, Some(8), false),
+    ] {
         let requester = TakesFences {
             sent: Mutex::new(Vec::new()),
         };
@@ -1186,9 +1193,10 @@ async fn a_leader_refences_with_a_kept_set_below_its_generation() {
             &shard,
             LogKind::Stream,
             Some(&kept(generation)),
+            stamp,
         )
         .await;
-        assert_eq!(took, sent, "kept at {generation}");
+        assert_eq!(took, sent, "kept at {generation} stamped {stamp:?}");
         let elections = requester.sent.lock().expect("lock");
         assert_eq!(
             elections
