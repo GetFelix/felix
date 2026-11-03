@@ -274,6 +274,13 @@ mod generation_start {
             .open_stream("t1", "ns", "orders", 0)
             .expect("log");
         log.rebuild_at(5).await.expect("drop the head");
+        // As a follower does after rebuilding, or a publish waits forever on
+        // offsets the old copy never committed.
+        promoted
+            .broker
+            .reset_replicated("t1", "ns", "orders", 0, 5)
+            .await
+            .expect("reset the commit order");
         log.record_generation(3, 2).expect("history");
         promoted
             .broker

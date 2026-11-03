@@ -1564,10 +1564,13 @@ already started, with records past its start record, writes another start
 record at the tail. This holds when retention has dropped the first start
 record too: the generation history says the generation began below what the
 log still holds. A generation that began before the fleet finalized
-`generation_start` still reopens without one, as above; it has had no
-elections. Once elections ship, the same happens when a broker elected at a
-generation is then named there by a cut-over the control plane wrote without
-hearing of the election. Each such open is a new stint, and the leader counts
+`generation_start` still reopens without one: it has had no elections, so
+every record past its start is its own, as for an open that does not fence.
+If retention has dropped its first record too, the broker cannot tell it from
+a trimmed start record and writes one, which costs an offset and nothing
+else. Once elections ship, a broker also writes a stint record when it was
+elected at a generation and is then named there by a cut-over the control
+plane wrote without hearing of the election. Each such open is a new stint, and the leader counts
 from the start record of its current stint (`own_start` in the driver). The
 generation history still says where the generation began.
 
@@ -1580,8 +1583,9 @@ while such a record is on one copy of it
 start reaches a majority of the new set only behind those records
 (`the_joint_start_waits_for_the_current_stints_start`). The log remembers its
 current stint's start in memory only; after a restart the next fenced open
-writes a new one, even when the log already ends with an earlier stint's. A cache shard's counter log still counts from the start the
-generation history records.
+writes a new one, even when the log already ends with an earlier stint's. A
+cache shard's counter log still counts from the start the generation history
+records.
 
 An in-memory stream writes none either. Its publishes never reach the shard's
 log: they take no offsets, nothing ships, the fence has nothing to take, and a

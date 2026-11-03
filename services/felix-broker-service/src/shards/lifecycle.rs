@@ -1995,10 +1995,12 @@ async fn accept_led_generation(
 
 /// Whether the generation beginning at `start` began before the fleet
 /// finalized `generation_start`: its first record is still in the log and is
-/// not a start record. Retention may have dropped the first record, which
-/// says nothing either way, so that reads as false and the caller writes one.
-/// A failed read is an error rather than a guess, since guessing "before"
-/// would skip the record a new stint needs.
+/// not a start record. A later generation that began on an empty log has none
+/// either; it was never fenced or elected, so it needs no stint record.
+/// Retention may have dropped the first record, which says nothing either
+/// way, so that reads as false and the caller writes one. A failed read is an
+/// error rather than a guess, since guessing "before" would skip the record a
+/// new stint needs.
 async fn began_before_the_finalize(
     log: &felix_broker::StreamLog,
     start: u64,
@@ -2006,10 +2008,12 @@ async fn began_before_the_finalize(
     if start < log.physical_base() {
         return Ok(false);
     }
-    let first = log
-        .read_replicated_from(start, 1)
-        .await
-        .map_err(|err| anyhow::anyhow!("read the generation's first record: {err}"))?;
+    let first = match log.read_replicated_from(start, 1).await {
+        Ok(first) => first,
+        // Retention dropped it between the check above and the read.
+        Err(_) if start < log.physical_base() => return Ok(false),
+        Err(err) => anyhow::bail!("read the generation's first record: {err}"),
+    };
     Ok(first
         .first()
         .is_some_and(|record| record.offset == start && !record.mark.is_generation_start()))
@@ -2062,7 +2066,9 @@ pub async fn write_generation_start(
         // the log holds nothing past the start record, already ends with this
         // stint's, or the generation began before the fleet finalized
         // `generation_start`: it has had no elections, and every record past
-        // its start is its own.
+        // its start is its own. Once retention drops such a generation's
+        // first record that cannot be told, and it gets one; that only
+        // delays the mark by a record.
         Some(epoch) if epoch.generation == generation && epoch.start_offset < tail => {
             let nothing_since = started && tail == epoch.start_offset + 1;
             if nothing_since
