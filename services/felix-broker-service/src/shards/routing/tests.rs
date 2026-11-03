@@ -837,8 +837,15 @@ fn an_elected_leadership_is_laid_over_the_assignment_until_named() {
         "no assignment"
     );
 
-    let mut caught_up = assignments;
-    caught_up.get_mut(&key(0)).expect("assigned").generation = 6;
+    // Named broker-a at the elected generation: the standing stays, so its
+    // reports can tell the control plane.
+    let mut collided = assignments;
+    collided.get_mut(&key(0)).expect("assigned").generation = 6;
+    let laid = with_elected(collided.clone(), &elections);
+    assert_eq!(laid[&key(0)].leader, "broker-b");
+
+    let mut caught_up = collided;
+    caught_up.get_mut(&key(0)).expect("assigned").generation = 7;
     let laid = with_elected(caught_up, &elections);
     assert_eq!(laid[&key(0)].leader, "broker-a");
     assert!(elections.is_empty());

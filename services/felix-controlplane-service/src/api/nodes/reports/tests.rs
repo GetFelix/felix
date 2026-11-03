@@ -747,3 +747,60 @@ async fn an_elected_leaders_report_is_adopted_once_replica_election_is_finalized
     assert_eq!(assignment.generation, at);
     assert_eq!(assignment.replicas, vec!["broker-y"]);
 }
+
+/// **A generation claimed twice moves on.** The control plane named broker-y
+/// at the generation broker-x was elected at while it was down. Ballots let
+/// only broker-x open there, so broker-y never can; the shard would have no
+/// leader until something else moved it. broker-x's report moves it to the
+/// next generation, under broker-x since it stood on the recorded set.
+#[tokio::test]
+async fn an_elected_leader_reporting_a_collided_generation_moves_the_shard_on() {
+    let (store, keys) = one_shard_cluster().await;
+    let election = felix_common::fleet::REPLICA_ELECTION.name();
+    for id in ["broker-x", "broker-y"] {
+        let mut node = store.get_node(id).await.expect("node");
+        node.status.features = [election.to_string()].into();
+        store.register_node(node).await.expect("offer the feature");
+    }
+    store
+        .finalize_fleet_feature(election)
+        .await
+        .expect("finalize");
+    let named_y = store
+        .put_shard_assignment(ShardAssignment {
+            key: shard_zero(),
+            leader: "broker-y".to_string(),
+            replicas: vec!["broker-x".to_string()],
+            generation: 0,
+            state: ShardState::Active,
+            successor: None,
+            joining: None,
+            move_started_at_millis: None,
+            move_reason: None,
+            incarnation: 0,
+            fence_storage_ids: Default::default(),
+            member_storage_ids: Default::default(),
+            learners: Default::default(),
+            pending_set: None,
+        })
+        .await
+        .expect("assign");
+    let at = named_y.generation;
+    let mut shard = shard_json(0, at, 10, &["broker-y"]);
+    shard["elected"] = serde_json::json!({
+        "leader": "broker-x",
+        "generation": at,
+        "replicas": ["broker-y"],
+        "set_generation": at,
+    });
+    let state = app_state_ready(Arc::clone(&store) as _);
+    // Judged against the new assignment, the report itself is stale.
+    let _ = post_report(state, &keys, serde_json::json!([shard])).await;
+    let assignment = store
+        .get_shard_assignment(&shard_zero())
+        .await
+        .expect("get");
+    assert_eq!(assignment.generation, at + 1, "{assignment:?}");
+    assert_eq!(assignment.leader, "broker-x");
+    assert_eq!(assignment.replicas, vec!["broker-y"]);
+}

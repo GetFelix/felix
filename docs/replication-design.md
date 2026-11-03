@@ -1332,7 +1332,11 @@ elected leader waits for the lease until the control plane is back (issue
     records the generation only, and issues every later one above it. It
     never reissues a generation at or below one it was told was elected. A
     leader on the old set is passed over while a change is pending: the new
-    set's leader, carrying a newer set generation, deposes it.
+    set's leader, carrying a newer set generation, deposes it. If the
+    control plane already named someone else at the elected generation, only
+    one of the two can open there. The elected leader keeps leading, and its
+    report moves the shard to the next generation, under the elected leader
+    when its set matches and under the named one otherwise.
 
 **Why it is safe.** Ballots give one leader per generation: each generation
 is fenced on one set, any two majorities of one set share a replica, and

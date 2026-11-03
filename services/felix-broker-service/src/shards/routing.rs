@@ -677,7 +677,11 @@ fn with_elected(
         by_router_key
             .get(key)
             .and_then(|key| assignments.get(key))
-            .map(|assignment| (assignment.generation, assignment.incarnation))
+            .map(|assignment| felix_replication::election::Named {
+                generation: assignment.generation,
+                incarnation: assignment.incarnation,
+                leader: assignment.leader.clone(),
+            })
     });
     for (key, elected) in elected {
         let Some(assignment) = by_router_key

@@ -443,9 +443,13 @@ async fn adopt_if_elected(
     let Some(elected) = shard.elected.as_ref() else {
         return Ok(assignment);
     };
+    // This control plane named another leader at the very generation the
+    // reporter was elected at. Ballots let only one of them open there, and
+    // the reporter is serving, so the named one never will.
+    let collided = shard.generation == assignment.generation && assignment.leader != node_id;
     if elected.leader != node_id
         || elected.generation != shard.generation
-        || shard.generation <= assignment.generation
+        || (shard.generation <= assignment.generation && !collided)
         || shard.stream_incarnation != assignment.incarnation
     {
         return Ok(assignment);
@@ -457,6 +461,9 @@ async fn adopt_if_elected(
         .map_err(|ref err| api_internal("read fleet features", err))?;
     if !enabled.contains(felix_common::fleet::REPLICA_ELECTION.name()) {
         return Ok(assignment);
+    }
+    if collided {
+        return reissue_past_collision(state, node_id, key, elected, assignment).await;
     }
     match state
         .store
@@ -488,6 +495,63 @@ async fn adopt_if_elected(
         // one retries, as for a lost CAS.
         Err(err) => {
             tracing::warn!(error = %err, "adopting an elected leader failed");
+            Ok(assignment)
+        }
+    }
+}
+
+/// Move a shard whose generation the control plane and an election both
+/// claimed to the next one, so it has a leader that can open: the elected
+/// leader on the set it stood on, as adoption would name it, or else the
+/// leader already named. An ordinary promotion with the usual conditional
+/// write; the elected leader steps down on its fence if it is not the one.
+async fn reissue_past_collision(
+    state: &AppState,
+    node_id: &str,
+    key: &crate::model::ShardKey,
+    elected: &felix_common::membership::ElectedLeadership,
+    assignment: crate::model::ShardAssignment,
+) -> Result<crate::model::ShardAssignment, ApiError> {
+    let mut past: crate::model::ElectedLeader = elected.clone().into();
+    past.generation = assignment.generation + 1;
+    let Some(mut next) = assignment.adopting(&past) else {
+        return Ok(assignment);
+    };
+    if next.leader == assignment.leader {
+        next.fence_storage_ids = assignment.fence_storage_ids.clone();
+    }
+    let token = match state.store.placement_token().await {
+        Ok(token) => token,
+        Err(err) => {
+            tracing::warn!(error = %err, "reading the placement token failed");
+            return Ok(assignment);
+        }
+    };
+    match state
+        .store
+        .put_shard_assignment_if(next, Some(assignment.generation), token)
+        .await
+    {
+        Ok(crate::store::AssignmentWrite::Written(written)) => {
+            tracing::warn!(
+                node_id = %node_id,
+                named = %assignment.leader,
+                collided_at = assignment.generation,
+                leader = %written.leader,
+                generation = written.generation,
+                stream = %key.stream,
+                shard = key.shard,
+                "an elected leader reported the generation this control plane named another \
+                 leader at; moved the shard to the next one",
+            );
+            state.placement_wakes.request_pass();
+            Ok(written)
+        }
+        // Lost to another write, which moved the shard on anyway, or left
+        // to the leader's next report.
+        Ok(_) => Ok(assignment),
+        Err(err) => {
+            tracing::warn!(error = %err, "moving a shard past a collided generation failed");
             Ok(assignment)
         }
     }
