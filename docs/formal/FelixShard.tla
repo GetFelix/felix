@@ -709,6 +709,10 @@ NamedFenceSkipsBallot == FALSE
 \* say how few, so it takes a bound below the generations `Elections`
 \* allows.
 CpDown == FALSE
+\* `Reissues`: under `Adopt`, when the control plane named one leader at the
+\* generation another was elected and opened at, it moves the shard to the
+\* next generation under the elected one (CpReissue).
+Reissues == FALSE
 \* `DetectorMisfires`: a candidate may suspect a leader it still hears, as a
 \* failure detector can be wrong. Only its own yes is affected.
 DetectorMisfires == FALSE
@@ -2698,6 +2702,54 @@ CpAdopt(v, b, views) ==
     /\ UNCHANGED << promised, fencing, answered, confirmed, ballot, opened, setGen, oldSet,
                     installed, ackGen >>
 
+\* Under `Reissues`, the control plane named a leader at the generation `b`
+\* was elected at, and `b` opened there. Ballots let only one of the two open,
+\* so the named one never will. On `b`'s report the control plane writes the
+\* next generation with `b` as leader on the control plane's set, a
+\* conditional write like a promotion (`reissue_past_collision` in
+\* services/felix-controlplane-service/src/api/nodes/reports.rs). Only `b` is
+\* named: it opened at the collided generation, so it holds everything
+\* acknowledged up to it, on whichever set. Not while a change is pending or a
+\* copy is joining, nor when `b` is outside the set. `b` fences there as at
+\* any new generation (`begin_open_renewed` in
+\* services/felix-broker-service/src/shards/lifecycle.rs under `joint_fence`),
+\* jointly with the set it knew when that is not the control plane's. Each
+\* one needs an election at the control plane's generation, so `Adopt` bounds
+\* them.
+CpReissue(v, b, views) ==
+    /\ Reissues
+    /\ v.leader /= b /\ v.gen = gen
+    /\ bgen[b] = gen /\ ~fencing[b] /\ <<gen, b>> \in opened
+    /\ cpNext = {} /\ joining = {} /\ b \in CpSet
+    /\ MayPromise(b, b, gen + 1)
+    /\ Cas(v)
+    /\ ver' = ver + 1
+    /\ cpView' = views
+    /\ gen' = gen + 1
+    /\ leader' = b
+    /\ cpExpiry' = now + L
+    /\ bgen' = [bgen EXCEPT ![b] = gen + 1]
+    /\ bexpiry' = [bexpiry EXCEPT ![b] = clock[b] + L]
+    /\ queued' = [queued EXCEPT ![b] = 0]
+    /\ pending' = [pending EXCEPT ![b] = 0]
+    /\ report' = NoReport
+    /\ draining' = FALSE
+    /\ stopped' = [stopped EXCEPT ![b] = FALSE]
+    /\ Promise(b, b, gen + 1)
+    /\ fencing' = [fencing EXCEPT ![b] = TRUE]
+    /\ answered' = [answered EXCEPT ![b] = {}]
+    /\ confirmed' = [confirmed EXCEPT ![b] = [m \in Brokers |-> 0]]
+    \* As `Promote`: a set `b` did not know is a change from the one it did.
+    /\ IF SetCheck
+       THEN /\ mine' = [mine EXCEPT ![b] = CpSet]
+            /\ setGen' = [setGen EXCEPT ![b] = gen + 1]
+            /\ oldSet' = IF CpSet /= mine[b] THEN [oldSet EXCEPT ![b] = mine[b]] ELSE oldSet
+       ELSE UNCHANGED << mine, setGen, oldSet >>
+    /\ UNCHANGED << now, clock, inflight, hbOut, hbAt, log, hwm, halted,
+                    acked, writes, staleCommit >>
+    /\ UNCHANGED << successor, moves, staged, out, joining, leaving, joinedAt >>
+    /\ UNCHANGED << opened, installed, nextVars, ackGen >>
+
 \* What a cut-over found, for `SplitAtCutOver`: whether the new set keeps the
 \* old leader, how many writes had been admitted, and how many replicas had
 \* promised a generation past the control plane's, which only an election
@@ -2910,6 +2962,7 @@ Decide(v, f, views) ==
           \/ SeatFence(v, f, views) \/ TrimFence(v, views) \/ TrimSet(v, f, views)
           \/ UndoFence(v, f, views) \/ Undo(v, f, views)
           \/ Swap(v, f, views) \/ CpAdopt(v, f, views) \/ Reclaim(v, views)
+          \/ CpReissue(v, f, views)
        /\ UNCHANGED << counterVars, expect, inherited, seen, seenInc, fenceIds >>
 
 -----------------------------------------------------------------------------
@@ -3421,6 +3474,34 @@ LeaderSettled ==
 \* Elections end with a leader that stays: none is missing for good, and
 \* candidates do not depose each other forever.
 ElectionSettles == <>[]LeaderSettled
+
+\* The control plane's leader can never open at the control plane's
+\* generation: another broker was elected there, opened, and still leads.
+Collided ==
+    \E b \in Brokers :
+        b /= leader /\ bgen[b] = gen /\ ~fencing[b] /\ <<gen, b>> \in opened
+
+\* The control plane's steps on an elected leader's report, taken once they
+\* stay possible: adopting a leader elected past its generation, and moving
+\* past one it collided with.
+ReportFairness ==
+    \A b \in Brokers :
+        /\ WF_vars(CpAdopt(Now, b, cpView)
+                   /\ UNCHANGED << counterVars, expect, inherited, seen, seenInc, fenceIds,
+                                   heard, decideIdVars, named >>)
+        /\ WF_vars(CpReissue(Now, b, cpView)
+                   /\ UNCHANGED << counterVars, expect, inherited, seen, seenInc, fenceIds,
+                                   heard, decideIdVars, named >>)
+
+ReissueSpec == Spec /\ Fairness /\ ReportFairness
+
+\* A generation whose leader can never open does not stay the control
+\* plane's while the leader elected there leads. Once that leader is deposed
+\* a later election moves the generation on, which the model bounds, so it
+\* cannot ask for that.
+CollisionSuperseded ==
+    \A g \in 1..(Adopt + Suspicions + 1) :
+        (gen = g /\ Collided) ~> (gen /= g \/ ~Collided)
 
 \* Nobody stands against an open leader that a majority of its set hears:
 \* pre-vote keeps a working leader in place. With the control plane down, a
