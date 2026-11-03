@@ -1524,18 +1524,21 @@ leader, and a broker stopping for a restart waits only until it leads
 nothing.
 
 **Balancing waits while the cluster recovers.** While any broker is down
-or has left, and was last heard from within `shard_restore_after_ms`, or
-any restore is copying a shard back, placement starts no move for balance:
-not for a stream's spread, not for the cluster's totals, and not to spread a
-zone. A staged balance move keeps copying but does not fence. `admin plan`
-lists such shards as waiting for the recovery. Failover is not held: a dead
+or has left, and was last heard from within `shard_restore_after_ms` (five
+minutes when that is `0`), or any restore is copying a shard back, placement
+starts no move for balance: not for a stream's spread, not for the cluster's
+totals, and not to spread a zone. A balance move already staged is dropped
+(`abandon`) before it fences, which also frees its move slot for a drain or a
+restore. `admin plan` lists the held shards as waiting for the recovery. Failover is not held: a dead
 broker's shards get new leaders in the same pass as always. Drains,
 restores and an operator's moves go on too. The reason is what a fence costs
 during a failover. The brokers left are opening the dead broker's shards,
 and a leader fenced then can take minutes to report drained, refusing the
 shard's writes the whole time. Caches and the system streams are the worst
 case, since every client waits on them. The restore window bounds the hold,
-so a broker that never comes back stops balancing for at most that long.
+so a broker that never comes back stops balancing for at most that long. A
+broker scaled in gracefully counts too: a broker added within five minutes of
+another leaving gets its shards once that window has passed.
 
 The limits hold across instances. A move is started from a read that saw a
 free slot, and the write lands only if no other placement write landed
@@ -1557,17 +1560,19 @@ serving; going back means a new generation and every client following the
 shard twice, while going on waits for at most the lag bound's worth of copy.
 An operator can still take one back (see [Operator controls](#operator-controls)).
 
-A destination that is marked down after the fence would hold the drained
-report forever, since the leader waits for it to be level. The next pass
+A destination that stops being live after the fence (marked down, or
+draining) would hold the drained report forever, since the leader waits for it
+to be level. The next pass
 gives the move up (`abandon`) with the same write as an operator's cancel:
 the leader serves again at a new generation and the destination's staged
 copy is dropped. Nobody has led since the fence, so the leader still holds
 every write it accepted, and the write is conditional on the fenced
 generation, so a cut-over cannot also land. The shard is not held to the
-give-up backoff below, because the move failed through no fault of its own.
-The shard is then fenced until the broker is marked down (about 19 s after
-its last heartbeat, by default; see [Broker liveness](#broker-liveness)) plus one
-pass, rather than for `shard_fence_timeout_ms`. A halted destination is different: its leader is
+give-up backoff above, because the move failed through no fault of its own.
+So a dead destination keeps the shard fenced only until the broker is marked
+down (about 19 s after its last heartbeat, by default; see
+[Broker liveness](#broker-liveness)) plus one pass, rather than for
+`shard_fence_timeout_ms`. A halted destination is different: its leader is
 reporting, so it is dropped at a new, still fenced generation, the leader
 reports drained against the followers it has, and the cut-over picks one of
 them or hands the shard back to the leader.

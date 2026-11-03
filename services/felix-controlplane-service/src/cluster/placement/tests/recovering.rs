@@ -40,7 +40,16 @@ fn lopsided() -> Vec<ShardAssignment> {
 }
 
 fn decisions(nodes: &[Node], existing: &[ShardAssignment], streams: &[Stream]) -> Vec<Decision> {
-    plan_with(streams, &[], nodes, existing, &Level, MovePolicy::default())
+    decisions_with(nodes, existing, streams, MovePolicy::default())
+}
+
+fn decisions_with(
+    nodes: &[Node],
+    existing: &[ShardAssignment],
+    streams: &[Stream],
+    policy: MovePolicy,
+) -> Vec<Decision> {
+    plan_with(streams, &[], nodes, existing, &Level, policy)
         .shards
         .into_iter()
         .map(|shard| shard.decision)
@@ -129,10 +138,10 @@ fn failover_is_placed_while_a_broker_is_down() {
     );
 }
 
-/// A staged move for balance keeps copying but does not fence; a drain's
-/// does.
+/// A staged move for balance is dropped, giving its slot back, and it never
+/// fences; a drain's goes on to the fence.
 #[test]
-fn a_staged_balance_move_does_not_fence_while_a_broker_is_down() {
+fn a_staged_balance_move_is_dropped_while_a_broker_is_down() {
     let staged = |reason| ShardAssignment {
         successor: Some("broker-b".to_string()),
         move_reason: Some(reason),
@@ -140,14 +149,19 @@ fn a_staged_balance_move_does_not_fence_while_a_broker_is_down() {
         ..assigned("orders", "broker-a", &["broker-b"])
     };
     let streams = [stream("orders", 1)];
-    assert_eq!(
-        decisions(
-            &with_c_down(10_000),
-            &[staged(MoveReason::Balance)],
-            &streams
-        ),
-        [Decision::Waiting(Blocked::Recovering)],
+    let decided = decisions(
+        &with_c_down(10_000),
+        &[staged(MoveReason::Balance)],
+        &streams,
     );
+    let [Decision::Move(MoveStep::Abandon { successor }, next)] = &decided[..] else {
+        panic!("expected the move to be dropped, got {decided:?}");
+    };
+    assert_eq!(successor, "broker-b");
+    assert_eq!(next.state, ShardState::Active);
+    assert_eq!(next.successor, None);
+    assert!(next.replicas.is_empty(), "{:?}", next.replicas);
+    assert_eq!(next.move_started_at_millis, None);
 
     let mut nodes = with_c_down(10_000);
     nodes[0].status.lifecycle = NodeLifecycle::Draining;
@@ -262,4 +276,29 @@ async fn a_dead_destination_unfences_through_the_store() {
     assert_eq!(after.successor, None);
     assert!(after.replicas.is_empty(), "{:?}", after.replicas);
     assert!(after.generation > fenced.generation);
+}
+
+/// A broker that left gracefully holds balancing as a down one does, and so
+/// does one down with restores turned off, for the default restore window.
+#[test]
+fn a_left_broker_or_restores_off_still_hold_balancing() {
+    let mut nodes = with_c_down(10_000);
+    nodes[2].status.lifecycle = NodeLifecycle::Left;
+    let decided = decisions(&nodes, &lopsided(), &[stream("orders", 4)]);
+    assert_eq!(started(&decided), 0, "{decided:?}");
+
+    let off = || MovePolicy {
+        restore_after_millis: None,
+        ..MovePolicy::default()
+    };
+    let streams = [stream("orders", 4)];
+    let decided = decisions_with(&with_c_down(10_000), &lopsided(), &streams, off());
+    assert_eq!(started(&decided), 0, "{decided:?}");
+    let decided = decisions_with(
+        &with_c_down(DEFAULT_RESTORE_AFTER_MILLIS),
+        &lopsided(),
+        &streams,
+        off(),
+    );
+    assert_eq!(started(&decided), 1, "{decided:?}");
 }

@@ -168,9 +168,10 @@ pub(super) struct Moves {
     policy: MovePolicy,
     /// Whether a move may start for the cluster's leader totals.
     pub(super) cluster_moves: bool,
-    /// A broker is down, or a copy is being restored: nothing starts or
-    /// fences for balance, so no shard is held behind brokers busy failing
-    /// over (#1805). Drains, restores and an operator's moves go on.
+    /// A broker is down, or a copy is being restored: nothing starts for
+    /// balance and a staged balance move is dropped, so no shard is fenced
+    /// behind brokers busy failing over (#1805). Drains, restores and an
+    /// operator's moves go on.
     pub(super) recovering: bool,
     /// Whether some shard wanted a move for its stream's spread.
     pub(super) stream_wanted: bool,
@@ -634,11 +635,22 @@ pub(super) fn move_step<'a>(
                 },
             );
         }
-        // A balance move keeps copying but does not fence while the cluster
-        // recovers: the fence would stop the shard's writes behind brokers
-        // that may take minutes to report drained.
-        let held = moves.recovering && existing.move_reason == Some(MoveReason::Balance);
-        if !held && moves.ready_to_fence(caught_up, key, successor) {
+        // A balance move is dropped while the cluster recovers: its fence
+        // would stop the shard's writes behind brokers that may take minutes
+        // to report drained, and held, it would keep the move slot a drain or
+        // a restore needs. Not the shard's fault, so its start is cleared.
+        if moves.recovering && leader_live && existing.move_reason == Some(MoveReason::Balance) {
+            return Decision::Move(
+                MoveStep::Abandon {
+                    successor: successor.to_string(),
+                },
+                ShardAssignment {
+                    move_started_at_millis: None,
+                    ..undo_staged(existing, successor, replication_factor)
+                },
+            );
+        }
+        if moves.ready_to_fence(caught_up, key, successor) {
             return Decision::Move(
                 MoveStep::Fence,
                 ShardAssignment {
@@ -658,9 +670,6 @@ pub(super) fn move_step<'a>(
                 },
                 undo_staged(existing, successor, replication_factor),
             );
-        }
-        if held {
-            return Decision::Waiting(Blocked::Recovering);
         }
         return Decision::Waiting(Blocked::DestinationCatchingUp {
             successor: successor.to_string(),

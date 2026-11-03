@@ -94,7 +94,7 @@ Every step is written to the control plane's store, so a control-plane restart
 or leader change resumes the move where it was. A destination that dies before
 it leads never gets the shard. Before the fence, it is dropped from the move.
 After the fence, the old leader serves again at a new generation in the pass
-after the destination is marked down, so the shard's writes stop for about as
+after the destination stops being live (marked down, or draining), so the shard's writes stop for about as
 long as it takes to notice the broker is gone, not for the fence timeout. If the
 old leader had already reported drained, another caught-up replica may take
 the shard instead. A leader that dies mid-move is an ordinary failover.
@@ -102,9 +102,10 @@ the shard instead. A leader that dies mid-move is an ordinary failover.
 ### Balancing waits during a failover
 
 While a broker is down or has left, and was last heard from within
-`FELIX_SHARD_RESTORE_AFTER_MS`, or while a restore is copying a shard back,
-placement starts no moves for balance. A balance move already staged keeps
-copying but does not fence. Everything that repairs the cluster goes on:
+`FELIX_SHARD_RESTORE_AFTER_MS` (five minutes when that is `0`), or while a
+restore is copying a shard back, placement starts no moves for balance. A
+balance move already staged is dropped before it fences, freeing its move
+slot. Everything that repairs the cluster goes on:
 failover gives the dead broker's shards new leaders at once, restores copy
 lost followers back, and drains and an operator's moves proceed.
 
@@ -113,7 +114,7 @@ and a leader fenced then can take minutes to hand over, refusing writes the
 whole time. That is worst for a cache, which every client waits on. Holding
 balance until the cluster is whole avoids it. `GET /v1/placement/plan` and
 `admin plan` show the held shards as waiting for the recovery. A broker that
-never comes back holds balancing for at most `FELIX_SHARD_RESTORE_AFTER_MS`.
+never comes back holds balancing for at most that window.
 
 ## Adding a broker
 
@@ -123,7 +124,10 @@ the rebalance above starts on the next placement pass
 (`FELIX_SHARD_RECONCILE_INTERVAL_MS`, 5 s by default).
 
 Nothing else is required. A cluster that came up unevenly, say with every
-shard on the first broker to register, corrects itself the same way.
+shard on the first broker to register, corrects itself the same way. If
+another broker went down or left within the last `FELIX_SHARD_RESTORE_AFTER_MS`,
+the new one waits for that window to pass before it is given shards; see
+[Balancing waits during a failover](#balancing-waits-during-a-failover).
 
 ## Draining a broker
 
@@ -345,7 +349,7 @@ fence and its tests are in `services/felix-broker-service/src/shards/lifecycle/f
 | `FELIX_SHARD_FENCE_TIMEOUT_MS` | `120000` | How long a fenced leader may go without reporting drained before the move is given up and the leader serves the shard again at a new generation, holding every write it accepted. Draining takes milliseconds once the destination is level, so a fence this old is stuck, and its shard takes no writes until it ends. The shard's next move then waits this long, doubling with each give-up in a row up to an hour. `0` waits forever. |
 | `FELIX_SHARD_ELECTION_HOLD_MS` | `10000` | Under `replica_election`, how long placement must have seen a follower suspect a shard's leader before it promotes on the followers' word, so it does not race the replicas' own election. Keep it at twice `FELIX_LEADER_SUSPECT_AFTER_MS`. `0` does not wait. |
 | `FELIX_SHARD_PENDING_SET_TIMEOUT_MS` | `600000` | Under `replica_election`, how long a cut-over's new replica set may wait for the leader to report it on both sets before the change is dropped and the old set stays, at a new generation. `0` waits forever. |
-| `FELIX_SHARD_RESTORE_AFTER_MS` | `300000` | How long a follower's broker may be down or gone before placement copies the shard to another broker. Set it above your longest broker restart, or a rolling restart copies every shard once per broker. `0` never replaces a lost follower; a replica set short of its factor is still topped up. |
+| `FELIX_SHARD_RESTORE_AFTER_MS` | `300000` | How long a follower's broker may be down or gone before placement copies the shard to another broker. Set it above your longest broker restart, or a rolling restart copies every shard once per broker. `0` never replaces a lost follower; a replica set short of its factor is still topped up. Also how long a down or departed broker holds balancing (five minutes when `0`). |
 | `FELIX_PLACEMENT_SETTLE_MS` | `10000` | How long after a cluster's first broker registered a new shard waits for as many live brokers as its replication factor before it is placed on fewer. Placement runs when a broker registers, so the shards go out as soon as enough brokers are live. Only a cluster younger than this waits. `0` places new shards on whatever is live. |
 | `FELIX_SHARD_RESTORE_STALL_MS` | `120000` | How long a restore's new copy may go without its reported position moving (for a cache, in either its own log or its counter log) before the restore is dropped and its slot goes to the next short shard. Without it, one restore that cannot finish holds every other one back for the move timeout. `0` waits for the move timeout. |
 | `FELIX_SHARD_MOVE_BYTES_PER_SEC` (broker) | `0` | Bytes per second a broker ships to move destinations, across every shard it leads. Applied only to a destination the quorum does not need (one still copying is left out of it), so `Quorum` publishes never wait on it, and not to the remainder after the fence. `0` is unlimited. |

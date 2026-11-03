@@ -40,7 +40,8 @@ pub enum MoveStep {
     /// The leader has stopped. `to` leads from the next generation.
     CutOver { from: String, to: String },
     /// A move's destination, or a follower being copied in, stopped being
-    /// live before it finished; its staging is undone.
+    /// live before it finished, or a staged balance move met a broker down;
+    /// its staging is undone. After the fence, the leader serves again.
     Abandon { successor: String },
     /// A move's destination, or a follower being copied in, stopped
     /// following: its leader reported it halted for `reason`. Undone as for
@@ -167,7 +168,7 @@ pub enum Blocked {
     /// A move is wanted, and placement is paused.
     Paused,
     /// A move for balance is wanted, and a broker is down or a copy is being
-    /// restored. It starts, or a staged one fences, once that is over.
+    /// restored. It starts once that is over.
     Recovering,
     /// The set is above the replication factor, and no follower can go yet:
     /// a report at this generation does not show the rest caught up without
