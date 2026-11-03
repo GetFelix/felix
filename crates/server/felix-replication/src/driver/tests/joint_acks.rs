@@ -310,6 +310,7 @@ impl PeerRequester for Lagging {
             } else {
                 end
             },
+            learner: false,
         }))
     }
 
