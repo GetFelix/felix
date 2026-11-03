@@ -1112,9 +1112,12 @@ only the copy it named.
 **Before the gate is known.** Whether a set naming another id makes a copy a
 learner depends on the `joint_fence` gate, which the broker learns only when
 it registers, after its peer listener is up. Until then such a request is
-refused as `Unavailable` and nothing is written. Everything else answers as
-before, so a broker that restarts with its data serves before it registers.
-A mark already on disk holds whatever the gate says.
+refused as `Unavailable` and nothing is written. A request for a copy that
+holds a promise answers as before, so a broker that restarts with its data
+keeps serving the shards it held. A request for a copy with no promise is
+handled as if the gate were on: it is refused, or refused retryably until a
+fresh confirmed read of the control plane backs its leader. A mark already on
+disk holds whatever the gate says.
 
 Not covered yet, and needed before elections (#1009 S9):
 
