@@ -43,7 +43,7 @@ builds Felix from source.
 
 ## Prerequisites
 
-- **Rust** 1.97.1 or later ([rustup](https://rustup.rs/))
+- **Rust** 1.97 or later; the repo pins 1.99.1 and rustup fetches it ([rustup](https://rustup.rs/))
 - **Git**
 - Optional: [Task](https://taskfile.dev/), for the shortcuts CI uses
 
@@ -420,11 +420,11 @@ collide with.
 
 ### Build Errors
 
-Ensure you have Rust 1.97.1 or later:
+Ensure you have Rust 1.97 or later (the repo pins 1.99.1, and rustup fetches it):
 
 ```bash
 rustc --version
-# Should show: rustc 1.97.1 or higher
+# Should show: rustc 1.97 or higher
 ```
 
 Update if needed:

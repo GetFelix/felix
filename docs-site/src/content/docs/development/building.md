@@ -283,8 +283,8 @@ and uploads them to the existing release; it refuses a name that is not a tag
 or has no published release. It defaults to a dry run:
 
 ```bash
-gh workflow run release-capi-archives.yml -f tag=v0.7.0-preview.2            # build and smoke only
-gh workflow run release-capi-archives.yml -f tag=v0.7.0-preview.2 -f dry_run=false
+gh workflow run release-capi-archives.yml -f tag=v0.7.0-preview.3            # build and smoke only
+gh workflow run release-capi-archives.yml -f tag=v0.7.0-preview.3 -f dry_run=false
 ```
 
 Uploading again replaces the files already there.
@@ -459,7 +459,7 @@ it were `tag`, so the rehearsal can run before the tag exists:
 
 ```bash
 gh workflow run release.yml --ref main \
-  -f tag=v0.7.0-preview.2 -f ref=main -f dry_run=true
+  -f tag=v0.7.0-preview.3 -f ref=main -f dry_run=true
 ```
 
 `ref` without `dry_run` fails the run. The felixctl archives are kept as a
