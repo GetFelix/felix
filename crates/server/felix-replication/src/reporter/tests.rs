@@ -77,6 +77,7 @@ fn report(stream: &str) -> ShardReport {
         given_up: false,
         inherited_storage: Vec::new(),
         joint_start_acked: None,
+        refused: None,
         holds_start: Default::default(),
         elected: None,
     }

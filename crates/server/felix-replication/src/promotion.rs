@@ -94,6 +94,15 @@ pub enum Outcome {
     Fenced { caught_up_from: Option<String> },
     /// Some replica did not offer the fence, so the shard opens on the lease.
     Lease { lacking: String },
+    /// Not yet, and not in this attempt: so many replicas promised this
+    /// generation to `promised_to` that no majority is left to take it. The
+    /// shard stays closed, and this broker reports the refusal so the
+    /// control plane names it again above the generation (#1730).
+    Refused {
+        promised_to: String,
+        why: String,
+        took: Vec<String>,
+    },
     /// Not yet: no majority answered, or the catch-up did not finish. The
     /// shard stays closed and the next pass tries again.
     Pending {
@@ -479,6 +488,20 @@ async fn fence_log<R: PeerRequester>(
     // Why the replicas that refused did, for the shard's status: a refusal
     // that no retry gets past names its way out there.
     let mut refusals: Vec<String> = Vec::new();
+    // Replicas that promised this generation to another node. Each is a vote
+    // that node holds, so once a majority can no longer be made without
+    // them, no answer still to come opens the shard.
+    let mut promised_away: Vec<(String, String)> = Vec::new();
+    let reachable = |promised_away: &[(String, String)]| {
+        let left = replicas
+            .iter()
+            .map(|replica| replica.node_id.as_str())
+            .filter(|node| !promised_away.iter().any(|(away, _)| away == node));
+        match joint {
+            None => left.count() + 1 >= needed,
+            Some(joint) => joint.has_majorities(left),
+        }
+    };
     let mut asks = futures::stream::FuturesUnordered::new();
     for replica in replicas {
         let (node_id, addr) = (replica.node_id.clone(), replica.advertise_addr);
@@ -535,6 +558,32 @@ async fn fence_log<R: PeerRequester>(
                 uncounted(key, kind, &node_id, reported_ids, identity);
             }
             Ok(InternalMessage::FenceOk(ok)) => answered.push((node_id, addr, ok)),
+            Ok(InternalMessage::ReplicateError(err))
+                if err.code == ErrorCode::FencedEpoch
+                    && crate::replica::promised_to(&err.detail, shard.generation).is_some() =>
+            {
+                let other = crate::replica::promised_to(&err.detail, shard.generation)
+                    .unwrap_or_default()
+                    .to_string();
+                refusals.push(format!("{node_id} refused: {}", err.detail));
+                promised_away.push((node_id, other));
+                if !reachable(&promised_away) {
+                    let mut why = format!(
+                        "{} of the replicas promised generation {} to another node",
+                        promised_away.len(),
+                        shard.generation
+                    );
+                    for refusal in &refusals {
+                        why.push_str("; ");
+                        why.push_str(refusal);
+                    }
+                    return Err(Outcome::Refused {
+                        promised_to: promised_away[0].1.clone(),
+                        why,
+                        took: took(&answered),
+                    });
+                }
+            }
             Ok(InternalMessage::ReplicateError(err)) if err.code == ErrorCode::FencedEpoch => {
                 // A replica has taken a newer leader: this promotion is over.
                 return Err(Outcome::pending(

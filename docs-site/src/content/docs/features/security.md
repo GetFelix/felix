@@ -15,8 +15,7 @@ otherwise. Encryption at rest and audit logging are **not** built.
 
 :::note[Security Maturity]
 Felix is pre-1.0 and has not been through an external security
-review yet. This page states plainly which protections exist and which are
-planned; the [status table](/getting-started/what-felix-is-for/) is
+review yet. This page states plainly which protections exist and which do not; the [status table](/getting-started/what-felix-is-for/) is
 kept current per capability.
 :::
 
@@ -620,7 +619,7 @@ To use them:
 3. Claim the lease with a conditional put that asks for a token, publish with
    the token, and renew at the version you hold before the TTL runs out. Each
    renewal returns a fresh token. See
-   [Leases and lease tokens](/clients/rust/#leases-and-lease-tokens) for the
+   [Leases and lease tokens](/clients/rust/cache/#leases-and-lease-tokens) for the
    Rust code.
 
 ```mermaid

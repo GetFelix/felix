@@ -1,0 +1,170 @@
+name: Shard starvation (nightly)
+
+# The lease-canary test (crates/testing/felix-cluster/tests/scale) at felixd's
+# scale: about 1500 replicated shards created in bulk on three brokers, with
+# steady appends, while a small lease cache renews every two seconds. The
+# per-pr variant is the 600-stream version on a debug build.
+# docs/cluster-harness.md ("Shard starvation") says how to read a failure.
+#
+# A failed scheduled run opens an issue labelled `scale-nightly`, or comments on
+# the open one; a green one closes it.
+
+on:
+  schedule:
+    # Every night at 05:53 UTC, after the history and fuzz (03:17),
+    # power-loss (04:07), release-build (04:41) and TLA walk (05:23) runs.
+    - cron: "53 5 * * *"
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: "nightly (release build, 1500 streams) or per-pr (debug build, 600 streams)"
+        required: false
+        type: choice
+        options:
+          - nightly
+          - per-pr
+        default: nightly
+      streams:
+        description: "Streams to create (empty keeps the variant's size)"
+        required: false
+        default: ""
+      appended:
+        description: "Streams that take steady appends (empty keeps the variant's)"
+        required: false
+        default: ""
+      hold_secs:
+        description: "Seconds the appends go on after the last create (empty keeps the variant's)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scale-nightly-${{ github.ref }}-${{ inputs.variant }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # 1500 shards on three brokers would otherwise reserve full segments up front.
+  FELIX_DURABLE_PREALLOCATE: "false"
+  FELIX_TEST_TIMEOUT_SCALE: "3"
+
+jobs:
+  canary:
+    name: lease canary (${{ matrix.variant }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: ["${{ inputs.variant || 'nightly' }}"]
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.99.1"
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: scale-${{ matrix.variant }}
+
+      - name: Choose the variant
+        id: variant
+        env:
+          VARIANT: ${{ matrix.variant }}
+          STREAMS: ${{ inputs.streams }}
+          APPENDED: ${{ inputs.appended }}
+          HOLD_SECS: ${{ inputs.hold_secs }}
+        run: |
+          case "$VARIANT" in
+            nightly) echo "profile=--release" >> "$GITHUB_OUTPUT"
+                     echo "test=a_lease_cache_renews_on_time_at_felixd_scale" >> "$GITHUB_OUTPUT" ;;
+            per-pr) echo "profile=" >> "$GITHUB_OUTPUT"
+                    echo "test=a_lease_cache_renews_on_time_while_shards_are_created_in_bulk" >> "$GITHUB_OUTPUT" ;;
+            *) echo "unknown variant: $VARIANT"; exit 1 ;;
+          esac
+          for pair in "FELIX_SCALE_STREAMS=$STREAMS" "FELIX_SCALE_APPENDED=$APPENDED" "FELIX_SCALE_HOLD_SECS=$HOLD_SECS"; do
+            value="${pair#*=}"
+            [ -z "$value" ] && continue
+            [[ "$value" =~ ^[1-9][0-9]{0,4}$ ]] || { echo "not a count: $pair"; exit 1; }
+            echo "$pair" >> "$GITHUB_ENV"
+          done
+
+      # The harness runs the broker beside the test binary, which `cargo test`
+      # does not rebuild.
+      # Step timeouts, so a hang fails the step and the Report step still
+      # files it; a job that hits its own timeout counts as cancelled.
+      - name: Build the broker the harness runs
+        timeout-minutes: 25
+        run: cargo build ${{ steps.variant.outputs.profile }} -p felix-broker-service --bin felix-broker
+
+      - name: Run the canary
+        timeout-minutes: 25
+        env:
+          FELIX_TEST_CLUSTER_LOG_DIR: ${{ runner.temp }}/cluster-logs
+        run: |
+          set -o pipefail
+          cargo test ${{ steps.variant.outputs.profile }} -p felix-cluster --test scale \
+            -- --nocapture --include-ignored --exact "lease_starvation::${{ steps.variant.outputs.test }}" 2>&1 | tee "$RUNNER_TEMP/scale-output.txt"
+          # A renamed test would otherwise match nothing and pass.
+          grep -q '^running 1 test' "$RUNNER_TEMP/scale-output.txt" || { echo "the canary test did not run"; exit 1; }
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Lease canary"
+            echo
+            echo '```'
+            grep -E 'lease canary:|panicked at|the lease canary failed' "$RUNNER_TEMP/scale-output.txt" | head -20 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload broker logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: scale-logs-${{ matrix.variant }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/cluster-logs
+            ${{ runner.temp }}/scale-output.txt
+          retention-days: 14
+
+      - name: Report
+        if: ${{ always() && job.status != 'cancelled' && github.event_name == 'schedule' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STATUS: ${{ job.status }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          gh label create scale-nightly --repo "$REPO" --color d93f0b \
+            --description "The nightly shard-starvation run failed" 2>/dev/null || true
+          open=$(gh issue list --repo "$REPO" --label scale-nightly --state open --json number --jq '.[0].number // empty')
+          if [ "$STATUS" = success ]; then
+            if [ -n "$open" ]; then
+              gh issue comment "$open" --repo "$REPO" --body "Green again at $SHA: $RUN_URL"
+              gh issue close "$open" --repo "$REPO"
+            fi
+            exit 0
+          fi
+          line=$(grep -m1 'lease canary:' "$RUNNER_TEMP/scale-output.txt" 2>/dev/null || echo "(no canary summary; the run stopped earlier)")
+          body=$(printf 'Run: %s\nCommit: %s\n\n```\n%s\n```\n\ndocs/cluster-harness.md ("Shard starvation") says how to read it. This issue closes itself when a nightly run passes.\n' \
+            "$RUN_URL" "$SHA" "$line")
+          if [ -n "$open" ]; then
+            gh issue comment "$open" --repo "$REPO" --body "$body"
+          else
+            gh issue create --repo "$REPO" --label scale-nightly \
+              --title "Nightly shard-starvation run fails" --body "$body"
+          fi

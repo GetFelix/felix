@@ -94,6 +94,10 @@ const LEARNER_LEVEL: u16 = 23;
 /// The metadata level whose members store a stream's MQTT mount (#1690).
 const MOUNT_LEVEL: u16 = 24;
 
+/// The metadata level whose members store the refusal a leader reports when
+/// its generation was promised to another node (#1730).
+const REFUSED_LEVEL: u16 = 25;
+
 /// The metadata level whose members name a leader elected on another set on
 /// that set when they adopt it, instead of taking only its generation
 /// (#1009).
@@ -1026,6 +1030,10 @@ impl ControlPlaneStore for RaftStore {
         // side. Dropped first.
         if !report.holds_start.is_empty() && self.group_level().await < LEARNER_LEVEL {
             report.holds_start.clear();
+        }
+        // Without it the shard waits on the leader's silence, as before.
+        if report.refused.is_some() && self.group_level().await < REFUSED_LEVEL {
+            report.refused = None;
         }
         // The API's own check still stands for a group that cannot apply
         // the field.

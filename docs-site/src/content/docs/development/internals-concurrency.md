@@ -25,7 +25,7 @@ In publish → delivery order:
 | 2 | Client worker mpsc channel | queued publish **items** per stream-worker | none, the channel backpressures | `publish_queue_depth` = 64 |
 | 3 | Broker `PublishAdmission` | in-flight publish **bytes**, process-wide | none, always waits (within `EnqueuePolicy::Wait`'s timeout) | `pub_inflight_bytes` = 64 MiB |
 | 4 | Broker publish scheduler queue | queued publish **items**, process-wide (or per core shard), shared between tenants by deficit round robin | `EnqueuePolicy`: `Drop` / `Fail` / `Wait` / `Backpressure`; an acked publish that finds no room is answered `overloaded` (`publish_queue_full`) | `pub_queue_depth` × `pub_workers_per_conn` in all, `pub_queue_depth` guaranteed per tenant; `Drop` unless `pub_ingress_wait` (then `Backpressure`) |
-| 5 | Broker-core subscriber channel | queued `DeliveryEnvelope`s per subscriber | `subscriber_queue_policy`: `Block` / `DropNew` / `DropOld` | `subscriber_queue_capacity` = 512, `drop_new` |
+| 5 | Broker-core subscriber channel | queued `DeliveryEnvelope`s per subscriber | `subscriber_queue_policy`: `Block` / `DropNew` / `DropOld` ([`DropOld` acts as `DropNew`](/development/internals-publish/#fanout-and-the-subscriber-queue-policy)) | `subscriber_queue_capacity` = 512, `drop_new` |
 | 6 | Connection writer, per subscriber | frames queued for one subscription's QUIC stream; their bytes count toward the subscription's share of the connection's egress byte bound | `subscriber_lane_queue_policy`: same three | `subscriber_lane_queue_depth` = 64, `drop_new`; `subscriber_egress_max_bytes` = 256 MiB per connection |
 
 Checkpoints 1-2 are client-side (see
@@ -117,7 +117,7 @@ alone. Every drop is counted in `felix_sub_queue_dropped_total`.
 pub enum SubQueuePolicy {
     Block,    // sender awaits queue space; nothing is ever shed
     DropNew,  // sender try_sends; on Full, the new item is discarded
-    DropOld,  // behaves as DropNew; counted separately in metrics
+    DropOld,  // behaves as DropNew; see Internals: Publish
 }
 ```
 

@@ -58,6 +58,7 @@ fn report(stream: &str, caught_up: &[&str], reported_at_millis: u64) -> ReplicaR
         node_incarnations: Default::default(),
         follower_storage: Default::default(),
         joint_start_acked: None,
+        refused: None,
         holds_start: Default::default(),
     }
 }
@@ -258,6 +259,7 @@ async fn load_reads_the_store_on_the_stores_clock() {
                 node_incarnations: Default::default(),
                 follower_storage: Default::default(),
                 joint_start_acked: None,
+                refused: None,
                 holds_start: Default::default(),
             },
             "broker-x",
@@ -736,4 +738,48 @@ fn a_report_names_no_member_whose_identity_changed() {
         view.reported_members(&key("orders")),
         ["broker-a", "broker-b"]
     );
+}
+
+/// A refusal from the assignment's leader at the assignment's generation.
+fn refusal(generation: u64, leader: &str, reported_at_millis: u64) -> ReplicaReport {
+    ReplicaReport {
+        generation,
+        leader: Some(leader.to_string()),
+        refused: Some(felix_common::membership::RefusedGeneration {
+            generation,
+            promised_to: "broker-b".to_string(),
+        }),
+        ..report("orders", &[], reported_at_millis)
+    }
+}
+
+/// **A refusal counts only from the assignment's leader, at the assignment's
+/// generation.** Another node's report says nothing about this leader, and a
+/// refusal of an older generation is not evidence about the current one.
+#[test]
+fn a_refusal_counts_only_at_the_assignments_generation_and_leader() {
+    let view = at(vec![refusal(4, "broker-a", 1_000)], 1_000).with_nodes(&[], &[led_by_a(4)]);
+    assert!(view.leader_refused(&key("orders"), 4, "broker-a"));
+    assert!(!view.leader_refused(&key("orders"), 4, "broker-c"));
+    assert!(!view.leader_refused(&key("orders"), 5, "broker-a"));
+
+    // The report is at 4 but the refusal it carries is of an older generation.
+    let mut stale = refusal(4, "broker-a", 1_000);
+    stale.refused.as_mut().expect("refused").generation = 3;
+    let view = at(vec![stale], 1_000).with_nodes(&[], &[led_by_a(4)]);
+    assert!(!view.leader_refused(&key("orders"), 4, "broker-a"));
+
+    // A report that refuses nothing.
+    let view =
+        at(vec![report("orders", &["broker-b"], 1_000)], 1_000).with_nodes(&[], &[led_by_a(4)]);
+    assert!(!view.leader_refused(&key("orders"), 4, "broker-a"));
+}
+
+/// A refusal nobody has repeated within the report TTL is silence, not
+/// evidence: the leader may be gone.
+#[test]
+fn an_expired_refusal_is_not_acted_on() {
+    let view =
+        at(vec![refusal(4, "broker-a", 1_000)], 1_000 + TTL_MS + 1).with_nodes(&[], &[led_by_a(4)]);
+    assert!(!view.leader_refused(&key("orders"), 4, "broker-a"));
 }

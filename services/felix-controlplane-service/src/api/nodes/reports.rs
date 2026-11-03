@@ -404,6 +404,7 @@ async fn record_one(
             .map(|(node, id)| (node.clone(), id.clone()))
             .collect(),
         joint_start_acked: shard.joint_start_acked,
+        refused: shard.refused.clone(),
         holds_start: shard.holds_start.clone(),
     };
     // The store checks leadership again as it writes: the checks above read
