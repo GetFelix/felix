@@ -590,6 +590,120 @@ test output, and uploads only the folders of the tests libtest reported as
 failed, with their binary's control-plane log, as the `failed-cluster-logs`
 artifact.
 
+## Shard starvation
+
+`crates/testing/felix-cluster/tests/scale` checks that a broker busy with
+hundreds of shards still serves a small, latency-critical one on time. It
+guards against the failure behind #1760: at felixd's scale, a lease cache's
+renewals waited longer than the lease TTL while every broker stayed up, no
+leader changed and nothing was logged at ERROR. (felixd is a workload runner
+built on Felix that keeps its leases in a Felix cache.) Three causes were found:
+
+- Each broker's replication driver ships at most 16 shards at a time (its
+  pass slots), and it kept giving those slots to the same busy shards (#1794).
+- A follower's request to a broker could wait on a control-plane read, which
+  held up every other request on the same broker-to-broker connection (#1791).
+- The fences a leader sends to confirm a read waited behind the fences of newly
+  promoted shards on that connection (#1796).
+
+The test starts three brokers with the fleet features felixd finalizes and a
+one-shard `Quorum` cache with three replicas, `leases`. A canary renews four
+keys in it the way felixd renews a lease: a conditional put on the version it
+last wrote, with a 6 s TTL, every 2 s, then a read back. For 12 s the cluster is
+otherwise idle, which sets the baseline. Then the test creates single-shard
+`Quorum` streams with three replicas through the control plane's API, 16 at a
+time, and appends to the first 96 every 50 ms from the moment each exists.
+After the last create the appends go on for a while longer.
+
+```mermaid
+sequenceDiagram
+    participant T as test
+    participant C as canary (4 keys)
+    participant B as brokers
+    T->>B: start, finalize features
+    loop every 2 s, throughout
+        C->>B: put_if(version, TTL 6 s), then read
+    end
+    Note over T,B: 12 s idle: baseline
+    T->>B: create N streams, 16 in flight
+    T->>B: append every 50 ms to the first M
+    Note over T,B: hold, appends continue
+    T->>T: compare loaded latencies with the baseline
+```
+
+It fails when:
+
+- **A lease lapsed.** A renewal was refused because the entry had expired, or
+  the read after it found the key gone. A renewal has 4 s (TTL minus the
+  interval) to be applied.
+- **The loaded p99 is too far from the idle one,** for renewals or for reads:
+  over 20 times the idle p99 and over 2 s. Idle p99s are a few
+  milliseconds, so the 2 s floor is what usually applies. On GitHub's 4-vCPU
+  runners at the per-PR size, the loaded p99 was 5 to 6 s without the fixes
+  and under 0.85 s with them, so 2 s leaves room for a slow runner either way.
+  At the nightly size it was 5 to 6 s without and under 0.2 s with. A run takes
+  about 60 loaded samples of each at the per-PR size, so its p99 is the worst
+  one: a single 2 s stall fails it.
+- **The load never applied.** Fewer than half the appended streams took an
+  append, so the canary was not tested under load.
+
+| Variant | Streams | Appended | Hold | Build | Where |
+| --- | --- | --- | --- | --- | --- |
+| `a_lease_cache_renews_on_time_while_shards_are_created_in_bulk` | 600 | 96 | 30 s | debug | every PR, in the cluster job's `rest` suite |
+| `a_lease_cache_renews_on_time_at_felixd_scale` (`#[ignore]`) | 1500 | 96 | 60 s | release | nightly, `.github/workflows/scale-nightly.yml` |
+
+`scale-nightly.yml` can also run the per-PR variant on dispatch, with
+`variant=per-pr`.
+
+The appended count matters more than the stream count. Starvation needs more
+shards with work on one leader than the replication driver's 16 pass slots.
+Both variants append to 96 streams, about 32 per leader, twice the slots. At 32
+appended (about 11 per leader) a broker without the #1794 fix still passed.
+
+Run them locally with:
+
+```bash
+# The per-PR size, on a debug build.
+cargo build -p felix-broker-service --bin felix-broker
+cargo test -p felix-cluster --test scale -- --include-ignored --nocapture \
+  --exact lease_starvation::a_lease_cache_renews_on_time_while_shards_are_created_in_bulk
+
+# The nightly size, on a release build.
+cargo build --release -p felix-broker-service --bin felix-broker
+cargo test --release -p felix-cluster --test scale -- --include-ignored --nocapture \
+  --exact lease_starvation::a_lease_cache_renews_on_time_at_felixd_scale
+```
+
+`FELIX_SCALE_STREAMS`, `FELIX_SCALE_APPENDED` and `FELIX_SCALE_HOLD_SECS`
+change the size without a rebuild. The nightly workflow takes the same values
+as dispatch inputs, plus `variant` (`nightly` or `per-pr`).
+
+### Reading a failure
+
+Every run prints one line, pass or fail. This one is the per-PR size on a
+broker without the fixes:
+
+```text
+lease canary: Load { streams: 600, appended: 96, hold: 30s }: created in 424.6ms; appends 2987 ok, 7670 failed; renewals idle [n=20 p50=6.3ms p99=7.6ms max=7.6ms] loaded [n=32 p50=605.2ms p99=5.0s max=5.0s] bound 2.0s; reads idle [n=20 p50=5.2ms p99=6.8ms max=6.8ms] loaded [n=32 p50=40.9ms p99=6.0s max=6.0s] bound 2.0s; 0 lapse(s)
+```
+
+Renewals and reads are timed out at the TTL, so a p99 of 5 to 6 s means
+requests that waited about as long as a lease lives.
+
+`idle` is the baseline and `loaded` everything sent after the first create. A
+failure adds the problems and each broker's `quorum wait timed out` warnings.
+Those name the shard that waited and two counters: `driver_scan` is how many
+times the leader's replication driver has scanned its shards, and
+`shard_last_scan` is the scan that last gave this shard a pass. A gap of
+hundreds of scans with both followers caught up means the shard never got a
+pass slot, which is the #1794 shape. Long waits with no such gap point at the
+peer lanes (#1791, #1796) or at the leader's apply. Failed appends are not
+judged: a stream still being placed refuses for a while.
+
+A failed nightly run opens an issue labelled `scale-nightly`, or comments on
+the open one, with the summary line; the next green run closes it. Its
+`scale-logs-*` artifact holds every broker's log.
+
 ## Fault campaigns
 
 `felix_cluster::history` runs clients against `Quorum` streams and a `Quorum`
