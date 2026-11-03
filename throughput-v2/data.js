@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793662633623,
+  "lastUpdate": 1793671156365,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -43056,6 +43056,58 @@ window.BENCHMARK_DATA = {
             "range": "27930.74",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 764063.24\nmean: 761105.74\nstdev: 27930.74\ncv: 3.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5dfb5b11dbe2d951b86ec4177f964f6c2628c241",
+          "message": "test(cluster): a shard-starvation guard for lease renewals at scale (#1760) (#1803)\n\n* test(cluster): a lease canary under bulk shard creation and steady appends (#1760)\n\nWIP: the nightly workflow still carries a temporary push trigger for the proof runs.\n\n* docs: what the shard-starvation test guards and how to read a failure (#1760)\n\n* test(cluster): size the per-PR canary past the driver's pass slots (#1760)\n\n* test(cluster): calibrate the canary's bound and hold the per-PR size until the fixes land (#1760)\n\n* test(cluster): review fixes for the starvation guard (#1760)\n\nStart the baseline after every key is claimed, fail on a panicked renewer\nor a load that never applied, bound the control-plane requests, give the\nnightly steps their own timeouts so a hang is reported, move the cron off\nthe TLA walk's minute, and define the terms the docs used.\n\n* test(cluster): run the starvation guard on every PR now that its fixes are on main (#1760)",
+          "timestamp": "2026-11-02T17:51:03-08:00",
+          "tree_id": "651cb8c25a54bee824d5c041404fa8d8f2968b5a",
+          "url": "https://github.com/GetFelix/felix/commit/5dfb5b11dbe2d951b86ec4177f964f6c2628c241"
+        },
+        "date": 1793671155631,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 422598.56,
+            "range": "18522.41",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 422598.56\nmean: 421949.07\nstdev: 18522.41\ncv: 4.39%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 422598.56,
+            "range": "18522.41",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 422598.56\nmean: 421949.07\nstdev: 18522.41\ncv: 4.39%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 97386.44,
+            "range": "657.15",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 97386.44\nmean: 97244.56\nstdev: 657.15\ncv: 0.68%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 973864.35,
+            "range": "6571.52",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 973864.35\nmean: 972445.62\nstdev: 6571.52\ncv: 0.68%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
