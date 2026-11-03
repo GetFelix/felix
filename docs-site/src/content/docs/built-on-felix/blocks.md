@@ -12,12 +12,19 @@ world, and Felix stores it, orders the writes and tells everyone what changed.
 It is early. You can walk around a generated world in first person, dig and
 place blocks, and keep the world in Felix or in your browser. Players do not see
 each other yet. To try it, [download the latest
-release](https://github.com/GetFelix/felix-blocks/releases/latest) and play in
-your browser with no Felix: unpack it, run `python3 -m http.server 8000 --bind
-127.0.0.1` in the folder, and open `http://localhost:8000/play.html?offline=mine`.
-The [README](https://github.com/GetFelix/felix-blocks#readme) has the download
-commands and checksums. The images below are the style frame, and the sections after
-them describe how the game is built to work.
+release](https://github.com/GetFelix/felix-blocks/releases/latest), unpack the
+web build and run this in its folder:
+
+```bash
+python3 -m http.server 8000 --bind 127.0.0.1
+```
+
+Then open `http://localhost:8000/play.html?offline=mine`. That plays in your
+browser with no Felix. The [README](https://github.com/GetFelix/felix-blocks#readme)
+has the download commands and checksums.
+
+The images below are the style frame, and the sections after them describe how
+the game is built to work.
 
 | Day | Night |
 |---|---|

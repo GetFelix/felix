@@ -21,7 +21,7 @@ What works:
 Not built yet:
 
 - Zones.
-- Forking a city from the page, although the simulator can.
+- Forking a city from the page (the simulator can already fork).
 
 The [README](https://github.com/GetFelix/felix-metro#readme) has the controls and a
 quick start. The sections below describe how it works.

@@ -45,8 +45,8 @@ exports. The workload contract is written in WIT, in
 
 ### Contract
 
-The interface between felixd and a workload and what each side promises. Versions
-0.2 and 0.3 run; these pages teach 0.2. A component built against 0.1 is refused. See
+The interface between felixd and a workload and what each side promises. felixd runs
+0.2 and 0.3, and these pages teach 0.2. A component built against 0.1 is refused. See
 [The workload contract](/built-on-felix/felixd/contract/).
 
 ### Step

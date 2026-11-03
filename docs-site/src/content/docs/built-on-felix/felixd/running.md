@@ -3,7 +3,7 @@ title: "Running felixd"
 description: "The felixd subcommands and flags, the environment variables that point it at Felix, what it needs from a Felix cluster, and a quickstart that starts a broker, submits a workload and checks it."
 ---
 
-felixd is one binary. The latest release is a preview. It has builds for Linux
+felixd is one binary. Releases are previews, so expect changes between them. They have builds for Linux
 (x86_64 and aarch64) and macOS (aarch64) on the
 [releases page](https://github.com/GetFelix/felixd/releases), with a signed
 checksum file; the repository's README shows how to verify

@@ -90,12 +90,13 @@ It also does not pass on the recorded publisher
 ([#54](https://github.com/GetFelix/felix-gateway/issues/54)). Scrubbing and
 verified authorship in the viewer wait on both.
 
-The attempt limit before a
-task is dead-lettered is one broker setting, so workers also count attempts
-themselves. Agent identities need an outside OIDC issuer, which `agents-tool`
-runs for now. There is no request and reply between clients, so `ask` is built
-on the messages stream, and there is no bounded counter add, so a budget takes
-a reserve, a check and a refund. Each gap has an
+The attempt limit before a task is dead-lettered is one broker setting, so
+workers also count attempts themselves. Agent identities need an outside OIDC
+issuer, which `agents-tool` runs for now.
+
+There is no request and reply between clients, so `ask` is built on the
+messages stream. There is no bounded counter add, so a budget takes a reserve,
+a check and a refund. Each gap has an
 [issue](https://github.com/GetFelix/felix-agents/labels/felix-gap).
 
 ## What it demonstrates
