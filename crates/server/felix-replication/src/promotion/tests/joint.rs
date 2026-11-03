@@ -997,3 +997,33 @@ async fn a_reissued_elected_leader_fences_the_set_it_was_elected_on() {
     let outcome = fence(&replicas).await;
     assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
 }
+
+/// **A log set that differs from the set before only in who votes is fenced
+/// beside it.** The log keeps broker-y and broker-w as learners where the
+/// set before has them voting. broker-a, broker-y and broker-w are a
+/// majority of the set before, of its names and of the new set, yet miss
+/// every voter majority of the log's set, which broker-b and broker-c may
+/// have acknowledged on.
+#[test]
+fn a_log_set_differing_only_in_learners_is_fenced_beside_the_one_before() {
+    let set = |learners: &[&str]| Membership {
+        generation: 4,
+        members: [LEADER, "broker-b", "broker-c", "broker-y", "broker-w"]
+            .map(|node| Member {
+                node: node.to_string(),
+                storage: None,
+                learner: learners.contains(&node),
+                wiped: false,
+            })
+            .to_vec(),
+    };
+    let stored = ReplicaSet {
+        current: set(&["broker-y", "broker-w"]),
+        leaving: None,
+    };
+
+    let besides =
+        crate::promotion::joint::logged_besides(Some(&stored), &swapped(), &set(&[]), None);
+
+    assert_eq!(besides, Some(stored.current));
+}
