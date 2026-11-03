@@ -8,6 +8,7 @@ mod capabilities;
 mod connections;
 mod forwards;
 mod lanes;
+mod learner;
 mod listener;
 mod mtls;
 mod requests;

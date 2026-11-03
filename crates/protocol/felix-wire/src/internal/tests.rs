@@ -122,6 +122,7 @@ fn every_message() -> Vec<InternalMessage> {
         InternalMessage::ReplicateOk(ReplicateOk {
             correlation_id: 42,
             durable_offset: 102,
+            learner: false,
         }),
         InternalMessage::ReplicateError(ReplicateError {
             correlation_id: 42,

@@ -1,25 +1,17 @@
 use super::*;
+use serial_test::serial;
 
 #[test]
+#[serial]
 fn collection_records_and_samples() {
-    // Drain any prior samples from other tests to keep this test deterministic.
+    // Other tests record into the global collector unconditionally, so an
+    // emptiness check after the drain would race them. Only the sentinel values
+    // below are asserted.
     set_enabled(false);
     let _ = take_samples();
     let _ = take_cache_samples();
 
     assert!(!should_sample());
-    if let Some(samples) = take_samples() {
-        assert!(samples.0.is_empty());
-        assert!(samples.1.is_empty());
-        assert!(samples.2.is_empty());
-        assert!(samples.3.is_empty());
-        assert!(samples.4.is_empty());
-        assert!(samples.5.is_empty());
-        assert!(samples.6.is_empty());
-        assert!(samples.7.is_empty());
-        assert!(samples.8.is_empty());
-    }
-
     enable_collection(2);
     set_enabled(true);
 

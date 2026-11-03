@@ -2271,6 +2271,9 @@ instead of being left with a feed nothing will write to or end.
   stream subscription every record below it was sent to the subscriber or dropped
   by the subscriber's own queue, and none at or above it was. It is the stream's
   position, not the subscriber's: a queue that dropped records does not move it.
+  On a `Quorum` stream a batch this broker holds for the committed mark was not
+  offered, so `resume_from` is at or below it: the batch is on disk and the next
+  leader can still commit it.
   Absent for an in-memory stream, whose sequence means nothing on another broker.
   For a cache watch it is the shard log's tail, and absent if writes were still
   in flight when the watch ended; resume after the last offset seen then.
@@ -2287,6 +2290,18 @@ before the move can still reach the subscriber, so the last offset it saw may be
 past `resume_from`; and records its queue dropped stay dropped, exactly as they
 would have without the move. Resumed that way, nothing is repeated and nothing
 is skipped that the subscriber would otherwise have received.
+
+A leader that loses a shard usually stays one of its replicas, and the new
+leader starts shipping to it at once. Those records can reach its log before it
+has ended its readers. It then ends them right away, as for a move to the
+leader its log accepted, with `resume_from` below the records it never offered.
+The same goes for a rebuild the new leader asks of it.
+
+A subscription still reading its history from disk on a `Quorum` stream waits
+at the committed mark. If the broker stops serving the shard before the mark
+reaches the end of that history, the event stream is reset rather than ended
+with `shard_moved`. The client then resumes after the last record it received,
+or where it asked to start if it received none.
 
 The Rust `Client` does this on its own: a subscription from
 `Client::subscribe` and a cache watch from `Client::watch_cache`
@@ -2392,8 +2407,10 @@ A durable stream's log also holds records that are not events. Once the fleet
 has finalized `generation_start`, a leader appends a **generation-start**
 record whenever it starts serving a shard at a new generation, so its quorum
 mark can cover the records it inherited: after a promotion, at either end of a
-move, and when a cancelled move hands the shard back. Each step of a move is a
-new generation, so a move can leave several in a row. A record takes the next
+move, and when a cancelled move hands the shard back. A replicated leader that
+opens a shard again at a generation it already led, as after a restart,
+appends another. Each step of a move is a new generation, so a move can leave
+several in a row. A record takes the next
 offset like any other and is never delivered, not to a subscription, a
 consumer group, or a Kafka fetch. A subscriber therefore sees `N-1` and then
 `N+1` across a generation start at `N`.
@@ -2421,7 +2438,8 @@ drop by them. A drop is still reported, only its size is off.
 
 A client that did not offer `0x0800` gets the frames it always got, and reads
 the gap at generation starts as a drop. That is a false drop signal, once per
-leader change or move, and only after `generation_start` is finalized.
+leader change, move or leader restart, and only after `generation_start` is
+finalized.
 
 ## Event batch publisher
 
