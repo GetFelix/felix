@@ -10,15 +10,15 @@ application. The pages here say which Felix features each one uses and what it
 relies on Felix to guarantee. Setup and development detail lives in each
 repository.
 
-| Project | What it is | Felix features it leans on |
+| Project | What it is | Leans on |
 |---|---|---|
-| [felix-canvas](/built-on-felix/canvas/) | A multiplayer whiteboard | Durable and in-memory streams, offsets to detect drops, a snapshot cache, a TTL presence cache, a consumer group, felix-gateway |
-| [felix-webhook-relay](/built-on-felix/webhook-relay/) | A webhook relay with retries, dead letters and replay | Durable streams, the idempotent producer, one consumer group per endpoint, watched config caches, counters, replay by offset |
-| [felix-arena](/built-on-felix/arena/) | A browser team deathmatch, played through Felix, with a kill cam replayed from the log | Atomic commits, replay from an offset for a kill cam, quorum replication, per-arena token narrowing |
-| [felix-metro](/built-on-felix/metro/) | A 3D city simulator, in design, whose timeline goes back to any moment | A shard per district, atomic commits with keyframe state, range reads to seek, subscribe from an offset into live, expected-offset fencing |
-| [felix-blocks](/built-on-felix/blocks/) | A voxel building game, in design, where friends edit one world together | A log-backed cache with one key per chunk, conditional writes, a retained cache watch, compaction, a TTL presence cache, RBAC for builders and visitors |
-| [felix-agents](/built-on-felix/agents/) | A swarm of AI workers, in design: tasks flow out, results flow back, and every run can be watched live and replayed | A consumer group with claim extension and dead letters, conditional cache writes for shared findings and locks, TTL caches, counters for budgets, RBAC down to a key prefix, range reads and subscribe from an offset |
-| [felixd](/built-on-felix/felixd/) | A node agent that runs deterministic Wasm workloads on a cluster: a workload survives the loss of its node, resumes from an offset and replays to any point. Failover, exactly-once output and replay run today; pipelines and operations are next | Leases with TTL and conditional cache writes, `publish_if` on a single-shard output stream, subscribe from an offset, snapshot streams, quorum replication, `offset_for_time` and range reads, RBAC on each node's token |
+| [felix-canvas](/built-on-felix/canvas/) | A multiplayer whiteboard | Streams, a snapshot cache, a TTL presence cache |
+| [felix-webhook-relay](/built-on-felix/webhook-relay/) | A webhook relay with retries, dead letters and replay | Durable streams, [consumer groups](/features/queues/), the idempotent producer |
+| [felix-arena](/built-on-felix/arena/) | A browser team deathmatch with a kill cam replayed from the log | Atomic commits, replay from an offset |
+| [felix-metro](/built-on-felix/metro/) | A playable 3D city simulator whose timeline goes back to any moment | A shard per district, range reads, subscribe from an offset |
+| [felix-blocks](/built-on-felix/blocks/) | A voxel building game, early, that stores its world in Felix | A cache with one key per chunk, conditional writes |
+| [felix-agents](/built-on-felix/agents/) | A swarm of AI workers, in design, whose runs can be watched and replayed | A consumer group, conditional cache writes, RBAC |
+| [felixd](/built-on-felix/felixd/) | A node agent that runs Wasm workloads and moves them when a node dies | Leases, `publish_if`, subscribe from an offset |
 
 The browser apps reach Felix through
 [felix-gateway](/clients/browsers/), which is documented with the clients.

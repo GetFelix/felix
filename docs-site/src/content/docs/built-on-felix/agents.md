@@ -14,7 +14,9 @@ The viewer in the browser is a live picture of the swarm: workers claiming
 tasks, sending and receiving work, and results coming back. Any run can be
 replayed by scrubbing back to any moment of it.
 
-It is in design. Nothing runs yet. The [style frame](https://github.com/GetFelix/felix-agents/blob/main/prototype/style-frame.html)
+It is early. `agents-tool` can create a run, and `felix-mcp` lists an agent's
+tools to an MCP host, but no swarm runs yet. The
+[style frame](https://github.com/GetFelix/felix-agents/blob/main/prototype/style-frame.html)
 fixes the look of the viewer, driven by a hand-written run rather than a
 working swarm. The sections below describe the design.
 
@@ -81,10 +83,12 @@ folds it into the state of the run at any offset. To follow live it subscribes
 from the offset after the last record it read, so the replay and live delivery
 meet with no gap.
 
-Some of this is planned work rather than something Felix offers today.
-felix-gateway's TypeScript client has no range read yet, the gateway has no
-time lookup and does not pass on the recorded publisher, so scrubbing and
-verified authorship in the viewer wait on those. The attempt limit before a
+Some of this is a gap in what Felix offers today. felix-gateway serves range
+reads and time lookups, but its TypeScript client does not expose them
+([felix-gateway#53](https://github.com/GetFelix/felix-gateway/issues/53)), and
+the gateway does not pass on the recorded publisher
+([felix-gateway#54](https://github.com/GetFelix/felix-gateway/issues/54)), so
+scrubbing and verified authorship in the viewer wait on those. The attempt limit before a
 task is dead-lettered is one broker setting, so workers also count attempts
 themselves. Agent identities need an outside OIDC issuer, which `agents-tool`
 runs for now. There is no request and reply between clients, so `ask` is built

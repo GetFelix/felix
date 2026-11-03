@@ -276,8 +276,8 @@ felixctl cache del workloads counter          # remove it
 Both leave the module and the streams in place, and nothing deletes them. Running
 `felixd run` for the same id starts the workload again from its snapshot. After a
 `del`, the check that refuses a new module no longer has a spec to compare with, so
-do not reuse a deleted id for different code. `felixd drain` and `felixd ps` are not
-built ([#17](https://github.com/GetFelix/felixd/issues/17)).
+do not reuse a deleted id for different code. `felixd ps` shows what
+is running, and `felixd drain` moves a node's workloads away.
 
 ## When it goes wrong
 
@@ -286,9 +286,8 @@ built ([#17](https://github.com/GetFelix/felixd/issues/17)).
 | The step returns `reject` for an input | A rejection record on `wl.<id>.out` for that input. The workload keeps running | Look at the record's error code and detail. The input is skipped and nothing else is needed |
 | The step returns `poison`, traps, runs out of fuel or breaks the contract | A failure record on the output stream, then `state` `failed` and a `failure` reason in the spec | Fix the module and submit it under a new id. There is no recorded way past a poison input ([#98](https://github.com/GetFelix/felixd/issues/98)) |
 | Fuel or memory is too low, but the code is right | The same failure | Raise `--fuel` or `--max-memory` and run `felixd run` again for the same id |
-| The module is built for contract 0.1, or a restore runs out of `snapshot_fuel` | [Needs operator](/built-on-felix/felixd/terminology/#needs-operator). The agent logs `the workload needs an operator, not running it`, and releases the lease if it held one. Nothing is marked failed | Rebuild against 0.2, or raise `--snapshot-fuel` and run `felixd run` again for the same id. The agent starts the workload when the spec changes |
+| The module is built for contract 0.1, or a restore runs out of `snapshot_fuel` | [Needs operator](/built-on-felix/felixd/terminology/#needs-operator). The node records a needs-operator reason on the output stream and releases the lease if it held one; `felixd ps` shows it. Nothing is marked failed | Rebuild against 0.2, or raise `--snapshot-fuel` and run `felixd run` again for the same id. The agent starts the workload when the spec changes |
 
-Needs-operator is only a log line on the agent that tried. It is not a recorded
-state ([#112](https://github.com/GetFelix/felixd/issues/112)), so `felixd check` does
-not show it. A workload that never starts producing, with no failure record, is
-worth looking for in the agents' logs.
+Needs-operator is a recorded state, so `felixd ps` shows the reason. A workload
+that never starts producing, with no failure record, is worth looking up there
+first.

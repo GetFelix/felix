@@ -84,15 +84,17 @@ version.
 | snapshot | 2 | one record: version, input offset, output tail, epoch, state | one chunk |
 | snapshot | 1 | the same without an epoch | one chunk, epoch 0 |
 
-A build that meets a version it does not know fails the workload. The design for
-rolling upgrades is that such a node stops claiming the workload without marking it
-failed, and that new formats are written only after every node advertises that it
-reads them ([#65](https://github.com/GetFelix/felixd/issues/65)). That is not built.
+A build from before a record kind or version existed can fail the workload that
+carries it. Newer builds instead leave a workload alone when they meet a record
+from a newer build, so upgrade every node before you rely on a feature of the new
+build. Making new formats wait until every node advertises that it reads them is
+not built ([#65](https://github.com/GetFelix/felixd/issues/65)).
 
 ## Cache values
 
-These are JSON today. They are to become versioned typed records
-([#73](https://github.com/GetFelix/felixd/issues/73)).
+These are JSON. Each value of `workloads`, `leases`, `epochs`, `nodes` and
+`drains` is wrapped as `{"format": 1, "value": ...}`, and a reader refuses a
+format it does not know.
 
 | Cache | Key | Value |
 |---|---|---|

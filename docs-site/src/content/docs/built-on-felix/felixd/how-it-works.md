@@ -335,9 +335,9 @@ seconds.
 
 **A restore that runs out of fuel** puts the workload in the
 [needs-operator](/built-on-felix/felixd/terminology/#needs-operator) state, not
-failed: the limit can be raised and the workload resumed. Today that is a logged
-error on the node. It is not yet a recorded state
-([#112](https://github.com/GetFelix/felixd/issues/112)). Raising
+failed: the limit can be raised and the workload resumed. The holder writes a
+needs-operator record to the output stream and releases the lease, and
+`felixd ps` shows the reason. Raising
 `--snapshot-fuel` with `felixd run` for the same id writes a new spec, and the
 agent restarts the workload under it.
 
