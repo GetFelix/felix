@@ -2178,9 +2178,9 @@ history is read. A broker that just took a shard has no mark for its
 generation yet (`Settling`): a `Latest` subscribe is refused as retryable until
 the first mark. Held batches are dropped when the shard is released (never
 delivered as committed); subscribers are ended with where to resume and pick
-up on the next leader. That position is at or below the first held batch, since
-the batch stays on disk and the next leader can commit it. A generation-start
-record written behind a held batch does not move it. While the lease is lapsed the bound is `Refused`: new
+up on the next leader. The resume position is at or below the first held
+batch, since the batch stays on disk and the next leader can commit it. A
+generation-start record written behind a held batch does not move it. While the lease is lapsed the bound is `Refused`: new
 subscribes, watches and cache reads are refused (`felix_broker_lease_refusals_total{boundary="read"}`),
 and the readers of every led shard are ended as for a move.
 
