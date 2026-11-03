@@ -243,7 +243,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardElectNoBallotAcks.cfg` | `FelixShardElect.cfg` without ballots, two generations of elections and two writes, the set check on so the first leader can follow a candidate | violate `AckedHeldByLeader`, checked per generation |
 | `FelixShardElectAdoptPromote.cfg` | `FelixShardElect.cfg` with one write, the set check, adoption up to generation 2 and promotion on suspicion up to generation 2 | pass, the same invariants (186K distinct states without the write; not yet measured with it) |
 | `FelixShardElectReissue.cfg` | `FelixShardElectAdoptPromote.cfg` with promotion on suspicion up to generation 1 and the control plane moving past a generation it named one leader at while another was elected and opened there: the next generation, under the elected leader, on the control plane's set (`Reissues`, CpReissue) | pass, the same invariants (130,796 distinct states, 6 s locally) |
-| `FelixShardElectReissueReplace.cfg` | `FelixShardElectReissue.cfg` with four brokers, a spare that promotion puts in place of the old leader (`ReplaceOnPromote`), no write, and adoption up to generation 2: the elected leader's set differs from the control plane's when they collide, so the reissued leader fences both (`ReissueFencesElected`) | pass, the same invariants (24,096 distinct states, 1 s locally) |
+| `FelixShardElectReissueReplace.cfg` | `FelixShardElectReissue.cfg` with four brokers, a spare that promotion puts in place of the old leader (`ReplaceOnPromote`), no write, and adoption up to generation 2: the elected leader's set differs from the control plane's when they collide, so the reissue is a pending change from the elected set to the control plane's, and the reissued leader fences both (`ReissuePending`) | pass, the same invariants (66,576 distinct states, 4 s locally) |
 | `FelixShardElectStepDown.cfg` | `FelixShardElect.cfg` with time to 2, `L = 2` and `Margin = 2` (so no promotion), one write and one generation of elections: an elected leader acknowledges a write and then steps down when its own lease lapses, leaving the control plane's leader at an older generation it has promised away | pass the same invariants (1.49M distinct states, under a minute). Found by `FelixShardWalkElect.cfg`: before `Newest` counted promises, `AckedHeldByLeader` took that deposed leader for the newest one |
 | `FelixShardElectHandoff.cfg` | `FelixShardElect.cfg` with a planned move and a cancel, every change fenced (`FenceEveryChange`), the set check on, one generation of elections, one write, reports flowing so a move can start | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (111.2M distinct states, 2 h 23 min on a four-core CI runner; nightly) |
 | `FelixShardElectHandoffLeaders.cfg` | the same without the write, for every pull request | pass `OneLeaderPerGeneration` and the rest, which hold trivially without a write (5.05M distinct states, 5.9 min on a CI runner, with the set check's step-down) |
@@ -823,9 +823,13 @@ With the control plane up, placement can name a leader at the generation a
 candidate is elected at. Ballots let only one of the two open there. When the
 elected one opens, the control plane's leader never will. Short of another
 promotion or election, the generation stays there. On the elected leader's
-report the control plane writes the next generation with it as leader, on
-the control plane's set (CpReissue, `reissue_past_collision`). The leader
-fences that set, and jointly the set it was elected on when the two differ.
+report the control plane writes the next generation with it as leader
+(CpReissue, `reissue_past_collision`). When the set it was elected on is not
+the control plane's, the write is a set change from the elected set to the
+control plane's, shaped as a cut-over: the elected set becomes the recorded
+one, a candidate refuses to stand while the change is pending, a failover
+promotes from the elected set, and the leader fences both sets jointly. The
+change completes only once it opened on both.
 The report may be old, so the leader takes the generation only if it has not
 promised it to another; otherwise it never opens there. `FelixShardElectReissue.cfg` checks that this
 keeps one leader per generation and every acknowledged record.
