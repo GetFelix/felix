@@ -259,7 +259,7 @@ podman run -p 8787:8787 \
 ```
 
 The gateway is versioned on its own, apart from Felix. Release 0.8.0 is
-tested against Felix 0.6.2 and later 0.6 releases.
+tested against Felix 0.6.2.
 
 If the brokers use a certificate from a private CA, mount it and set
 `GATEWAY_FELIX_CA_FILE`; set `GATEWAY_FELIX_SERVER_NAME` to the name the
