@@ -36,6 +36,7 @@ impl PeerRequester for SlowPeer {
         Ok(InternalMessage::ReplicateOk(ReplicateOk {
             correlation_id: 0,
             durable_offset: batch.first_offset + batch.payloads.len() as u64,
+            learner: false,
         }))
     }
 }
@@ -70,6 +71,7 @@ impl PeerRequester for ShiftingPeer {
         Ok(InternalMessage::ReplicateOk(ReplicateOk {
             correlation_id: 0,
             durable_offset: batch.first_offset + batch.payloads.len() as u64,
+            learner: false,
         }))
     }
 }
@@ -433,6 +435,7 @@ impl PeerRequester for FencingFollowers {
                 Ok(InternalMessage::ReplicateOk(ReplicateOk {
                     correlation_id: 0,
                     durable_offset: batch.first_offset + batch.payloads.len() as u64,
+                    learner: false,
                 }))
             }
             other => panic!("unexpected {:?}", other.kind()),
@@ -803,6 +806,7 @@ impl PeerRequester for Recording {
         Ok(InternalMessage::ReplicateOk(ReplicateOk {
             correlation_id: 0,
             durable_offset: batch.first_offset + batch.payloads.len() as u64,
+            learner: false,
         }))
     }
 }

@@ -229,6 +229,9 @@
 (* control plane records, becomes its leader (CpAdopt), up to generation   *)
 (* `Adopt`. One on another set only moves the control plane's generation   *)
 (* up, so it never issues a generation below one it heard was elected.    *)
+(* That leaves the control plane naming its old leader at a generation it  *)
+(* cannot serve. With `Renames` the control plane names it again one       *)
+(* generation up, on its own set, and the leader fences there (CpRename).  *)
 (*                                                                         *)
 (* Elections also break the cut-over and the hand-back. The control plane  *)
 (* names them at a generation it picked without knowing of an election,    *)
@@ -530,6 +533,12 @@ CrashLeader == FALSE
 GiveUpOnCrash == FALSE
 Reclaims == FALSE
 ReclaimBlind == FALSE
+\* `Renames`: under `Adopt`, once the control plane records an election
+\* without adopting it, it names its leader again at the next generation when
+\* that leader reports it cannot serve the recorded one (CpRename).
+\* `RenameUnfenced`: the renamed leader opens at once instead of fencing.
+Renames == FALSE
+RenameUnfenced == FALSE
 FenceChecksIds == TRUE
 UnnamedCounts == FALSE
 NameByRegistration == FALSE
@@ -2876,6 +2885,68 @@ Reclaim(v, views) ==
                     joining, leaving, joinedAt >>
     /\ UNCHANGED << promised, fencing, answered, ballot, opened, setVars, ackGen >>
 
+\* `m` promised generation `g` to a leader other than `b`.
+PromisedAway(m, b, g) == promised[m] = g /\ ballot[m] /= {} /\ ballot[m] /= {b}
+
+\* What the control plane's leader reports as refused at its generation
+\* (`refused` in the replica report): its open there fails, since it promised
+\* the generation to another node (`PromisedAway` in
+\* services/felix-broker-service/src/shards/lifecycle.rs), or its fence there
+\* can never reach a majority, since too many of its set did
+\* (`Outcome::Refused` in crates/server/felix-replication/src/promotion.rs).
+\* Read live, as `Reclaim` reads its measurement.
+RenameDue ==
+    /\ Renames
+    /\ bgen[leader] < gen
+    /\ \/ PromisedAway(leader, leader, gen)
+       \/ ~LeaderMajority(leader, { m \in Members(leader) : ~PromisedAway(m, leader, gen) })
+
+\* Under `Renames`, the control plane names its leader again at the next
+\* generation, the same set and any pending change kept, once that leader
+\* reports it cannot serve the generation a recorded election moved the
+\* control plane to (`election_refused`, `move_step` in
+\* services/felix-controlplane-service/src/cluster/placement/moves.rs). Not
+\* while a move drains its leader, which ends through its own steps. The
+\* leader fences there as at any new term: its open failed, so the broker
+\* reopens it fenced (`begin_open_renewed` in lifecycle.rs), on the set the
+\* assignment names, and while a change is pending, jointly with the set
+\* being left. Each one needs a recorded election before it, so `Adopt`
+\* bounds them.
+CpRename(v, views) ==
+    /\ RenameDue
+    /\ ~v.draining
+    /\ MayPromise(leader, leader, gen + 1)
+    /\ Cas(v)
+    /\ ver' = ver + 1
+    /\ cpView' = views
+    /\ gen' = gen + 1
+    /\ cpExpiry' = now + L
+    /\ bgen' = [bgen EXCEPT ![leader] = gen + 1]
+    /\ bexpiry' = [bexpiry EXCEPT ![leader] = clock[leader] + L]
+    /\ queued' = [queued EXCEPT ![leader] = 0]
+    /\ pending' = [pending EXCEPT ![leader] = 0]
+    /\ report' = NoReport
+    /\ stopped' = [stopped EXCEPT ![leader] = FALSE]
+    /\ Promise(leader, leader, gen + 1)
+    /\ confirmed' = [confirmed EXCEPT ![leader] = [m \in Brokers |-> 0]]
+    /\ IF SetCheck
+       THEN /\ mine' = [mine EXCEPT ![leader] = IF cpNext = {} THEN CpSet ELSE cpNext]
+            /\ setGen' = [setGen EXCEPT ![leader] = gen + 1]
+            /\ oldSet' = [oldSet EXCEPT ![leader] = IF cpNext = {} THEN {} ELSE CpSet]
+       ELSE UNCHANGED << mine, setGen, oldSet >>
+    /\ IF RenameUnfenced
+       THEN /\ log' = [log EXCEPT ![leader] = Opened(leader, gen + 1)]
+            /\ Opens(leader, gen + 1)
+            /\ fencing' = [fencing EXCEPT ![leader] = FALSE]
+            /\ UNCHANGED answered
+       ELSE /\ fencing' = [fencing EXCEPT ![leader] = TRUE]
+            /\ answered' = [answered EXCEPT ![leader] = {}]
+            /\ UNCHANGED << log, opened >>
+    /\ UNCHANGED << now, clock, leader, inflight, hbOut, hbAt, hwm, halted,
+                    acked, writes, staleCommit >>
+    /\ UNCHANGED << draining, successor, moves, staged, out, joining, leaving, joinedAt >>
+    /\ UNCHANGED << installed, nextVars, ackGen >>
+
 \* A placement write, from a read taken in the same step or from one a
 \* planner has held since.
 Decide(v, f, views) ==
@@ -2885,6 +2956,7 @@ Decide(v, f, views) ==
           \/ SeatFence(v, f, views) \/ TrimFence(v, views) \/ TrimSet(v, f, views)
           \/ UndoFence(v, f, views) \/ Undo(v, f, views)
           \/ Swap(v, f, views) \/ CpAdopt(v, f, views) \/ Reclaim(v, views)
+          \/ CpRename(v, views)
        /\ UNCHANGED << counterVars, expect, inherited, seen, seenInc, fenceIds >>
 
 -----------------------------------------------------------------------------
@@ -3457,6 +3529,12 @@ OneLeaderPerGeneration ==
 AdoptedMatchesOpened ==
     <<gen, leader>> \in opened /\ bgen[leader] = gen =>
         mine[leader] = IF cpNext /= {} THEN cpNext ELSE CpSet
+
+\* A witness, not a safety property: the control plane never has a leader to
+\* name again (`RenameDue`). TLC finds one under `Renames`
+\* (FelixShardElectRenameDue.cfg), which shows the configuration that passes
+\* with it gets that far.
+NeverRenameDue == ~RenameDue
 
 \* Under `SetCheck`, once a set change opened, a majority of the new set and
 \* of the set before it know the new set, so no replica on the old set alone

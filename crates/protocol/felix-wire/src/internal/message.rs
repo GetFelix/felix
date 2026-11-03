@@ -105,6 +105,7 @@ impl InternalMessage {
             Self::HelloOk(m) if m.capabilities.is_none() => Kind::HelloOk,
             Self::HelloOk(_) => Kind::HelloCapableOk,
             Self::ReplicateRecords(m) => records_kind(m, Kind::ReplicateRecords),
+            Self::ReplicateOk(m) if m.learner => Kind::ReplicateLearnerOk,
             Self::ReplicateOk(_) => Kind::ReplicateOk,
             Self::ReplicateError(_) => Kind::ReplicateError,
             Self::ReplicateBootstrap(_) => Kind::ReplicateBootstrap,

@@ -378,6 +378,8 @@ async fn ship_batch<R: PeerRequester>(
     cursor.stalled = progress == Progress::Retry;
     match progress {
         Progress::Stored { durable_offset } => {
+            // From the same answer as `confirmed`, so the two always agree.
+            cursor.learner = is_learner(&answer);
             // The follower's own account of where it is, since it did the
             // writing and a partially applied batch would leave the two
             // disagreeing — but never past the end of what was sent. The leader
@@ -466,6 +468,11 @@ pub fn read_answer(answer: &InternalMessage) -> Progress {
         // stop replication over a protocol confusion.
         _ => Progress::Retry,
     }
+}
+
+/// Whether `answer` comes from a follower whose copy is a learner.
+pub(crate) fn is_learner(answer: &InternalMessage) -> bool {
+    matches!(answer, InternalMessage::ReplicateOk(ok) if ok.learner)
 }
 
 /// Whether this leader's base lies above everything known committed on a

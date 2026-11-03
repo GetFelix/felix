@@ -22,7 +22,7 @@ use crate::ConsistencyLevel;
 use crate::broker::RingRecord;
 use crate::commit::{StateEntry, StateOp, StateView};
 use crate::durable::StreamLog;
-use crate::handoff::{Ending, FeedEnd, ShardMoved};
+use crate::handoff::{Ending, FeedEnd, ShardHandoff, ShardMoved};
 
 /// One stream shard's live state, shared by every handle to it.
 #[derive(Debug)]
@@ -328,7 +328,11 @@ impl StreamState {
     /// `Broker::subscribe_from`. Kept, it would end below the records just
     /// written, and a reader from before them would get the ring and then the
     /// live edge, skipping everything in between.
-    pub(crate) fn advance_to(&self, next_seq: u64) {
+    ///
+    /// Subscribers still registered were offered none of those records, so
+    /// they are ended here as for a move to `to()`, told to resume where the
+    /// sequence stood. Ended later, they would be told to resume past them.
+    pub(crate) fn advance_to(&self, next_seq: u64, to: impl FnOnce() -> ShardHandoff) {
         let mut state = self.log_state.lock();
         // The commit order can stand past the ring: dropping a hold releases
         // turns for records that stay on disk but never reach the ring. A
@@ -337,6 +341,7 @@ impl StreamState {
         if next_seq <= state.next_seq.max(self.commit_sequencer.next_offset()) {
             return;
         }
+        self.end_passed_over(&state, to);
         state.log.clear();
         state.next_seq = next_seq;
         state.generation_start_run = None;
@@ -354,8 +359,17 @@ impl StreamState {
     /// For a follower whose log was just rebuilt: the ring and the sequence
     /// described records that are gone, and `advance_to` only ever moves
     /// forward.
-    pub(crate) fn reset_to(&self, next_seq: u64) {
+    ///
+    /// A rebuild that keeps the committed records can move the sequence up,
+    /// past a batch held here that the mark already covers. Subscribers still
+    /// registered were never offered it, so they are ended first, as in
+    /// `advance_to`. A downward reset leaves them registered: ending them at
+    /// the old sequence would skip the records the new log is about to hold.
+    pub(crate) fn reset_to(&self, next_seq: u64, to: impl FnOnce() -> ShardHandoff) {
         let mut state = self.log_state.lock();
+        if next_seq > state.next_seq {
+            self.end_passed_over(&state, to);
+        }
         state.log.clear();
         state.next_seq = next_seq;
         state.generation_start_run = None;
@@ -508,9 +522,14 @@ impl StreamState {
     }
 
     /// A generation-start record sits at `offset` at the tail, the last of
-    /// `run` in a row. The next publish follows it, and the stream's
-    /// sequence and commit order move past it the way `advance_to` moves
-    /// them past replicated records, but the ring and held batches stay.
+    /// `run` in a row. The next publish follows it, and the commit order
+    /// moves past it the way `advance_to` moves it past replicated records,
+    /// but the ring and held batches stay.
+    ///
+    /// The stream's sequence moves past it too, unless batches are held:
+    /// then it stays below them, since it is where readers ended by a move
+    /// resume and the held batches have not reached them yet. The next
+    /// publish moves it past the record.
     ///
     /// Only before the leader serves: resetting the commit order under a
     /// publish in flight would let it jump its turn.
@@ -518,7 +537,9 @@ impl StreamState {
         let mut state = self.log_state.lock();
         let next = offset + 1;
         if state.next_seq < next {
-            state.next_seq = next;
+            if !self.held.is_busy() {
+                state.next_seq = next;
+            }
             self.commit_sequencer.reset(next);
         }
         state.generation_start_run = Some((next, run));
@@ -742,6 +763,28 @@ impl StreamState {
     /// does any subscriber that registers on this state afterwards.
     pub(crate) fn end_subscribers(&self, ending: Option<Ending>) -> usize {
         let log = self.log_state.lock();
+        self.end_locked(&log, ending)
+    }
+
+    /// End the subscribers still registered as for a move to `to()`, at the
+    /// sequence as it stands, before it moves past records they were never
+    /// offered. Under the log lock.
+    fn end_passed_over(&self, log: &LogState, to: impl FnOnce() -> ShardHandoff) {
+        if self.subscribers.lock().senders.is_empty() {
+            return;
+        }
+        let ended = self.end_locked(log, Some(Ending::Moved(to())));
+        tracing::info!(
+            stream = self.held.shard().map(|(stream, _)| stream),
+            shard = self.held.shard().map(|(_, shard)| shard),
+            ended,
+            resume_from = log.next_seq,
+            "ended readers of a shard whose log another leader rewrote",
+        );
+    }
+
+    /// [`Self::end_subscribers`] with the log lock already held.
+    fn end_locked(&self, log: &LogState, ending: Option<Ending>) -> usize {
         let mut state = self.subscribers.lock();
         let ended = state.senders.len();
         match ending {

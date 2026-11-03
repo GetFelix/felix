@@ -93,14 +93,10 @@ impl RoutingTable {
             if !routing.is_modulo() {
                 placement.routing = routing;
             }
-            let leader_ref = nodes.get(&leader).cloned().unwrap_or(NodeRef {
-                node_id: leader.clone(),
-                // A placeholder that can never be dialled, paired with
-                // `live: false` so it is refused rather than attempted.
-                advertise_addr: SocketAddr::from(([0, 0, 0, 0], 0)),
-                region: String::new(),
-                live: false,
-            });
+            let leader_ref = nodes
+                .get(&leader)
+                .cloned()
+                .unwrap_or_else(|| NodeRef::unresolved(leader.clone()));
             let known = nodes.contains_key(&leader);
             routes.insert(
                 key,
@@ -111,9 +107,16 @@ impl RoutingTable {
                         live: known && leader_ref.live,
                         ..leader_ref
                     },
+                    // Every replica the assignment names, resolved or not.
+                    // Quorums are sized from this list, so dropping one the
+                    // catalog has not caught up with would shrink every
+                    // majority counted over it.
                     replicas: replicas
                         .into_iter()
-                        .filter_map(|id| nodes.get(&id).cloned())
+                        .map(|id| match nodes.get(&id) {
+                            Some(node) => node.clone(),
+                            None => NodeRef::unresolved(id),
+                        })
                         .collect(),
                     generation,
                     draining,
@@ -253,16 +256,37 @@ impl RoutingTable {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeRef {
     pub node_id: String,
+    /// Port 0 when the node catalog does not name the node; see
+    /// [`NodeRef::unresolved`].
     pub advertise_addr: SocketAddr,
     pub region: String,
     /// Whether the cluster currently considers this node able to serve.
     pub live: bool,
 }
 
+impl NodeRef {
+    /// A node an assignment names that the node catalog does not, so there
+    /// is no address to reach it at. It keeps its place in the route: a
+    /// quorum counted over the route counts it as a member that has not
+    /// answered, never as one fewer member.
+    pub(crate) fn unresolved(node_id: String) -> Self {
+        Self {
+            node_id,
+            // Port 0 can never be dialled, and `live: false` keeps it from
+            // being chosen to forward to.
+            advertise_addr: SocketAddr::from(([0, 0, 0, 0], 0)),
+            region: String::new(),
+            live: false,
+        }
+    }
+}
+
 /// Where one shard is served, as of the snapshot that carried it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Route {
     pub leader: NodeRef,
+    /// Every replica the assignment names, in its order, including any the
+    /// node catalog has no address for ([`NodeRef::unresolved`]).
     pub replicas: Vec<NodeRef>,
     pub generation: u64,
     /// The leader has been told to stop serving at this generation so the

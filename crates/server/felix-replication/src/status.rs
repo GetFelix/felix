@@ -34,7 +34,8 @@ pub struct ShardStatus {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FollowerStatus {
     pub node_id: String,
-    /// A move's destination still copying, left out of the quorum.
+    /// Left out of the quorum: a move's destination still copying, or a copy
+    /// that answered as a learner after a wipe.
     pub learner: bool,
     pub next_offset: u64,
     /// How far the follower has answered that its log is this leader's.

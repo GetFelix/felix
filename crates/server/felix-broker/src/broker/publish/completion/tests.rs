@@ -125,7 +125,7 @@ async fn a_publish_superseded_by_a_reset_is_not_applied() {
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(!parked.is_finished(), "the second batch waits on the first");
 
-    handle.state.reset_to(2);
+    handle.state.reset_to(2, crate::ShardHandoff::default);
     let outcome = tokio::time::timeout(Duration::from_secs(5), parked)
         .await
         .expect("the reset wakes the parked publish")
@@ -149,10 +149,15 @@ async fn a_publish_superseded_by_a_reset_is_not_applied() {
         handle.state.log_state.lock().log.is_empty(),
         "a superseded batch reached the replay ring"
     );
+    // The reset moved the sequence past offsets the subscriber was never
+    // offered, so it ends the subscriber below them.
+    let got = tokio::time::timeout(Duration::from_millis(100), live.recv()).await;
     assert!(
-        tokio::time::timeout(Duration::from_millis(100), live.recv())
-            .await
-            .is_err(),
-        "a superseded batch reached a subscriber"
+        matches!(got, Ok(None)),
+        "a superseded batch reached a subscriber: {got:?}"
+    );
+    assert_eq!(
+        live.receiver.moved().and_then(|moved| moved.resume_from),
+        Some(0)
     );
 }

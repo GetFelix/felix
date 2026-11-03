@@ -529,3 +529,51 @@ fn a_timed_fetch_is_its_own_kind() {
         fetch(true, true)
     );
 }
+
+/// **An answer without the learner flag is byte for byte the original.** An
+/// older leader reads only kind 8; a learner's answer goes as its own kind,
+/// with the same body, so it cannot be misread as a voter's.
+#[test]
+fn a_learners_answer_is_its_own_kind_and_a_voters_is_unchanged() {
+    let voter = ReplicateOk {
+        correlation_id: 42,
+        durable_offset: 102,
+        learner: false,
+    };
+    let learner = ReplicateOk {
+        learner: true,
+        ..voter
+    };
+    let voter_bytes = InternalMessage::ReplicateOk(voter)
+        .encode()
+        .expect("encode");
+    let learner_bytes = InternalMessage::ReplicateOk(learner)
+        .encode()
+        .expect("encode");
+
+    assert_eq!(
+        InternalMessage::ReplicateOk(voter).kind(),
+        Kind::ReplicateOk
+    );
+    assert_eq!(Kind::ReplicateOk as u16, 8);
+    assert_eq!(Kind::ReplicateLearnerOk as u16, 47);
+    assert_eq!(
+        InternalMessage::ReplicateOk(learner).kind(),
+        Kind::ReplicateLearnerOk
+    );
+    let header = InternalHeader::LEN;
+    assert_eq!(voter_bytes[header..], learner_bytes[header..], "same body");
+    assert_eq!(
+        &voter_bytes[header..],
+        &[0, 0, 0, 0, 0, 0, 0, 42, 0, 0, 0, 0, 0, 0, 0, 102][..]
+    );
+
+    assert_eq!(
+        InternalMessage::decode(voter_bytes).expect("decode"),
+        InternalMessage::ReplicateOk(voter)
+    );
+    assert_eq!(
+        InternalMessage::decode(learner_bytes).expect("decode"),
+        InternalMessage::ReplicateOk(learner)
+    );
+}

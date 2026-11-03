@@ -1480,6 +1480,23 @@ async fn a_copy_with_no_promise_refuses_a_lagging_views_leader_a_rebuild() {
     assert!(log.accepted_leader().is_none());
 }
 
+/// **A leader reads whom a refused generation was promised to.** It tells a
+/// ballot cast for another node at its own generation from a newer leader,
+/// and only the first says the control plane recorded an election it did
+/// not adopt.
+#[test]
+fn a_promise_refusal_names_the_node_it_was_promised_to() {
+    let promised = promised_detail(4, "broker-d");
+
+    assert_eq!(promised_to(&promised, 4), Some("broker-d"));
+    assert_eq!(promised_to(&promised, 5), None, "another generation");
+    assert_eq!(
+        promised_to("this broker accepted generation 6, the sender is at 4", 4),
+        None,
+        "a newer generation is not a promise"
+    );
+}
+
 /// A control plane that names broker-a at generation 1 for every shard, but
 /// answers for any shard other than 0 only once `open` has permits.
 struct GatedConfirmed {
