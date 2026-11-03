@@ -1424,7 +1424,11 @@ elected generation itself, not the next one:
 An election more than 16 generations past the assignment's, or past
 `i64::MAX`, is refused and the report is judged as before: elections run a
 few generations at most between two reports, and a far generation would push
-every later write toward the top of the range. A store whose generation is
+every later write toward the top of the range. A leader in the control
+plane's set elected on another set exactly 16 generations past is refused
+the same way: it is named at the generation after, one past the window, and
+taking only the generation would name the control plane's leader where the
+elected one opened. A store whose generation is
 the last it can issue refuses further writes instead of repeating one.
 
 Either way every later write, whoever makes it, is above the elected

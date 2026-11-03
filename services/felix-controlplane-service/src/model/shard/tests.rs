@@ -737,3 +737,20 @@ fn reissuing_names_the_recorded_set_when_an_elected_member_is_unknown() {
         named_a.nodes().collect::<BTreeSet<_>>()
     );
 }
+
+/// **A leader elected on another set at the window's edge is not adopted.**
+/// Its reissue would land one past the window, which the store refuses, and
+/// taking only the generation would name broker-a at 23, where broker-b
+/// opened. The report is judged as before (`AdoptedMatchesOpened`).
+#[test]
+fn an_elected_set_whose_reissue_is_past_the_window_is_not_adopted() {
+    let named_a = assignment();
+    let edge = named_a.generation + ELECTION_GENERATION_WINDOW;
+    let on_other = elected("broker-b", &["broker-c", "broker-d"], edge, 6);
+    assert_eq!(named_a.adopting_elected_set(&on_other, &|_| true), None);
+    let inside = elected("broker-b", &["broker-c", "broker-d"], edge - 1, 6);
+    let next = named_a
+        .adopting_elected_set(&inside, &|_| true)
+        .expect("reissued inside the window");
+    assert_eq!((next.leader.as_str(), next.generation), ("broker-b", edge));
+}

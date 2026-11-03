@@ -730,15 +730,15 @@ impl ShardAssignment {
             return Some(adopted);
         }
         if self.nodes().any(|node| *node == elected.leader) {
-            // Beyond the window the store would refuse the write: recorded
-            // only, as before.
-            let reissued = ShardAssignment {
+            // Beyond the window the store would refuse the write, and taking
+            // only the generation would name this set's leader where the
+            // elected one opened. Not adopted: the report is judged as before.
+            return ShardAssignment {
                 generation: elected.generation,
                 ..self.clone()
             }
             .reissuing(elected, known)
             .filter(|next| check_elected_generation(self.generation, next.generation).is_ok());
-            return Some(reissued.unwrap_or(adopted));
         }
         Some(adopted.on_elected_set(elected))
     }
