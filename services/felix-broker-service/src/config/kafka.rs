@@ -35,6 +35,10 @@ pub struct KafkaListenerConfig {
     pub max_connections_per_ip: usize,
     /// How long an unauthenticated connection is kept.
     pub auth_timeout_ms: u64,
+    /// Store a produced record's key and headers. Off by default: the first
+    /// stored one moves the logs to a storage format an older build refuses
+    /// to open, and nearly every Kafka producer sends keys.
+    pub record_headers: bool,
 }
 
 impl KafkaListenerConfig {
@@ -64,6 +68,11 @@ impl KafkaListenerConfig {
             None | Some("true" | "1") => true,
             Some("false" | "0") => false,
             Some(other) => bail!("FELIX_KAFKA_TLS must be true or false, not {other:?}"),
+        };
+        let record_headers = match get("FELIX_KAFKA_RECORD_HEADERS").as_deref() {
+            None | Some("false" | "0") => false,
+            Some("true" | "1") => true,
+            Some(other) => bail!("FELIX_KAFKA_RECORD_HEADERS must be true or false, not {other:?}"),
         };
         let max_connections = match get("FELIX_KAFKA_MAX_CONNECTIONS") {
             None => DEFAULT_MAX_CONNECTIONS,
@@ -102,6 +111,7 @@ impl KafkaListenerConfig {
             max_connections,
             max_connections_per_ip,
             auth_timeout_ms,
+            record_headers,
         }))
     }
 }

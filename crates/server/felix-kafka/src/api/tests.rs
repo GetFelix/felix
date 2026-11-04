@@ -6,6 +6,7 @@
 
 mod fetch;
 mod groups;
+mod headers;
 mod limits;
 mod list_offsets;
 mod metadata;
@@ -16,7 +17,7 @@ mod sasl;
 mod versions;
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -191,6 +192,8 @@ pub(super) struct Fixture {
     pub(super) broker: Arc<Broker>,
     pub(super) cluster: Arc<FakeCluster>,
     service: KafkaService,
+    /// What the broker's record-headers gate answers.
+    headers_accepted: Arc<AtomicBool>,
     _dir: TempDir,
 }
 
@@ -239,6 +242,9 @@ impl Fixture {
         let broker =
             Arc::new(Broker::new(EphemeralCache::new().into()).with_durable_storage(storage));
         broker.allow_head_trims_when(|| true);
+        let headers_accepted = Arc::new(AtomicBool::new(false));
+        let gate = Arc::clone(&headers_accepted);
+        broker.record_headers_when(move || gate.load(Ordering::SeqCst));
         broker.register_tenant(TENANT).await.expect("tenant");
         let cluster = Arc::new(FakeCluster {
             placements: Mutex::new(HashMap::new()),
@@ -257,8 +263,41 @@ impl Fixture {
             broker,
             cluster,
             service,
+            headers_accepted,
             _dir: dir,
         }
+    }
+
+    /// Make the broker accept record headers, as a finalized fleet does.
+    pub(super) fn accept_headers(&self) {
+        self.headers_accepted.store(true, Ordering::SeqCst);
+    }
+
+    /// Publish as a Felix client does, with a key and headers block per record.
+    pub(super) async fn publish_with_blocks(
+        &self,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        records: &[(&str, Option<felix_wire::RecordHeaders>)],
+    ) {
+        let handle = self
+            .broker
+            .resolve_stream_handle(TENANT, namespace, stream, shard)
+            .await
+            .expect("handle");
+        let payloads: Vec<Bytes> = records
+            .iter()
+            .map(|(value, _)| Bytes::copy_from_slice(value.as_bytes()))
+            .collect();
+        let blocks: Vec<Option<Bytes>> = records
+            .iter()
+            .map(|(_, block)| block.as_ref().map(|block| block.encode().expect("block")))
+            .collect();
+        self.broker
+            .publish_batch_with_outcome(&handle, &payloads, None, Some(&blocks))
+            .await
+            .expect("publish");
     }
 
     /// Register a stream, creating its namespace.

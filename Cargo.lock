@@ -1334,6 +1334,7 @@ dependencies = [
  "kafka-protocol",
  "lz4",
  "metrics",
+ "metrics-exporter-prometheus",
  "snap",
  "tempfile",
  "tokio",

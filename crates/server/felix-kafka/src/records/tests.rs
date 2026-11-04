@@ -49,3 +49,40 @@ fn records_encode_as_one_batch_a_client_can_decode() {
 fn no_records_encode_as_nothing() {
     assert!(encode_batch(&[]).expect("encode").is_empty());
 }
+
+#[test]
+fn a_records_key_and_headers_come_back_in_order_and_a_bare_record_has_none() {
+    let mut keyed = record(0, "a");
+    keyed.headers = Some(Box::new(
+        felix_wire::RecordHeaders {
+            key: Some(Bytes::from_static(b"k")),
+            headers: vec![
+                ("trace".to_string(), Bytes::from_static(b"1")),
+                ("empty".to_string(), Bytes::new()),
+            ],
+        }
+        .encode()
+        .expect("block"),
+    ));
+    let encoded = encode_batch(&[keyed, record(1, "b")]).expect("encode");
+
+    let decoded = RecordBatchDecoder::decode(&mut encoded.clone()).expect("decode");
+    let [first, second] = decoded.records.as_slice() else {
+        panic!("two records");
+    };
+    assert_eq!(first.key, Some(Bytes::from_static(b"k")));
+    let headers: Vec<_> = first.headers.iter().collect();
+    assert_eq!(headers.len(), 2);
+    assert_eq!(headers[0].0.as_str(), "trace");
+    assert_eq!(headers[0].1, &Some(Bytes::from_static(b"1")));
+    assert_eq!(headers[1].0.as_str(), "empty");
+    assert_eq!(headers[1].1, &Some(Bytes::new()));
+    assert_eq!((second.key.clone(), second.headers.len()), (None, 0));
+}
+
+#[test]
+fn a_block_that_does_not_parse_fails_the_page_rather_than_the_record_being_sent_bare() {
+    let mut broken = record(0, "a");
+    broken.headers = Some(Box::new(Bytes::from_static(&[0xff])));
+    assert!(encode_batch(&[broken]).is_err());
+}
