@@ -14,14 +14,14 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   A_SHA: cf8c400e34c4c3870345692e90abe357057c16e5
-  B_SHA: d8e6fac4455ae936e790ce8e507c5c731b1af76c
+  B_SHA: 32e9b5505e5d04aa40f5290506cd6428f520cf39
 
 jobs:
   single:
     runs-on: ubuntu-latest
     timeout-minutes: 170
     env:
-      ROUNDS: "8"
+      ROUNDS: "20"
     steps:
       - uses: actions/checkout@v7
         with:
