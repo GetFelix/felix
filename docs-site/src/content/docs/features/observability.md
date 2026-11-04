@@ -284,12 +284,16 @@ yet. `unmounted` counts a `PUBLISH` to a topic that is under no stream's mount,
 `invalid_topic_name` one whose topic name is not allowed (empty, a wildcard, a
 NUL, or too long), and `not_authorized` one by a token without `stream.publish`
 on the mounted stream. A publish that was not written and nobody was told about
-is counted where it was dropped: `not_owner` (another broker owns the shard),
+is counted where it was dropped: `not_owner` (no broker could take it: see
+[MQTT](/features/mqtt/)),
 `record_headers_disabled`, `stream_unavailable` and `reserved_header`. `qos2_unsupported`,
 `retain_unsupported`, `topic_alias_invalid` and `receive_maximum_exceeded` are
-publishes the client was not allowed to send. `leadership_lost`, `quorum_timeout` and
-`write_failed` are connections closed because a write's outcome was unknown;
-watch them during failovers, since the device sends the message again.
+publishes the client was not allowed to send. `leadership_lost`, `quorum_timeout`,
+`write_failed` and `forward_unanswered` (a forward to the shard's owner got no
+answer, and sending it again did not get one either, within the forward budget)
+are connections closed because a write's outcome was unknown; watch them during
+failovers, since the device sends the message again. A forward the owner
+refused for its token counts as `not_authorized`.
 `felix_mqtt_published_total{qos}` counts messages that were written; a QoS 1
 message is counted when its `PUBACK` is owed. Reasons that start with `ws_` are WebSocket
 upgrades that were refused (`ws_origin`, `ws_header_too_large`,

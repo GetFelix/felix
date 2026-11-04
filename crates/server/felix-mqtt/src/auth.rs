@@ -41,6 +41,28 @@ pub struct Principal {
     access: Access,
     expires_at: Option<i64>,
     revoked: Option<Arc<RevokedFn>>,
+    credential: Option<Credential>,
+}
+
+/// The token a connection authenticated with, kept so the shard's owner can
+/// check it again when a publish is forwarded there. Never printed.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Credential(Arc<str>);
+
+impl Credential {
+    pub fn new(token: &str) -> Self {
+        Self(token.into())
+    }
+
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Credential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Credential(..)")
+    }
 }
 
 #[derive(Clone)]
@@ -59,6 +81,7 @@ impl Principal {
             access: Access::Token(None),
             expires_at: None,
             revoked: None,
+            credential: None,
         }
     }
 
@@ -94,8 +117,19 @@ impl Principal {
         self
     }
 
+    /// The token this principal was verified from, for a broker that hands
+    /// a publish on to another one which checks it again.
+    pub fn with_credential(mut self, credential: Credential) -> Self {
+        self.credential = Some(credential);
+        self
+    }
+
     pub fn tenant_id(&self) -> &str {
         &self.tenant_id
+    }
+
+    pub(crate) fn credential(&self) -> Option<&Credential> {
+        self.credential.as_ref()
     }
 
     /// Whether this principal may publish to a stream: `stream.publish` on the

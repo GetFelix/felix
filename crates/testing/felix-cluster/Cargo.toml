@@ -62,6 +62,8 @@ felix-storage = { path = "../../server/felix-storage", version = "0.7.0-preview.
 felix-replication = { path = "../../server/felix-replication" }
 # The Kafka produce test speaks the protocol itself, to re-send on purpose.
 kafka-protocol = { workspace = true, features = ["client"] }
+# The MQTT publish test drives the brokers' MQTT listeners as a device would.
+rumqttc = { version = "0.25.1", default-features = false }
 # These spawn several broker processes each. Run one cluster at a time: a CI
 # runner with two cores starting nine brokers at once starves them all, and the
 # ephemeral ports they were handed are more likely to collide.

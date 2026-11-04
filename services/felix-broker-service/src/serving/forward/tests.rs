@@ -163,6 +163,7 @@ async fn forward(owner: &ScriptedOwner) -> std::result::Result<Option<(u64, u64)
         "token",
         vec![Bytes::from_static(b"an order")],
         None,
+        None,
         // Generous: the cases here are about what the owner answered, not about
         // running out of time. `a_forward_answers_within_its_budget` is where
         // the budget itself is under test.
@@ -433,6 +434,7 @@ async fn a_forward_answers_within_its_budget() {
         "token",
         vec![Bytes::from_static(b"an order")],
         None,
+        None,
         budget,
     )
     .await
@@ -473,6 +475,7 @@ async fn a_spent_budget_sends_nothing() {
         AckMode::OnCommit,
         "token",
         vec![Bytes::from_static(b"an order")],
+        None,
         None,
         Duration::ZERO,
     )
@@ -632,6 +635,7 @@ async fn a_forward_names_its_incarnation_only_to_an_owner_that_reads_it() {
             "token",
             vec![Bytes::from_static(b"an order")],
             None,
+            None,
             Duration::from_secs(30),
         )
         .await
@@ -670,6 +674,7 @@ async fn a_failed_capability_lookup_never_sends_a_plain_forward() {
         "token",
         vec![Bytes::from_static(b"an order")],
         None,
+        None,
         Duration::from_secs(30),
     )
     .await
@@ -697,6 +702,7 @@ async fn forward_with_headers(
         "token",
         vec![Bytes::from_static(b"an order")],
         Some(vec![Some(Bytes::from_static(b"trace"))]),
+        None,
         Duration::from_secs(30),
     )
     .await

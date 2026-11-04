@@ -17,7 +17,7 @@ mod topic;
 mod write;
 pub mod ws;
 
-pub use auth::{AuthError, Authenticator, Principal};
+pub use auth::{AuthError, Authenticator, Credential, Principal};
 pub use mount::{MountedTopic, Mounts, NoMounts};
 pub use service::MqttService;
 pub use settings::Settings;

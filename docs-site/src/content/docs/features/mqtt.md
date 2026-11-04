@@ -122,13 +122,18 @@ counted in `felix_mqtt_refused_total{reason}`.
 
 Three limits to know:
 
-- **One owner.** A message is written by the broker that owns the shard its topic
-  maps to. If another broker owns it, a 5.0 client at QoS 1 gets `PUBACK` 0x83
-  with the reason string `not_owner`, a 3.1.1 client's connection closes, and a
-  QoS 0 message is dropped and counted. Forwarding to the owner is the next
-  piece of work.
-- **Unknown outcome.** If leadership moves or a majority does not answer in time
-  after the message was sent, the broker cannot say whether it was written. It
+- **Any broker in the cluster.** A device can connect to any broker. A message
+  for a shard another broker owns is forwarded there, and the `PUBACK` waits for
+  the owner's answer. If the owner dies before answering, the connected broker
+  sends the message again to whichever broker owns the shard next, and the new
+  owner recognises it and does not write it twice. A device that connects
+  without credentials (`FELIX_MQTT_ANONYMOUS_TENANT`) has no token for the owner
+  to check, so it can publish only to shards its own broker owns. Anything else
+  is refused with `not_owner`: a 5.0 client at QoS 1 gets `PUBACK` 0x83, a
+  3.1.1 client's connection closes, and a QoS 0 message is dropped and counted.
+- **Unknown outcome.** If a majority does not answer in time, or the owner
+  cannot be reached again before the forward budget runs out, the broker cannot
+  say whether the message was written. It
   sends neither a `PUBACK` nor an error reason, and closes the connection. Most
   clients drop an unacknowledged message when a clean session ends, so publish
   it again from the application after reconnecting; the stream may then hold it
