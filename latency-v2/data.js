@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793776606723,
+  "lastUpdate": 1793776830175,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -56232,6 +56232,72 @@ window.BENCHMARK_DATA = {
             "range": "615.13",
             "unit": "us",
             "extra": "trials: 5\nmedian: 584.00\nmean: 851.40\nstdev: 615.13\ncv: 72.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b3f2253f97b56a2b8b012fff02b2fb137c5eed44",
+          "message": "fix(replication): a failover fences the set an unopened joint fence was leaving (#1878) (#1880)\n\n* fix(replication): a failover fences the set an unopened joint fence was leaving (#1878)\n\nA replica that answered a joint fence keeps the new set with the set it\nleaves beside it. If that fence never opened, nothing read the kept set at\nthe next failover: set_before takes the control plane's prior set and\nlogged_besides compares only the log's current set. The failover could then\nopen on majorities of the newer sets while a write acknowledged before the\nchange sat only in the old one.\n\nA failover now also fences the kept leaving set when the log holds no\nrecord written at its own set's generation, the evidence that fence opened.\n\nSpec-Unaffected: not yet mirrored; the model's Promote still drops the pending old set (FelixShardReplacedPendingLeft.cfg on #1879). The spec lane mirrors this rule.\n\n* docs and tests: the cost and limit of fencing an unopened fence's set (#1878)\n\nRule 7 says what keeps a log fencing the old set and that two unopened\nfailovers in a row are not covered yet. A generation recorded with nothing\nwritten at it counts as unopened.\n\nSpec-Unaffected: not yet mirrored; the model's Promote still drops the pending old set (FelixShardReplacedPendingLeft.cfg on #1879). The spec lane mirrors this rule.",
+          "timestamp": "2026-11-03T23:15:36-08:00",
+          "tree_id": "32414dee6ecbf23cd93bfaa6cc774ede2e7c8c9a",
+          "url": "https://github.com/GetFelix/felix/commit/b3f2253f97b56a2b8b012fff02b2fb137c5eed44"
+        },
+        "date": 1793776824774,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 66,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 66.00\nmean: 65.60\nstdev: 0.55\ncv: 0.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 88,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 88.00\nmean: 88.20\nstdev: 0.45\ncv: 0.51%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 111,
+            "range": "4.51",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 111.00\nmean: 113.40\nstdev: 4.51\ncv: 3.97%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 84,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 84.00\nmean: 84.00\nstdev: 0.71\ncv: 0.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 183,
+            "range": "10.35",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 183.00\nmean: 185.80\nstdev: 10.35\ncv: 5.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 272,
+            "range": "31.73",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 272.00\nmean: 279.60\nstdev: 31.73\ncv: 11.35%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
