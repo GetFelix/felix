@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793776610079,
+  "lastUpdate": 1793776832908,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -44304,6 +44304,58 @@ window.BENCHMARK_DATA = {
             "range": "5614.67",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 803191.02\nmean: 806412.64\nstdev: 5614.67\ncv: 0.70%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b3f2253f97b56a2b8b012fff02b2fb137c5eed44",
+          "message": "fix(replication): a failover fences the set an unopened joint fence was leaving (#1878) (#1880)\n\n* fix(replication): a failover fences the set an unopened joint fence was leaving (#1878)\n\nA replica that answered a joint fence keeps the new set with the set it\nleaves beside it. If that fence never opened, nothing read the kept set at\nthe next failover: set_before takes the control plane's prior set and\nlogged_besides compares only the log's current set. The failover could then\nopen on majorities of the newer sets while a write acknowledged before the\nchange sat only in the old one.\n\nA failover now also fences the kept leaving set when the log holds no\nrecord written at its own set's generation, the evidence that fence opened.\n\nSpec-Unaffected: not yet mirrored; the model's Promote still drops the pending old set (FelixShardReplacedPendingLeft.cfg on #1879). The spec lane mirrors this rule.\n\n* docs and tests: the cost and limit of fencing an unopened fence's set (#1878)\n\nRule 7 says what keeps a log fencing the old set and that two unopened\nfailovers in a row are not covered yet. A generation recorded with nothing\nwritten at it counts as unopened.\n\nSpec-Unaffected: not yet mirrored; the model's Promote still drops the pending old set (FelixShardReplacedPendingLeft.cfg on #1879). The spec lane mirrors this rule.",
+          "timestamp": "2026-11-03T23:15:36-08:00",
+          "tree_id": "32414dee6ecbf23cd93bfaa6cc774ede2e7c8c9a",
+          "url": "https://github.com/GetFelix/felix/commit/b3f2253f97b56a2b8b012fff02b2fb137c5eed44"
+        },
+        "date": 1793776832167,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 641294.43,
+            "range": "91973.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 641294.43\nmean: 638886.48\nstdev: 91973.88\ncv: 14.40%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 641294.43,
+            "range": "91973.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 641294.43\nmean: 638886.48\nstdev: 91973.88\ncv: 14.40%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 158818.13,
+            "range": "4702.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 158818.13\nmean: 157378.39\nstdev: 4702.88\ncv: 2.99%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1588181.31,
+            "range": "47028.77",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1588181.31\nmean: 1573783.89\nstdev: 47028.77\ncv: 2.99%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
