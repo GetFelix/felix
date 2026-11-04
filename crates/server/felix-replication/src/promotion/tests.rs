@@ -606,6 +606,29 @@ async fn a_fence_a_majority_promised_away_is_refused() {
     assert!(took.is_empty(), "{took:?}");
 }
 
+/// **A promise away with the only other replica down is refused.** No
+/// attempt at this generation can open while that replica stays down, so
+/// waiting on it would keep the shard closed for as long as it does.
+#[tokio::test]
+async fn a_promise_away_with_the_other_replica_down_is_refused() {
+    let mut replicas = Replicas::new();
+    replicas.ballots = true;
+    replicas.get_mut("broker-b").reachable = false;
+    replicas
+        .get("broker-c")
+        .holds("broker-c", 4, 0, &["a"])
+        .await;
+    promised_to(&replicas, "broker-c", "broker-d").await;
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route(), true, None).await;
+
+    let Outcome::Refused { promised_to, .. } = outcome else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!(promised_to, "broker-d");
+}
+
 /// One replica's promise to another node leaves a majority with this broker
 /// and the other replica: the ballot already keeps that node from one, so
 /// the fence opens.
