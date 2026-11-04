@@ -129,27 +129,39 @@ pub(super) struct JointSets {
     /// left. A member voting only there is sent it instead of `leaving`, or
     /// it would refuse a fence naming no set it votes in.
     besides: Option<ReplicaSetView>,
-    /// The set being left counted with its learners and without: replicas
+    /// Each set being left counted with its learners and without: replicas
     /// keep it either way, and a majority of each is needed.
-    old_voters: Vec<BTreeSet<String>>,
+    old_voters: Vec<OldVoters>,
     new_voters: BTreeSet<String>,
-    /// The copy the set being left names for a member, where it names one.
-    copies: std::collections::BTreeMap<String, felix_storage::StorageId>,
     local: String,
+}
+
+/// The voters of one set being left, with the copy it names for each
+/// member, where it names one. An answer counts toward this set only from
+/// that copy: another copy under the same node id holds nothing this set
+/// acknowledged on.
+#[derive(Debug, PartialEq)]
+struct OldVoters {
+    voters: BTreeSet<String>,
+    copies: std::collections::BTreeMap<String, StorageId>,
+}
+
+impl OldVoters {
+    fn counts(&self, node_id: &str, identity: Option<StorageId>) -> bool {
+        self.copies
+            .get(node_id)
+            .is_none_or(|named| identity.as_ref() == Some(named))
+    }
 }
 
 impl JointSets {
     /// Whether an answer from `node_id`, whose handshake gave `identity`, is
-    /// from the copy the set being left names. A node id given to a new,
-    /// empty copy holds nothing the old set acknowledged.
-    pub(super) fn same_copy(
-        &self,
-        node_id: &str,
-        identity: Option<felix_storage::StorageId>,
-    ) -> bool {
-        self.copies
-            .get(node_id)
-            .is_none_or(|named| identity.as_ref() == Some(named))
+    /// from a copy some set being left names. A node id given to a new,
+    /// empty copy holds nothing an old set acknowledged.
+    pub(super) fn same_copy(&self, node_id: &str, identity: Option<StorageId>) -> bool {
+        self.old_voters
+            .iter()
+            .any(|old| old.counts(node_id, identity))
     }
 
     /// The set being left as the fence to `node_id` carries it: one it
@@ -169,45 +181,79 @@ impl JointSets {
     /// Whether any member of the set being left is named by its copy, so
     /// answers must say which copy they come from.
     pub(super) fn names_copies(&self) -> bool {
-        !self.copies.is_empty()
+        self.old_voters.iter().any(|old| !old.copies.is_empty())
     }
 
-    /// Whether `answered`, with this broker, is a majority of the voters of
-    /// both sets. A learner is never a voter, so it never counts.
-    pub(super) fn has_majorities<'n>(&self, answered: impl Iterator<Item = &'n str>) -> bool {
-        let mut answered: BTreeSet<&str> = answered.collect();
-        answered.insert(&self.local);
-        let majority = |voters: &BTreeSet<String>| {
-            voters
-                .iter()
-                .filter(|v| answered.contains(v.as_str()))
-                .count()
-                * 2
-                > voters.len()
-        };
-        self.old_voters.iter().all(majority) && majority(&self.new_voters)
+    /// Whether `answered`, each with the copy its handshake named, is with
+    /// this broker a majority of the voters of every set. A learner is never
+    /// a voter, so it never counts.
+    pub(super) fn has_majorities<'n>(
+        &self,
+        answered: impl Iterator<Item = (&'n str, Option<StorageId>)>,
+    ) -> bool {
+        let answered: Vec<_> = answered.collect();
+        self.old_voters
+            .iter()
+            .all(|old| self.majority(&old.voters, |v| self.answered_for(old, &answered, v)))
+            && self.majority(&self.new_voters, |v| {
+                answered.iter().any(|(node, _)| *node == v)
+            })
+    }
+
+    /// Whether `nodes` could still make every majority, whichever copies
+    /// they answer from.
+    pub(super) fn can_reach<'n>(&self, nodes: impl Iterator<Item = &'n str>) -> bool {
+        let nodes: BTreeSet<&str> = nodes.collect();
+        self.old_voters
+            .iter()
+            .map(|old| &old.voters)
+            .chain(std::iter::once(&self.new_voters))
+            .all(|voters| self.majority(voters, |v| nodes.contains(v)))
+    }
+
+    fn answered_for(
+        &self,
+        old: &OldVoters,
+        answered: &[(&str, Option<StorageId>)],
+        voter: &str,
+    ) -> bool {
+        answered
+            .iter()
+            .any(|(node, identity)| *node == voter && old.counts(node, *identity))
+    }
+
+    fn count(&self, voters: &BTreeSet<String>, answered: impl Fn(&str) -> bool) -> usize {
+        voters
+            .iter()
+            .filter(|v| *v == &self.local || answered(v))
+            .count()
+    }
+
+    fn majority(&self, voters: &BTreeSet<String>, answered: impl Fn(&str) -> bool) -> bool {
+        self.count(voters, answered) * 2 > voters.len()
     }
 
     /// How far the answers got, for a fence that stays pending.
-    pub(super) fn shortfall<'n>(&self, answered: impl Iterator<Item = &'n str>) -> String {
-        let mut answered: BTreeSet<&str> = answered.collect();
-        answered.insert(&self.local);
-        let count = |voters: &BTreeSet<String>| {
-            voters
-                .iter()
-                .filter(|v| answered.contains(v.as_str()))
-                .count()
-        };
+    pub(super) fn shortfall<'n>(
+        &self,
+        answered: impl Iterator<Item = (&'n str, Option<StorageId>)>,
+    ) -> String {
+        let answered: Vec<_> = answered.collect();
         let old = self
             .old_voters
             .iter()
-            .map(|voters| format!("{} of {}", count(voters), voters.len()))
+            .map(|old| {
+                let took = self.count(&old.voters, |v| self.answered_for(old, &answered, v));
+                format!("{took} of {}", old.voters.len())
+            })
             .collect::<Vec<_>>()
             .join(" and ");
         format!(
             "{old} voters of the set being left and {} of {} of the new set took the fence, \
              a majority of each needed",
-            count(&self.new_voters),
+            self.count(&self.new_voters, |v| answered
+                .iter()
+                .any(|(node, _)| *node == v)),
             self.new_voters.len(),
         )
     }
@@ -311,13 +357,14 @@ pub(super) fn logged_besides(
     }
     let stored = stored?;
     let logged = &stored.current;
-    // Learner flags count: the same names voting differently are another
-    // set, whose voter majorities the set before may miss.
-    let nodes = |set: &Membership| -> BTreeSet<(String, bool)> {
+    // Learner flags and copies count: the same names voting differently, or
+    // from other copies, are another set, whose majorities the set before
+    // may miss.
+    let nodes = |set: &Membership| {
         set.members
             .iter()
-            .map(|m| (m.node.clone(), m.learner))
-            .collect()
+            .map(|m| (m.node.clone(), m.learner, m.storage.map(|id| id.to_bytes())))
+            .collect::<BTreeSet<_>>()
     };
     if logged.generation < route.generation && nodes(logged) != nodes(before) {
         return Some(logged.clone());
@@ -436,7 +483,7 @@ pub(super) async fn across<R: PeerRequester>(
         .map(|member| member.node_id.clone())
         .collect();
     // Each set being left counted with its learners and without.
-    let mut old_voters: Vec<BTreeSet<String>> = Vec::new();
+    let mut old_voters: Vec<OldVoters> = Vec::new();
     for old in olds() {
         let all: BTreeSet<String> = old.members.iter().map(|m| m.node.clone()).collect();
         let counted: BTreeSet<String> = old
@@ -445,7 +492,16 @@ pub(super) async fn across<R: PeerRequester>(
             .filter(|m| !m.learner)
             .map(|m| m.node.clone())
             .collect();
+        let copies: std::collections::BTreeMap<String, StorageId> = old
+            .members
+            .iter()
+            .filter_map(|m| Some((m.node.clone(), m.storage?)))
+            .collect();
         for voters in [all, counted] {
+            let voters = OldVoters {
+                voters,
+                copies: copies.clone(),
+            };
             if !old_voters.contains(&voters) {
                 old_voters.push(voters);
             }
@@ -464,7 +520,9 @@ pub(super) async fn across<R: PeerRequester>(
         })
     });
     // An empty set being left is no change to fence across, as in the model.
-    if before.members.is_empty() || (!replaced && old_voters.iter().all(|old| *old == new_voters)) {
+    if before.members.is_empty()
+        || (!replaced && old_voters.iter().all(|old| old.voters == new_voters))
+    {
         return Fenced {
             before,
             joint: None,
@@ -507,12 +565,6 @@ pub(super) async fn across<R: PeerRequester>(
         asked,
         leaving: view(&before),
         besides: besides.as_ref().map(view),
-        // The set `set_before` found names the copy where both name one.
-        copies: olds()
-            .rev()
-            .flat_map(|old| &old.members)
-            .filter_map(|member| Some((member.node.clone(), member.storage?)))
-            .collect(),
         old_voters,
         new_voters,
         local: local_node_id.to_string(),
