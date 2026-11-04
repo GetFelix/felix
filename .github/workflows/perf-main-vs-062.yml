@@ -1,0 +1,166 @@
+name: Perf scratch (main vs v0.6.2)
+
+# Temporary: early release-style A/B, a = v0.6.2, b = main. Deleted with the branch.
+# single: perf-pr's cells (incl. 64 KiB fanout-10 and 100-subscriber fanout), both sides on one runner.
+# rf3: RF 3 steady and promotion-burst cluster bench, brokers only differ by side.
+
+on:
+  push:
+    branches: [scratch/perf-main-vs-062]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  A_SHA: cf8c400e34c4c3870345692e90abe357057c16e5
+  B_SHA: d8e6fac4455ae936e790ce8e507c5c731b1af76c
+
+jobs:
+  single:
+    runs-on: ubuntu-latest
+    timeout-minutes: 170
+    env:
+      ROUNDS: "8"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.99.1"
+          components: rustfmt
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: |
+            . -> /tmp/target-a
+            . -> /tmp/target-b
+      - name: Worktrees and harness
+        run: |
+          set -euo pipefail
+          git worktree add /tmp/side-a "$A_SHA"
+          git worktree add /tmp/side-b "$B_SHA"
+          for d in /tmp/side-a /tmp/side-b; do
+            for f in run_latency_matrix.py ci_subset_latency.yml ci_subset_throughput.yml ci_subset_large_payload.yml ci_subset_fanout.yml; do
+              cp "scripts/perf/$f" "$d/scripts/perf/$f"
+            done
+          done
+      - name: Build both
+        run: |
+          set -euo pipefail
+          (cd /tmp/side-a && CARGO_TARGET_DIR=/tmp/target-a cargo build --release --bin latency-demo --all-features)
+          (cd /tmp/side-b && CARGO_TARGET_DIR=/tmp/target-b cargo build --release --bin latency-demo --all-features)
+      - name: Rounds, alternating
+        run: |
+          set -uo pipefail
+          nproc; free -g
+          rm -f /tmp/side-*/data/raw/latency_demo_runs.jsonl
+          run_side() {
+            ( cd "$1"; export CARGO_TARGET_DIR="$2"
+              for c in latency throughput large_payload fanout; do
+                python3 scripts/perf/run_latency_matrix.py --trials 1 --config scripts/perf/ci_subset_$c.yml \
+                  || echo "::warning::$1 $c failed"
+              done )
+          }
+          for round in $(seq 1 "$ROUNDS"); do
+            echo "::group::round $round"
+            if [ $((round % 2)) -eq 1 ]; then
+              run_side /tmp/side-a /tmp/target-a; run_side /tmp/side-b /tmp/target-b
+            else
+              run_side /tmp/side-b /tmp/target-b; run_side /tmp/side-a /tmp/target-a
+            fi
+            echo "::endgroup::"
+          done
+          mkdir -p /tmp/out
+          cp /tmp/side-a/data/raw/latency_demo_runs.jsonl /tmp/out/a.jsonl
+          cp /tmp/side-b/data/raw/latency_demo_runs.jsonl /tmp/out/b.jsonl
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: single-out
+          path: /tmp/out/
+          retention-days: 7
+
+  rf3-build:
+    needs: single
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.99.1"
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Build harness and both brokers
+        run: |
+          set -euo pipefail
+          out=/tmp/perf-bin; mkdir -p $out
+          h_sha=$(git rev-parse HEAD)
+          cargo test --release -p felix-cluster --test replicated_bench --no-run --message-format=json \
+            | jq -r 'select(.profile.test == true and .executable != null) | .executable' | tail -1 > /tmp/exe
+          cp "$(cat /tmp/exe)" $out/replicated_bench
+          for side in a b; do
+            case $side in a) sha=$A_SHA;; b) sha=$B_SHA;; esac
+            git checkout --detach -q "$sha"
+            cargo build --release -p felix-broker-service --bin felix-broker
+            cp target/release/felix-broker $out/felix-broker-$side
+            git checkout -q -- .
+          done
+          git checkout --detach -q "$h_sha"
+          sha256sum $out/*
+      - uses: actions/upload-artifact@v7
+        with:
+          name: perf-bin
+          path: /tmp/perf-bin/
+          retention-days: 3
+
+  rf3-run:
+    needs: rf3-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    env:
+      ROUNDS: "6"
+      BENCH_STEADY_SECS: "20"
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: perf-bin
+          path: /tmp/perf-bin
+      - name: Cluster rounds, alternating sides
+        run: |
+          set -uo pipefail
+          nproc; free -g; chmod +x /tmp/perf-bin/*
+          p=/tmp/perf; mkdir -p $p/out $p/bin; cd $p
+          cp /tmp/perf-bin/replicated_bench $p/bin/
+          cp /tmp/perf-bin/felix-broker-b $p/bin/felix-broker
+          for s in a b; do
+            printf '#!/bin/bash\nshift\nexec /tmp/perf-bin/felix-broker-%s "$@"\n' $s > $p/wrap-$s.sh
+          done
+          chmod +x $p/wrap-*.sh
+          for round in $(seq 1 "$ROUNDS"); do
+            if [ $(( (round + ${{ matrix.shard }}) % 2 )) -eq 0 ]; then sides="a b"; else sides="b a"; fi
+            for side in $sides; do
+              r=${{ matrix.shard }}-$round
+              echo "::group::round $r side $side"
+              FELIX_BROKER_WRAPPER=$p/wrap-$side.sh BENCH_SIDE=$side BENCH_ROUND=$r \
+                timeout 1500 $p/bin/replicated_bench --ignored --nocapture --test-threads=1 2>&1 \
+                | tee $p/out/cluster-$r-$side.log || echo "::warning::round $r side $side failed"
+              grep -h 'BENCH_JSON ' $p/out/cluster-$r-$side.log | sed 's/^.*BENCH_JSON //' >> $p/out/cluster.jsonl || true
+              echo "::endgroup::"
+            done
+          done
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: perf-out-${{ matrix.shard }}
+          path: /tmp/perf/out/
+          retention-days: 7
