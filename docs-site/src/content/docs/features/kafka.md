@@ -308,7 +308,7 @@ producer.produce("orders.created", value=order_json, key=order_id)
 producer.flush()
 ```
 
-That is a sketch; kcat is what is tested. Three things to know on the way in:
+That is a sketch; kcat is what is tested. Four things to know on the way in:
 
 - **The key and headers are dropped unless you turn on
   `FELIX_KAFKA_RECORD_HEADERS`.** The client hashes the key to choose a
@@ -318,7 +318,8 @@ That is a sketch; kcat is what is tested. Three things to know on the way in:
   order. It is off by default because the first stored one moves the logs to a
   storage format an older build refuses to open (see
   [Upgrades](/deployment/upgrades/#record_headers)), and nearly every producer
-  sends keys. Three rules come from Felix's records. A null header value is
+  sends keys.
+- **Stored headers follow Felix's record rules.** A null header value is
   stored as an empty value, since Felix values are not nullable. A header name
   that starts with `felix.` is reserved for Felix's own listeners, so the
   produce is refused with `INVALID_RECORD`; Produce v8 and later clients see a
@@ -347,7 +348,10 @@ Because Felix speaks the producer side of the protocol, a migration does not
 need every writer rewritten at once. Point one producer at Felix, check its
 records with `kcat -C` or a Felix subscriber, then move the next. Producers
 that are rewritten later against a Felix client write to the same stream, and
-readers cannot tell the difference.
+readers cannot tell the difference, provided the Kafka listener stores keys
+and headers (`FELIX_KAFKA_RECORD_HEADERS=true`). Without it, records from a
+Kafka producer arrive with no key or headers, while a Felix client's keep
+theirs.
 
 Two things to settle before moving a producer:
 
@@ -588,7 +592,8 @@ producer's `batch.size` or `linger.ms`.
 **Records arrive without keys or headers.** The record was stored without
 them, `FELIX_KAFKA_RECORD_HEADERS` is not `true`, or the broker that took the
 produce does not accept record headers yet, so the key and headers were
-dropped. `felix_kafka_produce_dropped_total` says whether that happened. See [Feeding Felix from Kafka producers you already
+dropped. `felix_kafka_produce_dropped_total` says whether that happened. See
+[Feeding Felix from Kafka producers you already
 have](#feeding-felix-from-kafka-producers-you-already-have).
 
 **A produce is refused with `INVALID_RECORD`.** A header name starts with

@@ -94,10 +94,11 @@ failover, because their sequences are stored in the log and replicated.
 Three things are not carried over on the way in by default. The record key
 picks the partition and is then dropped, headers are dropped, and the
 producer's timestamp is replaced by the broker's append time. Set
-`FELIX_KAFKA_RECORD_HEADERS=true` to store the key and headers; it is a one-way
-step for the data directory (see [Upgrades](/deployment/upgrades/#record_headers)).
-A consumer that reads meaning from the key needs it stored or in the value. Topics cannot be created from Kafka tools;
-create the stream through the control plane or felixctl.
+`FELIX_KAFKA_RECORD_HEADERS=true` to store the key and headers; it is a
+one-way step for the data directory (see
+[Upgrades](/deployment/upgrades/#record_headers)). A consumer that reads
+meaning from the key needs it stored or in the value. Topics cannot be created
+from Kafka tools; create the stream through the control plane or felixctl.
 
 ## Example
 

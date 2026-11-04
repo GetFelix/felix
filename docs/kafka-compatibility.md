@@ -166,7 +166,7 @@ Felix publish makes. `InitProducerId` needs only an authenticated connection.
 | `acks=all` on a `Quorum` stream and no majority in time | `REQUEST_TIMED_OUT` | Retries; idempotence keeps the retry from writing twice |
 | Leadership moved after the write and before a majority held it | `NOT_LEADER_OR_FOLLOWER` | Re-sends to the new leader |
 | v0 or v1 message set | `UNSUPPORTED_FOR_MESSAGE_FORMAT` | Fails the produce |
-| A header name starting with `felix.`, or one Felix cannot store (empty), with `FELIX_KAFKA_RECORD_HEADERS` on | `INVALID_RECORD` | Fails the produce. Produce v8 and later carry the reason; older versions get the code alone |
+| A header name starting with `felix.`, or one Felix cannot store (empty), with `FELIX_KAFKA_RECORD_HEADERS` on and the broker accepting record headers | `INVALID_RECORD` | Fails the produce. Produce v8 and later carry the reason; older versions get the code alone |
 | Bad CRC, truncated batch, unknown codec | `CORRUPT_MESSAGE` | Retries, then fails |
 | Batch decompresses past 16 MiB | `MESSAGE_TOO_LARGE` | Fails the produce |
 | Idempotent batch ahead of the next sequence | `OUT_OF_ORDER_SEQUENCE_NUMBER` | Fatal for the idempotent producer |
