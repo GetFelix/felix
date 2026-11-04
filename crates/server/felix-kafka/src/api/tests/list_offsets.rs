@@ -98,11 +98,18 @@ async fn latest_is_refused_while_a_new_leader_settles() {
         .await;
     fixture.cluster.settle("created", 0);
     let mut client = fixture.connect();
-    let (error, _, _) = answer(&mut client, 0, -1, 1).await;
-    assert_eq!(
-        error,
-        kafka_protocol::ResponseError::OffsetNotAvailable.code()
-    );
+    // `OFFSET_NOT_AVAILABLE` from v5; older clients do not know it.
+    for version in 1..=7 {
+        let (error, _, _) = answer(&mut client, 0, -1, version).await;
+        let expected = if version >= 5 {
+            kafka_protocol::ResponseError::OffsetNotAvailable
+        } else {
+            kafka_protocol::ResponseError::LeaderNotAvailable
+        };
+        assert_eq!(error, expected.code(), "v{version}");
+    }
+    // Earliest needs no commit point and is answered.
+    assert_eq!(answer(&mut client, 0, -2, 5).await, (0, -1, 0));
 }
 
 #[tokio::test]

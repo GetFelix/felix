@@ -189,10 +189,12 @@ async fn read_partition(
         Ok(high_watermark) => high_watermark,
         // A new leader with no mark yet knows of nothing committed past the
         // log start, so the fetch is answered empty and the consumer polls on.
+        // The high watermark and last stable offset can then read below the
+        // consumer's position: not out of range, though its lag reads negative.
         Err(Unreadable::Settling) => readable.floor(tail),
-        Err(error @ Unreadable::NotServed) => {
+        Err(Unreadable::NotServed) => {
             return answer
-                .with_error_code(ResponseError::from(error).code())
+                .with_error_code(ResponseError::NotLeaderOrFollower.code())
                 .with_high_watermark(-1);
         }
     };

@@ -646,7 +646,7 @@ mod creating_moving_and_deleting_a_group_1 {
     }
 }
 
-/// rust/groups-and-commits.md line 110: "Creating, moving and deleting a group", block 2.
+/// rust/groups-and-commits.md line 116: "Creating, moving and deleting a group", block 2.
 mod creating_moving_and_deleting_a_group_2 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -699,7 +699,7 @@ mod creating_moving_and_deleting_a_group_2 {
     }
 }
 
-/// rust/groups-and-commits.md line 182: "Atomic commits", block 1.
+/// rust/groups-and-commits.md line 188: "Atomic commits", block 1.
 mod atomic_commits_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -739,7 +739,7 @@ mod atomic_commits_1 {
     }
 }
 
-/// rust/groups-and-commits.md line 222: "Atomic commits", block 2.
+/// rust/groups-and-commits.md line 228: "Atomic commits", block 2.
 mod atomic_commits_2 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -765,7 +765,7 @@ mod atomic_commits_2 {
     }
 }
 
-/// rust/groups-and-commits.md line 251: "Atomic commits", block 3.
+/// rust/groups-and-commits.md line 257: "Atomic commits", block 3.
 mod atomic_commits_3 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -785,7 +785,7 @@ mod atomic_commits_3 {
     }
 }
 
-/// rust/groups-and-commits.md line 280: "Trimming a shard's head", block 1.
+/// rust/groups-and-commits.md line 286: "Trimming a shard's head", block 1.
 mod trimming_a_shard_s_head_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;

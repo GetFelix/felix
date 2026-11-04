@@ -46,17 +46,6 @@ impl Readable {
     }
 }
 
-impl From<Unreadable> for ResponseError {
-    fn from(unreadable: Unreadable) -> Self {
-        match unreadable {
-            Unreadable::NotServed => Self::NotLeaderOrFollower,
-            // What Kafka answers while a new leader's high watermark catches
-            // up from an election, and clients retry it.
-            Unreadable::Settling => Self::OffsetNotAvailable,
-        }
-    }
-}
-
 pub(super) async fn resolve(
     shared: &Shared,
     principal: Option<&Principal>,
