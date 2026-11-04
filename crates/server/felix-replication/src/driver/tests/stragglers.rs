@@ -948,6 +948,15 @@ impl Switchable {
         self.answers.lock().expect("lock").insert(node, answer);
     }
 
+    fn sent_count(&self, node: &str) -> usize {
+        self.sent
+            .lock()
+            .expect("lock")
+            .iter()
+            .filter(|(to, _)| to == node)
+            .count()
+    }
+
     fn sent_since(&self, node: &str, since: tokio::time::Instant) -> bool {
         self.sent
             .lock()
@@ -1032,6 +1041,47 @@ async fn a_dead_follower_does_not_hold_a_record_back_from_a_free_one() {
     assert!(
         prompt(&marks, 0, 4, 4).await,
         "the mark waited on the dead follower",
+    );
+    driver.stop().await;
+}
+
+/// b refuses and c hangs, so no follower can make the majority. A record
+/// landing must still reach b at once, no mark may come without a majority,
+/// and the early end of the wait must not turn into a tight loop of passes.
+#[tokio::test(start_paused = true)]
+async fn a_refusing_follower_and_a_dead_one_ship_the_record_without_a_busy_loop() {
+    let (broker, _dir) = super::quorum::quorum_leader(3, 4).await;
+    let router = router(LOCAL, &["broker-b", "broker-c"], 4);
+    let marks = Arc::new(QuorumMarks::new());
+    let peers = Arc::new(Switchable::default());
+    let routes_changed = Arc::new(tokio::sync::Notify::new());
+    peers.set("broker-b", Answer::Refuse);
+    peers.set("broker-c", Answer::Hang);
+    let driver = driver_with(
+        Arc::clone(&peers),
+        &broker,
+        &router,
+        &marks,
+        &routes_changed,
+    );
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    let landed = tokio::time::Instant::now();
+    let before = peers.sent_count("broker-b");
+    append(&broker, 0).await;
+    tokio::time::sleep(SOON).await;
+    assert!(
+        peers.sent_since("broker-b", landed),
+        "the record waited for the dead follower before it was shipped to the free one",
+    );
+    assert!(
+        !prompt(&marks, 0, 4, 4).await,
+        "a mark was published without a majority",
+    );
+    let passes = peers.sent_count("broker-b") - before;
+    assert!(
+        passes <= 20,
+        "the pass looped without waiting: {passes} sends to b",
     );
     driver.stop().await;
 }

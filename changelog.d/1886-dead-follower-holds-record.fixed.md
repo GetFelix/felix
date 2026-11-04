@@ -4,4 +4,5 @@
   follower was busy with an earlier pass. A level follower that had been sent
   nothing could not make the majority, so a `Quorum` publish waited out the
   dead peer's request. Now a record appended to the shard ends that wait once
-  a follower that counts has answered.
+  a follower that counts has answered without vouching for anything (it was
+  sent nothing, or it refused).
