@@ -1357,9 +1357,12 @@ async fn a_batch_that_is_not_stored_keeps_the_earlier_sets() {
     let (broker, _dir) = broker_with_storage().await;
     let fleet = felix_common::fleet::FleetGate::new([felix_common::fleet::JOINT_FENCE.name()]);
     fleet.restart([felix_common::fleet::JOINT_FENCE.name()]);
-    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5)).with_fleet(
-        Arc::new(crate::quorum::QuorumMarks::with_fleet(Arc::new(fleet))),
-    );
+    // The control plane's set before generation 5 is what the batch's set
+    // leaves; without it the batch is refused before it raises the set.
+    let router = super::election::router_after(5, Some(&["broker-a", LOCAL, "broker-c"]));
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router).with_fleet(Arc::new(
+        crate::quorum::QuorumMarks::with_fleet(Arc::new(fleet)),
+    ));
     let unopened = kept_set(4, &[LOCAL, "broker-x", "broker-y"]);
     let left = kept_set(3, &[LOCAL, "broker-c", "broker-d"]);
     let log = log_of(&broker).await;

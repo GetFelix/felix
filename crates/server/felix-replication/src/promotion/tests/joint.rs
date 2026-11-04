@@ -577,6 +577,7 @@ async fn a_failover_without_a_prior_fences_the_set_the_log_kept_as_leaving() {
     log.accept_set(ReplicaSet {
         current: set(4, &[LEADER, "broker-x", "broker-z"]),
         leaving: Some(set(3, &["broker-x", LEADER, "broker-b"])),
+        earlier: Vec::new(),
     })
     .await
     .expect("keep the pending set and the one it leaves");

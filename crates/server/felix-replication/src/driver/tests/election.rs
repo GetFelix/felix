@@ -317,6 +317,7 @@ async fn a_restarted_elected_leader_keeps_the_set_it_was_elected_on() {
                 .to_vec(),
         },
         leaving: None,
+        earlier: Vec::new(),
     })
     .await
     .expect("the set it was elected on");
@@ -451,6 +452,7 @@ fn set_of_three(generation: u64) -> felix_storage::disk_log::ReplicaSet {
                 .to_vec(),
         },
         leaving: None,
+        earlier: Vec::new(),
     }
 }
 
@@ -479,6 +481,7 @@ async fn a_leader_opened_at_a_bump_on_the_same_members_keeps_the_new_set() {
                 .to_vec(),
         },
         leaving: None,
+        earlier: Vec::new(),
     })
     .await
     .expect("the set of 3");

@@ -87,7 +87,7 @@ fn ok(answer: &InternalMessage) {
 /// A router at `generation` led by broker-a with `LOCAL` following, whose
 /// watch saw `before` (leader first) as the set right before it, or saw
 /// nothing before it when `before` is `None`.
-fn router_after(generation: u64, before: Option<&[&str]>) -> Arc<ShardRouter> {
+pub(super) fn router_after(generation: u64, before: Option<&[&str]>) -> Arc<ShardRouter> {
     let router = router_with(&[LOCAL], generation);
     let nodes: HashMap<String, NodeRef> = ["broker-a", LOCAL, "broker-c"]
         .iter()
@@ -231,6 +231,7 @@ async fn only_a_wiped_learner_learns_a_set_without_the_set_before_it() {
                     }],
                 },
                 leaving: None,
+                earlier: Vec::new(),
             })
             .await
             .expect("set");

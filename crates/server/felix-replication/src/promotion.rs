@@ -420,6 +420,7 @@ pub(crate) async fn refence<R: PeerRequester>(
         candidate: true,
         set: candidacy.set.clone(),
         leaving: candidacy.leaving.as_ref().map(joint::view),
+        earlier: Vec::new(),
     };
     fence_again(requester, node_id, addr, shard, kind, election).await
 }
@@ -453,6 +454,7 @@ pub(crate) async fn refence_kept<R: PeerRequester>(
         candidate: false,
         set: joint::view(&kept.current),
         leaving: kept.leaving.as_ref().map(joint::view),
+        earlier: kept.earlier.iter().map(joint::view).collect(),
     };
     fence_again(requester, node_id, addr, shard, kind, election).await
 }

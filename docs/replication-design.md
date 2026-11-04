@@ -4507,6 +4507,11 @@ acknowledgements on the kept set alone, because the control plane records
 that set with nothing pending (`FinishChange`). Without `joint_fence`
 finalized such a fence could never open, so the broker does not stand.
 
+A broker whose set file keeps earlier sets does not stand either. Those sets
+are kept only while a fence leaving them never opened, so a majority of one
+may hold an acknowledged write that no later set has. A candidate's fence
+leaves at most one set, so the control plane handles that shard.
+
 A replica that takes a candidate's fence records the candidate the same way,
 so it takes the candidate's batches and sends clients to it. The elected
 leader stamps its batches with the kept set's generation, below its own,

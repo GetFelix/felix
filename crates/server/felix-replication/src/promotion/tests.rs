@@ -1236,6 +1236,7 @@ async fn a_leader_refences_with_a_kept_set_below_its_generation() {
             members: vec![member(LEADER), member("broker-b"), member("broker-c")],
         },
         leaving: None,
+        earlier: Vec::new(),
     };
     let mut shard = batch(7, 0, &[]).shard;
     shard.generation = 7;
