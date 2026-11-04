@@ -212,13 +212,15 @@ pub struct RefusedGeneration {
     pub generation: u64,
     /// The node it promised the generation to. Empty when nothing was
     /// promised and the broker refused because its fence cannot learn the
-    /// set it leaves at that generation ([`Self::set_unknown`]).
+    /// set it leaves at that generation, or because it or a majority of its
+    /// set already accepted a newer generation ([`Self::set_unknown`]).
     pub promised_to: String,
 }
 
 impl RefusedGeneration {
     /// A refusal of `generation` by a leader whose joint fence cannot learn
-    /// the set it leaves there, as for a shard learned from a snapshot.
+    /// the set it leaves there, as for a shard learned from a snapshot, or
+    /// that can never be fenced because a newer ballot holds it.
     /// Placement answers it as it answers a promise: one generation up,
     /// whose set before is the set this broker is named on now.
     pub fn set_unknown(generation: u64) -> Self {

@@ -1566,9 +1566,7 @@ impl ReplicaHandler {
                 correlation_id,
                 ErrorCode::FencedEpoch,
                 0,
-                format!(
-                    "this broker accepted generation {accepted}, the sender is at {generation}"
-                ),
+                superseded_detail(accepted, generation),
             )
         })
     }
@@ -2187,9 +2185,7 @@ async fn accept_sender(
                 correlation_id,
                 ErrorCode::FencedEpoch,
                 0,
-                format!(
-                    "this broker accepted generation {accepted}, the sender is at {generation}"
-                ),
+                superseded_detail(accepted, generation),
             ))
         }
         Err(err) => {
@@ -2266,6 +2262,24 @@ pub(crate) fn promised_to(detail: &str, generation: u64) -> Option<&str> {
             "this broker accepted generation {generation} from "
         ))
         .filter(|leader| !leader.is_empty())
+}
+
+/// What a replica answers a sender at `generation` once its ballot holds
+/// the newer `accepted`; [`superseded_by`] reads it back.
+pub(crate) fn superseded_detail(accepted: u64, generation: u64) -> String {
+    format!("this broker accepted generation {accepted}, the sender is at {generation}")
+}
+
+/// The newer generation a `FencedEpoch` refusal says this replica's ballot
+/// already holds, when it refused a sender at `generation` for that.
+/// `None` for any other refusal, such as a routing view that has moved on.
+pub(crate) fn superseded_by(detail: &str, generation: u64) -> Option<u64> {
+    let accepted = detail
+        .strip_prefix("this broker accepted generation ")?
+        .strip_suffix(&format!(", the sender is at {generation}"))?
+        .parse::<u64>()
+        .ok()?;
+    (accepted > generation).then_some(accepted)
 }
 
 /// Where a batch from a leader at `generation` must start for every record

@@ -1,5 +1,5 @@
-//! A leader named at a generation it promised to another node says so
-//! instead of failing quietly.
+//! A leader named at a generation it promised to another node, or below one
+//! it already accepted, says so instead of failing quietly.
 use std::sync::Arc;
 
 use felix_common::membership::RefusedGeneration;
@@ -80,14 +80,18 @@ async fn a_promised_generation_is_recorded_as_refused() {
     assert_eq!(held.fence().refused_at(&key(0)), None);
 }
 
-/// A generation this broker already moved past is a different failure: it is
-/// not a promise to someone else, so nothing is recorded.
+/// **A generation below one this broker already accepted is recorded as
+/// refused, naming no node** (#1914). With elections the newer ballot can be
+/// this broker's own standing that never opened, which no assignment names;
+/// unreported, the control plane keeps naming it at a generation it can
+/// never open. When the control plane did name the newer one, the report is
+/// for an older generation than it holds and changes nothing.
 #[tokio::test]
-async fn a_superseded_generation_is_not_recorded_as_refused() {
+async fn a_superseded_generation_is_recorded_as_refused() {
     let dir = tempfile::tempdir().expect("tempdir");
     let storage = storage(dir.path());
     log(&storage)
-        .accept_generation(6, Some("broker-b"))
+        .accept_generation(6, Some("broker-a"))
         .await
         .expect("accept");
     let (lifecycle, store) = node(&storage);
@@ -96,5 +100,15 @@ async fn a_superseded_generation_is_not_recorded_as_refused() {
 
     let held = lifecycle.lock().await;
     assert_eq!(held.phase(&key(0)), Phase::Failed);
+    assert_eq!(
+        held.fence().refused_at(&key(0)),
+        Some(RefusedGeneration::set_unknown(4)),
+    );
+    drop(held);
+
+    // Named again above the ballot, it opens and the refusal is cleared.
+    reconcile(&lifecycle, &store, &led_with_followers(7)).await;
+    let held = lifecycle.lock().await;
+    assert_eq!(held.phase(&key(0)), Phase::Active);
     assert_eq!(held.fence().refused_at(&key(0)), None);
 }

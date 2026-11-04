@@ -95,7 +95,8 @@ pub enum Outcome {
     /// Some replica did not offer the fence, so the shard opens on the lease.
     Lease { lacking: String },
     /// Not yet, and not in this attempt: a replica promised this generation
-    /// to `promised_to`, and either so many did that no majority is left to
+    /// to `promised_to`, or took a newer generation no assignment named
+    /// (`promised_to` empty), and either so many did that no majority is left to
     /// take it or every other replica that did not take it was unreachable
     /// or timed out. The shard stays closed,
     /// and this broker reports the refusal so the control plane names it
@@ -559,9 +560,11 @@ async fn fence_log<R: PeerRequester>(
     // Why the replicas that refused did, for the shard's status: a refusal
     // that no retry gets past names its way out there.
     let mut refusals: Vec<String> = Vec::new();
-    // Replicas that promised this generation to another node. Each is a vote
-    // that node holds, so once a majority can no longer be made without
-    // them, no answer still to come opens the shard.
+    // Replicas that promised this generation to another node, or took a
+    // newer one the control plane never named (an election's ballot whose
+    // standing did not open), with that node or "". Neither ever takes this
+    // generation, so once a majority can no longer be made without them, no
+    // answer still to come opens the shard.
     let mut promised_away: Vec<(String, String)> = Vec::new();
     let reachable = |promised_away: &[(String, String)]| {
         let left = replicas
@@ -654,7 +657,35 @@ async fn fence_log<R: PeerRequester>(
                         why.push_str(refusal);
                     }
                     return Err(Outcome::Refused {
-                        promised_to: promised_away[0].1.clone(),
+                        promised_to: first_promise(&promised_away),
+                        why,
+                        took: took(&answered),
+                    });
+                }
+            }
+            // A ballot above this generation that no assignment this broker
+            // has seen names. If the control plane had named it, it would
+            // also have named someone above this broker's generation and
+            // this refusal is stale; if not, nothing else ever moves the
+            // shard past it, so it is reported like a promise (#1914).
+            Ok(InternalMessage::ReplicateError(err))
+                if err.code == ErrorCode::FencedEpoch
+                    && crate::replica::superseded_by(&err.detail, shard.generation).is_some() =>
+            {
+                refusals.push(format!("{node_id} refused: {}", err.detail));
+                promised_away.push((node_id, String::new()));
+                if !reachable(&promised_away) {
+                    let mut why = format!(
+                        "{} of the replicas will not take generation {}",
+                        promised_away.len(),
+                        shard.generation
+                    );
+                    for refusal in &refusals {
+                        why.push_str("; ");
+                        why.push_str(refusal);
+                    }
+                    return Err(Outcome::Refused {
+                        promised_to: first_promise(&promised_away),
                         why,
                         took: took(&answered),
                     });
@@ -737,9 +768,9 @@ async fn fence_log<R: PeerRequester>(
         // joint set's count kept the majority out: a rename resets the
         // copies the next fence checks, so that case waits instead.
         let explained = joint.is_none() && other_copies == 0 && declined == 0;
-        if let Some((_, promised_to)) = promised_away.first().filter(|_| explained) {
+        if !promised_away.is_empty() && explained {
             return Err(Outcome::Refused {
-                promised_to: promised_to.clone(),
+                promised_to: first_promise(&promised_away),
                 why,
                 took: took(&answered),
             });
@@ -1435,6 +1466,17 @@ async fn catch_up<R: PeerRequester>(
         "took a replica's log that was ahead of this broker's before serving",
     );
     Ok(())
+}
+
+/// The node a refused fence's replicas promised the generation to, or ""
+/// when every one of them refused for a newer generation instead.
+fn first_promise(promised_away: &[(String, String)]) -> String {
+    promised_away
+        .iter()
+        .map(|(_, to)| to)
+        .find(|to| !to.is_empty())
+        .cloned()
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

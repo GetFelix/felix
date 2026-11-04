@@ -108,10 +108,12 @@ pub enum MoveStep {
     /// without adopting. It is named again at a new generation, above the
     /// one it promised away, on the same set.
     ElectionRefused,
-    /// The leader reported that it refused its generation because its joint
-    /// fence cannot learn the set that generation leaves, as for a shard it
-    /// learned from a snapshot. It is named again one generation up, on the
-    /// same set, whose set before is the one it is named on now.
+    /// The leader reported that it refused its generation without naming a
+    /// node: its joint fence cannot learn the set that generation leaves, as
+    /// for a shard it learned from a snapshot, or it or a majority of its set
+    /// already accepted a newer generation no assignment named. It is named
+    /// again one generation up, on the same set, whose set before is the one
+    /// it is named on now.
     SetUnknown,
     /// The shard no longer elects (its consistency changed), so a pending
     /// set can never be reported: the change is dropped.

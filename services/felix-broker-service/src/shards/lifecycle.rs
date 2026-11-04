@@ -835,6 +835,29 @@ impl std::fmt::Display for PromisedAway {
 
 impl std::error::Error for PromisedAway {}
 
+/// An open refused because this broker had already accepted a newer
+/// generation than the one it was named at. With elections that can be a
+/// ballot of its own standing that never opened, which no assignment names,
+/// so the control plane must name it again above it.
+#[derive(Debug)]
+pub struct Superseded {
+    pub generation: u64,
+    pub accepted: u64,
+}
+
+impl std::fmt::Display for Superseded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "this broker already accepted generation {} for the shard, newer than the {} it \
+             was assigned to lead",
+            self.accepted, self.generation
+        )
+    }
+}
+
+impl std::error::Error for Superseded {}
+
 /// What a driver needs to open and close local shard state.
 ///
 /// A trait so the lifecycle can be exercised without a disk, and so the durable
@@ -1898,6 +1921,11 @@ async fn apply_open(
                     .fence()
                     .refused(&key, generation, &promised.promised_to);
             }
+            // Reported like a promise, with no node: nothing else moves the
+            // control plane past a ballot it never issued (#1914).
+            if err.downcast_ref::<Superseded>().is_some() {
+                lifecycle.fence().refused(&key, generation, "");
+            }
             lifecycle.open_failed(&key, generation, format!("{err:#}"));
             drop(lifecycle);
             tracing::error!(
@@ -1977,12 +2005,11 @@ async fn accept_led_generation(
     ballot: Option<&str>,
 ) -> anyhow::Result<()> {
     match log.accept_generation(generation, ballot).await {
-        Ok(felix_storage::disk_log::GenerationCheck::Superseded { accepted }) => {
-            anyhow::bail!(
-                "this broker already accepted generation {accepted} for the shard, \
-                 newer than the {generation} it was assigned to lead"
-            );
+        Ok(felix_storage::disk_log::GenerationCheck::Superseded { accepted }) => Err(Superseded {
+            generation,
+            accepted,
         }
+        .into()),
         Ok(felix_storage::disk_log::GenerationCheck::Promised { leader }) => Err(PromisedAway {
             generation,
             promised_to: leader,

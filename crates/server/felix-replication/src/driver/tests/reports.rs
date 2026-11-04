@@ -1067,6 +1067,77 @@ async fn a_fence_promised_away_by_a_majority_reports_the_refusal() {
     assert_eq!(report.leader_offset, None, "a refusal measures no tail");
 }
 
+/// Offers the fence's capabilities and answers every fence that its ballot
+/// already holds generation 7, as a follower whose own standing persisted
+/// its ballot and never opened does.
+struct SupersededFollowers;
+
+impl PeerRequester for SupersededFollowers {
+    async fn request(
+        &self,
+        _node_id: &str,
+        _addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, PeerError> {
+        match message {
+            InternalMessage::Fence(fence) => Ok(InternalMessage::ReplicateError(
+                felix_wire::internal::ReplicateError {
+                    correlation_id: fence.correlation_id,
+                    code: felix_wire::internal::ErrorCode::FencedEpoch,
+                    expected_offset: 0,
+                    detail: crate::replica::superseded_detail(7, fence.shard.generation),
+                },
+            )),
+            other => panic!("unexpected {:?}", other.kind()),
+        }
+    }
+
+    async fn capabilities(
+        &self,
+        _node_id: &str,
+        _addr: SocketAddr,
+    ) -> std::result::Result<felix_wire::internal::PeerCapabilities, PeerError> {
+        Ok(crate::promotion::REQUIRED)
+    }
+}
+
+/// **A leader whose fence a majority answered with a newer ballot no
+/// assignment named reports the generation refused** (#1914). Elections
+/// that withdrew their standings leave such ballots; the control plane
+/// never hears of them, so without the report it names this broker at a
+/// generation that can never be fenced and waits on silence for good.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fence_below_a_majoritys_ballots_reports_the_refusal() {
+    let (broker, _dir) = leader_with(3).await;
+    let (control_plane, received) = recording_control_plane().await;
+    let shutdown = CancellationToken::new();
+    let driver = spawn(
+        Arc::new(SupersededFollowers),
+        broker,
+        router(LOCAL, &["broker-b", "broker-c"], 4),
+        Arc::new(Unfenced),
+        Arc::new(FencingAtFour),
+        published(),
+        Some(control_plane.reporter(shutdown.clone())),
+        Duration::from_millis(50),
+        Arc::default(),
+        RebuildPolicy::default(),
+        MoveThrottle::unlimited(),
+        shutdown.clone(),
+    );
+
+    let report = first_report(&received, Duration::from_secs(5)).await;
+    shutdown.cancel();
+    driver.stop().await;
+    let report = report.expect("no report of the refused fence");
+    assert_eq!(report.generation, 4);
+    assert_eq!(
+        report.refused,
+        Some(RefusedGeneration::set_unknown(4)),
+        "refused naming no node, so placement names it again one up"
+    );
+}
+
 /// [`PromisedAwayFollowers`] that check sets, so a fence under
 /// `joint_fence` needs the set it leaves. Any fence that went out would come
 /// back promised to broker-d.

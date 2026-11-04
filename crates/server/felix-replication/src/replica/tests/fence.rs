@@ -1554,6 +1554,25 @@ fn a_promise_refusal_names_the_node_it_was_promised_to() {
     );
 }
 
+/// **A leader reads the newer ballot a replica refused it for**, and only
+/// that: a promise at its own generation, or a newer generation refused
+/// against another sender's, is not one.
+#[test]
+fn a_superseded_refusal_names_the_newer_ballot() {
+    assert_eq!(superseded_by(&superseded_detail(6, 4), 4), Some(6));
+    assert_eq!(
+        superseded_by(&superseded_detail(6, 4), 5),
+        None,
+        "another sender"
+    );
+    assert_eq!(superseded_by(&promised_detail(4, "broker-d"), 4), None);
+    assert_eq!(
+        superseded_by(&superseded_detail(4, 4), 4),
+        None,
+        "not newer"
+    );
+}
+
 /// A control plane that names broker-a at generation 1 for every shard, but
 /// answers for any shard other than 0 only once `open` has permits.
 struct GatedConfirmed {
