@@ -1120,6 +1120,7 @@ fn only_a_set_this_broker_could_not_know_is_unknown() {
             ..crate::replica_set::kept(&route, None).current
         },
         leaving: None,
+        earlier: Vec::new(),
     };
 
     assert_eq!(
