@@ -275,6 +275,20 @@ pub(super) async fn shard_assignment_snapshot(
     })
 }
 
+pub(super) async fn first_shard_assignments(
+    store: &InMemoryStore,
+) -> StoreResult<Vec<(ShardKey, u64, u64)>> {
+    let state = store.shards.read().await;
+    Ok(state
+        .changes
+        .items
+        .iter()
+        .filter(|change| change.op == ShardAssignmentChangeOp::Assigned)
+        .filter_map(|change| change.assignment.as_ref())
+        .map(|first| (first.key.clone(), first.incarnation, first.generation))
+        .collect())
+}
+
 pub(super) async fn shard_assignment_changes(
     store: &InMemoryStore,
     since: u64,

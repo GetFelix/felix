@@ -974,6 +974,10 @@ impl ControlPlaneStore for RaftStore {
         self.local().shard_assignment_snapshot().await
     }
 
+    async fn first_shard_assignments(&self) -> StoreResult<Vec<(ShardKey, u64, u64)>> {
+        self.local().first_shard_assignments().await
+    }
+
     async fn shard_assignment_changes(
         &self,
         since: u64,

@@ -1095,16 +1095,25 @@ impl PeerRequester for ElectingFollowers {
     }
 }
 
-/// **Under `joint_fence`, a leader that cannot learn the set its generation
-/// leaves reports the generation refused, naming no node** (#1872). Its log
-/// keeps no set and its watch saw nothing before generation 4, as for a shard
-/// learned from a snapshot. Without the report its fence stays pending and
-/// the control plane, which hears nothing, never names it again.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_fence_with_an_unknown_set_before_reports_the_generation_refused() {
+/// The first report of a leader at generation 4 under `joint_fence` whose
+/// watch saw nothing before 4, with generation 4's own set kept in its log,
+/// as a leader keeps that opened at 4 before `joint_fence` was on, or none.
+/// The first report naming a refusal, or none within `within`.
+async fn joint_fence_refusal(keep_own_set: bool, within: Duration) -> Option<ShardReplicaStatus> {
     use felix_common::fleet::{FleetGate, GENERATION_START, JOINT_FENCE, MAJORITY_ACK};
 
     let (broker, _dir) = leader_with(3).await;
+    let routes = router(LOCAL, &["broker-b", "broker-c"], 4);
+    if keep_own_set {
+        let route = routes.snapshot().get(&key()).cloned().expect("route");
+        broker
+            .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+            .await
+            .expect("log")
+            .accept_set(crate::replica_set::kept(&route, None))
+            .await
+            .expect("keep generation 4's set");
+    }
     let (control_plane, received) = recording_control_plane().await;
     let names = [GENERATION_START, MAJORITY_ACK, JOINT_FENCE].map(|feature| feature.name());
     let fleet = FleetGate::new(names.to_vec());
@@ -1117,7 +1126,7 @@ async fn a_fence_with_an_unknown_set_before_reports_the_generation_refused() {
     let driver = spawn(
         Arc::new(ElectingFollowers),
         broker,
-        router(LOCAL, &["broker-b", "broker-c"], 4),
+        routes,
         Arc::new(Unfenced),
         Arc::new(FencingAtFour),
         published,
@@ -1129,11 +1138,51 @@ async fn a_fence_with_an_unknown_set_before_reports_the_generation_refused() {
         shutdown.clone(),
     );
 
-    let report = first_report(&received, Duration::from_secs(5)).await;
+    let refusal = tokio::time::timeout(within, async {
+        loop {
+            let found = received
+                .lock()
+                .expect("lock")
+                .iter()
+                .find(|report| report.refused.is_some())
+                .cloned();
+            if let Some(report) = found {
+                return report;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .ok();
     shutdown.cancel();
     driver.stop().await;
-    let report = report.expect("no report of the unfenceable generation");
+    refusal
+}
+
+/// **Under `joint_fence`, a leader that cannot learn the set its generation
+/// leaves reports the generation refused, naming no node** (#1872). Its log
+/// keeps generation 4's own set without the one before, and its watch saw
+/// nothing before 4, as after a restart. Without the report its fence stays
+/// pending and the control plane, which hears nothing, never names it again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fence_with_an_unknown_set_before_reports_the_generation_refused() {
+    let report = joint_fence_refusal(true, Duration::from_secs(5))
+        .await
+        .expect("no report of the unfenceable generation");
     assert_eq!(report.generation, 4);
     assert_eq!(report.refused, Some(RefusedGeneration::set_unknown(4)));
     assert_eq!(report.leader_offset, None, "a refusal measures no tail");
+}
+
+/// **A leader with no kept set reports no refusal** (#1872). It may be a
+/// failover's new leader whose watch started from a snapshot: the set at 3
+/// can still be acknowledging behind a partition, and a rename to 5 would
+/// leave it unfenced. Its fence waits instead.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fence_with_no_kept_set_reports_no_refusal() {
+    let refusal = joint_fence_refusal(false, Duration::from_secs(2)).await;
+    assert_eq!(
+        refusal, None,
+        "asked for a rename with no evidence nothing came before"
+    );
 }

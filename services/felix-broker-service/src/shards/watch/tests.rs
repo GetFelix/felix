@@ -465,3 +465,62 @@ fn an_incarnation_zero_assignment_is_never_first() {
     owned.assign_afresh(&key(0), assignment(0, "broker-a", 0));
     assert_eq!(prior_leader(&owned), None);
 }
+
+/// **A snapshot item marked as a shard's first assignment has nothing before
+/// it**, on the terms an `assigned` change has: not at incarnation 0, and not
+/// at an incarnation this broker already held (#1872).
+#[test]
+fn a_snapshot_marked_first_has_no_set_before() {
+    let marked = std::collections::HashSet::from([key(0)]);
+    let mut first = assignment(0, "broker-a", 12);
+    first.incarnation = 3;
+
+    let mut owned = ShardOwnership::default();
+    owned.reset_marked(vec![first.clone()], &marked);
+    assert_eq!(prior_leader(&owned), Some(None));
+
+    let mut owned = ShardOwnership::default();
+    owned.reset_marked(vec![assignment(0, "broker-a", 0)], &marked);
+    assert_eq!(prior_leader(&owned), None, "incarnation 0 is never first");
+
+    let mut owned = ShardOwnership::default();
+    let mut held = first.clone();
+    held.generation = 11;
+    held.leader = "broker-z".to_string();
+    owned.apply(&key(0), Some(held));
+    owned.reset_marked(vec![first], &marked);
+    assert_eq!(
+        prior_leader(&owned),
+        Some(Some("broker-z".into())),
+        "the set this broker held at the same incarnation came before"
+    );
+}
+
+/// **An unmarked snapshot item records nothing before it** (#1872). A
+/// failover's new leader that learns its shard from a snapshot has no record
+/// of the set it leaves; reading the item as a first assignment would fence
+/// the new set alone while a majority of the old one still acknowledges.
+/// What an older control plane sends is unmarked.
+#[test]
+fn an_unmarked_snapshot_item_is_not_first() {
+    let item = |marked: Option<bool>| {
+        let mut json = serde_json::json!({
+            "tenant_id": "t1", "namespace": "ns", "stream": "orders", "shard": 0,
+            "leader": "broker-b", "replicas": ["broker-c", "broker-d"],
+            "generation": 12, "state": "active", "incarnation": 3,
+        });
+        if let Some(marked) = marked {
+            json["first_assignment"] = marked.into();
+        }
+        serde_json::from_value::<super::SnapshotItem>(json).expect("item")
+    };
+    assert!(!item(None).first_assignment);
+    assert!(!item(Some(false)).first_assignment);
+    let marked = item(Some(true));
+    assert!(marked.first_assignment);
+    assert_eq!(marked.assignment.generation, 12);
+
+    let mut owned = ShardOwnership::default();
+    owned.reset(vec![item(None).assignment]);
+    assert_eq!(prior_leader(&owned), None);
+}

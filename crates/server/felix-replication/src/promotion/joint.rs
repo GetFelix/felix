@@ -265,15 +265,19 @@ pub(crate) enum NoSetBefore {
     /// This broker counts the set of this newer generation.
     Newer(u64),
     /// Nothing here names the set at the generation before this one, and
-    /// this log keeps no set or this generation's own: the watch learned
-    /// the shard from a snapshot, and the log is new or kept its set before
-    /// `joint_fence` was on. Only a later generation can tell, and renaming
-    /// to it skips no generation this broker did not open.
+    /// this log keeps this generation's own set: it was fenced here at this
+    /// generation before `joint_fence` was on, or followed at it. Only a
+    /// later generation can tell, and renaming to it leaves the set this
+    /// log keeps, the one already fenced.
     Unknown(u64),
     /// As [`Self::Unknown`], but this log keeps the set of an older
     /// generation than the one before: this broker never opened the
     /// generation in between, whose set a rename would leave unfenced.
     Skipped(u64),
+    /// As [`Self::Unknown`], but this log keeps no set and nothing says the
+    /// route is the shard's first assignment. An earlier set may hold
+    /// acknowledged records that a rename would leave unfenced.
+    Unseen(u64),
 }
 
 impl std::fmt::Display for NoSetBefore {
@@ -283,11 +287,13 @@ impl std::fmt::Display for NoSetBefore {
                 f,
                 "this broker counts the set of generation {generation}, newer than this one"
             ),
-            Self::Unknown(generation) | Self::Skipped(generation) => write!(
-                f,
-                "the set before generation {generation} is not known here, so the set being \
-                 left cannot be fenced"
-            ),
+            Self::Unknown(generation) | Self::Skipped(generation) | Self::Unseen(generation) => {
+                write!(
+                    f,
+                    "the set before generation {generation} is not known here, so the set being \
+                     left cannot be fenced"
+                )
+            }
         }
     }
 }
@@ -340,8 +346,9 @@ pub(crate) fn set_before(
                 return Ok(Some(crate::replica_set::placed(set, before)));
             }
         }
-        // A first assignment has nothing before it, and a log that already
-        // keeps a set is not one a first assignment would find.
+        // A first assignment, as the watch saw it or a snapshot marked it,
+        // has nothing before it, and a log that already keeps a set is not
+        // one a first assignment would find.
         Some(PriorSet { before: None, .. }) if stored.is_none() => return Ok(None),
         _ => {}
     }
@@ -351,11 +358,14 @@ pub(crate) fn set_before(
     {
         return Ok(Some(stored.current.clone()));
     }
+    // Only this generation's own kept set is evidence that no earlier set
+    // still holds records this broker would leave behind.
     match stored {
-        Some(stored) if stored.current.generation < route.generation => {
-            Err(NoSetBefore::Skipped(route.generation))
+        Some(stored) if stored.current.generation == route.generation => {
+            Err(NoSetBefore::Unknown(route.generation))
         }
-        _ => Err(NoSetBefore::Unknown(route.generation)),
+        Some(_) => Err(NoSetBefore::Skipped(route.generation)),
+        None => Err(NoSetBefore::Unseen(route.generation)),
     }
 }
 

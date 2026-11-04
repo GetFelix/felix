@@ -145,14 +145,15 @@ Later control-plane changes are on `main`:
 - A leader that could not serve a generation because it had promised it to
   another node reports the refusal, and placement names it again at a higher
   generation (#1730): migration `0042`, level 25.
-- After `joint_fence` is finalized, a leader that cannot learn the replica
-  set its generation replaced reports that generation refused, and placement
-  names it again one generation up. This happens after a broker restart at a
-  generation that started before the finalize, and for a new shard a broker
-  first sees in a snapshot. The report uses the `refused` field above with no
-  node named, so it needs migration `0042` and level 25, and finalizing
+- After `joint_fence` is finalized, a leader restarted at a generation that
+  started before the finalize cannot learn the replica set that generation
+  replaced. It reports the generation refused, and placement names it again
+  one generation up. The report uses the `refused` field above with no node
+  named, so it needs migration `0042` and level 25, and finalizing
   `joint_fence` under Raft waits for level 25. Rolling restarts after the
-  finalize need no extra step.
+  finalize need no extra step. A new shard a broker first sees in a snapshot
+  opens on the snapshot's `first_assignment` mark, which a 0.7 control plane
+  sends. With the usual upgrade order (control plane first) every broker gets it.
 
 In short, Postgres runs migrations `0037` to `0042` on start (`0039` to
 `0042` are on `main` only), and under Raft these features wait for metadata

@@ -237,3 +237,41 @@ async fn the_confirmed_read_answers_one_shard() {
     assert_eq!(assigned["assignment"]["leader"], "broker-x");
     assert_eq!(read(7).await["assignment"], serde_json::Value::Null);
 }
+
+/// **The snapshot marks a shard's first assignment, and only that one**
+/// (#1872). A broker that learns the shard from the snapshot records nothing
+/// before it, as the `assigned` change tells a watching broker. A later
+/// write is not first, so its item carries no mark.
+#[tokio::test]
+async fn the_snapshot_marks_only_a_first_assignment() {
+    let fixture = fixture().await;
+    let snapshot = || async {
+        let request = Request::builder()
+            .uri("/v1/shard-assignments/snapshot")
+            .header("authorization", format!("Bearer {}", fixture.bearer))
+            .body(Body::empty())
+            .expect("request");
+        let response = fixture
+            .app
+            .clone()
+            .oneshot(request)
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let body: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        body["items"][0].clone()
+    };
+
+    fixture.assign("broker-x").await;
+    let first = snapshot().await;
+    assert_eq!(first["leader"], "broker-x");
+    assert_eq!(first["first_assignment"], true, "{first}");
+
+    fixture.assign("broker-y").await;
+    let later = snapshot().await;
+    assert_eq!(later["leader"], "broker-y");
+    assert_eq!(later.get("first_assignment"), None, "{later}");
+}

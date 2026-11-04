@@ -1,7 +1,8 @@
 //! With joint fences on (`ClusterConfig::joint_fence`), a set change
 //! that swaps two members does not serve until a majority of the set it
-//! leaves has taken its fence, and a leader that cannot learn the set it
-//! leaves is named again a generation up rather than left waiting.
+//! leaves has taken its fence. A leader that keeps its generation's set but
+//! not the one before is named again a generation up, and one that learns a
+//! new shard from a snapshot opens on the snapshot's first-assignment mark.
 //!
 //! Run with `cargo test -p felix-cluster --test failures joint_fence::`.
 use std::time::Duration;
@@ -276,7 +277,8 @@ async fn serves(cluster: &Cluster, stream: &str, what: &str) {
 /// restart its watch learns the shard from a snapshot, with nothing before
 /// it. Its fence cannot know the set being left, so it reports the
 /// generation refused, and placement names it again one up, whose set before
-/// it does know.
+/// it does know. The fence counter shows that path ran: a shard that served
+/// only because placement failed it over proves nothing.
 #[serial]
 #[tokio::test]
 async fn a_rolling_restart_after_joint_fence_is_finalized_serves_every_shard() {
@@ -322,14 +324,28 @@ async fn a_rolling_restart_after_joint_fence_is_finalized_serves_every_shard() {
             .await;
         }
     }
+    // Each node restarted once, so each counter covers everything since its
+    // own restart.
+    let mut set_unknown = 0.0;
+    for node in cluster.node_ids() {
+        set_unknown += cluster
+            .metric(&node, "felix_broker_fence_set_unknown_total")
+            .await
+            .expect("scrape")
+            .unwrap_or(0.0);
+    }
+    assert!(
+        set_unknown > 0.0,
+        "no restarted leader reported its set before unknown"
+    );
     cluster.shutdown().await;
 }
 
 /// **A shard whose leader learns it only from a snapshot serves** (#1872).
 /// The leader is down when the shard is first assigned to it, so its watch
-/// takes the assignment from the snapshot it starts with and never sees that
-/// nothing came before it. Placement names it again one generation up on its
-/// refusal, and it opens there, still the leader.
+/// takes the assignment from the snapshot it starts with. The snapshot marks
+/// the item as the shard's first assignment, so the leader knows nothing came
+/// before it and opens at that generation.
 #[serial]
 #[tokio::test]
 async fn a_shard_learned_only_from_a_snapshot_serves() {
@@ -423,6 +439,14 @@ async fn a_shard_learned_only_from_a_snapshot_serves() {
         .find(|a| a.key.stream == LATER)
         .expect("still assigned");
     assert_eq!(now.leader, leader, "placed elsewhere: {now:?}");
-    assert!(now.generation > first.generation, "{now:?} after {first:?}");
+    assert_eq!(
+        now.generation, first.generation,
+        "opened by a rename, not on the snapshot's mark: {now:?} after {first:?}"
+    );
+    let renamed = cluster
+        .metric(&leader, "felix_broker_fence_set_unknown_total")
+        .await
+        .expect("scrape");
+    assert_eq!(renamed, None, "the leader asked for a rename");
     cluster.shutdown().await;
 }

@@ -684,6 +684,7 @@ async fn open_fenced(
                 why = %why,
                 "the set this generation leaves is not known here; reporting it refused",
             );
+            metrics::record_fence_set_unknown();
             false
         }
         Outcome::Refused {

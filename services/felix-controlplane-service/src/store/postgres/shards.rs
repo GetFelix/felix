@@ -551,6 +551,34 @@ pub(super) async fn shard_assignment_snapshot(
     Ok(Snapshot { items, next_seq })
 }
 
+pub(super) async fn first_shard_assignments(
+    store: &PostgresStore,
+) -> StoreResult<Vec<(ShardKey, u64, u64)>> {
+    let rows = sqlx::query_as::<_, (String, String, String, i32, String, i64, i64)>(
+        r#"SELECT tenant_id, namespace, stream, shard, kind,
+                  COALESCE((payload->>'incarnation')::bigint, 0),
+                  (payload->>'generation')::bigint
+               FROM shard_assignment_changes
+               WHERE op = 'assigned' AND payload IS NOT NULL"#,
+    )
+    .fetch_all(&store.pool)
+    .await?;
+    rows.into_iter()
+        .map(
+            |(tenant_id, namespace, stream, shard, kind, incarnation, generation)| {
+                let key = ShardKey {
+                    tenant_id,
+                    namespace,
+                    stream,
+                    shard: shard as u32,
+                    kind: parse_shard_kind(&kind)?,
+                };
+                Ok((key, incarnation as u64, generation as u64))
+            },
+        )
+        .collect()
+}
+
 pub(super) async fn shard_assignment_changes(
     store: &PostgresStore,
     since: u64,

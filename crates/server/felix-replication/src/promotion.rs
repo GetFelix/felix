@@ -104,10 +104,12 @@ pub enum Outcome {
         took: Vec<String>,
     },
     /// Not at this generation: under `joint_fence` the set it leaves is not
-    /// known here, as for a shard this broker learned from a snapshot. The
-    /// shard stays closed, and this broker reports the generation refused so
-    /// the control plane names it again one up, where the set before is the
-    /// one it is named on now (#1872).
+    /// known here, though this log keeps the generation's own set, as after
+    /// a restart at a generation opened before the feature was on. The shard
+    /// stays closed, and this broker reports the generation refused so the
+    /// control plane names it again one up, where the set before is the one
+    /// it is named on now (#1872). With no kept set the fence stays
+    /// [`Self::Pending`] instead.
     SetUnknown { why: String },
     /// Not yet: no majority answered, or the catch-up did not finish. The
     /// shard stays closed and the next pass tries again.

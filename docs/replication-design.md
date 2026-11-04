@@ -4176,19 +4176,24 @@ Once it is finalized on a broker that offers `ELECTION`:
   the set from the assignment its watch saw at that generation,
   from the set the leader before shipped with at it, or from what this
   leader kept beside its own set. When none of those knows it, the fence
-  does not fence the new set alone. That happens when the watch learned the
-  shard from a snapshot and the log keeps no set from the generation before:
-  a new shard whose first assignment reached the broker in a snapshot, or a
-  leader restarted at a generation it opened before `joint_fence` was on.
-  When the log keeps no set at all, or keeps this generation's own set, the
-  broker reports the generation refused, naming no node, and placement names
-  it again one generation up on the same set (`set_unknown`). The set that
-  generation leaves is the one the broker is named on now, which its watch
-  sees change and its log may keep, so the fence there can open. A log that
-  keeps an older set than the one before is a leader that skipped a
-  generation it never opened: renaming would leave that generation's set
-  unfenced, so its fence stays pending. Only a shard's first assignment,
-  seen by the watch as one on a log that keeps no set, has nothing to leave.
+  does not fence the new set alone. What it does depends on what the log
+  keeps, and it acts only on evidence that no earlier set can still hold
+  acknowledged records:
+  - The log keeps this generation's own set: the broker fenced or followed
+    here at this generation, before `joint_fence` was on (a leader
+    restarted after the finalize). It reports the generation refused,
+    naming no node, and placement names it again one generation up on the
+    same set (`set_unknown`). The set that generation leaves is the one the
+    log keeps, so the fence there can open.
+  - The log keeps an older set than the one before: the leader skipped a
+    generation it never opened, and a rename would leave that generation's
+    set unfenced. The fence stays pending.
+  - The log keeps no set: this may be a failover's new leader whose watch
+    started from a snapshot, while the old leader, cut off, still
+    acknowledges on a majority of the old set. The fence stays pending.
+    Only a shard's first assignment has nothing to leave: the watch sees
+    it as an `assigned` change, or the snapshot marks it
+    (`first_assignment`), and then the new set is fenced alone.
   A member of the old set that no route names any more is reached
   at the address the node catalog gives, and answers even though its own
   routing view leaves it out.

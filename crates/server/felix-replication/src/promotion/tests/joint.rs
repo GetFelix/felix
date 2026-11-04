@@ -639,12 +639,13 @@ async fn fence_pending(replicas: &Replicas, leader: &Arc<Broker>) -> Outcome {
     .await
 }
 
-/// **A set before that is not known keeps the shard closed, and says so.**
-/// Neither the watch nor the leader's log knows the set at generation 4, so
-/// the fence does not fall back to the new set alone: it ends as
-/// `SetUnknown`, which the driver reports so the control plane names the
-/// leader a generation up (#1872). A first assignment, with nothing before
-/// it, fences the new set.
+/// **A leader with no kept set and no first-assignment mark waits.** The
+/// leader at generation 4 shipped `a`; this broker holds it but no set file,
+/// and its watch did not see the step to generation 5. The set at 4 may
+/// still be acknowledging behind a partition, so the fence neither fences
+/// the new set alone nor asks for a rename, which would leave the set at 4
+/// unfenced: it stays `Pending` (#1872). A first assignment, which the watch
+/// or a snapshot marks, has nothing before it and fences the new set.
 #[tokio::test]
 async fn an_unknown_set_before_keeps_the_fence_pending() {
     let replicas = replicas_with(&["broker-x", "broker-z"]);
@@ -652,8 +653,8 @@ async fn an_unknown_set_before_keeps_the_fence_pending() {
 
     let outcome = fence_after(&replicas, &leader, true, None).await;
 
-    let Outcome::SetUnknown { why } = &outcome else {
-        panic!("fenced the new set alone, or waits unreported: {outcome:?}");
+    let Outcome::Pending { why, .. } = &outcome else {
+        panic!("fenced the new set alone, or asked for a rename on no evidence: {outcome:?}");
     };
     assert!(why.contains("is not known here"), "{why}");
 
@@ -922,11 +923,12 @@ async fn a_log_set_naming_another_copy_is_fenced_beside_the_one_before() {
 }
 
 /// **Only a set the broker could not have learned asks for a new
-/// generation** (#1872). With no kept set, or this generation's own, nothing
-/// here can know the set before, and a rename skips nothing this broker
-/// opened. A log keeping an older set than the one before belongs to a leader
-/// that never opened the generation in between: a rename would leave that
-/// generation's set unfenced, so the fence only waits.
+/// generation** (#1872). A log keeping this generation's own set was fenced
+/// or followed here at it, so a rename leaves a set already fenced. A log
+/// keeping an older set belongs to a leader that never opened the generation
+/// in between, and a log keeping none may be a failover's new leader whose
+/// set before still acknowledges: a rename would leave that set unfenced, so
+/// both only wait.
 #[test]
 fn only_a_set_this_broker_could_not_know_is_unknown() {
     use crate::promotion::joint::NoSetBefore;
@@ -941,7 +943,7 @@ fn only_a_set_this_broker_could_not_know_is_unknown() {
 
     assert_eq!(
         crate::promotion::set_before(None, &route, None),
-        Err(NoSetBefore::Unknown(PROMOTED))
+        Err(NoSetBefore::Unseen(PROMOTED))
     );
     assert_eq!(
         crate::promotion::set_before(Some(&kept_at(PROMOTED)), &route, None),
