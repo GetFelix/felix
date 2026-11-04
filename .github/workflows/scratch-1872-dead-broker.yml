@@ -1,0 +1,37 @@
+name: scratch 1872 dead_broker loop
+on:
+  push:
+    branches: ["scratch/1872-dead-broker"]
+jobs:
+  loop:
+    strategy:
+      fail-fast: false
+      matrix:
+        ref: ["32e9b5505e5d04aa40f5290506cd6428f520cf39", "9ea6f4e20699ff168761ae2df5377c2c3eaead74"]
+    runs-on: ${{ vars.FELIX_LARGE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ matrix.ref }}
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.99.1"
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Loop
+        env:
+          FELIX_TEST_TIMEOUT_SCALE: "3"
+        shell: bash
+        run: |
+          cargo build -p felix-broker-service --bin felix-broker
+          cargo test -p felix-cluster --test caches --no-run
+          pass=0; fail=0
+          for i in $(seq 1 30); do
+            if cargo test -p felix-cluster --test caches dead_broker:: > out.log 2>&1; then
+              pass=$((pass+1))
+            else
+              fail=$((fail+1)); echo "RUN $i FAILED"; grep -E "panicked|FAILED|failures:" out.log | head -10
+            fi
+          done
+          echo "RESULT ref=${{ matrix.ref }} pass=$pass fail=$fail"
