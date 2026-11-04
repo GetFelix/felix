@@ -1035,6 +1035,7 @@ Typed, because they need different responses:
 | `FencedEpoch` | the sender named an epoch older than the responder's | do not retry; it is no longer the leader |
 | `UnsupportedKind` | the responder predates the kind that was sent | do not retry with that kind; a forwarder falls back to the legacy forward kind once |
 | `StaleSet` | the responder counts a newer replica set than the sender's fence or batch named; its generation is in `expected_offset`. Sent only to a peer that offered `ELECTION` | do not retry; stop leading or standing at that set |
+| `LeadershipLost` (13) | the owner wrote a `SequencedForwardPublish` and stopped leading the shard before a majority held it. Sent only in answer to that kind | the batch may be in the log: report it indeterminate; the MQTT listener sends it again under the same sequence to whoever leads now |
 
 `ReplicateBootstrap` is kind 10, `ReplicateRebuild` kind 24,
 `ReplicateMarkedRecords` kind 25, `ReplicateCommittedRecords` kind 26,
@@ -1105,7 +1106,11 @@ the same producer id and sequence, to whichever broker owns the shard by then,
 this one included. It keeps trying within the forward budget
 (`BrokerConfig::forward_budget`). Once an answer was lost, only a later success
 settles the write. A refusal from a later send says nothing about the first, so
-the device is told neither.
+the device is told neither. An owner deposed while it waited for the majority answers
+a sequenced forward `LeadershipLost`, which the listener treats like a lost
+answer. A token the owner could not check, as opposed to one it refused, is
+answered `Unavailable` rather than `Unauthorized` on this kind, so the device is
+not told its token was rejected.
 
 Retries are bounded by an attempt budget, so a shard being reassigned converges
 or fails explicitly instead of chasing `NotLeader` around the cluster. A redirect

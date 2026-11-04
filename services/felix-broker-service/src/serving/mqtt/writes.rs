@@ -268,13 +268,18 @@ impl<P: PeerRequester + Send + Sync + 'static> BrokerWrites<P> {
                 offsets: written.outcome.offsets,
             };
             let shard = self.ingress.as_ref().map(|_| key);
+            // A re-send late in the budget does not wait past it.
+            let wait = deadline.map_or(self.quorum_timeout, |deadline| {
+                self.quorum_timeout
+                    .min(deadline.saturating_duration_since(Instant::now()))
+            });
             let quorum = felix_replication::quorum::await_quorum(
                 handle,
                 shard,
                 &outcome,
                 self.marks.as_deref(),
                 ingress,
-                self.quorum_timeout,
+                wait,
             )
             .await;
             if let Err(err) = quorum {

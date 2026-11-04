@@ -828,7 +828,21 @@ async fn a_forwarded_quorum_publish_is_acknowledged_once_the_majority_holds_it()
 /// "unknown" even once the mark passes the record.
 #[tokio::test]
 async fn a_quorum_ack_is_withheld_when_the_lease_lapses_while_it_waits() {
+    let err = lease_lapses_while_waiting(forwarded()).await;
+    assert_eq!(err.code, ErrorCode::StorageFailed);
+}
+
+/// A sequenced forward is told the leadership moved, which its sender reads
+/// as an unknown outcome and sends again to whoever leads now.
+#[tokio::test]
+async fn a_sequenced_forward_deposed_while_it_waits_is_told_so() {
+    let err = lease_lapses_while_waiting(sequenced(b"reading")).await;
+    assert_eq!(err.code, ErrorCode::LeadershipLost);
+}
+
+async fn lease_lapses_while_waiting(publish: ForwardPublish) -> ForwardPublishError {
     let (broker, _dir) = broker_with(ConsistencyLevel::Quorum).await;
+    broker.record_headers_when(|| true);
     let shard = crate::shards::ShardKey {
         tenant_id: TENANT.to_string(),
         namespace: NAMESPACE.to_string(),
@@ -851,7 +865,7 @@ async fn a_quorum_ack_is_withheld_when_the_lease_lapses_while_it_waits() {
 
     let waiting = tokio::spawn({
         let handler = Arc::clone(&handler);
-        async move { handler.apply(forwarded()).await }
+        async move { handler.apply(publish).await }
     });
     for _ in 0..200 {
         if broker
@@ -870,7 +884,8 @@ async fn a_quorum_ack_is_withheld_when_the_lease_lapses_while_it_waits() {
 
     match waiting.await.expect("task") {
         InternalMessage::ForwardPublishError(err) => {
-            assert!(err.detail.contains("lease"), "{}", err.detail)
+            assert!(err.detail.contains("lease"), "{}", err.detail);
+            err
         }
         other => panic!(
             "a quorum ack went out after the lease lapsed: {:?}",

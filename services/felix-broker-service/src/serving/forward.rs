@@ -282,6 +282,18 @@ pub async fn forward_publish(
                 last_code = Some(err.code);
                 legacy = true;
             }
+            // Written, then the owner was deposed before a majority held it:
+            // as unknown as a lost answer, and only a sequenced forward is
+            // answered with it.
+            Ok(InternalMessage::ForwardPublishError(err))
+                if err.code == ErrorCode::LeadershipLost =>
+            {
+                metrics::record_forward(metrics::OUTCOME_INDETERMINATE);
+                return Err(ForwardError::Indeterminate {
+                    node_id: target.node_id,
+                    detail: err.detail,
+                });
+            }
             Ok(InternalMessage::ForwardPublishError(err)) => {
                 last = format!("{:?}: {}", err.code, err.detail);
                 last_code = Some(err.code);

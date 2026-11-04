@@ -129,7 +129,17 @@ impl ForwardingHandler {
             .await
         {
             Ok(ctx) => ctx.publisher,
-            Err(detail) => {
+            // A sequenced forward's sender tells its device the answer
+            // outright, so a token that could not be checked right now is not
+            // reported as refused. Older senders get what they always got.
+            Err(Denied {
+                detail,
+                unchecked: true,
+            }) if publish.producer.is_some() => {
+                metrics::record_served(metrics::OUTCOME_REFUSED);
+                return error(correlation_id, ErrorCode::Unavailable, detail);
+            }
+            Err(Denied { detail, .. }) => {
                 metrics::record_served(metrics::OUTCOME_UNAUTHORIZED);
                 return error(correlation_id, ErrorCode::Unauthorized, detail);
             }
@@ -193,7 +203,19 @@ impl ForwardingHandler {
                 .await
                 {
                     metrics::record_served(metrics::OUTCOME_ERROR);
-                    return error(correlation_id, ErrorCode::StorageFailed, err.to_string());
+                    // A sequenced forward can be sent again to whoever leads
+                    // now, so it is told the leadership moved rather than that
+                    // the write failed.
+                    let deposed = matches!(
+                        err.downcast_ref::<felix_replication::quorum::QuorumError>(),
+                        Some(felix_replication::quorum::QuorumError::LeadershipLost { .. })
+                    );
+                    let code = if deposed && publish.producer.is_some() {
+                        ErrorCode::LeadershipLost
+                    } else {
+                        ErrorCode::StorageFailed
+                    };
+                    return error(correlation_id, code, err.to_string());
                 }
                 metrics::record_served(metrics::OUTCOME_OK);
                 InternalMessage::ForwardPublishOk(ForwardPublishOk::new(
@@ -309,7 +331,7 @@ impl ForwardingHandler {
             .await
         {
             Ok(caller) => caller,
-            Err(detail) => {
+            Err(Denied { detail, .. }) => {
                 metrics::record_served(metrics::OUTCOME_UNAUTHORIZED);
                 return InternalMessage::ForwardCacheError(ForwardCacheError {
                     correlation_id,
@@ -597,23 +619,30 @@ impl ForwardingHandler {
         action: Action,
         resource: &str,
         allowed: impl FnOnce(&PermissionMatcher) -> bool,
-    ) -> Result<AuthContext, String> {
+    ) -> Result<AuthContext, Denied> {
         if credential.is_empty() {
-            return Err(
+            return Err(Denied::refused(
                 "forwarded with no credential: the forwarding broker predates credentialed \
                  forwards, or stripped it"
                     .to_string(),
-            );
+            ));
         }
         let ctx = self
             .auth
             .authenticate(tenant_id, credential)
             .await
-            .map_err(|err| format!("the publisher's credential was refused: {err}"))?;
+            .map_err(|err| Denied {
+                // Anything but a verdict on the token itself, such as the
+                // tenant's keys being unreachable.
+                unchecked: !(err.is::<felix_authz::AuthzError>()
+                    || err.is::<crate::serving::auth::CredentialRefused>()
+                    || err.is::<crate::serving::revocation::Revoked>()),
+                detail: format!("the publisher's credential was refused: {err}"),
+            })?;
         if ctx.tenant_id != tenant_id || !allowed(&ctx.matcher) {
-            return Err(format!(
+            return Err(Denied::refused(format!(
                 "the publisher's credential does not allow {action:?} on {resource}"
-            ));
+            )));
         }
         Ok(ctx)
     }
@@ -897,6 +926,23 @@ impl PeerRequestHandler for ForwardingHandler {
                 ErrorCode::Malformed,
                 format!("{:?} is not a request", other.kind()),
             ),
+        }
+    }
+}
+
+/// Why a forwarded request's credential was not accepted. The detail never
+/// holds the token.
+struct Denied {
+    detail: String,
+    /// The token could not be checked, rather than being refused.
+    unchecked: bool,
+}
+
+impl Denied {
+    fn refused(detail: String) -> Self {
+        Self {
+            detail,
+            unchecked: false,
         }
     }
 }

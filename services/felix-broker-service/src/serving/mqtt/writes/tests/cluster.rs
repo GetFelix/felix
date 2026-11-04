@@ -39,6 +39,13 @@ fn ingress(leader: &str) -> Arc<IngressRouter> {
         "us-west-2",
         RegionRouter::new("us-west-2".to_string()),
     ));
+    let ingress = Arc::new(IngressRouter::new(router, Arc::default()));
+    show(&ingress, leader, GENERATION);
+    ingress
+}
+
+/// Publish a view in which `leader` leads the shard at `generation`.
+fn show(ingress: &IngressRouter, leader: &str, generation: u64) {
     let nodes: HashMap<String, NodeRef> = [(LOCAL, 7001), (OWNER, 7002), ("broker-c", 7003)]
         .into_iter()
         .map(|(id, port)| {
@@ -60,7 +67,7 @@ fn ingress(leader: &str) -> Arc<IngressRouter> {
             key: shard(),
             leader: leader.to_string(),
             replicas: vec![follower.to_string()],
-            generation: GENERATION,
+            generation,
             state: "active".to_string(),
             successor: None,
             routing: Default::default(),
@@ -72,15 +79,13 @@ fn ingress(leader: &str) -> Arc<IngressRouter> {
     )]
     .into_iter()
     .collect();
-    let ingress = Arc::new(IngressRouter::new(router, Arc::default()));
     let servable: HashMap<ShardKey, u64> = if leader == LOCAL {
-        ingress.fence().open(&shard(), GENERATION);
-        [(shard(), GENERATION)].into_iter().collect()
+        ingress.fence().open(&shard(), generation);
+        [(shard(), generation)].into_iter().collect()
     } else {
         HashMap::new()
     };
     ingress.publish(routing_table_from(&assignments, &nodes), &nodes, servable);
-    ingress
 }
 
 /// An owner that answers forwards from a script and keeps what it was sent.
@@ -363,4 +368,62 @@ async fn a_shard_not_open_here_is_refused_as_not_owner() {
         Err(WriteError::Refused(Refusal::NotOwner))
     );
     assert!(stored(&broker).await.is_empty());
+}
+
+/// An owner deposed while it waited for the majority says so, and the batch
+/// is sent again like one whose answer was lost.
+#[tokio::test]
+async fn a_forward_whose_owner_was_deposed_is_sent_again() {
+    let owner = ScriptedOwner::new([refused(ErrorCode::LeadershipLost), ok()]);
+    let (writes, _broker, _dir) = forwarding(&owner, Duration::from_secs(2)).await;
+
+    writes
+        .write(batch(0, 41, &["plant/a"]))
+        .await
+        .expect("answered by the re-send");
+    let sent = owner.sent();
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[0].1, sent[1].1);
+}
+
+/// **This broker deposed while it waited for the majority sends the batch
+/// again to the new owner**, under the same sequence, instead of closing the
+/// device's connection.
+#[tokio::test]
+async fn a_local_write_whose_leadership_moved_is_sent_to_the_new_owner() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let broker = broker_with(true, ConsistencyLevel::Quorum, dir.path()).await;
+    broker.record_headers_when(|| true);
+    let marks = Arc::new(QuorumMarks::new());
+    marks.publish(&shard(), GENERATION, 0);
+    let ingress = ingress(LOCAL);
+    let owner = ScriptedOwner::new([ok()]);
+    let writes = BrokerWrites::new(
+        Arc::clone(&broker),
+        Some(Arc::clone(&ingress)),
+        Some(marks),
+        Duration::from_secs(1),
+    )
+    .with_forwarding(Arc::clone(&owner), Duration::from_secs(3));
+
+    let moved = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        show(&ingress, OWNER, GENERATION + 1);
+    });
+    writes
+        .write(batch(0, 41, &["plant/a"]))
+        .await
+        .expect("answered by the new owner");
+    moved.await.expect("view");
+
+    assert_eq!(stored(&broker).await.len(), 1, "written here first");
+    let sent = owner.sent();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(
+        sent[0].1.producer,
+        Some(ForwardProducer {
+            producer_id: 41,
+            sequence: 0
+        })
+    );
 }

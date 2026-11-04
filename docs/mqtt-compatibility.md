@@ -204,8 +204,9 @@ connection publishes under its own producer id, and every batch carries the next
 sequence for its shard.
 
 **If the broker cannot tell.** If a majority does not answer in time, the write
-fails after the batch took its offsets, or a forward stays unanswered past the
-budget, the message may or may not be
+fails after the batch took its offsets, or the owner moves or a forward stays
+unanswered and sending it again does not settle it within the budget, the
+message may or may not be
 in the stream. The broker then sends neither a `PUBACK` nor an error reason: a
 5.0 error reason means "not delivered", which may be false. It closes the
 connection. Sessions do not outlive the connection yet, and with a clean
@@ -259,7 +260,7 @@ dropped silently: each is counted in `felix_mqtt_refused_total{reason}`.
 | Written and acknowledged | `PUBACK`, reason 0 | Nothing | `PUBACK` (QoS 0: nothing) |
 | Topic under no mount (`unmounted`) | `PUBACK` 0x90 (topic name invalid) | `DISCONNECT` 0x90 | Closes |
 | Principal lacks `stream.publish` on the mounted stream (`not_authorized`) | `PUBACK` 0x87 | `DISCONNECT` 0x87 | Closes |
-| No broker could take it: the owner cannot be reached or keeps moving, predates forwarded MQTT publishes, or the connection is anonymous and another broker owns the shard (`not_owner`) | `PUBACK` 0x83, reason string `not_owner` | Dropped, counted | Closes (QoS 0: dropped, counted) |
+| Not written here and not forwarded: the owner cannot be reached, keeps moving or is busy, predates forwarded MQTT publishes, has not opened record headers yet, or the connection is anonymous and another broker owns the shard (`not_owner`) | `PUBACK` 0x83, reason string `not_owner` | Dropped, counted | Closes (QoS 0: dropped, counted) |
 | The owner refused the connection's token on a forward: revoked, expired, or no `stream.publish` there (`not_authorized`) | `PUBACK` 0x87 | Dropped, counted | Closes (QoS 0: dropped, counted) |
 | Broker does not accept record headers (`record_headers_disabled`) | `PUBACK` 0x83, reason string `record_headers_disabled` | Dropped, counted | Closes (QoS 0: dropped, counted) |
 | Mounted stream is gone or not durable (`stream_unavailable`) | `PUBACK` 0x80, reason string `stream_unavailable` | Dropped, counted | Closes (QoS 0: dropped, counted) |
