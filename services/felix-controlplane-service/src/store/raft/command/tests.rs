@@ -255,3 +255,15 @@ fn restamping_preserves_the_request_id() {
     let restamped = restamp(&stamped, 222).expect("a heartbeat carries a clock");
     assert_eq!(request_id_of(&restamped).as_deref(), Some("rid-9"));
 }
+
+/// **`joint_fence` is finalized only where a refusal report is kept.** A
+/// leader whose fence cannot learn the set it leaves is renamed on its
+/// refusal, which members before level 25 drop, so a group below it would
+/// leave that shard waiting for good (#1872).
+#[test]
+fn joint_fence_waits_for_the_level_that_keeps_refusals() {
+    let finalize = MetaCommand::FinalizeFleetFeature {
+        feature: felix_common::fleet::JOINT_FENCE.name().to_string(),
+    };
+    assert_eq!(finalize.version(), 25);
+}

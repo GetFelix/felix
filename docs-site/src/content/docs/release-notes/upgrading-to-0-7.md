@@ -138,7 +138,7 @@ Later control-plane changes are on `main`:
   (`member_storage_ids`): Postgres migration `0039`, Raft metadata level 22.
 - A copy whose storage was replaced is a learner until it is re-admitted, and
   a leader reports where its generation started (`holds_start`): migration
-  `0040`, level 23. Finalizing `joint_fence` needs that level, and
+  `0040`, level 23. Finalizing `joint_fence` needs level 25 (below), and
   `generation_start`, `stream_incarnations` and `cache_incarnations`
   finalized first.
 - A stream can carry an MQTT mount: migration `0041`, level 24.
@@ -149,8 +149,9 @@ Later control-plane changes are on `main`:
   set its generation replaced reports that generation refused, and placement
   names it again one generation up. This happens after a broker restart at a
   generation that started before the finalize, and for a new shard a broker
-  first sees in a snapshot. No migration or metadata level: the report uses
-  the existing `refused` field with no node named. Rolling restarts after the
+  first sees in a snapshot. The report uses the `refused` field above with no
+  node named, so it needs migration `0042` and level 25, and finalizing
+  `joint_fence` under Raft waits for level 25. Rolling restarts after the
   finalize need no extra step.
 
 In short, Postgres runs migrations `0037` to `0042` on start (`0039` to

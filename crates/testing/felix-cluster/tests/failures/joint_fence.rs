@@ -381,11 +381,11 @@ async fn a_shard_learned_only_from_a_snapshot_serves() {
         !assignments.iter().any(|a| a.key.stream == LATER),
         "placed before the test assigned it: {assignments:?}"
     );
-    let template = assignments
+    let mut key = assignments
         .into_iter()
         .find(|a| a.key.stream == STREAM)
-        .expect("the startup stream's assignment");
-    let mut key = template.key.clone();
+        .expect("the startup stream's assignment")
+        .key;
     key.stream = LATER.to_string();
     let first = store
         .put_shard_assignment(felix_controlplane_service::model::ShardAssignment {
@@ -394,6 +394,8 @@ async fn a_shard_learned_only_from_a_snapshot_serves() {
             replicas: replicas.clone(),
             generation: 0,
             state: felix_controlplane_service::model::ShardState::Assigning,
+            // The store stamps the new stream's own.
+            incarnation: 0,
             successor: None,
             joining: None,
             move_started_at_millis: None,
@@ -402,7 +404,6 @@ async fn a_shard_learned_only_from_a_snapshot_serves() {
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
-            ..template
         })
         .await
         .expect("assign the new shard");

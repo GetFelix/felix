@@ -218,7 +218,7 @@ leaders leave that copy's answers out of their marks. None of these names is
 a feature an operator finalizes: the finalize endpoint, and its dry run,
 refuse them by name. Finalizing `joint_fence` is refused while a serving
 broker lacks `peer_election`, `start_holders` or `non_voting`, and until
-every Raft member is at metadata level 23 (see "Turning on joint fences"
+every Raft member is at metadata level 25 (see "Turning on joint fences"
 below). These are checked only when the operator finalizes; after that a
 broker is admitted on the enabled features alone. That is enough because no
 build reports `joint_fence` without the three markers; the one way around
@@ -929,7 +929,9 @@ checks the first four itself.
    after the finalize could open its first shard. A stream or cache created
    before the incarnations were finalized carries incarnation 0, so place
    all of its shards before finalizing `joint_fence`.
-4. Under Raft, every member is at metadata level 23.
+4. Under Raft, every member is at metadata level 25: 23 for learners and
+   start holders, 25 for the refusal report that renames a shard whose fence
+   cannot learn the set it leaves.
 5. On Postgres, every control-plane instance runs a release with learners
    (migration 0040) before the finalize. Nothing checks this: an older
    instance that writes an assignment leaves its learners unmarked for that
@@ -950,13 +952,6 @@ again, the leader and the re-admitted copy acknowledge writes. The failover
 already names the copy under its new storage id, so this test does not take
 the path that writes the same set again at the next generation; unit tests
 cover that one.
-
-Finalizing `joint_fence` on a running fleet needs no restart, and a rolling
-restart after it is safe: a leader that comes back at a generation it opened
-before the finalize reports it refused, and placement names it again one
-generation up (see "When the leader cannot learn the set it leaves" below).
-`failures/joint_fence.rs` checks both that and a shard whose leader learns
-it only from a snapshot.
 
 States are `assigning` (placement decided, the leader has not confirmed),
 `active` (the leader is serving), and `draining` (the leader has been told to
@@ -1497,10 +1492,17 @@ finalized. Placement answers the same way (`set_unknown`): the same leader
 and set at the next generation. The set that generation leaves is the one
 the broker is named on now, so its fence can open there. Nothing in the
 control plane's state is new for this: the empty name is stored like any
-other.
+other. Under Raft the report is kept only from metadata level 25, which is
+why finalizing `joint_fence` needs that level.
 
-Without the report the shard waits for the pending-set timeout or a lease
-lapse, as before. Under Raft the field is stored from metadata level 25 and
+So a rolling restart after finalizing `joint_fence` is safe: a leader that
+comes back at a generation it opened before the finalize is named again one
+generation up. `failures/joint_fence.rs` checks that, and a shard whose
+leader learns it only from a snapshot.
+
+Without a refusal report for a promise, the shard waits for the pending-set
+timeout or a lease lapse, as before. Without one for an unknown set, it
+waits until something else writes the assignment. Under Raft the field is stored from metadata level 25 and
 dropped below it; under Postgres it is migration 0042 (`refused_generation`,
 `refused_to`), with `refused_at` as the marker that keeps what a member that
 predates the columns leaves behind from reading as a refusal.

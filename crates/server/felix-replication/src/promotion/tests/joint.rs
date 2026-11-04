@@ -920,3 +920,35 @@ async fn a_log_set_naming_another_copy_is_fenced_beside_the_one_before() {
     let outcome = fence_after(&replicas, &leader, true, Some(prior)).await;
     assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
 }
+
+/// **Only a set the broker could not have learned asks for a new
+/// generation** (#1872). With no kept set, or this generation's own, nothing
+/// here can know the set before, and a rename skips nothing this broker
+/// opened. A log keeping an older set than the one before belongs to a leader
+/// that never opened the generation in between: a rename would leave that
+/// generation's set unfenced, so the fence only waits.
+#[test]
+fn only_a_set_this_broker_could_not_know_is_unknown() {
+    use crate::promotion::joint::NoSetBefore;
+    let route = swapped();
+    let kept_at = |generation: u64| ReplicaSet {
+        current: Membership {
+            generation,
+            ..crate::replica_set::kept(&route, None).current
+        },
+        leaving: None,
+    };
+
+    assert_eq!(
+        crate::promotion::set_before(None, &route, None),
+        Err(NoSetBefore::Unknown(PROMOTED))
+    );
+    assert_eq!(
+        crate::promotion::set_before(Some(&kept_at(PROMOTED)), &route, None),
+        Err(NoSetBefore::Unknown(PROMOTED))
+    );
+    assert_eq!(
+        crate::promotion::set_before(Some(&kept_at(PROMOTED - 2)), &route, None),
+        Err(NoSetBefore::Skipped(PROMOTED))
+    );
+}

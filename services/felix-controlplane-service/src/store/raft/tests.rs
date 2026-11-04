@@ -1712,7 +1712,7 @@ async fn learners_wait_for_every_member() {
     let refused = store.finalize_fleet_feature(joint).await;
     assert!(
         matches!(&refused, Err(StoreError::Conflict(_))),
-        "joint_fence was finalized past a member below level 23: {refused:?}"
+        "joint_fence was finalized past a member below level 25: {refused:?}"
     );
 
     version.store(
