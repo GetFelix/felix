@@ -40,12 +40,12 @@ async fn the_reported_markers_cannot_be_finalized_by_name() {
         store
             .register_node(with_features(
                 node(id, 7600 + i as u16),
-                &["peer_election", "start_holders"],
+                &["peer_election", "start_holders", "non_voting"],
             ))
             .await
             .expect("node");
     }
-    for marker in ["start_holders", "peer_election"] {
+    for marker in ["start_holders", "peer_election", "non_voting"] {
         for dry_run in [true, false] {
             assert_eq!(
                 finalize(store.clone(), &keys, marker, dry_run).await,

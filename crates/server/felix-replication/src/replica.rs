@@ -1769,9 +1769,9 @@ impl ReplicaHandler {
         // so a copy with no promise, or one not yet re-admitted, cannot take
         // an unconfirmed leader on the strength of an assignment it has not
         // seen (#1331).
-        // Unread, the gate may be on: refuse as if it were. Off, or on a
-        // build that does not mark wiped copies, the read answers as before.
-        let elections = self.non_voting_gate() != Some(false);
+        // Unread, the gate may be on: refuse as if it were. Off, the read
+        // answers as before.
+        let elections = self.joint_gate() != Some(false);
         let Some(confirmed) = self.confirmed.as_ref() else {
             return elections.then(|| unbacked(correlation_id, key, generation));
         };
@@ -1854,12 +1854,6 @@ impl ReplicaHandler {
         self.joint_gate() == Some(true)
     }
 
-    /// [`Self::joint_gate`] for marking a wiped copy a learner, which also
-    /// needs this build to allow it ([`QuorumMarks::non_voting_ready`]).
-    fn non_voting_gate(&self) -> Option<bool> {
-        non_voting_gate(self.fleet.as_deref())
-    }
-
     /// Whether the fleet has `joint_fence`, or `None` while this broker has
     /// not yet taken a registration's answer. The peer listener is bound
     /// before registration, so the gate can be unread while requests arrive.
@@ -1930,17 +1924,8 @@ impl ReplicaHandler {
     }
 }
 
-/// The log a group or counter log keeps its promise in: the shard's own.
-/// See [`ReplicaHandler::non_voting_gate`].
-pub(crate) fn non_voting_gate(fleet: Option<&crate::quorum::QuorumMarks>) -> Option<bool> {
-    match fleet {
-        Some(marks) if marks.non_voting_ready() => joint_gate(Some(marks)),
-        _ => Some(false),
-    }
-}
-
 /// See [`ReplicaHandler::joint_gate`].
-fn joint_gate(fleet: Option<&crate::quorum::QuorumMarks>) -> Option<bool> {
+pub(crate) fn joint_gate(fleet: Option<&crate::quorum::QuorumMarks>) -> Option<bool> {
     match fleet {
         Some(marks) => marks.fleet_decides(felix_common::fleet::JOINT_FENCE),
         None => Some(false),

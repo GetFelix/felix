@@ -101,15 +101,20 @@ pub(crate) fn placed(set: &felix_router::PlacedSet, generation: u64) -> Membersh
     }
 }
 
-/// Whether `route` names `node` under storage id `own`. Allocates nothing.
-pub(crate) fn names_storage(route: &Route, node: &str, own: StorageId) -> bool {
+/// The storage id `route` names for `node`, if it names one.
+pub(crate) fn named_storage(route: &Route, node: &str) -> Option<StorageId> {
     named_ids(
         route.member_storage_ids.as_deref(),
         route.fence_storage_ids.as_deref(),
     )
     .and_then(|ids| ids.get(node))
     .and_then(|hex| from_hex(hex))
-    .is_some_and(|named| StorageId::from_bytes(named) == own)
+    .map(StorageId::from_bytes)
+}
+
+/// Whether `route` names `node` under storage id `own`. Allocates nothing.
+pub(crate) fn names_storage(route: &Route, node: &str, own: StorageId) -> bool {
+    named_storage(route, node) == Some(own)
 }
 
 /// The ids that name the set's members: the registered ones, or the failover's
