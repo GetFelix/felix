@@ -2593,7 +2593,7 @@ impl<R: PeerRequester> PeerRequester for Witness<'_, R> {
 /// A cursor's `confirmed` is what the copy it was learned from holds. Once
 /// the leader has reason to think that copy may be gone, counting it would
 /// let a record held only by the leader be acknowledged.
-fn vouched_only(
+pub(super) fn vouched_only(
     followers: &[FollowerCursor],
     generation: u64,
     unconfirmed: &HashSet<String>,

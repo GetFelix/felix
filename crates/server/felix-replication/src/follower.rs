@@ -107,13 +107,16 @@ impl FollowerCursor {
     /// What this follower's last checked answer vouched for at `generation`,
     /// while the cursor still describes the copy and generation that answer
     /// came from. A copy the leader has seen change since, even only its
-    /// incarnation, has to answer again. A halted follower or a learner is
-    /// still reported holding what it vouched for; the marks leave it out
-    /// ([`Self::counts`]).
+    /// incarnation, has to answer again. A halted follower vouches for
+    /// nothing: it is no longer shipped to or pinged, so it must not be named
+    /// holding the start. A learner is still reported holding what it vouched
+    /// for; the marks leave it out ([`Self::counts`]).
     pub(crate) fn vouched_at(&self, generation: u64) -> u64 {
         match self.vouched {
             Some(vouched)
-                if vouched.identity == self.identity() && vouched.generation == generation =>
+                if self.halted.is_none()
+                    && vouched.identity == self.identity()
+                    && vouched.generation == generation =>
             {
                 vouched.offset.min(self.confirmed)
             }
