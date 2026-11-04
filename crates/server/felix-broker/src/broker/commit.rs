@@ -102,7 +102,14 @@ impl Broker {
         // another commit claim between its check and its own claim.
         let (shared, exclusive);
         if checks.is_empty() {
-            shared = Some(handle.state.commit_gate.read().await);
+            // `try_read` first: an uncontended `read().await` still spends
+            // the task's coop budget and now and then yields, which shows up
+            // in the tail. It fails while a checked commit waits, so that
+            // one is not starved.
+            shared = Some(match handle.state.commit_gate.try_read() {
+                Ok(guard) => guard,
+                Err(_) => handle.state.commit_gate.read().await,
+            });
             exclusive = None;
         } else {
             shared = None;
