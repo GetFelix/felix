@@ -220,6 +220,10 @@ pub enum Kind {
     /// block. An older owner refuses it rather than writing the records
     /// without their blocks.
     HeaderedForwardPublish = 51,
+    /// `HeaderedForwardPublish` followed by the producer id and batch
+    /// sequence it is applied under. An older owner refuses it rather than
+    /// writing the batch without the sequence check.
+    SequencedForwardPublish = 52,
 }
 
 impl Kind {
@@ -277,6 +281,7 @@ impl Kind {
             49 => Ok(Kind::ReplicateHeaderedRecords),
             50 => Ok(Kind::ReplicateHeaderedFetch),
             51 => Ok(Kind::HeaderedForwardPublish),
+            52 => Ok(Kind::SequencedForwardPublish),
             other => Err(Error::UnsupportedInternalKind(other)),
         }
     }

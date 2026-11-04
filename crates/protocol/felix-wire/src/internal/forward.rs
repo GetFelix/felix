@@ -35,6 +35,22 @@ pub struct ForwardPublish {
     ///
     /// [`PeerCapabilities::RECORD_HEADERS`]: super::PeerCapabilities::RECORD_HEADERS
     pub headers: Option<Vec<Option<Bytes>>>,
+    /// The producer id and batch sequence to apply the batch under, so a
+    /// re-send after a lost answer is recognised as the batch already held
+    /// rather than written again. `Some` travels as `SequencedForwardPublish`,
+    /// sent only to an owner that advertised
+    /// [`PeerCapabilities::SEQUENCED_FORWARDS`]; it carries header blocks and
+    /// a credential, as that kind extends the headered one.
+    ///
+    /// [`PeerCapabilities::SEQUENCED_FORWARDS`]: super::PeerCapabilities::SEQUENCED_FORWARDS
+    pub producer: Option<ForwardProducer>,
+}
+
+/// Where a forwarded batch sits in its producer's sequence on the shard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ForwardProducer {
+    pub producer_id: u64,
+    pub sequence: u64,
 }
 
 /// How the origin publisher asked for its write to be acknowledged.

@@ -115,6 +115,13 @@ impl PeerCapabilities {
     /// [`ReplicateRecords::headers`]: super::ReplicateRecords::headers
     /// [`ForwardPublish::headers`]: super::ForwardPublish::headers
     pub const RECORD_HEADERS: Self = Self(1 << 17);
+    /// Reads a forwarded publish that names its producer id and batch
+    /// sequence ([`ForwardPublish::producer`]) and applies it as that
+    /// producer's idempotent batch, so a re-sent batch already in the log is
+    /// answered with its offsets instead of written twice.
+    ///
+    /// [`ForwardPublish::producer`]: super::ForwardPublish::producer
+    pub const SEQUENCED_FORWARDS: Self = Self(1 << 18);
 
     pub fn from_bits(bits: u64) -> Self {
         Self(bits)

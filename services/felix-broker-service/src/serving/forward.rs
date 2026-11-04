@@ -35,7 +35,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use felix_wire::internal::{
     AckMode, CacheOpKind, ErrorCode, ForwardCacheCondition, ForwardCacheOk, ForwardCacheOp,
-    ForwardLease, ForwardPublish, InternalMessage, PeerCapabilities, ShardRef,
+    ForwardLease, ForwardProducer, ForwardPublish, InternalMessage, PeerCapabilities, ShardRef,
 };
 
 use felix_replication::peer::PeerRequester;
@@ -98,6 +98,12 @@ pub enum ForwardError {
 /// travel only to an owner that offers `RECORD_HEADERS`; the pool refuses to
 /// send them to one that does not, and the batch is then not forwarded.
 ///
+/// `producer` names the producer id and batch sequence the owner applies the
+/// batch under, so that the caller may send it again after an `Indeterminate`
+/// answer: an owner holding it answers with its offsets and writes nothing.
+/// It travels only to an owner that offers `SEQUENCED_FORWARDS`, and needs
+/// `headers`.
+///
 /// `budget` bounds the whole loop, retries included. Without it the attempt
 /// budget is the only bound, and it is far larger than the client's patience:
 /// the waiter gives up first and replaces whatever this concluded with
@@ -113,6 +119,7 @@ pub async fn forward_publish(
     credential: &str,
     payloads: Vec<Bytes>,
     headers: Option<Vec<Option<Bytes>>>,
+    producer: Option<ForwardProducer>,
     budget: Duration,
 ) -> Result<Option<(u64, u64)>, ForwardError> {
     let deadline = Instant::now() + budget;
@@ -192,6 +199,7 @@ pub async fn forward_publish(
                 credential.to_string()
             },
             headers: headers.clone(),
+            producer,
         });
 
         let answer = tokio::time::timeout(
@@ -273,6 +281,18 @@ pub async fn forward_publish(
                 last = format!("{:?}: {}", err.code, err.detail);
                 last_code = Some(err.code);
                 legacy = true;
+            }
+            // Written, then the owner was deposed before a majority held it:
+            // as unknown as a lost answer, and only a sequenced forward is
+            // answered with it.
+            Ok(InternalMessage::ForwardPublishError(err))
+                if err.code == ErrorCode::LeadershipLost =>
+            {
+                metrics::record_forward(metrics::OUTCOME_INDETERMINATE);
+                return Err(ForwardError::Indeterminate {
+                    node_id: target.node_id,
+                    detail: err.detail,
+                });
             }
             Ok(InternalMessage::ForwardPublishError(err)) => {
                 last = format!("{:?}: {}", err.code, err.detail);

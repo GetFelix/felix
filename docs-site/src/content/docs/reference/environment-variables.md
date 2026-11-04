@@ -2289,7 +2289,7 @@ absent. They are listed in that script rather than here.
 | `FELIX_REGION_ID` | `local` | Region this instance reports. |
 | `FELIX_MQTT_LISTEN` | unset | `ip:port` the MQTT listener binds (MQTT 3.1.1 and 5.0). Unset turns the listener off: nothing is bound and no runtime is built. See [MQTT](/features/mqtt/). |
 | `FELIX_MQTT_TLS` | `true` | Serve TLS on the MQTT listener with the broker's client certificate. `false` serves plain TCP: tokens cross the network in clear text. |
-| `FELIX_MQTT_ANONYMOUS_TENANT` | unset | Development switch: an MQTT connection that sends no username and password acts as this tenant and may publish to every stream mounted for it. A connection that sends a wrong token is still refused. Leave unset in production. |
+| `FELIX_MQTT_ANONYMOUS_TENANT` | unset | Development switch: an MQTT connection that sends no username and password acts as this tenant and may publish to every stream mounted for it, on shards this broker owns: with no token, there is nothing for another broker to check on a forward. A connection that sends a wrong token is still refused. Leave unset in production. |
 | `FELIX_MQTT_WORKER_THREADS` | `2` | Threads in the MQTT listener's own runtime. A connection flood spends these, not the threads serving QUIC. |
 | `FELIX_MQTT_MAX_CONNECTIONS` | `100000` | MQTT connections served at once. The next one is closed on arrival and counted in `felix_mqtt_refused_total{reason="connection_limit"}`. |
 | `FELIX_MQTT_MAX_CONNECTIONS_PER_IP` | `1024` | MQTT connections one source IP may hold, checked before the total. Higher than Kafka's because device fleets often share one NAT address. `0` is unlimited. Refusals are counted under `reason="per_ip_limit"`. |

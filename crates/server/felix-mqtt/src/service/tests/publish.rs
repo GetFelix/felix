@@ -192,6 +192,9 @@ async fn the_record_is_the_topic_the_message_fields_and_the_payload() {
 
     let batch = writes.batches().remove(0);
     assert_eq!(&*batch.tenant_id, "acme");
+    // Carried for the owner to check on a forward, and never printed.
+    assert_eq!(batch.credential, Some(crate::Credential::new("good")));
+    assert!(!format!("{batch:?}").contains("good"));
     assert_eq!(&*batch.target.stream, "plant");
     let record = &batch.records[0];
     assert_eq!(record.payload, Bytes::from_static(b"21.5"));
