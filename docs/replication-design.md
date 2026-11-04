@@ -1321,6 +1321,15 @@ elected leader waits for the lease until the control plane is back (issue
    share no replica with a majority of the old. A staged copy is not part of
    the persisted set: it does not stand, answer a fence or count until a set
    change writes it in, and that change fences jointly like any other.
+   A joint fence that never opens leaves its change half made: the replicas
+   that answered keep the new set with the old one beside it, but a
+   majority of the old set may never have heard of the change, and a write
+   acknowledged before it may sit only there. So a failover whose log keeps
+   such a pair fences the old set of the pair too, unless the log holds a
+   record written at the pair's generation. That record is the evidence the
+   fence opened, since its leader writes nothing before reaching both
+   majorities. Without the evidence the old set stays in the fence, at the
+   cost of waiting for a majority of it.
 8. *The control plane flips only after the joint fence.* A cut-over that
    changes the set records the new set as pending; the old set stays the
    control plane's set until a leader on the new set reports its
@@ -1381,7 +1390,9 @@ the record when it answered or refused the old leader after, so the
 catch-up brings it. If the later leader's set is newer, every change between
 the two sets fenced a majority of the set before it and of the set after it,
 so each step shares a replica with the step before, and the record, or the
-refusal of the old leader, is carried across. If the later leader's set is
+refusal of the old leader, is carried across. A change whose fence never opened
+carried nothing across, so the next failover fences the set that change was
+leaving as well as the ones after it (rule 7). If the later leader's set is
 older, a majority of it took the fence of the change that came after it,
 learned the newer set, and refuses the candidate. Overlap comes from the
 joint fence, not from the size of a change: without it, the cut-over above
