@@ -161,7 +161,7 @@ pub(super) struct FenceAttempt {
     took: Option<Vec<String>>,
     why: Option<String>,
     /// So many replicas promised the generation to another node that no
-    /// majority was left to take it.
+    /// majority was left to take it, or the set it leaves is not known here.
     refused: Option<RefusedGeneration>,
 }
 
@@ -252,7 +252,8 @@ struct ShardState {
     /// they were at: a new promotion starts from [`FENCE_RETRY`] again.
     fence_failures: (u64, u32),
     /// The last fence attempt found the generation promised to another node
-    /// by too many replicas to open. Reported each tick, as a refused open is.
+    /// by too many replicas to open, or could not learn the set it leaves.
+    /// Reported each tick, as a refused open is.
     fence_refused: Option<RefusedGeneration>,
     /// What its last pass left.
     last: Option<LastPass>,
@@ -372,9 +373,10 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
     }
 
     /// What to report as refused at `route`'s generation: an open refused
-    /// there, or a fence refused by a promise to another node
-    /// ([`crate::promotion::Outcome::Refused`]). The shard still fences again
-    /// after the second, in case the set has changed since.
+    /// there, a fence refused by a promise to another node
+    /// ([`crate::promotion::Outcome::Refused`]), or a joint fence that cannot
+    /// learn the set it leaves. The shard still fences again after the last
+    /// two, in case the set has changed since.
     fn refusal(&self, key: &ShardKey, route: &felix_router::Route) -> Option<RefusedGeneration> {
         self.refused_open(key, route).or_else(|| {
             self.states
@@ -636,6 +638,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                     Outcome::Pending { why, took } | Outcome::Refused { why, took, .. } => {
                         (Some(took.clone()), Some(why.clone()))
                     }
+                    Outcome::SetUnknown { why } => (Some(Vec::new()), Some(why.clone())),
                     Outcome::Fenced { .. } | Outcome::Lease { .. } => (None, None),
                 };
                 let refused = match &outcome {
@@ -643,6 +646,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                         generation,
                         promised_to: promised_to.clone(),
                     }),
+                    Outcome::SetUnknown { .. } => Some(RefusedGeneration::set_unknown(generation)),
                     _ => None,
                 };
                 let opened = open_fenced(cx.gate, &key, generation, outcome).await;

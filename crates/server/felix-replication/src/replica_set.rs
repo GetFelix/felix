@@ -39,6 +39,22 @@ pub(crate) fn kept(route: &Route, learner: Option<&str>) -> ReplicaSet {
     ReplicaSet {
         current: membership(&view(route, learner)),
         leaving: None,
+        earlier: Vec::new(),
+    }
+}
+
+/// Keep `set` on `log`, with earlier sets only under `joint`, given once the
+/// fleet has finalized `joint_fence`: only the joint fence reads them, and a
+/// file holding them is one an older build refuses.
+pub(crate) async fn accept(
+    log: &felix_broker::StreamLog,
+    set: ReplicaSet,
+    joint: bool,
+) -> felix_broker::Result<felix_storage::disk_log::SetCheck> {
+    if joint {
+        log.accept_set_keeping_earlier(set).await
+    } else {
+        log.accept_set(set).await
     }
 }
 

@@ -105,6 +105,14 @@ pub enum Outcome {
         why: String,
         took: Vec<String>,
     },
+    /// Not at this generation: under `joint_fence` the set it leaves is not
+    /// known here, though this log keeps the generation's own set, as after
+    /// a restart at a generation opened before the feature was on. The shard
+    /// stays closed, and this broker reports the generation refused so the
+    /// control plane names it again one up, where the set before is the one
+    /// it is named on now (#1872). With no kept set the fence stays
+    /// [`Self::Pending`] instead.
+    SetUnknown { why: String },
     /// Not yet: no majority answered, or the catch-up did not finish. The
     /// shard stays closed and the next pass tries again.
     Pending {
@@ -176,6 +184,7 @@ pub(crate) async fn fence_shard_as<R: PeerRequester>(
     joint: Option<&Joint<'_>>,
     candidacy: Option<&crate::election::Candidacy>,
 ) -> Outcome {
+    let joint_fence = joint.is_some();
     let replicas: Vec<_> = route
         .replicas
         .iter()
@@ -282,7 +291,12 @@ pub(crate) async fn fence_shard_as<R: PeerRequester>(
                 (Some(joint), Some(set), None) => {
                     match joint::sets(requester, &log, local_node_id, route, set, joint).await {
                         Ok(fenced) => Some(fenced),
-                        Err(why) => return Err(Outcome::pending(why, Vec::new())),
+                        Err(why @ joint::NoSetBefore::Unknown(_)) => {
+                            return Err(Outcome::SetUnknown {
+                                why: why.to_string(),
+                            });
+                        }
+                        Err(why) => return Err(Outcome::pending(why.to_string(), Vec::new())),
                     }
                 }
                 (Some(joint), Some(set), Some(_)) => match leaving {
@@ -343,6 +357,7 @@ pub(crate) async fn fence_shard_as<R: PeerRequester>(
                     local_node_id,
                     route,
                     under_joint.as_ref().map(|fenced| &fenced.before),
+                    joint_fence,
                 )
                 .await?;
             }
@@ -418,6 +433,7 @@ pub(crate) async fn refence<R: PeerRequester>(
         candidate: true,
         set: candidacy.set.clone(),
         leaving: candidacy.leaving.as_ref().map(joint::view),
+        earlier: Vec::new(),
     };
     fence_again(requester, node_id, addr, shard, kind, election).await
 }
@@ -451,6 +467,7 @@ pub(crate) async fn refence_kept<R: PeerRequester>(
         candidate: false,
         set: joint::view(&kept.current),
         leaving: kept.leaving.as_ref().map(joint::view),
+        earlier: kept.earlier.iter().map(joint::view).collect(),
     };
     fence_again(requester, node_id, addr, shard, kind, election).await
 }
@@ -571,6 +588,7 @@ async fn fence_log<R: PeerRequester>(
                     candidate,
                     set: set.clone(),
                     leaving: Some(joint.leaving_for(&node_id).clone()),
+                    earlier: joint.earlier_for(&node_id),
                 }),
                 (None, Some(set)) => {
                     let offered = match requester.recorded_capabilities(&node_id) {
@@ -583,6 +601,7 @@ async fn fence_log<R: PeerRequester>(
                             candidate,
                             set: set.clone(),
                             leaving: None,
+                            earlier: Vec::new(),
                         })
                 }
                 (_, None) => None,
@@ -1119,6 +1138,7 @@ async fn keep_own_set(
     local_node_id: &str,
     route: &Route,
     leaving: Option<&felix_storage::disk_log::Membership>,
+    joint_fence: bool,
 ) -> Result<(), Outcome> {
     match log
         .accept_generation(route.generation, Some(local_node_id))
@@ -1146,7 +1166,7 @@ async fn keep_own_set(
     }
     let mut set = crate::replica_set::kept(route, None);
     set.leaving = leaving.cloned();
-    match log.accept_set(set).await {
+    match crate::replica_set::accept(log, set, joint_fence).await {
         Ok(felix_storage::disk_log::SetCheck::Stale { known }) => Err(Outcome::pending(
             format!("this broker counts the set of generation {known}, newer than this one"),
             Vec::new(),

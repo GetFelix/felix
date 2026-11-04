@@ -153,6 +153,7 @@ async fn follower() -> (Arc<Broker>, tempfile::TempDir) {
     log.accept_set(ReplicaSet {
         current: set(3),
         leaving: None,
+        earlier: Vec::new(),
     })
     .await
     .expect("set");
@@ -304,6 +305,7 @@ async fn a_pending_set_change_is_not_stood_on() {
     log.accept_set(ReplicaSet {
         current: set(4),
         leaving: Some(leaving),
+        earlier: Vec::new(),
     })
     .await
     .expect("set");
@@ -329,6 +331,7 @@ async fn the_set_a_move_left_is_stood_on_jointly() {
     log.accept_set(ReplicaSet {
         current: set(4),
         leaving: Some(leaving.clone()),
+        earlier: Vec::new(),
     })
     .await
     .expect("set");
@@ -350,6 +353,7 @@ async fn the_set_a_move_left_is_stood_on_jointly() {
         log.accept_set(ReplicaSet {
             current: set(4),
             leaving: Some(leaving.clone()),
+            earlier: Vec::new(),
         })
         .await
         .expect("set");
@@ -392,6 +396,7 @@ async fn a_finished_moves_set_being_left_is_not_fenced_again() {
         log.accept_set(ReplicaSet {
             current: set(4),
             leaving: Some(left.clone()),
+            earlier: Vec::new(),
         })
         .await
         .expect("set");
@@ -421,6 +426,7 @@ async fn an_unchanged_set_kept_beside_is_stood_on_once_joint_fences_are_on() {
     log.accept_set(ReplicaSet {
         current: set(4),
         leaving: Some(set(3)),
+        earlier: Vec::new(),
     })
     .await
     .expect("set");
@@ -445,6 +451,31 @@ async fn an_unchanged_set_kept_beside_is_stood_on_once_joint_fences_are_on() {
         .await
         .expect("never stood");
     assert_eq!(elected.leaving, Some(set(3)));
+}
+
+/// A set kept from before a fence that never opened is not stood on: the
+/// candidate would fence its own set alone and miss a majority of the
+/// earlier one (#1881).
+#[tokio::test(start_paused = true)]
+async fn a_set_keeping_earlier_sets_is_not_stood_on() {
+    let (broker, _dir) = follower().await;
+    let log = shard_log(&broker, &key()).await.expect("log");
+    let mut earlier = set(2);
+    earlier.members[2].node = "broker-d".to_string();
+    log.accept_set_keeping_earlier(ReplicaSet {
+        current: set(4),
+        leaving: None,
+        earlier: vec![earlier],
+    })
+    .await
+    .expect("set");
+    assert!(!log.replica_set().expect("kept").earlier.is_empty());
+
+    let ctx = ctx(&broker, voters(None));
+    let route = ctx.router.snapshot().get(&key()).expect("route").clone();
+    assert_eq!(stand(&ctx, &key(), &route).await, Round::Ineligible);
+    assert!(ctx.requester.asked.lock().expect("lock").is_empty());
+    assert_eq!(log.accepted_generation(), 3, "no ballot");
 }
 
 /// The place counts voters with a log ahead and granting voters with a

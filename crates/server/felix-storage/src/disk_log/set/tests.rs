@@ -55,6 +55,7 @@ fn settled(generation: u64) -> ReplicaSet {
             ],
         },
         leaving: None,
+        earlier: Vec::new(),
     }
 }
 
@@ -104,6 +105,7 @@ fn an_empty_set_round_trips() {
             members: Vec::new(),
         },
         leaving: None,
+        earlier: Vec::new(),
     };
     assert_eq!(decode(&set.encode(None).unwrap()), Some(set));
 }
@@ -209,6 +211,7 @@ fn a_checksummed_but_malformed_body_does_not_decode() {
             members: vec![member("a", None)],
         },
         leaving: None,
+        earlier: Vec::new(),
     }
     .encode(None)
     .unwrap();
@@ -271,6 +274,7 @@ fn one(members: Vec<Member>) -> ReplicaSet {
             members,
         },
         leaving: None,
+        earlier: Vec::new(),
     }
 }
 
@@ -438,6 +442,95 @@ fn a_file_from_before_wiped_marks_reads_as_not_wiped() {
             generation: 3,
             members: vec![member("a", Some(1)), member("c", None)],
         }),
+        earlier: Vec::new(),
     };
     assert_eq!(ReplicaSet::decode(&bytes), Some((expected, None)));
+}
+
+fn with_earlier(generation: u64) -> ReplicaSet {
+    ReplicaSet {
+        earlier: vec![
+            Membership {
+                generation: generation - 2,
+                members: vec![member("b", Some(2)), member("y", None)],
+            },
+            Membership {
+                generation: generation - 3,
+                members: vec![member("a", Some(1)), member("z", Some(7))],
+            },
+        ],
+        ..changing(generation)
+    }
+}
+
+#[test]
+fn a_set_with_earlier_sets_round_trips_with_a_wiped_mark() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mark = WipedMark {
+        node: "a".to_string(),
+        learner: true,
+    };
+    super::store(dir.path(), &with_earlier(9), Some(&mark)).expect("store");
+    assert_eq!(
+        super::load(dir.path()).expect("load"),
+        Some((with_earlier(9), Some(mark)))
+    );
+}
+
+/// A file with no earlier sets is the one a build without them wrote, so a
+/// rollback opens it; one with them fails the open there instead.
+#[test]
+fn no_earlier_sets_is_the_file_an_older_build_wrote() {
+    let bytes = changing(8).encode(None).unwrap();
+    assert_eq!(bytes, raw(&changing(8)));
+    let flags = u16::from_be_bytes(
+        with_earlier(8).encode(None).unwrap()[6..8]
+            .try_into()
+            .unwrap(),
+    );
+    assert_eq!(flags, FLAG_LEAVING | FLAG_EARLIER);
+}
+
+#[test]
+fn an_earlier_set_must_be_older_and_a_count_of_zero_does_not_decode() {
+    for at in [9, 10] {
+        let mut set = with_earlier(9);
+        set.earlier[1].generation = at;
+        assert!(set.encode(None).is_err(), "{at}");
+    }
+    let mut body = changing(8).encode(None).unwrap();
+    body.truncate(body.len() - 4);
+    body[7] |= FLAG_EARLIER as u8;
+    body.extend_from_slice(&0u16.to_be_bytes());
+    assert_eq!(decode(&sealed(body)), None);
+}
+
+/// The file keeps earlier sets newest first and each once; any other order
+/// or a repeat is damage, not a second spelling of the same sets.
+#[test]
+fn earlier_sets_out_of_order_or_repeated_do_not_decode() {
+    let with = |earlier: &[Membership]| {
+        let mut body = changing(8).encode(None).unwrap();
+        body.truncate(body.len() - 4);
+        body[7] |= FLAG_EARLIER as u8;
+        body.extend_from_slice(&(earlier.len() as u16).to_be_bytes());
+        for set in earlier {
+            set.encode_into(&mut body);
+        }
+        sealed(body)
+    };
+    let sets = with_earlier(8).earlier;
+    assert!(decode(&with(&sets)).is_some());
+    let reversed: Vec<_> = sets.iter().rev().cloned().collect();
+    assert_eq!(decode(&with(&reversed)), None);
+    let repeated = Membership {
+        generation: sets[1].generation - 1,
+        ..sets[0].clone()
+    };
+    assert_eq!(decode(&with(&[sets[0].clone(), repeated])), None);
+    let as_leaving = Membership {
+        generation: 2,
+        ..changing(8).leaving.unwrap()
+    };
+    assert_eq!(decode(&with(&[sets[0].clone(), as_leaving])), None);
 }

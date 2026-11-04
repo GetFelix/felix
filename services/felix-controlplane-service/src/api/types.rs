@@ -466,9 +466,22 @@ pub struct ShardAssignmentListResponse {
     pub next_cursor: Option<String>,
 }
 
+/// A [`RoutedShardAssignment`] in a snapshot.
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq, Eq)]
+pub struct SnapshotShardAssignment {
+    #[serde(flatten)]
+    pub assigned: RoutedShardAssignment,
+    /// The shard's first assignment: written when the control plane had none
+    /// for it, so no set came before this one. The snapshot's counterpart of
+    /// an `assigned` change. Absent means not known, never "not first": the
+    /// change that would show it may have left the retained log.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub first_assignment: bool,
+}
+
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ShardAssignmentSnapshotResponse {
-    pub items: Vec<RoutedShardAssignment>,
+    pub items: Vec<SnapshotShardAssignment>,
     /// Where to start polling changes. A consumer that applies this snapshot and
     /// then polls from here sees every committed change exactly once.
     pub next_seq: u64,
