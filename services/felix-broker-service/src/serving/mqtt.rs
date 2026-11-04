@@ -9,13 +9,14 @@
 
 mod mounts;
 mod rate;
+mod writes;
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use felix_mqtt::{AuthError, Authenticator, Mounts, MqttService, Principal, ws};
+use felix_mqtt::{AuthError, Authenticator, Mounts, MqttService, Principal, Writes, ws};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpSocket};
 use tokio::runtime::Runtime;
@@ -26,6 +27,7 @@ use tokio_util::task::TaskTracker;
 
 pub use self::mounts::BrokerMounts;
 use self::rate::RateGate;
+pub use self::writes::BrokerWrites;
 use crate::config::MqttListenerConfig;
 use crate::serving::auth::{BrokerAuth, CredentialRefused};
 use crate::serving::limits::PerIpLimiter;
@@ -70,6 +72,7 @@ impl Authenticator for BrokerMqttAuth {
             Ok(context) => {
                 let revocable = context.revocable;
                 Ok(Principal::new(tenant_id)
+                    .with_permissions(context.matcher)
                     .with_expiry(context.expires_at)
                     .with_revocation(move || {
                         let revocable = revocable.clone();
@@ -118,6 +121,7 @@ impl MqttListener {
         tls: Option<Arc<rustls::ServerConfig>>,
         auth: Arc<dyn Authenticator>,
         mounts: Arc<dyn Mounts>,
+        writes: Arc<dyn Writes>,
     ) -> Result<Self> {
         let tls = match (config.tls, tls) {
             (true, Some(server)) => Some(TlsAcceptor::from(server)),
@@ -152,7 +156,7 @@ impl MqttListener {
             listener,
             ws,
             tls,
-            service: MqttService::new(auth, mounts, config.settings.clone()),
+            service: MqttService::new(auth, mounts, writes, config.settings.clone()),
             max_connections: config.max_connections,
             per_ip: PerIpLimiter::new(config.max_connections_per_ip),
             connect_rate: config.connect_rate,

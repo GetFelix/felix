@@ -2289,7 +2289,7 @@ absent. They are listed in that script rather than here.
 | `FELIX_REGION_ID` | `local` | Region this instance reports. |
 | `FELIX_MQTT_LISTEN` | unset | `ip:port` the MQTT listener binds (MQTT 3.1.1 and 5.0). Unset turns the listener off: nothing is bound and no runtime is built. See [MQTT](/features/mqtt/). |
 | `FELIX_MQTT_TLS` | `true` | Serve TLS on the MQTT listener with the broker's client certificate. `false` serves plain TCP: tokens cross the network in clear text. |
-| `FELIX_MQTT_ANONYMOUS_TENANT` | unset | Development switch: an MQTT connection that sends no username and password acts as this tenant. A connection that sends a wrong token is still refused. Leave unset in production. |
+| `FELIX_MQTT_ANONYMOUS_TENANT` | unset | Development switch: an MQTT connection that sends no username and password acts as this tenant and may publish to every stream mounted for it. A connection that sends a wrong token is still refused. Leave unset in production. |
 | `FELIX_MQTT_WORKER_THREADS` | `2` | Threads in the MQTT listener's own runtime. A connection flood spends these, not the threads serving QUIC. |
 | `FELIX_MQTT_MAX_CONNECTIONS` | `100000` | MQTT connections served at once. The next one is closed on arrival and counted in `felix_mqtt_refused_total{reason="connection_limit"}`. |
 | `FELIX_MQTT_MAX_CONNECTIONS_PER_IP` | `1024` | MQTT connections one source IP may hold, checked before the total. Higher than Kafka's because device fleets often share one NAT address. `0` is unlimited. Refusals are counted under `reason="per_ip_limit"`. |
@@ -2298,6 +2298,7 @@ absent. They are listed in that script rather than here.
 | `FELIX_MQTT_MAX_PACKET_BYTES` | `1048576` | Largest MQTT packet. A larger one closes the connection. Sent to 5.0 clients as `Maximum Packet Size`. |
 | `FELIX_MQTT_MAX_TOPIC_BYTES` | `1024` | Longest MQTT topic name or filter, in bytes. |
 | `FELIX_MQTT_MAX_TOPIC_LEVELS` | `16` | Most `/`-separated levels in an MQTT topic name or filter. |
+| `FELIX_MQTT_MAX_INFLIGHT` | `64` | Most QoS 1 publishes one MQTT connection may have waiting for the stream's acknowledgement, from 1 to 65535. Sent to 5.0 clients as `Receive Maximum`; a client past it is disconnected with reason 0x93 (`receive_maximum_exceeded`). A 3.1.1 client is held to it by the broker not reading the connection until the publishes are written. |
 | `FELIX_MQTT_MAX_SUBSCRIPTIONS` | `64` | Most filters in one MQTT `SUBSCRIBE`. |
 | `FELIX_MQTT_WS_LISTEN` | unset | `ip:port` for MQTT over WebSockets, for browser apps. Needs `FELIX_MQTT_LISTEN` too: both sockets share its runtime, TLS setting, connection limits and connect rate. Serves `wss` when `FELIX_MQTT_TLS` is on, `ws` otherwise. See [MQTT](/features/mqtt/#browsers-and-websockets). |
 | `FELIX_MQTT_WS_ALLOWED_ORIGINS` | unset | Comma-separated `Origin` values a browser may connect from, written as `scheme://host[:port]` with no path or trailing slash, such as `https://app.example.com`. `*` allows any. Unset refuses every request that carries an `Origin`: browsers always send one, most other clients do not (the Python `paho-mqtt` client does). An entry that could never match fails startup. Refusals are counted under `reason="ws_origin"`. |
