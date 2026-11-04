@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793812804353,
+  "lastUpdate": 1793816527042,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -44720,6 +44720,58 @@ window.BENCHMARK_DATA = {
             "range": "43694.43",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 815793.92\nmean: 798332.44\nstdev: 43694.43\ncv: 5.47%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "76755a2594948028ad5bc82b39481a3898e45c4a",
+          "message": "fix(replication): a learner caught up after its pass is still reported holding the start (#1893)\n\n* fix(replication): a learner caught up after its pass is still reported holding the start\n\nA leader names a follower in holds_start only on an answer checked in the\nsame pass. A learner whose catch-up exchange outlived its pass is merged by\nthe driver, and the next pass finds it level with the tail and the mark\nthere, so it was sent nothing and never named. With no further append the\ncontrol plane never re-admitted it. Such a learner now gets its last record\nagain, which is a checked answer the report can name.\n\nCloses #1892\n\nSpec-Unaffected: liveness of the holds_start report only; a learner's answer still counts toward no mark, and re-admission still needs a checked answer from the copy, as the model has it.\n\n* fix(replication): ask a stalled learner again too\n\nA failed ping stalls the learner's cursor level with the tail, and the\nstalled guard then kept every later pass from asking it, which is #1892\nagain. Review finding.\n\nSpec-Unaffected: liveness of the holds_start report only; no mark counts a learner.",
+          "timestamp": "2026-11-04T17:53:28Z",
+          "tree_id": "cdcae63a9491d8d03c6bf16f5b2901e0895aa0bf",
+          "url": "https://github.com/GetFelix/felix/commit/76755a2594948028ad5bc82b39481a3898e45c4a"
+        },
+        "date": 1793816526324,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 350120.32,
+            "range": "26006.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 350120.32\nmean: 340225.04\nstdev: 26006.89\ncv: 7.64%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 350120.32,
+            "range": "26006.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 350120.32\nmean: 340225.04\nstdev: 26006.89\ncv: 7.64%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80183.9,
+            "range": "6197.06",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80183.90\nmean: 77379.65\nstdev: 6197.06\ncv: 8.01%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 801839.03,
+            "range": "61970.54",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 801839.03\nmean: 773796.53\nstdev: 61970.54\ncv: 8.01%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
