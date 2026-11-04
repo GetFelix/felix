@@ -1,0 +1,66 @@
+name: scratch s10 election loop
+on:
+  push:
+    branches: ["scratch/s10-*"]
+permissions:
+  contents: read
+jobs:
+  loop:
+    name: loop (${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
+    env:
+      CARGO_TERM_COLOR: never
+      RUSTFLAGS: "-C instrument-coverage"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.99.1"
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Build
+        run: |
+          mkdir -p "$RUNNER_TEMP/prof"
+
+          cargo build -p felix-broker-service --bin felix-broker
+          cargo build -p felix-loadgen
+          cargo test -p felix-cluster --test failures --no-run
+      - name: Loop
+        shell: bash
+        env:
+          FELIX_TEST_TIMEOUT_SCALE: "5"
+          LLVM_PROFILE_FILE: ${{ runner.temp }}/prof/felix-%m.profraw
+          RUST_LOG: ${{ contains(github.ref_name, 'diag') && 'info' || 'info' }}
+        run: |
+          pass=0; fail=0
+          filter=""; loops=3
+          for i in $(seq 1 $loops); do
+            export FELIX_TEST_CLUSTER_LOG_DIR="$RUNNER_TEMP/logs/$i"
+            if cargo test -p felix-cluster --test failures -- $filter > "$RUNNER_TEMP/out-$i.log" 2>&1; then
+              pass=$((pass+1))
+              mkdir -p "$RUNNER_TEMP/keep/$i"
+              find "$RUNNER_TEMP/logs/$i" -path '*two_followers_stand*' -name 'broker-*.log' | while read -r f; do
+                sed 's/\x1b\[[0-9;]*m//g' "$f" | grep -E "ERROR|DIAG|elected leader|standing|opening the shard|quorum wait|fenced by" > "$RUNNER_TEMP/keep/$i/$(basename "$f")" || true
+              done
+              rm -rf "$RUNNER_TEMP/logs/$i"
+            else
+              fail=$((fail+1)); cp "$RUNNER_TEMP/out-$i.log" "$RUNNER_TEMP/logs/$i/" || true
+              grep -m3 "panicked\|publish failed" "$RUNNER_TEMP/out-$i.log" || true
+            fi
+          done
+          echo "RESULT shard=${{ matrix.shard }} pass=$pass fail=$fail" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: logs-${{ matrix.shard }}
+          path: |
+            ${{ runner.temp }}/logs
+            ${{ runner.temp }}/keep
+          if-no-files-found: ignore
+          retention-days: 3

@@ -609,6 +609,15 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     let unreadable = route.pending.is_some() && pending.is_none();
     let held_offset = |tail: u64, followers: &[FollowerCursor]| {
         if unreadable || stepped_down() {
+            tracing::info!(
+                stream = %key.stream,
+                generation = route.generation,
+                tail,
+                unreadable,
+                accepted = log.accepted_generation(),
+                set_generation = log.set_generation(),
+                "DIAG held offset zero: unreadable or stepped down",
+            );
             return 0;
         }
         let held = if by_followers {
@@ -630,7 +639,24 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 learner.as_deref(),
             ),
         };
-        counted(held)
+        let out = counted(held);
+        if key.kind == felix_router::ShardKind::Stream && out < tail {
+            tracing::info!(
+                stream = %key.stream,
+                generation = route.generation,
+                tail,
+                held,
+                out,
+                by_followers,
+                accepted = log.accepted_generation(),
+                set_generation = log.set_generation(),
+                election_active,
+                pending = pending.is_some(),
+                followers = ?followers.iter().map(|f| (f.node_id.clone(), f.confirmed, f.counts())).collect::<Vec<_>>(),
+                "DIAG held offset short",
+            );
+        }
+        out
     };
     let acknowledged = |tail: u64, followers: &[FollowerCursor]| {
         if !acks_at_quorum {
