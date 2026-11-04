@@ -1131,6 +1131,13 @@ and a joint fence treats a member kept under another storage id as a change
 of set even when the node list is the same, so the old set's majority counts
 only the copy it named.
 
+A leader names a follower in `holds_start` only on an answer from that copy in
+the same pass, so a wiped copy's old position is never reported. A learner can
+finish catching up on an exchange that outlives its pass. The next pass then
+finds it level with the tail and would send it nothing, and on a shard with no
+further writes nothing would ever name it. So a pass sends such a learner its
+last record again, and its answer puts it in the report.
+
 **Before the gate is known.** Whether a set naming another id makes a copy a
 learner depends on the `joint_fence` gate, which the broker learns only when
 it registers, after its peer listener is up. A broker that does not report

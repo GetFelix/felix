@@ -885,7 +885,18 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                     .successor
                     .as_deref()
                     .is_none_or(|successor| successor == cursor.node_id);
+            // A learner is re-admitted on a report naming it as holding the
+            // start, and only an answer in this pass can name it. One caught
+            // up by an exchange that outlived its pass is level now and would
+            // be sent nothing, so with no further append it would never be
+            // named (#1892).
+            let unnamed_learner = cursor.learner
+                && cursor.halted.is_none()
+                && !cursor.stalled
+                && cursor.storage_id.is_some()
+                && cursor.confirmed > inherited;
             let ping = successor
+                || unnamed_learner
                 || would_raise(
                     &cursor.node_id,
                     &entry.followers,
