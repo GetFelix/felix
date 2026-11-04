@@ -90,9 +90,9 @@ fn the_existing_kind_discriminants_are_unchanged() {
         (38, Kind::Ping),
         (39, Kind::Pong),
         (47, Kind::ReplicateLearnerOk),
-        (48, Kind::ReplicateHeaderedRecords),
-        (49, Kind::ReplicateHeaderedFetch),
-        (50, Kind::HeaderedForwardPublish),
+        (49, Kind::ReplicateHeaderedRecords),
+        (50, Kind::ReplicateHeaderedFetch),
+        (51, Kind::HeaderedForwardPublish),
     ] {
         assert_eq!(Kind::from_u16(value).expect("known"), kind);
         assert_eq!(kind as u16, value);
