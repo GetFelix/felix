@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793823209441,
+  "lastUpdate": 1793823465904,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -57024,6 +57024,72 @@ window.BENCHMARK_DATA = {
             "range": "46.96",
             "unit": "us",
             "extra": "trials: 5\nmedian: 542.00\nmean: 552.00\nstdev: 46.96\ncv: 8.51%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "99ae6c71e98de2de12894f648730cd2bd8cada57",
+          "message": "fix(replication): a replica keeps every set since the last opened generation (#1881) (#1882)\n\n* fix(replication): a failover fences the set an unopened joint fence was leaving (#1878)\n\nA replica that answered a joint fence keeps the new set with the set it\nleaves beside it. If that fence never opened, nothing read the kept set at\nthe next failover: set_before takes the control plane's prior set and\nlogged_besides compares only the log's current set. The failover could then\nopen on majorities of the newer sets while a write acknowledged before the\nchange sat only in the old one.\n\nA failover now also fences the kept leaving set when the log holds no\nrecord written at its own set's generation, the evidence that fence opened.\n\nSpec-Unaffected: not yet mirrored; the model's Promote still drops the pending old set (FelixShardReplacedPendingLeft.cfg on #1879). The spec lane mirrors this rule.\n\n* docs and tests: the cost and limit of fencing an unopened fence's set (#1878)\n\nRule 7 says what keeps a log fencing the old set and that two unopened\nfailovers in a row are not covered yet. A generation recorded with nothing\nwritten at it counts as unopened.\n\nSpec-Unaffected: not yet mirrored; the model's Promote still drops the pending old set (FelixShardReplacedPendingLeft.cfg on #1879). The spec lane mirrors this rule.\n\n* fix(replication): a replica keeps every set since the last opened generation (#1881)\n\nA replica kept one set being left, so two fences in a row that never\nopened overwrote the older set and a later failover could open without a\nwrite only that set held. The replica-set file now keeps earlier sets:\naccepting a newer set carries the kept set, the set it was leaving and\nthe older kept sets forward unless the log holds a record of the set\nbeing replaced. A batch raise carries nothing, since its leader opened.\nA failover fences all of them, the fence carries them to every member in\nElectionKeptFence (kind 48), and a joint fence counts only replicas\noffering KEPT_SETS. Bounded at 16 distinct sets; past that the raise\nfails and the fence is refused.\n\nSpec-Unaffected: not yet mirrored; the spec lane's FelixShardReplacedPendingLeftTwiceAll models this rule (branch spec/1872-set-unknown).\n\n* fix(replication): earlier sets only under joint_fence, kept through a batch until durable (#1881)\n\nReview fixes. A set kept without joint_fence writes no earlier sets, so a\nrollback still opens the shard. A batch raise carries the kept sets like a\nfence; they are dropped only once the log durably holds a record of the set\nbeing replaced. A raise that would add a set past the cap is refused, but one\nnaming only kept sets still fits, so a fence on a kept set can open and end\nthe list. The file refuses earlier sets out of order or repeated.\n\n* fix(replication): the set cap holds from the first set, and a repeat after a mark or admission is dropped (#1881)\n\nDelta review fixes. A first set is held to the same cap, so a raise naming\nonly kept sets always fits. An earlier set the current one comes to repeat\nafter the wiped mark or an admission is dropped instead of failing the write.\nThe leader keeps earlier sets while the joint_fence gate is unread, as a\nreplica does. Older generations' ends are bounded by the durable offset too.\n\n* docs(upgrades): a rollback can refuse a replica set file with earlier sets (#1881)\n\n* fix(replication): a candidate does not stand on a set file keeping earlier sets (#1881)\n\nA candidate's fence leaves at most one set, so it would miss a majority of\nan earlier set kept from a fence that never opened. Such a shard is left to\nthe control plane. The merge of main also gives S9's test sets and refences\nthe new `earlier` field: a refence of a kept set sends the earlier sets the\nleader keeps.",
+          "timestamp": "2026-11-04T12:12:39-08:00",
+          "tree_id": "aba8e44aa5e3e4571ad9e4600bdd51f70b7baaee",
+          "url": "https://github.com/GetFelix/felix/commit/99ae6c71e98de2de12894f648730cd2bd8cada57"
+        },
+        "date": 1793823459167,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 94,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 94.00\nmean: 94.20\nstdev: 0.45\ncv: 0.47%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 128,
+            "range": "1.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 128.00\nmean: 128.80\nstdev: 1.92\ncv: 1.49%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 170,
+            "range": "19.63",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 170.00\nmean: 178.20\nstdev: 19.63\ncv: 11.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 132,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 132.00\nmean: 131.60\nstdev: 0.55\ncv: 0.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 253,
+            "range": "8.41",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 253.00\nmean: 254.20\nstdev: 8.41\ncv: 3.31%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 348,
+            "range": "294.73",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 348.00\nmean: 463.80\nstdev: 294.73\ncv: 63.55%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
