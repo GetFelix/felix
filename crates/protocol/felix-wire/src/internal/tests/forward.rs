@@ -110,6 +110,7 @@ fn an_over_long_credential_is_refused_on_encode() {
         payloads: Vec::new(),
         credential: "x".repeat(MAX_CREDENTIAL_BYTES + 1),
         headers: None,
+        producer: None,
     });
     assert!(matches!(message.encode(), Err(Error::FrameTooLarge)));
 }
@@ -436,4 +437,76 @@ fn forwarded_headers_that_differ_in_count_are_refused() {
         InternalMessage::decode(Bytes::from(forged)),
         Err(Error::InvalidRecordHeaders(_))
     ));
+}
+
+fn sequenced_forward(headers: Option<Vec<Option<Bytes>>>) -> InternalMessage {
+    let InternalMessage::ForwardPublish(base) = headered_forward(headers) else {
+        panic!("a forward");
+    };
+    InternalMessage::ForwardPublish(ForwardPublish {
+        producer: Some(ForwardProducer {
+            producer_id: 0xfeed,
+            sequence: 9,
+        }),
+        ..base
+    })
+}
+
+/// A forward that names its producer is its own kind, needs both the headers
+/// and the sequenced capability, and round-trips, inside the incarnation
+/// envelope too.
+#[test]
+fn a_sequenced_forward_is_its_own_kind_and_round_trips() {
+    let message = sequenced_forward(Some(vec![Some(Bytes::from_static(b"block")), None]));
+    assert_eq!(message.kind(), Kind::SequencedForwardPublish);
+    assert_eq!(
+        message.required_capability(),
+        Some(PeerCapabilities::RECORD_HEADERS.union(PeerCapabilities::SEQUENCED_FORWARDS))
+    );
+    let bytes = message.encode().expect("encode");
+    assert_eq!(
+        &bytes[bytes.len() - 16..],
+        &[0, 0, 0, 0, 0, 0, 0xfe, 0xed, 0, 0, 0, 0, 0, 0, 0, 9]
+    );
+    assert_eq!(InternalMessage::decode(bytes).expect("decode"), message);
+
+    // The decoder refuses a section with no block, so there is nothing to
+    // send for a sequenced batch without one.
+    for bare in [
+        sequenced_forward(None),
+        sequenced_forward(Some(vec![None, None])),
+    ] {
+        assert!(matches!(bare.encode(), Err(Error::InvalidRecordHeaders(_))));
+    }
+
+    let InternalMessage::ForwardPublish(base) = message else {
+        panic!("a forward");
+    };
+    let incarnated = InternalMessage::ForwardPublish(ForwardPublish {
+        shard: ShardRef {
+            incarnation: Some(7),
+            ..base.shard.clone()
+        },
+        ..base
+    });
+    let bytes = incarnated.encode().expect("encode");
+    assert_eq!(
+        InternalHeader::decode(&bytes).expect("header").kind,
+        Kind::Incarnated
+    );
+    assert_eq!(InternalMessage::decode(bytes).expect("decode"), incarnated);
+}
+
+/// A sequenced body cut short of its sequence does not decode as a shorter
+/// batch.
+#[test]
+fn a_sequenced_forward_without_its_sequence_is_refused() {
+    let bytes = sequenced_forward(Some(vec![Some(Bytes::from_static(b"block")), None]))
+        .encode()
+        .expect("encode");
+    let mut cut = bytes.to_vec();
+    cut.truncate(cut.len() - 8);
+    let length = (cut.len() - InternalHeader::LEN) as u32;
+    cut[InternalHeader::LEN - 4..InternalHeader::LEN].copy_from_slice(&length.to_be_bytes());
+    assert!(InternalMessage::decode(Bytes::from(cut)).is_err());
 }

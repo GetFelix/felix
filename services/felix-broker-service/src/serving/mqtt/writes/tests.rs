@@ -9,7 +9,17 @@ use felix_wire::RecordHeaders;
 
 use super::*;
 
+mod cluster;
+
 async fn broker(durable: bool, dir: &std::path::Path) -> Arc<Broker> {
+    broker_with(durable, felix_broker::ConsistencyLevel::Leader, dir).await
+}
+
+async fn broker_with(
+    durable: bool,
+    consistency: felix_broker::ConsistencyLevel,
+    dir: &std::path::Path,
+) -> Arc<Broker> {
     let storage = DurableStorage::open(
         dir,
         LogConfig {
@@ -32,6 +42,7 @@ async fn broker(durable: bool, dir: &std::path::Path) -> Arc<Broker> {
             "plant",
             StreamMetadata {
                 durable,
+                consistency,
                 ..StreamMetadata::default()
             },
         )
@@ -47,6 +58,7 @@ fn writes(broker: &Arc<Broker>) -> BrokerWrites {
 fn batch(sequence: u64, producer_id: u64, topics: &[&str]) -> WriteBatch {
     WriteBatch {
         tenant_id: "acme".into(),
+        credential: Some(felix_mqtt::Credential::new("token")),
         target: MountedTopic {
             namespace: "ns".into(),
             stream: "plant".into(),

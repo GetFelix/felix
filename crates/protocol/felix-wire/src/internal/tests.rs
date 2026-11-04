@@ -39,6 +39,7 @@ fn forward() -> InternalMessage {
         payloads: vec![Bytes::from_static(b"a"), Bytes::from_static(b"bb")],
         credential: String::new(),
         headers: None,
+        producer: None,
     })
 }
 
@@ -50,6 +51,7 @@ fn authorized_forward() -> InternalMessage {
         payloads: vec![Bytes::from_static(b"a"), Bytes::from_static(b"bb")],
         credential: "eyJ.token.sig".to_string(),
         headers: None,
+        producer: None,
     })
 }
 

@@ -383,6 +383,7 @@ async fn seed_metadata(
                 // recovered their logs. An ephemeral stream would let a broker
                 // report ready before it could serve anything.
                 "durable": spec.durable,
+                "mount": spec.mount,
             }),
         )
         .await

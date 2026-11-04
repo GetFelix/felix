@@ -305,6 +305,7 @@ async fn a_forwarded_publish_is_written_by_the_owner() {
         &publisher_token(),
         vec![Bytes::from_static(b"hello")],
         None,
+        None,
         FORWARD_BUDGET,
     )
     .await
@@ -344,6 +345,7 @@ async fn an_owner_behind_the_requester_refuses_rather_than_writing() {
         AckMode::OnCommit,
         &publisher_token(),
         vec![Bytes::from_static(b"too-new")],
+        None,
         None,
         FORWARD_BUDGET,
     )
@@ -385,6 +387,7 @@ async fn a_broker_that_no_longer_owns_the_shard_redirects() {
         AckMode::OnCommit,
         &publisher_token(),
         vec![Bytes::from_static(b"moved")],
+        None,
         None,
         FORWARD_BUDGET,
     )
@@ -443,6 +446,7 @@ async fn a_redirect_that_loops_back_to_a_tried_owner_is_refused() {
         AckMode::OnCommit,
         &publisher_token(),
         vec![Bytes::from_static(b"loop")],
+        None,
         None,
         FORWARD_BUDGET,
     )
@@ -503,6 +507,7 @@ async fn a_retryable_refusal_converges() {
         &publisher_token(),
         vec![Bytes::from_static(b"retry-me")],
         None,
+        None,
         FORWARD_BUDGET,
     )
     .await
@@ -554,6 +559,7 @@ async fn a_permanently_refusing_owner_fails_within_the_budget() {
         AckMode::OnCommit,
         &publisher_token(),
         vec![Bytes::from_static(b"never")],
+        None,
         None,
         FORWARD_BUDGET,
     )
@@ -633,6 +639,7 @@ async fn a_lost_answer_is_reported_as_indeterminate_and_never_retried() {
         &publisher_token(),
         vec![Bytes::from_static(b"exactly-once")],
         None,
+        None,
         FORWARD_BUDGET,
     )
     .await
@@ -681,6 +688,7 @@ async fn an_unreachable_owner_fails_without_sending() {
         &publisher_token(),
         vec![Bytes::from_static(b"nowhere")],
         None,
+        None,
         FORWARD_BUDGET,
     )
     .await
@@ -708,6 +716,7 @@ async fn an_owner_that_has_not_opened_the_shard_refuses() {
         AckMode::OnCommit,
         &publisher_token(),
         vec![Bytes::from_static(b"not-yet")],
+        None,
         None,
         FORWARD_BUDGET,
     )
@@ -747,6 +756,7 @@ async fn a_forward_the_client_was_not_entitled_to_is_refused_by_the_owner() {
             AckMode::OnCommit,
             credential,
             vec![Bytes::from_static(b"not yours")],
+            None,
             None,
             FORWARD_BUDGET,
         )

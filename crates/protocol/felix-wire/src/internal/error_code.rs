@@ -47,6 +47,12 @@ pub enum ErrorCode {
     /// Not retryable. Sent only in answer to a fence or batch that carries a
     /// set, so only to a peer that offered `ELECTION`.
     StaleSet = 12,
+    /// The owner wrote a sequenced forward and stopped leading the shard
+    /// before a majority held it. The batch may be in the log; sent again
+    /// under the same sequence, it is answered from whoever leads now. Sent
+    /// only in answer to a `SequencedForwardPublish`. Not retryable as a
+    /// refusal.
+    LeadershipLost = 13,
 }
 
 impl ErrorCode {
@@ -65,6 +71,7 @@ impl ErrorCode {
             10 => Ok(ErrorCode::FencedEpoch),
             11 => Ok(ErrorCode::UnsupportedKind),
             12 => Ok(ErrorCode::StaleSet),
+            13 => Ok(ErrorCode::LeadershipLost),
             other => Err(Error::UnknownInternalErrorCode(other)),
         }
     }

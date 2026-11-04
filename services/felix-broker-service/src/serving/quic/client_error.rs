@@ -315,6 +315,9 @@ impl ClientError {
                 // The owner checks the client's own credential on a forward.
                 Some(Internal::Unauthorized) => Self::forbidden(message),
                 Some(Internal::StorageFailed) => Self::new(ErrorCode::Storage, message),
+                // Only a sequenced forward is answered with it, and
+                // `forward_publish` reports that as indeterminate.
+                Some(Internal::LeadershipLost) => Self::new(ErrorCode::Unacknowledged, message),
                 Some(
                     Internal::ProtocolVersion
                     | Internal::Malformed

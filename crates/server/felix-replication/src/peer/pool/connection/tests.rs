@@ -100,6 +100,7 @@ mod correlation {
                 payloads: vec![Bytes::from_static(b"hello")],
                 credential: String::new(),
                 headers: None,
+                producer: None,
             }),
             InternalMessage::ForwardPublishOk(ForwardPublishOk {
                 correlation_id: 7,
@@ -230,6 +231,7 @@ mod correlation {
                 payloads: vec![Bytes::from_static(b"hello")],
                 credential: String::new(),
                 headers: None,
+                producer: None,
             }),
             99,
         );

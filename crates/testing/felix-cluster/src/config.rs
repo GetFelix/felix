@@ -103,6 +103,8 @@ pub struct StreamSpec {
     /// Whether the stream is durable. On by default; off makes it in-memory,
     /// for measurements that must not include the disk.
     pub durable: bool,
+    /// The MQTT topic prefix the stream is mounted at, if any.
+    pub mount: Option<String>,
 }
 
 impl StreamSpec {
@@ -111,6 +113,14 @@ impl StreamSpec {
     pub fn in_memory(self) -> Self {
         Self {
             durable: false,
+            ..self
+        }
+    }
+
+    /// The same stream, mounted at the MQTT topic prefix `prefix`.
+    pub fn mounted_at(self, prefix: impl Into<String>) -> Self {
+        Self {
+            mount: Some(prefix.into()),
             ..self
         }
     }
@@ -133,6 +143,7 @@ impl StreamSpec {
             consistency: "Leader".to_string(),
             region: None,
             durable: true,
+            mount: None,
         }
     }
 
@@ -147,6 +158,7 @@ impl StreamSpec {
             consistency: "Quorum".to_string(),
             region: None,
             durable: true,
+            mount: None,
         }
     }
 
@@ -159,6 +171,7 @@ impl StreamSpec {
             consistency: "Leader".to_string(),
             region: None,
             durable: true,
+            mount: None,
         }
     }
 }
