@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793764931417,
+  "lastUpdate": 1793773328879,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -44200,6 +44200,58 @@ window.BENCHMARK_DATA = {
             "range": "7381.91",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 807599.53\nmean: 810511.14\nstdev: 7381.91\ncv: 0.91%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "03c8c92e4de407b045e7acc0fb9e2cb1335e5571",
+          "message": "feat(mqtt): publish at QoS 0 and 1 to a mounted stream on the shard's owner (#1691) (#1876)\n\n* feat(mqtt): publish at QoS 0 and 1 to a mounted stream on the shard's owner (#1691)\n\nA PUBACK is queued only after the write has the acknowledgement the\nstream's consistency asks for, in the order the PUBLISHes arrived. An\nunknown outcome closes the connection without answering. Each connection\npublishes under its own producer id, one idempotent batch at a time, and\nis held to FELIX_MQTT_MAX_INFLIGHT (advertised as Receive Maximum).\n\n* fix(mqtt): bound decoding by the in-flight limit, 0x80 for a gone stream, honest resend docs (#1691)\n\n* chore(mqtt): mark the publish path as outside the model (#1691)\n\nSpec-Unaffected: the MQTT listener writes through the broker's existing owner publish path (begin_append, commit, await_quorum) and adds no lease, fence, replication or routing behaviour; serving/mqtt only maps a batch onto that path.",
+          "timestamp": "2026-11-03T22:14:39-08:00",
+          "tree_id": "8f6ee6bc0f9737578b6d93b8d4acfbd178b291f4",
+          "url": "https://github.com/GetFelix/felix/commit/03c8c92e4de407b045e7acc0fb9e2cb1335e5571"
+        },
+        "date": 1793773328037,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 417538.55,
+            "range": "26727.13",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 417538.55\nmean: 411819.32\nstdev: 26727.13\ncv: 6.49%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 417538.55,
+            "range": "26727.13",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 417538.55\nmean: 411819.32\nstdev: 26727.13\ncv: 6.49%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 93752.72,
+            "range": "556.63",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 93752.72\nmean: 93633.97\nstdev: 556.63\ncv: 0.59%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 937527.22,
+            "range": "5566.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 937527.22\nmean: 936339.71\nstdev: 5566.26\ncv: 0.59%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
