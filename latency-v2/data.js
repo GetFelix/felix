@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793816523882,
+  "lastUpdate": 1793820082337,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -56826,6 +56826,72 @@ window.BENCHMARK_DATA = {
             "range": "444.94",
             "unit": "us",
             "extra": "trials: 5\nmedian: 587.00\nmean: 848.40\nstdev: 444.94\ncv: 52.44%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4a325b5cfb063d3e3f4a5b5f41c38644bc597466",
+          "message": "spec: a failover fences the recorded set and the log's set, checked in pieces (#1860) (#1879)\n\n* spec: a failover fences the recorded set and the log's set, checked in pieces (#1806, #1860)\n\nBrings the #1806 model (67e9aeaa7, 2c2ee24b7 on spec/1806-fence-both-sets)\nto main: oldSet holds the sets being left, and a failover's fence takes a\nmajority of the promoted broker's own set and, under FenceRecordedSet, the\ncontrol plane's recorded set. FelixShardElectAdoptFailover never finished\nin six hours, so it is split at the first failover (SplitAtFailover,\nFailoverTag, PieceGens): same or apart sets, 0 or 1 writes, stood or not,\nfirst failover at generation 2, 3, or 4 and above.\n\n* spec: PieceGens defaults to Nat, so a piece can take every generation from 4 up (#1860)\n\nTLC cannot compare an infinite set with {}.\n\n* spec: register the empty failover pieces, run the three measured heavy ones nightly (#1860)\n\nTwelve pieces hold only the states before a first failover and now check\nNoCutOverInPiece. Same0Gen4, Apart0Gen4 and Apart1Gen4 run nightly.\nSame0StoodGen2 ran out of runner disk and needs splitting again; eight\npieces are still being measured.\n\n* spec: cite the failover tests in each piece, split the stood Gen2 pieces again, record the measured pieces (#1860)\n\nThe pieces cited their parent cfg by name, which docs:evidence does not\naccept, so each now names the parent's two tests. Same0StoodGen2 ran out of\nrunner disk and Same1StoodGen2 did not finish, so both split by\nPieceStoodCounts and PieceDestStood. Same1Gen2 and Same1Gen4 passed and run\nnightly; the five that did not finish in six hours are recorded as unchecked.",
+          "timestamp": "2026-11-04T19:04:36Z",
+          "tree_id": "3f61c2836032dfe30607fb80662e00559de1190a",
+          "url": "https://github.com/GetFelix/felix/commit/4a325b5cfb063d3e3f4a5b5f41c38644bc597466"
+        },
+        "date": 1793820077240,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 69,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 69.00\nmean: 69.00\nstdev: 0.71\ncv: 1.02%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1014-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 120,
+            "range": "1.48",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 120.00\nmean: 120.20\nstdev: 1.48\ncv: 1.23%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1014-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 145,
+            "range": "6.53",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 145.00\nmean: 147.80\nstdev: 6.53\ncv: 4.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1014-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 85,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 85.00\nmean: 85.00\nstdev: 0.71\ncv: 0.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1014-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 179,
+            "range": "31.68",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 179.00\nmean: 194.40\nstdev: 31.68\ncv: 16.30%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1014-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 279,
+            "range": "735.93",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 279.00\nmean: 659.20\nstdev: 735.93\ncv: 111.64%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1014-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
