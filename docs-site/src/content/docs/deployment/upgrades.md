@@ -156,7 +156,9 @@ was down during the finalize too.
 older release has nothing to roll back to, so its first broker registration
 finalizes every feature its brokers report, in order, except
 `publisher_principal`, which stays an opt-in because it grows every record by
-its publisher's id. The control plane treats a cluster as new when no stream
+its publisher's id, and `joint_fence` and `replica_election`, which an operator
+finalizes (see [Failover without the control
+plane](/deployment/failover-without-control-plane/#turning-it-on)). The control plane treats a cluster as new when no stream
 or cache was ever created and no broker has registered twice, and, under the
 Raft backend, only once every member runs this release. It finalizes
 through the same checks as the command below, so a feature some broker does

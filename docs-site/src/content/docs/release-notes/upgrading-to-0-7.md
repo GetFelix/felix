@@ -182,7 +182,8 @@ upgrade above:
    registration, so keep it set on every broker, new ones included.
 6. Finalize `replica_election` the same way.
 7. Check that `felix_broker_fleet_feature_enabled{feature="replica_election"}`
-   is 1 on every broker.
+   is 1 on every broker. A broker with `FELIX_LEADER_SUSPECT_AFTER_MS=0` still
+   never stands, so leave that setting at its default or above zero.
 
 A cluster created on 0.7.0 has already finalized steps 3 and 4 at its first
 broker registration, so it needs steps 2, 5, 6 and 7 only.
