@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793823213920,
+  "lastUpdate": 1793823468850,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -44928,6 +44928,58 @@ window.BENCHMARK_DATA = {
             "range": "44456.58",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 807895.29\nmean: 792386.32\nstdev: 44456.58\ncv: 5.61%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "99ae6c71e98de2de12894f648730cd2bd8cada57",
+          "message": "fix(replication): a replica keeps every set since the last opened generation (#1881) (#1882)\n\n* fix(replication): a failover fences the set an unopened joint fence was leaving (#1878)\n\nA replica that answered a joint fence keeps the new set with the set it\nleaves beside it. If that fence never opened, nothing read the kept set at\nthe next failover: set_before takes the control plane's prior set and\nlogged_besides compares only the log's current set. The failover could then\nopen on majorities of the newer sets while a write acknowledged before the\nchange sat only in the old one.\n\nA failover now also fences the kept leaving set when the log holds no\nrecord written at its own set's generation, the evidence that fence opened.\n\nSpec-Unaffected: not yet mirrored; the model's Promote still drops the pending old set (FelixShardReplacedPendingLeft.cfg on #1879). The spec lane mirrors this rule.\n\n* docs and tests: the cost and limit of fencing an unopened fence's set (#1878)\n\nRule 7 says what keeps a log fencing the old set and that two unopened\nfailovers in a row are not covered yet. A generation recorded with nothing\nwritten at it counts as unopened.\n\nSpec-Unaffected: not yet mirrored; the model's Promote still drops the pending old set (FelixShardReplacedPendingLeft.cfg on #1879). The spec lane mirrors this rule.\n\n* fix(replication): a replica keeps every set since the last opened generation (#1881)\n\nA replica kept one set being left, so two fences in a row that never\nopened overwrote the older set and a later failover could open without a\nwrite only that set held. The replica-set file now keeps earlier sets:\naccepting a newer set carries the kept set, the set it was leaving and\nthe older kept sets forward unless the log holds a record of the set\nbeing replaced. A batch raise carries nothing, since its leader opened.\nA failover fences all of them, the fence carries them to every member in\nElectionKeptFence (kind 48), and a joint fence counts only replicas\noffering KEPT_SETS. Bounded at 16 distinct sets; past that the raise\nfails and the fence is refused.\n\nSpec-Unaffected: not yet mirrored; the spec lane's FelixShardReplacedPendingLeftTwiceAll models this rule (branch spec/1872-set-unknown).\n\n* fix(replication): earlier sets only under joint_fence, kept through a batch until durable (#1881)\n\nReview fixes. A set kept without joint_fence writes no earlier sets, so a\nrollback still opens the shard. A batch raise carries the kept sets like a\nfence; they are dropped only once the log durably holds a record of the set\nbeing replaced. A raise that would add a set past the cap is refused, but one\nnaming only kept sets still fits, so a fence on a kept set can open and end\nthe list. The file refuses earlier sets out of order or repeated.\n\n* fix(replication): the set cap holds from the first set, and a repeat after a mark or admission is dropped (#1881)\n\nDelta review fixes. A first set is held to the same cap, so a raise naming\nonly kept sets always fits. An earlier set the current one comes to repeat\nafter the wiped mark or an admission is dropped instead of failing the write.\nThe leader keeps earlier sets while the joint_fence gate is unread, as a\nreplica does. Older generations' ends are bounded by the durable offset too.\n\n* docs(upgrades): a rollback can refuse a replica set file with earlier sets (#1881)\n\n* fix(replication): a candidate does not stand on a set file keeping earlier sets (#1881)\n\nA candidate's fence leaves at most one set, so it would miss a majority of\nan earlier set kept from a fence that never opened. Such a shard is left to\nthe control plane. The merge of main also gives S9's test sets and refences\nthe new `earlier` field: a refence of a kept set sends the earlier sets the\nleader keeps.",
+          "timestamp": "2026-11-04T12:12:39-08:00",
+          "tree_id": "aba8e44aa5e3e4571ad9e4600bdd51f70b7baaee",
+          "url": "https://github.com/GetFelix/felix/commit/99ae6c71e98de2de12894f648730cd2bd8cada57"
+        },
+        "date": 1793823468015,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 504001.68,
+            "range": "40773.98",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 504001.68\nmean: 531762.33\nstdev: 40773.98\ncv: 7.67%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 504001.68,
+            "range": "40773.98",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 504001.68\nmean: 531762.33\nstdev: 40773.98\ncv: 7.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 120406.34,
+            "range": "5972.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 120406.34\nmean: 117668.25\nstdev: 5972.59\ncv: 5.08%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1204063.45,
+            "range": "59725.93",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1204063.45\nmean: 1176682.55\nstdev: 59725.93\ncv: 5.08%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
