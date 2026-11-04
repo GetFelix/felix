@@ -118,6 +118,11 @@ pub const PATH_LEASE: &str = "lease";
 /// had superseded, while taking that log.
 pub const PROMOTION_TRUNCATED_TOTAL: &str = "felix_broker_promotion_truncated_total";
 
+/// Fences under `joint_fence` that could not learn the set their generation
+/// leaves and reported the generation refused, so the control plane names the
+/// leader again one generation up.
+pub const FENCE_SET_UNKNOWN_TOTAL: &str = "felix_broker_fence_set_unknown_total";
+
 /// Scans the driver ran, by what woke it: `append`, `tick` or `routes`. Each
 /// one looks at every shard this broker leads.
 pub const SCANS_TOTAL: &str = "felix_broker_replication_scans_total";
@@ -178,6 +183,10 @@ pub fn record_promotion_opened(path: &'static str) {
 
 pub fn record_promotion_truncated() {
     metrics::counter!(PROMOTION_TRUNCATED_TOTAL).increment(1);
+}
+
+pub fn record_fence_set_unknown() {
+    metrics::counter!(FENCE_SET_UNKNOWN_TOTAL).increment(1);
 }
 
 pub fn record_move_throttled(bytes: u64) {

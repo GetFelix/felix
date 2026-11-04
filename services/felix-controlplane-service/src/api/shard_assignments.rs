@@ -1,5 +1,5 @@
 //! Which broker leads each shard, as operators and brokers read it.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use tokio::time::Instant;
@@ -15,6 +15,7 @@ use crate::api::pagination::{PageParams, list_visible};
 use crate::api::types::{
     ConfirmedShardAssignmentResponse, RoutedShardAssignment, RoutedShardAssignmentChange,
     ShardAssignmentChangesResponse, ShardAssignmentListResponse, ShardAssignmentSnapshotResponse,
+    SnapshotShardAssignment,
 };
 use crate::model::{ShardAssignment, ShardAssignmentChange, ShardKey, StreamRouting};
 use crate::store::{ConfirmedAssignment, StoreError};
@@ -98,8 +99,31 @@ pub(crate) async fn shard_assignment_snapshot(
         .shard_assignment_snapshot()
         .await
         .map_err(|ref err| api_internal("failed to snapshot shard assignments", err))?;
+    // Read after the snapshot: a first assignment stays first, so one read
+    // later marks no item wrongly, and one evicted in between is only left
+    // unmarked.
+    let first: HashSet<(ShardKey, u64, u64)> = state
+        .store
+        .first_shard_assignments()
+        .await
+        .map_err(|ref err| api_internal("failed to read first shard assignments", err))?
+        .into_iter()
+        .collect();
+    let items = with_routing(&state, snapshot.items)
+        .await?
+        .into_iter()
+        .map(|assigned| {
+            let item = &assigned.assignment;
+            let first_assignment =
+                first.contains(&(item.key.clone(), item.incarnation, item.generation));
+            SnapshotShardAssignment {
+                assigned,
+                first_assignment,
+            }
+        })
+        .collect();
     Ok(Json(ShardAssignmentSnapshotResponse {
-        items: with_routing(&state, snapshot.items).await?,
+        items,
         next_seq: snapshot.next_seq,
     }))
 }

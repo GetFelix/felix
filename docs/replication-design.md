@@ -4298,11 +4298,36 @@ Once it is finalized on a broker that offers `ELECTION`:
   when it names none; such a fence does not stay pending. For other changes the broker learns
   the set from the assignment its watch saw at that generation,
   from the set the leader before shipped with at it, or from what this
-  leader kept beside its own set. When none of those knows it (the watch
-  started from a snapshot, or skipped that generation, and the log keeps an
-  older set), the fence stays pending rather than fence the new set alone.
-  Only a shard's first assignment, on a log that keeps no set, has nothing
-  to leave. A member of the old set that no route names any more is reached
+  leader kept beside its own set. When none of those knows it, the fence
+  does not fence the new set alone. What it does depends on what the log
+  keeps, and it acts only on evidence that no earlier set can still hold
+  acknowledged records:
+  - The log keeps this generation's own set and the broker's own ballot at
+    it: the broker opened this generation as leader before `joint_fence`
+    was on (a leader restarted after the finalize), and that open fenced
+    the set before. It reports the generation refused,
+    naming no node, and placement names it again one generation up on the
+    same set (`set_unknown`). The set that generation leaves is the one the
+    log keeps, so the fence there can open.
+  - The route is at generation 0 and the log keeps no set: a shard never
+    moved since it was placed. A log never keeps a set at generation 0, and
+    no generation comes before it, so nothing can be left unfenced (only a
+    deleted stream recreated at incarnation 0 wrote before, which an open
+    without `joint_fence` ignores too). The broker asks for a rename as
+    above, and the fence at generation 1 needs a majority of the set at 0.
+  - The log keeps this generation's set under another node's ballot, kept
+    from that node's fence or election request: nothing proves the set
+    before was fenced from here. The fence stays pending.
+  - The log keeps an older set than the one before: the leader skipped a
+    generation it never opened, and a rename would leave that generation's
+    set unfenced. The fence stays pending.
+  - The log keeps no set, above generation 0: this may be a failover's new leader whose watch
+    started from a snapshot, while the old leader, cut off, still
+    acknowledges on a majority of the old set. The fence stays pending.
+    Only a shard's first assignment has nothing to leave: the watch sees
+    it as an `assigned` change, or the snapshot marks it
+    (`first_assignment`), and then the new set is fenced alone.
+  A member of the old set that no route names any more is reached
   at the address the node catalog gives, and answers even though its own
   routing view leaves it out.
 - Outside a pending cut-over, a failover can leave two sets. When the

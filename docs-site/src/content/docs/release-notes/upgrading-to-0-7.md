@@ -145,7 +145,7 @@ Later control-plane changes are on `main`:
   (`member_storage_ids`): Postgres migration `0039`, Raft metadata level 22.
 - A copy whose storage was replaced is a learner until it is re-admitted, and
   a leader reports where its generation started (`holds_start`): migration
-  `0040`, level 23. Finalizing `joint_fence` needs that level, and
+  `0040`, level 23. Finalizing `joint_fence` needs level 25 (below), and
   `generation_start`, `stream_incarnations` and `cache_incarnations`
   finalized first. A broker reports `joint_fence` only with
   `FELIX_INTERNAL_ELECTION=true`, so it is part of turning on failover
@@ -154,6 +154,15 @@ Later control-plane changes are on `main`:
 - A leader that could not serve a generation because it had promised it to
   another node reports the refusal, and placement names it again at a higher
   generation (#1730): migration `0042`, level 25.
+- After `joint_fence` is finalized, a leader restarted at a generation that
+  started before the finalize cannot learn the replica set that generation
+  replaced. It reports the generation refused, and placement names it again
+  one generation up. The report uses the `refused` field above with no node
+  named, so it needs migration `0042` and level 25, and finalizing
+  `joint_fence` under Raft waits for level 25. Rolling restarts after the
+  finalize need no extra step. A new shard a broker first sees in a snapshot
+  opens on the snapshot's `first_assignment` mark, which a 0.7 control plane
+  sends. With the usual upgrade order (control plane first) every broker gets it.
 - An elected leader is adopted on the replica set it was elected on: level
   26, with no Postgres migration. Finalizing `replica_election` needs that
   level.

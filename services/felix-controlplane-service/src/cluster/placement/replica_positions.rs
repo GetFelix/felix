@@ -67,6 +67,8 @@
 //! [`ControlPlaneStore`]: crate::store::ControlPlaneStore
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use felix_common::membership::RefusedGeneration;
+
 use crate::cluster::placement::CaughtUp;
 use crate::config::NodeLivenessConfig;
 use crate::model::{
@@ -429,17 +431,17 @@ impl ReplicaPositions {
             && self.same_incarnation(report, leader)
     }
 
-    /// Whether `leader` reported at `generation` that it refused that
-    /// generation, in a report still within its TTL.
-    fn refused(&self, key: &ShardKey, generation: u64, leader: &str) -> bool {
-        self.fresh(key).is_some_and(|report| {
-            report.leader.as_deref() == Some(leader)
-                && report.generation == generation
-                && report
-                    .refused
-                    .as_ref()
-                    .is_some_and(|refused| refused.generation == generation)
-        })
+    /// The refusal of `generation` that `leader` reported at it, in a report
+    /// still within its TTL.
+    fn refused(&self, key: &ShardKey, generation: u64, leader: &str) -> Option<RefusedGeneration> {
+        let report = self.fresh(key)?;
+        if report.leader.as_deref() != Some(leader) || report.generation != generation {
+            return None;
+        }
+        report
+            .refused
+            .clone()
+            .filter(|refused| refused.generation == generation)
     }
 
     /// Whether the given-up leader's probe names `node_id` caught up, on the
@@ -613,7 +615,12 @@ impl CaughtUp for ReplicaPositions {
             })
     }
 
-    fn leader_refused(&self, key: &ShardKey, generation: u64, leader: &str) -> bool {
+    fn leader_refusal(
+        &self,
+        key: &ShardKey,
+        generation: u64,
+        leader: &str,
+    ) -> Option<RefusedGeneration> {
         self.refused(key, generation, leader)
     }
 

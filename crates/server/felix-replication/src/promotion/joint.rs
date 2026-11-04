@@ -267,6 +267,54 @@ impl JointSets {
     }
 }
 
+/// Why [`set_before`] has no set for a route.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum NoSetBefore {
+    /// This broker counts the set of this newer generation.
+    Newer(u64),
+    /// Nothing here names the set at the generation before this one, and
+    /// this log keeps this generation's own set. Only a later generation can
+    /// tell, and renaming to it leaves the set this log keeps. [`sets`]
+    /// returns it only when this broker also opened the generation as its
+    /// leader, before `joint_fence` was on: that open already fenced the
+    /// set before, so the rename skips nothing. Also generation 0 with no
+    /// kept set: no log keeps one there, and no generation precedes it.
+    Unknown(u64),
+    /// As [`Self::Unknown`], but this log keeps the set of an older
+    /// generation than the one before: this broker never opened the
+    /// generation in between, whose set a rename would leave unfenced.
+    Skipped(u64),
+    /// As [`Self::Unknown`], but this log keeps no set and nothing says the
+    /// route is the shard's first assignment. An earlier set may hold
+    /// acknowledged records that a rename would leave unfenced.
+    Unseen(u64),
+    /// As [`Self::Unknown`], but this broker's ballot is not its own at this
+    /// generation: the set was kept from another node's fence or election
+    /// request, which proves nothing was fenced from here.
+    NotOpened(u64),
+}
+
+impl std::fmt::Display for NoSetBefore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Newer(generation) => write!(
+                f,
+                "this broker counts the set of generation {generation}, newer than this one"
+            ),
+            Self::Unknown(generation)
+            | Self::Skipped(generation)
+            | Self::Unseen(generation)
+            | Self::NotOpened(generation) => {
+                write!(
+                    f,
+                    "the set before generation {generation} is not known here, so the set being \
+                     left cannot be fenced"
+                )
+            }
+        }
+    }
+}
+
 /// The control plane's set right before `route`, which a set change at the
 /// route's generation leaves. `Ok(None)`: the route is the shard's first
 /// assignment and this log keeps no set, so nothing came before it. `Err`
@@ -275,15 +323,12 @@ pub(crate) fn set_before(
     stored: Option<&ReplicaSet>,
     route: &Route,
     prior: Option<&PriorSet>,
-) -> Result<Option<Membership>, String> {
+) -> Result<Option<Membership>, NoSetBefore> {
     let before = route.generation.checked_sub(1);
     if let Some(stored) = stored
         && stored.current.generation > route.generation
     {
-        return Err(format!(
-            "this broker counts the set of generation {}, newer than this one",
-            stored.current.generation
-        ));
+        return Err(NoSetBefore::Newer(stored.current.generation));
     }
     // A cut-over the control plane holds as pending names the set it leaves:
     // the control plane's own, as the model's `Swap` takes it, and the set
@@ -318,8 +363,9 @@ pub(crate) fn set_before(
                 return Ok(Some(crate::replica_set::placed(set, before)));
             }
         }
-        // A first assignment has nothing before it, and a log that already
-        // keeps a set is not one a first assignment would find.
+        // A first assignment, as the watch saw it or a snapshot marked it,
+        // has nothing before it, and a log that already keeps a set is not
+        // one a first assignment would find.
         Some(PriorSet { before: None, .. }) if stored.is_none() => return Ok(None),
         _ => {}
     }
@@ -329,11 +375,20 @@ pub(crate) fn set_before(
     {
         return Ok(Some(stored.current.clone()));
     }
-    Err(format!(
-        "the set before generation {} is not known here, so the set being left cannot be \
-         fenced",
-        route.generation
-    ))
+    // Only this generation's own kept set is evidence that no earlier set
+    // still holds records this broker would leave behind. A log never keeps
+    // a set at generation 0 (`accept_set` takes it as the one it has), but
+    // no generation precedes it: only a deleted stream recreated at
+    // incarnation 0 can have written before, as without `joint_fence`. The
+    // rename's fence at 1 still needs a majority of the set at 0.
+    match stored {
+        Some(stored) if stored.current.generation == route.generation => {
+            Err(NoSetBefore::Unknown(route.generation))
+        }
+        Some(_) => Err(NoSetBefore::Skipped(route.generation)),
+        None if route.generation == 0 => Err(NoSetBefore::Unknown(0)),
+        None => Err(NoSetBefore::Unseen(route.generation)),
+    }
 }
 
 /// The set `stored` keeps from before `route`, when it names other members
@@ -468,7 +523,8 @@ fn recorded_leaving(
 
 /// The fence for `route` under `joint_fence`: the set it leaves, and the
 /// joint fence when that set's voters differ from the route's. `Err` is a
-/// fence that cannot open yet, because the set being left is not known.
+/// fence that cannot open at this generation, because the set being left is
+/// not known.
 ///
 /// A member whose capabilities cannot be learned, whose address is unknown,
 /// or that does not check sets, is not asked: it is a member that has not
@@ -481,9 +537,20 @@ pub(super) async fn sets<R: PeerRequester>(
     route: &Route,
     set: &ReplicaSetView,
     joint: &Joint<'_>,
-) -> Result<Fenced, String> {
+) -> Result<Fenced, NoSetBefore> {
     let stored = log.replica_set();
-    let before = match set_before(stored.as_ref(), route, joint.prior.as_ref())? {
+    let before = match set_before(stored.as_ref(), route, joint.prior.as_ref()) {
+        // A rename is safe only past a generation this broker opened as
+        // leader: its own ballot there, as `keep_own_set` records it.
+        Err(NoSetBefore::Unknown(generation))
+            if log.accepted_generation() != generation
+                || log.accepted_leader().as_deref() != Some(local_node_id) =>
+        {
+            return Err(NoSetBefore::NotOpened(generation));
+        }
+        before => before?,
+    };
+    let before = match before {
         Some(before) => before,
         // Nothing before a first assignment: kept as an empty set, which
         // is no change to fence across, as in the model.
