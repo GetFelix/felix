@@ -1,0 +1,115 @@
+name: Performance A/B (commit path)
+
+# Runs crates/server/felix-broker/tests/commit_throughput.rs against a baseline
+# ref and the checked-out ref, alternating sides each round, and prints median
+# throughput and latency per cell with a Welch's t-test. The test file is
+# copied into the baseline so a ref that predates it can be measured.
+# Advisory: it never fails the run.
+
+on:
+  push:
+    branches: [feat/1051-commit-if-version]
+    paths: [.github/workflows/perf-commit-ab.yml]
+  workflow_dispatch:
+    inputs:
+      baseline:
+        description: "Baseline ref"
+        required: false
+        default: "main"
+        type: string
+      rounds:
+        description: "Rounds; each runs every cell once per side. Use an even number."
+        required: false
+        default: "20"
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  compare:
+    runs-on: ${{ vars.FELIX_LARGE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          path: candidate
+
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.baseline || 'main' }}
+          path: baseline
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.99.1"
+
+      - name: Build both sides
+        run: |
+          set -euo pipefail
+          cp candidate/crates/server/felix-broker/tests/commit_throughput.rs \
+             baseline/crates/server/felix-broker/tests/commit_throughput.rs
+          for side in baseline candidate; do
+            # One target directory per checkout: the two share crate names.
+            (cd "$side" && CARGO_TARGET_DIR="$PWD/target" cargo test --release -p felix-broker \
+              --test commit_throughput --no-run --message-format=json \
+              | python3 -c 'import sys,json
+for l in sys.stdin:
+    try: m=json.loads(l)
+    except ValueError: continue
+    if m.get("executable") and m["target"]["name"]=="commit_throughput": print(m["executable"])' \
+              > "../$side.bin")
+          done
+
+      - name: Run, alternating
+        env:
+          ROUNDS: ${{ inputs.rounds || '20' }}
+        run: |
+          set -euo pipefail
+          : > a.jsonl; : > b.jsonl
+          one() { "$(cat "$1.bin")" --ignored --nocapture 2>&1 | grep '^{' >> "$2"; }
+          for round in $(seq 1 "$ROUNDS"); do
+            if [ $((round % 2)) -eq 1 ]; then one baseline a.jsonl; one candidate b.jsonl
+            else one candidate b.jsonl; one baseline a.jsonl; fi
+          done
+
+      - name: Compare
+        run: |
+          python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import json, math, statistics as st
+          def load(p):
+              d = {}
+              for l in open(p):
+                  r = json.loads(l)
+                  d.setdefault(r["cell"], []).append(r)
+              return d
+          a, b = load("a.jsonl"), load("b.jsonl")
+          def welch(x, y):
+              if len(x) < 2 or len(y) < 2: return float("nan")
+              vx, vy = st.variance(x)/len(x), st.variance(y)/len(y)
+              return (st.mean(y)-st.mean(x))/math.sqrt(vx+vy) if vx+vy else 0.0
+          print("| cell | metric | baseline median | candidate median | change | t | n |")
+          print("|---|---|---|---|---|---|---|")
+          for cell in sorted(a):
+              for m in ("commits_per_s", "p50_ns", "p99_ns"):
+                  x = [r[m] for r in a[cell]]; y = [r[m] for r in b.get(cell, [])]
+                  if not y: continue
+                  mx, my = st.median(x), st.median(y)
+                  print(f"| {cell} | {m} | {mx:.0f} | {my:.0f} | {100*(my-mx)/mx:+.1f}% | {welch(x,y):+.1f} | {len(x)}/{len(y)} |")
+          PY
+
+      - name: Upload raw results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: perf-commit-ab-results
+          path: |
+            a.jsonl
+            b.jsonl
+          if-no-files-found: warn
