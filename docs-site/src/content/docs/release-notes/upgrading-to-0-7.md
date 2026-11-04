@@ -69,7 +69,8 @@ None of these is required. Each default keeps the 0.6.2 behavior.
 | `FELIX_RECORD_HEADERS` *(main)* | Single broker only. `false` refuses publishes that carry headers, which keeps logs at v7 or older. Turning it off later leaves stored headers readable. |
 | `FELIX_MQTT_LISTEN`, `FELIX_MQTT_WS_LISTEN` *(main)* | Bind the MQTT listener, plain and over WebSockets. Unset leaves it off. Related `FELIX_MQTT_*` limits are in [the reference](/reference/environment-variables/). |
 | `FELIX_LEASE_TOKEN_KEY_FILE`, `FELIX_LEASE_TOKEN_MAX_TTL_SECONDS` *(main)* | Key file and longest lifetime for lease tokens. Without the key file a broker neither mints nor accepts them. Every broker needs the same file. |
-| `FELIX_SHARD_ELECTION_HOLD_MS`, `FELIX_SHARD_PENDING_SET_TIMEOUT_MS` | Control-plane timers for `replica_election`, which no broker offers yet. Nothing uses them today. |
+| `FELIX_INTERNAL_ELECTION` | Broker. `true` makes the broker offer replica elections. Every broker needs it before `joint_fence` and `replica_election` can be finalized, and keeps needing it after. See [Turning on failover without the control plane](#turning-on-failover-without-the-control-plane). |
+| `FELIX_SHARD_ELECTION_HOLD_MS`, `FELIX_SHARD_PENDING_SET_TIMEOUT_MS` | Control-plane timers for `replica_election`. Nothing uses them until that feature is finalized. |
 
 In a cluster, headers are refused whatever `FELIX_RECORD_HEADERS` says, because
 the `record_headers` fleet feature is not implemented yet.
@@ -122,15 +123,14 @@ soon after the first no longer leaves the shard closed (#1574).
 The control plane can now keep a cut-over's new replica set pending until
 the leader reports it on both the old and the new set, and adopt a leader
 its replicas elected, both of which `replica_election` needs (#1009).
-Nothing uses them until that feature is finalized, and no broker offers it
-yet.
+Nothing uses them until that feature is finalized.
 
 - With the Postgres backend, the control plane runs migration `0038` when it
   starts. Finish upgrading every control-plane instance before finalizing
   `replica_election`: the control plane cannot see another instance's version,
   and one that predates this drops a pending set when it writes the shard.
-- With the Raft backend, both need every member at metadata level 21, and so
-  does finalizing `replica_election`.
+- With the Raft backend, both need every member at metadata level 21.
+  Finalizing `replica_election` needs level 26 (below).
 
 Later control-plane changes are on `main`:
 
@@ -140,10 +140,52 @@ Later control-plane changes are on `main`:
   a leader reports where its generation started (`holds_start`): migration
   `0040`, level 23. Finalizing `joint_fence` needs that level.
 - A stream can carry an MQTT mount: migration `0041`, level 24.
+- A leader's report can say which generation it refused because it was
+  promised to another broker, so the control plane names it again above that
+  generation (#1730): migration `0042`, level 25.
+- An elected leader is adopted on the replica set it was elected on: level
+  26, with no Postgres migration. Finalizing `replica_election` needs that
+  level.
 
-In short, Postgres runs migrations `0037` to `0041` on start (`0039` to
-`0041` are on `main` only), and under Raft these features wait for metadata
-levels 20 to 24. Upgrade every control-plane member before the brokers.
+In short, Postgres runs migrations `0037` to `0042` on start (`0039` to
+`0042` are on `main` only), and under Raft these features wait for metadata
+levels 20 to 26. Upgrade every control-plane member before the brokers.
+
+## Turning on failover without the control plane
+
+In 0.7.0 a shard's replicas can elect a new leader themselves when the old one
+dies while the control plane is down. It stays off after the upgrade. What it
+does and its limits are in [Failover without the control
+plane](/deployment/failover-without-control-plane/). To turn it on, after the
+upgrade above:
+
+1. Finish upgrading every control-plane member. Under Raft the finalizes below
+   check it (level 23 for `joint_fence`, 26 for `replica_election`). Under
+   Postgres nothing checks it, so make sure no instance runs an older build.
+2. Set `FELIX_INTERNAL_ELECTION=true` on every broker and restart them one at
+   a time. Nothing changes yet.
+3. Finalize, if they are not already, `generation_start`, `majority_ack`,
+   `lease_free_reads`, and `fenced_caches` if you want caches elected. Each
+   has its own cautions in [Upgrades and
+   compatibility](/deployment/upgrades/#runbook-rolling-out-a-fleet-feature).
+4. Finalize `stream_incarnations` and `cache_incarnations`. Do this before
+   `joint_fence`: under `joint_fence`, a new stream or cache created without an
+   incarnation never finishes opening (#1862).
+5. Finalize `joint_fence`, dry run first:
+
+   ```bash
+   felix-controlplane admin features finalize joint_fence --dry-run
+   felix-controlplane admin features finalize joint_fence
+   ```
+
+   From here a broker without `FELIX_INTERNAL_ELECTION=true` is refused at
+   registration, so keep it set on every broker, new ones included.
+6. Finalize `replica_election` the same way.
+7. Check that `felix_broker_fleet_feature_enabled{feature="replica_election"}`
+   is 1 on every broker.
+
+A cluster created on 0.7.0 has already finalized steps 3 and 4 at its first
+broker registration, so it needs steps 2, 5, 6 and 7 only.
 
 ## Clients
 
