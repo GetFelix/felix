@@ -225,6 +225,7 @@ async fn under_joint_fence_a_shipping_leader_keeps_the_set_it_leaves() {
         log.accept_set(ReplicaSet {
             current: before,
             leaving: None,
+            earlier: Vec::new(),
         })
         .await
         .expect("the set before");
@@ -275,6 +276,7 @@ async fn under_joint_fence_a_shipping_leader_keeps_no_set_when_the_one_before_is
                 .to_vec(),
         },
         leaving: None,
+        earlier: Vec::new(),
     })
     .await
     .expect("an older set");
@@ -315,6 +317,7 @@ async fn a_restarted_elected_leader_keeps_the_set_it_was_elected_on() {
                 .to_vec(),
         },
         leaving: None,
+        earlier: Vec::new(),
     })
     .await
     .expect("the set it was elected on");
@@ -449,6 +452,7 @@ fn set_of_three(generation: u64) -> felix_storage::disk_log::ReplicaSet {
                 .to_vec(),
         },
         leaving: None,
+        earlier: Vec::new(),
     }
 }
 
@@ -477,6 +481,7 @@ async fn a_leader_opened_at_a_bump_on_the_same_members_keeps_the_new_set() {
                 .to_vec(),
         },
         leaving: None,
+        earlier: Vec::new(),
     })
     .await
     .expect("the set of 3");

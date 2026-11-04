@@ -105,6 +105,16 @@ impl PeerCapabilities {
     ///
     /// [`ReplicateOk::learner`]: super::ReplicateOk::learner
     pub const LEARNER_ACKS: Self = Self(1 << 15);
+    /// Keeps every set an election fence names, not only the set being
+    /// left, and every set its own log kept from generations that never
+    /// opened, and reads a fence that carries the older sets
+    /// ([`FenceElection::earlier`]). A joint fence counts only replicas
+    /// that offer it: one that keeps a single set would let a later
+    /// failover from its log skip a set that still holds acknowledged
+    /// writes.
+    ///
+    /// [`FenceElection::earlier`]: super::FenceElection::earlier
+    pub const KEPT_SETS: Self = Self(1 << 16);
     /// Reads batches that carry each record's key-and-headers block
     /// ([`ReplicateRecords::headers`]) and stores the blocks with the
     /// records, answers a headered [`ReplicateFetch`] with them, and reads a

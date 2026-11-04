@@ -21,10 +21,12 @@
 //! plane recorded without taking, a failover leaves both the recorded set and
 //! the elected leader's (#1806). A majority of each is needed.
 //!
-//! So is the set kept beside the log's own when this log holds no record of
-//! its own set's generation: that fence may never have opened, and
-//! then a majority of the set it was leaving may still hold what was
-//! acknowledged before it (#1878).
+//! So are the sets kept beside the log's own when this log holds no record
+//! of its own set's generation: that fence may never have opened, and then a
+//! majority of any set it was leaving may still hold what was acknowledged
+//! before it (#1878). The log keeps every such set across fences that never
+//! opened, not only the newest (#1881), and the fence carries all of them to
+//! every member, so whichever replica fails over next fences them too.
 
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
@@ -132,7 +134,8 @@ pub(super) struct JointSets {
     pub(super) leaving: ReplicaSetView,
     /// The log's sets from before the route that are left besides
     /// `leaving`. A member voting only in one is sent it instead of
-    /// `leaving`, or it would refuse a fence naming no set it votes in.
+    /// `leaving`, or it would refuse a fence naming no set it votes in. Every
+    /// member is sent the rest as the fence's earlier sets, to keep.
     besides: Vec<ReplicaSetView>,
     /// Each set being left counted with its learners and without: replicas
     /// keep it either way, and a majority of each is needed.
@@ -184,6 +187,17 @@ impl JointSets {
             .iter()
             .find(|besides| votes_in(besides))
             .unwrap_or(&self.leaving)
+    }
+
+    /// The sets being left that the fence to `node_id` carries besides
+    /// [`Self::leaving_for`], so a replica keeps every one of them.
+    pub(super) fn earlier_for(&self, node_id: &str) -> Vec<ReplicaSetView> {
+        let sent = self.leaving_for(node_id);
+        std::iter::once(&self.leaving)
+            .chain(&self.besides)
+            .filter(|set| *set != sent)
+            .cloned()
+            .collect()
     }
 
     /// Whether any member of the set being left is named by its copy, so
@@ -436,37 +450,44 @@ pub(super) fn logged_besides(
         .cloned()
 }
 
-/// The set `stored` keeps as left by its own set's fence, when `opened` is
-/// false: this log holds no record of that generation, so the fence
-/// may never have opened, and a majority of the set it was leaving may still
-/// hold what was acknowledged before it while no later set does. A failover
-/// fences it too, unless `fenced` already holds it (#1878).
-pub(super) fn unopened_leaving(
+/// The sets `stored` keeps from before its own set, when `opened` is false:
+/// this log holds no record of its set's generation, so that fence may never
+/// have opened, and a majority of a set it was leaving may still hold what
+/// was acknowledged before it while no later set does. That is the set kept
+/// as leaving (#1878) and every earlier set the log carried across fences
+/// that never opened (#1881). A failover fences each that `fenced` does not
+/// already hold.
+pub(super) fn unopened_sets(
     stored: Option<&ReplicaSet>,
     route: &Route,
     opened: bool,
     fenced: &[&Membership],
-) -> Option<Membership> {
-    let stored = stored?;
-    let leaving = stored.leaving.as_ref()?;
-    (!opened
-        && stored.current.generation < route.generation
-        && !leaving.members.is_empty()
-        && !fenced.iter().any(|set| same_set(set, leaving)))
-    .then(|| leaving.clone())
+) -> Vec<Membership> {
+    let Some(stored) =
+        stored.filter(|stored| !opened && stored.current.generation <= route.generation)
+    else {
+        return Vec::new();
+    };
+    let mut sets: Vec<Membership> = Vec::new();
+    for set in stored.leaving.iter().chain(&stored.earlier) {
+        if !set.members.is_empty()
+            && !fenced
+                .iter()
+                .copied()
+                .chain(&sets)
+                .any(|kept| same_set(kept, set))
+        {
+            sets.push(set.clone());
+        }
+    }
+    sets
 }
 
 /// Whether two sets name the same members. Learner flags and copies count:
 /// the same names voting differently, or from other copies, are another set,
 /// whose majorities the other may miss.
 fn same_set(one: &Membership, other: &Membership) -> bool {
-    let nodes = |set: &Membership| {
-        set.members
-            .iter()
-            .map(|m| (m.node.clone(), m.learner, m.storage.map(|id| id.to_bytes())))
-            .collect::<BTreeSet<_>>()
-    };
-    nodes(one) == nodes(other)
+    one.same_members(other)
 }
 
 /// A pending change's set being left, at generation `before`. The other
@@ -566,11 +587,10 @@ pub(super) async fn sets<R: PeerRequester>(
     if !before.members.is_empty()
         && let Some(stored) = stored.as_ref()
     {
-        let opened = holds_records_of(log, stored.current.generation).await;
+        let opened = log.holds_records_of(stored.current.generation);
         let fenced: Vec<&Membership> = std::iter::once(&before).chain(&besides).collect();
-        if let Some(unopened) = unopened_leaving(Some(stored), route, opened, &fenced) {
-            besides.push(unopened);
-        }
+        let unopened = unopened_sets(Some(stored), route, opened, &fenced);
+        besides.extend(unopened);
     }
     Ok(across(requester, local_node_id, route, set, before, besides, joint).await)
 }
@@ -662,8 +682,12 @@ pub(super) async fn across<R: PeerRequester>(
             None => requester.capabilities(&node_id, advertise_addr).await.ok(),
         };
         // A member that does not check sets would take the fence without
-        // the set being left; it cannot count toward either majority.
-        if offered.is_some_and(|offered| offered.contains(PeerCapabilities::ELECTION)) {
+        // the set being left, and one that keeps a single set being left
+        // would let a failover from its log skip the others; neither counts
+        // toward any majority.
+        if offered.is_some_and(|offered| {
+            offered.contains(PeerCapabilities::ELECTION.union(PeerCapabilities::KEPT_SETS))
+        }) {
             asked.push(NodeRef {
                 node_id,
                 advertise_addr,
@@ -684,19 +708,6 @@ pub(super) async fn across<R: PeerRequester>(
         before,
         joint: Some(joint),
     }
-}
-
-/// Whether `log` holds a record written at `generation`: a leader writes one
-/// only once its fence opened. The generation's epoch outlives a trim of its
-/// start record, which a retention pass may take. A tail that cannot be read
-/// is no evidence.
-async fn holds_records_of(log: &felix_broker::StreamLog, generation: u64) -> bool {
-    let Ok(tail) = log.tail_offset().await else {
-        return false;
-    };
-    log.generations()
-        .iter()
-        .any(|epoch| epoch.generation == generation && epoch.start_offset < tail)
 }
 
 pub(crate) fn view(set: &Membership) -> ReplicaSetView {

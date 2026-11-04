@@ -7,9 +7,12 @@ use felix_storage::disk_log::{Member, Membership, ReplicaSet};
 
 use super::*;
 
-/// What every replica here offers: the fence and set checks.
+/// What every replica here offers: the fence and set checks, keeping every
+/// set a fence names.
 fn electing() -> PeerCapabilities {
-    PeerCapabilities::from_bits(REQUIRED.bits()).union(PeerCapabilities::ELECTION)
+    PeerCapabilities::from_bits(REQUIRED.bits())
+        .union(PeerCapabilities::ELECTION)
+        .union(PeerCapabilities::KEPT_SETS)
 }
 
 fn addr_of(node_id: &str) -> Option<SocketAddr> {
@@ -95,6 +98,7 @@ async fn kept_marked(
     log.accept_set(ReplicaSet {
         current,
         leaving: None,
+        earlier: Vec::new(),
     })
     .await
     .expect("keep the old set");
@@ -573,6 +577,7 @@ async fn a_failover_without_a_prior_fences_the_set_the_log_kept_as_leaving() {
     log.accept_set(ReplicaSet {
         current: set(4, &[LEADER, "broker-x", "broker-z"]),
         leaving: Some(set(3, &["broker-x", LEADER, "broker-b"])),
+        earlier: Vec::new(),
     })
     .await
     .expect("keep the pending set and the one it leaves");
@@ -1052,6 +1057,7 @@ fn a_log_set_differing_only_in_learners_is_fenced_beside_the_one_before() {
     let stored = ReplicaSet {
         current: set(&["broker-y", "broker-w"]),
         leaving: None,
+        earlier: Vec::new(),
     };
 
     let besides =
@@ -1266,6 +1272,7 @@ async fn kept_leaving_ayw(leader: &Broker) {
     log.accept_set(ReplicaSet {
         current: set(4, ["broker-x", "broker-b", "broker-c"]),
         leaving: Some(set(3, [LEADER, "broker-y", "broker-w"])),
+        earlier: Vec::new(),
     })
     .await
     .expect("keep the fence's sets");
@@ -1347,4 +1354,130 @@ async fn a_generation_recorded_without_records_still_fences_what_it_left() {
     let outcome = fence_after(&replicas, &leader, true, Some(prior_xbc())).await;
 
     assert!(matches!(outcome, Outcome::Pending { .. }), "{outcome:?}");
+}
+
+fn named(generation: u64, members: [&str; 3]) -> Membership {
+    Membership {
+        generation,
+        members: members
+            .map(|node| Member {
+                node: node.to_string(),
+                storage: None,
+                learner: false,
+                wiped: false,
+            })
+            .to_vec(),
+    }
+}
+
+/// broker-a answered two joint fences that never opened: at 3, leaving
+/// {broker-a, broker-u, broker-v} for {broker-a, broker-y, broker-w}, then
+/// at 4, leaving that for {broker-x, broker-b, broker-c}. It holds nothing
+/// written at 3 or 4.
+async fn kept_two_unopened(leader: &Broker) {
+    let log = leader
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    log.accept_generation(4, Some("broker-x"))
+        .await
+        .expect("ballot");
+    for (current, leaving) in [
+        (
+            named(3, [LEADER, "broker-y", "broker-w"]),
+            named(2, [LEADER, "broker-u", "broker-v"]),
+        ),
+        (
+            named(4, ["broker-x", "broker-b", "broker-c"]),
+            named(3, [LEADER, "broker-y", "broker-w"]),
+        ),
+    ] {
+        log.accept_set_keeping_earlier(ReplicaSet {
+            current,
+            leaving: Some(leaving),
+            earlier: Vec::new(),
+        })
+        .await
+        .expect("keep the fence's sets");
+    }
+}
+
+/// **A failover fences every set since the last generation that opened,
+/// not only the newest one left (#1881).** The fence at 4 overwrote the set
+/// kept as leaving, but the log carried the set left at 3: broker-u may hold
+/// a write acknowledged at 2 that no later set's majority has. The fence
+/// waits for a majority of it too, and every member keeps all the sets, so a
+/// failover from its log fences them as well.
+#[tokio::test]
+async fn a_failover_fences_the_sets_of_two_unopened_fences() {
+    let mut replicas = replicas_with(&[
+        "broker-x", "broker-z", "broker-y", "broker-w", "broker-u", "broker-v",
+    ]);
+    for down in ["broker-x", "broker-w", "broker-u", "broker-v"] {
+        replicas.get_mut(down).reachable = false;
+    }
+    // Members keep earlier sets only once `joint_fence` is finalized, and
+    // then answer only while they hold a promise.
+    for member in ["broker-z", "broker-u"] {
+        let replica = replicas.get_mut(member);
+        replica.handler = ReplicaHandler::new(Arc::clone(&replica.broker), router_for(member, 3))
+            .with_fleet(Arc::new(joint_fence_marks(true)));
+        replica
+            .broker
+            .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+            .await
+            .expect("log")
+            .accept_generation(1, Some(LEADER))
+            .await
+            .expect("ballot");
+    }
+    let (leader, _dir) = leader_holding(1, &["a"]).await;
+    kept_two_unopened(&leader).await;
+
+    let outcome = fence_after(&replicas, &leader, true, Some(prior_xbc())).await;
+    let Outcome::Pending { why, .. } = &outcome else {
+        panic!("opened without a majority of the oldest unopened set: {outcome:?}");
+    };
+    assert!(why.contains("2 of 3 and 2 of 3 and 1 of 3 voters"), "{why}");
+
+    replicas.get_mut("broker-u").reachable = true;
+    let outcome = fence_after(&replicas, &leader, true, Some(prior_xbc())).await;
+    assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
+    for member in ["broker-z", "broker-u"] {
+        let kept = replicas
+            .get(member)
+            .broker
+            .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+            .await
+            .expect("log")
+            .replica_set()
+            .expect("kept the fence's sets");
+        let mut generations: Vec<u64> = kept.leaving.iter().map(|old| old.generation).collect();
+        generations.extend(kept.earlier.iter().map(|old| old.generation));
+        generations.sort_unstable();
+        assert_eq!(generations, vec![2, 3, 4], "{member}");
+    }
+}
+
+/// **A member that would keep one set being left is not counted, even by a
+/// fence with no earlier set to carry.** broker-c offers `ELECTION` but not
+/// `KEPT_SETS`: it would overwrite the sets its own log kept, so a failover
+/// from it could skip one. With broker-b down, broker-x alone is not a
+/// majority of the set being left.
+#[tokio::test]
+async fn a_member_without_kept_sets_counts_as_not_answering() {
+    let mut replicas = replicas_with(&["broker-x", "broker-z"]);
+    replicas.get_mut("broker-b").reachable = false;
+    replicas.get_mut("broker-c").capabilities =
+        PeerCapabilities::from_bits(REQUIRED.bits()).union(PeerCapabilities::ELECTION);
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+    kept_before(&leader, &["broker-x", "broker-b", "broker-c"], &[]).await;
+
+    let outcome = fence(&replicas, &leader, true).await;
+
+    let Outcome::Pending { why, .. } = &outcome else {
+        panic!("counted a member that keeps one set: {outcome:?}");
+    };
+    assert!(why.contains("1 of 3 voters of the set being left"), "{why}");
+    assert!(!replicas.sent_to("broker-c"), "asked broker-c");
 }

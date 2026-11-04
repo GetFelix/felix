@@ -545,7 +545,13 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         })
         .flatten();
     if let Some(kept) = kept
-        && let Err(err) = log.accept_set(kept).await
+        // Kept while the gate is unread too, as a replica keeps them.
+        && let Err(err) = crate::replica_set::accept(
+            &log,
+            kept,
+            marks.fleet_decides(felix_common::fleet::JOINT_FENCE) != Some(false),
+        )
+        .await
     {
         tracing::warn!(
             stream = %key.stream,

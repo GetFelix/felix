@@ -111,6 +111,14 @@ and [`record_headers`](/deployment/upgrades/#record_headers)
 for what each writes and what an older broker does with it, and
 [Rollback](/deployment/upgrades/#rollback) for the limits above.
 
+A rollback can also trip on a shard's replica set file. A 0.7 broker that has
+not yet read whether `joint_fence` is finalized, for example right after a
+restart, keeps older replica sets in that file, because dropping them is unsafe
+if the fleet did finalize it. An older build refuses such a file and fails to
+open that shard's log. Start the broker on 0.7 again, let it learn that
+`joint_fence` is off and write the shard's next replica set, which drops them,
+then roll it back.
+
 ## Control plane changes
 
 A leader promoted by a failover now reports, for each follower it has not
