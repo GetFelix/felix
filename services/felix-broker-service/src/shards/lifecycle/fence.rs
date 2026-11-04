@@ -182,6 +182,8 @@ impl ShardFence {
     pub fn open(&self, key: &ShardKey, generation: u64) {
         let gate = Arc::clone(self.gates.write().entry(key.clone()).or_default());
         gate.open_at.store(generation, SeqCst);
+        gate.opened_below
+            .fetch_max(generation.saturating_add(1), SeqCst);
     }
 
     /// Refuse every write to `key` that has not entered yet. Writes already in
@@ -401,6 +403,17 @@ impl felix_replication::driver::WriteFence for ShardFence {
         }
     }
 
+    fn opened_since(&self, key: &ShardKey, generation: u64) -> bool {
+        self.gates
+            .read()
+            .get(key)
+            .is_some_and(|gate| gate.opened_below.load(SeqCst) > generation)
+    }
+
+    fn promoting(&self, key: &ShardKey, generation: u64) -> bool {
+        self.awaiting_promotion(key) == Some(generation)
+    }
+
     fn withheld(&self, key: &ShardKey, generation: u64) -> bool {
         self.gave_up.read().get(key) == Some(&generation)
             || self
@@ -526,6 +539,9 @@ struct Gate {
     passed_at: AtomicU64,
     /// The generation this broker learned it was deposed at, or [`CLOSED`].
     deposed_at: AtomicU64,
+    /// One past the newest generation this process opened the shard at, or
+    /// 0 if it never has. Closing leaves it.
+    opened_below: AtomicU64,
     in_flight: AtomicUsize,
     idle: Notify,
 }
@@ -538,6 +554,7 @@ impl Default for Gate {
             sessions_free_at: AtomicU64::new(CLOSED),
             passed_at: AtomicU64::new(CLOSED),
             deposed_at: AtomicU64::new(CLOSED),
+            opened_below: AtomicU64::new(0),
             in_flight: AtomicUsize::new(0),
             idle: Notify::new(),
         }

@@ -444,9 +444,13 @@ async fn adopt_if_elected(
     let Some(elected) = shard.elected.as_ref() else {
         return Ok(assignment);
     };
+    // This control plane named another leader at the very generation the
+    // reporter was elected at. Ballots let only one of them open there, and
+    // the reporter is serving, so the named one never will.
+    let collided = shard.generation == assignment.generation && assignment.leader != node_id;
     if elected.leader != node_id
         || elected.generation != shard.generation
-        || shard.generation <= assignment.generation
+        || (shard.generation <= assignment.generation && !collided)
         || shard.stream_incarnation != assignment.incarnation
     {
         return Ok(assignment);
@@ -458,6 +462,9 @@ async fn adopt_if_elected(
         .map_err(|ref err| api_internal("read fleet features", err))?;
     if !enabled.contains(felix_common::fleet::REPLICA_ELECTION.name()) {
         return Ok(assignment);
+    }
+    if collided {
+        return reissue_past_collision(state, node_id, key, elected, assignment).await;
     }
     match state
         .store
@@ -474,8 +481,19 @@ async fn adopt_if_elected(
                 adopted,
                 "an elected leader reported; the control plane took its generation",
             );
+            // Taken as a generation only (below level 26, or an elected set
+            // naming a node the catalog lacks), it now names another leader at
+            // the elected one: move past that at once rather than on the next
+            // report, so a failover planned meanwhile does not leave the
+            // elected set unfenced. Placement wakes only after, so its write
+            // cannot win the generation first.
+            let result = if !adopted && written.generation == elected.generation {
+                reissue_past_collision(state, node_id, key, elected, written).await
+            } else {
+                Ok(written)
+            };
             state.placement_wakes.request_pass();
-            Ok(written)
+            result
         }
         Ok(_) => Ok(assignment),
         // Below metadata level 21 under Raft, or a set the store refuses:
@@ -489,6 +507,80 @@ async fn adopt_if_elected(
         // one retries, as for a lost CAS.
         Err(err) => {
             tracing::warn!(error = %err, "adopting an elected leader failed");
+            Ok(assignment)
+        }
+    }
+}
+
+/// Move a shard whose generation the control plane and an election both
+/// claimed to the next one, under the elected leader, so it has a leader that
+/// can open: [`ShardAssignment::reissuing`](crate::model::ShardAssignment::reissuing),
+/// with the conditional, placement-fenced write placement uses.
+///
+/// Only the elected leader is named. It opened at the collided generation, so
+/// its log holds everything acknowledged up to it, whichever set acknowledged
+/// it. Another member fencing only a majority of the control plane's set
+/// could miss records the elected leader acknowledged on its own set when the
+/// two differ, which is also why a differing elected set is written as the
+/// set being left, the control plane's pending from it.
+async fn reissue_past_collision(
+    state: &AppState,
+    node_id: &str,
+    key: &crate::model::ShardKey,
+    elected: &felix_common::membership::ElectedLeadership,
+    assignment: crate::model::ShardAssignment,
+) -> Result<crate::model::ShardAssignment, ApiError> {
+    // A member deleted from the catalog cannot be named, and a write naming
+    // it would fail on every report.
+    let mut unknown = std::collections::BTreeSet::new();
+    for node in &elected.replicas {
+        match state.store.get_node(node).await {
+            Ok(_) => {}
+            Err(StoreError::NotFound(_)) => {
+                unknown.insert(node.as_str());
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "reading an elected member failed");
+                return Ok(assignment);
+            }
+        }
+    }
+    let Some(next) = assignment.reissuing(&elected.clone().into(), &|node| !unknown.contains(node))
+    else {
+        return Ok(assignment);
+    };
+    let token = match state.store.placement_token().await {
+        Ok(token) => token,
+        Err(err) => {
+            tracing::warn!(error = %err, "reading the placement token failed");
+            return Ok(assignment);
+        }
+    };
+    match state
+        .store
+        .put_shard_assignment_if(next, Some(assignment.generation), token)
+        .await
+    {
+        Ok(crate::store::AssignmentWrite::Written(written)) => {
+            tracing::warn!(
+                node_id = %node_id,
+                named = %assignment.leader,
+                collided_at = assignment.generation,
+                leader = %written.leader,
+                generation = written.generation,
+                stream = %key.stream,
+                shard = key.shard,
+                "an elected leader reported the generation this control plane named another \
+                 leader at; moved the shard to the next one",
+            );
+            state.placement_wakes.request_pass();
+            Ok(written)
+        }
+        // Lost to another write, which moved the shard on anyway, or left
+        // to the leader's next report.
+        Ok(_) => Ok(assignment),
+        Err(err) => {
+            tracing::warn!(error = %err, "moving a shard past a collided generation failed");
             Ok(assignment)
         }
     }

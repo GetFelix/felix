@@ -44,7 +44,7 @@ use crate::metrics;
 use crate::peer::{PeerError, PeerRequester};
 use crate::replica::last_generation;
 
-mod joint;
+pub(crate) mod joint;
 
 pub use joint::Joint;
 use joint::JointSets;
@@ -94,10 +94,12 @@ pub enum Outcome {
     Fenced { caught_up_from: Option<String> },
     /// Some replica did not offer the fence, so the shard opens on the lease.
     Lease { lacking: String },
-    /// Not yet, and not in this attempt: so many replicas promised this
-    /// generation to `promised_to` that no majority is left to take it. The
-    /// shard stays closed, and this broker reports the refusal so the
-    /// control plane names it again above the generation (#1730).
+    /// Not yet, and not in this attempt: a replica promised this generation
+    /// to `promised_to`, and either so many did that no majority is left to
+    /// take it or every other replica that did not take it was unreachable
+    /// or timed out. The shard stays closed,
+    /// and this broker reports the refusal so the control plane names it
+    /// again above the generation (#1730).
     Refused {
         promised_to: String,
         why: String,
@@ -146,6 +148,34 @@ pub async fn fence_shard<R: PeerRequester>(
     lease_fallback: bool,
     joint: Option<&Joint<'_>>,
 ) -> Outcome {
+    fence_shard_as(
+        requester,
+        broker,
+        local_node_id,
+        key,
+        route,
+        lease_fallback,
+        joint,
+        None,
+    )
+    .await
+}
+
+/// [`fence_shard`], for a broker standing for election when `candidacy` is
+/// given: the fence says so, and carries the set the candidate keeps, with
+/// its own generation, rather than the route's. Standing changes no set, so
+/// the kept set is not rewritten either.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn fence_shard_as<R: PeerRequester>(
+    requester: &R,
+    broker: &Arc<Broker>,
+    local_node_id: &str,
+    key: &ShardKey,
+    route: &Route,
+    lease_fallback: bool,
+    joint: Option<&Joint<'_>>,
+    candidacy: Option<&crate::election::Candidacy>,
+) -> Outcome {
     let replicas: Vec<_> = route
         .replicas
         .iter()
@@ -180,9 +210,10 @@ pub async fn fence_shard<R: PeerRequester>(
     let shard = crate::incarnation::shard_ref(broker, key, route.generation);
     let reported_ids = route.fence_storage_ids.as_deref();
     // The set this leader counts, for replicas that check sets.
-    let set = requester
-        .offers_election()
-        .then(|| crate::replica_set::view(route, None));
+    let set = requester.offers_election().then(|| match candidacy {
+        Some(candidacy) => candidacy.set.clone(),
+        None => crate::replica_set::view(route, None),
+    });
     let own_logs = async {
         let mut caught_up_from = None;
         for &kind in logs {
@@ -244,13 +275,38 @@ pub async fn fence_shard<R: PeerRequester>(
                 ));
             }
             // Under `joint_fence` a fence whose set being left is unknown
-            // stays pending rather than fence the new set alone.
-            let under_joint = match (joint, set) {
-                (Some(joint), Some(set)) => {
+            // stays pending rather than fence the new set alone. A candidate
+            // fences the set it keeps, and jointly the one kept beside it.
+            let leaving = candidacy.and_then(|candidacy| candidacy.leaving.as_ref());
+            let under_joint = match (joint, set, candidacy) {
+                (Some(joint), Some(set), None) => {
                     match joint::sets(requester, &log, local_node_id, route, set, joint).await {
                         Ok(fenced) => Some(fenced),
                         Err(why) => return Err(Outcome::pending(why, Vec::new())),
                     }
+                }
+                (Some(joint), Some(set), Some(_)) => match leaving {
+                    Some(leaving) => Some(
+                        joint::across(
+                            requester,
+                            local_node_id,
+                            route,
+                            set,
+                            leaving.clone(),
+                            Vec::new(),
+                            joint,
+                        )
+                        .await,
+                    ),
+                    None => None,
+                },
+                // A set kept beside the candidate's was written by a joint
+                // fence; fencing without it could miss a majority of it.
+                (None, Some(_), Some(_)) if leaving.is_some() => {
+                    return Err(Outcome::pending(
+                        "the kept set has a set being left, and joint fences are not on",
+                        Vec::new(),
+                    ));
                 }
                 _ => None,
             };
@@ -277,10 +333,11 @@ pub async fn fence_shard<R: PeerRequester>(
                 reported_ids,
                 set,
                 joint,
+                candidacy.is_some(),
             )
             .await;
             caught_up_from = caught_up_from.or(fenced?);
-            if set.is_some() {
+            if set.is_some() && candidacy.is_none() {
                 keep_own_set(
                     &log,
                     local_node_id,
@@ -344,6 +401,101 @@ pub async fn fence_shard<R: PeerRequester>(
     }
 }
 
+/// Send an elected leader's fence again to one follower that missed it.
+/// Nothing names the elected generation on that broker but this fence, so
+/// until it lands the follower refuses every batch as behind, and a broker
+/// that led before keeps refusing pre-votes as the leader. The leader's own
+/// ballot is on disk, since the shard opened. Returns whether it was taken.
+pub(crate) async fn refence<R: PeerRequester>(
+    requester: &R,
+    node_id: &str,
+    addr: std::net::SocketAddr,
+    shard: &ShardRef,
+    kind: LogKind,
+    candidacy: &crate::election::Candidacy,
+) -> bool {
+    let election = FenceElection {
+        candidate: true,
+        set: candidacy.set.clone(),
+        leaving: candidacy.leaving.as_ref().map(joint::view),
+    };
+    fence_again(requester, node_id, addr, shard, kind, election).await
+}
+
+/// Send a named leader's joint fence again to one follower that missed it.
+/// A batch teaches no set being left that the follower cannot read from its
+/// own routing view, so without this a follower that was down for the fence
+/// refuses every batch until the next generation. The set this leader keeps is
+/// sent as it is, with or without a set being left, so the follower keeps what
+/// the leader keeps. It may be older than the shard's generation only when
+/// the leader stamps its batches with it (`stamp`): an elected leader that
+/// restarted keeps the set it was fenced on and no standing. Any other older
+/// set is what a promotion that opened on the lease left behind, and that
+/// leader fences nobody.
+pub(crate) async fn refence_kept<R: PeerRequester>(
+    requester: &R,
+    node_id: &str,
+    addr: std::net::SocketAddr,
+    shard: &ShardRef,
+    kind: LogKind,
+    kept: Option<&felix_storage::disk_log::ReplicaSet>,
+    stamp: Option<u64>,
+) -> bool {
+    let Some(kept) = kept.filter(|kept| {
+        let at = kept.current.generation;
+        at == shard.generation || (at < shard.generation && stamp == Some(at))
+    }) else {
+        return false;
+    };
+    let election = FenceElection {
+        candidate: false,
+        set: joint::view(&kept.current),
+        leaving: kept.leaving.as_ref().map(joint::view),
+    };
+    fence_again(requester, node_id, addr, shard, kind, election).await
+}
+
+async fn fence_again<R: PeerRequester>(
+    requester: &R,
+    node_id: &str,
+    addr: std::net::SocketAddr,
+    shard: &ShardRef,
+    kind: LogKind,
+    election: FenceElection,
+) -> bool {
+    // A follower without `ELECTION` records no elected leader and checks no
+    // set, so the fence would move nothing.
+    let offered = match requester.recorded_capabilities(node_id) {
+        Some(offered) => Some(offered),
+        None => requester.capabilities(node_id, addr).await.ok(),
+    };
+    if !offered.is_some_and(|offered| offered.contains(PeerCapabilities::ELECTION)) {
+        return false;
+    }
+    let candidate = election.candidate;
+    let (_, _, answer, _) = ask_fence(
+        requester,
+        node_id.to_string(),
+        addr,
+        shard.clone(),
+        crate::ship::replica_log(kind),
+        false,
+        Some(election),
+    )
+    .await;
+    let took = matches!(answer, Ok(InternalMessage::FenceOk(_)));
+    tracing::debug!(
+        node_id,
+        stream = %shard.stream,
+        shard = shard.shard,
+        generation = shard.generation,
+        took,
+        candidate,
+        "sent the leader's fence again to a follower whose route is behind",
+    );
+    took
+}
+
 /// Fence one of the shard's logs on a majority, and take the log of the
 /// answer furthest ahead if it is ahead of this broker's. `Ok` names the
 /// replica it was taken from, if one was; `Err` is the outcome to stop at.
@@ -363,6 +515,7 @@ async fn fence_log<R: PeerRequester>(
     reported_ids: Option<&BTreeMap<String, String>>,
     set: Option<&ReplicaSetView>,
     joint: Option<&JointSets>,
+    candidate: bool,
 ) -> Result<Option<String>, Outcome> {
     // Answers until a majority, this broker included, has taken the fence.
     // Later answers are not waited for: the model opens on the first majority.
@@ -383,6 +536,9 @@ async fn fence_log<R: PeerRequester>(
     // Answers from a copy the report did not name: they took the promise,
     // which still refuses the old leader, but count for nothing here.
     let mut other_copies = 0;
+    // Replicas that answered no in some way other than a promise away or
+    // silence, which a refusal below may not blame on the promise.
+    let mut declined = 0;
     // Why the replicas that refused did, for the shard's status: a refusal
     // that no retry gets past names its way out there.
     let mut refusals: Vec<String> = Vec::new();
@@ -412,7 +568,7 @@ async fn fence_log<R: PeerRequester>(
             // holds up only its own answer.
             let election = match (joint, set) {
                 (Some(joint), Some(set)) => Some(FenceElection {
-                    candidate: false,
+                    candidate,
                     set: set.clone(),
                     leaving: Some(joint.leaving_for(&node_id).clone()),
                 }),
@@ -424,7 +580,7 @@ async fn fence_log<R: PeerRequester>(
                     offered
                         .is_some_and(|offered| offered.contains(PeerCapabilities::ELECTION))
                         .then(|| FenceElection {
-                            candidate: false,
+                            candidate,
                             set: set.clone(),
                             leaving: None,
                         })
@@ -516,6 +672,17 @@ async fn fence_log<R: PeerRequester>(
                     answer = ?other.as_ref().map(InternalMessage::kind),
                     "a replica did not take the fence",
                 );
+                let silent = matches!(
+                    other,
+                    Err(PeerError::Unavailable { .. }
+                        | PeerError::Handshake { .. }
+                        | PeerError::Disconnected { .. }
+                        | PeerError::Timeout { .. }
+                        | PeerError::ShuttingDown)
+                );
+                if !silent {
+                    declined += 1;
+                }
                 if let Ok(InternalMessage::ReplicateError(err)) = other {
                     refusals.push(format!("{node_id} refused: {}", err.detail));
                 }
@@ -544,6 +711,19 @@ async fn fence_log<R: PeerRequester>(
         for refusal in &refusals {
             why.push_str("; ");
             why.push_str(refusal);
+        }
+        // A promise away never comes back, so with the rest only silent a
+        // retry here can wait forever on a replica that is gone; the refusal
+        // moves the shard up. Not when an answer from another copy or a
+        // joint set's count kept the majority out: a rename resets the
+        // copies the next fence checks, so that case waits instead.
+        let explained = joint.is_none() && other_copies == 0 && declined == 0;
+        if let Some((_, promised_to)) = promised_away.first().filter(|_| explained) {
+            return Err(Outcome::Refused {
+                promised_to: promised_to.clone(),
+                why,
+                took: took(&answered),
+            });
         }
         return Err(Outcome::pending(why, took(&answered)));
     }

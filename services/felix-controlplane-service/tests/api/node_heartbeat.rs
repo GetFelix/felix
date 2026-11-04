@@ -632,8 +632,21 @@ async fn election_features_are_refused_with_their_reason() {
             .expect("enabled")
             .contains("joint_fence")
     );
-    // The election driver is not in yet.
-    refused("metadata level", "replica_election").await;
+    // This control plane keeps pending sets and adopts elected leaders, so
+    // replica_election follows joint_fence.
+    let response = app
+        .clone()
+        .oneshot(finalize("replica_election", false))
+        .await
+        .expect("request");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        store
+            .enabled_fleet_features()
+            .await
+            .expect("enabled")
+            .contains("replica_election")
+    );
 }
 
 /// A storage identity is 32 lowercase hex digits. Anything else is refused
@@ -854,6 +867,46 @@ async fn a_new_cluster_finalizes_every_feature_at_its_first_registration() {
         again.incarnation,
         first.incarnation
     );
+}
+
+/// A new cluster whose brokers report the election features
+/// (`FELIX_INTERNAL_ELECTION=true`) still leaves `joint_fence` and
+/// `replica_election` off: elections are opt-in, so only an operator's
+/// finalize turns them on.
+#[tokio::test]
+async fn a_new_cluster_does_not_finalize_the_election_features_before_they_are_ready() {
+    let store = store();
+    let token = fleet_token(&store).await;
+    let app = app_with(Arc::clone(&store)).await;
+
+    let mut features: Vec<&str> = felix_common::fleet::IMPLEMENTED
+        .iter()
+        .map(|feature| feature.name())
+        .collect();
+    features.extend([
+        "peer_election",
+        "start_holders",
+        "joint_fence",
+        "replica_election",
+    ]);
+    let response = app
+        .clone()
+        .oneshot(authed(
+            &token,
+            "POST",
+            "/v1/nodes",
+            serde_json::json!({
+                "node_id": "broker-a",
+                "advertise_addr": "10.0.0.4:7001",
+                "region": "local",
+                "features": features,
+            }),
+        ))
+        .await
+        .expect("request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let enabled = read_json(response).await["fleet_features"].clone();
+    assert_eq!(enabled, serde_json::json!(NEW_CLUSTER));
 }
 
 /// A broker configured out of a feature keeps it, and the features that

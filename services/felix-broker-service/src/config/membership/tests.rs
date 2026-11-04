@@ -1,4 +1,4 @@
-use super::{features_for, is_host_port};
+use super::{election_features, features_for, is_host_port};
 
 #[test]
 fn a_client_advertise_address_is_a_host_and_a_port() {
@@ -47,6 +47,20 @@ fn a_broker_reports_what_joint_fences_need() {
         let reported = features_for(fences, by_lease);
         assert!(reported.contains(start_holders));
         assert!(reported.contains(non_voting));
+    }
+}
+
+/// A broker offering `ELECTION` says so, that it fences jointly, and that it
+/// stands for election; one that does not reports none of them.
+#[test]
+fn a_broker_offering_election_reports_it() {
+    let added: Vec<String> = election_features().collect();
+    assert!(added.contains(&felix_common::fleet::PEER_ELECTION.name().to_string()));
+    assert!(added.contains(&felix_common::fleet::JOINT_FENCE.name().to_string()));
+    assert!(added.contains(&felix_common::fleet::REPLICA_ELECTION.name().to_string()));
+    for fences in [false, true] {
+        let reported = features_for(fences, false);
+        assert!(added.iter().all(|feature| !reported.contains(feature)));
     }
 }
 

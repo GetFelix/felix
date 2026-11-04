@@ -157,8 +157,9 @@ fn a_new_cluster_finalizes_prerequisites_first() {
     }
 }
 
-/// Nothing reports the election features yet, so a fleet running this build
-/// cannot finalize them even with every prerequisite enabled.
+/// Only a broker under `FELIX_INTERNAL_ELECTION` reports the election features,
+/// so a fleet without it cannot finalize them even with every prerequisite
+/// enabled, and a new cluster leaves them to the operator.
 #[test]
 fn the_election_features_cannot_be_finalized_yet() {
     let reported: Vec<&str> = felix_common::fleet::IMPLEMENTED

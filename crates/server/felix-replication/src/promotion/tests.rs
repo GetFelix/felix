@@ -608,6 +608,29 @@ async fn a_fence_a_majority_promised_away_is_refused() {
     assert!(took.is_empty(), "{took:?}");
 }
 
+/// **A promise away with the only other replica down is refused.** No
+/// attempt at this generation can open while that replica stays down, so
+/// waiting on it would keep the shard closed for as long as it does.
+#[tokio::test]
+async fn a_promise_away_with_the_other_replica_down_is_refused() {
+    let mut replicas = Replicas::new();
+    replicas.ballots = true;
+    replicas.get_mut("broker-b").reachable = false;
+    replicas
+        .get("broker-c")
+        .holds("broker-c", 4, 0, &["a"])
+        .await;
+    promised_to(&replicas, "broker-c", "broker-d").await;
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route(), true, None).await;
+
+    let Outcome::Refused { promised_to, .. } = outcome else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!(promised_to, "broker-d");
+}
+
 /// One replica's promise to another node leaves a majority with this broker
 /// and the other replica: the ballot already keeps that node from one, so
 /// the fence opens.
@@ -1090,4 +1113,158 @@ async fn set_generation(broker: &Broker) -> u64 {
         .await
         .expect("log")
         .set_generation()
+}
+
+/// **A candidate's fence carries the set it keeps, at that set's own
+/// generation, and the candidate keeps no new set.** Standing changes no set,
+/// and the route's generation is one no assignment wrote, so a set stamped
+/// with it would be one the control plane never recorded.
+#[tokio::test]
+async fn a_candidates_fence_carries_the_set_it_keeps() {
+    use felix_storage::disk_log::{Member, Membership};
+
+    let electing = PeerCapabilities::from_bits(REQUIRED.bits()).union(PeerCapabilities::ELECTION);
+    let mut replicas = Replicas::new();
+    replicas.electing = true;
+    replicas.get_mut("broker-c").reachable = false;
+    replicas.get_mut("broker-b").capabilities = electing;
+    replicas
+        .get("broker-b")
+        .holds("broker-b", 4, 0, &["a"])
+        .await;
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+    let kept = Membership {
+        generation: 3,
+        members: [LEADER, "broker-b", "broker-c"]
+            .map(|node| Member {
+                node: node.to_string(),
+                storage: None,
+                learner: false,
+                wiped: false,
+            })
+            .to_vec(),
+    };
+    let candidacy = crate::election::Candidacy {
+        set: crate::promotion::joint::view(&kept),
+        leaving: None,
+    };
+
+    let outcome = fence_shard_as(
+        &replicas,
+        &leader,
+        LEADER,
+        &key(),
+        &route(),
+        false,
+        None,
+        Some(&candidacy),
+    )
+    .await;
+
+    assert_eq!(
+        outcome,
+        Outcome::Fenced {
+            caught_up_from: None
+        }
+    );
+    assert_eq!(replicas.sent(Kind::ElectionFence), vec!["broker-b"]);
+    assert_eq!(set_generation(&replicas.get("broker-b").broker).await, 3);
+    assert_eq!(
+        set_generation(&leader).await,
+        0,
+        "the candidate keeps no set"
+    );
+}
+
+/// Answers every fence and keeps the election it carried.
+struct TakesFences {
+    sent: Mutex<Vec<felix_wire::internal::FenceElection>>,
+}
+
+impl PeerRequester for TakesFences {
+    async fn request(
+        &self,
+        _node_id: &str,
+        _addr: SocketAddr,
+        message: InternalMessage,
+    ) -> Result<InternalMessage, PeerError> {
+        let InternalMessage::Fence(fence) = message else {
+            panic!("the leader sent {:?}", message.kind());
+        };
+        self.sent
+            .lock()
+            .expect("lock")
+            .extend(fence.election.clone());
+        Ok(InternalMessage::FenceOk(felix_wire::internal::FenceOk {
+            correlation_id: fence.correlation_id,
+            log_end: 0,
+            commit_offset: 0,
+            last_generation: 0,
+        }))
+    }
+
+    fn recorded_capabilities(&self, _node_id: &str) -> Option<PeerCapabilities> {
+        Some(REQUIRED.union(PeerCapabilities::ELECTION))
+    }
+}
+
+/// **A leader re-fences a follower with the set it keeps below its own
+/// generation**: an elected leader that restarted has no standing left in
+/// memory, and keeps the set it was fenced on, older than the generation it
+/// serves. Sending nothing would leave a follower that missed its fence
+/// refusing every batch until the generation changes. A kept set newer than
+/// the shard's generation is never sent.
+#[tokio::test]
+async fn a_leader_refences_with_a_kept_set_below_its_generation() {
+    let member = |node: &str| felix_storage::disk_log::Member {
+        node: node.to_string(),
+        storage: None,
+        learner: false,
+        wiped: false,
+    };
+    let kept = |generation| felix_storage::disk_log::ReplicaSet {
+        current: felix_storage::disk_log::Membership {
+            generation,
+            members: vec![member(LEADER), member("broker-b"), member("broker-c")],
+        },
+        leaving: None,
+    };
+    let mut shard = batch(7, 0, &[]).shard;
+    shard.generation = 7;
+    let addr: SocketAddr = "127.0.0.1:1".parse().expect("addr");
+    // Only a set the leader stamps its batches with goes out below the
+    // generation; an older set left by a promotion on the lease does not.
+    for (generation, stamp, sent) in [
+        (5, Some(5), true),
+        (5, None, false),
+        (7, None, true),
+        (8, Some(8), false),
+    ] {
+        let requester = TakesFences {
+            sent: Mutex::new(Vec::new()),
+        };
+        let took = refence_kept(
+            &requester,
+            "broker-b",
+            addr,
+            &shard,
+            LogKind::Stream,
+            Some(&kept(generation)),
+            stamp,
+        )
+        .await;
+        assert_eq!(took, sent, "kept at {generation} stamped {stamp:?}");
+        let elections = requester.sent.lock().expect("lock");
+        assert_eq!(
+            elections
+                .iter()
+                .map(|election| (election.candidate, election.set.generation))
+                .collect::<Vec<_>>(),
+            if sent {
+                vec![(false, generation)]
+            } else {
+                vec![]
+            },
+        );
+    }
 }

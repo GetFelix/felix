@@ -21,7 +21,6 @@ use crate::reporter::{ShardReport, shard_report};
 use crate::throttle::{MoveThrottle, paced_destination};
 use crate::{
     FollowerCursor, Progress, Rebuilds, caught_up, lag_records, metrics, quorum_offset_without,
-    ship_once_with,
 };
 
 /// How much of the log one exchange may carry.
@@ -321,6 +320,19 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
 ) -> ShardPass<'a> {
     marks.track_incarnations(broker);
     let route = &route;
+    // Led by election at a generation the control plane did not name: the set
+    // stays the one the candidate stood on, and the report asks for adoption.
+    let elected = marks
+        .elections()
+        .and_then(|elections| elections.reported(&key, route.generation));
+    let set_stamp = elected.as_ref().map(|elected| elected.set_generation);
+    let candidacy = marks
+        .elections()
+        .and_then(|elections| elections.candidacy(&key, route.generation));
+    // Sending a kept set again is election behaviour. In a fleet that has not
+    // finalized it, a stale route catches up from the control plane, and a
+    // fence there would reach brokers the promotion chose not to fence.
+    let refences_kept = marks.fleet_supports(felix_common::fleet::REPLICA_ELECTION);
     let shard_key = key.clone();
     let key = &key;
     // Resolved per pass rather than cached: a cache shard's log is replaced
@@ -489,7 +501,36 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     // it, so a fence that runs after this still knows the set being left. A
     // set before that is not known here is left for the fence, which then
     // stays pending, rather than kept without it.
+    //
+    // A log that counts the route's members at an older generation, on a
+    // shard this process has not opened at the route's generation, was
+    // elected on them before a restart: a fence at this generation would have
+    // kept the set at it, and the election lived in memory. So was one opened
+    // here on this broker's standing that the control plane has since
+    // adopted. That set is kept and stamped as it is, or this broker alone
+    // would count a newer set and refuse the next leader elected on the old
+    // one. A promotion on the lease is neither: its gate stays shut until its
+    // fence finishes, so it has not opened at the route's generation either,
+    // and it never stamps the set below. A shard opened here unfenced at the
+    // route's generation is a plain bump on the same members and keeps the
+    // new set, or no later promotee could fence it.
+    let elected_on_route_set = elected.is_none()
+        && ((!fence.opened_since(mark_key, route.generation)
+            && !fence.promoting(mark_key, route.generation))
+            || marks.elections().is_some_and(|elections| {
+                elections.opened_elected(key, route.generation, route.incarnation)
+            }))
+        && log.replica_set().is_some_and(|stored| {
+            stored.current.generation < route.generation
+                && same_nodes(
+                    &stored.current,
+                    &crate::replica_set::kept(route, entry.learner.as_deref()).current,
+                )
+        });
+    let set_stamp = set_stamp.or(elected_on_route_set.then(|| log.set_generation()));
     let kept = (electing
+        && elected.is_none()
+        && !elected_on_route_set
         && log.set_generation() < route.generation
         && log.accepted_generation() >= route.generation)
         .then(|| {
@@ -891,6 +932,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 counter_log.clone(),
             );
             let generation = route.generation;
+            let candidacy = candidacy.clone();
             let exchange: Exchange<'a> = Box::pin(async move {
                 // Every request below goes through this, so the pass counts
                 // the follower only on an answer from the copy its cursor
@@ -953,7 +995,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                         let commit = quorum_shard
                             .then(|| marks.offset_at(&mark_key, incarnation, generation))
                             .flatten();
-                        let progress = ship_once_with(
+                        let progress = crate::ship::ship_once_stamped(
                             requester,
                             &log,
                             &shard,
@@ -962,6 +1004,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                             MAX_BATCH_BYTES,
                             rebuilds,
                             commit,
+                            set_stamp,
                         )
                         .await;
                         if paced {
@@ -979,6 +1022,33 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                     cut
                 };
                 let (cut, ()) = futures::future::join(records, groups).await;
+                // A follower that missed the fence refuses batches until a
+                // fence reaches it: a candidate's generation is in no route,
+                // and a set being left is not learned from a batch (#1009).
+                if cursor.route_behind {
+                    if let Some(candidacy) = &candidacy {
+                        crate::promotion::refence(
+                            requester,
+                            &cursor.node_id,
+                            cursor.addr,
+                            &shard,
+                            log_kind,
+                            candidacy,
+                        )
+                        .await;
+                    } else if refences_kept {
+                        crate::promotion::refence_kept(
+                            requester,
+                            &cursor.node_id,
+                            cursor.addr,
+                            &shard,
+                            log_kind,
+                            log.replica_set().as_ref(),
+                            set_stamp,
+                        )
+                        .await;
+                    }
+                }
                 // A follower level with the tail was sent nothing, so nothing
                 // vouches for a position the mark still has to count. Its
                 // last record goes again for an answer; once the mark has
@@ -993,6 +1063,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                             &mut cursor,
                             rebuilds,
                             Some(mark_now),
+                            set_stamp,
                         )
                         .await;
                     } else if ping_counters
@@ -1006,6 +1077,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                             counters,
                             rebuilds,
                             None,
+                            set_stamp,
                         )
                         .await;
                     }
@@ -1040,6 +1112,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                             &mut cursor,
                             rebuilds,
                             Some(mark_now),
+                            set_stamp,
                         )
                         .await;
                     }
@@ -1063,7 +1136,10 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                         if let (Some(log), Some(aux)) = (log, aux.as_mut())
                             && stale(aux)
                         {
-                            reship_last(requester, log, &shard, kind, aux, rebuilds, None).await;
+                            reship_last(
+                                requester, log, &shard, kind, aux, rebuilds, None, set_stamp,
+                            )
+                            .await;
                         }
                     }
                 }
@@ -1144,7 +1220,8 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                     .at_incarnation(incarnation)
                     .serving_by_round(by_round)
                     .with_joint_start(joint_start(tail, &counted, counters.as_ref()))
-                    .with_holds_start(holders(&counted, &aux.counters.followers)),
+                    .with_holds_start(holders(&counted, &aux.counters.followers))
+                    .with_elected(elected.clone()),
                     &aux.counters.followers,
                 ),
                 offset,
@@ -1302,7 +1379,8 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                     .at_incarnation(incarnation)
                     .serving_by_round(by_round)
                     .with_joint_start(joint_start(tail, &counted, counters.as_ref()))
-                    .with_holds_start(holders(&counted, &aux.counters.followers)),
+                    .with_holds_start(holders(&counted, &aux.counters.followers))
+                    .with_elected(elected.clone()),
                     &aux.counters.followers,
                 ),
                 offset,
@@ -1503,7 +1581,8 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         .at_incarnation(incarnation)
         .serving_by_round(by_round)
         .with_joint_start(joint_start(tail, &counted, counters.as_ref()))
-        .with_holds_start(holders(&counted, &aux.counters.followers)),
+        .with_holds_start(holders(&counted, &aux.counters.followers))
+        .with_elected(elected.clone()),
         &aux.counters.followers,
     );
     // A follower missing some of that state would lose it if it led, so it is
@@ -2312,6 +2391,7 @@ async fn reship_last<R: PeerRequester>(
     cursor: &mut FollowerCursor,
     rebuilds: &Rebuilds,
     commit: Option<u64>,
+    set_stamp: Option<u64>,
 ) {
     let level = cursor.next_offset == cursor.confirmed;
     if cursor.halted.is_some()
@@ -2322,7 +2402,7 @@ async fn reship_last<R: PeerRequester>(
         return;
     }
     cursor.next_offset -= 1;
-    let progress = ship_once_with(
+    let progress = crate::ship::ship_once_stamped(
         requester,
         log,
         shard,
@@ -2331,6 +2411,7 @@ async fn reship_last<R: PeerRequester>(
         MAX_BATCH_BYTES,
         rebuilds,
         commit,
+        set_stamp,
     )
     .await;
     if !matches!(progress, Progress::Stored { .. }) && cursor.next_offset + 1 == cursor.confirmed {
@@ -2644,6 +2725,20 @@ async fn release_readers(broker: &Broker, key: &ShardKey) {
         handle.release_committed();
         handle.appended().notify_waiters();
     }
+}
+
+/// Whether `a` and `b` name the same nodes.
+fn same_nodes(
+    a: &felix_storage::disk_log::Membership,
+    b: &felix_storage::disk_log::Membership,
+) -> bool {
+    let nodes = |set: &felix_storage::disk_log::Membership| {
+        set.members
+            .iter()
+            .map(|member| member.node.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    nodes(a) == nodes(b)
 }
 
 /// The route's set as this leader keeps it. Under `joint_fence` (`joint`

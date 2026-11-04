@@ -462,10 +462,20 @@ async fn before_finalize_inherited_records_count_as_before() {
 /// Marks as a fleet that finalized both `generation_start` and
 /// `majority_ack` counts them: by the followers.
 pub(super) fn follower_ack_marks() -> QuorumMarks {
+    follower_ack_marks_adopted(false)
+}
+
+/// [`follower_ack_marks`], with the fleet view adopted when `adopted`, so a
+/// promoted shard fences rather than waiting on a view that has not arrived.
+pub(super) fn follower_ack_marks_adopted(adopted: bool) -> QuorumMarks {
     use felix_common::fleet::{FleetGate, GENERATION_START, MAJORITY_ACK};
     let names = [GENERATION_START.name(), MAJORITY_ACK.name()];
     let fleet = FleetGate::new(names);
-    fleet.observe(names);
+    if adopted {
+        fleet.restart(names);
+    } else {
+        fleet.observe(names);
+    }
     QuorumMarks::with_fleet(Arc::new(fleet))
 }
 
@@ -1003,7 +1013,7 @@ async fn a_promotion_waits_for_the_fleet_view_before_the_lease() {
         let dead = &dead;
         let router = &router;
         async move {
-            let (_, _, outcome) = fence_one(dead, &broker, router, key(), route, &marks).await;
+            let (_, _, outcome, _) = fence_one(dead, &broker, router, key(), route, &marks).await;
             outcome
         }
     };
