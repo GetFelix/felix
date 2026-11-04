@@ -74,6 +74,7 @@ jobs:
           set -uo pipefail
           p=/tmp/perf; mkdir -p $p/out $p/bin; cd $p
           cp /tmp/perf-bin/replicated_bench $p/bin/replicated_bench
+          cp /tmp/perf-bin/felix-broker-f $p/bin/felix-broker
           for side in p m f; do
             printf '#!/bin/bash\nshift\nexec /tmp/perf-bin/felix-broker-%s "$@"\n' "$side" > $p/wrap-$side.sh
             chmod +x $p/wrap-$side.sh
