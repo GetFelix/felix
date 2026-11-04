@@ -1,0 +1,1 @@
+Two survivors of a lost leader no longer split an election at one generation when the first candidate's fence is slow to arrive (#1914). The follower second in the order now asks its voters again after its wait and stands only if they still agree, so it sees the first candidate's ballot instead of standing against it. Each split used to cost a generation on both candidates.
