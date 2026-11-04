@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793763482964,
+  "lastUpdate": 1793764927798,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -56034,6 +56034,72 @@ window.BENCHMARK_DATA = {
             "range": "1050.78",
             "unit": "us",
             "extra": "trials: 5\nmedian: 412.00\nmean: 1038.40\nstdev: 1050.78\ncv: 101.19%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "92561e5f199470f8c275788bf0905a32825e818d",
+          "message": "fix(conformance): the fixture settles shard moves before it holds (#1869) (#1871)\n\n* fix(conformance): settle shard moves before the fixture holds, and serialize hold with the placement pass (#1869)\n\n* fix(conformance): heal always releases hold, partition keeps an open fence, python heal timeout",
+          "timestamp": "2026-11-04T03:54:51Z",
+          "tree_id": "7f9638c0460196f851275095100839c4d0cb85d3",
+          "url": "https://github.com/GetFelix/felix/commit/92561e5f199470f8c275788bf0905a32825e818d"
+        },
+        "date": 1793764920714,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 151,
+            "range": "4.88",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 151.00\nmean: 152.40\nstdev: 4.88\ncv: 3.20%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 217,
+            "range": "274.91",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 217.00\nmean: 416.00\nstdev: 274.91\ncv: 66.08%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 269,
+            "range": "545.73",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 269.00\nmean: 655.60\nstdev: 545.73\ncv: 83.24%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 197,
+            "range": "8.73",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 197.00\nmean: 200.40\nstdev: 8.73\ncv: 4.36%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 385,
+            "range": "118.22",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 385.00\nmean: 439.00\nstdev: 118.22\ncv: 26.93%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 534,
+            "range": "499.21",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 534.00\nmean: 750.40\nstdev: 499.21\ncv: 66.53%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
