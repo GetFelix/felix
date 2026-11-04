@@ -889,10 +889,10 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
             // start, and only an answer in this pass can name it. One caught
             // up by an exchange that outlived its pass is level now and would
             // be sent nothing, so with no further append it would never be
-            // named (#1892).
+            // named (#1892). A stalled one too: a ping that failed stalls the
+            // cursor, and nothing else would ask it again.
             let unnamed_learner = cursor.learner
                 && cursor.halted.is_none()
-                && !cursor.stalled
                 && cursor.storage_id.is_some()
                 && cursor.confirmed > inherited;
             let ping = successor

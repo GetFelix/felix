@@ -555,6 +555,8 @@ async fn an_unchecked_answer_from_a_follower_that_cannot_progress_loops_no_pass(
 struct IdentifiedLearner {
     learner: &'static str,
     sent: Mutex<Vec<String>>,
+    /// The next request to `learner` fails.
+    fail_next: std::sync::atomic::AtomicBool,
 }
 
 fn storage() -> felix_storage::StorageId {
@@ -572,6 +574,16 @@ impl PeerRequester for IdentifiedLearner {
             panic!("the driver sent something other than a replication batch");
         };
         self.sent.lock().expect("lock").push(node_id.to_string());
+        if node_id == self.learner
+            && self
+                .fail_next
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(PeerError::Unavailable {
+                node_id: node_id.to_string(),
+                detail: "timed out".to_string(),
+            });
+        }
         Ok(InternalMessage::ReplicateOk(ReplicateOk {
             correlation_id: 0,
             durable_offset: batch.first_offset + batch.payloads.len() as u64,
@@ -603,6 +615,7 @@ async fn a_learner_caught_up_after_its_pass_is_reported_holding_the_start() {
     let peers = IdentifiedLearner {
         learner: "broker-b",
         sent: Mutex::default(),
+        fail_next: Default::default(),
     };
     let rebuilds = Rebuilds::new(RebuildPolicy::default());
     let throttle = MoveThrottle::unlimited();
@@ -663,4 +676,69 @@ async fn a_learner_caught_up_after_its_pass_is_reported_holding_the_start() {
     );
     assert_eq!(sent(&peers) - before, 1, "b was asked more than once");
     assert!(shards.passes.is_empty(), "the answer started another pass");
+}
+
+/// **A learner whose ping failed is asked again.** The failed ping stalls
+/// b's cursor level with the tail; the next pass must still ask it, or with
+/// nothing appended it is never named.
+#[tokio::test(start_paused = true)]
+async fn a_learner_whose_ping_failed_is_still_reported_holding_the_start() {
+    let (broker, _dir) = super::quorum::quorum_leader(TAIL as usize, 4).await;
+    let router = router(LOCAL, &["broker-b", "broker-c"], 4);
+    let marks = QuorumMarks::new();
+    let status = ShardStatusBoard::new();
+    let peers = IdentifiedLearner {
+        learner: "broker-b",
+        sent: Mutex::default(),
+        fail_next: Default::default(),
+    };
+    let rebuilds = Rebuilds::new(RebuildPolicy::default());
+    let throttle = MoveThrottle::unlimited();
+    let mut shards = Shards::new(Context {
+        requester: &peers,
+        broker: &broker,
+        router: &router,
+        fence: &Unfenced,
+        gate: &crate::promotion::NoGate,
+        marks: &marks,
+        status: &status,
+        reporter: None,
+        rebuilds: &rebuilds,
+        throttle: &throttle,
+        refresh: Duration::from_secs(300),
+    });
+    shards.hold_busy(&key(), "broker-b");
+    shards.scan(WakeKind::Tick);
+    let (scan, ended) = shards.passes.next().await.expect("a pass");
+    shards.fold(scan, ended);
+
+    let mut answer = shards.answer_held(&key(), "broker-b", true);
+    answer.cursor.next_offset = TAIL;
+    answer.cursor.confirmed = TAIL;
+    answer.cursor.stalled = false;
+    answer.cursor.learner = true;
+    answer.cursor.storage_id = Some(storage());
+    peers
+        .fail_next
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    shards.apply(answer);
+    let (scan, ended) = shards
+        .passes
+        .next()
+        .await
+        .expect("the answer starts a pass");
+    shards.fold(scan, ended);
+
+    shards.scan(WakeKind::Tick);
+    let (scan, ended) = shards.passes.next().await.expect("the tick's pass");
+    let holds_start = ended
+        .report
+        .as_ref()
+        .map(|report| report.holds_start.clone())
+        .unwrap_or_default();
+    shards.fold(scan, ended);
+    assert!(
+        holds_start.contains(&"broker-b".to_string()),
+        "a failed ping left the learner unnamed: {holds_start:?}"
+    );
 }
