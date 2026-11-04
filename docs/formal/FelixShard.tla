@@ -1109,7 +1109,7 @@ LearnSet(f, b) ==
     THEN /\ setGen' = [setGen EXCEPT ![f] = setGen[b]]
          /\ mine' = [mine EXCEPT ![f] = mine[b]]
          /\ oldSet' = [oldSet EXCEPT ![f] = IF LearnsLeavingSet \/ oldSet[b] = {} THEN oldSet[b]
-                                             ELSE IF setGen[f] < setGen[b] THEN mine[f]
+                                             ELSE IF setGen[f] < setGen[b] THEN {mine[f]}
                                              ELSE oldSet[f]]
     ELSE UNCHANGED << setGen, mine, oldSet >>
 
@@ -2857,7 +2857,7 @@ ReissueAt(b, g, E, S, pends) ==
             /\ IF SetCheck
                THEN /\ mine' = [mine EXCEPT ![b] = IF alone THEN E ELSE S]
                     /\ setGen' = [setGen EXCEPT ![b] = g + 1]
-                    /\ oldSet' = [oldSet EXCEPT ![b] = IF E /= S /\ ~alone THEN E ELSE {}]
+                    /\ oldSet' = [oldSet EXCEPT ![b] = IF E /= S /\ ~alone THEN {E} ELSE {}]
                ELSE UNCHANGED << mine, setGen, oldSet >>
        ELSE UNCHANGED takeVars
 
