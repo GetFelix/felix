@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793784098586,
+  "lastUpdate": 1793790188332,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -56496,6 +56496,72 @@ window.BENCHMARK_DATA = {
             "range": "626.51",
             "unit": "us",
             "extra": "trials: 5\nmedian: 461.00\nmean: 729.60\nstdev: 626.51\ncv: 85.87%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6f6e3e2fd5f43560c0bf49f06fec3a908ca8d3f8",
+          "message": "feat(kafka): Kafka keys and headers stored with FELIX_KAFKA_RECORD_HEADERS (#1688) (#1855)\n\n* feat(replication): replication and forwarding carry record headers (#1688)\n\nA leader ships each record's key-and-headers block to a follower that\noffers the new RECORD_HEADERS peer capability (ReplicateHeadered\nRecords, kind 47), the follower stores the blocks with the records, and\nthe promotion catch-up fetch asks for them (kind 48). A forward carries\nthem to an owner that offers it (kind 49). The batch checksum covers\nthe blocks; a batch without any is byte for byte what it was.\n\nA follower that does not offer the capability is still held at the\nfirst record with a block instead of being sent it bare. record_headers\njoins the implemented fleet features and a new cluster's starting set,\nso a finalized fleet accepts headers.\n\nSpec-Unaffected: the model covers offsets, generations and the quorum mark; a record's key and headers travel and are stored with it like its payload and change none of them.\n\n* test(replication): the pinned peer capability sets include record_headers (#1688)\n\n* fix(replication): guard a data directory holding headers against an unfinalized fleet (#1688)\n\nA directory that stored a record with headers (storage format v8) writes a\nrecord-headers marker before the record, whether it came from a client, a\nforward or a leader. A broker holding it refuses to join a fleet that has not\nfinalized record_headers. The owner and the ingress broker report a forward\nthe owner will not take as feature_not_enabled, the redirect case included.\n\nSpec-Unaffected: no change to offsets, generations or the quorum mark.\n\n* feat(kafka): the Kafka listener keeps record keys and headers (#1688)\n\nProduce stores a record's key and headers as its block when the broker\naccepts record headers, and fetch returns them. A felix. header name is an\ninvalid record; a null header value is stored empty. A broker that does not\naccept headers still drops and counts them.\n\n* refactor(kafka): name the key-and-headers pair (#1688)\n\n* feat(kafka): keys and headers are stored only with FELIX_KAFKA_RECORD_HEADERS (#1688)\n\nEnabling the Kafka listener would otherwise move a lone broker to storage\nformat v8 for the keys nearly every producer sends. The listener now drops\nand counts them unless the operator opts in, and the stale drop docs,\nmetric doc and kcat comments are corrected.\n\n* fix(replication): the internal-message fuzz target knows the headered kinds (#1688)\n\nProperty 4 asserted that only election kinds need a capability, so any\nheadered frame the fuzzer built was a false crash. Also: the stale cluster\nnote on the Rust publishing page, and a changelog line on the marker.\n\nSpec-Unaffected: fuzz target, docs and changelog only.\n\n* docs(kafka): the opt-in caveat where readers meet Kafka records, and review wording (#1688)\n\n* test(cluster): the record-headers test leaves out the harness probe; re-bless the Rust client doc examples (#1688)\n\n* test(cluster): count only the forwards the record-headers test made (#1688)\n\n* test(client): re-bless the Rust client doc examples (#1688)\n\n* chore(kafka): record that the Kafka key and header mapping leaves the model alone (#1688)\n\nSpec-Unaffected: the Kafka listener only decides whether a record's key and headers are stored with it; offsets, generations, leases and the quorum mark are untouched.\n\n* fix(replication): headered kinds move to 49-51 and RECORD_HEADERS to 1 << 17 (#1688)\n\nKind 48 and bit 1 << 16 go to the election's kept-sets fence (#1881).\n\nSpec-Unaffected: wire numbering only.",
+          "timestamp": "2026-11-04T02:57:07-08:00",
+          "tree_id": "0a96e28b78f6de11220465ce877c3c1f563e8544",
+          "url": "https://github.com/GetFelix/felix/commit/6f6e3e2fd5f43560c0bf49f06fec3a908ca8d3f8"
+        },
+        "date": 1793790181569,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 96,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 96.00\nmean: 96.20\nstdev: 0.84\ncv: 0.87%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 132,
+            "range": "3.46",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 132.00\nmean: 131.00\nstdev: 3.46\ncv: 2.64%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 167,
+            "range": "82.94",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 167.00\nmean: 208.60\nstdev: 82.94\ncv: 39.76%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 131,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 131.00\nmean: 131.20\nstdev: 1.30\ncv: 0.99%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 258,
+            "range": "8.23",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 258.00\nmean: 258.80\nstdev: 8.23\ncv: 3.18%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 425,
+            "range": "117.40",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 425.00\nmean: 440.80\nstdev: 117.40\ncv: 26.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
