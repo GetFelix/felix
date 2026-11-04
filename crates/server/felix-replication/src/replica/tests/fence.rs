@@ -246,11 +246,13 @@ async fn a_leaders_promotion_fences_take_turns_and_a_read_round_does_not_wait() 
     ));
     taken(&handler.fence(SENDER, fence(5)).await);
     let soon = std::time::Duration::from_millis(500);
+    // Under the turn's 2 s cap, so an answer this fast did not wait for it.
+    let answered = std::time::Duration::from_millis(1_500);
 
     let turn = handler.fence_turn(SENDER).await.expect("the turn is free");
-    let read_round = tokio::time::timeout(soon, handler.fence(SENDER, fence(5))).await;
+    let read_round = tokio::time::timeout(answered, handler.fence(SENDER, fence(5))).await;
     taken(&read_round.expect("a read round's fence does not wait for the turn"));
-    let other = tokio::time::timeout(soon, handler.fence(Some("broker-b"), fence(6))).await;
+    let other = tokio::time::timeout(answered, handler.fence(Some("broker-b"), fence(6))).await;
     assert!(
         other.is_ok(),
         "another leader's fence does not wait for this one's turn"
@@ -267,6 +269,24 @@ async fn a_leaders_promotion_fences_take_turns_and_a_read_round_does_not_wait() 
     );
     drop(turn);
     taken(&promotion.await.expect("the fence task"));
+}
+
+/// A fence whose leader's turn stays taken runs anyway once the wait is up,
+/// so one stuck fence cannot hold up the leader's others past its timeout.
+#[tokio::test]
+async fn a_fence_runs_without_its_turn_once_the_wait_is_up() {
+    let (broker, _dir) = broker_with_storage().await;
+    let handler = ReplicaHandler::new(broker, router_with(&[LOCAL], 4));
+    let _turn = handler.fence_turn(SENDER).await.expect("the turn is free");
+    let waited = tokio::time::timeout(
+        std::time::Duration::from_secs(4),
+        handler.fence_turn(SENDER),
+    )
+    .await;
+    assert!(
+        waited.expect("the wait for a turn is bounded").is_none(),
+        "the turn was never released, so the fence runs without it"
+    );
 }
 
 /// A fence from a leader older than one this replica has accepted is itself

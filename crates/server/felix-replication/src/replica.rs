@@ -34,11 +34,13 @@ use felix_wire::internal::{
 const MAX_FETCH_BYTES: usize = 4 * 1024 * 1024;
 
 /// The longest a fence waits for its leader's turn before it runs anyway.
-/// Under the peer request timeout, so a fence that waited is still answered
-/// before its leader gives up on it.
+/// Under the default 5 s peer request timeout, so a fence that waited is
+/// still answered before its leader gives up on it. A request timeout set
+/// below this lets a queued fence time out before it runs.
 const FENCE_TURN_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// How many logs' fenced generations are remembered before starting over.
+/// How many logs' fenced generations are remembered. Past it, one is
+/// forgotten for each new one.
 const MAX_FENCED_AT: usize = 65_536;
 
 use crate::peer::metrics;
@@ -1053,8 +1055,9 @@ impl ReplicaHandler {
     /// One leader's promotion fences run here one at a time. Each may open a
     /// log and write a ballot, and a promotion burst running them side by side
     /// starves the writes this broker already serves. A read round's fence
-    /// writes nothing and skips the queue, so it never waits behind a
-    /// promotion's (#1796).
+    /// writes nothing and skips the queue, so it does not wait behind a
+    /// promotion's (#1796). That is known from what this broker last
+    /// answered, so after a restart a log's first read round queues once.
     pub async fn fence(&self, sender: Option<&str>, request: Fence) -> InternalMessage {
         let log_kind = log_kind(request.log);
         let key = (shard_key(&request.shard, log_kind), log_kind);
@@ -1070,9 +1073,13 @@ impl ReplicaHandler {
             let mut fenced_at = self.fenced_at.lock();
             // Forgetting only sends a read round's fence through the queue.
             if fenced_at.len() >= MAX_FENCED_AT && !fenced_at.contains_key(&key) {
-                fenced_at.clear();
+                let any = fenced_at.keys().next().cloned();
+                if let Some(any) = any {
+                    fenced_at.remove(&any);
+                }
             }
-            fenced_at.insert(key, generation);
+            let at = fenced_at.entry(key).or_insert(generation);
+            *at = (*at).max(generation);
         }
         answer
     }
