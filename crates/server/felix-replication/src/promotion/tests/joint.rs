@@ -914,3 +914,110 @@ async fn a_log_set_naming_another_copy_is_fenced_beside_the_one_before() {
     let outcome = fence_after(&replicas, &leader, true, Some(prior)).await;
     assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
 }
+
+/// broker-a's log keeps {broker-x, broker-b, broker-c} at generation 4 with
+/// {broker-a, broker-y, broker-w}, the set its fence was leaving, beside it.
+async fn kept_leaving_ayw(leader: &Broker) {
+    let log = leader
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    log.accept_generation(4, Some("broker-x"))
+        .await
+        .expect("ballot");
+    let set = |generation, members: [&str; 3]| Membership {
+        generation,
+        members: members
+            .map(|node| Member {
+                node: node.to_string(),
+                storage: None,
+                learner: false,
+                wiped: false,
+            })
+            .to_vec(),
+    };
+    log.accept_set(ReplicaSet {
+        current: set(4, ["broker-x", "broker-b", "broker-c"]),
+        leaving: Some(set(3, [LEADER, "broker-y", "broker-w"])),
+    })
+    .await
+    .expect("keep the fence's sets");
+}
+
+/// **A failover fences the set an unopened fence was still leaving.**
+/// broker-a answered broker-x's joint fence at generation 4, so its log
+/// keeps {broker-x, broker-b, broker-c} with {broker-a, broker-y, broker-w}
+/// beside it, but holds nothing written at 4: that fence may never have
+/// opened, and broker-y may hold a write acknowledged at 3 that no member of
+/// the newer sets has. A majority of the new set and of the one at 4 is not
+/// enough; the fence waits for broker-y, and sends it the set it votes in.
+#[tokio::test]
+async fn a_failover_fences_the_set_an_unopened_fence_was_leaving() {
+    let mut replicas = replicas_with(&["broker-x", "broker-z", "broker-y", "broker-w"]);
+    replicas.get_mut("broker-x").reachable = false;
+    replicas.get_mut("broker-y").reachable = false;
+    replicas.get_mut("broker-w").reachable = false;
+    let (leader, _dir) = leader_holding(3, &["a"]).await;
+    kept_leaving_ayw(&leader).await;
+
+    let outcome = fence_after(&replicas, &leader, true, Some(prior_xbc())).await;
+    let Outcome::Pending { why, .. } = &outcome else {
+        panic!("opened without a majority of the set still being left: {outcome:?}");
+    };
+    assert!(why.contains("2 of 3 and 1 of 3 voters"), "{why}");
+
+    replicas.get_mut("broker-y").reachable = true;
+    let outcome = fence_after(&replicas, &leader, true, Some(prior_xbc())).await;
+    assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
+    let kept = replicas
+        .get("broker-y")
+        .broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log")
+        .replica_set()
+        .expect("broker-y kept the fence's set");
+    assert_eq!(kept.leaving.map(|old| old.generation), Some(3));
+}
+
+/// **A log holding a record of its set's generation drops the set that
+/// fence left.** The same log as above, but holding a record written at 4,
+/// which its leader wrote only once its fence opened on a majority of both
+/// sets. The failover needs no answer from the set left at 3.
+#[tokio::test]
+async fn a_failover_after_an_opened_fence_does_not_fence_what_it_left() {
+    let mut replicas = replicas_with(&["broker-x", "broker-z", "broker-y", "broker-w"]);
+    replicas.get_mut("broker-x").reachable = false;
+    replicas.get_mut("broker-y").reachable = false;
+    replicas.get_mut("broker-w").reachable = false;
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+    kept_leaving_ayw(&leader).await;
+
+    let outcome = fence_after(&replicas, &leader, true, Some(prior_xbc())).await;
+
+    assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
+}
+
+/// **A generation recorded with nothing written at it is no evidence it
+/// opened.** A leader records its term before it writes the start record, so
+/// an epoch at 4 starting at the tail says nothing about the fence. The
+/// failover still waits for the set left at 3.
+#[tokio::test]
+async fn a_generation_recorded_without_records_still_fences_what_it_left() {
+    let mut replicas = replicas_with(&["broker-x", "broker-z", "broker-y", "broker-w"]);
+    replicas.get_mut("broker-x").reachable = false;
+    replicas.get_mut("broker-y").reachable = false;
+    replicas.get_mut("broker-w").reachable = false;
+    let (leader, _dir) = leader_holding(3, &["a"]).await;
+    leader
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log")
+        .record_generation(4, 1)
+        .expect("term start");
+    kept_leaving_ayw(&leader).await;
+
+    let outcome = fence_after(&replicas, &leader, true, Some(prior_xbc())).await;
+
+    assert!(matches!(outcome, Outcome::Pending { .. }), "{outcome:?}");
+}
