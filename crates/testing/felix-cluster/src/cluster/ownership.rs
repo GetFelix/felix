@@ -85,7 +85,7 @@ impl Cluster {
     /// How long placement believes a report past when it was made, under the
     /// harness's liveness settings.
     pub fn report_ttl_millis(&self) -> u64 {
-        crate::controlplane::report_ttl_millis()
+        self.control_plane().report_ttl_millis()
     }
 
     /// [`Self::replica_report`] for shard `shard` of cache `cache`.

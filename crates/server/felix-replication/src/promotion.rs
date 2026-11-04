@@ -97,7 +97,8 @@ pub enum Outcome {
     /// Not yet, and not in this attempt: a replica promised this generation
     /// to `promised_to`, and either so many did that no majority is left to
     /// take it or every other replica that did not take it was unreachable
-    /// or timed out. The shard stays closed,
+    /// or timed out. Or, with `promised_to` empty, a replica's ballot holds a
+    /// newer generation, which may be one no assignment named. The shard stays closed,
     /// and this broker reports the refusal so the control plane names it
     /// again above the generation (#1730).
     Refused {
@@ -659,6 +660,22 @@ async fn fence_log<R: PeerRequester>(
                         took: took(&answered),
                     });
                 }
+            }
+            // A ballot above this generation that no assignment this broker
+            // has seen names, as an election that never opened leaves. If
+            // the control plane had named it, it has also named someone
+            // above this broker and ignores the report; if not, nothing else
+            // ever moves the shard past it (#1914). Over at once, as for any
+            // newer leader, rather than open without that replica.
+            Ok(InternalMessage::ReplicateError(err))
+                if err.code == ErrorCode::FencedEpoch
+                    && crate::replica::superseded_by(&err.detail, shard.generation).is_some() =>
+            {
+                return Err(Outcome::Refused {
+                    promised_to: String::new(),
+                    why: format!("{node_id} has accepted a newer generation: {}", err.detail),
+                    took: took(&answered),
+                });
             }
             Ok(InternalMessage::ReplicateError(err)) if err.code == ErrorCode::FencedEpoch => {
                 // A replica has taken a newer leader: this promotion is over.
