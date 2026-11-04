@@ -819,8 +819,9 @@ leaving. Accepting a newer set carries the kept ones forward until the log
 durably holds a record of the set being replaced, so they are dropped only on
 evidence that a later generation opened. They are newest first, each is older
 than the current set, and none names the same members as another kept set;
-a file breaking any of that is refused. A raise that would add a set past 16
-earlier ones is refused. A file without them is byte for byte what an older
+a file breaking any of that is refused. A raise that adds a set is refused
+once the file would hold more than 17 distinct sets, counting the current set
+and the set being left, so a raise naming only kept sets always fits. A file without them is byte for byte what an older
 build writes; a build that predates them refuses a file that has them, which
 fails the open. Brokers write them only once `joint_fence` is finalized, so
 a fleet that can still roll back has none. The one exception is a replica

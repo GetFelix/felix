@@ -1354,9 +1354,9 @@ elected leader waits for the lease until the control plane is back (issue
    refuses a file that has them.
 
    The file keeps at most 16 earlier sets. A replica refuses a fence or
-   batch that would add a set it does not keep once it keeps 17 (the
-   current set and 16 earlier), with `StorageFailed`, rather than forget
-   one. It still takes one naming only sets it keeps. So lease churn on
+   batch that would add a set it does not keep once it would keep more
+   than 17 distinct sets in all, counting the current set and the set
+   being left, with `StorageFailed`, rather than forget one. It still takes one naming only sets it keeps. So lease churn on
    the current set, or a failover that abandons a pending change (rule 8),
    can still open on a kept set, and the record its leader writes ends the
    list at the next set change. A set change the control plane keeps

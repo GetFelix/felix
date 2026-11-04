@@ -474,3 +474,47 @@ async fn more_earlier_sets_than_the_file_keeps_fail_the_raise() {
         set::MAX_EARLIER_SETS
     );
 }
+
+/// Admitting a learner can make the current set one an earlier set names;
+/// the repeat goes rather than fail every admission.
+#[tokio::test]
+async fn admitting_a_learner_drops_an_earlier_set_it_now_repeats() {
+    let dir = tempdir().expect("tempdir");
+    let log = open(&dir, FsyncMode::OnCommit);
+    let mut current = named(2, &["a", "b"]);
+    current.members[1].learner = true;
+    log.accept_set_keeping_earlier(ReplicaSet {
+        current,
+        leaving: None,
+        earlier: vec![named(1, &["a", "b"])],
+    })
+    .await
+    .expect("accept");
+    assert!(log.admit_member("b", false).await.expect("admit"));
+    let kept = log.replica_set().expect("set");
+    assert_eq!(
+        (kept.current, kept.earlier),
+        (named(2, &["a", "b"]), Vec::new())
+    );
+}
+
+/// A first set is held to the same cap as any other, so the guarantee that
+/// a raise naming only kept sets fits holds from the start.
+#[tokio::test]
+async fn a_first_set_past_the_cap_is_refused() {
+    let dir = tempdir().expect("tempdir");
+    let log = open(&dir, FsyncMode::OnCommit);
+    let earlier = (1..=set::MAX_EARLIER_SETS as u64)
+        .rev()
+        .map(|g| named(g, &[&format!("n{g}"), "x"]))
+        .collect();
+    let result = log
+        .accept_set_keeping_earlier(ReplicaSet {
+            current: named(20, &["a", "x"]),
+            leaving: Some(named(19, &["b", "x"])),
+            earlier,
+        })
+        .await;
+    assert!(result.is_err(), "kept more sets than a later raise fits");
+    assert!(log.replica_set().is_none());
+}

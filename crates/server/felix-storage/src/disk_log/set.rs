@@ -279,6 +279,13 @@ impl ReplicaSet {
             .any(|set| !kept.all().any(|other| other.same_members(set)))
     }
 
+    /// Drop earlier sets that now name the same members as `current` or
+    /// `leaving`: their majorities are those sets' own.
+    fn drop_repeated_earlier(&mut self) {
+        let earlier = std::mem::take(&mut self.earlier);
+        self.carry(earlier);
+    }
+
     /// Add `sets` to the earlier sets, skipping any that names the same
     /// members as one already kept or as `current` or `leaving`, and keep
     /// them newest first.
@@ -367,20 +374,21 @@ impl DiskLog {
                 let sent = std::mem::take(&mut set.earlier);
                 set.carry(sent);
                 let kept = inner.replica_set.read().clone();
-                if let Some(kept) = kept {
-                    if !holds_durable_records_in(&inner, kept.current.generation) {
-                        set.carry(
-                            std::iter::once(kept.current.clone())
-                                .chain(kept.leaving.clone())
-                                .chain(kept.earlier.clone()),
-                        );
-                    }
-                    if set.distinct_sets() > MAX_EARLIER_SETS + 1 && set.adds_to(&kept) {
-                        return Err(invalid(
-                            "the replica set file already keeps as many sets as it allows; \
-                             a fence on a set it keeps must open first",
-                        ));
-                    }
+                if let Some(kept) = &kept
+                    && !holds_durable_records_in(&inner, kept.current.generation)
+                {
+                    set.carry(
+                        std::iter::once(kept.current.clone())
+                            .chain(kept.leaving.clone())
+                            .chain(kept.earlier.clone()),
+                    );
+                }
+                let adds = kept.as_ref().is_none_or(|kept| set.adds_to(kept));
+                if adds && set.distinct_sets() > MAX_EARLIER_SETS + 1 {
+                    return Err(invalid(
+                        "the replica set file already keeps as many sets as it allows; \
+                         a fence on a set it keeps must open first",
+                    ));
                 }
             } else {
                 set.earlier.clear();
@@ -417,6 +425,9 @@ impl DiskLog {
                     }
                 }
             }
+            // The mark may have made the current set one an earlier set
+            // already names.
+            set.drop_repeated_earlier();
             store(&inner.dir, &set, wiped.as_ref())?;
             let generation = set.current.generation;
             // The mark first: a reader that sees the new set sees it too.
@@ -502,6 +513,9 @@ impl DiskLog {
             if !changed {
                 return Ok(false);
             }
+            // Admission may have made the current set one an earlier set
+            // already names.
+            set.drop_repeated_earlier();
             store(&inner.dir, &set, wiped.as_ref())?;
             *inner.replica_set.write() = Some(set);
             *inner.wiped.write() = wiped;
@@ -537,7 +551,9 @@ fn holds_records_before(inner: &LogInner, generation: u64, tail: u64) -> bool {
         .iter()
         .position(|epoch| epoch.generation == generation)
         .is_some_and(|i| {
-            let end = entries.get(i + 1).map_or(tail, |next| next.start_offset);
+            let end = entries
+                .get(i + 1)
+                .map_or(tail, |next| next.start_offset.min(tail));
             end > entries[i].start_offset
         })
 }
