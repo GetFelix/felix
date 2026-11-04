@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793816527042,
+  "lastUpdate": 1793820084466,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -44772,6 +44772,58 @@ window.BENCHMARK_DATA = {
             "range": "61970.54",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 801839.03\nmean: 773796.53\nstdev: 61970.54\ncv: 8.01%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4a325b5cfb063d3e3f4a5b5f41c38644bc597466",
+          "message": "spec: a failover fences the recorded set and the log's set, checked in pieces (#1860) (#1879)\n\n* spec: a failover fences the recorded set and the log's set, checked in pieces (#1806, #1860)\n\nBrings the #1806 model (67e9aeaa7, 2c2ee24b7 on spec/1806-fence-both-sets)\nto main: oldSet holds the sets being left, and a failover's fence takes a\nmajority of the promoted broker's own set and, under FenceRecordedSet, the\ncontrol plane's recorded set. FelixShardElectAdoptFailover never finished\nin six hours, so it is split at the first failover (SplitAtFailover,\nFailoverTag, PieceGens): same or apart sets, 0 or 1 writes, stood or not,\nfirst failover at generation 2, 3, or 4 and above.\n\n* spec: PieceGens defaults to Nat, so a piece can take every generation from 4 up (#1860)\n\nTLC cannot compare an infinite set with {}.\n\n* spec: register the empty failover pieces, run the three measured heavy ones nightly (#1860)\n\nTwelve pieces hold only the states before a first failover and now check\nNoCutOverInPiece. Same0Gen4, Apart0Gen4 and Apart1Gen4 run nightly.\nSame0StoodGen2 ran out of runner disk and needs splitting again; eight\npieces are still being measured.\n\n* spec: cite the failover tests in each piece, split the stood Gen2 pieces again, record the measured pieces (#1860)\n\nThe pieces cited their parent cfg by name, which docs:evidence does not\naccept, so each now names the parent's two tests. Same0StoodGen2 ran out of\nrunner disk and Same1StoodGen2 did not finish, so both split by\nPieceStoodCounts and PieceDestStood. Same1Gen2 and Same1Gen4 passed and run\nnightly; the five that did not finish in six hours are recorded as unchecked.",
+          "timestamp": "2026-11-04T19:04:36Z",
+          "tree_id": "3f61c2836032dfe30607fb80662e00559de1190a",
+          "url": "https://github.com/GetFelix/felix/commit/4a325b5cfb063d3e3f4a5b5f41c38644bc597466"
+        },
+        "date": 1793820084101,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 525975.01,
+            "range": "32014.50",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 525975.01\nmean: 525198.14\nstdev: 32014.50\ncv: 6.10%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1014-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 525975.01,
+            "range": "32014.50",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 525975.01\nmean: 525198.14\nstdev: 32014.50\ncv: 6.10%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1014-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 123666.08,
+            "range": "2054.78",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 123666.08\nmean: 123681.95\nstdev: 2054.78\ncv: 1.66%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1014-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1236660.76,
+            "range": "20547.85",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1236660.76\nmean: 1236819.43\nstdev: 20547.85\ncv: 1.66%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1014-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
