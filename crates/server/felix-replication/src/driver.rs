@@ -607,7 +607,7 @@ async fn fence_one<'a, R: PeerRequester>(
         .then(|| {
             promotion::Joint::new(&addr_of, router.prior_set(&key))
                 .with_local_storage(marks.local_storage())
-                .with_replaced_storage(marks.non_voting_ready() && marks.replaced_storage())
+                .with_replaced_storage(marks.replaced_storage())
         });
     // This broker's own standing for election, if that is what the route is.
     let candidacy = marks

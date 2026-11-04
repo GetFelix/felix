@@ -119,6 +119,29 @@ fn router_after(generation: u64, before: Option<&[&str]>) -> Arc<ShardRouter> {
     router
 }
 
+/// A control plane whose confirmed read assigns `generation` to the sender,
+/// which a copy with no promise needs under `joint_fence`.
+struct AssignedToSender(u64);
+
+#[async_trait::async_trait]
+impl crate::confirmed::ConfirmedRoutes for AssignedToSender {
+    async fn confirmed(&self, _key: &felix_router::ShardKey) -> crate::confirmed::Confirmed {
+        crate::confirmed::Confirmed::Assigned {
+            generation: self.0,
+            leader: SENDER.expect("a sender").to_string(),
+        }
+    }
+}
+
+fn refused_for_set_before(answer: &InternalMessage) -> bool {
+    matches!(
+        answer,
+        InternalMessage::ReplicateError(err)
+            if err.code == ErrorCode::StaleRoute
+                && err.detail.contains("does not know the set before")
+    )
+}
+
 fn joint_marks() -> Arc<crate::quorum::QuorumMarks> {
     let fleet = felix_common::fleet::FleetGate::new([felix_common::fleet::JOINT_FENCE.name()]);
     fleet.restart(Some(felix_common::fleet::JOINT_FENCE.name()));
@@ -135,16 +158,18 @@ fn joint_marks() -> Arc<crate::quorum::QuorumMarks> {
 async fn a_batch_under_joint_fence_learns_the_set_being_left_only_from_the_control_plane() {
     let (broker, _dir) = broker_with_storage().await;
     knows_set(&broker, 3).await;
-    let unknown =
-        ReplicaHandler::new(Arc::clone(&broker), router_after(4, None)).with_fleet(joint_marks());
-    let answer = unknown
-        .apply(
+    let unknown = ReplicaHandler::new(Arc::clone(&broker), router_after(4, None))
+        .with_fleet(joint_marks())
+        .with_confirmed_routes(Arc::new(AssignedToSender(4)));
+    let answer = settled(|| {
+        unknown.apply(
             SENDER,
             stamped(4, 0, &["a"], 4),
             felix_broker::LogKind::Stream,
         )
-        .await;
-    assert_eq!(refusal(&answer).code, ErrorCode::StaleRoute);
+    })
+    .await;
+    assert!(refused_for_set_before(&answer), "{answer:?}");
     assert_eq!(
         stream_log(&broker).await.set_generation(),
         3,
@@ -155,14 +180,16 @@ async fn a_batch_under_joint_fence_learns_the_set_being_left_only_from_the_contr
         Arc::clone(&broker),
         router_after(4, Some(&["broker-a", LOCAL, "broker-c"])),
     )
-    .with_fleet(joint_marks());
-    let answer = watched
-        .apply(
+    .with_fleet(joint_marks())
+    .with_confirmed_routes(Arc::new(AssignedToSender(4)));
+    let answer = settled(|| {
+        watched.apply(
             SENDER,
             stamped(4, 0, &["a"], 4),
             felix_broker::LogKind::Stream,
         )
-        .await;
+    })
+    .await;
     assert!(
         matches!(answer, InternalMessage::ReplicateOk(_)),
         "{answer:?}"
@@ -206,20 +233,17 @@ async fn only_a_wiped_learner_learns_a_set_without_the_set_before_it() {
             .await
             .expect("set");
         let handler = ReplicaHandler::new(Arc::clone(&broker), router_after(4, None))
-            .with_fleet(joint_marks());
-        let answer = handler
-            .apply(
+            .with_fleet(joint_marks())
+            .with_confirmed_routes(Arc::new(AssignedToSender(4)));
+        let answer = settled(|| {
+            handler.apply(
                 SENDER,
                 stamped(4, 0, &["a"], 4),
                 felix_broker::LogKind::Stream,
             )
-            .await;
-        // A wiped learner goes on to the confirmed read, which this
-        // handler has none of; it is not refused for the set before.
-        let stale = matches!(
-            &answer,
-            InternalMessage::ReplicateError(err) if err.code == ErrorCode::StaleRoute
-        );
+        })
+        .await;
+        let stale = refused_for_set_before(&answer);
         assert_eq!(
             stale, !learns,
             "learner {learner}, wiped {wiped}: {answer:?}"
