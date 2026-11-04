@@ -496,7 +496,7 @@ impl Prefetch {
     /// view now names this broker a follower of and did not before. Takes
     /// at most 64; a shard past that is read on its first request.
     pub fn named(&self, shards: impl IntoIterator<Item = (ShardKey, u64)>) {
-        let elections = crate::replica::non_voting_gate(self.fleet.as_deref()) != Some(false);
+        let elections = crate::replica::joint_gate(self.fleet.as_deref()) != Some(false);
         for (key, incarnation) in shards.into_iter().take(PREFETCH_PER_CHANGE) {
             self.reads.prefetch(
                 &self.routes,
