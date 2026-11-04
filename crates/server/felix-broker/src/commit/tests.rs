@@ -378,3 +378,20 @@ fn a_claim_from_an_older_epoch_is_ignored() {
     claims.claim(20, 0, &[put("k", b"v")]);
     assert_eq!(claims.current("k", Some(10), Some(15), 1), Some(10));
 }
+
+/// **Commits without checks claim in parallel, so a lower offset can be
+/// recorded after a higher one.** The higher offset still decides the version.
+#[test]
+fn an_earlier_offset_recorded_late_does_not_replace_a_later_one() {
+    let mut claims = super::KeyClaims::default();
+    let put = |v: &'static [u8]| StateOp::Put {
+        key: "k".into(),
+        value: Bytes::from_static(v),
+    };
+    claims.claim(21, 0, &[put(b"b")]);
+    let late = claims.claim(20, 0, &[put(b"a")]);
+    assert_eq!(claims.current("k", Some(10), Some(10), 0), Some(21));
+    // Withdrawing the late one leaves the later claim alone.
+    claims.withdraw(20, late);
+    assert_eq!(claims.current("k", Some(10), Some(10), 0), Some(21));
+}

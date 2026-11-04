@@ -96,9 +96,18 @@ impl Broker {
         };
         let stored = record.encode();
         let events = [event];
-        // Held until the offset is known: a later commit's check must see
-        // this one's keys.
-        let _gate = handle.state.claim_gate.lock().await;
+        // Held until the offset is known and the keys are recorded, so a check
+        // sees every commit claimed ahead of it. Commits with no check share
+        // the gate and keep claiming in parallel; one with checks waits for
+        // them and runs alone.
+        let (shared, exclusive);
+        if checks.is_empty() {
+            shared = Some(handle.state.claim_gate.read().await);
+            exclusive = None;
+        } else {
+            shared = None;
+            exclusive = Some(handle.state.claim_gate.write().await);
+        }
         for check in checks {
             let read = self.state_get(handle, &check.key).await?;
             let epoch = handle.state.claims_epoch.load(Ordering::Acquire);
@@ -137,7 +146,7 @@ impl Broker {
                 .claim(offset, epoch, &record.ops);
             (offset, undo)
         });
-        drop(_gate);
+        drop((shared, exclusive));
         claimed.set_commit(Arc::from(record.ops));
         let outcome = self.complete_publish(claimed).await;
         // A caller that goes away mid-wait leaves the claim: the commit still

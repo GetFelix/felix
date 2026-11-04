@@ -69,7 +69,12 @@ impl KeyClaims {
                 super::StateOp::Put { key, .. } => (key, Some(offset)),
                 super::StateOp::Delete { key } => (key, None),
             };
-            let prev = self.claimed.insert(key.clone(), (offset, version, epoch));
+            // Commits without checks claim in parallel, so a later offset may
+            // be recorded first; the highest offset is the key's version.
+            let prev = self.claimed.get(key).copied();
+            if prev.is_none_or(|p| p.0 < offset || p.2 < epoch) {
+                self.claimed.insert(key.clone(), (offset, version, epoch));
+            }
             undo.push((key.clone(), prev));
         }
         undo

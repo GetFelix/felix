@@ -35,8 +35,9 @@ pub(crate) struct StreamState {
     pub(crate) subscribers: Mutex<SubscriberRegistry>,
     // In-memory log for cursor-based replay.
     pub(crate) log_state: Mutex<LogState>,
-    // Held by a commit across its version checks and its claim.
-    pub(crate) claim_gate: tokio::sync::Mutex<()>,
+    // A commit holds it across its claim: shared without version checks,
+    // exclusive with them.
+    pub(crate) claim_gate: tokio::sync::RwLock<()>,
     pub(crate) key_claims: Mutex<crate::commit::KeyClaims>,
     // Bumped wherever the state view is dropped; claims of an older one are void.
     pub(crate) claims_epoch: std::sync::atomic::AtomicU64,
@@ -167,7 +168,7 @@ impl StreamState {
                 generation_start_run: None,
                 state_view: None,
             }),
-            claim_gate: tokio::sync::Mutex::new(()),
+            claim_gate: tokio::sync::RwLock::new(()),
             key_claims: Mutex::default(),
             claims_epoch: std::sync::atomic::AtomicU64::new(0),
             subscriber_queue_capacity,
