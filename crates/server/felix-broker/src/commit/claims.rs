@@ -19,11 +19,14 @@ pub struct VersionCheck {
     pub required: Option<u64>,
 }
 
+/// Offset, the version the commit leaves, and the epoch it was claimed in.
+pub(crate) type Claim = (u64, Option<u64>, u64);
+
 #[derive(Debug, Default)]
 pub(crate) struct KeyClaims {
     /// Key to the offset of the last commit that claimed it, and the version
     /// that commit leaves: its offset for a put, none for a delete.
-    claimed: HashMap<String, (u64, Option<u64>)>,
+    claimed: HashMap<String, Claim>,
 }
 
 impl KeyClaims {
@@ -35,25 +38,53 @@ impl KeyClaims {
         key: &str,
         read: Option<u64>,
         as_of: Option<u64>,
+        epoch: u64,
     ) -> Option<u64> {
         if self.claimed.len() >= PRUNE_AT {
-            self.claimed
-                .retain(|_, (offset, _)| as_of.is_none_or(|as_of| *offset > as_of));
+            self.claimed.retain(|_, (offset, _, e)| {
+                *e == epoch && as_of.is_none_or(|as_of| *offset > as_of)
+            });
         }
         match self.claimed.get(key) {
-            Some((offset, version)) if as_of.is_none_or(|as_of| *offset > as_of) => *version,
+            Some((offset, version, e))
+                if *e == epoch && as_of.is_none_or(|as_of| *offset > as_of) =>
+            {
+                *version
+            }
             _ => read,
         }
     }
 
-    /// Record that the commit at `offset` writes these `ops`.
-    pub(crate) fn claim(&mut self, offset: u64, ops: &[super::StateOp]) {
+    /// Record that the commit at `offset` writes these `ops`. The returned
+    /// undo puts back what the claims replaced.
+    pub(crate) fn claim(
+        &mut self,
+        offset: u64,
+        epoch: u64,
+        ops: &[super::StateOp],
+    ) -> Vec<(String, Option<Claim>)> {
+        let mut undo = Vec::with_capacity(ops.len());
         for op in ops {
             let (key, version) = match op {
                 super::StateOp::Put { key, .. } => (key, Some(offset)),
                 super::StateOp::Delete { key } => (key, None),
             };
-            self.claimed.insert(key.clone(), (offset, version));
+            let prev = self.claimed.insert(key.clone(), (offset, version, epoch));
+            undo.push((key.clone(), prev));
+        }
+        undo
+    }
+
+    /// Withdraw the commit at `offset`, which did not land. A key a later
+    /// commit has claimed since is left alone.
+    pub(crate) fn withdraw(&mut self, offset: u64, undo: Vec<(String, Option<Claim>)>) {
+        for (key, prev) in undo.into_iter().rev() {
+            if self.claimed.get(&key).is_some_and(|c| c.0 == offset) {
+                match prev {
+                    Some(prev) => self.claimed.insert(key, prev),
+                    None => self.claimed.remove(&key),
+                };
+            }
         }
     }
 }

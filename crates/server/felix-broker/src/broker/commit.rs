@@ -6,6 +6,7 @@
 //! and are applied where the event enters the ring. See `crate::commit`.
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use bytes::Bytes;
 
@@ -97,10 +98,16 @@ impl Broker {
         let events = [event];
         // Held until the offset is known: a later commit's check must see
         // this one's keys.
-        let mut claims = handle.state.key_claims.lock().await;
+        let _gate = handle.state.claim_gate.lock().await;
         for check in checks {
             let read = self.state_get(handle, &check.key).await?;
-            let held = claims.current(&check.key, read.version, read.as_of);
+            let epoch = handle.state.claims_epoch.load(Ordering::Acquire);
+            let held =
+                handle
+                    .state
+                    .key_claims
+                    .lock()
+                    .current(&check.key, read.version, read.as_of, epoch);
             if held != check.required {
                 return Err(BrokerError::VersionMismatch {
                     key: check.key.clone(),
@@ -121,12 +128,24 @@ impl Broker {
             )
             .await?
             .expect("a commit claims or is refused");
-        if let Some(offset) = claimed.first_offset() {
-            claims.claim(offset, &record.ops);
-        }
-        drop(claims);
+        let withdraw = claimed.first_offset().map(|offset| {
+            let epoch = handle.state.claims_epoch.load(Ordering::Acquire);
+            let undo = handle
+                .state
+                .key_claims
+                .lock()
+                .claim(offset, epoch, &record.ops);
+            (offset, undo)
+        });
+        drop(_gate);
         claimed.set_commit(Arc::from(record.ops));
-        self.complete_publish(claimed).await
+        let outcome = self.complete_publish(claimed).await;
+        // A caller that goes away mid-wait leaves the claim: the commit still
+        // lands then. Only a failure takes its versions back.
+        if let (Some((offset, undo)), Err(_)) = (withdraw, &outcome) {
+            handle.state.key_claims.lock().withdraw(offset, undo);
+        }
+        outcome
     }
 
     /// `key` in the shard's state, as of the last commit readers can see.

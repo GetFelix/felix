@@ -345,3 +345,36 @@ async fn an_ephemeral_stream_refuses_a_commit() {
         Err(BrokerError::CommitNeedsDurableStream)
     ));
 }
+
+/// **A commit that fails takes its claimed versions back.** Left behind, a
+/// claim reports a version no reader will see, and a writer retrying with the
+/// version it read is refused over and over.
+#[test]
+fn a_withdrawn_claim_leaves_the_view_in_charge() {
+    let mut claims = super::KeyClaims::default();
+    let ops = [put("k", b"v")];
+    let undo = claims.claim(20, 0, &ops);
+    assert_eq!(claims.current("k", Some(10), Some(10), 0), Some(20));
+    claims.withdraw(20, undo);
+    assert_eq!(claims.current("k", Some(10), Some(10), 0), Some(10));
+}
+
+/// A claim a later commit has replaced is not the withdrawn commit's to take
+/// back.
+#[test]
+fn withdrawing_leaves_a_later_claim() {
+    let mut claims = super::KeyClaims::default();
+    let first = claims.claim(20, 0, &[put("k", b"a")]);
+    claims.claim(21, 0, &[put("k", b"b")]);
+    claims.withdraw(20, first);
+    assert_eq!(claims.current("k", Some(10), Some(10), 0), Some(21));
+}
+
+/// **A claim from before the view was dropped is void.** A reset or a new
+/// timeline can reuse the claim's offset for a different record.
+#[test]
+fn a_claim_from_an_older_epoch_is_ignored() {
+    let mut claims = super::KeyClaims::default();
+    claims.claim(20, 0, &[put("k", b"v")]);
+    assert_eq!(claims.current("k", Some(10), Some(15), 1), Some(10));
+}
