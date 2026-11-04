@@ -26,6 +26,7 @@ mod service;
 mod topic;
 
 pub use cluster::{
-    Cluster, Endpoint, Placement, Principal, ShardRef, WriteError, WritePermit, kafka_node_id,
+    Cluster, Endpoint, Placement, Principal, ShardRef, Unreadable, WriteError, WritePermit,
+    kafka_node_id,
 };
 pub use service::{KafkaService, Settings};

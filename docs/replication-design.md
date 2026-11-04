@@ -1321,6 +1321,20 @@ elected leader waits for the lease until the control plane is back (issue
    share no replica with a majority of the old. A staged copy is not part of
    the persisted set: it does not stand, answer a fence or count until a set
    change writes it in, and that change fences jointly like any other.
+   A joint fence that never opens leaves its change half made: the replicas
+   that answered keep the new set with the old one beside it, but a
+   majority of the old set may never have heard of the change, and a write
+   acknowledged before it may sit only there. So a failover whose log keeps
+   such a pair fences the old set of the pair too, unless the log holds a
+   record written at the pair's generation. That record is the evidence the
+   fence opened, since its leader writes nothing before reaching both
+   majorities, and `joint_fence` needs `generation_start`, so an opened
+   generation always begins with its start record. Without the evidence the
+   old set stays in the fence, and the failover waits for a majority of it:
+   a log that missed an opened generation's records keeps fencing the old
+   set until the next set change, which can stall a shard whose old set has
+   lost its majority. A failover keeps only one older set, so two failovers
+   in a row whose fences both fail to open are not yet covered.
 8. *The control plane flips only after the joint fence.* A cut-over that
    changes the set records the new set as pending; the old set stays the
    control plane's set until a leader on the new set reports its
@@ -1381,7 +1395,10 @@ the record when it answered or refused the old leader after, so the
 catch-up brings it. If the later leader's set is newer, every change between
 the two sets fenced a majority of the set before it and of the set after it,
 so each step shares a replica with the step before, and the record, or the
-refusal of the old leader, is carried across. If the later leader's set is
+refusal of the old leader, is carried across. A change whose fence never opened
+carried nothing across, so the next failover fences the set that change was
+leaving as well as the ones after it (rule 7). This covers one such change,
+not two in a row. If the later leader's set is
 older, a majority of it took the fence of the change that came after it,
 learned the newer set, and refuses the candidate. Overlap comes from the
 joint fence, not from the size of a change: without it, the cut-over above
@@ -2274,9 +2291,20 @@ the control plane is upgraded.
 quorum mark at the leader's generation is the committed high-water mark:
 consumer-group polls hand out nothing at or past it, Kafka `Fetch` returns
 nothing past it and reports it as the high watermark and last stable offset,
-and `ListOffsets` latest is the mark. Before the first mark of a generation it
-is zero. `Leader` streams, shards placed without replicas and single-node
-brokers are unbounded, as their commit point is local durability.
+and `ListOffsets` latest is the mark. Before the first mark of a generation,
+as right after a failover onto this broker, there is no bound to give: zero
+would send a reader asking for `latest` back to the start of the log. Kafka
+`Fetch` answers empty. `ListOffsets` for `latest` is refused as Kafka refuses
+it while a new leader's high watermark catches up: `OFFSET_NOT_AVAILABLE` from
+v5 and `LEADER_NOT_AVAILABLE` before, both retriable. Earliest and timestamp
+queries are still answered, bounded at the log start. Group polls, seeks and
+describes are refused as `shard_unavailable` with reason `not_ready`. `Leader`
+streams, shards placed without replicas and single-node brokers are unbounded, as their commit point is local durability. A shard
+without replicas is unbounded only on the broker that serves it. Elsewhere,
+such as on a leader deposed by a move to a route with no replicas, the bound
+is refused, so that broker hands out nothing past the mark. Held batches stay
+held, `read_committed` and group polls, seeks and describes are refused, and
+Kafka `Fetch` and `ListOffsets` answer `NOT_LEADER_OR_FOLLOWER` (#1852).
 
 QUIC subscriptions are gated too. A durable batch past the mark joins a
 per-stream hold under its commit turn, so the hold is in offset order; when the

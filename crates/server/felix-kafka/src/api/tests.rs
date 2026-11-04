@@ -32,7 +32,9 @@ use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 use tokio_util::sync::CancellationToken;
 
-use crate::cluster::{Cluster, Endpoint, Placement, Principal, ShardRef, WriteError, WritePermit};
+use crate::cluster::{
+    Cluster, Endpoint, Placement, Principal, ShardRef, Unreadable, WriteError, WritePermit,
+};
 use crate::service::{KafkaService, Settings};
 
 pub(super) const TENANT: &str = "t1";
@@ -50,7 +52,7 @@ pub(super) struct FakeCluster {
     /// What the next consistency wait answers, when not success.
     pub(super) consistency_error: Mutex<Option<WriteError>>,
     /// Commit points by `(stream, shard)`; a shard without one is unbounded.
-    committed: Mutex<HashMap<(String, u32), u64>>,
+    committed: Mutex<HashMap<(String, u32), Result<u64, Unreadable>>>,
     /// What `admit_produce` answers.
     pub(super) produce_hold: Mutex<std::time::Duration>,
     /// Every `admit_produce` call, as `(tenant, records, bytes)`.
@@ -122,12 +124,17 @@ impl Cluster for FakeCluster {
         }
     }
 
-    fn committed_until(&self, shard: &ShardRef<'_>, _handle: &StreamHandle) -> Option<u64> {
+    fn committed_until(
+        &self,
+        shard: &ShardRef<'_>,
+        _handle: &StreamHandle,
+    ) -> Result<Option<u64>, Unreadable> {
         self.committed
             .lock()
             .expect("lock")
             .get(&(shard.stream.to_string(), shard.shard))
             .copied()
+            .transpose()
     }
 
     fn admit_produce(&self, tenant_id: &str, records: u64, bytes: u64) -> std::time::Duration {
@@ -152,7 +159,24 @@ impl FakeCluster {
         self.committed
             .lock()
             .expect("lock")
-            .insert((stream.to_string(), shard), offset);
+            .insert((stream.to_string(), shard), Ok(offset));
+    }
+
+    /// Stop serving a shard's commit point, as a `Quorum` shard that moved
+    /// away after its read was placed here.
+    pub(super) fn stop_serving(&self, stream: &str, shard: u32) {
+        self.committed
+            .lock()
+            .expect("lock")
+            .insert((stream.to_string(), shard), Err(Unreadable::NotServed));
+    }
+
+    /// Lead a shard with no mark yet, as a broker just after a failover.
+    pub(super) fn settle(&self, stream: &str, shard: u32) {
+        self.committed
+            .lock()
+            .expect("lock")
+            .insert((stream.to_string(), shard), Err(Unreadable::Settling));
     }
 
     pub(super) fn add_broker(&self, node_id: &str, host: &str, port: u16) {
