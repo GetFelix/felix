@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793763112003,
+  "lastUpdate": 1793763486956,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -44096,6 +44096,58 @@ window.BENCHMARK_DATA = {
             "range": "10576.81",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1210879.43\nmean: 1207517.55\nstdev: 10576.81\ncv: 0.88%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "02e4bf3b89ead2680fa86a060522dfee62885434",
+          "message": "feat(replication): let joint_fence be finalized once every broker keeps wiped copies from voting (#1829)\n\n* feat(replication): let joint_fence be finalized once every broker keeps wiped copies from voting\n\nRemove the NON_VOTING_READY and JOINT_FENCE_READY switches. Brokers report\n`non_voting`, and the control plane finalizes joint_fence only when every\nserving broker does, so a mixed fleet stays safe whatever the upgrade order.\nAdd ClusterConfig::joint_fence and a cluster test that follows a wiped\nfollower through a failover until it counts again.\n\nSpec-Unaffected: no change to the model's rules; the code no longer has a build switch the spec never modelled.\n\n* docs(replication): a broker before it registers refuses a copy with no promise until a fresh read backs it\n\n* test(cluster): run placement in the learners failover test\n\nThe harness control plane only places shards when a test asks, so the\nfailover this test waits for was never planned.\n\nSpec-Unaffected: test-only change\n\n* fix(replication): a broker that does not report joint_fence decides it off before registering\n\nRegistration refuses a broker without an enabled feature, so one that does\nnot report joint_fence never runs with it on. Treating the gate as unknown\nuntil registration answered made every release broker refuse promise-less\ncopies in that window on fleets that never enabled joint fences.\n\nSpec-Unaffected: the model has no pre-registration window; brokers that report joint_fence decide as before.\n\n* fix(fleet): joint_fence needs stream and cache incarnations first (#1862)\n\nUnder joint fences a broker opens a new shard only once it knows nothing\ncame before it, which it reads from an incarnation above 0. Without\nstream_incarnations and cache_incarnations finalized, every stream or quorum\ncache created after the finalize stayed opening. The control plane now\nrefuses joint_fence (and replica_election) before them.\n\nThe cluster harness finalizes each feature's prerequisites first, as an\noperator must, and waits for each requested feature by name instead of an\nexact count of enabled features. A new cluster test creates a stream and a\nquorum cache under joint fences and writes to both.\n\nSpec-Unaffected: fleet finalize prerequisites and test harness only; no protocol or apply-path change.\n\n* docs(control-plane): place incarnation-0 shards before finalizing joint_fence\n\nSpec-Unaffected: docs only.",
+          "timestamp": "2026-11-04T03:34:02Z",
+          "tree_id": "d1fbbd7776a0d0c9dfa2b7cd2d2d7b515ddc3102",
+          "url": "https://github.com/GetFelix/felix/commit/02e4bf3b89ead2680fa86a060522dfee62885434"
+        },
+        "date": 1793763486017,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 514222.72,
+            "range": "40993.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 514222.72\nmean: 503392.16\nstdev: 40993.31\ncv: 8.14%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 514222.72,
+            "range": "40993.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 514222.72\nmean: 503392.16\nstdev: 40993.31\ncv: 8.14%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 119442.92,
+            "range": "1389.43",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 119442.92\nmean: 120240.61\nstdev: 1389.43\ncv: 1.16%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1194429.16,
+            "range": "13894.32",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1194429.16\nmean: 1202406.10\nstdev: 13894.32\ncv: 1.16%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
