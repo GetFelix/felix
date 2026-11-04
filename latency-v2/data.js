@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793812799103,
+  "lastUpdate": 1793816523882,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -56760,6 +56760,72 @@ window.BENCHMARK_DATA = {
             "range": "823.53",
             "unit": "us",
             "extra": "trials: 5\nmedian: 531.00\nmean: 896.20\nstdev: 823.53\ncv: 91.89%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "76755a2594948028ad5bc82b39481a3898e45c4a",
+          "message": "fix(replication): a learner caught up after its pass is still reported holding the start (#1893)\n\n* fix(replication): a learner caught up after its pass is still reported holding the start\n\nA leader names a follower in holds_start only on an answer checked in the\nsame pass. A learner whose catch-up exchange outlived its pass is merged by\nthe driver, and the next pass finds it level with the tail and the mark\nthere, so it was sent nothing and never named. With no further append the\ncontrol plane never re-admitted it. Such a learner now gets its last record\nagain, which is a checked answer the report can name.\n\nCloses #1892\n\nSpec-Unaffected: liveness of the holds_start report only; a learner's answer still counts toward no mark, and re-admission still needs a checked answer from the copy, as the model has it.\n\n* fix(replication): ask a stalled learner again too\n\nA failed ping stalls the learner's cursor level with the tail, and the\nstalled guard then kept every later pass from asking it, which is #1892\nagain. Review finding.\n\nSpec-Unaffected: liveness of the holds_start report only; no mark counts a learner.",
+          "timestamp": "2026-11-04T17:53:28Z",
+          "tree_id": "cdcae63a9491d8d03c6bf16f5b2901e0895aa0bf",
+          "url": "https://github.com/GetFelix/felix/commit/76755a2594948028ad5bc82b39481a3898e45c4a"
+        },
+        "date": 1793816515874,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 150,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 150.00\nmean: 149.60\nstdev: 0.55\ncv: 0.37%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 214,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 214.00\nmean: 213.60\nstdev: 1.14\ncv: 0.53%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 271,
+            "range": "11.82",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 271.00\nmean: 272.20\nstdev: 11.82\ncv: 4.34%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 198,
+            "range": "1.34",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 198.00\nmean: 198.60\nstdev: 1.34\ncv: 0.68%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 392,
+            "range": "19.46",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 392.00\nmean: 392.80\nstdev: 19.46\ncv: 4.95%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 587,
+            "range": "444.94",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 587.00\nmean: 848.40\nstdev: 444.94\ncv: 52.44%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
