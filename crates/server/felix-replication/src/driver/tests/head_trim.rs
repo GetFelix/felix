@@ -77,6 +77,7 @@ async fn append_trim(log: &felix_broker::StreamLog, floor: u64) -> u64 {
             &[RecordMark::Trim { floor }],
             &[],
             &[],
+            None,
         )
         .await
         .expect("append")

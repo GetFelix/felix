@@ -27,6 +27,14 @@ pub struct ForwardPublish {
     ///
     /// [`Kind::AuthorizedForwardPublish`]: super::Kind::AuthorizedForwardPublish
     pub credential: String,
+    /// Each record's key-and-headers block, one per payload, when any record
+    /// has one. `None` is the batch as it always travelled. `Some` travels as
+    /// `HeaderedForwardPublish`, sent only to an owner that advertised
+    /// [`PeerCapabilities::RECORD_HEADERS`]; it needs a credential, as that
+    /// kind is an authorized one.
+    ///
+    /// [`PeerCapabilities::RECORD_HEADERS`]: super::PeerCapabilities::RECORD_HEADERS
+    pub headers: Option<Vec<Option<Bytes>>>,
 }
 
 /// How the origin publisher asked for its write to be acknowledged.

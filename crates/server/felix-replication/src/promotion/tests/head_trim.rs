@@ -33,6 +33,7 @@ async fn a_trim_in_a_taken_tail_is_stored_as_a_trim() {
             &[RecordMark::Trim { floor: FLOOR }],
             &[],
             &[],
+            None,
         )
         .await
         .expect("append")

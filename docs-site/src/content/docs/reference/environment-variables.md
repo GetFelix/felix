@@ -414,7 +414,7 @@ every publish that carries headers (`feature_not_enabled`, reason
 `record_headers`), so the logs stay at storage format v7. Subscribers still
 read headers a log already holds, so turning it off later does not hide them.
 In a cluster this has no effect: headers are a fleet feature, and a cluster
-member does not enable them until they replicate.
+member does not enable them until its fleet has finalized `record_headers`.
 
 **Type**: Boolean
 

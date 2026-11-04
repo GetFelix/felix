@@ -108,7 +108,8 @@ one topic goes to one shard, so a topic keeps its order. The header names are in
 [`docs/mqtt-compatibility.md`](https://github.com/GetFelix/felix/blob/main/docs/mqtt-compatibility.md#what-is-stored).
 
 Storing headers needs the broker to accept record headers, which a single broker
-does by default. The first MQTT publish to a mounted stream is what moves its
+does by default and a clustered one does once its fleet has finalized
+`record_headers`. The first MQTT publish to a mounted stream is what moves its
 logs to storage format v8, so mounting a stream is the step that opts in. See
 [upgrades](/deployment/upgrades/).
 
