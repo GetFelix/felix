@@ -557,6 +557,14 @@ RenameUnfenced == FALSE
 \* whenever the set is unknown, the unsafe rule.
 SetLossUpTo == 0
 UnknownRenamesAny == FALSE
+\* `FirstAssignMark`: a broker that learned the shard from a snapshot with no
+\* set kept reads the set before as empty, not unknown, when the snapshot
+\* item carries the first-assignment mark. The control plane sets it only
+\* when its change log holds the shard's `assigned` change at that same
+\* generation, so only at the model's first generation. `MarkAnyGeneration`
+\* trusts the mark at any generation, the unsafe rule.
+FirstAssignMark == FALSE
+MarkAnyGeneration == FALSE
 FenceChecksIds == TRUE
 UnnamedCounts == FALSE
 NameByRegistration == FALSE
@@ -2268,7 +2276,12 @@ ForgetSet(b) ==
     /\ answered' = [answered EXCEPT ![b] = {}]
     /\ queued' = [queued EXCEPT ![b] = 0]
     /\ pending' = [pending EXCEPT ![b] = 0]
-    /\ oldSet' = [oldSet EXCEPT ![b] = {{}}]
+    \* The model does not tell a lost kept set from a kept one, so the mark
+    \* is read wherever the set is lost; at the first generation that is
+    \* harmless, as nothing came before it.
+    /\ oldSet' = [oldSet EXCEPT ![b] =
+                     IF FirstAssignMark /\ (gen = 1 \/ (MarkAnyGeneration /\ <<gen, b>> \notin opened))
+                     THEN {} ELSE {{}}]
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, acked, writes, staleCommit,
                     promised, confirmed, ballot, opened, setGen, installed,
@@ -3102,7 +3115,14 @@ RenameDue ==
           \/ /\ stillFencing /\ JointFence
              /\ \E o \in oldSet[leader] \ {{}} : ~MajorityOf(left \cup {leader}, o)
           \/ /\ stillFencing /\ SetUnknown(leader)
-             /\ ~UnknownRenamesAny => <<gen, leader>> \in opened
+             \* `set_unknown` in promotion/joint.rs: the kept set is at exactly
+             \* this generation, no cut-over is pending at it, and the ballot
+             \* names this leader there, which `keep_own_set` writes only once
+             \* `fence_log` succeeded, i.e. it opened.
+             /\ ~UnknownRenamesAny =>
+                  /\ <<gen, leader>> \in opened
+                  /\ setGen[leader] = gen
+                  /\ ~(cpNext /= {} /\ cpNextGen = gen)
 
 \* Under `Renames`, the control plane names its leader again at the next
 \* generation, the same set and any pending change kept, once that leader

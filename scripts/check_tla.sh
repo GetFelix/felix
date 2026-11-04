@@ -134,6 +134,8 @@ expectations=(
   "FelixShardReplacedPendingLeft violates AckedHeldByLeader"
   "FelixShardReplacedSetUnknownAny violates AckedHeldByLeader"
   "FelixShardReplacedSetUnknownRenames violates NeverRenameUnknownSet"
+  "FelixShardReplacedSetUnknownMarkAny violates AckedHeldByLeader"
+  "FelixShardReplacedSetUnknownMarkRenames violates NeverRenameUnknownSet"
   "FelixShardFencedAckSeat pass"
   "FelixShardFencedAckGrow pass"
   "FelixShardFencedAckSeatPair pass"
