@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793773328879,
+  "lastUpdate": 1793776610079,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -44252,6 +44252,58 @@ window.BENCHMARK_DATA = {
             "range": "5566.26",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 937527.22\nmean: 936339.71\nstdev: 5566.26\ncv: 0.59%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7904b90ec6aea753da5a0099742a2018be8810cf",
+          "message": "fix(replication): a deposed leader's read bound is refused after a move to no replicas (#1867)\n\n* fix(replication): a deposed leader's read bound is refused after a move to no replicas (#1852)\n\ncommitted_bound returned Unbounded for a shard whose route has no replicas\nbefore checking that this broker serves it. A leader deposed by a move to an\nRF 1 route then released batches it held for the mark and let read_committed\nrun past it. Check serving first; a served shard with no replicas stays\nunbounded.\n\n* fix(replication): read_bound checks serving first too (#1852)\n\nKafka Fetch, ListOffsets and group polls ask read_bound, which had the same\norder as committed_bound. A deposed leader now answers zero there.\n\n* chore: record that the shard model is unaffected (#1852)\n\nSpec-Unaffected: FelixShardSessions already models a deposed leader delivering only up to its own mark (DeliverTo = \"mark\"); this makes the code match it for a shard moved to a route with no replicas.\n\n* fix(replication): group and Kafka reads refuse a shard no longer served (#1852)\n\nread_bound answered zero for a Quorum shard this broker no longer serves.\nA group seek to latest that raced a move wrote zero under its guard, and a\nKafka ListOffsets latest clamped zero up to the log start, so consumers\nrewound. read_bound now says NotServed; group operations refuse as fenced\nand Kafka answers NOT_LEADER_OR_FOLLOWER.\n\nSpec-Unaffected: FelixShardSessions already has a deposed leader hand out nothing past its mark; this refuses instead of answering zero.\n\n* fix(replication): a new leader with no mark refuses latest instead of answering zero (#1852)\n\nread_bound answered zero while this broker served a Quorum shard with no\nmark at its generation, so ListOffsets latest and a group seek to latest\nrewound to the log start right after a failover. It now answers Settling:\nKafka ListOffsets returns OFFSET_NOT_AVAILABLE, Fetch stays empty, and\ngroup polls, seeks and describes are refused as shard_unavailable\n(not_ready).\n\n* fix(kafka): ListOffsets settling answers per version; earliest still answered (#1852)\n\nListOffsets latest on a new Quorum leader with no mark answers\nOFFSET_NOT_AVAILABLE from v5 and LEADER_NOT_AVAILABLE before, as Kafka\ndoes. Earliest and timestamp queries are answered with the log start as\ntheir bound. Client docs say group poll, seek and describe are safe to\nretry on shard_unavailable.",
+          "timestamp": "2026-11-04T07:09:54Z",
+          "tree_id": "565dfc6184a60b7c3628d0249af09f04116026e7",
+          "url": "https://github.com/GetFelix/felix/commit/7904b90ec6aea753da5a0099742a2018be8810cf"
+        },
+        "date": 1793776609483,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 362571.4,
+            "range": "14474.85",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 362571.40\nmean: 360444.24\nstdev: 14474.85\ncv: 4.02%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 362571.4,
+            "range": "14474.85",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 362571.40\nmean: 360444.24\nstdev: 14474.85\ncv: 4.02%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80319.1,
+            "range": "561.47",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80319.10\nmean: 80641.27\nstdev: 561.47\ncv: 0.70%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 803191.02,
+            "range": "5614.67",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 803191.02\nmean: 806412.64\nstdev: 5614.67\ncv: 0.70%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
