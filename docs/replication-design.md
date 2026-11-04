@@ -3549,6 +3549,14 @@ busy follower's answer instead of waiting out the unreachable one (#1080).
 Counting it there matters: a pass that only gave up on the answer would ask
 the follower again, and two followers each answering one pass behind would cut
 every pass short that way, with the mark never moving (#1479).
+The same holds with no busy follower. A follower level with a mark that already
+covers the tail is sent nothing, so it vouches for nothing, and the pass can
+have no majority while it waits on one follower that never answers. So once a
+follower that counts has answered, a record appended to the shard also ends
+that wait: the free follower gets the record in the next pass, and the
+unanswered exchange becomes a straggler (#1886). A tick, a route change or
+another shard's append does not end it, since the next pass would only ask the
+same followers again.
 Its auxiliary logs wait too, so they do not
 dial the same slow peer again. When the exchange ends with no pass running, the
 cursor goes back and the shard passes again if the follower moved, or if it
