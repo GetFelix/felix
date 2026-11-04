@@ -21,15 +21,9 @@ const OLD: [u8; 16] = [3; 16];
 
 /// The gate as a registration's answer left it.
 fn marks(joint: bool) -> Arc<QuorumMarks> {
-    Arc::new(build_marks(joint).allow_non_voting())
-}
-
-/// The gate as a registration's answer left it, on a build that does not
-/// yet mark wiped copies.
-fn build_marks(joint: bool) -> QuorumMarks {
     let fleet = FleetGate::new([JOINT_FENCE.name()]);
     fleet.restart(joint.then_some(JOINT_FENCE.name()));
-    QuorumMarks::with_fleet(Arc::new(fleet))
+    Arc::new(QuorumMarks::with_fleet(Arc::new(fleet)))
 }
 
 /// A handler on `broker` under `joint_fence`, whose copy holds `own`, with the
@@ -731,9 +725,7 @@ async fn a_wiped_copy_refuses_before_the_gate_is_adopted() {
     let (broker, _dir) = broker_with_storage().await;
     let fleet = Arc::new(FleetGate::new([JOINT_FENCE.name()]));
     let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 6))
-        .with_fleet(Arc::new(
-            QuorumMarks::with_fleet(Arc::clone(&fleet)).allow_non_voting(),
-        ))
+        .with_fleet(Arc::new(QuorumMarks::with_fleet(Arc::clone(&fleet))))
         .with_local_storage(StorageId::from_bytes(OWN))
         .with_stickiness(Duration::ZERO)
         .with_confirmed_routes(ConfirmedAs::new(Confirmed::Assigned {
@@ -916,15 +908,6 @@ async fn a_copy_with_no_promise_refuses_a_generation_newer_than_the_control_plan
     let answer = settled(|| on.fence(SENDER, plain.clone())).await;
     assert_eq!(refusal(&answer).code, ErrorCode::StaleRoute);
 
-    let unready = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 6))
-        .with_fleet(Arc::new(build_marks(true)))
-        .with_confirmed_routes(Arc::clone(&confirmed) as _);
-    let answer = settled(|| unready.fence(SENDER, plain.clone())).await;
-    assert!(
-        matches!(answer, InternalMessage::FenceOk(_)),
-        "a build that does not mark wiped copies answers as before: {answer:?}"
-    );
-
     let (broker, _dir) = broker_with_storage().await;
     let off = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 6))
         .with_fleet(marks(false))
@@ -943,20 +926,20 @@ impl crate::confirmed::ConfirmedRoutes for Moving {
     }
 }
 
-/// **A build that does not mark wiped copies reuses a read taken since the
-/// restart** (#1791). The read was taken after any wipe, so it is no older
+/// **Without joint fences a copy reuses a read taken since the restart**
+/// (#1791). The read was taken after any wipe, so it is no older
 /// than the promises the wipe cost. A leader deposed after the read can then
 /// be taken, as by any copy its successor has not fenced yet; once the
 /// successor's fence lands, the ballot refuses it.
 #[tokio::test]
-async fn before_the_build_allows_it_a_read_since_the_restart_is_reused() {
+async fn without_joint_fences_a_read_since_the_restart_is_reused() {
     let (broker, _dir) = broker_with_storage().await;
     let confirmed = Arc::new(Moving(parking_lot::Mutex::new(Confirmed::Assigned {
         generation: 6,
         leader: "broker-a".to_string(),
     })));
     let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5))
-        .with_fleet(Arc::new(build_marks(true)))
+        .with_fleet(marks(false))
         .with_confirmed_routes(Arc::clone(&confirmed) as _);
     let at = |generation| Fence {
         election: None,
@@ -1020,6 +1003,21 @@ async fn with_the_gate_off_a_copy_with_no_set_answers_as_before() {
     assert_eq!(log.member_is_learner(LOCAL), Some(false));
     let answer = settled(|| handler.pre_vote(pre_vote(7))).await;
     assert!(matches!(answer, InternalMessage::PreVoteAnswer(_)));
+}
+
+/// **Without `joint_fence` a wiped copy is not marked** either: a set naming
+/// another storage id for it is kept as it came, and the fence is answered.
+#[tokio::test]
+async fn with_the_gate_off_a_wiped_copy_is_not_marked() {
+    let (broker, _dir) = broker_with_storage().await;
+    let handler = handler(&broker, 6, OWN)
+        .with_fleet(marks(false))
+        .with_replaced_storage(true);
+    let answer = settled(|| handler.fence(SENDER, fence_with(6, set(5, OLD), None, false))).await;
+    assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
+    let log = log_of(&broker).await;
+    assert_eq!(log.member_is_learner(LOCAL), Some(false));
+    assert!(!log.member_is_wiped(LOCAL));
 }
 
 /// **A copy re-admitted on its stream log answers no group fence until its
@@ -1207,22 +1205,6 @@ async fn a_copy_whose_counter_log_cannot_open_stays_a_learner() {
         .await
         .expect("cache log");
     assert_eq!(cache.member_is_learner(LOCAL), Some(true), "admitted");
-}
-
-/// **A build that does not yet mark wiped copies leaves a fleet that
-/// finalized `joint_fence` as it was**: a set naming another storage id for
-/// this copy is kept as it came, and the fence is answered.
-#[tokio::test]
-async fn before_the_build_allows_it_a_wiped_copy_is_not_marked() {
-    let (broker, _dir) = broker_with_storage().await;
-    let handler = handler(&broker, 6, OWN)
-        .with_fleet(Arc::new(build_marks(true)))
-        .with_replaced_storage(true);
-    let answer = settled(|| handler.fence(SENDER, fence_with(6, set(5, OLD), None, false))).await;
-    assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
-    let log = log_of(&broker).await;
-    assert_eq!(log.member_is_learner(LOCAL), Some(false));
-    assert!(!log.member_is_wiped(LOCAL));
 }
 
 /// **A promotion whose set being left still lists the copy as a learner does

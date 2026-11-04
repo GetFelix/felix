@@ -965,13 +965,12 @@ once it has caught up with a leader that was chosen without it. This is the
 rule [#1331](https://github.com/GetFelix/felix/issues/1331) adopted, and what
 Raft does with a new member. Without `joint_fence` brokers answer as before.
 
-The rule is built but still switched off. The control plane now re-admits a
-learner and keeps placement off one ([#1737](https://github.com/GetFelix/felix/issues/1737);
-see "How the control plane re-admits a copy" below). What is missing is an
-end-to-end cluster test of the whole sequence. Until it lands the control
-plane refuses to finalize `joint_fence`, and brokers check their own switch
-too, for a fleet that finalized it on an earlier release
-(`NON_VOTING_READY` in `crates/server/felix-replication/src/quorum.rs`).
+The control plane re-admits a learner and keeps placement off one
+([#1737](https://github.com/GetFelix/felix/issues/1737); see "How the control
+plane re-admits a copy" below), and the cluster test `failures/learners.rs`
+follows a wiped copy through a failover until it counts again. Brokers report that they follow the rule
+(`non_voting`), and the control plane finalizes `joint_fence` only once every
+serving broker does.
 
 ```mermaid
 sequenceDiagram
@@ -1134,16 +1133,19 @@ only the copy it named.
 
 **Before the gate is known.** Whether a set naming another id makes a copy a
 learner depends on the `joint_fence` gate, which the broker learns only when
-it registers, after its peer listener is up. Until then such a request is
-refused as `Unavailable` and nothing is written. Everything else answers as
-before, so a broker that restarts with its data serves before it registers.
-A mark already on disk holds whatever the gate says.
+it registers, after its peer listener is up. A broker that does not report
+`joint_fence` knows the answer already: registration would refuse it if the
+fleet had the feature, so it treats the gate as off. For one that does, until
+then such a request is
+refused as `Unavailable` and nothing is written. A request for a copy that
+holds a promise answers as before, so a broker that restarts with its data
+keeps serving the shards it held. A request for a copy with no promise is
+handled as if the gate were on: it is refused, or refused retryably until a
+fresh confirmed read of the control plane backs its leader. A mark already on
+disk holds whatever the gate says.
 
-Not covered yet, and needed before elections (#1009 S9):
+Not covered yet, and needed before elections (#1009):
 
-- An end-to-end cluster test of the sequence above, and the switch
-  `NON_VOTING_READY`, which stays off until it passes. The full list is
-  "Turning on joint fences" in `docs/control-plane.md`.
 - The model's group logs (`GroupLogs`) stand in the counter log's place:
   one log beside the records, not the dead-letter and cursor pair, and the
   model waits for a majority where the code, short of answers, takes the
@@ -1279,7 +1281,8 @@ elected leader waits for the lease until the control plane is back (issue
    default) is gone as far as that follower is concerned.
 2. *Pre-vote.* Before it persists anything, a follower that suspects the
    leader asks its set whether it would get the next generation. A replica
-   says yes only if it has not heard its own leader within S, the asker's
+   says yes only if it leads no open generation itself (#1815: the code does
+   not check this yet), it has not heard its own leader within S, the asker's
    log is at least as far ahead as its own by (last generation, length), and
    the asker's set is no older than the one it knows. Nobody persists
    anything for a pre-vote. The follower stands only on a majority of yeses,
@@ -1403,7 +1406,12 @@ move, so a flapping link does not churn leaders. A leader that a majority of
 its set cannot reach loses stickiness at those replicas after S, and they can
 elect. Order by log and node id makes one candidate usual; randomised backoff
 breaks the remaining ties within a round or two. With no majority able to
-talk, nobody is elected, by design.
+talk, nobody is elected, by design. The model checks that an election
+finishes with the control plane down and any one broker stopped, given pre-vote
+and backoff, and that it does not without backoff
+(`FelixShardElectLive.cfg`, docs/formal/README.md). Against a candidate whose
+own detector is wrong, that needs the open leader to refuse the pre-vote too,
+which `pre_vote` does not do yet (#1815).
 
 **Decisions** (from the discussion on issue #1009):
 
@@ -1604,8 +1612,12 @@ start reaches a majority of the new set only behind those records
 (`the_joint_start_waits_for_the_current_stints_start`). The log remembers its
 current stint's start in memory only; after a restart the next fenced open
 writes a new one, even when the log already ends with an earlier stint's. A
-cache shard's counter log still counts from the start the generation history
-records.
+cache shard's counter log counts its joint start from its current stint's
+start record too
+(`the_counter_logs_joint_start_waits_for_the_current_stints_start`). Its mark
+still counts from the start the generation history records: the records
+between the two starts are this generation's own, and only the flip needs
+them on the new set.
 
 An in-memory stream writes none either. Its publishes never reach the shard's
 log: they take no offsets, nothing ships, the fence has nothing to take, and a
@@ -4097,14 +4109,15 @@ production broker sends or reads a set yet. With it on:
 
 The control plane's finalize gates are in place too: `joint_fence` is refused
 before `generation_start` and while a serving broker does not report that it
-offers the `ELECTION` peer capability or names start holders in its reports
-(`start_holders`), and `replica_election` is refused until `joint_fence` and its
+offers the `ELECTION` peer capability, names start holders in its reports
+(`start_holders`) or keeps a wiped copy from voting (`non_voting`), and
+`replica_election` is refused until `joint_fence` and its
 other prerequisites are finalized, every serving broker offers `ELECTION`,
 and the control plane has the metadata level for the pending replica set and
 adoption (level 21 under Raft, which every member must report). No broker
-offers `ELECTION`, and the control plane holds its own flag back until the
-election driver (#1009 S9) turns it on, with joint fences, two-majority acks
-and the wiped-voter guard in, so both features stay unfinalizable.
+reports `joint_fence` or offers `ELECTION` yet, and the control plane holds
+its metadata-level flag back until the election driver (#1009) turns it
+on, so both features stay unfinalizable.
 
 The control plane's side of rule 8 is built. Under `replica_election`, a
 cut-over that changes the set of a shard whose replicas elect names the new
@@ -4138,7 +4151,7 @@ leader](control-plane.md#adopting-an-elected-leader)). In the model that is
 
 Joint fences and the fenced next-generation open are built too, dormant
 behind `joint_fence`. No build reports that feature, so a fleet cannot
-finalize it; the cluster test reports it through `FELIX_TEST_FLEET_FEATURES`.
+finalize it; the cluster tests turn it on with `ClusterConfig::joint_fence`.
 Once it is finalized on a broker that offers `ELECTION`:
 
 - The generation right after one a broker serves is fenced before it serves,
@@ -4153,7 +4166,14 @@ Once it is finalized on a broker that offers `ELECTION`:
   each. That covers a move's cut-over, a replacement's join and
   seat, a top-up and a grow. The set being left is the control plane's set
   at the generation right before the route's, as the model's `Swap` takes it.
-  The broker learns it from the assignment its watch saw at that generation,
+  For a cut-over the control plane holds as pending, that set is on the
+  route, and it is authoritative: the broker takes it from there, the same
+  set the leader acknowledges on. Its watch, its log or what it kept beside
+  its set only fill in each member's copy and learner mark, and only when
+  they name the same members. When none of them names those members, each
+  member counts only from the copy the route names for it, or by node id
+  when it names none; such a fence does not stay pending. For other changes the broker learns
+  the set from the assignment its watch saw at that generation,
   from the set the leader before shipped with at it, or from what this
   leader kept beside its own set. When none of those knows it (the watch
   started from a snapshot, or skipped that generation, and the log keeps an
@@ -4162,6 +4182,19 @@ Once it is finalized on a broker that offers `ELECTION`:
   to leave. A member of the old set that no route names any more is reached
   at the address the node catalog gives, and answers even though its own
   routing view leaves it out.
+- Outside a pending cut-over, a failover can leave two sets. When the
+  control plane records an election without taking the elected leader's
+  set, its own set and the one the elected leader shipped with can differ,
+  and a majority of either may hold acknowledged records. So when the set
+  the promoted broker's log keeps from before the route differs from the set
+  found above (other members, other voters, or another copy of a member),
+  the fence needs a majority of that set too, as the model's `Promote`
+  fences the promoted broker's own set. Each set counts an answer only from
+  the copy it names. A member that votes only in the log's set is sent that
+  set as the one being left. Only the set found above is kept beside the
+  leader's, so a fence tried again at that generation after the log took the
+  new set fences that set alone. That is safe: the replicas that took the
+  first fence keep their promise, and the leader already caught up from them.
 - Each member of the set being left is counted as a voter and, where it was
   a move's staged destination, also not: replicas may keep the set either
   way, and the fence needs a majority of each reading.
@@ -4216,8 +4249,18 @@ acknowledgement is the one it was.
   with no pending change, and acknowledgements go back to the new set alone.
   The model's `CpFlip` keeps the generation; here the next one is fenced
   jointly again and opens on the new set.
-- A cache's counter log is counted on the new set alone, as the model's
-  counters are.
+- A cache's counter log is counted the same way, on both majorities, and the
+  leader reports the joint start only once the counter log's own start
+  record for its current stint is acknowledged on both as well. The counter
+  updates acknowledged before the cut-over sit behind that record, not the
+  cache log's. Reported on the cache log alone, the control plane could take a
+  new set where only the leader holds them
+  (`a_flip_waits_for_the_counter_log_on_both_majorities` and
+  `a_pending_change_counts_counters_on_both_majorities` in
+  `driver/tests/joint_acks.rs`). A counter log that does not open on a pass
+  holds the joint start back for that pass, rather than counting as a cache
+  with no counters (`a_counter_log_that_does_not_open_reports_no_joint_start`). The model's set-change configurations have
+  no counter log yet.
 - This leader ships to the new set's followers only. A majority of the set
   being left that needs a member outside the new set therefore does not form,
   and the change times out (`FELIX_SHARD_PENDING_SET_TIMEOUT_MS`) and is
