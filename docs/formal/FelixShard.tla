@@ -542,7 +542,8 @@ ReclaimBlind == FALSE
 \* `Renames`: under `Adopt`, the control plane names its leader again at the
 \* next generation when that leader reports it cannot serve the recorded one:
 \* an election the control plane recorded without adopting it moved past it,
-\* or its fence there cannot win a majority (CpRename).
+\* its fence there cannot win a majority, or a replica promised it away
+\* while the fence is still pending (CpRename).
 \* `RenameUnfenced`: the renamed leader opens at once instead of fencing.
 Renames == FALSE
 RenameUnfenced == FALSE
@@ -3026,6 +3027,7 @@ RenameDue ==
        /\ bgen[leader] < gen \/ stillFencing
        /\ \/ PromisedAway(leader, leader, gen)
           \/ ~LeaderMajority(leader, left \cap Members(leader))
+          \/ stillFencing /\ left /= FenceMembers(leader)
           \/ /\ stillFencing /\ JointFence /\ oldSet[leader] /= {}
              /\ ~MajorityOf(left \cup {leader}, oldSet[leader])
 
@@ -3033,7 +3035,8 @@ RenameDue ==
 \* generation, the same set and any pending change kept, once that leader
 \* reports it cannot serve the control plane's generation: a recorded
 \* election moved the control plane past it, or it is still fencing there
-\* and too many of its set promised a candidate (`election_refused`,
+\* and too many of its set promised a candidate, or one did and the fence
+\* has not opened (`election_refused`,
 \* `move_step` in services/felix-controlplane-service/src/cluster/placement/moves.rs).
 \* Not while a move drains its leader, which ends through its own steps. The
 \* leader fences there as at any new term: its open failed, so the broker

@@ -94,10 +94,11 @@ pub enum Outcome {
     Fenced { caught_up_from: Option<String> },
     /// Some replica did not offer the fence, so the shard opens on the lease.
     Lease { lacking: String },
-    /// Not yet, and not in this attempt: so many replicas promised this
-    /// generation to `promised_to` that no majority is left to take it. The
-    /// shard stays closed, and this broker reports the refusal so the
-    /// control plane names it again above the generation (#1730).
+    /// Not yet, and not in this attempt: a replica promised this generation
+    /// to `promised_to`, and either so many did that no majority is left to
+    /// take it or the rest did not take it either. The shard stays closed,
+    /// and this broker reports the refusal so the control plane names it
+    /// again above the generation (#1730).
     Refused {
         promised_to: String,
         why: String,
@@ -695,6 +696,16 @@ async fn fence_log<R: PeerRequester>(
         for refusal in &refusals {
             why.push_str("; ");
             why.push_str(refusal);
+        }
+        // The rest did not take it either, down or not. A promise to another
+        // node never comes back, so retrying at this generation can wait
+        // forever on a replica that is gone; the refusal moves the shard up.
+        if let Some((_, promised_to)) = promised_away.first() {
+            return Err(Outcome::Refused {
+                promised_to: promised_to.clone(),
+                why,
+                took: took(&answered),
+            });
         }
         return Err(Outcome::pending(why, took(&answered)));
     }

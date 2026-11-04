@@ -1530,6 +1530,10 @@ in one of two ways:
 - It started to open first, persisting its own promise, but a majority of
   the set promised the generation to the elected broker, so its fence can
   never reach a majority.
+- A replica promised the generation to another broker and the rest of the
+  set did not take the fence either, for example because one of them is
+  down. A retry at this generation would wait on that broker for as long as
+  it stays down, so this counts as a refusal too.
 
 Either way it says so in its report, with `refused` set to the `generation`
 it refused and the node it `promised_to`, and repeats it each tick. The
