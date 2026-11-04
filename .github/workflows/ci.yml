@@ -742,6 +742,7 @@ jobs:
           # The C page's token example includes libcurl; skipping it here
           # would leave it unchecked.
           FELIX_CAPI_DOCS_REQUIRE_CURL: '1'
+          FELIX_CAPI_KEEP_DIR: ${{ runner.temp }}/capi-work
         run: |
           if ! echo '#include <curl/curl.h>' | cc -E -x c - >/dev/null 2>&1; then
             sudo apt-get update -q && sudo apt-get install -y -q libcurl4-openssl-dev
@@ -753,6 +754,14 @@ jobs:
       - name: C ABI conformance verdict
         if: ${{ !cancelled() && steps.capi.outcome != 'skipped' }}
         run: cargo run --locked -q -p felix-conformance -- verify c-conformance.json
+
+      - name: Upload the C fixture logs
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: c-conformance-fixture-logs
+          path: ${{ runner.temp }}/capi-work
+          if-no-files-found: ignore
 
   # Same reasoning as the Python job above, and the same shape: the binding
   # wraps the Rust client, so a change anywhere under `crates/sdk/felix-client` can
