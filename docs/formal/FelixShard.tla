@@ -565,6 +565,14 @@ UnknownRenamesAny == FALSE
 \* trusts the mark at any generation, the unsafe rule.
 FirstAssignMark == FALSE
 MarkAnyGeneration == FALSE
+\* `KeepsUnopened` (#1878): a failover also fences the set the promoted
+\* broker was still leaving, unless its log holds a record of its own set's
+\* generation, so that fence opened (`unopened_leaving` in
+\* promotion/joint.rs). Off, a failover replaces it. `OneLeavingSet`: a
+\* member answering a fence keeps only one of the sets it leaves, one it
+\* votes in (`leaving_for`), as the broker's kept set has one `leaving`.
+KeepsUnopened == FALSE
+OneLeavingSet == FALSE
 FenceChecksIds == TRUE
 UnnamedCounts == FALSE
 NameByRegistration == FALSE
@@ -1103,8 +1111,15 @@ LearnSet(f, b) ==
     IF SetCheck
     THEN /\ setGen' = [setGen EXCEPT ![f] = setGen[b]]
          /\ mine' = [mine EXCEPT ![f] = mine[b]]
-         /\ oldSet' = [oldSet EXCEPT ![f] = oldSet[b]]
+         /\ IF OneLeavingSet /\ Cardinality(oldSet[b]) > 1
+            THEN \E o \in oldSet[b] :
+                   /\ f \in o \/ \A p \in oldSet[b] : f \notin p
+                   /\ oldSet' = [oldSet EXCEPT ![f] = {o}]
+            ELSE oldSet' = [oldSet EXCEPT ![f] = oldSet[b]]
     ELSE UNCHANGED << setGen, mine, oldSet >>
+
+\* Whether `b`'s log holds a record a leader wrote at generation `g`.
+HoldsRecordOf(b, g) == \E i \in 1..Len(log[b]) : log[b][i].lg = g
 
 \* Whether a broker is a candidate rather than the leader the control plane
 \* named at its generation.
@@ -2009,7 +2024,9 @@ Promote(v, f, views) ==
     /\ setGen' = IF SetCheck THEN [setGen EXCEPT ![f] = gen + 1] ELSE setGen
     \* A change still pending at `f` stays pending, and a set `f` did not know
     \* is a change from the one it did (`FailoverOldSets`).
-    /\ LET left == FailoverOldSets(mine[f]) \ {mine'[f]}
+    /\ LET kept == IF KeepsUnopened /\ ~HoldsRecordOf(f, setGen[f])
+                   THEN oldSet[f] \ {{}} ELSE {}
+           left == (FailoverOldSets(mine[f]) \cup kept) \ {mine'[f]}
        IN oldSet' = IF SetCheck /\ left /= {} THEN [oldSet EXCEPT ![f] = left] ELSE oldSet
     \* A failover writes the control plane's set at the new generation, which
     \* abandons a cut-over's pending change.
