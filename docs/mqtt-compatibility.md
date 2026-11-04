@@ -63,8 +63,9 @@ What `CONNECT` does:
 | A packet over 64 KiB before `CONNECT` | Closed. |
 
 `FELIX_MQTT_ANONYMOUS_TENANT` is a development switch. A connection that sends
-no credentials acts as that tenant, and the broker logs a warning at startup. A
-connection that sends a wrong token is still refused.
+no credentials acts as that tenant and may publish to every stream mounted for
+it, and the broker logs a warning at startup. A connection that sends a wrong
+token is still refused.
 
 A connection ends when its token expires or is revoked. A 5.0 client is sent a
 `DISCONNECT` with reason 0x87 first. Re-authenticating with `AUTH` is not
@@ -199,9 +200,10 @@ sequence for its shard.
 does not answer in time after the batch was sent, the message may or may not be
 in the stream. The broker then sends neither a `PUBACK` nor an error reason: a
 5.0 error reason means "not delivered", which may be false. It closes the
-connection, and the client sends the message again with `DUP` set after it
-reconnects. Sessions do not outlive the connection yet, so that second copy is
-a new message: QoS 1 is at least once, as MQTT says it is.
+connection. Sessions do not outlive the connection yet, and with a clean
+session MQTT tells the client to forget unacknowledged messages, so most
+clients will not resend it on their own. The application decides: publish it
+again after reconnecting, and accept that the stream may then hold it twice.
 
 ### What is stored
 
@@ -251,7 +253,7 @@ dropped silently: each is counted in `felix_mqtt_refused_total{reason}`.
 | Principal lacks `stream.publish` on the mounted stream (`not_authorized`) | `PUBACK` 0x87 | `DISCONNECT` 0x87 | Closes |
 | This broker does not own the shard (`not_owner`) | `PUBACK` 0x83, reason string `not_owner` | Dropped, counted | Closes (QoS 0: dropped, counted) |
 | Broker does not accept record headers (`record_headers_disabled`) | `PUBACK` 0x83, reason string `record_headers_disabled` | Dropped, counted | Closes (QoS 0: dropped, counted) |
-| Mounted stream is gone or not durable (`stream_unavailable`) | `PUBACK` 0x88, reason string `stream_unavailable` | Dropped, counted | Closes (QoS 0: dropped, counted) |
+| Mounted stream is gone or not durable (`stream_unavailable`) | `PUBACK` 0x80, reason string `stream_unavailable` | Dropped, counted | Closes (QoS 0: dropped, counted) |
 | User property starting with `felix.` (`reserved_header`) | `PUBACK` 0x83 | `DISCONNECT` 0x83 | Not possible |
 | QoS 2 (`qos2_unsupported`) | `DISCONNECT` 0x9B | the same | Closes |
 | Retain flag set (`retain_unsupported`) | `DISCONNECT` 0x9A | the same | Closes |

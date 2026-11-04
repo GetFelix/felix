@@ -361,6 +361,25 @@ async fn a_broker_without_record_headers_refuses_with_a_reason() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_stream_that_is_gone_is_told_with_a_reason_a_puback_may_carry() {
+    let writes = FakeWrites::new();
+    writes.fail_with(Err(WriteError::Refused(Refusal::StreamUnavailable)));
+    let mut h = connected_with(Version::V5, Settings::default(), writes).await;
+    h.client
+        .send(
+            Packet::Publish(publish(QoS::AtLeastOnce, Some(2))),
+            Version::V5,
+        )
+        .await;
+    let ack = puback(h.client.recv().await);
+    assert_eq!(ack.reason, ReasonCode::UnspecifiedError);
+    assert_eq!(
+        ack.properties.reason_string.as_ref().map(|s| s.as_str()),
+        Some("stream_unavailable")
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_refusal_does_not_use_up_a_sequence() {
     let writes = FakeWrites::new();
     writes.fail_with(Err(WriteError::Refused(Refusal::NotOwner)));
@@ -514,19 +533,24 @@ async fn a_3_1_1_client_past_the_limit_waits_instead_of_being_disconnected() {
         ..Settings::default()
     };
     let mut h = connected_with(Version::V311, settings, Arc::clone(&writes)).await;
-    for id in 1..=4 {
-        h.client
-            .send(
-                Packet::Publish(publish(QoS::AtLeastOnce, Some(id))),
-                Version::V311,
-            )
-            .await;
+    // One write, so a single read can take in several: the limit must hold
+    // within that read too.
+    let mut burst = BytesMut::new();
+    for id in 1..=6 {
+        Packet::Publish(publish(QoS::AtLeastOnce, Some(id)))
+            .encode(Version::V311, &mut burst)
+            .unwrap();
     }
+    h.client.raw(&burst).await;
     h.client.nothing_arrives().await;
     writes.release(10);
-    for id in 1..=4 {
+    for id in 1..=6 {
         assert_eq!(puback(h.client.recv().await).packet_id, id);
     }
+    // Held to the limit, plus the one publish read past it.
+    let sizes: Vec<_> = writes.batches().iter().map(|b| b.records.len()).collect();
+    assert!(sizes.iter().all(|&n| n <= 3), "batch sizes {sizes:?}");
+    assert_eq!(sizes.iter().sum::<usize>(), 6);
 }
 
 #[tokio::test(start_paused = true)]

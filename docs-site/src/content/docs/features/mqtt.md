@@ -77,7 +77,8 @@ none. The
 [control plane API](/api/control-plane-api/) has the exact rules.
 
 A connection with no credentials is refused unless the broker was started with
-`FELIX_MQTT_ANONYMOUS_TENANT=<tenant>`, which is for development only.
+`FELIX_MQTT_ANONYMOUS_TENANT=<tenant>`, which is for development only: such a
+connection may publish to every stream mounted for that tenant.
 
 A connection ends when its token expires or is revoked. A device is also closed
 if it is silent for one and a half keepalive intervals, with the interval capped
@@ -111,8 +112,9 @@ does by default. The first MQTT publish to a mounted stream is what moves its
 logs to storage format v8, so mounting a stream is the step that opts in. See
 [upgrades](/deployment/upgrades/).
 
-Nothing is dropped silently. A publish to a topic under no mount, or by a token
-without `stream.publish` on the mounted stream, is refused: a 5.0 client at QoS 1
+A refused publish is always answered or counted. A publish to a topic under no
+mount, or by a token without `stream.publish` on the mounted stream, is
+refused: a 5.0 client at QoS 1
 gets a `PUBACK` with reason 0x90 or 0x87 and keeps its connection, a 3.1.1
 client's connection closes (3.1.1 cannot refuse one message). Each refusal is
 counted in `felix_mqtt_refused_total{reason}`.
@@ -126,8 +128,10 @@ Three limits to know:
   piece of work.
 - **Unknown outcome.** If leadership moves or a majority does not answer in time
   after the message was sent, the broker cannot say whether it was written. It
-  sends neither a `PUBACK` nor an error reason, and closes the connection; the
-  client sends the message again after it reconnects, so QoS 1 is at least once.
+  sends neither a `PUBACK` nor an error reason, and closes the connection. Most
+  clients drop an unacknowledged message when a clean session ends, so publish
+  it again from the application after reconnecting; the stream may then hold it
+  twice.
 - **No retained messages or topic aliases.** A retained publish is refused with
   reason 0x9A (3.1.1: the connection closes), and no topic alias is accepted.
 

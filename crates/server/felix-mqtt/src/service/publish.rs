@@ -321,7 +321,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
                 }
             }
             // Not told either way: an error reason would say "not delivered",
-            // which may be false. The client sends it again with DUP.
+            // which may be false. Closing leaves the resend to the client.
             Err(WriteError::OutcomeUnknown(reason)) => return Err(End::Close(reason)),
             Err(WriteError::Refused(refusal)) => {
                 let (reason, label) = describe(refusal);
@@ -368,7 +368,8 @@ fn describe(refusal: Refusal) -> (ReasonCode, &'static str) {
             ReasonCode::ImplementationSpecificError,
             "record_headers_disabled",
         ),
-        Refusal::StreamUnavailable => (ReasonCode::ServerUnavailable, "stream_unavailable"),
+        // 0x88 is not allowed on a PUBACK.
+        Refusal::StreamUnavailable => (ReasonCode::UnspecifiedError, "stream_unavailable"),
     }
 }
 

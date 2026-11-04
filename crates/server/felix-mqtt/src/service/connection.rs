@@ -99,7 +99,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         let mut muted_until: Option<Instant> = None;
 
         loop {
-            while let Some(packet) = self.next_packet(Some(version), &limits)? {
+            // One read can hold many packets, so the limit is checked per
+            // packet as well as before reading.
+            while publishing.pending() <= max_inflight
+                && let Some(packet) = self.next_packet(Some(version), &limits)?
+            {
                 self.handle(shared, &session, &mut publishing, packet)?;
             }
             if let Some(hold) = publishing.start(&shared.writes)
