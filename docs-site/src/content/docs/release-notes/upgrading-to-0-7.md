@@ -147,8 +147,9 @@ Later control-plane changes are on `main`:
   a leader reports where its generation started (`holds_start`): migration
   `0040`, level 23. Finalizing `joint_fence` needs that level, and
   `generation_start`, `stream_incarnations` and `cache_incarnations`
-  finalized first. No broker reports `joint_fence` yet, so the control plane
-  refuses the finalize; it is not something to plan around in 0.7.
+  finalized first. A broker reports `joint_fence` only with
+  `FELIX_INTERNAL_ELECTION=true`, so it is part of turning on failover
+  without the control plane (below).
 - A stream can carry an MQTT mount: migration `0041`, level 24.
 - A leader that could not serve a generation because it had promised it to
   another node reports the refusal, and placement names it again at a higher
