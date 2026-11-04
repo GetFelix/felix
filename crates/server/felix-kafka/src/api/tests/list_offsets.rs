@@ -67,6 +67,25 @@ async fn latest_is_the_commit_point() {
     assert_eq!(answer(&mut client, 0, -1, 1).await, (0, -1, 1));
 }
 
+/// A shard that stops serving here between placement and the read is
+/// refused, not answered with the log start: a consumer resetting to
+/// `latest` would otherwise start from the beginning.
+#[tokio::test]
+async fn latest_is_refused_once_the_shard_is_not_served_here() {
+    let fixture = Fixture::anonymous().await;
+    fixture.stream("orders", "created", 1, true).await;
+    fixture
+        .publish("orders", "created", 0, &["a", "b", "c"])
+        .await;
+    fixture.cluster.stop_serving("created", 0);
+    let mut client = fixture.connect();
+    let (error, _, _) = answer(&mut client, 0, -1, 1).await;
+    assert_eq!(
+        error,
+        kafka_protocol::ResponseError::NotLeaderOrFollower.code()
+    );
+}
+
 #[tokio::test]
 async fn a_time_finds_the_first_record_at_or_after_it() {
     let fixture = Fixture::anonymous().await;

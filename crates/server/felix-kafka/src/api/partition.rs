@@ -10,7 +10,7 @@ use std::sync::Arc;
 use felix_broker::{StreamHandle, StreamLog};
 use kafka_protocol::ResponseError;
 
-use crate::cluster::{Placement, Principal, ShardRef};
+use crate::cluster::{NotServed, Placement, Principal, ShardRef};
 use crate::service::Shared;
 use crate::topic::{TopicStream, parse_topic};
 
@@ -20,21 +20,25 @@ pub(super) struct Readable {
     /// Woken when a publish to the shard commits.
     pub(super) appended: Arc<tokio::sync::Notify>,
     /// Asked on every read, because the mark moves while a fetch waits.
-    committed: Arc<dyn Fn() -> Option<u64> + Send + Sync>,
+    committed: Arc<dyn Fn() -> Result<Option<u64>, NotServed> + Send + Sync>,
 }
 
 impl Readable {
     /// Where readers stop: `tail`, or the shard's commit point if that is
-    /// lower. See [`crate::cluster::Cluster::committed_until`].
-    pub(super) fn high_watermark(&self, tail: u64) -> u64 {
+    /// lower. See [`crate::cluster::Cluster::committed_until`]. Placement is
+    /// checked once, at [`resolve`]; a shard that stopped serving here since
+    /// is refused rather than answered from this broker's log.
+    pub(super) fn high_watermark(&self, tail: u64) -> Result<u64, ResponseError> {
+        let committed =
+            (self.committed)().map_err(|NotServed| ResponseError::NotLeaderOrFollower)?;
         // Never below the log start: a mark behind retention's trim says
         // nothing new is readable, not that trimmed offsets are.
         let floor = self.log.readable_base().min(tail);
-        let committed = match ((self.committed)(), self.log.poisoned_read_end()) {
+        let committed = match (committed, self.log.poisoned_read_end()) {
             (Some(committed), Some(end)) => Some(committed.min(end)),
             (committed, end) => committed.or(end),
         };
-        committed.map_or(tail, |committed| committed.clamp(floor, tail))
+        Ok(committed.map_or(tail, |committed| committed.clamp(floor, tail)))
     }
 }
 

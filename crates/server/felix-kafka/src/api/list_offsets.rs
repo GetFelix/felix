@@ -73,7 +73,7 @@ async fn offset_for(
     let base = log.readable_base();
     // The high watermark, not the log end: an offset past the commit point is
     // not one a consumer may start from.
-    let tail = readable.high_watermark(log.tail_offset().await.map_err(storage)?);
+    let tail = readable.high_watermark(log.tail_offset().await.map_err(storage)?)?;
     match timestamp {
         LATEST => Ok((-1, tail as i64)),
         EARLIEST => Ok((-1, base as i64)),

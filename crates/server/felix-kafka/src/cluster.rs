@@ -63,11 +63,17 @@ pub trait Cluster: Send + Sync + 'static {
     /// The offset below which a shard's records are committed, which is where
     /// a fetch stops and what it reports as the high watermark. `None` when
     /// everything durable here is committed: a `Leader` stream, or a shard
-    /// with no replicas. A `Quorum` shard's is its quorum mark, since a record
-    /// past it can be lost at failover and its offset reused.
-    fn committed_until(&self, shard: &ShardRef<'_>, handle: &StreamHandle) -> Option<u64> {
+    /// served here with no replicas. A `Quorum` shard's is its quorum mark,
+    /// since a record past it can be lost at failover and its offset reused.
+    /// [`NotServed`] once this broker no longer serves a `Quorum` shard it
+    /// was reading, which the client hears as `NOT_LEADER_OR_FOLLOWER`.
+    fn committed_until(
+        &self,
+        shard: &ShardRef<'_>,
+        handle: &StreamHandle,
+    ) -> Result<Option<u64>, NotServed> {
         let _ = (shard, handle);
-        None
+        Ok(None)
     }
 
     /// Account for `records` records of `bytes` payload that `tenant_id` is
@@ -265,3 +271,8 @@ pub fn kafka_node_id(node_id: &str) -> i32 {
 
 #[cfg(test)]
 mod tests;
+
+/// A `Quorum` shard this broker no longer serves, so it has no commit point
+/// to read to; see [`Cluster::committed_until`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NotServed;

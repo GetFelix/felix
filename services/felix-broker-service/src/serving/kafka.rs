@@ -246,7 +246,11 @@ impl Cluster for BrokerCluster {
         })
     }
 
-    fn committed_until(&self, shard: &ShardRef<'_>, handle: &StreamHandle) -> Option<u64> {
+    fn committed_until(
+        &self,
+        shard: &ShardRef<'_>,
+        handle: &StreamHandle,
+    ) -> Result<Option<u64>, felix_kafka::NotServed> {
         let key = Self::key(shard);
         felix_replication::quorum::read_bound(
             Some(handle.consistency()),
@@ -254,6 +258,7 @@ impl Cluster for BrokerCluster {
             self.marks.as_deref(),
             self.ingress.as_deref(),
         )
+        .map_err(|_| felix_kafka::NotServed)
     }
 
     fn admit_produce(&self, tenant_id: &str, records: u64, bytes: u64) -> Duration {

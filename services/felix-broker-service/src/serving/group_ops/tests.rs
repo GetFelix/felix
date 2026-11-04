@@ -719,6 +719,59 @@ async fn a_seek_lands_inside_the_log() {
     assert_eq!(committed(&leader).await, Some(0));
 }
 
+/// A seek or describe admitted while this broker led the shard, which then
+/// moved to a route with no replicas before the read: refused, not answered
+/// as offset zero. A seek to `latest` would otherwise rewind the group to
+/// the start, and the group moves with the shard.
+#[tokio::test]
+async fn the_read_end_of_a_shard_no_longer_served_here_is_refused() {
+    let mut leader = Leader::start().await;
+    leader
+        .broker
+        .publish_batch(
+            TENANT,
+            NAMESPACE,
+            leader::QUORUM,
+            0,
+            &[Bytes::from_static(b"a"), Bytes::from_static(b"b")],
+        )
+        .await
+        .expect("publish");
+    let marks = Arc::new(felix_replication::quorum::QuorumMarks::new());
+    marks.publish(&leader::stream_key(leader::QUORUM), leader::GENERATION, 2);
+    let publish_ctx = build_publish_context(
+        Arc::clone(&leader.broker),
+        &BrokerConfig::default(),
+        ClusterContext {
+            ingress: Some(Arc::clone(&leader.ingress)),
+            marks: Some(Arc::clone(&marks)),
+            ..ClusterContext::default()
+        },
+    );
+    let (_, log, owned) = reader_and_log(
+        &leader.broker,
+        &publish_ctx,
+        TENANT,
+        NAMESPACE,
+        leader::QUORUM,
+        0,
+    )
+    .expect("served here");
+    assert_eq!(
+        read_end(&leader.broker, &publish_ctx, &owned, &log)
+            .await
+            .expect("read end"),
+        2
+    );
+
+    // The successor leads it with no replicas.
+    leader.cut_over(&leader::stream_key(leader::QUORUM));
+    let refused = read_end(&leader.broker, &publish_ctx, &owned, &log)
+        .await
+        .expect_err("answered for a shard served elsewhere");
+    assert_eq!(refused.code(), &felix_wire::ErrorCode::ShardUnavailable);
+}
+
 #[tokio::test]
 async fn describe_reports_the_tail_and_the_claims() {
     let (leader, publish_ctx) = claimed_one().await;

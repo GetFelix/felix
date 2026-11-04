@@ -120,16 +120,13 @@ async fn poll_rechecking(
             Err(_) if !first => return Ok(Vec::new()),
             Err(refused) => return Err(refused),
         };
-        first = false;
         // Read each round: the mark moves while a poll waits.
-        let committed = felix_replication::quorum::read_bound(
-            broker
-                .stream_consistency(tenant_id, namespace, stream)
-                .await,
-            &owned.key,
-            publish_ctx.marks.as_deref(),
-            publish_ctx.ingress.as_deref(),
-        );
+        let committed = match committed_bound(broker, publish_ctx, &owned).await {
+            Ok(committed) => committed,
+            Err(_) if !first => return Ok(Vec::new()),
+            Err(refused) => return Err(refused),
+        };
+        first = false;
         let claimed = reader
             .poll_below(
                 &key,
@@ -352,19 +349,31 @@ async fn read_end(
     owned: &Owned,
     log: &felix_broker::StreamLog,
 ) -> Result<u64, ClientError> {
+    let committed = committed_bound(broker, publish_ctx, owned).await?;
+    let tail = log.tail_offset().await.map_err(storage)?;
+    Ok(tail
+        .min(committed.unwrap_or(u64::MAX))
+        .min(log.poisoned_read_end().unwrap_or(u64::MAX)))
+}
+
+/// The quorum mark a group may read to, `None` when the shard has none.
+/// Refused once this broker no longer serves the shard: zero there is not a
+/// position, and a seek to `latest` would rewind the group to it.
+async fn committed_bound(
+    broker: &Broker,
+    publish_ctx: &PublishContext,
+    owned: &Owned,
+) -> Result<Option<u64>, ClientError> {
     let key = &owned.key;
-    let committed = felix_replication::quorum::read_bound(
+    felix_replication::quorum::read_bound(
         broker
             .stream_consistency(&key.tenant_id, &key.namespace, &key.stream)
             .await,
         key,
         publish_ctx.marks.as_deref(),
         publish_ctx.ingress.as_deref(),
-    );
-    let tail = log.tail_offset().await.map_err(storage)?;
-    Ok(tail
-        .min(committed.unwrap_or(u64::MAX))
-        .min(log.poisoned_read_end().unwrap_or(u64::MAX)))
+    )
+    .map_err(|_| crate::shards::lifecycle::fence::Fenced::NotServing.into())
 }
 
 /// What a consumer does with a record it was handed.

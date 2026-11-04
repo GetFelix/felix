@@ -185,7 +185,10 @@ async fn read_partition(
     // Consumers read to the high watermark, which on a `Quorum` shard is the
     // commit point rather than the log's end. An offset between the two is
     // not out of range, only not readable yet, so it is answered empty.
-    let high_watermark = readable.high_watermark(tail);
+    let high_watermark = match readable.high_watermark(tail) {
+        Ok(high_watermark) => high_watermark,
+        Err(error) => return answer.with_error_code(error.code()).with_high_watermark(-1),
+    };
     let answer = answer
         .with_high_watermark(high_watermark as i64)
         .with_last_stable_offset(high_watermark as i64)

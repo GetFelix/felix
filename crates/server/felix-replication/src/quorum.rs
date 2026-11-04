@@ -1007,35 +1007,39 @@ pub async fn await_cache_quorum<S: ShardServing + ?Sized>(
 /// A `Quorum` shard's commit point is the quorum mark, not the local tail. A
 /// record past the mark may still be lost at failover and its offset reused
 /// for a different record, so a reader that saw it would hold a position the
-/// new leader's log contradicts. `None` means no bound: a `Leader` stream,
-/// whose commit point is local durability, a single-node broker, or a shard
-/// this broker serves with no replicas, where the leader alone is the majority -- the
-/// same cases [`await_quorum`] acknowledges without waiting.
+/// new leader's log contradicts. `Ok(None)` means no bound: a `Leader`
+/// stream, whose commit point is local durability, a single-node broker, or a
+/// shard this broker serves with no replicas, where the leader alone is the
+/// majority -- the same cases [`await_quorum`] acknowledges without waiting.
 ///
 /// Zero while this broker has no mark for the shard at its current
-/// generation: nothing is known to be on a majority yet.
+/// generation: nothing is known to be on a majority yet. [`NotServed`] once
+/// it does not serve a `Quorum` shard at all, so a caller refuses rather
+/// than answer zero as if it were a real position.
 pub fn read_bound<S: ShardServing + ?Sized>(
     consistency: Option<felix_broker::ConsistencyLevel>,
     shard: &crate::ShardKey,
     marks: Option<&QuorumMarks>,
     ingress: Option<&S>,
-) -> Option<u64> {
+) -> Result<Option<u64>, NotServed> {
     if consistency != Some(felix_broker::ConsistencyLevel::Quorum) {
-        return None;
+        return Ok(None);
     }
     let (Some(marks), Some(ingress)) = (marks, ingress) else {
-        return None;
+        return Ok(None);
     };
     // Serving first, as in [`committed_bound`]: a shard moved to a route with
     // no replicas is unbounded only where it is now served.
-    let Some(generation) = ingress.generation(shard) else {
-        return Some(0);
-    };
+    let generation = ingress.generation(shard).ok_or(NotServed)?;
     if !ingress.replicated(shard) {
-        return None;
+        return Ok(None);
     }
-    Some(marks.offset(shard, generation).unwrap_or(0))
+    Ok(Some(marks.offset(shard, generation).unwrap_or(0)))
 }
+
+/// [`read_bound`]'s answer for a `Quorum` shard this broker does not serve.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NotServed;
 
 /// Hold a counter add on a `Quorum` cache until a majority of the shard's
 /// replica set holds the counter log up to `end`, or answer a counter read
