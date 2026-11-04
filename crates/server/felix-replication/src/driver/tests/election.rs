@@ -433,6 +433,65 @@ async fn an_adopted_elected_leader_keeps_the_set_it_was_elected_on() {
     );
 }
 
+/// Scratch: the split-then-win sequence. It stood at 2 and split, won 3 on
+/// the set of 1, opened, and the control plane adopted it at 3.
+#[tokio::test]
+async fn scratch_adopted_after_a_split_keeps_the_set_it_was_elected_on() {
+    let (broker, _dir) = quorum_leader(3, 4).await;
+    let log = stream_log(&broker).await;
+    log.accept_generation(1, Some("broker-c"))
+        .await
+        .expect("ballot");
+    log.accept_set(set_of_three(1)).await.expect("the set of 1");
+    log.accept_generation(3, Some(LOCAL))
+        .await
+        .expect("split ballot");
+    log.accept_generation(4, Some(LOCAL))
+        .await
+        .expect("winning ballot");
+    let followers = Followers::new(true, &["broker-b", "broker-c"]);
+
+    let marks = follower_ack_marks();
+    let elections = Arc::new(crate::election::Elections::new(
+        LOCAL,
+        Arc::new(tokio::sync::Notify::new()),
+    ));
+    elections.record(
+        key(),
+        crate::election::Elected {
+            leader: LOCAL.to_string(),
+            generation: 3,
+            set: set_of_three(1).current,
+            leaving: None,
+            incarnation: 0,
+        },
+    );
+    elections.withdraw(&key(), 3);
+    elections.record(
+        key(),
+        crate::election::Elected {
+            leader: LOCAL.to_string(),
+            generation: 4,
+            set: set_of_three(1).current,
+            leaving: None,
+            incarnation: 0,
+        },
+    );
+    elections.opened(&key(), 4);
+    marks.set_elections(elections.clone());
+    pass(&followers, &broker, &marks).await;
+    elections.withdraw(&key(), 4);
+
+    pass(&followers, &broker, &marks).await;
+
+    assert_eq!(stream_log(&broker).await.set_generation(), 1);
+    assert!(
+        followers.stamps().iter().all(|(_, s)| *s == Some(1)),
+        "{:?}",
+        followers.stamps()
+    );
+}
+
 fn set_of_three(generation: u64) -> felix_storage::disk_log::ReplicaSet {
     use felix_storage::disk_log::{Member, Membership, ReplicaSet};
 
