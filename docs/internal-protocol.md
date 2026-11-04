@@ -1134,6 +1134,13 @@ to tell a leader is alive. A queue that lasted
 answered before the next request is read, because every later request on the
 connection is checked against the identity it gives.
 
+Promotion fences from one leader still take turns on each follower. Each one
+can open a log and write a ballot to disk, and hundreds of them at once slow
+the writes the follower already serves. So the follower runs one leader's
+promotion fences one at a time, and a fence waits at most 2 seconds for its
+turn before it runs anyway. A read round's fence repeats the generation the
+log already took and writes nothing, so it skips the queue.
+
 Nothing depends on the order of the control stream. A requester that needs
 one request to happen before another waits for the first answer before it
 sends the second:
