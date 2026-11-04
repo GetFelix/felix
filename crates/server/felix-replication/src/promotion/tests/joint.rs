@@ -965,12 +965,12 @@ fn only_a_set_this_broker_could_not_know_is_unknown() {
     );
 }
 
-/// **A leader restarted at generation 0 asks for a rename on its own
-/// ballot** (#1872). A log never keeps a set at generation 0, so a shard
-/// never moved since its first assignment, restarted after `joint_fence` is
-/// finalized, has only its ballot to show it opened there. Its own ballot
-/// asks for generation 1, whose set before its watch knows; another node's
-/// ballot, or none, waits.
+/// **A leader restarted at generation 0 asks for a rename** (#1872). A log
+/// never keeps a set at generation 0, so a shard never moved since its first
+/// assignment, restarted after `joint_fence` is finalized, would otherwise
+/// wait forever. Nothing precedes generation 0, so it asks for generation 1,
+/// whose set before its watch knows. A ballot naming another node still
+/// waits, as at any generation.
 #[tokio::test]
 async fn a_leader_at_generation_zero_renames_only_on_its_own_ballot() {
     let route = Route {

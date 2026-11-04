@@ -4271,18 +4271,19 @@ Once it is finalized on a broker that offers `ELECTION`:
     naming no node, and placement names it again one generation up on the
     same set (`set_unknown`). The set that generation leaves is the one the
     log keeps, so the fence there can open.
-  - The route is at generation 0 and the log keeps no set, under the
-    broker's own ballot at 0: a shard never moved since it was placed. A
-    log never keeps a set at generation 0, and no generation comes before
-    it, so the ballot is the evidence. The broker asks for a rename as
-    above.
+  - The route is at generation 0 and the log keeps no set: a shard never
+    moved since it was placed. A log never keeps a set at generation 0, and
+    no generation comes before it, so nothing can be left unfenced (only a
+    deleted stream recreated at incarnation 0 wrote before, which an open
+    without `joint_fence` ignores too). The broker asks for a rename as
+    above, and the fence at generation 1 needs a majority of the set at 0.
   - The log keeps this generation's set under another node's ballot, kept
     from that node's fence or election request: nothing proves the set
     before was fenced from here. The fence stays pending.
   - The log keeps an older set than the one before: the leader skipped a
     generation it never opened, and a rename would leave that generation's
     set unfenced. The fence stays pending.
-  - The log keeps no set: this may be a failover's new leader whose watch
+  - The log keeps no set, above generation 0: this may be a failover's new leader whose watch
     started from a snapshot, while the old leader, cut off, still
     acknowledges on a majority of the old set. The fence stays pending.
     Only a shard's first assignment has nothing to leave: the watch sees
