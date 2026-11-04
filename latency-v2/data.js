@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793822578667,
+  "lastUpdate": 1793823209441,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -56958,6 +56958,72 @@ window.BENCHMARK_DATA = {
             "range": "47.26",
             "unit": "us",
             "extra": "trials: 5\nmedian: 267.00\nmean: 271.40\nstdev: 47.26\ncv: 17.41%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "17b48bb4fdd6a733c6890397e8ce795c139a85f8",
+          "message": "fix(replication): a leader that cannot learn the set it leaves is named again one generation up (#1872) (#1874)\n\n* fix(replication): a leader that cannot learn the set it leaves is named again one generation up (#1872)\n\nUnder joint_fence every open is fenced, and the fence needs the set at the\ngeneration before. A broker that learned the shard from a control-plane\nsnapshot has no record of it when its log keeps no set from that\ngeneration: a leader restarted after the finalize at a generation it opened\nbefore it, or a new shard whose first assignment arrived in a snapshot.\nThe fence then stayed pending and nothing re-planned the shard.\n\nThe fence now ends as SetUnknown in that case, and the driver reports the\ngeneration refused each tick with no node named\n(RefusedGeneration::set_unknown). Placement already names a leader that\nrefuses its generation again one up on the same set; it now labels this\ncause `set_unknown`. The set that generation leaves is the one the broker is\nnamed on now, which its watch sees change and its log may keep, so the fence\nthere can open. No new stored field: the empty name fits the existing\n`refused` columns and Raft entries.\n\nThe cluster harness exports the broker environment joint_fence uses, so a\ntest can finalize it on a running fleet. Two cluster tests: a rolling\nrestart after finalizing joint_fence, and a shard whose leader learns it\nonly from a snapshot.\n\nSpec-Unaffected: the model's leader always knows the set it leaves (Swap sets oldSet' = CpSet), so a broker missing it is outside the model; the answer is CpRename's step, already modelled, which is a new fenced term whatever triggered it.\n\n* fix(replication): rename only where the set before cannot be known; joint_fence needs level 25 (#1872)\n\nReview follow-ups. A fence whose log keeps an older set than the one\nbefore belongs to a leader that never opened the generation in between;\nrenaming it would leave that generation's set unfenced, so it stays pending\n(NoSetBefore::Skipped). Under Raft the refusal report is dropped below\nmetadata level 25, so finalizing joint_fence now needs 25. Docs say both,\nand the cluster test sets the new shard's incarnation explicitly.\n\nSpec-Unaffected: the model's leader always knows the set it leaves; this narrows when the broker asks for CpRename's modelled step.\n\n* fix(replication): rename only on a kept own set; a snapshot marks a first assignment (#1872)\n\nA fence whose log keeps no set no longer asks for a rename. That broker may\nbe a failover's new leader whose watch started from a snapshot, with the old\nleader still acknowledging on a majority of the old set behind a partition;\na rename would fence the new set alone and lose those records. It now waits\n(NoSetBefore::Unseen -> Pending). Only a log keeping the route's own\ngeneration's set reports set_unknown.\n\nFor a new shard learned from a snapshot, snapshot items carry\nfirst_assignment when the control plane's retained change log still holds\nthe shard's `assigned` change at that incarnation and generation. The broker\nrecords nothing before it on the same terms as assign_afresh (incarnation >\n0, not an incarnation it already held). Derived on read, so nothing new is\nstored or replicated; an older control plane sends no mark and the fence\nwaits, as before.\n\nThe broker counts set_unknown fences (felix_broker_fence_set_unknown_total);\nthe rolling-restart cluster test asserts it rose, and the snapshot test that\nthe leader opened at the first generation without a rename.\n\nSpec-Unaffected: the model's leader always knows the set it leaves (Swap sets oldSet' = CpSet); a broker with no set file, or one that learned the shard from a snapshot, is not modelled. The spec lane is to model it: no kept set waits, an own-generation kept set takes CpRename, a first-assignment mark is an empty set before.\n\n* fix(replication): rename only past a generation this broker opened; first marks by index (#1872)\n\nReview findings on the previous commit:\n- A set kept at the route's generation may come from another node's fence\n  or election request, which proves nothing was fenced from here.\n  set_unknown now also needs this broker's own ballot at that generation\n  (accepted_generation == route generation, accepted_leader == self), as\n  keep_own_set records it; otherwise NoSetBefore::NotOpened stays Pending.\n- Postgres never trims shard changes, so scanning every `assigned` row per\n  snapshot grows without bound. A first assignment with an incarnation is\n  written at its change's seq, so the query is now one primary-key join per\n  current row. Both stores list only incarnations above 0.\n- Docs name each store's retention and the ballot rule.\n\nSpec-Unaffected: the model's leader always knows the set it leaves; a broker without a set file or that learned the shard from a snapshot is not modelled. Predicate for the spec lane: rename (set_unknown) iff joint_fence on, no pending cut-over at the route generation N, no `leaving` kept at N-1, no watch prior at N, the log keeps a set at exactly N, and its ballot is (N, self). No kept set waits unless a first-assignment mark (an empty set before) is present.\n\n* fix(replication): a leader at generation 0 renames on its own ballot (#1872)\n\nA log never keeps a set at generation 0: accept_set reads it as the set\nit already has. So a shard never moved since placement, restarted after\njoint_fence is finalized, read as Unseen and its fence waited forever.\nNothing precedes generation 0, so the own ballot there is the evidence.\n\nSpec-Unaffected: the model starts with its first-generation leader open,\nwhich is what the own ballot at generation 0 records here.\n\n* docs(replication): generation 0 itself is the evidence for its rename (#1872)\n\nThe open takes the leader's ballot before the fence runs, so the ballot\nproves nothing at generation 0. Say so, and narrow the no-kept-set\npending rule to generations above 0.\n\nSpec-Unaffected: wording only.",
+          "timestamp": "2026-11-04T12:05:42-08:00",
+          "tree_id": "3dcfba14d3e00c708c3513764a1f294828af767d",
+          "url": "https://github.com/GetFelix/felix/commit/17b48bb4fdd6a733c6890397e8ce795c139a85f8"
+        },
+        "date": 1793823201113,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 150,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 150.00\nmean: 150.20\nstdev: 0.45\ncv: 0.30%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 219,
+            "range": "2.61",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 219.00\nmean: 217.40\nstdev: 2.61\ncv: 1.20%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 264,
+            "range": "8.76",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 264.00\nmean: 264.60\nstdev: 8.76\ncv: 3.31%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 198,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 198.00\nmean: 197.40\nstdev: 0.89\ncv: 0.45%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 390,
+            "range": "5.59",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 390.00\nmean: 388.60\nstdev: 5.59\ncv: 1.44%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 542,
+            "range": "46.96",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 542.00\nmean: 552.00\nstdev: 46.96\ncv: 8.51%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
