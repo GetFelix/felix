@@ -104,6 +104,12 @@ bindings wrap the per-shard calls and the stream-wide forms
 ([Python](/clients/python/#the-whole-stream-at-once),
 [TypeScript](/clients/typescript/#the-whole-stream-at-once)).
 
+Just after a failover, the new leader of a `Quorum` stream has no committed
+tail yet. Until it does, it refuses a seek, a describe and a group's first poll
+with `shard_unavailable` (reason `not_ready`). `Client` backs off and asks again
+under its reconnect policy; if the call still fails, nothing changed, so call it
+again.
+
 A consumer can also manage each claim itself on a broker that advertises
 `FEATURE_GROUP_CLAIM_CONTROL` (`Connection::supports_group_claim_control`):
 

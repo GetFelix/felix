@@ -52,6 +52,34 @@ pub async fn ship_once_with<R: PeerRequester>(
     rebuilds: &Rebuilds,
     commit_offset: Option<u64>,
 ) -> Progress {
+    ship_once_stamped(
+        requester,
+        log,
+        shard,
+        log_kind,
+        cursor,
+        max_batch_bytes,
+        rebuilds,
+        commit_offset,
+        None,
+    )
+    .await
+}
+
+/// [`ship_once_with`], stamping `set_stamp` as the set's generation rather
+/// than the shard's own: an elected leader ships on the set it stood on.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn ship_once_stamped<R: PeerRequester>(
+    requester: &R,
+    log: &StreamLog,
+    shard: &ShardRef,
+    log_kind: felix_broker::LogKind,
+    cursor: &mut FollowerCursor,
+    max_batch_bytes: usize,
+    rebuilds: &Rebuilds,
+    commit_offset: Option<u64>,
+    set_stamp: Option<u64>,
+) -> Progress {
     ship_batch(
         requester,
         log,
@@ -62,6 +90,7 @@ pub async fn ship_once_with<R: PeerRequester>(
         rebuilds,
         commit_offset,
         None,
+        set_stamp,
     )
     .await
 }
@@ -89,6 +118,7 @@ pub(crate) async fn ship_once_until<R: PeerRequester>(
         rebuilds,
         None,
         Some(end),
+        None,
     )
     .await
 }
@@ -104,6 +134,7 @@ async fn ship_batch<R: PeerRequester>(
     rebuilds: &Rebuilds,
     commit_offset: Option<u64>,
     end: Option<u64>,
+    set_stamp: Option<u64>,
 ) -> Progress {
     if let Some(halt) = cursor.halted {
         let backing_off = cursor
@@ -229,11 +260,20 @@ async fn ship_batch<R: PeerRequester>(
         return Progress::UpToDate;
     }
 
-    // Headers replicate in the next change of #1688. Until then this path
-    // never ships such a record bare: a follower that acked it would hold a
-    // different record than the leader. What precedes it still goes. The
-    // promotion catch-up fetch (`replica.rs`) does not carry headers yet either.
-    if let Some(at) = records.iter().position(|record| record.headers.is_some()) {
+    let offered = requester.recorded_capabilities(&cursor.node_id);
+    // Headers ride the timed layout, so a follower that refused the committed
+    // kinds cannot be sent them either.
+    let carries_headers = !cursor.legacy_frames
+        && offered.is_some_and(|offered| {
+            offered.contains(labels_needed(log_kind))
+                && offered.contains(PeerCapabilities::RECORD_TIMES)
+                && offered.contains(PeerCapabilities::RECORD_HEADERS)
+        });
+    // A follower that cannot read the blocks is never sent such a record
+    // bare: it would acknowledge a different record than the leader's. What
+    // precedes it still goes.
+    if !carries_headers && let Some(at) = records.iter().position(|record| record.headers.is_some())
+    {
         records.truncate(at);
         if records.is_empty() {
             if HEADER_REFUSALS_LOGGED.due(&format!(
@@ -245,8 +285,8 @@ async fn ship_batch<R: PeerRequester>(
                     stream = %shard.stream,
                     shard = shard.shard,
                     offset = cursor.next_offset,
-                    "cannot replicate a record with headers yet; the follower stays behind it, \
-                     and this shard cannot rebuild, drain or move until headers replicate",
+                    "this follower does not offer `record_headers`; it stays behind a record \
+                     with headers, and this shard cannot rebuild, drain or move until it is upgraded",
                 );
             }
             metrics::record_shipped(metrics::OUTCOME_HEADERS_UNSUPPORTED);
@@ -267,7 +307,7 @@ async fn ship_batch<R: PeerRequester>(
         Vec::new()
     };
     let publishers = felix_broker::replication::publishers_to_wire(&records);
-    let offered = requester.recorded_capabilities(&cursor.node_id);
+    let headers = felix_broker::replication::headers_to_wire(&records);
     // Without them the follower stamps the records with its own clock, and a
     // failover shifts every inherited record's time by the replication delay.
     let times = offered
@@ -286,7 +326,12 @@ async fn ship_batch<R: PeerRequester>(
         correlation_id: 0,
         shard: shard.clone(),
         first_offset,
-        checksum: batch_checksum(&payloads, &marks, &publishers),
+        checksum: batch_checksum(
+            &payloads,
+            &marks,
+            &publishers,
+            headers.as_deref().unwrap_or_default(),
+        ),
         payloads,
         marks,
         // A follower that refused the committed kind is sent what it reads.
@@ -300,7 +345,13 @@ async fn ship_batch<R: PeerRequester>(
         publishers,
         // Sent only on a labelled batch; see `ReplicateRecords::times`.
         times,
-        set_generation: stamp_set(requester, offered, log_kind, shard.generation),
+        headers,
+        set_generation: stamp_set(
+            requester,
+            offered,
+            log_kind,
+            set_stamp.unwrap_or(shard.generation),
+        ),
     };
     carry_marks(&mut batch, log_kind, cursor.legacy_frames);
     // Which log this is belongs in the message kind, not in the shard
@@ -376,6 +427,10 @@ async fn ship_batch<R: PeerRequester>(
 
     let progress = read_answer(&answer);
     cursor.stalled = progress == Progress::Retry;
+    cursor.route_behind = matches!(
+        &answer,
+        InternalMessage::ReplicateError(err) if err.code == ErrorCode::StaleRoute
+    );
     match progress {
         Progress::Stored { durable_offset } => {
             // From the same answer as `confirmed`, so the two always agree.

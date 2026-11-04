@@ -65,6 +65,13 @@ pub struct ReplicateRecords {
     /// Not covered by the checksum, so an unlabelled batch checksums as it
     /// always has.
     pub times: Option<Vec<u64>>,
+    /// Each record's key-and-headers block, one per payload, when any record
+    /// has one; storage keeps the bytes as given. `None` is a batch no record
+    /// of which has a block, byte for byte what a peer that predates them
+    /// reads. `Some` travels only on a timed batch, as
+    /// `ReplicateHeaderedRecords`, sent only to a peer that advertised
+    /// `RECORD_HEADERS`. Covered by the checksum.
+    pub headers: Option<Vec<Option<Bytes>>>,
     /// The generation of the replica set the sender counts. `None` is a
     /// sender that does not check sets, and the batch travels as it always
     /// did; `Some` wraps it in a `SetStamped` frame, sent only to a peer that
@@ -238,11 +245,14 @@ impl ReplicaLog {
 ///
 /// Marks are covered after the payloads, and only when present, so an
 /// unmarked batch checksums exactly as it always has. Publishers are covered
-/// with the marks, as they travel.
+/// with the marks, as they travel. Header blocks are covered last, as they
+/// travel, and only when some record has one; `headers` is one per payload,
+/// or empty.
 pub fn batch_checksum(
     payloads: &[Bytes],
     marks: &[ProducerMark],
     publishers: &[Option<Bytes>],
+    headers: &[Option<Bytes>],
 ) -> u64 {
     let mut hasher = crc32fast::Hasher::new();
     for payload in payloads {
@@ -256,7 +266,89 @@ pub fn batch_checksum(
         put_marks(&mut encoded, &marks, publishers);
         hasher.update(&encoded);
     }
+    if any_block(headers) {
+        // Tagged, so a section of blocks cannot stand in for marks.
+        hasher.update(b"H");
+        let mut encoded = bytes::BytesMut::new();
+        put_blocks(&mut encoded, headers);
+        hasher.update(&encoded);
+    }
     u64::from(hasher.finalize())
+}
+
+/// Whether any record in `blocks` has a key-and-headers block.
+pub(super) fn any_block(blocks: &[Option<Bytes>]) -> bool {
+    blocks.iter().any(Option::is_some)
+}
+
+/// Key-and-headers blocks as they travel: a `u32` count, then per record a
+/// presence byte and, when set, a `u32` length and the block.
+pub(super) fn put_blocks(out: &mut bytes::BytesMut, blocks: &[Option<Bytes>]) {
+    use bytes::BufMut;
+    out.put_u32(blocks.len() as u32);
+    for block in blocks {
+        match block {
+            None => out.put_u8(0),
+            Some(block) => {
+                out.put_u8(1);
+                out.put_u32(block.len() as u32);
+                out.extend_from_slice(block);
+            }
+        }
+    }
+}
+
+/// Read blocks written by [`put_blocks`] for `count` records. A count that
+/// differs, or a section with no block in it, is refused: the encoder writes
+/// neither, so accepting them would give one message two encodings.
+pub(super) fn take_blocks(body: &mut Bytes, count: usize) -> Result<Vec<Option<Bytes>>> {
+    use bytes::Buf;
+    let declared = take_u32(body)? as usize;
+    if declared != count {
+        return Err(Error::InvalidRecordHeaders(
+            "headers count differs from payloads",
+        ));
+    }
+    // Each entry takes at least its presence byte.
+    if declared > body.remaining() {
+        return Err(Error::Incomplete);
+    }
+    let mut blocks = Vec::with_capacity(declared);
+    for _ in 0..declared {
+        match take_u8(body)? {
+            0 => blocks.push(None),
+            1 => {
+                let len = take_u32(body)? as usize;
+                if len > body.remaining() {
+                    return Err(Error::Incomplete);
+                }
+                blocks.push(Some(body.split_to(len)));
+            }
+            _ => return Err(Error::Incomplete),
+        }
+    }
+    if !any_block(&blocks) {
+        return Err(Error::InvalidRecordHeaders(
+            "headers section holds no block",
+        ));
+    }
+    Ok(blocks)
+}
+
+fn take_u32(body: &mut Bytes) -> Result<u32> {
+    use bytes::Buf;
+    if body.remaining() < 4 {
+        return Err(Error::Incomplete);
+    }
+    Ok(body.get_u32())
+}
+
+fn take_u8(body: &mut Bytes) -> Result<u8> {
+    use bytes::Buf;
+    if !body.has_remaining() {
+        return Err(Error::Incomplete);
+    }
+    Ok(body.get_u8())
 }
 
 /// Set on a mark byte when the record's publisher follows the mark: a `u8`

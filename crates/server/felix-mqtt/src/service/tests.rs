@@ -16,6 +16,9 @@ use super::MqttService;
 use crate::auth::{AuthError, Authenticator, Principal};
 use crate::mount::{MountedTopic, Mounts};
 use crate::settings::Settings;
+use crate::write::{WriteBatch, WriteError, Writes};
+
+mod publish;
 
 /// Tenant `acme` has one mount, `plant/`, on stream `ns/plant`. Another
 /// tenant would have its own, so the tenant is checked.
@@ -28,6 +31,63 @@ impl Mounts for FakeMounts {
             stream: "plant".into(),
             shard: 0,
         })
+    }
+}
+
+/// Records every batch, then holds it until the test lets it go, and answers
+/// with `outcome`. Batches run freely until `hold` is called.
+struct FakeWrites {
+    batches: std::sync::Mutex<Vec<WriteBatch>>,
+    outcome: std::sync::Mutex<Result<(), WriteError>>,
+    gate: tokio::sync::Semaphore,
+    quota_hold: std::sync::Mutex<Duration>,
+    producers: std::sync::atomic::AtomicU64,
+}
+
+impl FakeWrites {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            batches: Default::default(),
+            outcome: std::sync::Mutex::new(Ok(())),
+            gate: tokio::sync::Semaphore::new(tokio::sync::Semaphore::MAX_PERMITS),
+            quota_hold: std::sync::Mutex::new(Duration::ZERO),
+            producers: std::sync::atomic::AtomicU64::new(1),
+        })
+    }
+
+    /// Hold every batch until `release`.
+    fn hold(&self) {
+        self.gate
+            .forget_permits(tokio::sync::Semaphore::MAX_PERMITS);
+    }
+
+    fn release(&self, batches: usize) {
+        self.gate.add_permits(batches);
+    }
+
+    fn fail_with(&self, outcome: Result<(), WriteError>) {
+        *self.outcome.lock().unwrap() = outcome;
+    }
+
+    fn batches(&self) -> Vec<WriteBatch> {
+        self.batches.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl Writes for FakeWrites {
+    fn new_producer_id(&self) -> u64 {
+        self.producers.fetch_add(1, Ordering::SeqCst)
+    }
+
+    fn admit_produce(&self, _tenant_id: &str, _records: u64, _bytes: u64) -> Duration {
+        *self.quota_hold.lock().unwrap()
+    }
+
+    async fn write(&self, batch: WriteBatch) -> Result<(), WriteError> {
+        self.batches.lock().unwrap().push(batch);
+        self.gate.acquire().await.unwrap().forget();
+        *self.outcome.lock().unwrap()
     }
 }
 
@@ -49,7 +109,7 @@ impl Authenticator for FakeAuth {
         match (tenant_id, token) {
             ("acme", "good") => {
                 let revoke = Arc::clone(&self.revoke);
-                let mut principal = Principal::new("acme").with_revocation(move || {
+                let mut principal = Principal::anonymous("acme").with_revocation(move || {
                     let revoke = Arc::clone(&revoke);
                     Box::pin(async move { revoke.notified().await })
                 });
@@ -58,6 +118,13 @@ impl Authenticator for FakeAuth {
                 }
                 Ok(principal)
             }
+            // May connect, but holds no permission to publish.
+            ("acme", "reader") => Ok(Principal::new("acme").with_permissions(
+                felix_authz::PermissionMatcher::from_strings(&[
+                    "stream.subscribe:stream:acme/ns/plant".to_string(),
+                ])
+                .unwrap(),
+            )),
             (_, "down") => Err(AuthError::Unavailable),
             (_, "slow") => std::future::pending().await,
             _ => Err(AuthError::Rejected("no".into())),
@@ -119,9 +186,14 @@ struct Harness {
     client: Client,
     shutdown: CancellationToken,
     revoke: Arc<Notify>,
+    writes: Arc<FakeWrites>,
 }
 
 fn start(settings: Settings, expires_at: Option<i64>) -> Harness {
+    start_with(settings, expires_at, FakeWrites::new())
+}
+
+fn start_with(settings: Settings, expires_at: Option<i64>, writes: Arc<FakeWrites>) -> Harness {
     let (client_io, server_io) = duplex(64 * 1024);
     let revoke = Arc::new(Notify::new());
     let service = MqttService::new(
@@ -130,6 +202,7 @@ fn start(settings: Settings, expires_at: Option<i64>) -> Harness {
             revoke: Arc::clone(&revoke),
         }),
         Arc::new(FakeMounts),
+        Arc::clone(&writes) as Arc<dyn Writes>,
         settings,
     );
     let shutdown = CancellationToken::new();
@@ -149,6 +222,7 @@ fn start(settings: Settings, expires_at: Option<i64>) -> Harness {
         },
         shutdown,
         revoke,
+        writes,
     }
 }
 
@@ -173,7 +247,11 @@ fn connack(packet: Option<Packet>) -> felix_mqtt_wire::ConnAck {
 }
 
 async fn connected(version: Version) -> Harness {
-    let mut harness = start(Settings::default(), None);
+    connected_with(version, Settings::default(), FakeWrites::new()).await
+}
+
+async fn connected_with(version: Version, settings: Settings, writes: Arc<FakeWrites>) -> Harness {
+    let mut harness = start_with(settings, None, writes);
     harness.client.version = Some(version);
     harness
         .client
@@ -344,7 +422,7 @@ async fn unsupported_protocol_level_is_answered_then_closed() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_will_is_refused_while_there_is_no_publish_path() {
+async fn a_will_is_refused_because_none_is_sent_yet() {
     let mut h = start(Settings::default(), None);
     let mut c = connect(Version::V311);
     c.will = Some(Will {
@@ -412,50 +490,6 @@ async fn silence_past_one_and_a_half_keepalives_closes_the_connection() {
     assert!(!h.client.ended.load(Ordering::SeqCst));
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert!(h.client.closed_at_once().await);
-}
-
-#[tokio::test(start_paused = true)]
-async fn publish_is_refused_per_message_under_5_and_by_closing_under_3_1_1() {
-    let mut h = connected(Version::V5).await;
-    h.client
-        .send(
-            Packet::Publish(publish(QoS::AtLeastOnce, Some(7))),
-            Version::V5,
-        )
-        .await;
-    match h.client.recv().await {
-        Some(Packet::PubAck(ack)) => {
-            assert_eq!(ack.packet_id, 7);
-            assert_eq!(ack.reason, ReasonCode::NotAuthorized);
-        }
-        other => panic!("expected PUBACK, got {other:?}"),
-    }
-    h.client
-        .send(
-            Packet::Publish(publish(QoS::ExactlyOnce, Some(8))),
-            Version::V5,
-        )
-        .await;
-    assert!(
-        matches!(h.client.recv().await, Some(Packet::PubRec(ack)) if ack.reason == ReasonCode::NotAuthorized)
-    );
-    h.client
-        .send(Packet::Publish(publish(QoS::AtMostOnce, None)), Version::V5)
-        .await;
-    assert!(matches!(
-        h.client.recv().await,
-        Some(Packet::Disconnect(d)) if d.reason == ReasonCode::NotAuthorized
-    ));
-    assert!(h.client.closed().await);
-
-    let mut h = connected(Version::V311).await;
-    h.client
-        .send(
-            Packet::Publish(publish(QoS::AtLeastOnce, Some(1))),
-            Version::V311,
-        )
-        .await;
-    assert!(h.client.closed().await);
 }
 
 #[tokio::test(start_paused = true)]
@@ -672,7 +706,6 @@ fn a_publish_to_an_unmounted_topic_closes_a_3_1_1_connection() {
         assert!(h.client.closed().await);
     });
     assert_eq!(refusals.get("unmounted"), 1);
-    assert_eq!(refusals.get("publish_unsupported"), 0);
 }
 
 #[test]
@@ -694,13 +727,13 @@ fn a_5_client_is_told_per_message_that_a_topic_is_unmounted() {
         }
         h.client
             .send(
-                Packet::Publish(publish_to("yard/gate", QoS::ExactlyOnce, Some(8))),
+                Packet::Publish(publish_to("yard/gate", QoS::AtLeastOnce, Some(8))),
                 Version::V5,
             )
             .await;
         assert!(matches!(
             h.client.recv().await,
-            Some(Packet::PubRec(ack)) if ack.packet_id == 8 && ack.reason == ReasonCode::TopicNameInvalid
+            Some(Packet::PubAck(ack)) if ack.packet_id == 8 && ack.reason == ReasonCode::TopicNameInvalid
         ));
         // The connection is still good.
         h.client.send(Packet::PingReq, Version::V5).await;

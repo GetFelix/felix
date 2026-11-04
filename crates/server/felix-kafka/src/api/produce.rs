@@ -14,9 +14,11 @@
 //! stream's consistency, which is a majority of the replica set on a `Quorum`
 //! stream and nothing more on a `Leader` one. `0` writes and answers nothing.
 //!
-//! Keys, headers and producer timestamps are dropped: a Felix record is a
-//! payload and the broker's append time. The key has already done its job by
-//! then, choosing the partition.
+//! A record's key and headers are stored with it when the listener opts in
+//! (`FELIX_KAFKA_RECORD_HEADERS`) and the broker accepts record headers, and
+//! dropped (and counted) otherwise, so a fleet that has not finalized them
+//! still takes Kafka produces. Producer timestamps are
+//! always dropped: a Felix record's time is the broker's append time.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -135,6 +137,7 @@ impl From<Refused> for Failure {
                     decode::MAX_BATCH_BYTES
                 ),
             ),
+            Refused::Invalid(reason) => (ResponseError::InvalidRecord, reason),
             Refused::Corrupt(reason) => (ResponseError::CorruptMessage, reason),
         };
         Self {
@@ -173,11 +176,20 @@ async fn write(
     throttled: &mut Duration,
 ) -> Result<Written, Failure> {
     let located = resolve_write(shared, principal, topic, partition).await?;
-    let batches = decode::decode(records)?;
+    let keep_headers = shared.settings.record_headers && shared.broker.records_headers();
+    let batches = decode::decode(records, keep_headers)?;
+    // A kept block is charged with its payload; both are bytes the broker stores.
     let (count, bytes) = batches.iter().fold((0u64, 0u64), |(count, bytes), batch| {
+        let blocks = batch.blocks.iter().flatten().flatten().map(Bytes::len);
         (
             count + batch.values.len() as u64,
-            bytes + batch.values.iter().map(Bytes::len).sum::<usize>() as u64,
+            bytes
+                + batch
+                    .values
+                    .iter()
+                    .map(Bytes::len)
+                    .chain(blocks)
+                    .sum::<usize>() as u64,
         )
     });
     // Each charge reports the tenant's whole debt, so the last one is the
@@ -220,7 +232,12 @@ async fn publish(
     handle: &StreamHandle,
     batch: &Batch,
 ) -> Result<PublishOutcome, Failure> {
-    crate::metrics::dropped(batch.keyed, batch.with_headers);
+    // Blocks are built only when the listener opted in and the broker accepts
+    // them, and any key or header makes one, so none means these were not kept.
+    if batch.blocks.is_none() {
+        crate::metrics::dropped(batch.keyed, batch.with_headers);
+    }
+    let headers = batch.blocks.as_deref();
     let result = if batch.producer_id >= 0 {
         let Ok(sequence) = u64::try_from(batch.base_sequence) else {
             return Err(Failure {
@@ -230,13 +247,19 @@ async fn publish(
         };
         shared
             .broker
-            .publish_records_idempotent(handle, batch.producer_id as u64, sequence, &batch.values)
+            .publish_records_idempotent(
+                handle,
+                batch.producer_id as u64,
+                sequence,
+                &batch.values,
+                headers,
+            )
             .await
             .map(|IdempotentOutcome { outcome, duplicate }| (outcome, duplicate))
     } else {
         shared
             .broker
-            .publish_batch_with_outcome(handle, &batch.values, None, None)
+            .publish_batch_with_outcome(handle, &batch.values, None, headers)
             .await
             .map(|outcome| (outcome, false))
     };

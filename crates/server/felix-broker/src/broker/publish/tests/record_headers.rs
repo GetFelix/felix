@@ -336,3 +336,39 @@ async fn an_idempotent_batch_stores_its_headers_once() {
         vec![Some(sent), None]
     );
 }
+
+/// **The data directory is marked before the first record with headers is
+/// written.** A plain publish leaves no mark, and a headered one whose mark
+/// cannot be written stores nothing.
+#[tokio::test]
+async fn the_first_headered_publish_marks_the_directory_before_it_writes() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let broker = broker_with("orders", durable(), Some(storage(dir.path()))).await;
+    broker.record_headers_when(|| true);
+    let handle = stream_handle(&broker, "orders").await;
+    broker
+        .publish_batch_with_outcome(&handle, &payloads(&["a"]), None, None)
+        .await
+        .expect("plain publish");
+    assert!(!felix_storage::run_state::has_record_headers(dir.path()).expect("read"));
+
+    // The marker goes through a temporary file; a directory there fails it.
+    let blocker = dir.path().join("record-headers.tmp");
+    std::fs::create_dir(&blocker).expect("block the marker");
+    let refused = broker
+        .publish_batch_with_outcome(&handle, &payloads(&["b"]), None, Some(&[Some(block("t"))]))
+        .await;
+    assert!(
+        matches!(refused, Err(BrokerError::Storage(_))),
+        "{refused:?}"
+    );
+    assert!(!felix_storage::run_state::has_record_headers(dir.path()).expect("read"));
+    assert_eq!(stored_headers(&broker, "orders").await.len(), 1);
+
+    std::fs::remove_dir(&blocker).expect("unblock");
+    broker
+        .publish_batch_with_outcome(&handle, &payloads(&["b"]), None, Some(&[Some(block("t"))]))
+        .await
+        .expect("headered publish");
+    assert!(felix_storage::run_state::has_record_headers(dir.path()).expect("read"));
+}

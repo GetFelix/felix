@@ -17,6 +17,7 @@ use super::*;
 mod election;
 mod fence;
 mod groups;
+mod headers;
 mod incarnation;
 mod non_voting;
 mod trim;
@@ -50,6 +51,10 @@ fn key() -> felix_router::ShardKey {
 /// A router in which `LOCAL` is a follower of the shard at `generation`, unless
 /// `replicas` says otherwise.
 fn router_with(replicas: &[&str], generation: u64) -> Arc<ShardRouter> {
+    router_led_by("broker-a", replicas, generation)
+}
+
+fn router_led_by(leader: &str, replicas: &[&str], generation: u64) -> Arc<ShardRouter> {
     let router = Arc::new(ShardRouter::new(
         LOCAL,
         "us-west-2",
@@ -66,7 +71,7 @@ fn router_with(replicas: &[&str], generation: u64) -> Arc<ShardRouter> {
     let table = RoutingTable::build(
         [(
             key(),
-            "broker-a".to_string(),
+            leader.to_string(),
             replicas.iter().map(|r| r.to_string()).collect::<Vec<_>>(),
             generation,
         )],
@@ -113,12 +118,13 @@ fn batch(generation: u64, first_offset: u64, values: &[&str]) -> ReplicateRecord
             incarnation: None,
         },
         first_offset,
-        checksum: batch_checksum(&payloads, &[], &[]),
+        checksum: batch_checksum(&payloads, &[], &[], &[]),
         payloads,
         marks: Vec::new(),
         commit_offset: None,
         generations: None,
         publishers: Vec::new(),
+        headers: None,
         set_generation: None,
     }
 }

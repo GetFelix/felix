@@ -1,4 +1,4 @@
-use super::{features_for, is_host_port};
+use super::{election_features, features_for, is_host_port};
 
 #[test]
 fn a_client_advertise_address_is_a_host_and_a_port() {
@@ -36,12 +36,39 @@ fn a_broker_reading_on_the_lease_does_not_report_lease_free_reads() {
     assert!(!features_for(false, false).contains(lease_free));
 }
 
-/// Every broker of this build names start holders in its reports, which the
-/// control plane needs before it finalizes `joint_fence`.
+/// Every broker of this build names start holders in its reports and keeps
+/// a wiped copy from voting, which the control plane needs before it
+/// finalizes `joint_fence`.
 #[test]
-fn a_broker_reports_that_it_names_start_holders() {
+fn a_broker_reports_what_joint_fences_need() {
     let start_holders = felix_common::fleet::START_HOLDERS.name();
+    let non_voting = felix_common::fleet::NON_VOTING.name();
     for (fences, by_lease) in [(true, false), (true, true), (false, false)] {
-        assert!(features_for(fences, by_lease).contains(start_holders));
+        let reported = features_for(fences, by_lease);
+        assert!(reported.contains(start_holders));
+        assert!(reported.contains(non_voting));
     }
+}
+
+/// A broker offering `ELECTION` says so, that it fences jointly, and that it
+/// stands for election; one that does not reports none of them.
+#[test]
+fn a_broker_offering_election_reports_it() {
+    let added: Vec<String> = election_features().collect();
+    assert!(added.contains(&felix_common::fleet::PEER_ELECTION.name().to_string()));
+    assert!(added.contains(&felix_common::fleet::JOINT_FENCE.name().to_string()));
+    assert!(added.contains(&felix_common::fleet::REPLICA_ELECTION.name().to_string()));
+    for fences in [false, true] {
+        let reported = features_for(fences, false);
+        assert!(added.iter().all(|feature| !reported.contains(feature)));
+    }
+}
+
+/// **A broker reports `record_headers`**, with or without the fence: replication
+/// and forwarding carry the blocks, so a fleet of these can finalize it.
+#[test]
+fn a_broker_reports_record_headers() {
+    let headers = felix_common::fleet::RECORD_HEADERS.name();
+    assert!(features_for(true, false).contains(headers));
+    assert!(features_for(false, true).contains(headers));
 }

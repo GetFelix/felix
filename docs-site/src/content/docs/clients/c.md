@@ -764,6 +764,10 @@ static FelixStatus poll_orders(struct worker *worker) {
   back after the visibility timeout. A `max_records` of zero, and `reclaim`
   without a `consumer` (1 to 128 bytes), are `FELIX_STATUS_INVALID_ARGUMENT` at
   the call.
+- Poll, seek and describe retry inside the client under its reconnect policy.
+  One that still fails with
+  `FELIX_STATUS_SHARD_UNAVAILABLE`, as a new `Quorum` leader answers until it has
+  a committed tail, changed nothing: call again.
 - Records are not handles. `felix_client_group_ack`, `_nack`, `_extend`,
   `_dead_letter`, `_discard` and `_redrive` take the offset. Nack and extend also
   take the `attempts` the poll reported, which the broker checks, so a claim that

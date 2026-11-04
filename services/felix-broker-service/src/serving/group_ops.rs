@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use felix_broker::{Broker, GroupKey};
+use felix_replication::quorum::Unreadable;
 use felix_wire::{GroupRecord, StartPosition};
 use tokio::sync::Notify;
 use tokio::sync::futures::OwnedNotified;
@@ -22,7 +23,7 @@ use crate::serving::commit_ops;
 use crate::serving::quic::client_error::ClientError;
 use crate::serving::quic::handlers::publish::PublishContext;
 use crate::shards::lifecycle::fence::{self, FenceGuard};
-use crate::shards::routing::{Dispatch, dispatch};
+use crate::shards::routing::{Dispatch, Reason, dispatch};
 use crate::shards::{ShardKey, ShardKind};
 
 /// Longest a waiting poll goes without looking again unprompted.
@@ -120,16 +121,13 @@ async fn poll_rechecking(
             Err(_) if !first => return Ok(Vec::new()),
             Err(refused) => return Err(refused),
         };
-        first = false;
         // Read each round: the mark moves while a poll waits.
-        let committed = felix_replication::quorum::read_bound(
-            broker
-                .stream_consistency(tenant_id, namespace, stream)
-                .await,
-            &owned.key,
-            publish_ctx.marks.as_deref(),
-            publish_ctx.ingress.as_deref(),
-        );
+        let committed = match committed_bound(broker, publish_ctx, &owned).await {
+            Ok(committed) => committed,
+            Err(_) if !first => return Ok(Vec::new()),
+            Err(refused) => return Err(refused),
+        };
+        first = false;
         let claimed = reader
             .poll_below(
                 &key,
@@ -352,19 +350,38 @@ async fn read_end(
     owned: &Owned,
     log: &felix_broker::StreamLog,
 ) -> Result<u64, ClientError> {
+    let committed = committed_bound(broker, publish_ctx, owned).await?;
+    let tail = log.tail_offset().await.map_err(storage)?;
+    Ok(tail
+        .min(committed.unwrap_or(u64::MAX))
+        .min(log.poisoned_read_end().unwrap_or(u64::MAX)))
+}
+
+/// The quorum mark a group may read to, `None` when the shard has none.
+/// Refused once this broker no longer serves the shard, or while it has no
+/// mark at its generation yet: zero there is not a position, and a seek to
+/// `latest` would rewind the group to it.
+async fn committed_bound(
+    broker: &Broker,
+    publish_ctx: &PublishContext,
+    owned: &Owned,
+) -> Result<Option<u64>, ClientError> {
     let key = &owned.key;
-    let committed = felix_replication::quorum::read_bound(
+    felix_replication::quorum::read_bound(
         broker
             .stream_consistency(&key.tenant_id, &key.namespace, &key.stream)
             .await,
         key,
         publish_ctx.marks.as_deref(),
         publish_ctx.ingress.as_deref(),
-    );
-    let tail = log.tail_offset().await.map_err(storage)?;
-    Ok(tail
-        .min(committed.unwrap_or(u64::MAX))
-        .min(log.poisoned_read_end().unwrap_or(u64::MAX)))
+    )
+    .map_err(|unreadable| match unreadable {
+        Unreadable::NotServed => crate::shards::lifecycle::fence::Fenced::NotServing.into(),
+        Unreadable::Settling => ClientError::unavailable(
+            &Reason::NotReady,
+            "this broker has no committed mark for the shard yet",
+        ),
+    })
 }
 
 /// What a consumer does with a record it was handed.
@@ -530,7 +547,7 @@ impl Owned {
         {
             if unsettled {
                 return Err(ClientError::unavailable(
-                    &crate::shards::routing::Reason::NotReady,
+                    &Reason::NotReady,
                     "group state is not served here until replication has started for the shard",
                 ));
             }

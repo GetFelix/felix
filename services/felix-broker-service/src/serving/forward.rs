@@ -94,11 +94,17 @@ pub enum ForwardError {
 /// Returns the log offsets the owner assigned, when the stream has a log and
 /// the owner is recent enough to say so.
 ///
+/// `headers` is each payload's key-and-headers block, when any has one. They
+/// travel only to an owner that offers `RECORD_HEADERS`; the pool refuses to
+/// send them to one that does not, and the batch is then not forwarded.
+///
 /// `budget` bounds the whole loop, retries included. Without it the attempt
 /// budget is the only bound, and it is far larger than the client's patience:
 /// the waiter gives up first and replaces whatever this concluded with
 /// "publish commit timeout", which is both less informative and less
 /// actionable than every answer below. See `BrokerConfig::forward_budget`.
+// One parameter per part of the forwarded batch.
+#[allow(clippy::too_many_arguments)]
 pub async fn forward_publish(
     pool: &impl PeerRequester,
     target: &ForwardTarget,
@@ -106,6 +112,7 @@ pub async fn forward_publish(
     ack: AckMode,
     credential: &str,
     payloads: Vec<Bytes>,
+    headers: Option<Vec<Option<Bytes>>>,
     budget: Duration,
 ) -> Result<Option<(u64, u64)>, ForwardError> {
     let deadline = Instant::now() + budget;
@@ -184,6 +191,7 @@ pub async fn forward_publish(
             } else {
                 credential.to_string()
             },
+            headers: headers.clone(),
         });
 
         let answer = tokio::time::timeout(
@@ -257,10 +265,11 @@ pub async fn forward_publish(
                 };
             }
             Ok(InternalMessage::ForwardPublishError(err))
-                if err.code == ErrorCode::UnsupportedKind && !legacy =>
+                if err.code == ErrorCode::UnsupportedKind && !legacy && headers.is_none() =>
             {
                 // An owner from before credentialed forwards. Nothing was
-                // applied; send what it can read.
+                // applied; send what it can read. Never with headers: the
+                // legacy kind has no room for them.
                 last = format!("{:?}: {}", err.code, err.detail);
                 last_code = Some(err.code);
                 legacy = true;
@@ -299,6 +308,16 @@ pub async fn forward_publish(
                 metrics::record_forward(metrics::OUTCOME_INDETERMINATE);
                 return Err(ForwardError::Indeterminate {
                     node_id: target.node_id,
+                    detail: err.to_string(),
+                });
+            }
+            // The pool did not send it: this owner never offered the capability
+            // the frame needs. Possible for a headered batch after a redirect.
+            Err(err @ PeerError::Unsupported { .. }) => {
+                metrics::record_forward(metrics::OUTCOME_REFUSED);
+                return Err(ForwardError::Refused {
+                    stream: key.stream.clone(),
+                    code: Some(ErrorCode::UnsupportedKind),
                     detail: err.to_string(),
                 });
             }

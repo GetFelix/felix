@@ -9,18 +9,18 @@ use super::*;
 
 /// Times far from any clock this test could read, so a record stamped by a
 /// follower's own clock cannot pass for one of them.
-const TIMES: [u64; 3] = [1_000_001, 1_000_002, 1_000_003];
+pub(super) const TIMES: [u64; 3] = [1_000_001, 1_000_002, 1_000_003];
 
 /// Delivers a leader's batches to one replica's handler through the codec,
 /// as the pool would, offering `capabilities` and remembering what was sent.
-struct Follower<'a> {
+pub(super) struct Follower<'a> {
     handler: &'a ReplicaHandler,
     capabilities: PeerCapabilities,
-    sent: Mutex<Vec<Kind>>,
+    pub(super) sent: Mutex<Vec<Kind>>,
 }
 
 impl<'a> Follower<'a> {
-    fn new(handler: &'a ReplicaHandler, capabilities: PeerCapabilities) -> Self {
+    pub(super) fn new(handler: &'a ReplicaHandler, capabilities: PeerCapabilities) -> Self {
         Self {
             handler,
             capabilities,
@@ -53,7 +53,7 @@ impl PeerRequester for Follower<'_> {
 }
 
 /// A leader at `generation` holding `values` stamped with `TIMES`.
-async fn timed_leader(generation: u64, values: &[&str]) -> (Arc<Broker>, TempDir) {
+pub(super) async fn timed_leader(generation: u64, values: &[&str]) -> (Arc<Broker>, TempDir) {
     let dir = tempfile::tempdir().expect("tempdir");
     let broker = broker_on(dir.path());
     let log = stream_log(&broker).await;
@@ -63,7 +63,7 @@ async fn timed_leader(generation: u64, values: &[&str]) -> (Arc<Broker>, TempDir
         .map(|v| Bytes::copy_from_slice(v.as_bytes()))
         .collect();
     let pending = log
-        .begin_append_marked_at(0, &payloads, &[], &[], &TIMES[..values.len()])
+        .begin_append_marked_at(0, &payloads, &[], &[], &TIMES[..values.len()], None)
         .await
         .expect("append")
         .expect("at the tail");
@@ -71,7 +71,7 @@ async fn timed_leader(generation: u64, values: &[&str]) -> (Arc<Broker>, TempDir
     (broker, dir)
 }
 
-async fn stream_log(broker: &Broker) -> felix_broker::StreamLog {
+pub(super) async fn stream_log(broker: &Broker) -> felix_broker::StreamLog {
     broker
         .shard_log(LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
         .await
@@ -91,7 +91,7 @@ async fn times(broker: &Broker) -> Vec<u64> {
 }
 
 /// Ship everything `leader` holds to `follower`, at `generation`.
-async fn ship_all<R: PeerRequester>(follower: &R, leader: &Broker, generation: u64) {
+pub(super) async fn ship_all<R: PeerRequester>(follower: &R, leader: &Broker, generation: u64) {
     let mut cursor =
         crate::follower::FollowerCursor::new(LEADER, "10.0.0.1:7001".parse().expect("addr"), 0);
     let progress = crate::ship::ship_once(

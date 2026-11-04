@@ -94,6 +94,7 @@ fn forward(generation: u64) -> InternalMessage {
         ack: AckMode::None,
         payloads: vec![],
         credential: String::new(),
+        headers: None,
     })
 }
 

@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use felix_mqtt_wire::{ConnAck, Connect, Packet, Properties, ReasonCode, Utf8, Version};
+use felix_mqtt_wire::{ConnAck, Connect, Packet, Properties, QoS, ReasonCode, Utf8, Version};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tokio::time::{Instant, timeout_at};
 use tokio_util::sync::CancellationToken;
@@ -19,6 +19,11 @@ pub(super) struct Session {
     /// How long the client may be silent, before the grace is added.
     pub(super) keep_alive: Duration,
     pub(super) principal: Principal,
+    /// The producer id every write on this connection is made under.
+    pub(super) producer_id: u64,
+    /// Whether the client allows reason strings on acknowledgements (5.0
+    /// `Request Problem Information`).
+    pub(super) reason_strings: bool,
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
@@ -52,8 +57,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
             // answered with one.
             Err(_) => return self.reject(ReasonCode::ServerUnavailable, "auth_timeout"),
         };
-        // A will is a publish deferred to when the client vanishes, and there
-        // is no publish path yet. Refusing it now beats never sending it.
+        // A will is a publish deferred to when the client vanishes, and the
+        // listener does not send them yet. Refusing it now beats never
+        // sending it.
         if connect.will.is_some() {
             return self.reject(ReasonCode::NotAuthorized, "will_unsupported");
         }
@@ -65,6 +71,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
 
         let keep_alive = effective_keep_alive(&shared.settings, connect.keep_alive);
         let ack = connack(&shared.settings, &connect, keep_alive);
+        let reason_strings = connect
+            .properties
+            .request_problem_information
+            .unwrap_or(true);
         self.queue(&Packet::ConnAck(ack))?;
         self.flush().await?;
         tracing::debug!(tenant = principal.tenant_id(), "mqtt client connected");
@@ -72,6 +82,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
             version,
             keep_alive: Duration::from_secs(keep_alive.into()),
             principal,
+            producer_id: shared.writes.new_producer_id(),
+            reason_strings,
         })
     }
 
@@ -138,7 +150,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
                 return Err((ReasonCode::BadUserNameOrPassword, "auth_failed"));
             }
             return match &shared.settings.anonymous_tenant {
-                Some(tenant) => Ok(Principal::new(tenant.clone())),
+                Some(tenant) => Ok(Principal::anonymous(tenant.clone())),
                 None => Err((ReasonCode::NotAuthorized, "auth_required")),
             };
         };
@@ -207,6 +219,9 @@ fn connack(settings: &Settings, connect: &Connect, keep_alive: u16) -> ConnAck {
             properties.session_expiry_interval = Some(0);
         }
         properties.maximum_packet_size = Some(settings.max_packet_bytes);
+        properties.receive_maximum = Some(settings.max_inflight);
+        // QoS 2 comes with release marks in a later slice.
+        properties.maximum_qos = Some(QoS::AtLeastOnce);
         properties.retain_available = Some(false);
         properties.shared_subscription_available = Some(false);
         properties.subscription_identifiers_available = Some(false);

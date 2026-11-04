@@ -342,7 +342,10 @@ async fn the_batch_carries_the_checksum_the_follower_will_verify() {
     .await;
 
     let batch = follower.sent.lock().expect("lock")[0].clone();
-    assert_eq!(batch.checksum, batch_checksum(&batch.payloads, &[], &[]));
+    assert_eq!(
+        batch.checksum,
+        batch_checksum(&batch.payloads, &[], &[], &[])
+    );
     assert_eq!(
         batch.shard.generation, GENERATION,
         "the epoch was not carried"
@@ -360,6 +363,7 @@ async fn log_with_trim() -> (StreamLog, TempDir) {
             &[felix_storage::log::RecordMark::Trim { floor: 1 }],
             &[],
             &[],
+            None,
         )
         .await
         .expect("append")
@@ -406,7 +410,7 @@ async fn a_trim_record_ships_in_place_with_its_mark() {
     assert_eq!(batch.payloads[2], Bytes::from_static(b"headers"));
     assert_eq!(
         batch.checksum,
-        batch_checksum(&batch.payloads, &batch.marks, &[])
+        batch_checksum(&batch.payloads, &batch.marks, &[], &[])
     );
 }
 
@@ -479,11 +483,18 @@ async fn log_with_headers() -> (StreamLog, TempDir) {
     (log, dir)
 }
 
-/// **A record with headers is never shipped without them.** Replication does
-/// not carry headers yet, and a follower that acked the bare record would hold
-/// a different one than the leader. What comes before it still ships; the
-/// follower then waits at the record, loudly, and the pass ends instead of
-/// going round again.
+/// What a follower that reads the blocks offers.
+fn reads_headers() -> PeerCapabilities {
+    PeerCapabilities::GENERATION_LABELS
+        .union(PeerCapabilities::RECORD_TIMES)
+        .union(PeerCapabilities::RECORD_HEADERS)
+}
+
+/// **A record with headers is never shipped without them.** A follower that
+/// does not offer `RECORD_HEADERS` is an older build, and one that acked the
+/// bare record would hold a different one than the leader. What comes before
+/// it still ships; the follower then waits at the record, loudly, and the pass
+/// ends instead of going round again.
 #[tokio::test]
 async fn a_record_with_headers_is_held_not_shipped_bare() {
     let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
@@ -525,4 +536,117 @@ async fn a_record_with_headers_is_held_not_shipped_bare() {
         rendered.contains(r#"outcome="headers_unsupported"} 1"#),
         "{rendered}"
     );
+}
+
+/// **A follower that offers `RECORD_HEADERS` is sent the blocks with the
+/// records**, in the same batch as the ones around them, and the checksum
+/// covers them.
+#[tokio::test]
+async fn a_follower_that_reads_headers_is_sent_them() {
+    let (log, _dir) = log_with_headers().await;
+    let follower = ScriptedFollower::new([Ok(stored(3))]).offering(reads_headers());
+    let mut cursor = cursor(0);
+
+    let progress = ship_once(
+        &follower,
+        &log,
+        &shard(),
+        felix_broker::LogKind::Stream,
+        &mut cursor,
+        BATCH_BYTES,
+        &Rebuilds::disabled(),
+    )
+    .await;
+
+    assert_eq!(progress, Progress::Stored { durable_offset: 3 });
+    assert_eq!(follower.sent(), vec![(0, vec_of(&["a", "b", "c"]))]);
+    let batch = follower.batches().remove(0);
+    let blocks = vec![None, Some(Bytes::from_static(b"block")), None];
+    assert_eq!(batch.headers.as_deref(), Some(&blocks[..]));
+    assert_eq!(
+        batch.checksum,
+        batch_checksum(&batch.payloads, &batch.marks, &[], &blocks)
+    );
+    assert_eq!(
+        InternalMessage::ReplicateRecords(batch).kind(),
+        felix_wire::internal::Kind::ReplicateHeaderedRecords
+    );
+}
+
+/// A batch without a block is sent as it always was, to a follower that reads
+/// them or not.
+#[tokio::test]
+async fn a_batch_without_headers_carries_none() {
+    let (log, _dir) = leader_log(&["a", "b"]).await;
+    let follower = ScriptedFollower::new([Ok(stored(2))]).offering(reads_headers());
+    let mut cursor = cursor(0);
+
+    ship_once(
+        &follower,
+        &log,
+        &shard(),
+        felix_broker::LogKind::Stream,
+        &mut cursor,
+        BATCH_BYTES,
+        &Rebuilds::disabled(),
+    )
+    .await;
+
+    let batch = follower.batches().remove(0);
+    assert_eq!(batch.headers, None);
+    assert_eq!(
+        InternalMessage::ReplicateRecords(batch).kind(),
+        felix_wire::internal::Kind::ReplicateTimedRecords
+    );
+}
+
+/// **A follower that offers the labels and times but not `RECORD_HEADERS` is
+/// still held at the record**: it is an older build than the one that reads
+/// them, and the offer of the others says nothing about the blocks.
+#[tokio::test]
+async fn a_follower_without_the_headers_offer_is_still_held() {
+    let (log, _dir) = log_with_headers().await;
+    let follower = ScriptedFollower::new([Ok(stored(1))])
+        .offering(PeerCapabilities::GENERATION_LABELS.union(PeerCapabilities::RECORD_TIMES));
+    let mut cursor = answered(1);
+
+    let progress = ship_once(
+        &follower,
+        &log,
+        &shard(),
+        felix_broker::LogKind::Stream,
+        &mut cursor,
+        BATCH_BYTES,
+        &Rebuilds::disabled(),
+    )
+    .await;
+
+    assert_eq!(progress, Progress::Retry);
+    assert!(cursor.stalled);
+    assert_eq!(cursor.next_offset, 1);
+    assert!(follower.batches().is_empty(), "the record was sent bare");
+}
+
+/// A follower that refused the committed frame kinds cannot be sent the
+/// timed layout the blocks ride, so it is held at the record as well.
+#[tokio::test]
+async fn a_follower_on_legacy_frames_is_held_at_a_record_with_headers() {
+    let (log, _dir) = log_with_headers().await;
+    let follower = ScriptedFollower::new([]).offering(reads_headers());
+    let mut cursor = answered(1);
+    cursor.legacy_frames = true;
+
+    let progress = ship_once(
+        &follower,
+        &log,
+        &shard(),
+        felix_broker::LogKind::Stream,
+        &mut cursor,
+        BATCH_BYTES,
+        &Rebuilds::disabled(),
+    )
+    .await;
+
+    assert_eq!(progress, Progress::Retry);
+    assert!(follower.batches().is_empty(), "the record was sent bare");
 }

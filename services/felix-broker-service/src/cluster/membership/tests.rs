@@ -1064,3 +1064,45 @@ async fn a_trimmed_directory_joins_a_fleet_with_head_trim() {
     assert!(!task.fatal.is_cancelled());
     assert!(!calls.lock().expect("lock").heartbeats.is_empty());
 }
+
+/// **A directory that stored a record with headers does not join a fleet
+/// without `record_headers`.** An older follower would be held at the record
+/// and an older promoted leader could not serve it.
+#[tokio::test]
+async fn a_directory_with_headers_refuses_a_fleet_without_record_headers() {
+    let data = tempfile::tempdir().expect("tempdir");
+    felix_storage::run_state::record_headers_stored(data.path()).expect("mark");
+    let calls: Shared = Arc::default();
+
+    let task = join_with(&calls, data.path()).await;
+    assert!(task.fatal.is_cancelled(), "the broker stops");
+    let calls = calls.lock().expect("lock");
+    assert!(calls.heartbeats.is_empty(), "never heartbeats as a member");
+    assert_eq!(calls.deregistered, vec!["broker-a".to_string()]);
+}
+
+/// The same directory joins once the fleet has finalized `record_headers`.
+#[tokio::test]
+async fn a_directory_with_headers_joins_a_fleet_with_record_headers() {
+    let data = tempfile::tempdir().expect("tempdir");
+    felix_storage::run_state::record_headers_stored(data.path()).expect("mark");
+    let calls: Shared = Arc::new(Mutex::new(Calls {
+        fleet_features: vec![felix_common::fleet::RECORD_HEADERS.name().to_string()],
+        ..Calls::default()
+    }));
+    let task = join_with(&calls, data.path()).await;
+    assert!(!task.fatal.is_cancelled());
+    assert!(!calls.lock().expect("lock").heartbeats.is_empty());
+}
+
+/// The refusal names the feature it is waiting on.
+#[tokio::test]
+async fn the_refusal_names_the_missing_feature() {
+    let data = tempfile::tempdir().expect("tempdir");
+    felix_storage::run_state::record_headers_stored(data.path()).expect("mark");
+    let reason = join_refusal(Some(data.path()), &std::collections::BTreeSet::new())
+        .await
+        .expect("refused");
+    assert!(reason.contains("record_headers"), "{reason}");
+    assert!(!reason.contains("head_trim"), "{reason}");
+}

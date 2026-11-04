@@ -52,6 +52,13 @@ pub struct ClusterConfig {
     /// Off by default: every flush then also reads what it made durable. Needs
     /// brokers built with debug assertions, on Linux.
     pub power_loss: bool,
+    /// Run with joint fences on: every broker offers `ELECTION` and reports
+    /// `joint_fence` along with what this build reports, and
+    /// [`Cluster::start`](crate::Cluster::start) finalizes it before it
+    /// returns. No release reports `joint_fence` yet, so this is the only way
+    /// to turn it on. Needs brokers built with debug assertions, which honour
+    /// `FELIX_TEST_FLEET_FEATURES`. Off by default.
+    pub joint_fence: bool,
 }
 
 impl Default for ClusterConfig {
@@ -72,6 +79,7 @@ impl Default for ClusterConfig {
             kafka: false,
             proxy_links: false,
             power_loss: false,
+            joint_fence: false,
         }
     }
 }

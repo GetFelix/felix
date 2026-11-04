@@ -160,7 +160,34 @@ fn reported_features() -> std::collections::BTreeSet<String> {
     );
     // Unreadable reads as the lease, the side that reports less.
     let reads_by_lease = crate::config::quorum_reads_by_lease().unwrap_or(true);
-    features_for(fences, reads_by_lease)
+    // As the peer config reads it: `ELECTION` is offered only with the fence.
+    let election = fences
+        && matches!(
+            std::env::var("FELIX_INTERNAL_ELECTION")
+                .ok()
+                .map(|value| value.trim().to_ascii_lowercase())
+                .as_deref(),
+            Some("1" | "true" | "yes")
+        );
+    let mut features = features_for(fences, reads_by_lease);
+    if election {
+        features.extend(election_features());
+    }
+    features
+}
+
+/// What a broker offering `ELECTION` adds to its report: that it offers it,
+/// that it fences set changes jointly once `joint_fence` is finalized, and
+/// that it stands for election once `replica_election` is. A broker uses a
+/// finalized feature only if it reported it.
+fn election_features() -> impl Iterator<Item = String> {
+    [
+        felix_common::fleet::PEER_ELECTION,
+        felix_common::fleet::JOINT_FENCE,
+        felix_common::fleet::REPLICA_ELECTION,
+    ]
+    .into_iter()
+    .map(|feature| feature.name().to_string())
 }
 
 /// The features a broker can honestly report, given whether it fences what
@@ -180,8 +207,12 @@ fn features_for(fences: bool, reads_by_lease: bool) -> std::collections::BTreeSe
         })
         .filter(|feature| !(reads_by_lease && matches!(**feature, LEASE_FREE_READS)))
         .map(|feature| feature.name().to_string())
-        // This build's leaders name the followers holding the start record.
-        .chain([felix_common::fleet::START_HOLDERS.name().to_string()])
+        // This build's leaders name the followers holding the start record,
+        // and it keeps a wiped copy from voting or counting.
+        .chain([
+            felix_common::fleet::START_HOLDERS.name().to_string(),
+            felix_common::fleet::NON_VOTING.name().to_string(),
+        ])
         .collect()
 }
 
