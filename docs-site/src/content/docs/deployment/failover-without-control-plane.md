@@ -191,9 +191,8 @@ Then finalize these fleet features, in this order:
 
 1. `generation_start`, then `majority_ack`, then `lease_free_reads` (and
    `fenced_caches` if you want caches elected).
-2. `stream_incarnations` and `cache_incarnations`. Finalize both before
-   `joint_fence`: under `joint_fence`, a new stream or cache created without an
-   incarnation never finishes opening (issue #1862).
+2. `stream_incarnations` and `cache_incarnations`. `joint_fence` is refused
+   until both are finalized.
 3. `joint_fence`. From here on, a change to a replica set (a move, a
    replacement) needs a majority of both the old and the new set before the
    new leader serves.
