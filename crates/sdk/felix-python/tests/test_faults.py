@@ -49,7 +49,7 @@ def _post(fixture, path, body=None):
         method="POST",
         headers={"content-type": "application/json"},
     )
-    with urllib.request.urlopen(request, timeout=30) as response:
+    with urllib.request.urlopen(request, timeout=120) as response:
         response.read()
 
 

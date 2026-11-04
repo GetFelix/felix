@@ -23,3 +23,9 @@ impl Drop for OpenConnection {
 pub(crate) fn refused(reason: &'static str) {
     metrics::counter!("felix_mqtt_refused_total", "reason" => reason).increment(1);
 }
+
+/// A message written to its stream. `qos` is `"0"` or `"1"`; for QoS 1 the
+/// count is taken when the `PUBACK` is owed, not before.
+pub(crate) fn published(qos: &'static str, count: u64) {
+    metrics::counter!("felix_mqtt_published_total", "qos" => qos).increment(count);
+}
