@@ -1,0 +1,114 @@
+name: Perf scratch (fence turns, promotion burst)
+
+# Temporary: RF 3 promotion-burst A/B. p = pre-#1800 (3e81b94ef), m = main
+# (d8e6fac44), f = HEAD~1 (promotion fences take turns). Deleted with the branch.
+
+on:
+  push:
+    branches: [scratch/perf-fence-turns]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  P_SHA: 3e81b94ef04fb13709eb8e1a5ab3b53fdbbfc34b
+  M_SHA: d8e6fac4455ae936e790ce8e507c5c731b1af76c
+  BENCH_STEADY_SECS: "40"
+
+jobs:
+  build:
+    runs-on: ${{ vars.FELIX_LARGE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.99.1"
+      - name: Rust cache
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Build three sides
+        run: |
+          set -euo pipefail
+          out=/tmp/perf-bin; mkdir -p $out
+          cargo test --release -p felix-cluster --test replicated_bench --no-run --message-format=json \
+            | jq -r 'select(.profile.test == true and .executable != null) | .executable' | tail -1 > /tmp/exe
+          cp "$(cat /tmp/exe)" $out/replicated_bench
+          f_sha=$(git rev-parse HEAD~1)
+          for side in p m f; do
+            case $side in p) sha=$P_SHA;; m) sha=$M_SHA;; f) sha=$f_sha;; esac
+            git checkout --detach -q "$sha"
+            cargo build --release -p felix-broker-service --bin felix-broker
+            cp target/release/felix-broker $out/felix-broker-$side
+          done
+          sha256sum $out/*
+      - uses: actions/upload-artifact@v7
+        with:
+          name: perf-bin
+          path: /tmp/perf-bin/
+          retention-days: 3
+
+  run:
+    needs: build
+    runs-on: ${{ vars.FELIX_LARGE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    env:
+      ROUNDS: "6"
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: perf-bin
+          path: /tmp/perf-bin
+      - name: Machine
+        run: nproc; free -g; uname -a; df -h /tmp; chmod +x /tmp/perf-bin/*
+      - name: Cluster rounds, rotating sides
+        run: |
+          set -uo pipefail
+          p=/tmp/perf; mkdir -p $p/out $p/bin; cd $p
+          cp /tmp/perf-bin/replicated_bench $p/bin/replicated_bench
+          for side in p m f; do
+            printf '#!/bin/bash\nshift\nexec /tmp/perf-bin/felix-broker-%s "$@"\n' "$side" > $p/wrap-$side.sh
+            chmod +x $p/wrap-$side.sh
+          done
+          for round in $(seq 1 "$ROUNDS"); do
+            sides=(p m f); k=$(( (round + ${{ matrix.shard }}) % 3 ))
+            for i in 0 1 2; do
+              side=${sides[$(( (i + k) % 3 ))]}
+              r=${{ matrix.shard }}-$round
+              logs=$p/logs/$r-$side; mkdir -p $logs
+              echo "::group::round $r side $side"
+              FELIX_TEST_CLUSTER_LOG_DIR=$logs FELIX_BROKER_WRAPPER=$p/wrap-$side.sh BENCH_SIDE=$side BENCH_ROUND=$r \
+                timeout 1500 $p/bin/replicated_bench --ignored --nocapture --test-threads=1 2>&1 \
+                | tee $p/out/cluster-$r-$side.log || echo "::warning::round $r side $side failed"
+              grep -h 'BENCH_JSON ' $p/out/cluster-$r-$side.log | sed 's/^.*BENCH_JSON //' >> $p/out/cluster.jsonl || true
+              s=$p/out/fences-$r-$side.txt
+              {
+                for m in 'a majority took the fence' 'not fenced yet' 'promised the generation to another node' \
+                         'fenced by a promoted leader' 'opening the shard for writes'; do
+                  echo "$(cat $(find $logs -name '*.log') | grep -c "$m") $m"
+                done
+                echo '--- why (leader, not fenced yet)'
+                cat $(find $logs -name '*.log') | grep 'not fenced yet' | grep -o 'why=.*' \
+                  | sed -E 's/bulk-[0-9]+/S/g; s/[0-9]+/N/g' | cut -c1-220 | sort | uniq -c | sort -rn | head -25
+                echo '--- warn/error kinds'
+                cat $(find $logs -name '*.log') | grep -E ' (WARN|ERROR) ' | sed -E 's/^.*(WARN|ERROR) //; s/bulk-[0-9]+/S/g; s/[0-9]+/N/g' \
+                  | cut -c1-160 | sort | uniq -c | sort -rn | head -25
+              } > $s 2>&1
+              if [ "$round" = 1 ]; then tar czf $p/out/logs-$r-$side.tgz -C $logs . ; fi
+              rm -rf $logs
+              echo "::endgroup::"
+            done
+          done
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: perf-out-${{ matrix.shard }}
+          path: /tmp/perf/out/
