@@ -215,12 +215,15 @@ impl StreamState {
     ///
     /// The ring goes too so it cannot end up with a hole where the dropped
     /// batches were: the next batch released here pins its own offsets, and
-    /// a reader below it is served from disk.
+    /// a reader below it is served from disk. The state view goes too: a
+    /// dropped commit may yet be committed, and the next rebuild reads it
+    /// from the log once the mark covers it.
     pub(crate) fn discard_held(&self) -> usize {
         let mut state = self.log_state.lock();
         let dropped = self.held.discard();
         if dropped > 0 {
             state.log.clear();
+            state.state_view = None;
         }
         dropped
     }

@@ -411,6 +411,17 @@ async fn a_checked_commit_waits_for_a_held_commit_ahead_of_it() {
 /// let a check pass against the version that commit replaced.
 #[tokio::test]
 async fn a_discarded_hold_does_not_leave_a_stale_view() {
+    discard_then_check(false).await;
+}
+
+/// The same after this broker leads the shard again, when the ring has moved
+/// past the dropped commit.
+#[tokio::test]
+async fn a_discarded_hold_does_not_leave_a_stale_view_after_promotion() {
+    discard_then_check(true).await;
+}
+
+async fn discard_then_check(promote: bool) {
     let dir = tempfile::tempdir().expect("tempdir");
     let (broker, bound) = broker(dir.path(), ConsistencyLevel::Quorum).await;
     let handle = broker
@@ -423,8 +434,16 @@ async fn a_discarded_hold_does_not_leave_a_stale_view() {
     assert_eq!(commit(&broker, b"w", vec![put("k", b"1")]).await, 1);
     assert_eq!(broker.discard_uncommitted("t1", "ns", "orders", 0).await, 1);
 
-    // The next leader committed it.
-    *bound.0.lock() = ReadBound::Committed(2);
+    if promote {
+        // Leading again: the generation start moves the ring past the
+        // dropped commit.
+        broker
+            .append_generation_start("t1", "ns", "orders", 0, 2)
+            .await
+            .expect("generation start");
+    }
+    // It was committed after all.
+    *bound.0.lock() = ReadBound::Committed(if promote { 3 } else { 2 });
     let checked = broker
         .commit_to_handle_checked(
             &handle,
