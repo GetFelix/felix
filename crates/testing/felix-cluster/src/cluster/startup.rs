@@ -3,6 +3,7 @@
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
+use felix_controlplane_service::config::NodeLivenessConfig;
 
 use super::{Cluster, READY_TIMEOUT};
 use crate::node::{FAILURE_LOG_LINES, broker_binary, spawn_broker};
@@ -35,7 +36,14 @@ impl Cluster {
             .build()
             .context("build harness HTTP client")?;
 
-        let control_plane = ControlPlane::start(&config.tenant_id).await?;
+        let control_plane = ControlPlane::start_with(
+            &config.tenant_id,
+            NodeLivenessConfig {
+                expiry_timeout_ms: config.node_expiry.as_millis() as u64,
+                ..crate::controlplane::LIVENESS
+            },
+        )
+        .await?;
         let credentials = control_plane.credentials(&config.tenant_id);
 
         // Metadata first: a broker syncs streams at startup, and one that starts

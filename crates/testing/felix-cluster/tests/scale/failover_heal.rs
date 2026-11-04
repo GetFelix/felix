@@ -6,6 +6,11 @@
 //! outage, and with `replica_election` they did not heal after the restart
 //! either. Each test kills the broker leading a third of the streams while a
 //! client keeps publishing to every one of them, then restarts it.
+//!
+//! The control plane takes a deployment's time to mark the broker down, so
+//! with election the replicas stand while it waits, and more shards stand
+//! than can at once: some standings are given up and their ballots outrun the
+//! generation the control plane re-places at, as in felixd's run.
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -18,11 +23,14 @@ use serial_test::serial;
 use tokio::task::JoinSet;
 
 const APPEND_EVERY: Duration = Duration::from_millis(200);
-/// How long a shard may go without a publish after its leader is killed. An
-/// election takes about S + 3 s at worst (`docs/replication-design.md`,
-/// "Failover time"), placement about as long; the rest is margin for a busy
-/// runner.
-const OUTAGE_BOUND: Duration = Duration::from_secs(45);
+/// How long the control plane waits on a silent broker: a deployment's
+/// default, so placement re-places well after the brokers' 5 s suspicion.
+const NODE_EXPIRY: Duration = Duration::from_secs(15);
+/// How long a shard may go without a publish after its leader is killed.
+/// Placement re-places at about 19 s (the expiry and its quarter margin), and a
+/// shard named below a ballot then climbs a generation per pass; the rest is
+/// margin for a busy runner.
+const OUTAGE_BOUND: Duration = Duration::from_secs(90);
 /// How long after the restart every shard must be serving.
 const RESTART_BOUND: Duration = Duration::from_secs(45);
 
@@ -45,7 +53,7 @@ fn stream_count() -> usize {
     std::env::var("FELIX_SCALE_STREAMS")
         .ok()
         .map(|value| value.trim().parse().expect("FELIX_SCALE_STREAMS"))
-        .unwrap_or(150)
+        .unwrap_or(300)
 }
 
 async fn run(election: bool) {
@@ -62,6 +70,7 @@ async fn run(election: bool) {
             .collect(),
         sync_interval_ms: 1_000,
         broker_env,
+        node_expiry: NODE_EXPIRY,
         inherit_output: std::env::var("FELIX_TEST_BROKER_OUTPUT").is_ok(),
         ..Default::default()
     })
