@@ -392,15 +392,12 @@ impl ShardLifecycle {
                 if generation < existing.generation {
                     // Older than what we already acted on: a duplicate, a
                     // reordered poll, or a snapshot replay. Or the control
-                    // plane naming this broker below a standing of its own
-                    // that was withdrawn: nothing opens below it, so report
-                    // the refusal or the control plane never names it past
-                    // (#1914). A refusal the control plane has passed is
+                    // plane naming this broker below a standing of its own,
+                    // withdrawn or still fencing: nothing opens below it, so
+                    // report the refusal or the control plane never names it
+                    // past (#1914). A refusal the control plane has passed is
                     // ignored.
-                    if matches!(
-                        existing.phase,
-                        Phase::Closed | Phase::Failed | Phase::Unassigned
-                    ) {
+                    if !existing.phase.may_serve() {
                         self.fence.superseded(key, generation);
                     }
                     mm::record_stale_event();

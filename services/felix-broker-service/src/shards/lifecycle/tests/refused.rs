@@ -147,6 +147,28 @@ fn an_assignment_below_a_withdrawn_standing_is_refused() {
     ));
 }
 
+/// **Named below a standing still fencing, the same.** The control plane's
+/// assignment names this broker, so the withdrawal that follows never
+/// releases the shard: it stays fencing at its ballot until the control
+/// plane names it at or above it.
+#[test]
+fn an_assignment_below_a_fencing_standing_is_refused() {
+    let mut own = lifecycle();
+    own.observe(&key(0), Some(&assigned_to("broker-b", 4)));
+    own.fence_promotions();
+    own.observe(&key(0), Some(&assigned_to("broker-a", 6)));
+    assert_eq!(own.opened(&key(0), 6), Opened::Fencing);
+
+    assert_eq!(
+        own.observe(&key(0), Some(&assigned_to("broker-a", 5))),
+        Action::None
+    );
+    assert_eq!(
+        own.fence().refused_at(&key(0)),
+        Some(RefusedGeneration::set_unknown(5)),
+    );
+}
+
 /// **A replayed older assignment for a shard still served says nothing.**
 #[test]
 fn a_replay_below_a_served_generation_is_not_refused() {
