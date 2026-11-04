@@ -544,6 +544,24 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
             )
         })
         .flatten();
+    if key.kind == felix_router::ShardKind::Stream && marks.elections().is_some() {
+        tracing::info!(
+            stream = %key.stream,
+            route_generation = route.generation,
+            route_leader = %route.leader.node_id,
+            elected = ?elected.as_ref().map(|e| (e.generation, e.set_generation)),
+            elected_on_route_set,
+            opened_since = fence.opened_since(mark_key, route.generation),
+            promoting = fence.promoting(mark_key, route.generation),
+            opened_elected = marks.elections().is_some_and(|el| el.opened_elected(key, route.generation, route.incarnation)),
+            stored = ?log.replica_set().map(|s| (s.current.generation, s.current.members.iter().map(|m| m.node.clone()).collect::<Vec<_>>(), s.leaving.as_ref().map(|l| l.generation))),
+            set_generation = log.set_generation(),
+            accepted = log.accepted_generation(),
+            set_stamp = ?set_stamp,
+            kept = ?kept.as_ref().map(|k| (k.current.generation, k.leaving.as_ref().map(|l| l.generation))),
+            "DIAG leader set pass",
+        );
+    }
     if let Some(kept) = kept
         && let Err(err) = log.accept_set(kept).await
     {
