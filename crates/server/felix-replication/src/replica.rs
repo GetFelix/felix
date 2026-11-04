@@ -33,6 +33,16 @@ use felix_wire::internal::{
 /// The most one fetch answer carries, whatever the leader asked for.
 const MAX_FETCH_BYTES: usize = 4 * 1024 * 1024;
 
+/// The longest a fence waits for its leader's turn before it runs anyway.
+/// Under the default 5 s peer request timeout, so a fence that waited is
+/// still answered before its leader gives up on it. A request timeout set
+/// below this lets a queued fence time out before it runs.
+const FENCE_TURN_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// How many logs' fenced generations are remembered. Past it, one is
+/// forgotten for each new one.
+const MAX_FENCED_AT: usize = 65_536;
+
 use crate::peer::metrics;
 
 /// Stores replicated records against this broker's local logs.
@@ -71,6 +81,11 @@ pub struct ReplicaHandler {
     /// Whether the control plane last registered this broker under another
     /// identity. See `election.rs`.
     replaced_storage: bool,
+    /// Each leader's turn to fence here. See [`Self::fence`].
+    fence_turns: parking_lot::Mutex<HashMap<String, Arc<tokio::sync::Semaphore>>>,
+    /// The generation each log last took a fence at, which a read round's
+    /// fence repeats. Only paces fences; the ballot decides every one.
+    fenced_at: parking_lot::Mutex<HashMap<(felix_router::ShardKey, felix_broker::LogKind), u64>>,
     /// Run after an incarnation check passes, to change the catalog between
     /// the check and the open.
     #[cfg(test)]
@@ -132,6 +147,8 @@ impl ReplicaHandler {
             fleet: None,
             local_storage: None,
             replaced_storage: false,
+            fence_turns: parking_lot::Mutex::new(HashMap::new()),
+            fenced_at: parking_lot::Mutex::new(HashMap::new()),
             #[cfg(test)]
             incarnation_checked: parking_lot::Mutex::new(None),
         }
@@ -604,6 +621,22 @@ impl ReplicaHandler {
         log_kind: felix_broker::LogKind,
     ) -> InternalMessage {
         let correlation_id = batch.correlation_id;
+        // Only a stream's records carry header blocks; storing another log's
+        // batch without them would leave it differing from the leader's.
+        if log_kind != felix_broker::LogKind::Stream
+            && batch
+                .headers
+                .as_deref()
+                .is_some_and(|headers| headers.iter().any(Option::is_some))
+        {
+            metrics::record_replicated(metrics::OUTCOME_REFUSED);
+            return refused(
+                correlation_id,
+                ErrorCode::Malformed,
+                0,
+                format!("a {log_kind:?} log's records carry no headers"),
+            );
+        }
         let key = felix_router::ShardKey {
             tenant_id: batch.shard.tenant_id.clone(),
             namespace: batch.shard.namespace.clone(),
@@ -749,6 +782,14 @@ impl ReplicaHandler {
             metrics::record_replicated(metrics::OUTCOME_ERROR);
             return refused(correlation_id, ErrorCode::StorageFailed, 0, err.to_string());
         }
+        if let Err(err) = self
+            .broker
+            .mark_headers_stored_for(batch.headers.as_deref())
+            .await
+        {
+            metrics::record_replicated(metrics::OUTCOME_ERROR);
+            return refused(correlation_id, ErrorCode::StorageFailed, 0, err.to_string());
+        }
         let mut outcome = match unverified {
             Some(expected) if batch.first_offset > expected => Ok(Err(Divergence::Gap {
                 expected,
@@ -763,6 +804,7 @@ impl ReplicaHandler {
                     &batch.marks,
                     &batch.publishers,
                     batch.times.as_deref().unwrap_or_default(),
+                    batch.headers.as_deref(),
                 )
                 .await
             }
@@ -840,6 +882,7 @@ impl ReplicaHandler {
                             &batch.marks,
                             &batch.publishers,
                             batch.times.as_deref().unwrap_or_default(),
+                            batch.headers.as_deref(),
                         )
                         .await;
                     }
@@ -1034,6 +1077,13 @@ impl ReplicaHandler {
     /// their own, so the fence covers them without a request each. A
     /// promoted leader fences those logs as well, after the shard's own, for
     /// where each ends: the answer is that log's.
+    ///
+    /// One leader's promotion fences run here one at a time. Each may open a
+    /// log and write a ballot, and a promotion burst running them side by side
+    /// starves the writes this broker already serves. A read round's fence
+    /// writes nothing and skips the queue, so it does not wait behind a
+    /// promotion's (#1796). That is known from what this broker last
+    /// answered, so after a restart a log's first read round queues once.
     pub async fn fence(&self, sender: Option<&str>, request: Fence) -> InternalMessage {
         // A candidate's fence on the shard's own log, from a sender that names
         // itself: once taken, this replica routes the shard to it, so its
@@ -1059,7 +1109,28 @@ impl ReplicaHandler {
                 };
                 (Arc::clone(elections), key, elected)
             });
-        let answer = self.fence_once(sender, request).await;
+        let log_kind = log_kind(request.log);
+        let key = (shard_key(&request.shard, log_kind), log_kind);
+        let generation = request.shard.generation;
+        let confirming = self.fenced_at.lock().get(&key) == Some(&generation);
+        let _turn = if confirming {
+            None
+        } else {
+            self.fence_turn(sender).await
+        };
+        let answer = self.fence_in_turn(sender, request).await;
+        if matches!(answer, InternalMessage::FenceOk(_)) {
+            let mut fenced_at = self.fenced_at.lock();
+            // Forgetting only sends a read round's fence through the queue.
+            if fenced_at.len() >= MAX_FENCED_AT && !fenced_at.contains_key(&key) {
+                let any = fenced_at.keys().next().cloned();
+                if let Some(any) = any {
+                    fenced_at.remove(&any);
+                }
+            }
+            let at = fenced_at.entry(key).or_insert(generation);
+            *at = (*at).max(generation);
+        }
         if let (Some((elections, key, elected)), InternalMessage::FenceOk(_)) = (candidate, &answer)
         {
             elections.record(key, elected);
@@ -1067,7 +1138,23 @@ impl ReplicaHandler {
         answer
     }
 
-    async fn fence_once(&self, sender: Option<&str>, request: Fence) -> InternalMessage {
+    /// Wait for `sender`'s turn to fence, or [`FENCE_TURN_WAIT`] at most: a
+    /// fence stuck on its storage must not hold up that leader's others for
+    /// longer than they would wait anyway.
+    async fn fence_turn(&self, sender: Option<&str>) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        let turns = Arc::clone(
+            self.fence_turns
+                .lock()
+                .entry(sender.unwrap_or_default().to_string())
+                .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(1))),
+        );
+        tokio::time::timeout(FENCE_TURN_WAIT, turns.acquire_owned())
+            .await
+            .ok()?
+            .ok()
+    }
+
+    async fn fence_in_turn(&self, sender: Option<&str>, request: Fence) -> InternalMessage {
         let correlation_id = request.correlation_id;
         let generation = request.shard.generation;
         let log_kind = log_kind(request.log);
@@ -1384,6 +1471,17 @@ impl ReplicaHandler {
         };
         let first_offset = records.first().map_or(from_offset, |record| record.offset);
         let publishers = replication::publishers_to_wire(&records);
+        let headers = replication::headers_to_wire(&records);
+        // A reader that did not ask for the blocks would store these records
+        // without them, so it is refused instead.
+        if headers.is_some() && !(request.labelled && request.timed && request.headers) {
+            return refused(
+                correlation_id,
+                ErrorCode::UnsupportedKind,
+                0,
+                "these records carry headers; the fetch must ask for them".to_string(),
+            );
+        }
         let times = (request.labelled && request.timed).then(|| {
             records
                 .iter()
@@ -1397,7 +1495,12 @@ impl ReplicaHandler {
             correlation_id,
             shard: request.shard,
             first_offset,
-            checksum: felix_wire::internal::batch_checksum(&payloads, &marks, &publishers),
+            checksum: felix_wire::internal::batch_checksum(
+                &payloads,
+                &marks,
+                &publishers,
+                headers.as_deref().unwrap_or_default(),
+            ),
             payloads,
             marks,
             commit_offset: None,
@@ -1406,6 +1509,7 @@ impl ReplicaHandler {
                 .then(|| generations_over(&log.generations(), first_offset, end)),
             publishers,
             times,
+            headers,
             set_generation: None,
         };
         crate::ship::carry_marks(&mut batch, log_kind, false);

@@ -4,7 +4,7 @@
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use super::replicate::GenerationStart;
-use super::replicate::{ProducerMark, put_marks, take_marks};
+use super::replicate::{ProducerMark, any_block, put_blocks, put_marks, take_blocks, take_marks};
 use super::{
     AckMode, CacheOpKind, ErrorCode, Fence, FenceElection, FenceOk, ForwardCacheCondition,
     ForwardCacheError, ForwardCacheOk, ForwardCacheOp, ForwardCacheOutcome, ForwardLease,
@@ -67,8 +67,17 @@ impl InternalMessage {
                 }
                 // Last, and only on the authorized kind: the legacy layout in
                 // front of it is frozen.
-                if !m.credential.is_empty() {
+                if !m.credential.is_empty() || self.kind() == Kind::HeaderedForwardPublish {
                     put_credential(&mut body, &m.credential)?;
+                }
+                if self.kind() == Kind::HeaderedForwardPublish {
+                    let headers = m.headers.as_deref().unwrap_or_default();
+                    if headers.len() != m.payloads.len() {
+                        return Err(Error::InvalidRecordHeaders(
+                            "headers count differs from payloads",
+                        ));
+                    }
+                    put_blocks(&mut body, headers);
                 }
             }
             Self::ForwardPublishOk(m) => {
@@ -191,6 +200,15 @@ impl InternalMessage {
             | Self::ReplicateCounterRecords(m)
             | Self::ReplicateMarkedRecords(m) => {
                 set_generation = m.set_generation;
+                // Blocks ride only the headered kind. Sending the batch as
+                // another would store its records without them.
+                if m.headers.as_deref().is_some_and(any_block)
+                    && self.kind() != Kind::ReplicateHeaderedRecords
+                {
+                    return Err(Error::InvalidRecordHeaders(
+                        "headers need generations and times",
+                    ));
+                }
                 body.put_u64(m.correlation_id);
                 put_str(&mut body, &m.shard.tenant_id)?;
                 put_str(&mut body, &m.shard.namespace)?;
@@ -251,12 +269,22 @@ impl InternalMessage {
                         None => body.put_u64(m.commit_offset.unwrap_or(0)),
                     }
                 }
-                if self.kind() == Kind::ReplicateTimedRecords {
+                let headered = self.kind() == Kind::ReplicateHeaderedRecords;
+                if headered || self.kind() == Kind::ReplicateTimedRecords {
                     let times = m.times.as_deref().unwrap_or_default();
                     debug_assert_eq!(times.len(), m.payloads.len(), "one time per record");
                     for index in 0..m.payloads.len() {
                         body.put_u64(times.get(index).copied().unwrap_or(0));
                     }
+                }
+                if headered {
+                    let headers = m.headers.as_deref().unwrap_or_default();
+                    if headers.len() != m.payloads.len() {
+                        return Err(Error::InvalidRecordHeaders(
+                            "headers count differs from payloads",
+                        ));
+                    }
+                    put_blocks(&mut body, headers);
                 }
             }
             Self::ReplicateOk(m) => {
@@ -471,7 +499,9 @@ impl InternalMessage {
                 *message.set_generation_mut().ok_or(Error::Incomplete)? = Some(set_generation);
                 Ok(message)
             }
-            kind @ (Kind::ForwardPublish | Kind::AuthorizedForwardPublish) => {
+            kind @ (Kind::ForwardPublish
+            | Kind::AuthorizedForwardPublish
+            | Kind::HeaderedForwardPublish) => {
                 let correlation_id = take_u64(&mut body)?;
                 let tenant_id = take_str(&mut body)?;
                 let namespace = take_str(&mut body)?;
@@ -496,10 +526,15 @@ impl InternalMessage {
                     }
                     payloads.push(body.split_to(len));
                 }
-                let credential = if kind == Kind::AuthorizedForwardPublish {
-                    take_credential(&mut body)?
-                } else {
+                let credential = if kind == Kind::ForwardPublish {
                     String::new()
+                } else {
+                    take_credential(&mut body)?
+                };
+                let headers = if kind == Kind::HeaderedForwardPublish {
+                    Some(take_blocks(&mut body, payloads.len())?)
+                } else {
+                    None
                 };
                 if body.has_remaining() {
                     // Trailing bytes mean the body did not describe itself, so
@@ -521,6 +556,7 @@ impl InternalMessage {
                     ack,
                     payloads,
                     credential,
+                    headers,
                 }))
             }
             Kind::ForwardPublishOk => {
@@ -667,7 +703,10 @@ impl InternalMessage {
                     refusal,
                 }))
             }
-            Kind::ReplicateFetch | Kind::ReplicateLabelledFetch | Kind::ReplicateTimedFetch => {
+            Kind::ReplicateFetch
+            | Kind::ReplicateLabelledFetch
+            | Kind::ReplicateTimedFetch
+            | Kind::ReplicateHeaderedFetch => {
                 let message = ReplicateFetch {
                     correlation_id: take_u64(&mut body)?,
                     shard: ShardRef {
@@ -682,7 +721,11 @@ impl InternalMessage {
                     from_offset: take_u64(&mut body)?,
                     max_bytes: take_u32(&mut body)?,
                     labelled: kind != Kind::ReplicateFetch,
-                    timed: kind == Kind::ReplicateTimedFetch,
+                    timed: matches!(
+                        kind,
+                        Kind::ReplicateTimedFetch | Kind::ReplicateHeaderedFetch
+                    ),
+                    headers: kind == Kind::ReplicateHeaderedFetch,
                 };
                 expect_empty(&body)?;
                 Ok(Self::ReplicateFetch(message))
@@ -714,7 +757,8 @@ impl InternalMessage {
             | Kind::ReplicateMarkedRecords
             | Kind::ReplicateCommittedRecords
             | Kind::ReplicateLabelledRecords
-            | Kind::ReplicateTimedRecords => {
+            | Kind::ReplicateTimedRecords
+            | Kind::ReplicateHeaderedRecords => {
                 let correlation_id = take_u64(&mut body)?;
                 let tenant_id = take_str(&mut body)?;
                 let namespace = take_str(&mut body)?;
@@ -738,7 +782,8 @@ impl InternalMessage {
                     }
                     payloads.push(body.split_to(len));
                 }
-                let timed = kind == Kind::ReplicateTimedRecords;
+                let headered = kind == Kind::ReplicateHeaderedRecords;
+                let timed = kind == Kind::ReplicateTimedRecords || headered;
                 let labelled = kind == Kind::ReplicateLabelledRecords || timed;
                 let committed = kind == Kind::ReplicateCommittedRecords || labelled;
                 let (mut marks, publishers) = if kind == Kind::ReplicateMarkedRecords || committed {
@@ -789,6 +834,11 @@ impl InternalMessage {
                 } else {
                     None
                 };
+                let headers = if headered {
+                    Some(take_blocks(&mut body, payloads.len())?)
+                } else {
+                    None
+                };
                 expect_empty(&body)?;
                 // An unmarked batch has no marks, as the leader built it; the
                 // checksum covers marks only when there are any.
@@ -816,6 +866,7 @@ impl InternalMessage {
                     commit_offset,
                     generations,
                     times,
+                    headers,
                     set_generation: None,
                 };
                 if let Some(log) = log {

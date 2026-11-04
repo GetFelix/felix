@@ -1,9 +1,37 @@
 //! Consumer-group operations through a chosen broker.
 
+use std::time::{Duration, Instant};
+
 use anyhow::{Result, anyhow};
 
 use super::Cluster;
 use crate::client;
+
+/// How long a new leader gets to commit its first mark before a poll counts as refused.
+const SETTLING_BUDGET: Duration = Duration::from_secs(30);
+
+/// A leader that has not committed a mark for its new generation refuses group reads
+/// until it has one. Clients retry that refusal; so does a test that polls right after
+/// a failover. Any other error is returned at once.
+async fn retry_settling<T, F, Fut>(mut call: F) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T>>,
+{
+    let deadline = Instant::now() + crate::wait::budget(SETTLING_BUDGET);
+    loop {
+        match call().await {
+            Err(err) if is_settling(&err) && Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            other => return other,
+        }
+    }
+}
+
+fn is_settling(err: &anyhow::Error) -> bool {
+    format!("{err:#}").contains("no committed mark")
+}
 
 impl Cluster {
     /// Poll a consumer group through a named broker, whether or not it leads
@@ -25,8 +53,8 @@ impl Cluster {
             .ok_or_else(|| anyhow!("unknown node {node_id}"))?;
         let client =
             client::connect(node.client_addr, &self.tenant_id, &self.client_token()).await?;
-        let records = client
-            .group_poll(
+        let records = retry_settling(|| {
+            client.group_poll(
                 &self.tenant_id,
                 &self.namespace,
                 stream,
@@ -34,7 +62,8 @@ impl Cluster {
                 group,
                 max_records,
             )
-            .await?;
+        })
+        .await?;
         Ok(records
             .into_iter()
             .map(|record| record.payload.to_vec())
@@ -58,8 +87,8 @@ impl Cluster {
             .ok_or_else(|| anyhow!("unknown node {node_id}"))?;
         let client =
             client::connect(node.client_addr, &self.tenant_id, &self.client_token()).await?;
-        client
-            .group_poll(
+        retry_settling(|| {
+            client.group_poll(
                 &self.tenant_id,
                 &self.namespace,
                 stream,
@@ -67,7 +96,8 @@ impl Cluster {
                 group,
                 max_records,
             )
-            .await
+        })
+        .await
     }
 
     /// Finish one record for a group, through a named broker.
@@ -170,3 +200,6 @@ impl Cluster {
             .await
     }
 }
+
+#[cfg(test)]
+mod tests;

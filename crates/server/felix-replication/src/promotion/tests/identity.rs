@@ -201,3 +201,68 @@ async fn a_fence_without_reported_ids_counts_every_answer() {
 
     assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
 }
+
+/// **A promise away is not blamed when another copy answered.** Of five, b
+/// promised the generation to another node, c answered from a copy the
+/// report did not name, and d and e are down. c's answer is what kept the
+/// majority out, and a rename would reset the copies the next fence checks,
+/// so the fence waits instead of reporting a refusal.
+#[tokio::test]
+async fn a_promise_away_beside_another_copy_stays_pending() {
+    let mut replicas = super::groups::group_replicas(5, REQUIRED);
+    replicas.ballots = true;
+    for id in ["broker-b", "broker-c"] {
+        super::groups::holds(
+            &replicas,
+            5,
+            id,
+            felix_broker::LogKind::Stream,
+            4,
+            &[Bytes::from_static(b"a")],
+        )
+        .await;
+    }
+    promised_to(&replicas, "broker-b", "broker-x").await;
+    replicas.get_mut("broker-c").storage = Some(rotated());
+    replicas.get_mut("broker-d").reachable = false;
+    replicas.get_mut("broker-e").reachable = false;
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+    let mut route = super::groups::route_of_size(5);
+    route.fence_storage_ids = Some(Arc::new(
+        ["broker-b", "broker-c", "broker-d", "broker-e"]
+            .into_iter()
+            .map(|id| (id.to_string(), storage_of(id).to_hex()))
+            .collect(),
+    ));
+
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route, true, None).await;
+
+    let Outcome::Pending { why, .. } = outcome else {
+        panic!("{outcome:?}");
+    };
+    assert!(why.contains("another copy"), "{why}");
+}
+
+/// **A promise away is not blamed when another replica refused for its own
+/// reason.** b promised the generation to another node and c refused the
+/// fence for something a rename does not cure, so the fence waits and
+/// reports c's reason instead of moving the shard up.
+#[tokio::test]
+async fn a_promise_away_beside_another_refusal_stays_pending() {
+    let mut replicas = Replicas::new();
+    replicas.ballots = true;
+    replicas
+        .get("broker-b")
+        .holds("broker-b", 4, 0, &["a"])
+        .await;
+    promised_to(&replicas, "broker-b", "broker-d").await;
+    replicas.get_mut("broker-c").refuses = Some("copy is short of the tail");
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route(), true, None).await;
+
+    let Outcome::Pending { why, .. } = outcome else {
+        panic!("{outcome:?}");
+    };
+    assert!(why.contains("broker-c refused: copy is short"), "{why}");
+}

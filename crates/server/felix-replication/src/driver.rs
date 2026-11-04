@@ -724,7 +724,7 @@ async fn open_fenced(
                 generation,
                 promised_to = %promised_to,
                 why = %why,
-                "a majority promised the generation to another node; reporting the refusal",
+                "a replica promised the generation to another node and no majority took it; reporting the refusal",
             );
             false
         }

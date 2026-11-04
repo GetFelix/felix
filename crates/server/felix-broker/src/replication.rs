@@ -89,7 +89,10 @@ impl Divergence {
 /// empty stamps them with this broker's clock. Times are not compared on a
 /// retry: a copy stored from a leader that did not send them holds this
 /// broker's own.
+/// `headers` are the records' key-and-headers blocks, stored with them and
+/// covered by the checksum, or `None` when no record has one.
 /// Returns once the batch is durable.
+#[allow(clippy::too_many_arguments)]
 pub async fn apply(
     log: &StreamLog,
     first_offset: u64,
@@ -98,6 +101,7 @@ pub async fn apply(
     marks: &[ProducerMark],
     publishers: &[Option<Bytes>],
     times: &[u64],
+    headers: Option<&[Option<Bytes>]>,
 ) -> Result<std::result::Result<Applied, Divergence>> {
     // Everything below is decided from one reading of the tail, and the write
     // is made only if the tail is still there. A resend on a second lane can
@@ -114,6 +118,7 @@ pub async fn apply(
             marks,
             publishers,
             times,
+            headers,
         )
         .await?
         {
@@ -132,6 +137,7 @@ const MAX_APPLY_RACES: usize = 16;
 
 /// One attempt at [`apply`]. `None` when another append moved the tail after
 /// it was read.
+#[allow(clippy::too_many_arguments)]
 async fn apply_at_tail(
     log: &StreamLog,
     first_offset: u64,
@@ -140,17 +146,31 @@ async fn apply_at_tail(
     marks: &[ProducerMark],
     publishers: &[Option<Bytes>],
     times: &[u64],
+    headers: Option<&[Option<Bytes>]>,
 ) -> Result<Option<std::result::Result<Applied, Divergence>>> {
     let tail = log.tail_offset().await?;
 
     // Checked before the tail is consulted for anything else: a batch that did
     // not survive the trip says nothing reliable about position either.
-    let computed = felix_wire::internal::batch_checksum(payloads, marks, publishers);
+    let computed = felix_wire::internal::batch_checksum(
+        payloads,
+        marks,
+        publishers,
+        headers.unwrap_or_default(),
+    );
     if computed != checksum {
         return Ok(Some(Err(Divergence::Corrupt {
             leader: checksum,
             computed,
         })));
+    }
+
+    // One block per payload, or none; anything else would pair a block with
+    // the wrong record.
+    if headers.is_some_and(|headers| headers.len() != payloads.len()) {
+        return Err(BrokerError::Storage(
+            "a replication batch's headers differ in count from its payloads".to_string(),
+        ));
     }
 
     if payloads.is_empty() {
@@ -190,6 +210,7 @@ async fn apply_at_tail(
             &payloads[..overlap],
             &marks[..overlap],
             publishers.get(..overlap).unwrap_or_default(),
+            headers.map(|headers| &headers[..overlap]),
             tail,
         )
         .await?
@@ -218,6 +239,7 @@ async fn apply_at_tail(
             &marks[overlap..],
             publishers.get(overlap..).unwrap_or_default(),
             times.get(overlap..).unwrap_or_default(),
+            headers.map(|headers| &headers[overlap..]),
         )
         .await?
     else {
@@ -241,9 +263,19 @@ async fn conflict_in(
     overlapping: &[Bytes],
     marks: &[RecordMark],
     publishers: &[Option<Bytes>],
+    headers: Option<&[Option<Bytes>]>,
     tail: u64,
 ) -> Result<Option<Divergence>> {
-    let wanted: usize = overlapping.iter().map(|payload| payload.len() + 32).sum();
+    let wanted: usize = overlapping
+        .iter()
+        .enumerate()
+        .map(|(index, payload)| {
+            let block = headers
+                .and_then(|headers| headers[index].as_ref())
+                .map_or(0, Bytes::len);
+            payload.len() + block + 32
+        })
+        .sum();
     let stored = match log.read_replicated_from(first_offset, wanted.max(1)).await {
         Ok(stored) => stored,
         // Retention discarded the records this batch overlaps. There is nothing
@@ -263,11 +295,14 @@ async fn conflict_in(
         };
         // A mark that differs is a different record even with the same
         // bytes: it would leave this replica and the leader disagreeing about
-        // where a producer stands. So is a different publisher.
+        // where a producer stands. So is a different publisher, or a
+        // different key-and-headers block.
         let publisher = publishers.get(index).cloned().flatten();
+        let block = headers.and_then(|headers| headers[index].as_ref());
         if record.payload != *payload
             || record.mark != marks[index]
             || record.publisher != publisher
+            || record.headers.as_deref() != block
         {
             return Ok(Some(Divergence::Conflict {
                 offset,
@@ -288,6 +323,21 @@ pub fn publishers_to_wire(records: &[felix_storage::log::LogRecord]) -> Vec<Opti
         .iter()
         .map(|record| record.publisher.clone())
         .collect()
+}
+
+/// The records' key-and-headers blocks as they travel between brokers: one
+/// per record, or `None` when no record has one, so such a batch is unchanged
+/// on the wire.
+pub fn headers_to_wire(records: &[felix_storage::log::LogRecord]) -> Option<Vec<Option<Bytes>>> {
+    if records.iter().all(|record| record.headers.is_none()) {
+        return None;
+    }
+    Some(
+        records
+            .iter()
+            .map(|record| record.headers.as_deref().cloned())
+            .collect(),
+    )
 }
 
 /// A record's mark as it travels between brokers.

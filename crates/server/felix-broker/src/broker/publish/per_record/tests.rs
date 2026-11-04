@@ -84,12 +84,24 @@ async fn ship(
         .iter()
         .map(|r| crate::replication::mark_to_wire(r.mark))
         .collect();
-    let checksum = felix_wire::internal::batch_checksum(&payloads, &marks, &[]);
-    let applied =
-        crate::replication::apply(log(follower), from, checksum, &payloads, &marks, &[], &[])
-            .await
-            .expect("apply")
-            .expect("in order");
+    let blocks: Vec<Option<Bytes>> = records
+        .iter()
+        .map(|r| r.headers.as_deref().cloned())
+        .collect();
+    let checksum = felix_wire::internal::batch_checksum(&payloads, &marks, &[], &blocks);
+    let applied = crate::replication::apply(
+        log(follower),
+        from,
+        checksum,
+        &payloads,
+        &marks,
+        &[],
+        &[],
+        blocks.iter().any(Option::is_some).then_some(&blocks[..]),
+    )
+    .await
+    .expect("apply")
+    .expect("in order");
     broker
         .adopt_replicated("t1", "default", "orders", 0, applied.durable_offset)
         .await
@@ -105,11 +117,11 @@ async fn sequences_count_records_and_a_re_send_lands_once() {
     let (broker, handle, _storage) = open(dir.path()).await;
 
     let first = broker
-        .publish_records_idempotent(&handle, 7, 0, &bytes(&["a", "b", "c"]))
+        .publish_records_idempotent(&handle, 7, 0, &bytes(&["a", "b", "c"]), None)
         .await
         .expect("0");
     let second = broker
-        .publish_records_idempotent(&handle, 7, 3, &bytes(&["d", "e"]))
+        .publish_records_idempotent(&handle, 7, 3, &bytes(&["d", "e"]), None)
         .await
         .expect("3");
     assert!(!first.duplicate && !second.duplicate);
@@ -121,14 +133,14 @@ async fn sequences_count_records_and_a_re_send_lands_once() {
         (3, &["d", "e"], (3, 4)),
     ] {
         let again = broker
-            .publish_records_idempotent(&handle, 7, sequence, &bytes(batch))
+            .publish_records_idempotent(&handle, 7, sequence, &bytes(batch), None)
             .await
             .expect("re-send");
         assert!(again.duplicate, "sequence {sequence} was appended again");
         assert_eq!(again.outcome.offsets, Some(offsets));
     }
     let next = broker
-        .publish_records_idempotent(&handle, 7, 5, &bytes(&["f"]))
+        .publish_records_idempotent(&handle, 7, 5, &bytes(&["f"]), None)
         .await
         .expect("5");
     assert!(!next.duplicate);
@@ -143,19 +155,19 @@ async fn gaps_unknown_producers_and_expired_re_sends_are_refused() {
     let dir = tempfile::tempdir().expect("dir");
     let (broker, handle, _storage) = open(dir.path()).await;
     broker
-        .publish_records_idempotent(&handle, 7, 0, &bytes(&["a", "b"]))
+        .publish_records_idempotent(&handle, 7, 0, &bytes(&["a", "b"]), None)
         .await
         .expect("0");
 
     let gap = broker
-        .publish_records_idempotent(&handle, 7, 5, &bytes(&["x"]))
+        .publish_records_idempotent(&handle, 7, 5, &bytes(&["x"]), None)
         .await;
     assert!(
         matches!(gap, Err(BrokerError::SequenceGap { expected: 2 })),
         "{gap:?}"
     );
     let unknown = broker
-        .publish_records_idempotent(&handle, 8, 4, &bytes(&["x"]))
+        .publish_records_idempotent(&handle, 8, 4, &bytes(&["x"]), None)
         .await;
     assert!(
         matches!(
@@ -168,11 +180,11 @@ async fn gaps_unknown_producers_and_expired_re_sends_are_refused() {
     // Push the first batch out of the window the log remembers.
     let filler: Vec<Bytes> = (0..100).map(|i| Bytes::from(format!("f{i}"))).collect();
     broker
-        .publish_records_idempotent(&handle, 7, 2, &filler)
+        .publish_records_idempotent(&handle, 7, 2, &filler, None)
         .await
         .expect("filler");
     let expired = broker
-        .publish_records_idempotent(&handle, 7, 0, &bytes(&["a", "b"]))
+        .publish_records_idempotent(&handle, 7, 0, &bytes(&["a", "b"]), None)
         .await;
     assert!(
         matches!(expired, Err(BrokerError::SequenceExpired { sequence: 0 })),
@@ -193,7 +205,7 @@ async fn a_restarted_leader_answers_a_re_send_from_its_log() {
     let first = {
         let (broker, handle, storage) = open(dir.path()).await;
         let first = broker
-            .publish_records_idempotent(&handle, 7, 0, &bytes(&["a", "b"]))
+            .publish_records_idempotent(&handle, 7, 0, &bytes(&["a", "b"]), None)
             .await
             .expect("0");
         storage.shutdown().await.expect("shutdown");
@@ -202,13 +214,13 @@ async fn a_restarted_leader_answers_a_re_send_from_its_log() {
 
     let (broker, handle, _storage) = open(dir.path()).await;
     let again = broker
-        .publish_records_idempotent(&handle, 7, 0, &bytes(&["a", "b"]))
+        .publish_records_idempotent(&handle, 7, 0, &bytes(&["a", "b"]), None)
         .await
         .expect("re-send");
     assert!(again.duplicate, "the re-send was appended again");
     assert_eq!(again.outcome.offsets, first.outcome.offsets);
     broker
-        .publish_records_idempotent(&handle, 7, 2, &bytes(&["c"]))
+        .publish_records_idempotent(&handle, 7, 2, &bytes(&["c"]), None)
         .await
         .expect("2");
     assert_eq!(stored(&handle).await, bytes(&["a", "b", "c"]));
@@ -225,25 +237,25 @@ async fn a_replica_answers_re_sends_of_what_it_was_shipped() {
     let (follower, on_follower, _f) = open(follower_dir.path()).await;
 
     leader
-        .publish_records_idempotent(&on_leader, 7, 0, &bytes(&["a", "b"]))
+        .publish_records_idempotent(&on_leader, 7, 0, &bytes(&["a", "b"]), None)
         .await
         .expect("0");
     leader
-        .publish_records_idempotent(&on_leader, 7, 2, &bytes(&["c", "d", "e"]))
+        .publish_records_idempotent(&on_leader, 7, 2, &bytes(&["c", "d", "e"]), None)
         .await
         .expect("2");
     // The second batch arrives only in part: the leader died mid-shipment.
     ship(&on_leader, &follower, &on_follower, 0, 3).await;
 
     let whole = follower
-        .publish_records_idempotent(&on_follower, 7, 0, &bytes(&["a", "b"]))
+        .publish_records_idempotent(&on_follower, 7, 0, &bytes(&["a", "b"]), None)
         .await
         .expect("re-send");
     assert!(whole.duplicate, "the replica appended a batch it holds");
     assert_eq!(whole.outcome.offsets, Some((0, 1)));
 
     let finished = follower
-        .publish_records_idempotent(&on_follower, 7, 2, &bytes(&["c", "d", "e"]))
+        .publish_records_idempotent(&on_follower, 7, 2, &bytes(&["c", "d", "e"]), None)
         .await
         .expect("re-send");
     assert!(!finished.duplicate, "part of it was new");
@@ -266,4 +278,73 @@ fn a_wrapped_sequence_lifts_to_the_count_nearest_what_is_owed() {
     // A batch that starts before the wrap while the producer owes it.
     assert_eq!(lift(wrap - 1, Some(wrap - 1)), wrap - 1);
     assert_eq!(lift(0, Some(wrap)), wrap);
+}
+
+fn block(key: &'static str) -> Bytes {
+    felix_wire::RecordHeaders {
+        key: Some(Bytes::from_static(key.as_bytes())),
+        headers: Vec::new(),
+    }
+    .encode()
+    .expect("block")
+}
+
+async fn stored_headers(handle: &StreamHandle) -> Vec<Option<Bytes>> {
+    log(handle)
+        .read_from(0, usize::MAX)
+        .await
+        .expect("read")
+        .into_iter()
+        .map(|record| record.headers.map(|block| *block))
+        .collect()
+}
+
+/// **Each record keeps its own block**, and a batch finished after its start
+/// was written pairs the rest with their blocks, not the first ones.
+#[tokio::test]
+async fn record_blocks_follow_their_records_through_a_partial_batch() {
+    let leader_dir = tempfile::tempdir().expect("dir");
+    let follower_dir = tempfile::tempdir().expect("dir");
+    let (leader, on_leader, _l) = open(leader_dir.path()).await;
+    let (follower, on_follower, _f) = open(follower_dir.path()).await;
+    leader.record_headers_when(|| true);
+    follower.record_headers_when(|| true);
+
+    let blocks = [Some(block("k0")), None, Some(block("k2"))];
+    leader
+        .publish_records_idempotent(&on_leader, 7, 0, &bytes(&["a", "b", "c"]), Some(&blocks))
+        .await
+        .expect("0");
+    assert_eq!(
+        stored_headers(&on_leader).await,
+        blocks.to_vec(),
+        "a block is stored with its own record"
+    );
+
+    // Only the first record arrives before the leader dies.
+    ship(&on_leader, &follower, &on_follower, 0, 1).await;
+    let finished = follower
+        .publish_records_idempotent(&on_follower, 7, 0, &bytes(&["a", "b", "c"]), Some(&blocks))
+        .await
+        .expect("re-send");
+    assert!(!finished.duplicate);
+    assert_eq!(
+        stored_headers(&on_follower).await,
+        blocks.to_vec(),
+        "the shipped record keeps its block; the rest take theirs"
+    );
+}
+
+/// A broker that does not accept headers refuses them rather than drop them.
+#[tokio::test]
+async fn a_batch_with_blocks_is_refused_when_headers_are_not_accepted() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (broker, handle, _storage) = open(dir.path()).await;
+    let blocks = [Some(block("k"))];
+    let err = broker
+        .publish_records_idempotent(&handle, 7, 0, &bytes(&["a"]), Some(&blocks))
+        .await
+        .expect_err("refused");
+    assert!(matches!(err, BrokerError::RecordHeadersNotEnabled), "{err}");
+    assert!(stored(&handle).await.is_empty());
 }

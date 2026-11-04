@@ -372,9 +372,9 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
     }
 
     /// What to report as refused at `route`'s generation: an open refused
-    /// there, or a fence a majority answered with a promise to another node.
-    /// The shard still fences again after the second, in case the set has
-    /// changed since.
+    /// there, or a fence refused by a promise to another node
+    /// ([`crate::promotion::Outcome::Refused`]). The shard still fences again
+    /// after the second, in case the set has changed since.
     fn refusal(&self, key: &ShardKey, route: &felix_router::Route) -> Option<RefusedGeneration> {
         self.refused_open(key, route).or_else(|| {
             self.states

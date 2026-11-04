@@ -162,6 +162,7 @@ async fn forward(owner: &ScriptedOwner) -> std::result::Result<Option<(u64, u64)
         AckMode::OnCommit,
         "token",
         vec![Bytes::from_static(b"an order")],
+        None,
         // Generous: the cases here are about what the owner answered, not about
         // running out of time. `a_forward_answers_within_its_budget` is where
         // the budget itself is under test.
@@ -431,6 +432,7 @@ async fn a_forward_answers_within_its_budget() {
         AckMode::OnCommit,
         "token",
         vec![Bytes::from_static(b"an order")],
+        None,
         budget,
     )
     .await
@@ -471,6 +473,7 @@ async fn a_spent_budget_sends_nothing() {
         AckMode::OnCommit,
         "token",
         vec![Bytes::from_static(b"an order")],
+        None,
         Duration::ZERO,
     )
     .await
@@ -628,6 +631,7 @@ async fn a_forward_names_its_incarnation_only_to_an_owner_that_reads_it() {
             AckMode::OnCommit,
             "token",
             vec![Bytes::from_static(b"an order")],
+            None,
             Duration::from_secs(30),
         )
         .await
@@ -665,6 +669,7 @@ async fn a_failed_capability_lookup_never_sends_a_plain_forward() {
         AckMode::OnCommit,
         "token",
         vec![Bytes::from_static(b"an order")],
+        None,
         Duration::from_secs(30),
     )
     .await
@@ -678,5 +683,81 @@ async fn a_failed_capability_lookup_never_sends_a_plain_forward() {
         owner.attempts(),
         0,
         "a forward went out without its incarnation"
+    );
+}
+
+async fn forward_with_headers(
+    owner: &ScriptedOwner,
+) -> std::result::Result<Option<(u64, u64)>, ForwardError> {
+    forward_publish(
+        owner,
+        &target(),
+        &key(),
+        AckMode::OnCommit,
+        "token",
+        vec![Bytes::from_static(b"an order")],
+        Some(vec![Some(Bytes::from_static(b"trace"))]),
+        Duration::from_secs(30),
+    )
+    .await
+}
+
+/// A forward with header blocks goes as its own kind, to an owner that offers
+/// the capability, and is never taken back to the legacy kind: that kind has
+/// no room for the blocks, so an owner that refuses the headered one is
+/// refused rather than sent the batch without them.
+#[tokio::test]
+async fn a_forward_with_headers_is_never_resent_on_the_legacy_kind() {
+    let owner = ScriptedOwner::new([Ok(accepted(10, 10))]);
+    forward_with_headers(&owner).await.expect("accepted");
+    assert_eq!(
+        owner.kinds(),
+        vec![felix_wire::internal::Kind::HeaderedForwardPublish]
+    );
+
+    let owner = ScriptedOwner::new([
+        Ok(refused(ErrorCode::UnsupportedKind)),
+        Ok(accepted(10, 10)),
+    ]);
+    let err = forward_with_headers(&owner).await.expect_err("refused");
+    assert!(
+        matches!(
+            err,
+            ForwardError::Refused {
+                code: Some(ErrorCode::UnsupportedKind),
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+    assert_eq!(
+        owner.attempts(),
+        1,
+        "the batch was sent again without its headers"
+    );
+}
+
+/// A redirect to an owner that never offered `RECORD_HEADERS` ends in a typed
+/// refusal the publish path reports as `feature_not_enabled`, not a generic
+/// failure. The batch is not sent to that owner.
+#[tokio::test]
+async fn a_redirect_to_an_owner_without_the_capability_is_refused_as_unsupported() {
+    let owner = ScriptedOwner::new([
+        Ok(moved_to("broker-c", "10.0.0.5:7002", 5)),
+        Err(PeerError::Unsupported {
+            node_id: "broker-c".to_string(),
+            kind: felix_wire::internal::Kind::HeaderedForwardPublish,
+        }),
+    ]);
+    let err = forward_with_headers(&owner).await.expect_err("refused");
+    assert!(
+        matches!(
+            err,
+            ForwardError::Refused {
+                code: Some(ErrorCode::UnsupportedKind),
+                ..
+            }
+        ),
+        "{err:?}"
     );
 }

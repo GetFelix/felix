@@ -20,6 +20,7 @@ fn listener_config(max_connections_per_ip: usize) -> KafkaListenerConfig {
         max_connections: 64,
         max_connections_per_ip,
         auth_timeout_ms: 10_000,
+        record_headers: false,
     }
 }
 
