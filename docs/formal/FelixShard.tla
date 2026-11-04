@@ -573,6 +573,9 @@ MarkAnyGeneration == FALSE
 \* votes in (`leaving_for`), as the broker's kept set has one `leaving`.
 KeepsUnopened == FALSE
 OneLeavingSet == FALSE
+\* `LogDropsSets` (#1881): a member keeps the sets it leaves as the broker's
+\* log does (`LearnSetFrom`), not as the leader last sent them.
+LogDropsSets == FALSE
 FenceChecksIds == TRUE
 UnnamedCounts == FALSE
 NameByRegistration == FALSE
@@ -1107,19 +1110,33 @@ Settled(b) == cpNext = {} /\ mine[b] = CpSet
 \* fences the old one too, as Raft's joint configuration does; a batch comes
 \* only from a leader that opened, which ends it.
 SetCurrent(f, b) == SetCheck => setGen[f] <= setGen[b]
-LearnSet(f, b) ==
+\* Whether `b`'s log holds a record a leader wrote at generation `g`.
+HoldsRecordOf(b, g) == \E i \in 1..Len(log[b]) : log[b][i].lg = g
+
+\* Under `LogDropsSets` the sets are kept as `accept_set` keeps them
+\* (disk_log/set.rs): a set at the generation `f` keeps changes nothing; a
+\* newer one from a fence takes what it carries and, unless `f`'s log holds
+\* a record of its own set's generation, that set and the sets it kept; a
+\* newer one from a batch (`batch`, `check_batch_set` learning the route's
+\* set) keeps no set being left.
+LearnSetFrom(f, b, batch) ==
     IF SetCheck
     THEN /\ setGen' = [setGen EXCEPT ![f] = setGen[b]]
          /\ mine' = [mine EXCEPT ![f] = mine[b]]
-         /\ IF OneLeavingSet /\ Cardinality(oldSet[b]) > 1
+         /\ IF LogDropsSets
+            THEN LET carried == IF setGen[f] > 0 /\ ~HoldsRecordOf(f, setGen[f])
+                                THEN ({mine[f]} \cup oldSet[f]) \ {{}} ELSE {}
+                 IN oldSet' = [oldSet EXCEPT ![f] =
+                        IF setGen[f] = setGen[b] THEN @
+                        ELSE IF batch THEN {}
+                        ELSE (oldSet[b] \cup carried) \ {mine[b]}]
+            ELSE IF OneLeavingSet /\ Cardinality(oldSet[b]) > 1
             THEN \E o \in oldSet[b] :
                    /\ f \in o \/ \A p \in oldSet[b] : f \notin p
                    /\ oldSet' = [oldSet EXCEPT ![f] = {o}]
             ELSE oldSet' = [oldSet EXCEPT ![f] = oldSet[b]]
     ELSE UNCHANGED << setGen, mine, oldSet >>
-
-\* Whether `b`'s log holds a record a leader wrote at generation `g`.
-HoldsRecordOf(b, g) == \E i \in 1..Len(log[b]) : log[b][i].lg = g
+LearnSet(f, b) == LearnSetFrom(f, b, FALSE)
 
 \* Whether a broker is a candidate rather than the leader the control plane
 \* named at its generation.
@@ -1559,7 +1576,7 @@ Ship(b, f) ==
     /\ Promises => MayPromise(f, b, bgen[b])
     /\ IF Promises THEN Promise(f, b, bgen[b]) ELSE UNCHANGED << promised, ballot >>
     /\ SetCurrent(f, b)
-    /\ LearnSet(f, b)
+    /\ LearnSetFrom(f, b, TRUE)
     /\ LET i == Diverge(log[b], log[f]) IN
        \/ /\ i > Len(log[f])
           /\ i <= Len(log[b])
