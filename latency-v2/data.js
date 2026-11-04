@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793820082337,
+  "lastUpdate": 1793822578667,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -56892,6 +56892,72 @@ window.BENCHMARK_DATA = {
             "range": "735.93",
             "unit": "us",
             "extra": "trials: 5\nmedian: 279.00\nmean: 659.20\nstdev: 735.93\ncv: 111.64%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1014-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "47785e96d71b8566090c84eb4b35971686ec5ea7",
+          "message": "fix(controlplane): a built snapshot never replaces a newer installed one (#1908)\n\n* fix(controlplane): a built snapshot never replaces a newer installed one (#1745)\n\nOpenraft builds snapshots in a detached task, so a build that captured\nits state before an install of a newer snapshot could persist after it\nand overwrite it. The log was already purged up to the newer snapshot,\nso a restart asked for entries that were gone and the member refused to\nstart.\n\npersist_snapshot now reads the stored snapshot meta inside the write\ntransaction and skips the write when the stored last log index is at or\npast the new one. redb serializes write transactions, so nothing lands\nbetween the check and the write. install_snapshot also refuses to move\nthe applied cursor backwards, which would apply entries twice.\n\nSpec-Unaffected: no TLA model covers the control-plane Raft store; it is openraft plus redb, and the docs/formal specs model shard replication only.\n\n* docs(controlplane): name the install crash window openraft's purge order leaves (#1745)\n\nSpec-Unaffected: comments and docs only.",
+          "timestamp": "2026-11-04T11:58:13-08:00",
+          "tree_id": "16f185729bbae5a3231f00a7a4da45c43eb84273",
+          "url": "https://github.com/GetFelix/felix/commit/47785e96d71b8566090c84eb4b35971686ec5ea7"
+        },
+        "date": 1793822573521,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 65,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 65.00\nmean: 64.60\nstdev: 1.14\ncv: 1.76%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 92,
+            "range": "6.43",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 92.00\nmean: 91.40\nstdev: 6.43\ncv: 7.03%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 165,
+            "range": "232.65",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 165.00\nmean: 254.60\nstdev: 232.65\ncv: 91.38%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 79,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 79.00\nmean: 79.20\nstdev: 1.30\ncv: 1.65%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 172,
+            "range": "21.67",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 172.00\nmean: 177.20\nstdev: 21.67\ncv: 12.23%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 267,
+            "range": "47.26",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 267.00\nmean: 271.40\nstdev: 47.26\ncv: 17.41%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
