@@ -1170,6 +1170,18 @@ to tell a leader is alive. A queue that lasted
 answered before the next request is read, because every later request on the
 connection is checked against the identity it gives.
 
+Promotion fences from one leader still take turns on each follower. Each one
+can open a log and write a ballot to disk, and many of them at once slow
+the writes the follower already serves. So the follower runs one leader's
+promotion fences one at a time, and a fence waits at most 2 seconds for its
+turn before it runs anyway. A read round's fence repeats the generation the
+log already took and writes nothing, so it skips the queue. The follower
+knows that from the fences it last answered, so right after a restart a log's
+first read-round fence waits its turn once. The queue is per leader, across all
+of that leader's shards. The 2 second wait sits under the default 5 second peer
+request timeout (`FELIX_INTERNAL_REQUEST_TIMEOUT_MS`); a timeout set lower lets
+a queued fence time out before it runs.
+
 Nothing depends on the order of the control stream. A requester that needs
 one request to happen before another waits for the first answer before it
 sends the second:
