@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793790225532,
+  "lastUpdate": 1793791300194,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -44564,6 +44564,58 @@ window.BENCHMARK_DATA = {
             "range": "15548.10",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1191261.64\nmean: 1181801.57\nstdev: 15548.10\ncv: 1.32%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "32e9b5505e5d04aa40f5290506cd6428f520cf39",
+          "message": "fix(replication): an append ends a pass's wait on a dead follower once a free one has answered (#1887)\n\n* fix(replication): an append ends a pass's wait on a dead follower once a free one has answered (#1886)\n\nA pass with no majority waited on every exchange it launched, and only an\nearlier pass's busy follower let an append cut that wait short. A level\nfollower sent nothing vouches for nothing, so with one dead follower the\npass waited out its request and the next record never reached the healthy\nfollowers.\n\nSpec-Unaffected: changes only when a pass hands its unanswered exchanges to the driver; what counts toward the mark (answers checked this pass) and per-follower order are unchanged.\n\n* fix(replication): only an unchecked free follower ends the majority wait (#1886)\n\nWith five replicas the first healthy answer is not a majority, and letting\nit end the wait cut healthy passes short on any append. Only an answer that\nvouches for nothing (sent nothing, or refused) means the pass may be waiting\non a follower that never answers.\n\nSpec-Unaffected: narrows when a pass hands its unanswered exchanges to the driver; counting is unchanged.\n\n* test(replication): a refusing follower and a dead one ship the record without a busy loop (#1886)",
+          "timestamp": "2026-11-04T03:16:04-08:00",
+          "tree_id": "3d97d97273fa91e028845a7123cc7da85892355a",
+          "url": "https://github.com/GetFelix/felix/commit/32e9b5505e5d04aa40f5290506cd6428f520cf39"
+        },
+        "date": 1793791299430,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 357585.07,
+            "range": "16509.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 357585.07\nmean: 356791.96\nstdev: 16509.89\ncv: 4.63%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 357585.07,
+            "range": "16509.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 357585.07\nmean: 356791.96\nstdev: 16509.89\ncv: 4.63%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81010.47,
+            "range": "4388.95",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81010.47\nmean: 79328.65\nstdev: 4388.95\ncv: 5.53%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 810104.72,
+            "range": "43889.49",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 810104.72\nmean: 793286.47\nstdev: 43889.49\ncv: 5.53%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
