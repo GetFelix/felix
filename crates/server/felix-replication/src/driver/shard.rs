@@ -2536,6 +2536,7 @@ pub(super) fn follow_storage(
         cursor.incarnation = seen.incarnation;
         return;
     }
+    tracing::info!(node_id = %cursor.node_id, old = ?cursor.identity(), seen = ?seen, base, "DIAG follow_storage reset");
     if cursor.rebuilding {
         rebuilds.finish();
     }

@@ -1,0 +1,54 @@
+name: scratch s10 election loop
+on:
+  push:
+    branches: ["scratch/s10-*"]
+permissions:
+  contents: read
+jobs:
+  loop:
+    name: loop (${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    env:
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.99.1"
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Build
+        run: |
+          cargo build -p felix-broker-service --bin felix-broker
+          cargo build -p felix-loadgen
+          cargo test -p felix-cluster --test failures --no-run
+      - name: Loop
+        shell: bash
+        env:
+          FELIX_TEST_TIMEOUT_SCALE: "3"
+          RUST_LOG: ${{ contains(github.ref_name, 'diag') && 'info' || 'info' }}
+        run: |
+          pass=0; fail=0
+          for i in $(seq 1 ${LOOPS:-6}); do
+            export FELIX_TEST_CLUSTER_LOG_DIR="$RUNNER_TEMP/logs/$i"
+            if cargo test -p felix-cluster --test failures replica_election::a_follower_is_elected_while_the_control_plane_is_down -- --exact > "$RUNNER_TEMP/out-$i.log" 2>&1; then
+              pass=$((pass+1)); rm -rf "$RUNNER_TEMP/logs/$i"
+            else
+              fail=$((fail+1)); cp "$RUNNER_TEMP/out-$i.log" "$RUNNER_TEMP/logs/$i/" || true
+              grep -m3 "panicked\|publish failed" "$RUNNER_TEMP/out-$i.log" || true
+            fi
+          done
+          echo "RESULT shard=${{ matrix.shard }} pass=$pass fail=$fail" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: logs-${{ matrix.shard }}
+          path: ${{ runner.temp }}/logs
+          if-no-files-found: ignore
+          retention-days: 3

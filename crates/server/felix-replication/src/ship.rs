@@ -240,6 +240,9 @@ async fn ship_batch<R: PeerRequester>(
         records.retain(|record| record.offset < end);
     }
     if records.is_empty() {
+        if log_kind == felix_broker::LogKind::Stream {
+            tracing::info!(node_id = %cursor.node_id, next = cursor.next_offset, end = ?end, "DIAG ship nothing to read");
+        }
         if cursor.rebuilding {
             cursor.rebuilding = false;
             rebuilds.finish();
@@ -380,6 +383,22 @@ async fn ship_batch<R: PeerRequester>(
         answer = requester
             .request(&cursor.node_id, cursor.addr, without_commit(request))
             .await;
+    }
+    if log_kind == felix_broker::LogKind::Stream {
+        tracing::info!(
+            node_id = %cursor.node_id,
+            generation = shard.generation,
+            first_offset,
+            batch_end,
+            set_generation = ?set_stamp,
+            commit = ?commit_offset,
+            answer = ?answer.as_ref().map(|a| match a {
+                InternalMessage::ReplicateOk(ok) => format!("ok durable={} learner={}", ok.durable_offset, ok.learner),
+                InternalMessage::ReplicateError(e) => format!("err {:?} expected={} {}", e.code, e.expected_offset, e.detail),
+                other => format!("{:?}", other.kind()),
+            }).map_err(|e| e.to_string()),
+            "DIAG ship answer",
+        );
     }
     let answer = match answer {
         Ok(answer) => answer,

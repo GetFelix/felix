@@ -1039,6 +1039,22 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             .marks
             .offset_at(&watch_key(&key), incarnation, generation);
         let owed = behind || tail.is_some_and(|tail| mark.is_some_and(|mark| mark < tail));
+        if owed && key.kind == felix_router::ShardKind::Stream {
+            tracing::info!(
+                stream = %key.stream,
+                scan,
+                generation,
+                mark = ?mark,
+                tail = ?tail,
+                copying,
+                again,
+                exchanges = exchanges.len(),
+                straggling = ?straggling.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
+                cursors = ?cursors.followers.iter().map(|c| format!("{} next={} conf={} stalled={} learner={} halted={:?}", c.node_id, c.next_offset, c.confirmed, c.stalled, c.learner, c.halted)).collect::<Vec<_>>(),
+                route_learner = ?cursors.learner,
+                "DIAG pass folded owing",
+            );
+        }
         let settled = !owed
             && !copying
             && !again
