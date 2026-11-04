@@ -951,6 +951,13 @@ already names the copy under its new storage id, so this test does not take
 the path that writes the same set again at the next generation; unit tests
 cover that one.
 
+Finalizing `joint_fence` on a running fleet needs no restart, and a rolling
+restart after it is safe: a leader that comes back at a generation it opened
+before the finalize reports it refused, and placement names it again one
+generation up (see "When the leader cannot learn the set it leaves" below).
+`failures/joint_fence.rs` checks both that and a shard whose leader learns
+it only from a snapshot.
+
 States are `assigning` (placement decided, the leader has not confirmed),
 `active` (the leader is serving), and `draining` (the leader has been told to
 stop serving at this generation so the shard can move). A drained shard leaves
@@ -1480,6 +1487,18 @@ named, or one whose leader is draining. A follower replacement does not stop
 it: the new generation keeps the joining copy, and the replacement goes on
 under the same leader.
 
+**When the leader cannot learn the set it leaves**, it reports the same
+refusal with an empty `promised_to`. Under `joint_fence` every open is fenced,
+and the fence needs the set at the generation before. A broker that learned
+the shard from a snapshot and whose log keeps no set from that generation has
+no way to know it: a new shard whose first assignment arrived in a snapshot,
+or a leader restarted at a generation it opened before `joint_fence` was
+finalized. Placement answers the same way (`set_unknown`): the same leader
+and set at the next generation. The set that generation leaves is the one
+the broker is named on now, so its fence can open there. Nothing in the
+control plane's state is new for this: the empty name is stored like any
+other.
+
 Without the report the shard waits for the pending-set timeout or a lease
 lapse, as before. Under Raft the field is stored from metadata level 25 and
 dropped below it; under Postgres it is migration 0042 (`refused_generation`,
@@ -1680,7 +1699,7 @@ after the fence.
 
 | Metric | Meaning |
 | --- | --- |
-| `felix_shard_move_steps_total{step}` | move steps written: `stage`, `fence`, `cut_over`, `abandon`, `halted` (the destination halted), `timed_out`, `stalled` (a restore's copy stopped moving), `reseat`, `restore`, `seat`, `take_pending_set` (a pending replica set taken on the leader's report), `pending_set_timed_out`, `pending_set_dropped`, `pending_set_cancelled` (one dropped), `readmit` (a replaced copy named by its new storage id and held as a learner), `election_refused` (a leader named again above a generation promised to an elected broker), and an operator's `cancel`, `retake` and `discard` |
+| `felix_shard_move_steps_total{step}` | move steps written: `stage`, `fence`, `cut_over`, `abandon`, `halted` (the destination halted), `timed_out`, `stalled` (a restore's copy stopped moving), `reseat`, `restore`, `seat`, `take_pending_set` (a pending replica set taken on the leader's report), `pending_set_timed_out`, `pending_set_dropped`, `pending_set_cancelled` (one dropped), `readmit` (a replaced copy named by its new storage id and held as a learner), `election_refused` (a leader named again above a generation promised to an elected broker), `set_unknown` (a leader named again above a generation whose set before it could not learn), and an operator's `cancel`, `retake` and `discard` |
 | `felix_shards_under_replicated` | shards with fewer copies on serving brokers than their replication factor; non-zero for longer than the restore delay plus a copy means no broker can take the copy, or placement is paused |
 | `felix_shard_replicas_missing` | the copies those shards are missing between them |
 | `felix_shard_replicas_halted` | copies whose leader reports it has stopped shipping to them; counted as missing, kept out of placement, and replaced after the restore delay |

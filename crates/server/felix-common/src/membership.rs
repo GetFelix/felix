@@ -191,7 +191,8 @@ pub struct ShardReplicaStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub elected: Option<ElectedLeadership>,
     /// Set by a leader the control plane names whose open was refused because
-    /// it had already promised the generation to another node. The shard is
+    /// it had already promised the generation to another node, or whose
+    /// joint fence cannot learn the set it leaves there. The shard is
     /// not served and nothing else in the report is measured. Placement
     /// answers by naming the leader again at a generation above the refused
     /// one. Omitted otherwise, and by brokers that predate it.
@@ -201,15 +202,37 @@ pub struct ShardReplicaStatus {
 
 /// A generation a broker refused to lead because it had promised it to
 /// another node (`docs/replication-design.md`, "Electing without the control
-/// plane", rule 10).
+/// plane", rule 10), or because its joint fence cannot learn the set it
+/// leaves there.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(ToSchema))]
 pub struct RefusedGeneration {
     /// The generation the control plane named this broker at, which it had
-    /// already promised away.
+    /// already promised away or cannot fence.
     pub generation: u64,
-    /// The node it promised the generation to.
+    /// The node it promised the generation to. Empty when nothing was
+    /// promised and the broker refused because its fence cannot learn the
+    /// set it leaves at that generation ([`Self::set_unknown`]).
     pub promised_to: String,
+}
+
+impl RefusedGeneration {
+    /// A refusal of `generation` by a leader whose joint fence cannot learn
+    /// the set it leaves there, as for a shard learned from a snapshot.
+    /// Placement answers it as it answers a promise: one generation up,
+    /// whose set before is the set this broker is named on now.
+    pub fn set_unknown(generation: u64) -> Self {
+        Self {
+            generation,
+            promised_to: String::new(),
+        }
+    }
+
+    /// Whether the generation was promised to another node, rather than
+    /// refused for want of the set before it.
+    pub fn is_promise(&self) -> bool {
+        !self.promised_to.is_empty()
+    }
 }
 
 /// A leadership a broker won by election (`docs/replication-design.md`,

@@ -259,6 +259,33 @@ impl JointSets {
     }
 }
 
+/// Why [`set_before`] has no set for a route.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum NoSetBefore {
+    /// This broker counts the set of this newer generation.
+    Newer(u64),
+    /// Nothing here names the set at the generation before this one: the
+    /// watch learned the shard from a snapshot, or the log kept its set
+    /// before `joint_fence` was on. Only a later generation can tell.
+    Unknown(u64),
+}
+
+impl std::fmt::Display for NoSetBefore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Newer(generation) => write!(
+                f,
+                "this broker counts the set of generation {generation}, newer than this one"
+            ),
+            Self::Unknown(generation) => write!(
+                f,
+                "the set before generation {generation} is not known here, so the set being \
+                 left cannot be fenced"
+            ),
+        }
+    }
+}
+
 /// The control plane's set right before `route`, which a set change at the
 /// route's generation leaves. `Ok(None)`: the route is the shard's first
 /// assignment and this log keeps no set, so nothing came before it. `Err`
@@ -267,15 +294,12 @@ pub(crate) fn set_before(
     stored: Option<&ReplicaSet>,
     route: &Route,
     prior: Option<&PriorSet>,
-) -> Result<Option<Membership>, String> {
+) -> Result<Option<Membership>, NoSetBefore> {
     let before = route.generation.checked_sub(1);
     if let Some(stored) = stored
         && stored.current.generation > route.generation
     {
-        return Err(format!(
-            "this broker counts the set of generation {}, newer than this one",
-            stored.current.generation
-        ));
+        return Err(NoSetBefore::Newer(stored.current.generation));
     }
     // A cut-over the control plane holds as pending names the set it leaves:
     // the control plane's own, as the model's `Swap` takes it, and the set
@@ -321,11 +345,7 @@ pub(crate) fn set_before(
     {
         return Ok(Some(stored.current.clone()));
     }
-    Err(format!(
-        "the set before generation {} is not known here, so the set being left cannot be \
-         fenced",
-        route.generation
-    ))
+    Err(NoSetBefore::Unknown(route.generation))
 }
 
 /// The set `stored` keeps from before `route`, when it names other members
@@ -415,7 +435,8 @@ fn recorded_leaving(
 
 /// The fence for `route` under `joint_fence`: the set it leaves, and the
 /// joint fence when that set's voters differ from the route's. `Err` is a
-/// fence that cannot open yet, because the set being left is not known.
+/// fence that cannot open at this generation, because the set being left is
+/// not known.
 ///
 /// A member whose capabilities cannot be learned, whose address is unknown,
 /// or that does not check sets, is not asked: it is a member that has not
@@ -428,7 +449,7 @@ pub(super) async fn sets<R: PeerRequester>(
     route: &Route,
     set: &ReplicaSetView,
     joint: &Joint<'_>,
-) -> Result<Fenced, String> {
+) -> Result<Fenced, NoSetBefore> {
     let stored = log.replica_set();
     let before = match set_before(stored.as_ref(), route, joint.prior.as_ref())? {
         Some(before) => before,

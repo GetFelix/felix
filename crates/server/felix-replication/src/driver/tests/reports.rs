@@ -1066,3 +1066,74 @@ async fn a_fence_promised_away_by_a_majority_reports_the_refusal() {
     assert_eq!(report.refused, Some(refused(4)));
     assert_eq!(report.leader_offset, None, "a refusal measures no tail");
 }
+
+/// [`PromisedAwayFollowers`] that check sets, so a fence under
+/// `joint_fence` needs the set it leaves. Any fence that went out would come
+/// back promised to broker-d.
+struct ElectingFollowers;
+
+impl PeerRequester for ElectingFollowers {
+    async fn request(
+        &self,
+        node_id: &str,
+        addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, PeerError> {
+        PromisedAwayFollowers.request(node_id, addr, message).await
+    }
+
+    async fn capabilities(
+        &self,
+        _node_id: &str,
+        _addr: SocketAddr,
+    ) -> std::result::Result<felix_wire::internal::PeerCapabilities, PeerError> {
+        Ok(crate::promotion::REQUIRED.union(felix_wire::internal::PeerCapabilities::ELECTION))
+    }
+
+    fn offers_election(&self) -> bool {
+        true
+    }
+}
+
+/// **Under `joint_fence`, a leader that cannot learn the set its generation
+/// leaves reports the generation refused, naming no node** (#1872). Its log
+/// keeps no set and its watch saw nothing before generation 4, as for a shard
+/// learned from a snapshot. Without the report its fence stays pending and
+/// the control plane, which hears nothing, never names it again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fence_with_an_unknown_set_before_reports_the_generation_refused() {
+    use felix_common::fleet::{FleetGate, GENERATION_START, JOINT_FENCE, MAJORITY_ACK};
+
+    let (broker, _dir) = leader_with(3).await;
+    let (control_plane, received) = recording_control_plane().await;
+    let names = [GENERATION_START, MAJORITY_ACK, JOINT_FENCE].map(|feature| feature.name());
+    let fleet = FleetGate::new(names.to_vec());
+    fleet.restart(names.to_vec());
+    let published = Published {
+        marks: Arc::new(QuorumMarks::with_fleet(Arc::new(fleet))),
+        ..published()
+    };
+    let shutdown = CancellationToken::new();
+    let driver = spawn(
+        Arc::new(ElectingFollowers),
+        broker,
+        router(LOCAL, &["broker-b", "broker-c"], 4),
+        Arc::new(Unfenced),
+        Arc::new(FencingAtFour),
+        published,
+        Some(control_plane.reporter(shutdown.clone())),
+        Duration::from_millis(50),
+        Arc::default(),
+        RebuildPolicy::default(),
+        MoveThrottle::unlimited(),
+        shutdown.clone(),
+    );
+
+    let report = first_report(&received, Duration::from_secs(5)).await;
+    shutdown.cancel();
+    driver.stop().await;
+    let report = report.expect("no report of the unfenceable generation");
+    assert_eq!(report.generation, 4);
+    assert_eq!(report.refused, Some(RefusedGeneration::set_unknown(4)));
+    assert_eq!(report.leader_offset, None, "a refusal measures no tail");
+}

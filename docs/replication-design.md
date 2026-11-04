@@ -4175,11 +4175,17 @@ Once it is finalized on a broker that offers `ELECTION`:
   when it names none; such a fence does not stay pending. For other changes the broker learns
   the set from the assignment its watch saw at that generation,
   from the set the leader before shipped with at it, or from what this
-  leader kept beside its own set. When none of those knows it (the watch
-  started from a snapshot, or skipped that generation, and the log keeps an
-  older set), the fence stays pending rather than fence the new set alone.
-  Only a shard's first assignment, on a log that keeps no set, has nothing
-  to leave. A member of the old set that no route names any more is reached
+  leader kept beside its own set. When none of those knows it, the fence
+  does not fence the new set alone. That happens when the watch learned the
+  shard from a snapshot and the log keeps no set from the generation before:
+  a new shard whose first assignment reached the broker in a snapshot, or a
+  leader restarted at a generation it opened before `joint_fence` was on.
+  The broker then reports the generation refused, naming no node, and
+  placement names it again one generation up on the same set
+  (`set_unknown`). The set that generation leaves is the one the broker is
+  named on now, which its watch sees change and its log may keep, so the
+  fence there can open. Only a shard's first assignment, seen by the watch
+  as one on a log that keeps no set, has nothing to leave. A member of the old set that no route names any more is reached
   at the address the node catalog gives, and answers even though its own
   routing view leaves it out.
 - Outside a pending cut-over, a failover can leave two sets. When the

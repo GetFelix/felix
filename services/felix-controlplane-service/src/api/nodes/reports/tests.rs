@@ -631,8 +631,16 @@ async fn a_refusal_is_stored_and_read_by_placement() {
     )
     .await
     .expect("positions");
-    assert!(positions.leader_refused(&shard_zero(), generation, "broker-x"));
-    assert!(!positions.leader_refused(&shard_zero(), generation + 1, "broker-x"));
+    assert!(
+        positions
+            .leader_refusal(&shard_zero(), generation, "broker-x")
+            .is_some()
+    );
+    assert!(
+        positions
+            .leader_refusal(&shard_zero(), generation + 1, "broker-x")
+            .is_none()
+    );
 }
 
 /// Post a report naming broker-y caught up, measured at `measured`, and say

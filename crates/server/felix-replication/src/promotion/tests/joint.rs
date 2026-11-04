@@ -639,10 +639,12 @@ async fn fence_pending(replicas: &Replicas, leader: &Arc<Broker>) -> Outcome {
     .await
 }
 
-/// **A set before that is not known keeps the shard closed.** Neither the
-/// watch nor the leader's log knows the set at generation 4, so the fence
-/// does not fall back to the new set alone. A first assignment, with nothing
-/// before it, fences the new set.
+/// **A set before that is not known keeps the shard closed, and says so.**
+/// Neither the watch nor the leader's log knows the set at generation 4, so
+/// the fence does not fall back to the new set alone: it ends as
+/// `SetUnknown`, which the driver reports so the control plane names the
+/// leader a generation up (#1872). A first assignment, with nothing before
+/// it, fences the new set.
 #[tokio::test]
 async fn an_unknown_set_before_keeps_the_fence_pending() {
     let replicas = replicas_with(&["broker-x", "broker-z"]);
@@ -650,8 +652,8 @@ async fn an_unknown_set_before_keeps_the_fence_pending() {
 
     let outcome = fence_after(&replicas, &leader, true, None).await;
 
-    let Outcome::Pending { why, .. } = &outcome else {
-        panic!("fenced the new set alone: {outcome:?}");
+    let Outcome::SetUnknown { why } = &outcome else {
+        panic!("fenced the new set alone, or waits unreported: {outcome:?}");
     };
     assert!(why.contains("is not known here"), "{why}");
 
@@ -688,8 +690,12 @@ async fn a_set_kept_without_the_one_it_leaves_is_not_read_as_no_change() {
 
         let outcome = fence_after(&replicas, &leader, true, prior.clone()).await;
 
-        let Outcome::Pending { why, .. } = &outcome else {
-            panic!("read a set kept alone as no change: {outcome:?}");
+        // Without the record this is a leader restarted at a generation it
+        // kept before `joint_fence` was on: only a later generation can tell
+        // it the set before (#1872).
+        let why = match (&outcome, prior.is_some()) {
+            (Outcome::Pending { why, .. }, true) | (Outcome::SetUnknown { why }, false) => why,
+            _ => panic!("read a set kept alone as no change: {outcome:?}"),
         };
         let expected = if prior.is_some() {
             "1 of 3 voters of the set being left"

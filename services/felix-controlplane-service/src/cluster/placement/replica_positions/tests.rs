@@ -759,20 +759,20 @@ fn refusal(generation: u64, leader: &str, reported_at_millis: u64) -> ReplicaRep
 #[test]
 fn a_refusal_counts_only_at_the_assignments_generation_and_leader() {
     let view = at(vec![refusal(4, "broker-a", 1_000)], 1_000).with_nodes(&[], &[led_by_a(4)]);
-    assert!(view.leader_refused(&key("orders"), 4, "broker-a"));
-    assert!(!view.leader_refused(&key("orders"), 4, "broker-c"));
-    assert!(!view.leader_refused(&key("orders"), 5, "broker-a"));
+    assert!(view.leader_refusal(&key("orders"), 4, "broker-a").is_some());
+    assert!(view.leader_refusal(&key("orders"), 4, "broker-c").is_none());
+    assert!(view.leader_refusal(&key("orders"), 5, "broker-a").is_none());
 
     // The report is at 4 but the refusal it carries is of an older generation.
     let mut stale = refusal(4, "broker-a", 1_000);
     stale.refused.as_mut().expect("refused").generation = 3;
     let view = at(vec![stale], 1_000).with_nodes(&[], &[led_by_a(4)]);
-    assert!(!view.leader_refused(&key("orders"), 4, "broker-a"));
+    assert!(view.leader_refusal(&key("orders"), 4, "broker-a").is_none());
 
     // A report that refuses nothing.
     let view =
         at(vec![report("orders", &["broker-b"], 1_000)], 1_000).with_nodes(&[], &[led_by_a(4)]);
-    assert!(!view.leader_refused(&key("orders"), 4, "broker-a"));
+    assert!(view.leader_refusal(&key("orders"), 4, "broker-a").is_none());
 }
 
 /// A refusal nobody has repeated within the report TTL is silence, not
@@ -781,5 +781,5 @@ fn a_refusal_counts_only_at_the_assignments_generation_and_leader() {
 fn an_expired_refusal_is_not_acted_on() {
     let view =
         at(vec![refusal(4, "broker-a", 1_000)], 1_000 + TTL_MS + 1).with_nodes(&[], &[led_by_a(4)]);
-    assert!(!view.leader_refused(&key("orders"), 4, "broker-a"));
+    assert!(view.leader_refusal(&key("orders"), 4, "broker-a").is_none());
 }

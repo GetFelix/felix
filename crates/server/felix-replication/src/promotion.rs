@@ -103,6 +103,12 @@ pub enum Outcome {
         why: String,
         took: Vec<String>,
     },
+    /// Not at this generation: under `joint_fence` the set it leaves is not
+    /// known here, as for a shard this broker learned from a snapshot. The
+    /// shard stays closed, and this broker reports the generation refused so
+    /// the control plane names it again one up, where the set before is the
+    /// one it is named on now (#1872).
+    SetUnknown { why: String },
     /// Not yet: no majority answered, or the catch-up did not finish. The
     /// shard stays closed and the next pass tries again.
     Pending {
@@ -249,7 +255,12 @@ pub async fn fence_shard<R: PeerRequester>(
                 (Some(joint), Some(set)) => {
                     match joint::sets(requester, &log, local_node_id, route, set, joint).await {
                         Ok(fenced) => Some(fenced),
-                        Err(why) => return Err(Outcome::pending(why, Vec::new())),
+                        Err(why @ joint::NoSetBefore::Unknown(_)) => {
+                            return Err(Outcome::SetUnknown {
+                                why: why.to_string(),
+                            });
+                        }
+                        Err(why) => return Err(Outcome::pending(why.to_string(), Vec::new())),
                     }
                 }
                 _ => None,

@@ -145,6 +145,13 @@ Later control-plane changes are on `main`:
 - A leader that could not serve a generation because it had promised it to
   another node reports the refusal, and placement names it again at a higher
   generation (#1730): migration `0042`, level 25.
+- After `joint_fence` is finalized, a leader that cannot learn the replica
+  set its generation replaced reports that generation refused, and placement
+  names it again one generation up. This happens after a broker restart at a
+  generation that started before the finalize, and for a new shard a broker
+  first sees in a snapshot. No migration or metadata level: the report uses
+  the existing `refused` field with no node named. Rolling restarts after the
+  finalize need no extra step.
 
 In short, Postgres runs migrations `0037` to `0042` on start (`0039` to
 `0042` are on `main` only), and under Raft these features wait for metadata
