@@ -1114,15 +1114,18 @@ async fn two_slow_followers_out_of_step_make_a_mark() {
     let watched = watch_key(&key());
     let mut tail = 4;
     // Appends keep coming, as publishers retrying on the mark send them.
-    for _ in 0..20 {
+    for _ in 0..60 {
         append(&broker, 0).await;
         tail += 1;
         tokio::time::sleep(rtt / 2).await;
     }
-    // Both answer every round trip, so the mark trails by about that much.
+    // Neither catches up while the appends keep coming, so each hands back
+    // its cursor once a catch-up slice and a round trip are up, and the mark
+    // trails by about that many appends.
+    let behind = ((CATCH_UP_SLICE + 2 * rtt).as_millis() / (rtt / 2).as_millis()) as u64 + 4;
     let mark = marks.offset(&watched, 4);
     assert!(
-        mark >= Some(tail - 4),
+        mark >= Some(tail - behind),
         "the mark stayed at {mark:?} with the tail at {tail} and both live followers answering",
     );
     driver.stop().await;

@@ -68,6 +68,19 @@ pub struct FollowerCursor {
     ///
     /// [`ReplicateOk::learner`]: felix_wire::internal::ReplicateOk::learner
     pub learner: bool,
+    /// What the follower's last checked answer said it holds, and the copy
+    /// and generation that answer came from. `confirmed` counts toward a
+    /// mark only up to this, and only while the cursor still names that copy
+    /// (see [`Self::vouched_at`]).
+    pub(crate) vouched: Option<Vouched>,
+}
+
+/// A follower's answer that came from the copy its cursor describes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Vouched {
+    pub(crate) identity: PeerIdentity,
+    pub(crate) generation: u64,
+    pub(crate) offset: u64,
 }
 
 impl FollowerCursor {
@@ -87,6 +100,25 @@ impl FollowerCursor {
             incarnation: Incarnation::Unsent,
             route_behind: false,
             learner: false,
+            vouched: None,
+        }
+    }
+
+    /// How far this follower counts toward a mark at `generation`: what its
+    /// last checked answer vouched for, while the cursor still describes the
+    /// copy and generation that answer came from. Nothing while it does not
+    /// count at all. A copy the leader has seen change since, even only its
+    /// incarnation, has to answer again.
+    pub(crate) fn vouched_at(&self, generation: u64) -> u64 {
+        match self.vouched {
+            Some(vouched)
+                if self.counts()
+                    && vouched.identity == self.identity()
+                    && vouched.generation == generation =>
+            {
+                vouched.offset.min(self.confirmed)
+            }
+            _ => 0,
         }
     }
 
