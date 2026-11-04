@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793790188332,
+  "lastUpdate": 1793791279650,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -56562,6 +56562,72 @@ window.BENCHMARK_DATA = {
             "range": "117.40",
             "unit": "us",
             "extra": "trials: 5\nmedian: 425.00\nmean: 440.80\nstdev: 117.40\ncv: 26.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "32e9b5505e5d04aa40f5290506cd6428f520cf39",
+          "message": "fix(replication): an append ends a pass's wait on a dead follower once a free one has answered (#1887)\n\n* fix(replication): an append ends a pass's wait on a dead follower once a free one has answered (#1886)\n\nA pass with no majority waited on every exchange it launched, and only an\nearlier pass's busy follower let an append cut that wait short. A level\nfollower sent nothing vouches for nothing, so with one dead follower the\npass waited out its request and the next record never reached the healthy\nfollowers.\n\nSpec-Unaffected: changes only when a pass hands its unanswered exchanges to the driver; what counts toward the mark (answers checked this pass) and per-follower order are unchanged.\n\n* fix(replication): only an unchecked free follower ends the majority wait (#1886)\n\nWith five replicas the first healthy answer is not a majority, and letting\nit end the wait cut healthy passes short on any append. Only an answer that\nvouches for nothing (sent nothing, or refused) means the pass may be waiting\non a follower that never answers.\n\nSpec-Unaffected: narrows when a pass hands its unanswered exchanges to the driver; counting is unchanged.\n\n* test(replication): a refusing follower and a dead one ship the record without a busy loop (#1886)",
+          "timestamp": "2026-11-04T03:16:04-08:00",
+          "tree_id": "3d97d97273fa91e028845a7123cc7da85892355a",
+          "url": "https://github.com/GetFelix/felix/commit/32e9b5505e5d04aa40f5290506cd6428f520cf39"
+        },
+        "date": 1793791254746,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 125,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 125.00\nmean: 124.60\nstdev: 1.14\ncv: 0.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 184,
+            "range": "65.95",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 184.00\nmean: 218.20\nstdev: 65.95\ncv: 30.23%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 299,
+            "range": "744.24",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 299.00\nmean: 734.40\nstdev: 744.24\ncv: 101.34%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 170,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 170.00\nmean: 169.80\nstdev: 0.45\ncv: 0.26%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 346,
+            "range": "30.60",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 346.00\nmean: 358.80\nstdev: 30.60\ncv: 8.53%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 649,
+            "range": "2072.31",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 649.00\nmean: 1497.40\nstdev: 2072.31\ncv: 138.39%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
