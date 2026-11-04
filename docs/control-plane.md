@@ -201,13 +201,14 @@ after `generation_start`, `stream_incarnations` and `cache_incarnations`, the
 second after those, `majority_ack`, `lease_free_reads` and the first. A
 replaced copy stops being a learner only once it holds its generation's start
 record, which leaders write only under `generation_start`. Under joint fences
-a broker opens a new stream's or cache's shard only once it knows nothing came
-before the shard's first assignment, and it can tell that only from an
+a broker opens a new stream's or cache's shard only once it knows the
+assignment is the shard's first, and it can tell that only from an
 incarnation above 0. Without the incarnations, no stream or quorum cache
 created after the finalize would open
 (`joint_fence_is_refused_until_incarnations_are_finalized`). No build reports
-either feature yet, so a finalize of either is refused (`the_election_features_cannot_be_finalized_yet`), and a
-new cluster does not start with them. A broker that offers the `ELECTION`
+either feature yet, so a finalize of either is refused
+(`the_election_features_cannot_be_finalized_yet`), and a new cluster does not
+start with them. A broker that offers the `ELECTION`
 peer capability reports it as `peer_election`, which no build does yet.
 Every broker from #1737 on also reports `start_holders`: its leaders name, in
 each replica report, the followers holding the generation's start record
@@ -925,7 +926,9 @@ checks the first four itself.
 3. `generation_start`, `stream_incarnations` and `cache_incarnations` are
    finalized. A cluster created on 0.7 has all three; an upgraded one
    finalizes the incarnations first, or no stream or quorum cache created
-   after the finalize could open its first shard.
+   after the finalize could open its first shard. A stream or cache created
+   before the incarnations were finalized carries incarnation 0, so place
+   all of its shards before finalizing `joint_fence`.
 4. Under Raft, every member is at metadata level 23.
 5. On Postgres, every control-plane instance runs a release with learners
    (migration 0040) before the finalize. Nothing checks this: an older
