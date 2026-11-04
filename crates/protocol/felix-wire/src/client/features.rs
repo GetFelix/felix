@@ -421,6 +421,15 @@ pub const FEATURE_HEAD_TRIM: u32 = 0x0000_0010;
 /// a refusal to mint. A client checks the bit before setting the field.
 pub const FEATURE_LEASE_TOKEN: u32 = 0x0000_0020;
 
+/// The broker honours `if_version` on a `commit` change: the commit is made
+/// only if each key named still holds that version, and is refused with
+/// `publish_refused` and `version_mismatch` otherwise.
+///
+/// An extended bit, in `server_features_hi`. Advertised by a *broker*: an
+/// older broker ignores the unknown field and commits unconditionally, so a
+/// client checks the bit before sending `if_version`.
+pub const FEATURE_COMMIT_IF_VERSION: u32 = 0x0000_0080;
+
 /// Every extended feature bit this version implements: bits that travel in
 /// `client_features_hi` / `server_features_hi` rather than the first word.
 pub const KNOWN_FEATURES_HI: u32 = FEATURE_INSPECT
@@ -428,7 +437,8 @@ pub const KNOWN_FEATURES_HI: u32 = FEATURE_INSPECT
     | FEATURE_PUBLISH_WIDTH
     | FEATURE_EXPLICIT_SHARD
     | FEATURE_HEAD_TRIM
-    | FEATURE_LEASE_TOKEN;
+    | FEATURE_LEASE_TOKEN
+    | FEATURE_COMMIT_IF_VERSION;
 
 /// The peer reads the other side's extended feature word.
 ///
