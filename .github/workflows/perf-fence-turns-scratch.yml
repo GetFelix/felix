@@ -102,7 +102,7 @@ jobs:
                 echo '--- warn/error kinds'
                 cat $(find $logs -name '*.log') | grep -E ' (WARN|ERROR) ' | sed -E 's/^.*(WARN|ERROR) //; s/bulk-[0-9]+/S/g; s/[0-9]+/N/g' \
                   | cut -c1-160 | sort | uniq -c | sort -rn | head -25
-              } > $s 2>&1
+              } > $s 2>&1 || true
               if [ "$round" = 1 ]; then tar czf $p/out/logs-$r-$side.tgz -C $logs . ; fi
               rm -rf $logs
               echo "::endgroup::"
