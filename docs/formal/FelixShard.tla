@@ -3860,6 +3860,13 @@ NeverRenameWhileFencing == ~(RenameDue /\ bgen[leader] = gen)
 NeverRenameUnknownSet ==
     ~(/\ RenameDue /\ gen > 1 /\ bgen[leader] = gen /\ fencing[leader]
       /\ SetUnknown(leader) /\ <<gen, leader>> \in opened)
+\* The same at the first generation, where no generation precedes it
+\* (`NoSetBefore::Unknown(0)` in promotion/joint.rs: a log keeps no set at
+\* generation 0, so the broker's own ballot there is the evidence). TLC finds
+\* one under FelixShardReplacedSetUnknownFirstRenames.cfg.
+NeverRenameFirstUnknownSet ==
+    ~(/\ RenameDue /\ gen = 1 /\ bgen[leader] = gen /\ fencing[leader]
+      /\ SetUnknown(leader) /\ <<gen, leader>> \in opened)
 
 \* Under `SetCheck`, once a set change opened, a majority of the new set and
 \* of the set before it know the new set, so no replica on the old set alone
