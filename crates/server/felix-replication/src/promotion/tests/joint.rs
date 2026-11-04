@@ -997,3 +997,27 @@ async fn a_failover_after_an_opened_fence_does_not_fence_what_it_left() {
 
     assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
 }
+
+/// **A generation recorded with nothing written at it is no evidence it
+/// opened.** A leader records its term before it writes the start record, so
+/// an epoch at 4 starting at the tail says nothing about the fence. The
+/// failover still waits for the set left at 3.
+#[tokio::test]
+async fn a_generation_recorded_without_records_still_fences_what_it_left() {
+    let mut replicas = replicas_with(&["broker-x", "broker-z", "broker-y", "broker-w"]);
+    replicas.get_mut("broker-x").reachable = false;
+    replicas.get_mut("broker-y").reachable = false;
+    replicas.get_mut("broker-w").reachable = false;
+    let (leader, _dir) = leader_holding(3, &["a"]).await;
+    leader
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log")
+        .record_generation(4, 1)
+        .expect("term start");
+    kept_leaving_ayw(&leader).await;
+
+    let outcome = fence_after(&replicas, &leader, true, Some(prior_xbc())).await;
+
+    assert!(matches!(outcome, Outcome::Pending { .. }), "{outcome:?}");
+}
