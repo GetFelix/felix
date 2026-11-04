@@ -110,7 +110,7 @@ pub enum MoveStep {
     ElectionRefused,
     /// The leader reported that it refused its generation without naming a
     /// node: its joint fence cannot learn the set that generation leaves, as
-    /// for a shard it learned from a snapshot, or it or a majority of its set
+    /// for a shard it learned from a snapshot, or it or a replica of its set
     /// already accepted a newer generation no assignment named. It is named
     /// again one generation up, on the same set, whose set before is the one
     /// it is named on now.

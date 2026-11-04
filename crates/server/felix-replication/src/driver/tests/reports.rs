@@ -1101,13 +1101,13 @@ impl PeerRequester for SupersededFollowers {
     }
 }
 
-/// **A leader whose fence a majority answered with a newer ballot no
+/// **A leader whose fence a replica answers with a newer ballot no
 /// assignment named reports the generation refused** (#1914). Elections
 /// that withdrew their standings leave such ballots; the control plane
 /// never hears of them, so without the report it names this broker at a
 /// generation that can never be fenced and waits on silence for good.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_fence_below_a_majoritys_ballots_reports_the_refusal() {
+async fn a_fence_met_by_a_newer_ballot_reports_the_refusal() {
     let (broker, _dir) = leader_with(3).await;
     let (control_plane, received) = recording_control_plane().await;
     let shutdown = CancellationToken::new();

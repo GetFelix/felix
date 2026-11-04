@@ -212,7 +212,7 @@ pub struct RefusedGeneration {
     pub generation: u64,
     /// The node it promised the generation to. Empty when nothing was
     /// promised and the broker refused because its fence cannot learn the
-    /// set it leaves at that generation, or because it or a majority of its
+    /// set it leaves at that generation, or because it or a replica of its
     /// set already accepted a newer generation ([`Self::set_unknown`]).
     pub promised_to: String,
 }

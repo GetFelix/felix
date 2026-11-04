@@ -167,6 +167,16 @@ fn an_assignment_below_a_fencing_standing_is_refused() {
         own.fence().refused_at(&key(0)),
         Some(RefusedGeneration::set_unknown(5)),
     );
+
+    // Named at the ballot, the fence already running goes on, and serves
+    // there once it settles.
+    assert_eq!(
+        own.observe(&key(0), Some(&assigned_to("broker-a", 6))),
+        Action::None
+    );
+    assert!(own.fenced(&key(0), 6));
+    assert_eq!(own.phase(&key(0)), Phase::Active);
+    assert!(own.fence().admit(&key(0), 6).is_ok());
 }
 
 /// **A replayed older assignment for a shard still served says nothing.**
