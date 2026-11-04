@@ -575,7 +575,11 @@ KeepsUnopened == FALSE
 OneLeavingSet == FALSE
 \* `LogDropsSets` (#1881): a member keeps the sets it leaves as the broker's
 \* log does (`LearnSetFrom`), not as the leader last sent them.
+\* `BatchDropsSets`: a batch that raises the set keeps none, the rule before
+\* review. `KeptSetsCap`: how many earlier sets the set file holds.
 LogDropsSets == FALSE
+BatchDropsSets == FALSE
+KeptSetsCap == 16
 FenceChecksIds == TRUE
 UnnamedCounts == FALSE
 NameByRegistration == FALSE
@@ -1113,23 +1117,30 @@ SetCurrent(f, b) == SetCheck => setGen[f] <= setGen[b]
 \* Whether `b`'s log holds a record a leader wrote at generation `g`.
 HoldsRecordOf(b, g) == \E i \in 1..Len(log[b]) : log[b][i].lg = g
 
-\* Under `LogDropsSets` the sets are kept as `accept_set` keeps them
-\* (disk_log/set.rs): a set at the generation `f` keeps changes nothing; a
-\* newer one from a fence takes what it carries and, unless `f`'s log holds
-\* a record of its own set's generation, that set and the sets it kept; a
-\* newer one from a batch (`batch`, `check_batch_set` learning the route's
-\* set) keeps no set being left.
+\* Under `LogDropsSets` the sets are kept as `accept_set_keeping_earlier`
+\* keeps them (disk_log/set.rs): a set at the generation `f` keeps changes
+\* nothing. A newer one takes what it carries (none from a batch, whose
+\* route keeps no set being left) and, under `JointFence` and unless `f`'s
+\* log holds a record of its own set's generation, that set and the sets it
+\* kept. The model's logs are durable whole: no cfg with these sets loses a
+\* tail. A raise that would hold more than `KeptSetsCap` + 1 distinct sets
+\* is refused unless it adds none.
 LearnSetFrom(f, b, batch) ==
     IF SetCheck
     THEN /\ setGen' = [setGen EXCEPT ![f] = setGen[b]]
          /\ mine' = [mine EXCEPT ![f] = mine[b]]
          /\ IF LogDropsSets
-            THEN LET carried == IF setGen[f] > 0 /\ ~HoldsRecordOf(f, setGen[f])
+            THEN LET carried == IF JointFence /\ setGen[f] > 0 /\ ~HoldsRecordOf(f, setGen[f])
                                 THEN ({mine[f]} \cup oldSet[f]) \ {{}} ELSE {}
-                 IN oldSet' = [oldSet EXCEPT ![f] =
-                        IF setGen[f] = setGen[b] THEN @
-                        ELSE IF batch THEN {}
-                        ELSE (oldSet[b] \cup carried) \ {mine[b]}]
+                     sent == IF batch THEN {} ELSE oldSet[b]
+                     kept == IF batch /\ BatchDropsSets THEN {}
+                             ELSE (sent \cup carried) \ {mine[b]}
+                     had == {mine[f]} \cup oldSet[f]
+                 IN IF setGen[f] = setGen[b]
+                    THEN UNCHANGED oldSet
+                    ELSE /\ \/ Cardinality({mine[b]} \cup kept) <= KeptSetsCap + 1
+                            \/ ({mine[b]} \cup kept) \subseteq had
+                         /\ oldSet' = [oldSet EXCEPT ![f] = kept]
             ELSE IF OneLeavingSet /\ Cardinality(oldSet[b]) > 1
             THEN \E o \in oldSet[b] :
                    /\ f \in o \/ \A p \in oldSet[b] : f \notin p
