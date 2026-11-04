@@ -965,13 +965,12 @@ once it has caught up with a leader that was chosen without it. This is the
 rule [#1331](https://github.com/GetFelix/felix/issues/1331) adopted, and what
 Raft does with a new member. Without `joint_fence` brokers answer as before.
 
-The rule is built but still switched off. The control plane now re-admits a
-learner and keeps placement off one ([#1737](https://github.com/GetFelix/felix/issues/1737);
-see "How the control plane re-admits a copy" below). What is missing is an
-end-to-end cluster test of the whole sequence. Until it lands the control
-plane refuses to finalize `joint_fence`, and brokers check their own switch
-too, for a fleet that finalized it on an earlier release
-(`NON_VOTING_READY` in `crates/server/felix-replication/src/quorum.rs`).
+The control plane re-admits a learner and keeps placement off one
+([#1737](https://github.com/GetFelix/felix/issues/1737); see "How the control
+plane re-admits a copy" below), and the cluster test `failures/learners.rs`
+follows a wiped copy through a failover until it counts again. Brokers report that they follow the rule
+(`non_voting`), and the control plane finalizes `joint_fence` only once every
+serving broker does.
 
 ```mermaid
 sequenceDiagram
@@ -1134,16 +1133,19 @@ only the copy it named.
 
 **Before the gate is known.** Whether a set naming another id makes a copy a
 learner depends on the `joint_fence` gate, which the broker learns only when
-it registers, after its peer listener is up. Until then such a request is
-refused as `Unavailable` and nothing is written. Everything else answers as
-before, so a broker that restarts with its data serves before it registers.
-A mark already on disk holds whatever the gate says.
+it registers, after its peer listener is up. A broker that does not report
+`joint_fence` knows the answer already: registration would refuse it if the
+fleet had the feature, so it treats the gate as off. For one that does, until
+then such a request is
+refused as `Unavailable` and nothing is written. A request for a copy that
+holds a promise answers as before, so a broker that restarts with its data
+keeps serving the shards it held. A request for a copy with no promise is
+handled as if the gate were on: it is refused, or refused retryably until a
+fresh confirmed read of the control plane backs its leader. A mark already on
+disk holds whatever the gate says.
 
-Not covered yet, and needed before elections (#1009 S9):
+Not covered yet, and needed before elections (#1009):
 
-- An end-to-end cluster test of the sequence above, and the switch
-  `NON_VOTING_READY`, which stays off until it passes. The full list is
-  "Turning on joint fences" in `docs/control-plane.md`.
 - The model's group logs (`GroupLogs`) stand in the counter log's place:
   one log beside the records, not the dead-letter and cursor pair, and the
   model waits for a majority where the code, short of answers, takes the
@@ -1319,6 +1321,20 @@ elected leader waits for the lease until the control plane is back (issue
    share no replica with a majority of the old. A staged copy is not part of
    the persisted set: it does not stand, answer a fence or count until a set
    change writes it in, and that change fences jointly like any other.
+   A joint fence that never opens leaves its change half made: the replicas
+   that answered keep the new set with the old one beside it, but a
+   majority of the old set may never have heard of the change, and a write
+   acknowledged before it may sit only there. So a failover whose log keeps
+   such a pair fences the old set of the pair too, unless the log holds a
+   record written at the pair's generation. That record is the evidence the
+   fence opened, since its leader writes nothing before reaching both
+   majorities, and `joint_fence` needs `generation_start`, so an opened
+   generation always begins with its start record. Without the evidence the
+   old set stays in the fence, and the failover waits for a majority of it:
+   a log that missed an opened generation's records keeps fencing the old
+   set until the next set change, which can stall a shard whose old set has
+   lost its majority. A failover keeps only one older set, so two failovers
+   in a row whose fences both fail to open are not yet covered.
 8. *The control plane flips only after the joint fence.* A cut-over that
    changes the set records the new set as pending; the old set stays the
    control plane's set until a leader on the new set reports its
@@ -1379,7 +1395,10 @@ the record when it answered or refused the old leader after, so the
 catch-up brings it. If the later leader's set is newer, every change between
 the two sets fenced a majority of the set before it and of the set after it,
 so each step shares a replica with the step before, and the record, or the
-refusal of the old leader, is carried across. If the later leader's set is
+refusal of the old leader, is carried across. A change whose fence never opened
+carried nothing across, so the next failover fences the set that change was
+leaving as well as the ones after it (rule 7). This covers one such change,
+not two in a row. If the later leader's set is
 older, a majority of it took the fence of the change that came after it,
 learned the newer set, and refuses the candidate. Overlap comes from the
 joint fence, not from the size of a change: without it, the cut-over above
@@ -2003,6 +2022,40 @@ Reconciling that needs the two sides to agree on where their histories diverge,
 which is what the generation of each record establishes; see
 [Divergence and truncation](#divergence-and-truncation) (#406).
 
+**What a batch carries.** Every field a stream's log keeps for a record travels
+with it: the payload, the producer mark, the publisher, the time the leader
+stored it, the generation that wrote it, and the key-and-headers block a client
+sent (`ReplicateRecords.headers`, kind `ReplicateHeaderedRecords`). The follower
+stores them at the leader's offset, so a record read back from either log is the
+same record, and a promoted follower delivers the headers the old leader did.
+The promotion catch-up fetch asks for the blocks too (`ReplicateHeaderedFetch`),
+and a replica refuses a fetch that did not ask when its page holds one, because
+the new leader would otherwise take those records bare.
+
+The batch checksum covers the blocks, so a block altered in transit is refused
+as corrupt, and a follower whose stored record differs from the leader's only in
+its block answers `LogConflict` on a resend, like any other disagreement. Only
+a stream's log has blocks: a follower refuses a headered batch for a cache, a
+counter or a group log as `Malformed`.
+
+A follower that did not offer `RECORD_HEADERS` is an older build and cannot read
+a block. The leader ships it what precedes the first record with one and then
+holds there, counting `headers_unsupported`, because sending the record bare
+would let the follower acknowledge a record unlike the leader's. The shard
+cannot rebuild, drain or move that follower past the record until it is
+upgraded. A cluster accepts headers only once its fleet has finalized
+`record_headers`, which needs every broker to report it, so in a finalized
+fleet no follower is held this way.
+
+> `a_follower_that_reads_headers_is_sent_them`,
+> `a_follower_without_the_headers_offer_is_still_held`,
+> `a_follower_on_legacy_frames_is_held_at_a_record_with_headers`,
+> `a_follower_stores_the_leaders_header_blocks`,
+> `a_tail_taken_from_a_replica_keeps_its_header_blocks`,
+> `a_fetch_that_did_not_ask_for_blocks_is_refused_a_page_that_has_one`,
+> `header_blocks_are_stored_as_shipped_and_compared_on_a_resend`,
+> `the_checksum_changes_when_only_a_header_differs`
+
 **Replication never waits behind a forwarded publish.** A leader that was sent
 a forwarded `Quorum` publish answers it only once its replication reaches a
 majority. If that replication could queue behind forwards on a peer stream
@@ -2036,7 +2089,18 @@ exchange per follower and log. Two fences for one shard could already run at
 once, from two leaders or over two connections, and the log's ballot settles
 them under its own lock. See `docs/internal-protocol.md`, "The transport".
 
-> `a_read_round_fence_and_a_ping_do_not_wait_behind_promotion_fences`.
+Answers can go out in any order, but a follower still runs one leader's
+promotion fences one at a time, across all of that leader's shards. Each can
+open a log and write a ballot, and a burst of them together slows the
+publishes the follower is already replicating. A read round's fence is at the
+generation the log already took, writes nothing, and usually skips that queue
+(right after a restart, a log's first one waits once). A fence waits at most 2
+seconds for its turn, so one stuck on its disk does not hold up its leader's
+other promotions for longer than that.
+
+> `a_read_round_fence_and_a_ping_do_not_wait_behind_promotion_fences`,
+> `a_leaders_promotion_fences_take_turns_and_a_read_round_does_not_wait`,
+> `a_fence_runs_without_its_turn_once_the_wait_is_up`.
 
 Catch-up for a new or lagging follower is a bounded `read_range` from the leader,
 with sealed-segment checksums to verify wholesale rather than record by record,
@@ -2238,9 +2302,20 @@ the control plane is upgraded.
 quorum mark at the leader's generation is the committed high-water mark:
 consumer-group polls hand out nothing at or past it, Kafka `Fetch` returns
 nothing past it and reports it as the high watermark and last stable offset,
-and `ListOffsets` latest is the mark. Before the first mark of a generation it
-is zero. `Leader` streams, shards placed without replicas and single-node
-brokers are unbounded, as their commit point is local durability.
+and `ListOffsets` latest is the mark. Before the first mark of a generation,
+as right after a failover onto this broker, there is no bound to give: zero
+would send a reader asking for `latest` back to the start of the log. Kafka
+`Fetch` answers empty. `ListOffsets` for `latest` is refused as Kafka refuses
+it while a new leader's high watermark catches up: `OFFSET_NOT_AVAILABLE` from
+v5 and `LEADER_NOT_AVAILABLE` before, both retriable. Earliest and timestamp
+queries are still answered, bounded at the log start. Group polls, seeks and
+describes are refused as `shard_unavailable` with reason `not_ready`. `Leader`
+streams, shards placed without replicas and single-node brokers are unbounded, as their commit point is local durability. A shard
+without replicas is unbounded only on the broker that serves it. Elsewhere,
+such as on a leader deposed by a move to a route with no replicas, the bound
+is refused, so that broker hands out nothing past the mark. Held batches stay
+held, `read_committed` and group polls, seeks and describes are refused, and
+Kafka `Fetch` and `ListOffsets` answer `NOT_LEADER_OR_FOLLOWER` (#1852).
 
 QUIC subscriptions are gated too. A durable batch past the mark joins a
 per-stream hold under its commit turn, so the hold is in offset order; when the
@@ -3474,6 +3549,18 @@ busy follower's answer instead of waiting out the unreachable one (#1080).
 Counting it there matters: a pass that only gave up on the answer would ask
 the follower again, and two followers each answering one pass behind would cut
 every pass short that way, with the mark never moving (#1479).
+The same holds with no busy follower. A follower level with a mark that already
+covers the tail is sent nothing. Its exchange still ends at once, but nothing
+in it vouches for the follower's position, so the mark counts it at 0. The pass
+can then have no majority while it waits on one follower that never answers.
+So once a follower that counts has answered without vouching for anything
+(sent nothing, or refused), a record appended to the shard also ends that wait:
+the free follower gets the record in the next pass, and the unanswered exchange
+becomes a straggler (#1886). A follower whose answer did vouch for its position
+does not end the wait, so with five replicas the pass still waits for a second
+healthy answer rather than cutting every pass short. A tick, a route change or
+another shard's append does not end it, since the next pass would only ask the
+same followers again.
 Its auxiliary logs wait too, so they do not
 dial the same slow peer again. When the exchange ends with no pass running, the
 cursor goes back and the shard passes again if the follower moved, or if it
@@ -4107,14 +4194,15 @@ production broker sends or reads a set yet. With it on:
 
 The control plane's finalize gates are in place too: `joint_fence` is refused
 before `generation_start` and while a serving broker does not report that it
-offers the `ELECTION` peer capability or names start holders in its reports
-(`start_holders`), and `replica_election` is refused until `joint_fence` and its
+offers the `ELECTION` peer capability, names start holders in its reports
+(`start_holders`) or keeps a wiped copy from voting (`non_voting`), and
+`replica_election` is refused until `joint_fence` and its
 other prerequisites are finalized, every serving broker offers `ELECTION`,
 and the control plane has the metadata level for the pending replica set and
 adoption (level 21 under Raft, which every member must report). No broker
-offers `ELECTION`, and the control plane holds its own flag back until the
-election driver (#1009 S9) turns it on, with joint fences, two-majority acks
-and the wiped-voter guard in, so both features stay unfinalizable.
+reports `joint_fence` or offers `ELECTION` yet, and the control plane holds
+its metadata-level flag back until the election driver (#1009) turns it
+on, so both features stay unfinalizable.
 
 The control plane's side of rule 8 is built. Under `replica_election`, a
 cut-over that changes the set of a shard whose replicas elect names the new
@@ -4148,7 +4236,7 @@ leader](control-plane.md#adopting-an-elected-leader)). In the model that is
 
 Joint fences and the fenced next-generation open are built too, dormant
 behind `joint_fence`. No build reports that feature, so a fleet cannot
-finalize it; the cluster test reports it through `FELIX_TEST_FLEET_FEATURES`.
+finalize it; the cluster tests turn it on with `ClusterConfig::joint_fence`.
 Once it is finalized on a broker that offers `ELECTION`:
 
 - The generation right after one a broker serves is fenced before it serves,

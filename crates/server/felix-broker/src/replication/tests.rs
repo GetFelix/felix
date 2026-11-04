@@ -49,8 +49,8 @@ async fn ship(
     values: &[&str],
 ) -> std::result::Result<Applied, Divergence> {
     let payloads = batch(values);
-    let checksum = felix_wire::internal::batch_checksum(&payloads, &[], &[]);
-    apply(log, first_offset, checksum, &payloads, &[], &[], &[])
+    let checksum = felix_wire::internal::batch_checksum(&payloads, &[], &[], &[]);
+    apply(log, first_offset, checksum, &payloads, &[], &[], &[], None)
         .await
         .expect("apply")
 }
@@ -173,7 +173,7 @@ async fn a_batch_that_did_not_survive_the_trip_is_refused() {
     let (log, _dir) = follower().await;
     let payloads = batch(&["a", "b"]);
 
-    let divergence = apply(&log, 0, 0xdead_beef, &payloads, &[], &[], &[])
+    let divergence = apply(&log, 0, 0xdead_beef, &payloads, &[], &[], &[], None)
         .await
         .expect("apply")
         .expect_err("should be corrupt");
@@ -191,8 +191,8 @@ async fn a_batch_that_did_not_survive_the_trip_is_refused() {
 /// to catch.
 #[test]
 fn the_checksum_separates_records_that_concatenate_alike() {
-    let one = felix_wire::internal::batch_checksum(&batch(&["ab", "c"]), &[], &[]);
-    let other = felix_wire::internal::batch_checksum(&batch(&["a", "bc"]), &[], &[]);
+    let one = felix_wire::internal::batch_checksum(&batch(&["ab", "c"]), &[], &[], &[]);
+    let other = felix_wire::internal::batch_checksum(&batch(&["a", "bc"]), &[], &[], &[]);
 
     assert_ne!(one, other);
 }
@@ -321,8 +321,8 @@ async fn marks_are_stored_as_shipped_and_a_different_mark_is_a_conflict() {
         len: 2,
     };
     let marks = [opens, ProducerMark::Continues];
-    let checksum = felix_wire::internal::batch_checksum(&payloads, &marks, &[]);
-    apply(&log, 0, checksum, &payloads, &marks, &[], &[])
+    let checksum = felix_wire::internal::batch_checksum(&payloads, &marks, &[], &[]);
+    apply(&log, 0, checksum, &payloads, &marks, &[], &[], None)
         .await
         .expect("apply")
         .expect("in order");
@@ -336,8 +336,8 @@ async fn marks_are_stored_as_shipped_and_a_different_mark_is_a_conflict() {
     );
 
     // The same bytes, unmarked, at the same offsets.
-    let checksum = felix_wire::internal::batch_checksum(&payloads, &[], &[]);
-    let refused = apply(&log, 0, checksum, &payloads, &[], &[], &[])
+    let checksum = felix_wire::internal::batch_checksum(&payloads, &[], &[], &[]);
+    let refused = apply(&log, 0, checksum, &payloads, &[], &[], &[], None)
         .await
         .expect("apply")
         .expect_err("a record with a different mark was taken as the same");
@@ -382,7 +382,7 @@ async fn an_append_at_a_stale_tail_writes_nothing() {
     let (log, _dir) = follower().await;
     ship(&log, 0, &["a"]).await.expect("first");
     let refused = log
-        .begin_append_marked_at(0, &batch(&["b"]), &[RecordMark::None], &[], &[])
+        .begin_append_marked_at(0, &batch(&["b"]), &[RecordMark::None], &[], &[], None)
         .await
         .expect("append");
     assert!(refused.is_none());
@@ -397,8 +397,8 @@ async fn publishers_are_stored_as_shipped_and_compared_on_a_resend() {
     let (log, _dir) = follower().await;
     let payloads = batch(&["a", "b"]);
     let publishers = vec![Some(payload("alice")), None];
-    let checksum = felix_wire::internal::batch_checksum(&payloads, &[], &publishers);
-    apply(&log, 0, checksum, &payloads, &[], &publishers, &[])
+    let checksum = felix_wire::internal::batch_checksum(&payloads, &[], &publishers, &[]);
+    apply(&log, 0, checksum, &payloads, &[], &publishers, &[], None)
         .await
         .expect("apply")
         .expect("stored");
@@ -411,15 +411,15 @@ async fn publishers_are_stored_as_shipped_and_compared_on_a_resend() {
     );
     // The leader's records, shipped again: an overlap that agrees.
     assert!(
-        apply(&log, 0, checksum, &payloads, &[], &publishers, &[])
+        apply(&log, 0, checksum, &payloads, &[], &publishers, &[], None)
             .await
             .expect("apply")
             .is_ok()
     );
 
     let other = vec![Some(payload("mallory")), None];
-    let checksum = felix_wire::internal::batch_checksum(&payloads, &[], &other);
-    let refused = apply(&log, 0, checksum, &payloads, &[], &other, &[])
+    let checksum = felix_wire::internal::batch_checksum(&payloads, &[], &other, &[]);
+    let refused = apply(&log, 0, checksum, &payloads, &[], &other, &[], None)
         .await
         .expect("apply");
     assert!(matches!(
@@ -430,6 +430,66 @@ async fn publishers_are_stored_as_shipped_and_compared_on_a_resend() {
         publishers_to_wire(&held),
         vec![Some(payload("alice")), None]
     );
+}
+
+/// A follower stores each record's key-and-headers block as shipped, so its
+/// log reads back what the leader's does, and a resend whose block differs
+/// from the stored one, or that has none where one is stored, is a different
+/// record.
+#[tokio::test]
+async fn header_blocks_are_stored_as_shipped_and_compared_on_a_resend() {
+    let (log, _dir) = follower().await;
+    let payloads = batch(&["a", "b", "c"]);
+    let headers = vec![None, Some(payload("block")), None];
+    let checksum = felix_wire::internal::batch_checksum(&payloads, &[], &[], &headers);
+    apply(&log, 0, checksum, &payloads, &[], &[], &[], Some(&headers))
+        .await
+        .expect("apply")
+        .expect("stored");
+    let held = log.read_replicated_from(0, 1 << 20).await.expect("read");
+    assert_eq!(headers_to_wire(&held), Some(headers.clone()));
+
+    // The leader's records, shipped again: an overlap that agrees.
+    assert!(
+        apply(&log, 0, checksum, &payloads, &[], &[], &[], Some(&headers))
+            .await
+            .expect("apply")
+            .is_ok()
+    );
+
+    let other = vec![None, Some(payload("other")), None];
+    let checksum = felix_wire::internal::batch_checksum(&payloads, &[], &[], &other);
+    let refused = apply(&log, 0, checksum, &payloads, &[], &[], &[], Some(&other))
+        .await
+        .expect("apply");
+    assert!(matches!(
+        refused,
+        Err(Divergence::Conflict { offset: 1, .. })
+    ));
+
+    let bare = felix_wire::internal::batch_checksum(&payloads, &[], &[], &[]);
+    let refused = apply(&log, 0, bare, &payloads, &[], &[], &[], None)
+        .await
+        .expect("apply");
+    assert!(matches!(
+        refused,
+        Err(Divergence::Conflict { offset: 1, .. })
+    ));
+}
+
+/// A block altered in transit fails the checksum before anything is stored.
+#[tokio::test]
+async fn a_header_block_that_did_not_survive_the_trip_is_refused() {
+    let (log, _dir) = follower().await;
+    let payloads = batch(&["a"]);
+    let sent = vec![Some(payload("block"))];
+    let checksum = felix_wire::internal::batch_checksum(&payloads, &[], &[], &sent);
+    let arrived = vec![Some(payload("blocc"))];
+    let refused = apply(&log, 0, checksum, &payloads, &[], &[], &[], Some(&arrived))
+        .await
+        .expect("apply");
+    assert!(matches!(refused, Err(Divergence::Corrupt { .. })));
+    assert!(stored(&log).await.is_empty());
 }
 
 async fn stored_times(log: &StreamLog) -> Vec<u64> {
@@ -450,16 +510,16 @@ async fn stored_times(log: &StreamLog) -> Vec<u64> {
 async fn times_are_stored_as_shipped() {
     let (log, _dir) = follower().await;
     let payloads = batch(&["a", "b"]);
-    let checksum = felix_wire::internal::batch_checksum(&payloads, &[], &[]);
-    apply(&log, 0, checksum, &payloads, &[], &[], &[11, 12])
+    let checksum = felix_wire::internal::batch_checksum(&payloads, &[], &[], &[]);
+    apply(&log, 0, checksum, &payloads, &[], &[], &[11, 12], None)
         .await
         .expect("apply")
         .expect("stored");
     assert_eq!(stored_times(&log).await, vec![11, 12]);
 
     let payloads = batch(&["b", "c"]);
-    let checksum = felix_wire::internal::batch_checksum(&payloads, &[], &[]);
-    apply(&log, 1, checksum, &payloads, &[], &[], &[99, 13])
+    let checksum = felix_wire::internal::batch_checksum(&payloads, &[], &[], &[]);
+    apply(&log, 1, checksum, &payloads, &[], &[], &[99, 13], None)
         .await
         .expect("apply")
         .expect("the overlap agrees on everything compared");
@@ -472,9 +532,9 @@ async fn times_are_stored_as_shipped() {
 async fn a_batch_without_times_takes_this_brokers_clock() {
     let (log, _dir) = follower().await;
     let payloads = batch(&["a"]);
-    let checksum = felix_wire::internal::batch_checksum(&payloads, &[], &[]);
+    let checksum = felix_wire::internal::batch_checksum(&payloads, &[], &[], &[]);
     let before = crate::durable::append_time_now();
-    apply(&log, 0, checksum, &payloads, &[], &[], &[])
+    apply(&log, 0, checksum, &payloads, &[], &[], &[], None)
         .await
         .expect("apply")
         .expect("stored");
@@ -496,8 +556,8 @@ async fn a_replicated_trim_applies_its_floor_only_at_commit() {
     ship(&log, 0, &["a", "b", "c", "d"]).await.expect("stored");
     let payloads = batch(&["headers"]);
     let marks = [trim];
-    let checksum = felix_wire::internal::batch_checksum(&payloads, &marks, &[]);
-    apply(&log, 4, checksum, &payloads, &marks, &[], &[])
+    let checksum = felix_wire::internal::batch_checksum(&payloads, &marks, &[], &[]);
+    apply(&log, 4, checksum, &payloads, &marks, &[], &[], None)
         .await
         .expect("apply")
         .expect("stored");

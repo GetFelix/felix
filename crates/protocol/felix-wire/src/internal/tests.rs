@@ -38,6 +38,7 @@ fn forward() -> InternalMessage {
         ack: AckMode::OnCommit,
         payloads: vec![Bytes::from_static(b"a"), Bytes::from_static(b"bb")],
         credential: String::new(),
+        headers: None,
     })
 }
 
@@ -48,6 +49,7 @@ fn authorized_forward() -> InternalMessage {
         ack: AckMode::OnCommit,
         payloads: vec![Bytes::from_static(b"a"), Bytes::from_static(b"bb")],
         credential: "eyJ.token.sig".to_string(),
+        headers: None,
     })
 }
 
@@ -111,6 +113,7 @@ fn every_message() -> Vec<InternalMessage> {
         }),
         InternalMessage::ReplicateFetch(ReplicateFetch {
             timed: false,
+            headers: false,
             correlation_id: 42,
             shard: shard(),
             log: ReplicaLog::Stream,
@@ -197,6 +200,7 @@ fn every_message() -> Vec<InternalMessage> {
             commit_offset: None,
             generations: None,
             publishers: Vec::new(),
+            headers: None,
             set_generation: None,
         }),
         InternalMessage::ReplicateCacheBootstrap(ReplicateBootstrap {
@@ -215,6 +219,7 @@ fn every_message() -> Vec<InternalMessage> {
             commit_offset: None,
             generations: None,
             publishers: Vec::new(),
+            headers: None,
             set_generation: None,
         }),
         InternalMessage::ReplicateGroupBootstrap(ReplicateBootstrap {
@@ -233,6 +238,7 @@ fn every_message() -> Vec<InternalMessage> {
             commit_offset: None,
             generations: None,
             publishers: Vec::new(),
+            headers: None,
             set_generation: None,
         }),
         InternalMessage::ReplicateDeadLetterBootstrap(ReplicateBootstrap {
@@ -251,6 +257,7 @@ fn every_message() -> Vec<InternalMessage> {
             commit_offset: None,
             generations: None,
             publishers: Vec::new(),
+            headers: None,
             set_generation: None,
         }),
         InternalMessage::ReplicateCounterBootstrap(ReplicateBootstrap {
@@ -281,6 +288,7 @@ fn every_message() -> Vec<InternalMessage> {
             commit_offset: None,
             generations: None,
             publishers: Vec::new(),
+            headers: None,
             set_generation: None,
         }),
         InternalMessage::ReplicateRecords(ReplicateRecords {
@@ -294,6 +302,7 @@ fn every_message() -> Vec<InternalMessage> {
             commit_offset: Some(90),
             generations: None,
             publishers: Vec::new(),
+            headers: None,
             set_generation: None,
         }),
         InternalMessage::ReplicateMarkedRecords(ReplicateRecords {
@@ -311,6 +320,7 @@ fn every_message() -> Vec<InternalMessage> {
             commit_offset: Some(100),
             generations: None,
             publishers: Vec::new(),
+            headers: None,
             set_generation: None,
         }),
         InternalMessage::ReplicateCacheRecords(ReplicateRecords {
@@ -324,6 +334,7 @@ fn every_message() -> Vec<InternalMessage> {
             commit_offset: Some(0),
             generations: None,
             publishers: Vec::new(),
+            headers: None,
             set_generation: None,
         }),
     ]
@@ -342,6 +353,7 @@ fn replicate() -> InternalMessage {
         commit_offset: None,
         generations: None,
         publishers: Vec::new(),
+        headers: None,
         set_generation: None,
     })
 }

@@ -123,6 +123,8 @@ felix-mqtt-wire = { path = "../../crates/protocol/felix-mqtt-wire", version = "0
 # An independent WebSocket client, so the listener is checked against another
 # implementation of the protocol and not only its own.
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake"] }
+# A third-party MQTT client (Apache-2.0) for the publish conformance tests.
+rumqttc = { version = "0.25.1", default-features = false }
 tempfile = { workspace = true }
 # The Kafka tests run kcat in a container.
 tokio = { workspace = true, features = ["process", "test-util"] }

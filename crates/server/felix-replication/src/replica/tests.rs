@@ -17,6 +17,7 @@ use super::*;
 mod election;
 mod fence;
 mod groups;
+mod headers;
 mod incarnation;
 mod non_voting;
 mod trim;
@@ -113,12 +114,13 @@ fn batch(generation: u64, first_offset: u64, values: &[&str]) -> ReplicateRecord
             incarnation: None,
         },
         first_offset,
-        checksum: batch_checksum(&payloads, &[], &[]),
+        checksum: batch_checksum(&payloads, &[], &[], &[]),
         payloads,
         marks: Vec::new(),
         commit_offset: None,
         generations: None,
         publishers: Vec::new(),
+        headers: None,
         set_generation: None,
     }
 }

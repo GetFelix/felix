@@ -22,6 +22,7 @@ pub(super) fn record(correlation_id: u64, first_offset: u64) -> InternalMessage 
         commit_offset: None,
         generations: None,
         publishers: Vec::new(),
+        headers: None,
         set_generation: None,
     })
 }

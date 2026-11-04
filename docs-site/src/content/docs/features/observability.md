@@ -248,7 +248,7 @@ felix_kafka_produce_records_total           # records Kafka producers wrote
 felix_kafka_produce_bytes_total             # their payload bytes
 felix_kafka_produce_duplicate_records_total # re-sent idempotent records answered without writing
 felix_kafka_produce_errors_total            # refused partitions, by error
-felix_kafka_produce_dropped_total           # records whose key or headers were dropped, by field
+felix_kafka_produce_dropped_total           # records whose key or headers were dropped (`FELIX_KAFKA_RECORD_HEADERS` off, or the broker not accepting record headers), by field
 ```
 
 `felix_kafka_produce_duplicate_records_total` rising is idempotence doing its
@@ -270,6 +270,7 @@ counts consumers that tried to join a group; Felix refuses those on purpose.
 felix_mqtt_connections                      # gauge: MQTT connections open now
 felix_mqtt_connections_total
 felix_mqtt_refused_total                    # by reason, below
+felix_mqtt_published_total                  # messages written, by qos
 ```
 
 `felix_mqtt_refused_total` counts every connection or request the listener
@@ -278,10 +279,19 @@ connections that never got to `CONNECT`; `auth_timeout`, `auth_required`,
 `auth_failed` and `auth_unavailable` are `CONNECT` failures, where
 `auth_unavailable` means the control plane could not be asked and is worth an
 alert. `token_expired`, `revoked` and `keepalive_timeout` end a live connection.
-`publish_unsupported`, `subscribe_unsupported` and `will_unsupported` count what
-the listener cannot do yet. `unmounted` counts a `PUBLISH` to a topic that is
-under no stream's mount, and `invalid_topic_name` one whose topic name is not
-allowed (empty, a wildcard, a NUL, or too long). Reasons that start with `ws_` are WebSocket
+`subscribe_unsupported` and `will_unsupported` count what the listener cannot do
+yet. `unmounted` counts a `PUBLISH` to a topic that is under no stream's mount,
+`invalid_topic_name` one whose topic name is not allowed (empty, a wildcard, a
+NUL, or too long), and `not_authorized` one by a token without `stream.publish`
+on the mounted stream. A publish that was not written and nobody was told about
+is counted where it was dropped: `not_owner` (another broker owns the shard),
+`record_headers_disabled`, `stream_unavailable` and `reserved_header`. `qos2_unsupported`,
+`retain_unsupported`, `topic_alias_invalid` and `receive_maximum_exceeded` are
+publishes the client was not allowed to send. `leadership_lost`, `quorum_timeout` and
+`write_failed` are connections closed because a write's outcome was unknown;
+watch them during failovers, since the device sends the message again.
+`felix_mqtt_published_total{qos}` counts messages that were written; a QoS 1
+message is counted when its `PUBACK` is owed. Reasons that start with `ws_` are WebSocket
 upgrades that were refused (`ws_origin`, `ws_header_too_large`,
 `ws_upgrade_timeout`, `ws_not_http`, `ws_bad_request`, `ws_not_upgrade`,
 `ws_version`, `ws_subprotocol`, `ws_bad_key`, `ws_upgrade_write`, and

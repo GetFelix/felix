@@ -293,6 +293,7 @@ fn forwarded_with(credential: String) -> ForwardPublish {
         ack: AckMode::OnCommit,
         payloads: vec![Bytes::from_static(b"forwarded")],
         credential,
+        headers: None,
     }
 }
 
@@ -337,6 +338,56 @@ async fn a_forward_without_a_credential_is_refused_and_writes_nothing() {
     let detail = unauthorized_publish(handler.apply(forwarded_with(String::new())).await);
     assert!(detail.contains("no credential"), "{detail}");
 
+    let tail = broker
+        .cursor_tail(TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("tail");
+    assert_eq!(tail.next_seq(), 0, "a refused forward reached the log");
+}
+
+/// A forward that carries record headers is stored with them, so the owner's
+/// log holds what the client sent through the ingress broker.
+#[tokio::test]
+async fn a_forward_with_headers_is_stored_with_them() {
+    let (broker, _dir) = broker_with(ConsistencyLevel::Leader).await;
+    broker.record_headers_when(|| true);
+    let handler = handler(Arc::clone(&broker), None, Duration::from_secs(1));
+    let blocks = vec![Some(Bytes::from_static(b"trace")), None];
+    let mut publish = forwarded();
+    publish.payloads = vec![Bytes::from_static(b"a"), Bytes::from_static(b"b")];
+    publish.headers = Some(blocks.clone());
+
+    let answer = handler.apply(publish).await;
+    assert!(
+        matches!(answer, InternalMessage::ForwardPublishOk(_)),
+        "{answer:?}"
+    );
+
+    let log = broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    let stored = log.read_replicated_from(0, 1 << 20).await.expect("read");
+    assert_eq!(
+        felix_broker::replication::headers_to_wire(&stored),
+        Some(blocks)
+    );
+}
+
+/// An owner that does not accept headers refuses a forward that has them, and
+/// writes nothing, rather than store the records without.
+#[tokio::test]
+async fn a_forward_with_headers_is_refused_while_the_owner_does_not_accept_them() {
+    let (broker, _dir) = broker_with(ConsistencyLevel::Leader).await;
+    let handler = handler(Arc::clone(&broker), None, Duration::from_secs(1));
+    let mut publish = forwarded();
+    publish.headers = Some(vec![Some(Bytes::from_static(b"trace"))]);
+
+    let answer = handler.apply(publish).await;
+    assert!(
+        matches!(&answer, InternalMessage::ForwardPublishError(err) if err.code == ErrorCode::UnsupportedKind),
+        "{answer:?}"
+    );
     let tail = broker
         .cursor_tail(TENANT, NAMESPACE, STREAM, 0)
         .await
@@ -849,6 +900,7 @@ mod fence {
             credential: credentials.token(&[&format!(
                 "stream.publish:stream:{TENANT}/{NAMESPACE}/{DURABLE}"
             )]),
+            headers: None,
         };
 
         assert!(matches!(
@@ -886,6 +938,7 @@ mod fence {
             credential: credentials.token(&[&format!(
                 "stream.publish:stream:{TENANT}/{NAMESPACE}/{DURABLE}"
             )]),
+            headers: None,
         };
         let writer =
             credentials.token(&[&format!("cache.write:cache:{TENANT}/{NAMESPACE}/{CACHE}")]);

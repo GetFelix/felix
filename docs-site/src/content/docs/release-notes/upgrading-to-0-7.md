@@ -138,12 +138,17 @@ Later control-plane changes are on `main`:
   (`member_storage_ids`): Postgres migration `0039`, Raft metadata level 22.
 - A copy whose storage was replaced is a learner until it is re-admitted, and
   a leader reports where its generation started (`holds_start`): migration
-  `0040`, level 23. Finalizing `joint_fence` needs that level.
+  `0040`, level 23. Finalizing `joint_fence` needs that level, and
+  `generation_start`, `stream_incarnations` and `cache_incarnations`
+  finalized first.
 - A stream can carry an MQTT mount: migration `0041`, level 24.
+- A leader that could not serve a generation because it had promised it to
+  another node reports the refusal, and placement names it again at a higher
+  generation (#1730): migration `0042`, level 25.
 
-In short, Postgres runs migrations `0037` to `0041` on start (`0039` to
-`0041` are on `main` only), and under Raft these features wait for metadata
-levels 20 to 24. Upgrade every control-plane member before the brokers.
+In short, Postgres runs migrations `0037` to `0042` on start (`0039` to
+`0042` are on `main` only), and under Raft these features wait for metadata
+levels 20 to 25. Upgrade every control-plane member before the brokers.
 
 ## Clients
 

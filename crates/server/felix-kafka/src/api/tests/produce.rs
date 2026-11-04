@@ -67,7 +67,7 @@ fn batch(producer: Producer, values: &[&str], compression: Compression) -> Bytes
     buf.freeze()
 }
 
-fn request(acks: i16, partition: i32, records: Bytes) -> ProduceRequest {
+pub(super) fn request(acks: i16, partition: i32, records: Bytes) -> ProduceRequest {
     ProduceRequest::default()
         .with_acks(acks)
         .with_timeout_ms(5_000)
@@ -82,7 +82,11 @@ fn request(acks: i16, partition: i32, records: Bytes) -> ProduceRequest {
         ])
 }
 
-async fn produce(client: &mut Client, acks: i16, records: Bytes) -> PartitionProduceResponse {
+pub(super) async fn produce(
+    client: &mut Client,
+    acks: i16,
+    records: Bytes,
+) -> PartitionProduceResponse {
     let response = client.call(&request(acks, 0, records), 9).await;
     response.responses[0].partition_responses[0].clone()
 }
@@ -107,7 +111,7 @@ fn owned(pairs: &[(i64, &str)]) -> Vec<(i64, String)> {
 }
 
 /// **A produce lands at Felix's next offsets and a consumer reads it back.**
-/// Keys are dropped, values kept; every codec a producer may pick decodes.
+/// Every codec a producer may pick decodes.
 #[tokio::test]
 async fn produced_records_land_at_the_next_offsets_for_every_codec() {
     let fixture = Fixture::anonymous().await;
@@ -305,11 +309,12 @@ async fn ship_producer(
     let applied = felix_broker::replication::apply(
         log,
         from,
-        batch_checksum(&payloads, &marks, &[]),
+        batch_checksum(&payloads, &marks, &[], &[]),
         &payloads,
         &marks,
         &[],
         &[],
+        None,
     )
     .await
     .expect("apply")

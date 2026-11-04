@@ -322,6 +322,47 @@ async fn an_unknown_fetch_session_is_refused() {
     assert_eq!(response.error_code, 70, "FETCH_SESSION_ID_NOT_FOUND");
 }
 
+/// A fetch of a shard that stopped serving here after it was placed answers
+/// `NOT_LEADER_OR_FOLLOWER` and no records, not this broker's whole log.
+#[tokio::test]
+async fn a_fetch_is_refused_once_the_shard_is_not_served_here() {
+    let fixture = Fixture::anonymous().await;
+    fixture.stream("orders", "created", 1, true).await;
+    fixture.publish("orders", "created", 0, &["r0", "r1"]).await;
+    fixture.cluster.stop_serving("created", 0);
+    let mut client = fixture.connect();
+
+    let response = client
+        .call(&request(&[("orders.created", 0, 0)], 1, 0), 11)
+        .await;
+    let partition = only(&response);
+    assert_eq!(
+        partition.error_code,
+        kafka_protocol::ResponseError::NotLeaderOrFollower.code()
+    );
+    assert_eq!(partition.high_watermark, -1);
+    assert!(partition.records.as_ref().is_none_or(|r| r.is_empty()));
+}
+
+/// While a new leader has no commit point a fetch is answered empty, not
+/// refused, so the consumer keeps polling and reads once the mark lands.
+#[tokio::test]
+async fn a_fetch_is_empty_while_a_new_leader_settles() {
+    let fixture = Fixture::anonymous().await;
+    fixture.stream("orders", "created", 1, true).await;
+    fixture.publish("orders", "created", 0, &["r0", "r1"]).await;
+    fixture.cluster.settle("created", 0);
+    let mut client = fixture.connect();
+
+    let response = client
+        .call(&request(&[("orders.created", 0, 1)], 1, 0), 11)
+        .await;
+    let partition = only(&response);
+    assert_eq!(partition.error_code, 0);
+    assert_eq!(partition.high_watermark, 0);
+    assert!(records(partition).is_empty());
+}
+
 /// **A fetch stops at the commit point, not the log's end.** On a `Quorum`
 /// shard a record past the quorum mark can be lost at failover and its
 /// offset reused, so a consumer that read it would hold a position the next

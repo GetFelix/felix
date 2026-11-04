@@ -1,11 +1,13 @@
 //! Serving one MQTT client connection.
 //!
 //! A connection is one task: it reads packets, answers them in order, and
-//! writes the answers once per batch it read. Before `CONNECT` is accepted the
+//! writes the answers once per batch it read. A PUBLISH is answered when its
+//! write is acknowledged, in `publish.rs`. Before `CONNECT` is accepted the
 //! only things it can do are authenticate or be closed.
 
 mod connect;
 mod connection;
+mod publish;
 mod refuse;
 #[cfg(test)]
 mod tests;
@@ -18,6 +20,7 @@ use tokio_util::sync::CancellationToken;
 use crate::auth::Authenticator;
 use crate::mount::Mounts;
 use crate::settings::Settings;
+use crate::write::Writes;
 
 /// Answers MQTT clients. Cheap to clone.
 #[derive(Clone)]
@@ -29,15 +32,22 @@ pub struct MqttService {
 pub(crate) struct Shared {
     pub(crate) auth: Arc<dyn Authenticator>,
     pub(crate) mounts: Arc<dyn Mounts>,
+    pub(crate) writes: Arc<dyn Writes>,
     pub(crate) settings: Settings,
 }
 
 impl MqttService {
-    pub fn new(auth: Arc<dyn Authenticator>, mounts: Arc<dyn Mounts>, settings: Settings) -> Self {
+    pub fn new(
+        auth: Arc<dyn Authenticator>,
+        mounts: Arc<dyn Mounts>,
+        writes: Arc<dyn Writes>,
+        settings: Settings,
+    ) -> Self {
         Self {
             shared: Arc::new(Shared {
                 auth,
                 mounts,
+                writes,
                 settings,
             }),
         }
