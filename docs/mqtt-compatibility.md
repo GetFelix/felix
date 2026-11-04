@@ -184,10 +184,17 @@ behind earlier publishes.
 majority. **QoS 2** is not supported: the broker advertises `Maximum QoS` 1.
 
 **Which shard.** The mount finds the stream, and the full topic name picks the
-shard, so every message on one topic goes to one shard and keeps its order. A
-publish goes to a shard this broker owns. If another broker owns it, the broker
-does not forward the message yet (forwarding needs the producer sequence on the
-internal protocol, which is a later change); see the table below.
+shard, so every message on one topic goes to one shard and keeps its order. If
+another broker owns the shard, the message is forwarded to it with the
+connection's token, which the owner checks again, and the `PUBACK` waits for
+the owner's answer, with the same consistency wait. The forward carries the
+connection's producer id and the batch's sequence. If its answer is lost, for
+example because the owner died, the broker sends the same batch again to
+whichever broker owns the shard next, which may be itself, and a log that
+already holds it answers without writing it again. It keeps trying for the
+broker's forward budget (`FELIX_ACK_WAIT_TIMEOUT_MS` less a margin). A
+connection without credentials has no token for the owner, so its messages for
+another broker's shard are refused `not_owner`.
 
 **Batching.** A connection has one write at the broker at a time. Publishes that
 arrive while it is out wait, and when it returns the leading run of them for one
@@ -196,8 +203,9 @@ gets group commit; a device that sends one at a time pays nothing extra. Each
 connection publishes under its own producer id, and every batch carries the next
 sequence for its shard.
 
-**If the broker cannot tell.** If leadership moves, the lease lapses or a majority
-does not answer in time after the batch was sent, the message may or may not be
+**If the broker cannot tell.** If a majority does not answer in time, the write
+fails after the batch took its offsets, or a forward stays unanswered past the
+budget, the message may or may not be
 in the stream. The broker then sends neither a `PUBACK` nor an error reason: a
 5.0 error reason means "not delivered", which may be false. It closes the
 connection. Sessions do not outlive the connection yet, and with a clean
@@ -251,7 +259,8 @@ dropped silently: each is counted in `felix_mqtt_refused_total{reason}`.
 | Written and acknowledged | `PUBACK`, reason 0 | Nothing | `PUBACK` (QoS 0: nothing) |
 | Topic under no mount (`unmounted`) | `PUBACK` 0x90 (topic name invalid) | `DISCONNECT` 0x90 | Closes |
 | Principal lacks `stream.publish` on the mounted stream (`not_authorized`) | `PUBACK` 0x87 | `DISCONNECT` 0x87 | Closes |
-| This broker does not own the shard (`not_owner`) | `PUBACK` 0x83, reason string `not_owner` | Dropped, counted | Closes (QoS 0: dropped, counted) |
+| No broker could take it: the owner cannot be reached or keeps moving, predates forwarded MQTT publishes, or the connection is anonymous and another broker owns the shard (`not_owner`) | `PUBACK` 0x83, reason string `not_owner` | Dropped, counted | Closes (QoS 0: dropped, counted) |
+| The owner refused the connection's token on a forward: revoked, expired, or no `stream.publish` there (`not_authorized`) | `PUBACK` 0x87 | Dropped, counted | Closes (QoS 0: dropped, counted) |
 | Broker does not accept record headers (`record_headers_disabled`) | `PUBACK` 0x83, reason string `record_headers_disabled` | Dropped, counted | Closes (QoS 0: dropped, counted) |
 | Mounted stream is gone or not durable (`stream_unavailable`) | `PUBACK` 0x80, reason string `stream_unavailable` | Dropped, counted | Closes (QoS 0: dropped, counted) |
 | User property starting with `felix.` (`reserved_header`) | `PUBACK` 0x83 | `DISCONNECT` 0x83 | Not possible |
@@ -259,7 +268,7 @@ dropped silently: each is counted in `felix_mqtt_refused_total{reason}`.
 | Retain flag set (`retain_unsupported`) | `DISCONNECT` 0x9A | the same | Closes |
 | Topic alias sent (`topic_alias_invalid`) | `DISCONNECT` 0x94 | the same | Not possible |
 | More unacknowledged QoS 1 publishes than `Receive Maximum` (`receive_maximum_exceeded`) | `DISCONNECT` 0x93 | Not applicable | See below |
-| Outcome unknown (`leadership_lost`, `quorum_timeout`, `write_failed`) | Closes, no `PUBACK` | Closes | Closes, no `PUBACK` |
+| Outcome unknown (`leadership_lost`, `quorum_timeout`, `write_failed`, `forward_unanswered`) | Closes, no `PUBACK` | Closes | Closes, no `PUBACK` |
 
 Reason strings are sent only to a 5.0 client that did not turn off `Request
 Problem Information`.
@@ -314,7 +323,7 @@ clients.
 
 ## Not built yet
 
-Forwarding a publish to the broker that owns the shard, QoS 2, subscribing,
+QoS 2, subscribing,
 retained messages, persistent sessions, will messages, shared subscriptions and
 topic-level grants. The order they land in is in
 [mqtt-design.md](mqtt-design.md#implementation-slices).

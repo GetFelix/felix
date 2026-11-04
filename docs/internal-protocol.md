@@ -117,6 +117,7 @@ never have dialled the one that shipped to it.
 | `1 << 14` | `HEAD_TRIM` | reads a head trim's mark (byte `5`) in a records batch and stores the trim record, applying its floor on a `Quorum` stream only once its commit offset passes the record. A batch holding a trim goes only to a peer that offered it |
 | `1 << 15` | `LEARNER_ACKS` | offered by a caller: it reads `ReplicateLearnerOk`, so a follower whose copy is a learner answers it with that kind (see "A learner's answers" under "Replication") |
 | `1 << 17` | `RECORD_HEADERS` | reads `ReplicateHeaderedRecords` and stores each record's key-and-headers block with it, answers `ReplicateHeaderedFetch`, and reads `HeaderedForwardPublish`. A peer that offers it also offers `GENERATION_LABELS` and `RECORD_TIMES`. A batch or forward holding a block goes only to a peer that offered it |
+| `1 << 18` | `SEQUENCED_FORWARDS` | reads `SequencedForwardPublish` and applies it as the named producer's idempotent batch, answering a batch its log already holds with that batch's offsets (see "A forward that names its producer"). It goes only to a peer that offered both this and `RECORD_HEADERS` |
 
 #### Storage identity
 
@@ -173,7 +174,8 @@ current broker offers the bit when it dials.
 `GROUP_FENCE` and `BALLOTS` off: the broker refuses `Fence` and `ReplicateFetch` as unknown kinds,
 as an older build would, and checks only the generation of what it is sent. It
 still offers `GENERATION_LABELS`, `FORWARD_OFFSETS`, `RECORD_TIMES`, `PING`,
-`HEAD_TRIM` and `RECORD_HEADERS`, which are not the fence's.
+`HEAD_TRIM`, `RECORD_HEADERS` and `SEQUENCED_FORWARDS`, which are not the
+fence's.
 
 A promoted cache shard is fenced only when every replica offered `FENCE`,
 `TAIL_FETCH` and `CACHE_FENCE`; otherwise it opens on the lease, until the
@@ -316,6 +318,25 @@ described under "Replication" below. It goes only to an owner that offered
 broker answers the client that headers cannot be forwarded to that owner. A
 forward is never sent without blocks it was given, and the legacy fallback
 above never applies to it.
+
+### A forward that names its producer
+
+`SequencedForwardPublish` (52) is `HeaderedForwardPublish` followed by two
+`u64`s: a producer id and the batch's sequence for that producer on the shard.
+The owner applies it the way it applies an idempotent Kafka batch: if its log
+already holds that sequence for that producer, it writes nothing and answers
+with the held batch's offsets, after the same quorum wait a new batch gets. A
+held sequence with different payloads is refused `StorageFailed` and nothing is
+written. The batch must carry at least one key-and-headers block; the MQTT
+listener, its only sender, always does.
+
+This is what lets the ingress broker send a batch again after its answer was
+lost (see "Retrying a forwarded publish"). The sequences live in the log and
+are replicated with it, so a promoted replica answers a re-send exactly as the
+old leader would have. The frame goes only to an owner that offered
+`SEQUENCED_FORWARDS` and `RECORD_HEADERS`. To any other the pool refuses to
+send it, and the MQTT listener refuses the message as `not_owner`, which is
+what it did before this kind existed.
 
 An authorized frame relabelled as the legacy kind has trailing bytes and is
 refused; a legacy frame relabelled as authorized has no credential to read and
@@ -1023,8 +1044,8 @@ Typed, because they need different responses:
 `ReplicateTimedFetch` 37, `Incarnated` 40, `ElectionFence` 41,
 `SetStamped` 42, `PreVote` 43, `PreVoteAnswer` 44, `LeaseForwardCacheOp` 45,
 `LeaseForwardCacheOk` 46, `ReplicateLearnerOk` 47,
-`ReplicateHeaderedRecords` 49, `ReplicateHeaderedFetch` 50 and
-`HeaderedForwardPublish` 51. A peer
+`ReplicateHeaderedRecords` 49, `ReplicateHeaderedFetch` 50,
+`HeaderedForwardPublish` 51 and `SequencedForwardPublish` 52. A peer
 that predates any of them rejects the
 kind rather than misreading the body, which is why
 each is a new kind rather than a field on `ReplicateRecords`: this protocol
@@ -1077,6 +1098,14 @@ because "failed" is a claim the ingress broker cannot make.
 produced inside the broker is invisible to the client, which holds the
 `request_id` and is the only layer that could deduplicate. A client that wants
 the retry can reissue and know that it did.
+
+The exception is a `SequencedForwardPublish`. Its owner recognises a batch it
+already holds, so the MQTT listener sends it again after a lost answer, under
+the same producer id and sequence, to whichever broker owns the shard by then,
+this one included. It keeps trying within the forward budget
+(`BrokerConfig::forward_budget`). Once an answer was lost, only a later success
+settles the write. A refusal from a later send says nothing about the first, so
+the device is told neither.
 
 Retries are bounded by an attempt budget, so a shard being reassigned converges
 or fails explicitly instead of chasing `NotLeader` around the cluster. A redirect
