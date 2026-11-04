@@ -35,10 +35,16 @@ jobs:
           RUST_LOG: ${{ contains(github.ref_name, 'diag') && 'info' || 'info' }}
         run: |
           pass=0; fail=0
-          for i in $(seq 1 ${LOOPS:-6}); do
+          if [ "${{ matrix.shard }}" -le 2 ]; then filter="replica_election::a_follower_is_elected_while_the_control_plane_is_down --exact"; loops=15; else filter="replica_election::"; loops=3; fi
+          for i in $(seq 1 $loops); do
             export FELIX_TEST_CLUSTER_LOG_DIR="$RUNNER_TEMP/logs/$i"
-            if cargo test -p felix-cluster --test failures replica_election::a_follower_is_elected_while_the_control_plane_is_down -- --exact > "$RUNNER_TEMP/out-$i.log" 2>&1; then
-              pass=$((pass+1)); rm -rf "$RUNNER_TEMP/logs/$i"
+            if cargo test -p felix-cluster --test failures -- $filter > "$RUNNER_TEMP/out-$i.log" 2>&1; then
+              pass=$((pass+1))
+              mkdir -p "$RUNNER_TEMP/keep/$i"
+              find "$RUNNER_TEMP/logs/$i" -path '*a_follower_is_elected_while*' -name 'broker-*.log' | while read -r f; do
+                sed 's/\x1b\[[0-9;]*m//g' "$f" | grep -E "DIAG|elected leader|standing|opening the shard|quorum wait|fenced by" > "$RUNNER_TEMP/keep/$i/$(basename "$f")" || true
+              done
+              rm -rf "$RUNNER_TEMP/logs/$i"
             else
               fail=$((fail+1)); cp "$RUNNER_TEMP/out-$i.log" "$RUNNER_TEMP/logs/$i/" || true
               grep -m3 "panicked\|publish failed" "$RUNNER_TEMP/out-$i.log" || true
@@ -49,6 +55,8 @@ jobs:
         if: always()
         with:
           name: logs-${{ matrix.shard }}
-          path: ${{ runner.temp }}/logs
+          path: |
+            ${{ runner.temp }}/logs
+            ${{ runner.temp }}/keep
           if-no-files-found: ignore
           retention-days: 3
