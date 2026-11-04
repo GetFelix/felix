@@ -12,6 +12,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bytes::Bytes;
 
+use crate::auth::Credential;
 use crate::mount::MountedTopic;
 
 /// One MQTT message as a Felix record.
@@ -28,6 +29,9 @@ pub struct Record {
 #[derive(Debug, Clone)]
 pub struct WriteBatch {
     pub tenant_id: Arc<str>,
+    /// The connection's token, which a forward to the shard's owner carries
+    /// for the owner to check. `None` for an anonymous connection.
+    pub credential: Option<Credential>,
     pub target: MountedTopic,
     /// The connection's producer id.
     pub producer_id: u64,
@@ -50,6 +54,9 @@ pub enum Refusal {
     HeadersDisabled,
     /// The mounted stream is gone, not durable, or closing.
     StreamUnavailable,
+    /// The shard's owner checked the connection's token again on a forwarded
+    /// publish and refused it: revoked, expired, or no `stream.publish` there.
+    NotAuthorized,
 }
 
 /// Why a batch has no acknowledgement.
@@ -58,9 +65,10 @@ pub enum WriteError {
     /// Nothing was written, so the client may be told.
     Refused(Refusal),
     /// The batch may or may not be in the log: leadership moved, a majority
-    /// did not answer in time, or the write failed partway. The client must
-    /// not be told either way; the connection is closed and the client sends
-    /// the message again. The text is the reason counted.
+    /// did not answer in time, the write failed partway, or a forward's
+    /// answer was lost and re-sending it did not settle the question. The
+    /// client must not be told either way; the connection is closed and the
+    /// client sends the message again. The text is the reason counted.
     OutcomeUnknown(&'static str),
 }
 

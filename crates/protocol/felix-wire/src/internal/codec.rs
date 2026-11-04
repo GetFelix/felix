@@ -8,8 +8,8 @@ use super::replicate::{ProducerMark, any_block, put_blocks, put_marks, take_bloc
 use super::{
     AckMode, CacheOpKind, ErrorCode, Fence, FenceElection, FenceOk, ForwardCacheCondition,
     ForwardCacheError, ForwardCacheOk, ForwardCacheOp, ForwardCacheOutcome, ForwardLease,
-    ForwardPublish, ForwardPublishError, ForwardPublishOk, Hello, HelloOk, InternalHeader,
-    InternalMessage, Kind, LeaseForwardCacheOk, MAX_BATCH_PAYLOADS, MAX_BODY_BYTES,
+    ForwardProducer, ForwardPublish, ForwardPublishError, ForwardPublishOk, Hello, HelloOk,
+    InternalHeader, InternalMessage, Kind, LeaseForwardCacheOk, MAX_BATCH_PAYLOADS, MAX_BODY_BYTES,
     MAX_CREDENTIAL_BYTES, MAX_ENVELOPE_BYTES, MAX_IDENT_BYTES, MAX_INNER_BODY_BYTES,
     MAX_SET_MEMBERS, MAX_SET_NODE_BYTES, NotLeader, PeerCapabilities, Ping, Pong, PreVote,
     PreVoteAnswer, PreVoteRefusal, ReplicaLog, ReplicaSetView, ReplicateBootstrap, ReplicateError,
@@ -67,17 +67,32 @@ impl InternalMessage {
                 }
                 // Last, and only on the authorized kind: the legacy layout in
                 // front of it is frozen.
-                if !m.credential.is_empty() || self.kind() == Kind::HeaderedForwardPublish {
+                let blocks = matches!(
+                    self.kind(),
+                    Kind::HeaderedForwardPublish | Kind::SequencedForwardPublish
+                );
+                if !m.credential.is_empty() || blocks {
                     put_credential(&mut body, &m.credential)?;
                 }
-                if self.kind() == Kind::HeaderedForwardPublish {
+                if blocks {
                     let headers = m.headers.as_deref().unwrap_or_default();
                     if headers.len() != m.payloads.len() {
                         return Err(Error::InvalidRecordHeaders(
                             "headers count differs from payloads",
                         ));
                     }
+                    // The decoder refuses a section with no block, so a
+                    // sequenced batch without one has no encoding.
+                    if !any_block(headers) {
+                        return Err(Error::InvalidRecordHeaders(
+                            "a sequenced forward carries no block",
+                        ));
+                    }
                     put_blocks(&mut body, headers);
+                }
+                if let Some(producer) = m.producer {
+                    body.put_u64(producer.producer_id);
+                    body.put_u64(producer.sequence);
                 }
             }
             Self::ForwardPublishOk(m) => {
@@ -501,7 +516,8 @@ impl InternalMessage {
             }
             kind @ (Kind::ForwardPublish
             | Kind::AuthorizedForwardPublish
-            | Kind::HeaderedForwardPublish) => {
+            | Kind::HeaderedForwardPublish
+            | Kind::SequencedForwardPublish) => {
                 let correlation_id = take_u64(&mut body)?;
                 let tenant_id = take_str(&mut body)?;
                 let namespace = take_str(&mut body)?;
@@ -531,8 +547,17 @@ impl InternalMessage {
                 } else {
                     take_credential(&mut body)?
                 };
-                let headers = if kind == Kind::HeaderedForwardPublish {
+                let sequenced = kind == Kind::SequencedForwardPublish;
+                let headers = if kind == Kind::HeaderedForwardPublish || sequenced {
                     Some(take_blocks(&mut body, payloads.len())?)
+                } else {
+                    None
+                };
+                let producer = if sequenced {
+                    Some(ForwardProducer {
+                        producer_id: take_u64(&mut body)?,
+                        sequence: take_u64(&mut body)?,
+                    })
                 } else {
                     None
                 };
@@ -557,6 +582,7 @@ impl InternalMessage {
                     payloads,
                     credential,
                     headers,
+                    producer,
                 }))
             }
             Kind::ForwardPublishOk => {

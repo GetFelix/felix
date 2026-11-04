@@ -135,6 +135,7 @@ fn an_over_large_batch_is_refused_on_encode() {
         payloads: vec![Bytes::new(); MAX_BATCH_PAYLOADS + 1],
         credential: String::new(),
         headers: None,
+        producer: None,
     });
     assert!(matches!(message.encode(), Err(Error::FrameTooLarge)));
 }
@@ -148,6 +149,7 @@ fn an_empty_batch_round_trips() {
         payloads: Vec::new(),
         credential: String::new(),
         headers: None,
+        producer: None,
     });
     let decoded = InternalMessage::decode(message.encode().expect("encode")).expect("decode");
     assert_eq!(decoded, message);
@@ -158,7 +160,7 @@ fn unknown_enum_values_are_rejected() {
     assert!(Kind::from_u16(0).is_err());
     // One past the highest kind: an unknown kind must be rejected rather than
     // skipped, because the kind is what selects how to read the body.
-    assert!(Kind::from_u16(52).is_err());
+    assert!(Kind::from_u16(53).is_err());
     assert!(ReplicaLog::from_u8(0).is_err());
     assert!(ReplicaLog::from_u8(6).is_err());
     assert!(ErrorCode::from_u16(0).is_err());
