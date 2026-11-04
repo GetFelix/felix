@@ -1,5 +1,4 @@
-//! With joint fences on (`FELIX_INTERNAL_ELECTION`, and `joint_fence`
-//! reported through `FELIX_TEST_FLEET_FEATURES` and finalized), a set change
+//! With joint fences on (`ClusterConfig::joint_fence`), a set change
 //! that swaps two members does not serve until a majority of the set it
 //! leaves has taken its fence.
 //!
@@ -8,41 +7,25 @@ use std::time::Duration;
 
 use felix_cluster::{Cluster, ClusterConfig, StreamSpec};
 use felix_controlplane_service::store::ControlPlaneStore;
+use serde_json::json;
 use serial_test::serial;
 
 const STREAM: &str = "orders";
 
 async fn start() -> Cluster {
-    let features = felix_common::fleet::IMPLEMENTED
-        .iter()
-        .map(|feature| feature.name())
-        .chain([felix_common::fleet::JOINT_FENCE.name()])
-        .collect::<Vec<_>>()
-        .join(",");
-    let cluster = Cluster::start(ClusterConfig {
+    Cluster::start(ClusterConfig {
         nodes: 5,
         streams: vec![StreamSpec::quorum(STREAM, 1, 3)],
-        broker_env: vec![
-            ("FELIX_INTERNAL_ELECTION".to_string(), "true".to_string()),
-            ("FELIX_TEST_FLEET_FEATURES".to_string(), features),
-            (
-                "FELIX_PUBLISH_QUORUM_TIMEOUT_MS".to_string(),
-                "2000".to_string(),
-            ),
-        ],
+        broker_env: vec![(
+            "FELIX_PUBLISH_QUORUM_TIMEOUT_MS".to_string(),
+            "2000".to_string(),
+        )],
         inherit_output: std::env::var("FELIX_TEST_BROKER_OUTPUT").is_ok(),
+        joint_fence: true,
         ..Default::default()
     })
     .await
-    .expect("start cluster");
-    cluster
-        .finalize_fleet_features(
-            &["generation_start", "majority_ack", "joint_fence"],
-            Duration::from_secs(20),
-        )
-        .await
-        .expect("every broker enables joint_fence");
-    cluster
+    .expect("start cluster with joint_fence")
 }
 
 async fn assignment(cluster: &Cluster) -> felix_cluster::Assignment {
@@ -172,5 +155,102 @@ async fn a_two_member_swap_waits_for_the_old_majority() {
         .await
         .expect("restart one old follower");
     level_at(&cluster, &leader, &spares, after.generation).await;
+    cluster.shutdown().await;
+}
+
+/// **A stream and a quorum cache created after `joint_fence` is finalized
+/// open and take their first write.** A new shard's first open is fenced, and
+/// under joint fences that needs to know nothing came before it, which a
+/// broker reads from an incarnation above 0 (#1862).
+#[serial]
+#[tokio::test]
+async fn a_stream_and_a_cache_created_under_joint_fence_open() {
+    let cluster = start().await;
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .expect("http client");
+    let base = format!(
+        "{}/v1/tenants/{}/namespaces/{}",
+        cluster.control_plane_url(),
+        cluster.tenant_id,
+        cluster.namespace
+    );
+    let created = [
+        (
+            "streams",
+            json!({
+                "tenant_id": cluster.tenant_id,
+                "namespace": cluster.namespace,
+                "stream": "created-later",
+                "kind": "Stream",
+                "shards": 1,
+                "replication_factor": 3,
+                "retention": { "max_age_seconds": null, "max_size_bytes": null },
+                "consistency": "Quorum",
+                "delivery": "AtLeastOnce",
+                "durable": true,
+            }),
+        ),
+        (
+            "caches",
+            json!({
+                "cache": "cached-later",
+                "display_name": "cached-later",
+                "shards": 1,
+                "replication_factor": 3,
+                "consistency": "Quorum",
+            }),
+        ),
+    ];
+    for (kind, body) in created {
+        let response = http
+            .post(format!("{base}/{kind}"))
+            .bearer_auth(cluster.admin_token())
+            .json(&body)
+            .send()
+            .await
+            .expect("create");
+        let status = response.status();
+        let answer: serde_json::Value = response.json().await.expect("create answer");
+        assert!(status.is_success(), "create {kind}: {status} {answer}");
+        assert!(
+            answer["incarnation"].as_u64().unwrap_or(0) > 0,
+            "{kind} created without an incarnation: {answer}"
+        );
+    }
+
+    felix_cluster::wait::until(
+        Duration::from_secs(60),
+        "the new stream takes its first publish",
+        || async {
+            cluster.place_shards().await;
+            cluster
+                .publish_via_any("created-later", b"first".to_vec())
+                .await
+                .is_ok()
+        },
+    )
+    .await
+    .expect("a stream created under joint_fence opens");
+    felix_cluster::wait::until(
+        Duration::from_secs(60),
+        "the new cache takes its first put",
+        || async {
+            cluster.place_shards().await;
+            let Ok(owners) = cluster.cache_shard_owners("cached-later").await else {
+                return false;
+            };
+            let Some(owner) = owners.get(&0) else {
+                return false;
+            };
+            cluster
+                .cache_put_via(owner, "cached-later", "k", b"v")
+                .await
+                .is_ok()
+        },
+    )
+    .await
+    .expect("a quorum cache created under joint_fence opens");
     cluster.shutdown().await;
 }

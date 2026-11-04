@@ -53,7 +53,8 @@ async fn publish_headered(cluster: &Cluster, node: &str, trace: &str) -> u64 {
 }
 
 /// What `node` replays from the start, with each record's key and headers,
-/// once it holds `wanted` records.
+/// once it holds `wanted` records. The harness's startup `harness-probe`
+/// records are left out: they are not part of what this test published.
 async fn replay_headers(
     cluster: &Cluster,
     node: &str,
@@ -66,6 +67,9 @@ async fn replay_headers(
             while let Ok(Ok(Some(event))) =
                 tokio::time::timeout(Duration::from_secs(2), subscription.next_event()).await
             {
+                if event.payload.as_ref() == b"harness-probe" {
+                    continue;
+                }
                 held.push((
                     event
                         .offset
