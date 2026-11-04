@@ -571,6 +571,10 @@ anyway is refused as invalid (`unsupported frame flags`) and nothing is stored.
   `headers_unsupported` in `felix_broker_replication_shipped_total`. The
   finalize needs every broker to report the feature, so no follower is held
   once it is done.
+- **Kafka keys and headers** reach this format only with
+  `FELIX_KAFKA_RECORD_HEADERS=true`, which is off by default. Enabling the
+  Kafka listener alone never moves a log to v8, though nearly every Kafka
+  producer sends keys. Setting it is the one-way step for those producers.
 - **A single broker** accepts headers from the start, unless
   `FELIX_RECORD_HEADERS=false`. A data directory that stored a record with
   headers joins a cluster only once that cluster has finalized

@@ -217,6 +217,12 @@ fn free_port() -> u16 {
 }
 
 async fn start() -> Felix {
+    start_with(false).await
+}
+
+/// `record_headers` opts the listener in to storing keys and headers, and
+/// makes the broker accept them.
+async fn start_with(record_headers: bool) -> Felix {
     let data = tempfile::tempdir().expect("dir");
     let storage = DurableStorage::open(
         data.path(),
@@ -228,6 +234,10 @@ async fn start() -> Felix {
     )
     .expect("storage");
     let broker = Arc::new(Broker::new(EphemeralCache::new().into()).with_durable_storage(storage));
+    if record_headers {
+        broker.record_headers_when(|| true);
+        broker.read_record_headers_when(|| true);
+    }
     broker.register_tenant(TENANT).await.expect("tenant");
     broker
         .register_namespace(TENANT, "orders")
@@ -278,6 +288,7 @@ async fn start() -> Felix {
                 max_connections: 64,
                 max_connections_per_ip: 64,
                 auth_timeout_ms: 10_000,
+                record_headers,
             };
             let cluster = BrokerCluster::new(Arc::clone(&auth), None, None, "felix", &advertise)
                 .expect("cluster");
@@ -775,8 +786,8 @@ async fn kcat_produces_idempotently() {
     }
 }
 
-/// kcat -K splits each line into a key and a value. The key picked the
-/// partition (here -p does) and is not stored: Felix records have no key.
+/// kcat -K splits each line into a key and a value. The listener has not opted
+/// in to keys and headers, so the key is dropped and the value kept.
 #[tokio::test]
 async fn kcat_produces_keyed_records_and_the_value_is_kept() {
     if !kcat_available().await {
@@ -804,6 +815,46 @@ async fn kcat_produces_keyed_records_and_the_value_is_kept() {
         ])
         .await;
     assert_eq!(records(&output), ["|v1", "|v2"]);
+}
+
+/// **With the listener opted in, a key and headers survive kcat's round
+/// trip**: -K, -H on the way in, %k and %h on the way out, and a header with no
+/// value comes back empty.
+#[tokio::test]
+async fn kcat_keys_and_headers_are_kept_when_the_listener_opts_in() {
+    if !kcat_available().await {
+        return;
+    }
+    let felix = start_with(true).await;
+    let output = felix
+        .kcat_with_input(
+            &produce_args("1", &["-K", ":", "-H", "trace=t-1", "-H", "nil"]),
+            "k1:v1\nk2:v2\n",
+        )
+        .await;
+    assert!(output.status.success(), "{}", stderr(&output));
+    let output = felix
+        .kcat(&[
+            "-C",
+            "-t",
+            TOPIC,
+            "-p",
+            "1",
+            "-o",
+            "beginning",
+            "-e",
+            "-q",
+            "-f",
+            "%k|%s|%h\\n",
+        ])
+        .await;
+    assert!(output.status.success(), "{}", stderr(&output));
+    let lines = records(&output);
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    for (line, (key, value)) in lines.iter().zip([("k1", "v1"), ("k2", "v2")]) {
+        let prefix = format!("{key}|{value}|trace=t-1,nil=");
+        assert!(line.starts_with(&prefix), "{line:?}");
+    }
 }
 
 /// A transactional producer fails fast, and says why.
