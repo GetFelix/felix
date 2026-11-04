@@ -12,7 +12,7 @@ use bytes::Bytes;
 use super::Broker;
 use super::publish::{Append, PublishOutcome};
 use super::shards::StreamHandle;
-use crate::commit::{CommitRecord, StateOp, StateView};
+use crate::commit::{CommitRecord, StateOp, StateView, VersionCheck};
 use crate::error::{BrokerError, Result};
 
 /// Bytes read from the log per page while rebuilding a state view.
@@ -65,6 +65,27 @@ impl Broker {
         expected: Option<u64>,
         publisher: Option<&Bytes>,
     ) -> Result<PublishOutcome> {
+        self.commit_to_handle_checked(handle, event, ops, expected, &[], publisher)
+            .await
+    }
+
+    /// [`Self::commit_to_handle_at`], and only if each of `checks` holds.
+    /// Refused with [`BrokerError::VersionMismatch`] on the first that does
+    /// not, with nothing written.
+    ///
+    /// The checks and the claim run under one lock, and a commit records the
+    /// keys it writes before releasing it, so two commits requiring the same
+    /// version cannot both pass. The claim is still taken in the order the
+    /// lock was won, so the commit sequencer orders commits as before.
+    pub async fn commit_to_handle_checked(
+        &self,
+        handle: &StreamHandle,
+        event: Bytes,
+        ops: Vec<StateOp>,
+        expected: Option<u64>,
+        checks: &[VersionCheck],
+        publisher: Option<&Bytes>,
+    ) -> Result<PublishOutcome> {
         if handle.log().is_none() {
             return Err(BrokerError::CommitNeedsDurableStream);
         }
@@ -74,6 +95,19 @@ impl Broker {
         };
         let stored = record.encode();
         let events = [event];
+        // Held until the offset is known: a later commit's check must see
+        // this one's keys.
+        let mut claims = handle.state.key_claims.lock().await;
+        for check in checks {
+            let read = self.state_get(handle, &check.key).await?;
+            let held = claims.current(&check.key, read.version, read.as_of);
+            if held != check.required {
+                return Err(BrokerError::VersionMismatch {
+                    key: check.key.clone(),
+                    version: held,
+                });
+            }
+        }
         let mut claimed = self
             .claim(
                 handle,
@@ -87,6 +121,10 @@ impl Broker {
             )
             .await?
             .expect("a commit claims or is refused");
+        if let Some(offset) = claimed.first_offset() {
+            claims.claim(offset, &record.ops);
+        }
+        drop(claims);
         claimed.set_commit(Arc::from(record.ops));
         self.complete_publish(claimed).await
     }

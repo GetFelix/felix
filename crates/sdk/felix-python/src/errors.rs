@@ -416,6 +416,11 @@ fn annotate_refusal(py: Python<'_>, err: &PyErr, refused: &PublishRefused) -> Py
             value.setattr("reason", "offset_mismatch")?;
             value.setattr("tail", *tail)?;
         }
+        PublishRefusalReason::VersionMismatch { key, version } => {
+            value.setattr("reason", "version_mismatch")?;
+            value.setattr("key", key)?;
+            value.setattr("version", *version)?;
+        }
         PublishRefusalReason::NotLeader { node_id, addr } => {
             value.setattr("reason", "not_leader")?;
             value.setattr("node_id", node_id)?;

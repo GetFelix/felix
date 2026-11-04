@@ -35,6 +35,8 @@ pub(crate) struct StreamState {
     pub(crate) subscribers: Mutex<SubscriberRegistry>,
     // In-memory log for cursor-based replay.
     pub(crate) log_state: Mutex<LogState>,
+    // Held by a commit across its version checks and its claim.
+    pub(crate) key_claims: tokio::sync::Mutex<crate::commit::KeyClaims>,
     // Per-subscriber bounded queue depth.
     pub(crate) subscriber_queue_capacity: usize,
     // Queue admission policy when subscriber queue is full.
@@ -162,6 +164,7 @@ impl StreamState {
                 generation_start_run: None,
                 state_view: None,
             }),
+            key_claims: tokio::sync::Mutex::default(),
             subscriber_queue_capacity,
             subscriber_queue_policy,
             subscriber_queue_bytes,

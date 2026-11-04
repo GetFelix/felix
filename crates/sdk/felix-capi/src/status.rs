@@ -68,7 +68,9 @@ pub(crate) fn classify(err: &anyhow::Error) -> FelixStatus {
     }
     if let Some(refusal) = err.chain().find_map(|e| e.downcast_ref::<CommitError>()) {
         return match refusal {
-            CommitError::Unsupported => FELIX_STATUS_UNSUPPORTED,
+            CommitError::Unsupported | CommitError::IfVersionUnsupported => {
+                FELIX_STATUS_UNSUPPORTED
+            }
             // The call checks these before it starts; one that gets here is
             // still the caller's argument.
             CommitError::NotOnOwningShard { .. } | CommitError::EventCount(_) => {

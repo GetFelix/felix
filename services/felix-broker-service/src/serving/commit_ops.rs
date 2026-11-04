@@ -12,8 +12,9 @@ use std::future::Future;
 use bytes::Bytes;
 use felix_broker::{
     Broker, BrokerError, PublishOutcome, StateOp, StateRead, StreamHandle, TrimOutcome,
+    VersionCheck,
 };
-use felix_wire::StateChange;
+use felix_wire::{StateChange, StateCondition};
 
 use crate::serving::quic::client_error::ClientError;
 use crate::serving::quic::handlers::publish::PublishContext;
@@ -29,6 +30,12 @@ pub(crate) enum NotWritten {
     OffsetMismatch {
         tail: u64,
     },
+    /// A key did not hold the version the commit required. Nothing was
+    /// written.
+    VersionMismatch {
+        key: String,
+        version: Option<u64>,
+    },
     Refused(ClientError),
 }
 
@@ -42,6 +49,10 @@ impl NotWritten {
     fn from_broker(err: &BrokerError, context: &str) -> Self {
         match err {
             BrokerError::OffsetMismatch { tail, .. } => Self::OffsetMismatch { tail: *tail },
+            BrokerError::VersionMismatch { key, version } => Self::VersionMismatch {
+                key: key.clone(),
+                version: *version,
+            },
             err => Self::Refused(ClientError::from_broker(err, context)),
         }
     }
@@ -87,7 +98,7 @@ pub(crate) async fn commit(
         Some(entity_key),
         shard,
     )?;
-    let ops = changes.into_iter().map(state_op).collect();
+    let (ops, checks) = split_changes(changes);
     leader_write(
         broker,
         publish_ctx,
@@ -95,7 +106,7 @@ pub(crate) async fn commit(
         "commit not served",
         |handle| async move {
             broker
-                .commit_to_handle_at(&handle, event, ops, expected_offset, publisher)
+                .commit_to_handle_checked(&handle, event, ops, expected_offset, &checks, publisher)
                 .await
         },
     )
@@ -350,11 +361,35 @@ fn owned(dispatched: Dispatch, key: &ShardKey) -> Result<u64, ClientError> {
     }
 }
 
-fn state_op(change: StateChange) -> StateOp {
-    match change {
-        StateChange::Put { key, value } => StateOp::Put { key, value },
-        StateChange::Delete { key } => StateOp::Delete { key },
+/// The writes a commit makes, and the version each change required of its
+/// key, in change order.
+fn split_changes(changes: Vec<StateChange>) -> (Vec<StateOp>, Vec<VersionCheck>) {
+    let mut ops = Vec::with_capacity(changes.len());
+    let mut checks = Vec::new();
+    for change in changes {
+        let (op, condition) = match change {
+            StateChange::Put {
+                key,
+                value,
+                if_version,
+            } => (StateOp::Put { key, value }, if_version),
+            StateChange::Delete { key, if_version } => (StateOp::Delete { key }, if_version),
+        };
+        if let Some(condition) = condition {
+            let key = match &op {
+                StateOp::Put { key, .. } | StateOp::Delete { key } => key.clone(),
+            };
+            checks.push(VersionCheck {
+                key,
+                required: match condition {
+                    StateCondition::Absent => None,
+                    StateCondition::Version(version) => Some(version),
+                },
+            });
+        }
+        ops.push(op);
     }
+    (ops, checks)
 }
 
 #[cfg(test)]

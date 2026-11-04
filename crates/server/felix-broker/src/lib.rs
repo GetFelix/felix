@@ -71,7 +71,7 @@ pub use stream::{
 
 // Atomic commits.
 pub use broker::StateRead;
-pub use commit::{CommitRecord, StateOp, client_record};
+pub use commit::{CommitRecord, StateOp, VersionCheck, client_record};
 
 // Caches.
 pub use cache::{CacheChangeEvent, CacheWatchFilter, CacheWatchHub, CacheWatchSubscription};

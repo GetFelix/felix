@@ -588,6 +588,66 @@ async fn a_conditional_publish_lands_once_and_names_the_tail() -> Result<()> {
     Ok(())
 }
 
+/// **Two writers holding one version, over QUIC: one commit lands, the other
+/// is told what the key holds.** A refusal writes nothing, and a key that was
+/// never written can be created by exactly one writer.
+#[tokio::test]
+async fn a_commit_requiring_a_version_lands_once() -> Result<()> {
+    use felix_client::{CommitOp, PublishRefused, StateCondition};
+    use felix_wire::PublishRefusalReason;
+
+    let dir = tempfile::tempdir()?;
+    let running = start(dir.path()).await?;
+    let first = running.client().await?;
+    let second = running.client().await?;
+
+    let create = |writer: &'static str| {
+        vec![
+            CommitOp::publish(QUEUE, writer),
+            CommitOp::put_if(QUEUE, "owner", writer, StateCondition::Absent),
+        ]
+    };
+    let (a, b) = tokio::join!(
+        first.commit("t1", "default", b"lock", create("a")),
+        second.commit("t1", "default", b"lock", create("b")),
+    );
+    let (won, lost) = match (a, b) {
+        (Ok(receipt), Err(err)) | (Err(err), Ok(receipt)) => (receipt, err),
+        other => panic!("expected one winner: {other:?}"),
+    };
+    let refusal = lost.downcast_ref::<PublishRefused>().expect("refusal");
+    assert_eq!(
+        refusal.reason,
+        PublishRefusalReason::VersionMismatch {
+            key: "owner".to_string(),
+            version: Some(won.offset),
+        }
+    );
+    let state = first
+        .state_get("t1", "default", QUEUE, b"lock", "owner")
+        .await?;
+    assert_eq!(state.version, Some(won.offset));
+
+    let renewed = first
+        .commit(
+            "t1",
+            "default",
+            b"lock",
+            vec![
+                CommitOp::publish(QUEUE, "renew"),
+                CommitOp::delete_if(QUEUE, "owner", StateCondition::Version(won.offset)),
+            ],
+        )
+        .await?;
+    let state = first
+        .state_get("t1", "default", QUEUE, b"lock", "owner")
+        .await?;
+    assert_eq!(state.value, None);
+    assert_eq!(state.as_of, Some(renewed.offset));
+    running.stop().await;
+    Ok(())
+}
+
 /// **A client consuming a queue, end to end.** Until the wire carried group
 /// operations this could not be written at all: the machinery was reachable
 /// only from inside the broker.

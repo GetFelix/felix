@@ -12,9 +12,12 @@
 //! updates go to the shard's [`StateView`] under the same lock that puts the
 //! event in the replay ring.
 
+mod claims;
 mod record;
 mod view;
 
+pub(crate) use claims::KeyClaims;
+pub use claims::VersionCheck;
 pub use record::{CommitRecord, StateOp};
 pub(crate) use view::{Entry as StateEntry, StateView};
 

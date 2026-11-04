@@ -178,6 +178,9 @@ pub(crate) fn refusal_meta(reason: &PublishRefusalReason) -> serde_json::Value {
         PublishRefusalReason::OffsetMismatch { tail } => {
             serde_json::json!({ "reason": "offset_mismatch", "tail": tail.to_string() })
         }
+        PublishRefusalReason::VersionMismatch { key, version } => {
+            serde_json::json!({ "reason": "version_mismatch", "key": key, "version": version.map(|v| v.to_string()) })
+        }
         PublishRefusalReason::NotLeader { node_id, addr } => {
             serde_json::json!({ "reason": "not_leader", "node_id": node_id, "addr": addr })
         }

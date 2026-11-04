@@ -131,10 +131,52 @@ The check is the one `publish_if` makes, at the point the broker assigns the
 offset, so it is atomic with the write. It counts every record on the shard,
 plain publishes and a new leader's generation-start record included, which is
 what makes it a fence for a single writer. It does not compare one key's
-version; see below. `Client::commit_if` follows the leader the way
+version; see the next section. `Client::commit_if` follows the leader the way
 `commit` does. The broker must advertise `FEATURE_PUBLISH_CONDITIONAL`, and
 the client refuses to send the request otherwise. See
 [Conditional writes](semantics.md#conditional-writes).
+
+## A commit that requires a key's version
+
+`CommitOp::put_if(stream, key, value, condition)` and
+`CommitOp::delete_if(stream, key, condition)` make the whole commit depend on
+one key. `StateCondition::Version(n)` requires the key's `version` (the offset of
+the commit that last wrote it, as `state_get` reports) to be `n`;
+`StateCondition::Absent` requires that it hold no value, whether it was never
+written or was deleted. A commit may carry several, and all must hold. The
+first key that does not is named in the refusal, and the commit writes neither
+its event nor its state and takes no offset. Writers of different keys never
+refuse each other, which is the difference from `commit_if`.
+
+```mermaid
+sequenceDiagram
+    participant A as Writer A
+    participant B as Writer B
+    participant L as Shard leader
+    A->>L: commit, owner must be absent
+    B->>L: commit, owner must be absent
+    Note over L: one commit at a time checks and takes its place
+    L-->>A: commit_ok, offset 12
+    L-->>B: publish_refused, version_mismatch, owner at 12
+```
+
+The check and the commit's place in the shard's order happen under one lock
+per shard, so there is no gap between "the key held `n`" and "the commit is
+next". A commit takes its offset before it is durable and visible to readers.
+Each commit with state changes therefore records the keys it will write when it
+takes its offset, and a later check counts those keys at the version they will
+have. The version in a refusal can thus name a commit that is still becoming
+durable. If that commit then fails, the key keeps its old version and the
+refused writer simply retries after reading it again; a precondition is never
+met against a version that is already superseded. Commits take the lock;
+plain publishes do not.
+
+A refusal is `publish_refused` with `version_mismatch`, `key` and `version`
+(absent when the key holds no value). Sent only to a broker that advertised
+`FEATURE_COMMIT_IF_VERSION`; an older broker would ignore `if_version` and
+write unconditionally, so the Rust client refuses to send one to it with
+`CommitError::IfVersionUnsupported`. The conditions are part of the request
+only: the commit record and replication are unchanged.
 
 ## A commit to a named shard
 
@@ -244,11 +286,6 @@ answer and sends it again may write it twice. The idempotent producer's
 batch mark and the commit mark are both kinds of record, and a record is one
 kind, so a commit cannot yet carry a producer sequence.
 
-**Per-key versions.** A commit can be made conditional on the shard's next
-offset, not on the version of a key it writes, so two writers updating
-different keys of one shard refuse each other. Per-key preconditions are
-tracked in [#1051](https://github.com/GetFelix/felix/issues/1051).
-
 **Retention.** State is rebuilt from the retained log. A stream whose
 retention trims its commit records loses the state they wrote. Keep entity
 streams' retention unbounded, or long enough to cover every live key.
@@ -276,7 +313,7 @@ because the state is the log.
 
 A commit is a `commit` request, answered with `commit_ok` or `error`, and
 with `publish_refused` when it carried an `expected_offset` the shard has
-moved past; a state read is `state_get`, answered with `state_value`. A client sends either only
+moved past, or when a key does not hold the version a change required; a state read is `state_get`, answered with `state_value`. A client sends either only
 to a broker that advertised `FEATURE_ATOMIC_COMMIT`. See
 [`protocol.md`](protocol.md).
 

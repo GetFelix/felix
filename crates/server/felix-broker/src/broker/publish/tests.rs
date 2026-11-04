@@ -16,6 +16,7 @@ mod conditional;
 mod idempotent;
 mod publisher;
 mod record_headers;
+mod version_checks;
 
 #[tokio::test]
 async fn publish_delivers_to_subscriber() {

@@ -11,7 +11,7 @@ use felix_storage::log::{FsyncMode, LogConfig};
 use crate::error::BrokerError;
 use crate::{Broker, DurableStorage, StreamHandle, StreamMetadata};
 
-async fn durable_broker(dir: &std::path::Path) -> (Arc<Broker>, StreamHandle) {
+pub(super) async fn durable_broker(dir: &std::path::Path) -> (Arc<Broker>, StreamHandle) {
     let config = LogConfig {
         fsync_mode: FsyncMode::OnCommit,
         preallocate_segments: false,

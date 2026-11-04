@@ -103,6 +103,23 @@ fn a_record_round_trips() {
     );
 }
 
+/// **A record whose only operation is a delete of a short key decodes.** The
+/// operation is under nine bytes, and a size bound written for a put refused
+/// the record, so the shard's state could not be rebuilt from its log.
+#[test]
+fn a_short_delete_round_trips() {
+    let record = CommitRecord {
+        event: Bytes::new(),
+        ops: vec![StateOp::Delete {
+            key: "k".to_string(),
+        }],
+    };
+    assert_eq!(
+        CommitRecord::decode(&record.encode()).expect("decode"),
+        record
+    );
+}
+
 #[test]
 fn a_damaged_record_is_refused_rather_than_misread() {
     let encoded = CommitRecord {
