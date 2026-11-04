@@ -93,6 +93,7 @@ fn the_existing_kind_discriminants_are_unchanged() {
         (49, Kind::ReplicateHeaderedRecords),
         (50, Kind::ReplicateHeaderedFetch),
         (51, Kind::HeaderedForwardPublish),
+        (52, Kind::SequencedForwardPublish),
     ] {
         assert_eq!(Kind::from_u16(value).expect("known"), kind);
         assert_eq!(kind as u16, value);

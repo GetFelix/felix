@@ -30,12 +30,13 @@ use felix_authz::{
     Action, CacheKeys, CacheScope, Namespace, PermissionMatcher, StreamName, TenantId,
     cache_resource, stream_resource,
 };
-use felix_broker::Broker;
+use felix_broker::{Broker, SequenceReuse};
 use felix_router::{Resolution, ShardRouter};
 use felix_wire::internal::{
     CacheOpKind, ErrorCode, ForwardCacheCondition, ForwardCacheError, ForwardCacheOk,
-    ForwardCacheOp, ForwardCacheOutcome, ForwardLease, ForwardPublish, ForwardPublishError,
-    ForwardPublishOk, InternalMessage, LeaseForwardCacheOk, NotLeader, ShardRef,
+    ForwardCacheOp, ForwardCacheOutcome, ForwardLease, ForwardProducer, ForwardPublish,
+    ForwardPublishError, ForwardPublishOk, InternalMessage, LeaseForwardCacheOk, NotLeader,
+    ShardRef,
 };
 
 use crate::serving::auth::{AuthContext, BrokerAuth};
@@ -155,15 +156,25 @@ impl ForwardingHandler {
                     .into_publish_answer(correlation_id);
             }
         };
-        let published = self
-            .broker
-            .publish_batch_with_outcome(
-                &handle,
-                &publish.payloads,
-                publisher.as_ref(),
-                publish.headers.as_deref(),
-            )
-            .await;
+        let published = match publish.producer {
+            // A re-send of a batch this log already holds is answered with the
+            // held batch's offsets, and still waits for the quorum below: the
+            // first attempt may not have reached a majority yet.
+            Some(producer) => {
+                self.apply_sequenced(&handle, &publish, producer, publisher)
+                    .await
+            }
+            None => {
+                self.broker
+                    .publish_batch_with_outcome(
+                        &handle,
+                        &publish.payloads,
+                        publisher.as_ref(),
+                        publish.headers.as_deref(),
+                    )
+                    .await
+            }
+        };
         drop(fenced);
         match published {
             Ok(outcome) => {
@@ -204,6 +215,29 @@ impl ForwardingHandler {
                 error(correlation_id, ErrorCode::StorageFailed, err.to_string())
             }
         }
+    }
+
+    /// Write a forwarded batch as its producer's idempotent batch.
+    async fn apply_sequenced(
+        &self,
+        handle: &felix_broker::StreamHandle,
+        publish: &ForwardPublish,
+        producer: ForwardProducer,
+        publisher: Option<bytes::Bytes>,
+    ) -> felix_broker::Result<felix_broker::PublishOutcome> {
+        let claimed = self
+            .broker
+            .claim_batch_idempotent(
+                handle,
+                producer.producer_id,
+                producer.sequence,
+                &publish.payloads,
+                SequenceReuse::Refuse,
+                publisher.as_ref(),
+                publish.headers.as_deref(),
+            )
+            .await?;
+        Ok(self.broker.complete_idempotent(claimed).await?.outcome)
     }
 
     /// Serve a cache operation forwarded here because this broker owns the

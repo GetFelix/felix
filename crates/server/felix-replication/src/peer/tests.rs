@@ -61,6 +61,7 @@ fn forward() -> InternalMessage {
         payloads: vec![bytes::Bytes::from_static(b"payload")],
         credential: String::new(),
         headers: None,
+        producer: None,
     })
 }
 

@@ -19,7 +19,7 @@ use felix_broker::{ConsistencyLevel, DurableStorage, StreamMetadata};
 use felix_router::{NodeRef, RegionRouter, RoutingTable};
 use felix_storage::EphemeralCache;
 use felix_storage::log::{FsyncMode, LogConfig};
-use felix_wire::internal::{AckMode, ShardRef};
+use felix_wire::internal::{AckMode, ForwardProducer, ShardRef};
 use tempfile::TempDir;
 
 use super::*;
@@ -294,6 +294,7 @@ fn forwarded_with(credential: String) -> ForwardPublish {
         payloads: vec![Bytes::from_static(b"forwarded")],
         credential,
         headers: None,
+        producer: None,
     }
 }
 
@@ -372,6 +373,118 @@ async fn a_forward_with_headers_is_stored_with_them() {
         felix_broker::replication::headers_to_wire(&stored),
         Some(blocks)
     );
+}
+
+/// A forward that names its producer and sequence.
+fn sequenced(payload: &'static [u8]) -> ForwardPublish {
+    ForwardPublish {
+        payloads: vec![Bytes::from_static(payload)],
+        headers: Some(vec![Some(Bytes::from_static(b"block"))]),
+        producer: Some(ForwardProducer {
+            producer_id: 77,
+            sequence: 0,
+        }),
+        ..forwarded()
+    }
+}
+
+fn shard_key() -> crate::shards::ShardKey {
+    crate::shards::ShardKey {
+        tenant_id: TENANT.to_string(),
+        namespace: NAMESPACE.to_string(),
+        stream: STREAM.to_string(),
+        shard: 0,
+        kind: crate::shards::ShardKind::Stream,
+    }
+}
+
+async fn next_offset(broker: &Broker) -> u64 {
+    broker
+        .cursor_tail(TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("tail")
+        .next_seq()
+}
+
+/// **A sequenced batch sent again is answered from the log, not written
+/// again.** That is what makes it safe for the forwarder to re-send a batch
+/// whose answer it lost.
+#[tokio::test]
+async fn a_sequenced_forward_sent_twice_is_written_once() {
+    let (broker, _dir) = broker_with(ConsistencyLevel::Leader).await;
+    broker.record_headers_when(|| true);
+    let handler = handler(Arc::clone(&broker), None, Duration::from_secs(1));
+
+    let first = handler.apply(sequenced(b"reading")).await;
+    let again = handler.apply(sequenced(b"reading")).await;
+
+    let (InternalMessage::ForwardPublishOk(first), InternalMessage::ForwardPublishOk(again)) =
+        (&first, &again)
+    else {
+        panic!("both sends are answered: {first:?} {again:?}");
+    };
+    assert_eq!(first.offsets(), Some((0, 0)));
+    assert_eq!(again.offsets(), first.offsets());
+    assert_eq!(
+        next_offset(&broker).await,
+        1,
+        "the re-send was written again"
+    );
+}
+
+/// Another batch under a sequence already held is refused and not written: a
+/// reused sequence is not taken as the batch it replaced.
+#[tokio::test]
+async fn a_sequence_reused_for_another_batch_is_refused() {
+    let (broker, _dir) = broker_with(ConsistencyLevel::Leader).await;
+    broker.record_headers_when(|| true);
+    let handler = handler(Arc::clone(&broker), None, Duration::from_secs(1));
+
+    let first = handler.apply(sequenced(b"reading")).await;
+    assert!(
+        matches!(first, InternalMessage::ForwardPublishOk(_)),
+        "{first:?}"
+    );
+    let other = handler.apply(sequenced(b"another reading")).await;
+
+    assert!(
+        matches!(&other, InternalMessage::ForwardPublishError(err) if err.code == ErrorCode::StorageFailed),
+        "{other:?}"
+    );
+    assert_eq!(next_offset(&broker).await, 1);
+}
+
+/// **A re-sent batch on a `Quorum` stream waits for the majority like the
+/// first send did.** The first send's answer is exactly what may have been
+/// lost before a majority held it, so finding the batch in the log is not
+/// enough to acknowledge it.
+#[tokio::test]
+async fn a_resent_quorum_batch_waits_for_the_majority_again() {
+    let (broker, _dir) = broker_with(ConsistencyLevel::Quorum).await;
+    broker.record_headers_when(|| true);
+    let marks = Arc::new(QuorumMarks::new());
+    marks.publish(&shard_key(), GENERATION, 0);
+    let handler = handler(
+        Arc::clone(&broker),
+        Some(Arc::clone(&marks)),
+        Duration::from_millis(300),
+    );
+
+    for send in ["first", "re-send"] {
+        let answer = handler.apply(sequenced(b"reading")).await;
+        assert!(
+            matches!(&answer, InternalMessage::ForwardPublishError(err) if err.code == ErrorCode::StorageFailed),
+            "the {send} was acknowledged without a majority: {answer:?}"
+        );
+    }
+
+    marks.publish(&shard_key(), GENERATION, 1_000);
+    let answer = handler.apply(sequenced(b"reading")).await;
+    assert!(
+        matches!(&answer, InternalMessage::ForwardPublishOk(ok) if ok.offsets() == Some((0, 0))),
+        "{answer:?}"
+    );
+    assert_eq!(next_offset(&broker).await, 1);
 }
 
 /// An owner that does not accept headers refuses a forward that has them, and
@@ -901,6 +1014,7 @@ mod fence {
                 "stream.publish:stream:{TENANT}/{NAMESPACE}/{DURABLE}"
             )]),
             headers: None,
+            producer: None,
         };
 
         assert!(matches!(
@@ -939,6 +1053,7 @@ mod fence {
                 "stream.publish:stream:{TENANT}/{NAMESPACE}/{DURABLE}"
             )]),
             headers: None,
+            producer: None,
         };
         let writer =
             credentials.token(&[&format!("cache.write:cache:{TENANT}/{NAMESPACE}/{CACHE}")]);
