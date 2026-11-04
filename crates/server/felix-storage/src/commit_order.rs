@@ -45,6 +45,7 @@ impl CommitSequencer {
                 resolved: BTreeMap::new(),
                 generation: 0,
                 waiters: BTreeMap::new(),
+                settling: Vec::new(),
             }),
         }
     }
@@ -56,6 +57,31 @@ impl CommitSequencer {
     /// with nothing reserved and unresolved, this equals the log's next offset.
     pub fn next_offset(&self) -> Offset {
         self.state.lock().next
+    }
+
+    /// Bumped by every [`reset`](Self::reset). Read it before choosing the
+    /// `end` given to [`settled`](Self::settled).
+    pub fn generation(&self) -> u64 {
+        self.state.lock().generation
+    }
+
+    /// Wait until every range below `end` has resolved, applied or abandoned,
+    /// or a reset has moved the sequence on from `generation`.
+    ///
+    /// Ranges claimed after this is called do not hold it up unless they sit
+    /// below `end`. After a reset nothing claimed before it can apply, so
+    /// there is nothing left to wait for.
+    pub async fn settled(&self, end: Offset, generation: u64) {
+        let receiver = {
+            let mut state = self.state.lock();
+            if state.generation != generation || state.next >= end {
+                return;
+            }
+            let (sender, receiver) = oneshot::channel();
+            state.settling.push((end, sender));
+            receiver
+        };
+        let _ = receiver.await;
     }
 
     /// Claim the offset range `[first_offset, next_offset)` in the commit order.
@@ -110,7 +136,9 @@ impl CommitSequencer {
             // Wake everyone: a waiter parked on an offset the reset just
             // discarded would otherwise never be released. Its `wait` sees the
             // generation has moved and reports `Superseded`.
-            state.waiters.split_off(&0).into_values().collect()
+            let mut orphaned: Vec<_> = state.waiters.split_off(&0).into_values().collect();
+            orphaned.extend(state.settling.drain(..).map(|(_, sender)| sender));
+            orphaned
         };
         for waiter in orphaned {
             let _ = waiter.send(());
@@ -160,6 +188,9 @@ struct SequenceState {
     /// once that range's own waiter has finished with it, so the waiter at
     /// `next` is the only one whose condition can have just become true.
     waiters: BTreeMap<Offset, oneshot::Sender<()>>,
+    /// Callers of [`CommitSequencer::settled`], with the offset each waits
+    /// for. Almost always empty, so a release pays one length check.
+    settling: Vec<(Offset, oneshot::Sender<()>)>,
 }
 
 impl SequenceState {
@@ -192,6 +223,19 @@ impl SequenceState {
         } else {
             None
         }
+    }
+
+    /// The `settled` callers `next` has now passed, removed from the list.
+    fn take_settled(&mut self) -> Vec<oneshot::Sender<()>> {
+        if self.settling.is_empty() {
+            return Vec::new();
+        }
+        let next = self.next;
+        let (done, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.settling)
+            .into_iter()
+            .partition(|(end, _)| *end <= next);
+        self.settling = waiting;
+        done.into_iter().map(|(_, sender)| sender).collect()
     }
 }
 
@@ -255,7 +299,7 @@ impl CommitTurn<'_> {
 
 impl Drop for CommitTurn<'_> {
     fn drop(&mut self) {
-        let ready = {
+        let woken = {
             let mut state = self.sequencer.state.lock();
             // Dropped mid-wait: take this range's own registration with it, or
             // the entry outlives the waiter and a later release wakes nobody.
@@ -267,10 +311,14 @@ impl Drop for CommitTurn<'_> {
             if state.generation == self.generation {
                 state.resolve(self.first_offset, self.next_offset);
             }
-            state.take_ready()
+            (state.take_ready(), state.take_settled())
         };
         // Outside the lock: the woken task wants this mutex immediately.
+        let (ready, settled) = woken;
         if let Some(waiter) = ready {
+            let _ = waiter.send(());
+        }
+        for waiter in settled {
             let _ = waiter.send(());
         }
     }

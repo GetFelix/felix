@@ -160,16 +160,20 @@ sequenceDiagram
     L-->>B: publish_refused, version_mismatch, owner at 12
 ```
 
-The check and the commit's place in the shard's order happen under one lock
-per shard, so there is no gap between "the key held `n`" and "the commit is
-next". A commit takes its offset before it is durable and visible to readers.
-Each commit with state changes therefore records the keys it will write when it
-takes its offset, and a later check counts those keys at the version they will
-have. The version in a refusal can thus name a commit that is still becoming
-durable. If that commit then fails, the key keeps its old version and the
-refused writer simply retries after reading it again; a precondition is never
-met against a version that is already superseded. Commits take the lock;
-plain publishes do not.
+A commit takes its offset before it is durable and visible to readers, so a
+check that read the state straight away could miss a commit just ahead of it.
+A commit with conditions therefore runs alone on its shard: it takes a
+per-shard gate that stops other commits from taking offsets, waits until every
+commit that already took one has reached the state (or failed, or been undone
+by a leader change), checks the state, and takes its own offset before letting
+the others go. There is no gap between "the key held `n`" and "the commit is
+next", and a precondition is never met against a version that is already
+superseded.
+
+The wait is paid only by commits with conditions: about one commit's
+durability wait, plus, on a `Quorum` stream, until the commits ahead of it
+reach the committed mark. Commits without conditions share the gate and do no
+other work for it. Plain publishes do not take it.
 
 A refusal is `publish_refused` with `version_mismatch`, `key` and `version`
 (absent when the key holds no value). Sent only to a broker that advertised

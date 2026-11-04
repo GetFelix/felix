@@ -6,7 +6,6 @@
 //! and are applied where the event enters the ring. See `crate::commit`.
 
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 use bytes::Bytes;
 
@@ -74,10 +73,10 @@ impl Broker {
     /// Refused with [`BrokerError::VersionMismatch`] on the first that does
     /// not, with nothing written.
     ///
-    /// The checks and the claim run under one lock, and a commit records the
-    /// keys it writes before releasing it, so two commits requiring the same
-    /// version cannot both pass. The claim is still taken in the order the
-    /// lock was won, so the commit sequencer orders commits as before.
+    /// A commit with checks takes the shard's commit gate alone and waits
+    /// until every commit already claimed has reached the state or failed, so
+    /// the state it checks against is final up to its own offset. Commits
+    /// without checks share the gate and pay nothing else.
     pub async fn commit_to_handle_checked(
         &self,
         handle: &StreamHandle,
@@ -87,41 +86,33 @@ impl Broker {
         checks: &[VersionCheck],
         publisher: Option<&Bytes>,
     ) -> Result<PublishOutcome> {
-        if handle.log().is_none() {
+        let Some(log) = handle.log() else {
             return Err(BrokerError::CommitNeedsDurableStream);
-        }
+        };
         let record = CommitRecord {
             event: event.clone(),
             ops,
         };
         let stored = record.encode();
         let events = [event];
-        // Held until the offset is known and the keys are recorded, so a check
-        // sees every commit claimed ahead of it. Commits with no check share
-        // the gate and keep claiming in parallel; one with checks waits for
-        // them and runs alone.
+        // Held until the offset is claimed: a checked commit must not have
+        // another commit claim between its check and its own claim.
         let (shared, exclusive);
         if checks.is_empty() {
-            shared = Some(handle.state.claim_gate.read().await);
+            shared = Some(handle.state.commit_gate.read().await);
             exclusive = None;
         } else {
             shared = None;
-            exclusive = Some(handle.state.claim_gate.write().await);
-        }
-        for check in checks {
-            let read = self.state_get(handle, &check.key).await?;
-            let epoch = handle.state.claims_epoch.load(Ordering::Acquire);
-            let held =
-                handle
-                    .state
-                    .key_claims
-                    .lock()
-                    .current(&check.key, read.version, read.as_of, epoch);
-            if held != check.required {
-                return Err(BrokerError::VersionMismatch {
-                    key: check.key.clone(),
-                    version: held,
-                });
+            exclusive = Some(handle.state.commit_gate.write().await);
+            settle_commits(handle, log).await?;
+            for check in checks {
+                let read = self.state_get(handle, &check.key).await?;
+                if read.version != check.required {
+                    return Err(BrokerError::VersionMismatch {
+                        key: check.key.clone(),
+                        version: read.version,
+                    });
+                }
             }
         }
         let mut claimed = self
@@ -137,24 +128,9 @@ impl Broker {
             )
             .await?
             .expect("a commit claims or is refused");
-        let withdraw = claimed.first_offset().map(|offset| {
-            let epoch = handle.state.claims_epoch.load(Ordering::Acquire);
-            let undo = handle
-                .state
-                .key_claims
-                .lock()
-                .claim(offset, epoch, &record.ops);
-            (offset, undo)
-        });
         drop((shared, exclusive));
         claimed.set_commit(Arc::from(record.ops));
-        let outcome = self.complete_publish(claimed).await;
-        // A caller that goes away mid-wait leaves the claim: the commit still
-        // lands then. Only a failure takes its versions back.
-        if let (Some((offset, undo)), Err(_)) = (withdraw, &outcome) {
-            handle.state.key_claims.lock().withdraw(offset, undo);
-        }
-        outcome
+        self.complete_publish(claimed).await
     }
 
     /// `key` in the shard's state, as of the last commit readers can see.
@@ -206,4 +182,21 @@ impl Broker {
         }
         Err(BrokerError::StateViewBusy)
     }
+}
+
+/// Wait until every commit that claimed an offset on `handle` before this call
+/// has applied to the state view, failed, or been superseded by a reset.
+///
+/// The caller holds the commit gate exclusively, so no commit claims while
+/// this waits. Under it, a commit whose turn has resolved is in the view, in
+/// the hold, or gone; the hold is then waited out below the same offset.
+async fn settle_commits(handle: &StreamHandle, log: &crate::durable::StreamLog) -> Result<()> {
+    let order = &handle.state.commit_sequencer;
+    // Before the tail, so a reset in between ends the wait instead of
+    // leaving it on an offset the new log may not reach.
+    let generation = order.generation();
+    let end = log.tail_offset().await?;
+    order.settled(end, generation).await;
+    handle.state.held.settled(end).await;
+    Ok(())
 }

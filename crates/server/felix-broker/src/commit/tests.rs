@@ -346,52 +346,62 @@ async fn an_ephemeral_stream_refuses_a_commit() {
     ));
 }
 
-/// **A commit that fails takes its claimed versions back.** Left behind, a
-/// claim reports a version no reader will see, and a writer retrying with the
-/// version it read is refused over and over.
-#[test]
-fn a_withdrawn_claim_leaves_the_view_in_charge() {
-    let mut claims = super::KeyClaims::default();
-    let ops = [put("k", b"v")];
-    let undo = claims.claim(20, 0, &ops);
-    assert_eq!(claims.current("k", Some(10), Some(10), 0), Some(20));
-    claims.withdraw(20, undo);
-    assert_eq!(claims.current("k", Some(10), Some(10), 0), Some(10));
-}
+/// **A checked commit waits for every commit claimed ahead of it.** On a
+/// `Quorum` stream a commit past the mark is durable but held from the state,
+/// so a check that read the state straight away would pass against a version
+/// already replaced. The check waits for the hold, then sees the write.
+#[tokio::test]
+async fn a_checked_commit_waits_for_a_held_commit_ahead_of_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (broker, bound) = broker(dir.path(), ConsistencyLevel::Quorum).await;
+    let broker = Arc::new(broker);
+    let handle = broker
+        .resolve_stream_handle("t1", "ns", "orders", 0)
+        .await
+        .expect("handle");
+    assert_eq!(commit(&broker, b"seed", vec![put("k", b"0")]).await, 0);
+    assert_eq!(get(&broker, "k").await.version, Some(0));
 
-/// A claim a later commit has replaced is not the withdrawn commit's to take
-/// back.
-#[test]
-fn withdrawing_leaves_a_later_claim() {
-    let mut claims = super::KeyClaims::default();
-    let first = claims.claim(20, 0, &[put("k", b"a")]);
-    claims.claim(21, 0, &[put("k", b"b")]);
-    claims.withdraw(20, first);
-    assert_eq!(claims.current("k", Some(10), Some(10), 0), Some(21));
-}
+    *bound.0.lock() = ReadBound::Committed(1);
+    // Held: answered, but not in the state yet.
+    assert_eq!(commit(&broker, b"w", vec![put("k", b"1")]).await, 1);
+    assert_eq!(get(&broker, "k").await.version, Some(0));
 
-/// **A claim from before the view was dropped is void.** A reset or a new
-/// timeline can reuse the claim's offset for a different record.
-#[test]
-fn a_claim_from_an_older_epoch_is_ignored() {
-    let mut claims = super::KeyClaims::default();
-    claims.claim(20, 0, &[put("k", b"v")]);
-    assert_eq!(claims.current("k", Some(10), Some(15), 1), Some(10));
-}
-
-/// **Commits without checks claim in parallel, so a lower offset can be
-/// recorded after a higher one.** The higher offset still decides the version.
-#[test]
-fn an_earlier_offset_recorded_late_does_not_replace_a_later_one() {
-    let mut claims = super::KeyClaims::default();
-    let put = |v: &'static [u8]| StateOp::Put {
-        key: "k".into(),
-        value: Bytes::from_static(v),
+    let checked = {
+        let (broker, handle) = (Arc::clone(&broker), handle.clone());
+        tokio::spawn(async move {
+            broker
+                .commit_to_handle_checked(
+                    &handle,
+                    Bytes::from_static(b"c"),
+                    vec![put("k", b"2")],
+                    None,
+                    &[super::VersionCheck {
+                        key: "k".to_owned(),
+                        required: Some(0),
+                    }],
+                    None,
+                )
+                .await
+        })
     };
-    claims.claim(21, 0, &[put(b"b")]);
-    let late = claims.claim(20, 0, &[put(b"a")]);
-    assert_eq!(claims.current("k", Some(10), Some(10), 0), Some(21));
-    // Withdrawing the late one leaves the later claim alone.
-    claims.withdraw(20, late);
-    assert_eq!(claims.current("k", Some(10), Some(10), 0), Some(21));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!checked.is_finished(), "checked against a held commit");
+
+    *bound.0.lock() = ReadBound::Committed(2);
+    handle.release_committed();
+    let checked = tokio::time::timeout(Duration::from_secs(5), checked)
+        .await
+        .expect("released with the hold")
+        .expect("task");
+    assert!(
+        matches!(
+            checked,
+            Err(BrokerError::VersionMismatch {
+                version: Some(1),
+                ..
+            })
+        ),
+        "{checked:?}"
+    );
 }

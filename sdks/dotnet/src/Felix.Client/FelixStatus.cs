@@ -33,4 +33,6 @@ public enum FelixStatus
     OutcomeUnknown = 27,
     /// <summary>The broker does not support the operation.</summary>
     Unsupported = 28,
+    /// <summary>A commit required a key to hold a version it does not hold. Nothing was written; read the key again before retrying.</summary>
+    VersionMismatch = 29,
 }

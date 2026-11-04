@@ -12,6 +12,7 @@ public class ExceptionMappingTests
     [InlineData(FelixStatus.NotFound, false)]
     [InlineData(FelixStatus.OutcomeUnknown, false)]
     [InlineData(FelixStatus.InvalidArgument, false)]
+    [InlineData(FelixStatus.VersionMismatch, false)]
     public void RetryClassMatchesTheCAbi(FelixStatus status, bool retryable)
     {
         var error = Assert.IsType<FelixException>(FelixException.FromStatus((int)status, "m"));
@@ -26,6 +27,14 @@ public class ExceptionMappingTests
         Assert.True(error.OutcomeUnknown);
         Assert.False(error.IsRetryable);
         Assert.Equal("may have landed", error.Message);
+    }
+
+    [Fact]
+    public void VersionMismatchIsItsOwnStatus()
+    {
+        var error = Assert.IsType<FelixException>(FelixException.FromStatus(29, "k holds 12"));
+        Assert.Equal(FelixStatus.VersionMismatch, error.Status);
+        Assert.False(error.IsRetryable);
     }
 
     [Fact]

@@ -36,11 +36,8 @@ pub(crate) struct StreamState {
     // In-memory log for cursor-based replay.
     pub(crate) log_state: Mutex<LogState>,
     // A commit holds it across its claim: shared without version checks,
-    // exclusive with them.
-    pub(crate) claim_gate: tokio::sync::RwLock<()>,
-    pub(crate) key_claims: Mutex<crate::commit::KeyClaims>,
-    // Bumped wherever the state view is dropped; claims of an older one are void.
-    pub(crate) claims_epoch: std::sync::atomic::AtomicU64,
+    // exclusive with them. Fair, so a checked commit is not starved.
+    pub(crate) commit_gate: tokio::sync::RwLock<()>,
     // Per-subscriber bounded queue depth.
     pub(crate) subscriber_queue_capacity: usize,
     // Queue admission policy when subscriber queue is full.
@@ -168,9 +165,7 @@ impl StreamState {
                 generation_start_run: None,
                 state_view: None,
             }),
-            claim_gate: tokio::sync::RwLock::new(()),
-            key_claims: Mutex::default(),
-            claims_epoch: std::sync::atomic::AtomicU64::new(0),
+            commit_gate: tokio::sync::RwLock::new(()),
             subscriber_queue_capacity,
             subscriber_queue_policy,
             subscriber_queue_bytes,
@@ -312,8 +307,6 @@ impl StreamState {
         state.log.trim(capacity);
         state.next_seq = next_seq;
         state.state_view = None;
-        self.claims_epoch
-            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         state.next_seq = next_seq;
         // The commit order is keyed on disk offsets, so it has to restart from
         // the recovered tail too, or the first publish after a restart would
@@ -357,8 +350,6 @@ impl StreamState {
         state.next_seq = next_seq;
         state.generation_start_run = None;
         state.state_view = None;
-        self.claims_epoch
-            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         // Writes arriving as a follower: whatever this broker held as a
         // leader was not committed under it.
         self.held.discard();
@@ -387,8 +378,6 @@ impl StreamState {
         state.next_seq = next_seq;
         state.generation_start_run = None;
         state.state_view = None;
-        self.claims_epoch
-            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         self.held.discard();
         self.commits.reset();
         // Under the ring lock, as in `advance_to`.

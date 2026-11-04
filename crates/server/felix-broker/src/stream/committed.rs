@@ -71,6 +71,9 @@ pub(crate) struct CommitHold {
     queue: Mutex<Queue>,
     /// Wakes a release waiting for the bound to cover the front batch.
     wake: tokio::sync::Notify,
+    /// Wakes [`CommitHold::settled`] callers once a release pass finishes or
+    /// the hold is discarded.
+    passed: tokio::sync::Notify,
 }
 
 impl CommitHold {
@@ -168,6 +171,7 @@ impl CommitHold {
         {
             ready.extend(queue.held.pop_front());
         }
+        queue.releasing_from = ready.first().map(|batch| batch.first_offset);
         if !ready.is_empty() || queue.again {
             return Pass::Ready(ready);
         }
@@ -179,6 +183,37 @@ impl CommitHold {
         Pass::Done
     }
 
+    /// Called by the release once it has appended what [`Self::take_ready`]
+    /// last gave it.
+    pub(crate) fn finished_pass(&self) {
+        self.queue.lock().releasing_from = None;
+        self.passed.notify_waiters();
+    }
+
+    /// Wait until no batch below `end` is held or part way through its
+    /// release. Batches that join after this is called must start at or past
+    /// `end`, or it can wait on them too.
+    pub(crate) async fn settled(&self, end: u64) {
+        loop {
+            let passed = self.passed.notified();
+            tokio::pin!(passed);
+            passed.as_mut().enable();
+            if !self.is_busy() {
+                return;
+            }
+            {
+                let queue = self.queue.lock();
+                let below = |first: u64| first < end;
+                if !queue.held.front().is_some_and(|b| below(b.first_offset))
+                    && !queue.releasing_from.is_some_and(below)
+                {
+                    return;
+                }
+            }
+            passed.await;
+        }
+    }
+
     /// Drop everything held. For a shard this broker stopped leading: what
     /// it holds was never committed under its leadership, and the next
     /// leader's log is the one readers follow.
@@ -187,6 +222,7 @@ impl CommitHold {
         let dropped = queue.held.len();
         queue.held.clear();
         self.busy.store(queue.releasing, Ordering::SeqCst);
+        self.passed.notify_waiters();
         if queue.releasing {
             self.wake.notify_one();
         }
@@ -250,6 +286,9 @@ struct Queue {
     releasing: bool,
     /// The bound may have moved since the running release last read it.
     again: bool,
+    /// Where the batches the running release has taken but not yet appended
+    /// start.
+    releasing_from: Option<u64>,
 }
 
 impl Queue {
