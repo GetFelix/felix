@@ -937,6 +937,7 @@ VARIABLES
     installed,  \* history, under `SetCheck`: each <<set's generation, set, previous sets>> a set change opened, and its generation under `StintStarts`
     cpNext,     \* under `Swaps`, the set a cut-over is moving to while the old one is still the control plane's: {} when none
     cpNextGen,  \* the generation that set was written at
+    cpLeft,     \* under `LogDropsSets`, the control plane's set right before each generation
     cutOver,    \* ghost, under `SplitAtCutOver`: <<>>, or what the first cut-over found (CutOverTag)
     splits,     \* ghost, under `Backoff`: how many candidates stood while another's round was open
     sid,        \* each broker's storage identity, which a wipe changes
@@ -964,7 +965,7 @@ counterVars == << clog, chwm, cconfirmed, canswered, cacked >>
 
 \* The set each broker knows, beside `mine`, and a set change's old set; the
 \* control plane's pending set change, and the ghost that a cut-over sets.
-nextVars == << cpNext, cpNextGen, cutOver, splits >>
+nextVars == << cpNext, cpNextGen, cutOver, splits, cpLeft >>
 setVars == << setGen, oldSet, installed, nextVars >>
 
 \* Storage identities and registrations: only a wipe, a crash, a leader
@@ -1100,6 +1101,17 @@ SetUnknown(b) == {} \in oldSet[b]
 \* The set the control plane's assignment names.
 CpSet == ReplicaSet \cup joining
 
+\* A step that writes the next generation records `set` as the one before
+\* it, for `LogDropsSets` alone. Every other step that writes a generation
+\* leaves it, which `LeftRecorded` catches.
+RecordLeft(set) == cpLeft' = IF LogDropsSets THEN Append(cpLeft, set) ELSE cpLeft
+
+\* What a batch raising the set teaches as the set being left: the control
+\* plane's set before the batch's generation, as `check_batch_set` in
+\* replica/election.rs takes it from `set_before` with no set of its own.
+BatchLeaving(b) ==
+    IF JointFence /\ setGen[b] \in 1..Len(cpLeft) THEN {cpLeft[setGen[b]]} \ {{}} ELSE {}
+
 \* The sets a failover's fence leaves, `own` the promoted broker's.
 FailoverOldSets(own) ==
     (IF FenceOwnSet THEN {own} ELSE {}) \cup (IF FenceRecordedSet THEN {CpSet} ELSE {})
@@ -1119,8 +1131,8 @@ HoldsRecordOf(b, g) == \E i \in 1..Len(log[b]) : log[b][i].lg = g
 
 \* Under `LogDropsSets` the sets are kept as `accept_set_keeping_earlier`
 \* keeps them (disk_log/set.rs): a set at the generation `f` keeps changes
-\* nothing. A newer one takes what it carries (none from a batch, whose
-\* route keeps no set being left) and, under `JointFence` and unless `f`'s
+\* nothing. A newer one takes what it carries (from a batch, the control
+\* plane's set before it, `BatchLeaving`) and, under `JointFence` and unless `f`'s
 \* log holds a record of its own set's generation, that set and the sets it
 \* kept. The model's logs are durable whole: no cfg with these sets loses a
 \* tail. A raise that would hold more than `KeptSetsCap` + 1 distinct sets
@@ -1132,7 +1144,7 @@ LearnSetFrom(f, b, batch) ==
          /\ IF LogDropsSets
             THEN LET carried == IF JointFence /\ setGen[f] > 0 /\ ~HoldsRecordOf(f, setGen[f])
                                 THEN ({mine[f]} \cup oldSet[f]) \ {{}} ELSE {}
-                     sent == IF batch THEN {} ELSE oldSet[b]
+                     sent == IF batch THEN BatchLeaving(b) ELSE oldSet[b]
                      kept == IF batch /\ BatchDropsSets THEN {}
                              ELSE (sent \cup carried) \ {mine[b]}
                      had == {mine[f]} \cup oldSet[f]
@@ -1371,6 +1383,7 @@ Init ==
     /\ installed = {}
     /\ cpNext = {}
     /\ cpNextGen = 0
+    /\ cpLeft = <<{}>>
     /\ cutOver = <<>>
     /\ splits = 0
     /\ IdInit
@@ -2059,6 +2072,7 @@ Promote(v, f, views) ==
     \* A failover writes the control plane's set at the new generation, which
     \* abandons a cut-over's pending change.
     /\ cpNext' = {} /\ cpNextGen' = 0
+    /\ RecordLeft(CpSet)
     /\ cutOver' = IF SplitAtFailover /\ cutOver = <<>> THEN <<FailoverTag(f)>> ELSE cutOver
     /\ UNCHANGED << installed, ackGen, splits >>
     /\ joining' = {}
@@ -2388,7 +2402,7 @@ Elect(f) ==
     \* A replica standing while a set change is pending fences the old set too.
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, hbOut, hbAt,
                     log, hwm, halted, acked, writes, staleCommit, opened, ackGen,
-                    setGen, oldSet, installed, cpNext, cpNextGen, cutOver >>
+                    setGen, oldSet, installed, cpNext, cpNextGen, cutOver, cpLeft >>
     /\ UNCHANGED handoffVars
 
 \* Under `Backoff`, a candidate whose round failed gives it up and waits: the
@@ -2907,7 +2921,7 @@ CpAdopt(v, b, views) ==
             /\ draining' = FALSE
             \* Without `AdoptMatch` the adopted set replaces a pending one.
             /\ (IF AdoptMatch THEN UNCHANGED nextVars
-                ELSE cpNext' = {} /\ cpNextGen' = 0 /\ UNCHANGED << cutOver, splits >>)
+                ELSE cpNext' = {} /\ cpNextGen' = 0 /\ UNCHANGED << cutOver, splits, cpLeft >>)
        ELSE UNCHANGED << leader, cpExpiry, report, draining, nextVars >>
     /\ UNCHANGED << now, clock, inflight, bgen, bexpiry, hbOut, hbAt, log, hwm, halted,
                     queued, pending, acked, writes, staleCommit >>
@@ -3002,6 +3016,7 @@ Swap(v, f, views) ==
                        THEN <<CutOverTag(leader \in S, f)>> ELSE cutOver
          /\ UNCHANGED splits
     /\ cpNextGen' = gen + 1
+    /\ RecordLeft(CpSet)
     /\ setGen' = [setGen EXCEPT ![f] = gen + 1]
     /\ oldSet' = [oldSet EXCEPT ![f] = {CpSet}]
     /\ ver' = ver + 1
@@ -3045,7 +3060,7 @@ CpFlip ==
         /\ StartAcked(l, bgen[l])
         /\ CStartHeld(l, bgen[l])
     /\ out' = (out \cup CpSet) \ cpNext
-    /\ cpNext' = {} /\ cpNextGen' = 0 /\ UNCHANGED << cutOver, splits >>
+    /\ cpNext' = {} /\ cpNextGen' = 0 /\ UNCHANGED << cutOver, splits, cpLeft >>
     /\ ver' = ver + 1
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit,
@@ -3089,6 +3104,7 @@ CpFlipNamed ==
     /\ FlipReported
     /\ out' = (out \cup CpSet) \ cpNext
     /\ cpNext' = {} /\ cpNextGen' = 0 /\ UNCHANGED << cutOver, splits >>
+    /\ RecordLeft(cpNext)
     /\ ver' = ver + 1
     /\ gen' = gen + 1
     /\ cpExpiry' = now + L
@@ -3791,6 +3807,9 @@ PlacementKnowsLearners ==
 \* misleads there: an elected leader that steps down leaves a deposed one as
 \* the newest (FelixShardElectStepDown.cfg), and a candidate's promise to
 \* itself that reached nobody hides the leader below it.
+\* Under `LogDropsSets`, every generation's set before it is recorded.
+LeftRecorded == LogDropsSets => Len(cpLeft) = gen
+
 AckedHeldByLeader ==
     IF TracksOpens
     THEN \A b \in Brokers : (bgen[b] > 0 /\ ~fencing[b] /\ <<bgen[b], b>> \in opened) =>
@@ -4023,6 +4042,7 @@ TypeOK ==
     /\ setGen \in [Brokers -> Nat]
     /\ oldSet \in [Brokers -> SUBSET SUBSET Brokers]
     /\ cpNext \subseteq Brokers /\ cpNextGen \in Nat
+    /\ cpLeft \in Seq(SUBSET Brokers)
     /\ Len(cutOver) <= (IF SplitAtCutOver \/ SplitAtFailover THEN 1 ELSE 0)
     /\ splits \in 0..Splits
     /\ \A a \in ackGen : a[1] \in 1..MaxWrites /\ a[2] \in Nat
