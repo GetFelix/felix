@@ -124,9 +124,16 @@ impl ReplicaHandler {
         if let Some(refusal) = stale_set(correlation_id, key, log, stamped) {
             return Some(refusal);
         }
-        // A leader stamps its route generation, which is the batch's own. Any
-        // other stamp is refused as StaleRoute (retried) rather than StaleSet,
-        // which would halt a leader that is not at fault.
+        // The set this replica keeps: nothing to learn (`SetCurrent` in the
+        // model). An elected leader stamps it below its own generation, since
+        // standing does not change the set it was fenced on.
+        if stamped == log.set_generation() {
+            return None;
+        }
+        // A leader the control plane named stamps its route generation, which
+        // is the batch's own. Any other stamp is refused as StaleRoute
+        // (retried) rather than StaleSet, which would halt a leader that is
+        // not at fault.
         if stamped != generation {
             metrics::record_replicated(metrics::OUTCOME_REFUSED);
             return Some(refused(
@@ -137,9 +144,6 @@ impl ReplicaHandler {
                     "the set of generation {stamped} does not match the batch's generation {generation}"
                 ),
             ));
-        }
-        if stamped == log.set_generation() {
-            return None;
         }
         let snapshot = self.router.snapshot();
         let Some(route) = snapshot
@@ -156,7 +160,45 @@ impl ReplicaHandler {
                 ),
             ));
         };
-        let set = crate::replica_set::kept(route, None);
+        let mut set = crate::replica_set::kept(route, None);
+        match self.joint_gate() {
+            None => return Some(undecided(correlation_id, key)),
+            // Under `joint_fence` the leader keeps the set before as the one
+            // being left, and whoever stands next fences it. This copy's own
+            // older set may not be that one (an elected leader's, say), so
+            // only the control plane's is taken, and without it only the
+            // fence teaches the set (`LearnsLeavingSet` in the model). A
+            // wiped learner neither votes, stands nor leads, and stops being
+            // a learner only once it holds the generation's start record,
+            // which follows everything the set being left held, so it learns
+            // the set without one. A staged learner may lead, and a wiped
+            // voter votes, so neither does.
+            Some(true) => {
+                match crate::promotion::set_before(None, route, self.router.prior_set(key).as_ref())
+                {
+                    Ok(before) => {
+                        set.leaving = Some(before.unwrap_or(Membership {
+                            generation: route.generation.saturating_sub(1),
+                            members: Vec::new(),
+                        }));
+                    }
+                    Err(_) if self.keeps_wiped_learner(log, &set.current) => {}
+                    Err(_) => {
+                        metrics::record_replicated(metrics::OUTCOME_REFUSED);
+                        return Some(refused(
+                            correlation_id,
+                            ErrorCode::StaleRoute,
+                            0,
+                            format!(
+                                "this broker does not know the set before generation {stamped}; \
+                             a fence carries it"
+                            ),
+                        ));
+                    }
+                }
+            }
+            Some(false) => {}
+        }
         if let Some(refusal) = self.refuse_undecided(correlation_id, key, log, &set.current) {
             return Some(refusal);
         }
@@ -229,6 +271,13 @@ impl ReplicaHandler {
         self.replaced_storage && !(generation == 1 && names_own) && log.replica_set().is_none()
     }
 
+    /// Whether this copy keeps `set` as a wiped learner, as
+    /// [`Self::mark_local`] marks it.
+    fn keeps_wiped_learner(&self, log: &felix_broker::StreamLog, set: &Membership) -> bool {
+        (self.is_learner(log) && self.is_wiped(log))
+            || (self.joint_gate() == Some(true) && self.names_other_in(log, set))
+    }
+
     fn names_other_in(&self, log: &felix_broker::StreamLog, set: &Membership) -> bool {
         let members = || {
             set.members
@@ -261,8 +310,7 @@ impl ReplicaHandler {
     /// either mark.
     fn mark_local(&self, log: &felix_broker::StreamLog, mut set: ReplicaSet) -> ReplicaSet {
         let local = self.router.local_node_id();
-        let evidence =
-            self.non_voting_gate() == Some(true) && self.names_other_in(log, &set.current);
+        let evidence = self.joint_gate() == Some(true) && self.names_other_in(log, &set.current);
         let learner = self.is_learner(log) || evidence;
         let wiped = self.is_wiped(log) || evidence;
         let leaving = set
@@ -294,7 +342,7 @@ impl ReplicaHandler {
         log: &felix_broker::StreamLog,
         set: &Membership,
     ) -> Option<InternalMessage> {
-        (self.non_voting_gate().is_none() && !self.is_learner(log) && self.names_other_in(log, set))
+        (self.joint_gate().is_none() && !self.is_learner(log) && self.names_other_in(log, set))
             .then(|| undecided(correlation_id, key))
     }
 
@@ -347,7 +395,7 @@ impl ReplicaHandler {
             Some(election) => self.names_other_in_view(own, &election.set),
             None => self.replaced_copy_of(own, request.shard.generation, false),
         };
-        match self.non_voting_gate() {
+        match self.joint_gate() {
             _ if !learner && !evidence => return None,
             None if !learner => return Some(undecided(correlation_id, key)),
             Some(false) if !learner => return None,
@@ -560,7 +608,10 @@ impl ReplicaHandler {
         if log.accepted_generation() >= request.shard.generation {
             return answer(Some(PreVoteRefusal::StaleGeneration));
         }
-        if self.heard_leader_within(&key) {
+        // The leader itself refuses: it hears its own leadership, and a yes
+        // from it lets one follower whose detector misfired win a majority
+        // against it (#1815, `NoStandAgainstHeardLeader`).
+        if self.heard_leader_within(&key) || self.leads(&key, &log) {
             return answer(Some(PreVoteRefusal::LeaderReachable));
         }
         let Ok(end) = log.tail_offset().await else {
@@ -578,6 +629,22 @@ impl ReplicaHandler {
     /// broker without `ELECTION` takes no lock here.
     pub(super) fn heard_leader(&self, key: &felix_router::ShardKey) {
         self.heard.lock().insert(key.clone(), Instant::now());
+    }
+
+    /// Whether this broker's route names it leader of `key`, its log has
+    /// opened at that generation at least once, and has not promised past it.
+    /// A route naming it is not enough: one that went stale while this broker
+    /// was cut off would keep refusing a live majority's election for as long
+    /// as nobody fences it.
+    fn leads(&self, key: &felix_router::ShardKey, log: &felix_broker::StreamLog) -> bool {
+        self.router.snapshot().get(key).is_some_and(|route| {
+            route.leader.node_id == self.router.local_node_id()
+                && route.generation >= log.accepted_generation()
+                && log
+                    .generations()
+                    .last()
+                    .is_some_and(|epoch| epoch.generation == route.generation)
+        })
     }
 
     fn heard_leader_within(&self, key: &felix_router::ShardKey) -> bool {

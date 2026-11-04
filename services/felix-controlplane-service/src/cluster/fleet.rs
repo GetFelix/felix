@@ -126,16 +126,20 @@ where
     )))
 }
 
-/// Refuse to enable [`felix_common::fleet::PEER_ELECTION`] or
-/// [`felix_common::fleet::START_HOLDERS`]. They are reports, not features: a
+/// Refuse to enable [`felix_common::fleet::PEER_ELECTION`],
+/// [`felix_common::fleet::START_HOLDERS`] or
+/// [`felix_common::fleet::NON_VOTING`]. They are reports, not features: a
 /// broker states them so the control plane can gate other finalizes, and
 /// enabling one would make [`admit`] refuse every broker that predates it.
 ///
 /// Checked when the operator asks, like [`check_prerequisites`], so a Raft
 /// member applying the finalize decides the same as one on an older release.
 pub(crate) fn check_operator_finalizable(feature: &str) -> Result<(), StoreError> {
-    use felix_common::fleet::{PEER_ELECTION, START_HOLDERS};
-    if feature == PEER_ELECTION.name() || feature == START_HOLDERS.name() {
+    use felix_common::fleet::{NON_VOTING, PEER_ELECTION, START_HOLDERS};
+    if [PEER_ELECTION, START_HOLDERS, NON_VOTING]
+        .iter()
+        .any(|report| feature == report.name())
+    {
         return Err(StoreError::Conflict(format!(
             "cannot finalize {feature}: it is how a broker reports a capability, not a \
              feature; finalize the feature that needs it"
@@ -185,12 +189,12 @@ pub(crate) fn check_prerequisites(
 /// broker offers the `ELECTION` capability (reported as
 /// [`felix_common::fleet::PEER_ELECTION`]), for `joint_fence` unless every
 /// serving broker names start holders in its reports
-/// ([`felix_common::fleet::START_HOLDERS`]), and, for `replica_election`,
-/// `metadata_level_ready` says the control plane keeps the pending replica set
-/// and adopts elected leaders, and `joint_fence_ready` says `joint_fence` may be
-/// finalized at all.
+/// ([`felix_common::fleet::START_HOLDERS`]) and keeps a wiped copy from
+/// voting ([`felix_common::fleet::NON_VOTING`]), and, for `replica_election`,
+/// unless `metadata_level_ready` says the control plane keeps the pending
+/// replica set and adopts elected leaders.
 /// Any other feature passes. Under Raft the finalize also needs every member
-/// at metadata level 21 (`replica_election`) or 23 (`joint_fence`), which the
+/// at metadata level 26 (`replica_election`) or 23 (`joint_fence`), which the
 /// store checks as it proposes.
 ///
 /// Checked when the operator asks, like [`check_prerequisites`]: a Raft member
@@ -201,12 +205,13 @@ pub(crate) fn check_election<'a, I>(
     nodes: I,
     feature: &str,
     metadata_level_ready: bool,
-    joint_fence_ready: bool,
 ) -> Result<(), StoreError>
 where
     I: IntoIterator<Item = &'a Node>,
 {
-    use felix_common::fleet::{JOINT_FENCE, PEER_ELECTION, REPLICA_ELECTION, START_HOLDERS};
+    use felix_common::fleet::{
+        JOINT_FENCE, NON_VOTING, PEER_ELECTION, REPLICA_ELECTION, START_HOLDERS,
+    };
     let needs_level = feature == REPLICA_ELECTION.name();
     let is_joint_fence = feature == JOINT_FENCE.name();
     if !needs_level && !is_joint_fence {
@@ -231,10 +236,15 @@ where
             without_holders.join(", "),
         )));
     }
-    if is_joint_fence && !joint_fence_ready {
+    // A broker that lets a wiped copy vote could elect it, or count its acks,
+    // before it holds what it acknowledged. Checked here, not left to release
+    // order, so a fleet mixing builds stays safe.
+    let voting_wiped = lacking(nodes.iter().copied(), NON_VOTING.name());
+    if is_joint_fence && !voting_wiped.is_empty() {
         return Err(StoreError::Conflict(format!(
-            "cannot finalize {feature}: the control plane cannot yet re-admit a learner or \
-             keep placement off one, which joint fences need",
+            "cannot finalize {feature}: serving broker(s) {} let a wiped copy vote; \
+             upgrade them first",
+            voting_wiped.join(", "),
         )));
     }
     if needs_level && !metadata_level_ready {
@@ -246,17 +256,10 @@ where
     Ok(())
 }
 
-/// Whether `replica_election` may be finalized. The metadata it needs (the
-/// pending replica set and adoption) is in, but the election driver (#1009
-/// S9) flips this only once joint fences (S5), two-majority acks (S6b) and
-/// the wiped-voter guard (S8) are in too.
-pub(crate) const ELECTION_METADATA_LEVEL_READY: bool = false;
-
-/// Whether `joint_fence` may be finalized. A finalize is irreversible. The
-/// control plane now re-admits a replaced copy and keeps placement off a
-/// learner (#1737), but this stays false until an end-to-end cluster test
-/// shows it and `NON_VOTING_READY` in `quorum.rs` is flipped.
-pub(crate) const JOINT_FENCE_READY: bool = false;
+/// Whether `replica_election` may be finalized: the control plane keeps the
+/// pending replica set and adopts elected leaders, and brokers that report
+/// the feature stand for election. `joint_fence` must be finalized first.
+pub(crate) const ELECTION_METADATA_LEVEL_READY: bool = true;
 
 /// The features a cluster created on this release starts with. A finalize
 /// is one-way so that an upgraded fleet can still roll back before it, and a
@@ -267,7 +270,7 @@ pub(crate) const JOINT_FENCE_READY: bool = false;
 /// operator's: it grows every record by its publisher's id and keeps
 /// principal ids in the log, an opt-in a lone broker also leaves off unless
 /// `FELIX_RECORD_PUBLISHERS` asks for it.
-pub(crate) const NEW_CLUSTER: [felix_common::fleet::FleetFeature; 10] = [
+pub(crate) const NEW_CLUSTER: [felix_common::fleet::FleetFeature; 11] = [
     felix_common::fleet::GENERATION_START,
     felix_common::fleet::MAJORITY_ACK,
     felix_common::fleet::LEASE_FREE_READS,
@@ -278,6 +281,7 @@ pub(crate) const NEW_CLUSTER: [felix_common::fleet::FleetFeature; 10] = [
     felix_common::fleet::STREAM_INCARNATIONS,
     felix_common::fleet::CACHE_INCARNATIONS,
     felix_common::fleet::HEAD_TRIM,
+    felix_common::fleet::RECORD_HEADERS,
 ];
 
 /// Whether `store` is a cluster created on this release, so far untouched: no
@@ -452,10 +456,23 @@ async fn finalize_in_order(
     if !store.every_member_current().await {
         return (enabled, true);
     }
+    let Ok(nodes) = store.list_nodes().await else {
+        return (enabled, true);
+    };
     let mut again = false;
     for feature in NEW_CLUSTER {
         let name = feature.name();
         if enabled.contains(name) || check_prerequisites(&enabled, name).is_err() {
+            continue;
+        }
+        // The operator's readiness gates hold here too; the store does not
+        // check them.
+        if let Err(err) = check_election(&nodes, name, ELECTION_METADATA_LEVEL_READY) {
+            tracing::info!(
+                feature = name,
+                error = %err,
+                "not finalizing a fleet feature for a new cluster",
+            );
             continue;
         }
         match store.finalize_fleet_feature(name).await {

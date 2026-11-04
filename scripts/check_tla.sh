@@ -435,9 +435,10 @@ fi
 # FelixShardElectAdoptFailover is checked in pieces split at the first
 # failover (FelixShardElectAdoptFailover{Same,Apart}{0,1}{,Stood}Gen{2,3,4}).
 # The twelve registered above are empty: no first failover reaches them, and
-# each checks it stays so. FelixShardElectAdoptFailover{Same0,Apart0,Apart1}Gen4
-# run nightly. The other nine did not finish in a measuring run, so nothing
-# checks them yet.
+# each checks it stays so. FelixShardElectAdoptFailover{Same0,Apart0,Apart1,Same1}Gen4
+# and Same1Gen2 run nightly. Same{0,1}Gen{2,3} without Same1Gen2, Apart{0,1}Gen3
+# did not finish in six hours, so nothing checks them yet. Same{0,1}StoodGen2
+# are split again (Stood{One,Several}{Dest,Other}) and not measured yet.
 
 # Minutes each of the longer configurations takes on a four-core CI runner,
 # from the `Finished in` lines of a CI run (a new one is a guess until it has

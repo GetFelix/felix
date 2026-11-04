@@ -5,6 +5,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use felix_authz::{Action, Namespace, PermissionMatcher, StreamName, TenantId, stream_resource};
 
 /// Why a `CONNECT` was not accepted.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,22 +33,48 @@ pub trait Authenticator: Send + Sync {
 
 type RevokedFn = dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync;
 
-/// An authenticated connection's tenant and how long the credential behind it
-/// lasts.
+/// An authenticated connection's tenant, what it may do, and how long the
+/// credential behind it lasts.
 #[derive(Clone)]
 pub struct Principal {
     tenant_id: String,
+    access: Access,
     expires_at: Option<i64>,
     revoked: Option<Arc<RevokedFn>>,
 }
 
+#[derive(Clone)]
+enum Access {
+    /// The development switch: every stream of the tenant.
+    Anonymous,
+    Token(Option<PermissionMatcher>),
+}
+
 impl Principal {
+    /// A tenant's connection with no permissions yet; give it some with
+    /// [`Self::with_permissions`]. Until then it may publish nowhere.
     pub fn new(tenant_id: impl Into<String>) -> Self {
         Self {
             tenant_id: tenant_id.into(),
+            access: Access::Token(None),
             expires_at: None,
             revoked: None,
         }
+    }
+
+    /// A connection that sent no credentials, allowed every stream of
+    /// `tenant_id`. Only for the anonymous development switch.
+    pub fn anonymous(tenant_id: impl Into<String>) -> Self {
+        Self {
+            access: Access::Anonymous,
+            ..Self::new(tenant_id)
+        }
+    }
+
+    /// What the verified token allows, as a QUIC publish checks it.
+    pub fn with_permissions(mut self, matcher: PermissionMatcher) -> Self {
+        self.access = Access::Token(Some(matcher));
+        self
     }
 
     /// The credential stops being valid at `expires_at` (seconds since the
@@ -69,6 +96,23 @@ impl Principal {
 
     pub fn tenant_id(&self) -> &str {
         &self.tenant_id
+    }
+
+    /// Whether this principal may publish to a stream: `stream.publish` on the
+    /// stream's resource, the check a QUIC publish makes.
+    pub(crate) fn may_publish(&self, namespace: &str, stream: &str) -> bool {
+        match &self.access {
+            Access::Anonymous => true,
+            Access::Token(None) => false,
+            Access::Token(Some(matcher)) => matcher.allows(
+                Action::StreamPublish,
+                &stream_resource(
+                    &TenantId::new(&self.tenant_id),
+                    &Namespace::new(namespace),
+                    &StreamName::new(stream),
+                ),
+            ),
+        }
     }
 
     pub(crate) fn expires_at(&self) -> Option<i64> {

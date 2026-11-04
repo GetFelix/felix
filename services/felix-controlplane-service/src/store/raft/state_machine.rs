@@ -388,8 +388,9 @@ impl MetadataStateMachine {
                 key,
                 expected_generation,
                 elected,
+                elected_set,
             } => store
-                .adopt_elected_leader(&key, expected_generation, elected)
+                .apply_adopt_elected_leader(&key, expected_generation, &elected, elected_set)
                 .await
                 .map(assignment_written)
                 .map_err(Into::into),

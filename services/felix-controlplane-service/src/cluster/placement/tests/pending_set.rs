@@ -18,11 +18,9 @@ const ELECTION: [&str; 5] = [
     "replica_election",
 ];
 
-/// Brokers a to d offering the election features, a durable `Quorum` stream
-/// of three copies, and a shard fenced for a move from a to b with c the
-/// other follower. a is draining, so the cut-over drops it and tops the set
-/// up with d: {a, b, c} becomes {b, c, d}.
-pub(super) async fn fenced_move(finalize: bool) -> (InMemoryStore, ShardAssignment) {
+/// `brokers` offering the election features, finalized with `finalize`,
+/// and a durable `Quorum` stream "orders" of three copies.
+pub(super) async fn election_store(brokers: &[&str], finalize: bool) -> InMemoryStore {
     let store = InMemoryStore::new(StoreConfig {
         changes_limit: 1000,
         change_retention_max_rows: Some(1000),
@@ -49,10 +47,7 @@ pub(super) async fn fenced_move(finalize: bool) -> (InMemoryStore, ShardAssignme
         })
         .await
         .expect("stream");
-    for (i, id) in ["broker-a", "broker-b", "broker-c", "broker-d"]
-        .iter()
-        .enumerate()
-    {
+    for (i, id) in brokers.iter().enumerate() {
         let mut n = node(id, NodeLifecycle::Live, None);
         n.spec.advertise_addr = format!("10.0.0.4:{}", 7600 + i);
         n.status.features = ELECTION.iter().map(|f| f.to_string()).collect();
@@ -63,6 +58,15 @@ pub(super) async fn fenced_move(finalize: bool) -> (InMemoryStore, ShardAssignme
             store.finalize_fleet_feature(feature).await.expect(feature);
         }
     }
+    store
+}
+
+/// Brokers a to d offering the election features, a durable `Quorum` stream
+/// of three copies, and a shard fenced for a move from a to b with c the
+/// other follower. a is draining, so the cut-over drops it and tops the set
+/// up with d: {a, b, c} becomes {b, c, d}.
+pub(super) async fn fenced_move(finalize: bool) -> (InMemoryStore, ShardAssignment) {
+    let store = election_store(&["broker-a", "broker-b", "broker-c", "broker-d"], finalize).await;
     let fenced = store
         .put_shard_assignment(ShardAssignment {
             state: ShardState::Draining,

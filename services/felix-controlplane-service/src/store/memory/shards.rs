@@ -44,12 +44,15 @@ pub(super) async fn put_shard_assignment_if(
 
 /// [`crate::store::ControlPlaneStore::adopt_elected_leader`]. Deterministic,
 /// as a Raft apply must be: the decision is made from the assignment this
-/// store holds, and the write is conditional on it.
+/// store holds, and the write is conditional on it. `elected_set` applies
+/// [`ShardAssignment::adopting_elected_set`] instead of
+/// [`ShardAssignment::adopting`].
 pub(super) async fn adopt_elected_leader(
     store: &InMemoryStore,
     key: &ShardKey,
     expected_generation: u64,
     elected: &ElectedLeader,
+    elected_set: bool,
 ) -> StoreResult<AssignmentWrite> {
     let current = get_shard_assignment(store, key).await?;
     if current.generation != expected_generation {
@@ -57,18 +60,29 @@ pub(super) async fn adopt_elected_leader(
             current: Some(current.generation),
         });
     }
-    let Some(adopted) = current.adopting(elected) else {
+    let adopted = if elected_set {
+        let nodes = store.nodes.read().await;
+        current.adopting_elected_set(elected, &|node| nodes.records.contains_key(node))
+    } else {
+        current.adopting(elected)
+    };
+    let Some(adopted) = adopted else {
         return Ok(AssignmentWrite::Stale {
             current: Some(current.generation),
         });
     };
+    // Measured on the elected generation: a reissue names the elected
+    // leader one past it.
+    crate::model::check_elected_generation(current.generation, elected.generation)
+        .map_err(StoreError::Conflict)?;
+    let generation = adopted.generation;
     write_shard_assignment(
         store,
         adopted,
         Some(Some(expected_generation)),
         None,
         false,
-        Some(elected.generation),
+        Some(generation),
     )
     .await
 }
@@ -159,11 +173,13 @@ async fn write_shard_assignment(
                 Some(elected) if elected <= existing.generation => {
                     return Ok(AssignmentWrite::Stale { current });
                 }
-                Some(elected) => {
-                    crate::model::check_elected_generation(existing.generation, elected)
-                        .map_err(StoreError::Conflict)?;
-                    elected
+                // The adoption checked the window on the elected generation.
+                Some(elected) if elected > i64::MAX as u64 => {
+                    return Err(StoreError::Conflict(format!(
+                        "generation {elected} is past the last the control plane can issue"
+                    )));
                 }
+                Some(elected) => elected,
                 None => crate::model::next_generation(existing.generation)
                     .map_err(StoreError::Conflict)?,
             };

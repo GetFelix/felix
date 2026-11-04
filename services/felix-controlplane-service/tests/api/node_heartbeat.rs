@@ -483,8 +483,8 @@ async fn follower_features_are_finalized_after_generation_start() {
 
 /// The election features are refused over the API while a serving broker does
 /// not offer `ELECTION`, and `replica_election` is refused before
-/// `joint_fence`. Even with everything offered `joint_fence` is refused until
-/// the control plane re-admits learners (#1737).
+/// `joint_fence`. `joint_fence` also waits for brokers that name start holders
+/// and keep a wiped copy from voting.
 #[tokio::test]
 async fn election_features_are_refused_with_their_reason() {
     let store = store();
@@ -543,6 +543,8 @@ async fn election_features_are_refused_with_their_reason() {
         "generation_start",
         "majority_ack",
         "lease_free_reads",
+        "stream_incarnations",
+        "cache_incarnations",
         "joint_fence",
         "replica_election",
     ];
@@ -550,7 +552,15 @@ async fn election_features_are_refused_with_their_reason() {
     // Reports the features but not ELECTION.
     let response = app.clone().oneshot(register(&all)).await.expect("request");
     assert_eq!(response.status(), StatusCode::OK);
-    for feature in &all[..3] {
+    // A new stream opens under joint_fence only with an incarnation (#1862).
+    let response = app
+        .clone()
+        .oneshot(finalize("generation_start", false))
+        .await
+        .expect("request");
+    assert_eq!(response.status(), StatusCode::OK);
+    refused("stream_incarnations, cache_incarnations", "joint_fence").await;
+    for feature in &all[1..5] {
         let response = app
             .clone()
             .oneshot(finalize(feature, false))
@@ -568,8 +578,8 @@ async fn election_features_are_refused_with_their_reason() {
     refused("finalize joint_fence first", "replica_election").await;
 
     // Offering ELECTION is not enough: joint_fence also waits for brokers
-    // that name start holders, and stays refused until the control plane
-    // re-admits learners, so replica_election waits behind it.
+    // that name start holders and keep a wiped copy from voting, and
+    // replica_election waits behind it.
     let mut offered = all.to_vec();
     offered.push("peer_election");
     let response = app
@@ -586,7 +596,7 @@ async fn election_features_are_refused_with_their_reason() {
         .await
         .expect("request");
     assert_eq!(response.status(), StatusCode::OK);
-    refused("re-admit a learner", "joint_fence").await;
+    refused("let a wiped copy vote", "joint_fence").await;
     let response = app
         .clone()
         .oneshot(finalize("joint_fence", true))
@@ -600,6 +610,42 @@ async fn election_features_are_refused_with_their_reason() {
             .await
             .expect("enabled")
             .contains("joint_fence")
+    );
+
+    offered.push("non_voting");
+    let response = app
+        .clone()
+        .oneshot(register(&offered))
+        .await
+        .expect("request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let response = app
+        .clone()
+        .oneshot(finalize("joint_fence", false))
+        .await
+        .expect("request");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        store
+            .enabled_fleet_features()
+            .await
+            .expect("enabled")
+            .contains("joint_fence")
+    );
+    // This control plane keeps pending sets and adopts elected leaders, so
+    // replica_election follows joint_fence.
+    let response = app
+        .clone()
+        .oneshot(finalize("replica_election", false))
+        .await
+        .expect("request");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        store
+            .enabled_fleet_features()
+            .await
+            .expect("enabled")
+            .contains("replica_election")
     );
 }
 
@@ -683,7 +729,7 @@ async fn a_malformed_storage_id_is_a_bad_request() {
 }
 
 /// What a new cluster finalizes, in the order the enabled set answers it.
-const NEW_CLUSTER: [&str; 10] = [
+const NEW_CLUSTER: [&str; 11] = [
     "atomic_commit",
     "cache_incarnations",
     "fenced_caches",
@@ -693,6 +739,7 @@ const NEW_CLUSTER: [&str; 10] = [
     "jump_hash_routing",
     "lease_free_reads",
     "majority_ack",
+    "record_headers",
     "stream_incarnations",
 ];
 
@@ -820,6 +867,46 @@ async fn a_new_cluster_finalizes_every_feature_at_its_first_registration() {
         again.incarnation,
         first.incarnation
     );
+}
+
+/// A new cluster whose brokers report the election features
+/// (`FELIX_INTERNAL_ELECTION=true`) still leaves `joint_fence` and
+/// `replica_election` off: elections are opt-in, so only an operator's
+/// finalize turns them on.
+#[tokio::test]
+async fn a_new_cluster_does_not_finalize_the_election_features_before_they_are_ready() {
+    let store = store();
+    let token = fleet_token(&store).await;
+    let app = app_with(Arc::clone(&store)).await;
+
+    let mut features: Vec<&str> = felix_common::fleet::IMPLEMENTED
+        .iter()
+        .map(|feature| feature.name())
+        .collect();
+    features.extend([
+        "peer_election",
+        "start_holders",
+        "joint_fence",
+        "replica_election",
+    ]);
+    let response = app
+        .clone()
+        .oneshot(authed(
+            &token,
+            "POST",
+            "/v1/nodes",
+            serde_json::json!({
+                "node_id": "broker-a",
+                "advertise_addr": "10.0.0.4:7001",
+                "region": "local",
+                "features": features,
+            }),
+        ))
+        .await
+        .expect("request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let enabled = read_json(response).await["fleet_features"].clone();
+    assert_eq!(enabled, serde_json::json!(NEW_CLUSTER));
 }
 
 /// A broker configured out of a feature keeps it, and the features that

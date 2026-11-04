@@ -124,11 +124,11 @@ One shard, three brokers, one control plane, discrete time.
   never does. With `Ballots` each promise names the leader it was made to
   (`ballot`), and a replica answers a fence, a batch or a read round at the
   generation it promised only from that leader. The first leader starts with
-  its set's promise, as an elected one would. Nothing in the broker elects
-  yet; the ballot is in the code now so that a later change can.
+  its set's promise, as an elected one would. The broker's election driver
+  (`felix-replication`, `election/candidate.rs`) is what elects.
 - **The set check and adoption.** The design for electing without the
   control plane (`docs/replication-design.md`, "Electing without the control
-  plane"), not built yet. With `SetCheck` each replica keeps the set it last
+  plane"), built behind `replica_election`. With `SetCheck` each replica keeps the set it last
   learned and the generation of the assignment that wrote it (`setGen`). A
   batch and a fence carry the sender's pair; a replica that knows a newer one
   refuses, and otherwise learns it. A refused candidate learns the newer set
@@ -229,7 +229,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardElectAdopt.cfg` | `FelixShardElectStaleSet.cfg` with the set check, the joint fence, and the control plane adopting elected leaders up to generation 2 (`Adopt = 2`, which also bounds the generations replicas stand for) and replacing followers under them | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm`, `AdoptedMatchesOpened`, `SetChangesJoint` (not yet measured) |
 | `FelixShardElectAdoptTwoWrites.cfg` | the same with two writes | pass, the same invariants (nightly) |
 | `FelixShardElectAdoptFailover.cfg` | `FelixShardElectAdopt.cfg` taken to a failover after a recorded-only adoption: placement promotes on suspicion up to generation 3 (`Suspicions = 3`), so the control plane's set and the set in the promoted broker's log can differ, and the fence takes a majority of both (`FenceRecordedSet` beside `FenceOwnSet`) | too big for one run (192.5M distinct states at depth 20, no violation, after six hours); checked in the pieces below |
-| `FelixShardElectAdoptFailover{Same,Apart}{0,1}{,Stood}Gen{2,3,4}.cfg` | `FelixShardElectAdoptFailover.cfg` split at its first failover (`SplitAtFailover`, `CutOverPiece`): the promoted broker's own set is the control plane's or not, 0 or 1 writes were admitted before it, a replica had stood past the control plane's generation or not, and the failover takes generation 2, 3, or 4 and up (`PieceGens`). Each piece also checks everything before its failover, so together they reach every state the whole does | pass, the same invariants. Twelve pieces hold no failover: they hold just the 1.48M distinct states before one (depth 36, 3 to 5 min on a four-core CI runner) and check that they stay empty (`NoCutOverInPiece`). `Apart0Gen4` 13.5M distinct, 46 min; `Apart1Gen4` 15.5M, 54 min; `Same0Gen4` 36.3M, 2 h 15 min; these run nightly. `Same0StoodGen2` ran out of runner disk after 2 h 40 min and needs splitting again. The other eight (`Same{0,1}Gen{2,3}`, `Apart{0,1}Gen3`, `Same1Gen4`, `Same1StoodGen2`) are still being measured and are not checked yet |
+| `FelixShardElectAdoptFailover{Same,Apart}{0,1}{,Stood}Gen{2,3,4}.cfg`, `FelixShardElectAdoptFailoverSame{0,1}Stood{One,Several}{Dest,Other}Gen2.cfg` | `FelixShardElectAdoptFailover.cfg` split at its first failover (`SplitAtFailover`, `CutOverPiece`): the promoted broker's own set is the control plane's or not, 0 or 1 writes were admitted before it, a replica had stood past the control plane's generation or not, and the failover takes generation 2, 3, or 4 and up (`PieceGens`). Each piece also checks everything before its failover, so together they reach every state the whole does | pass, the same invariants. Twelve pieces hold no failover: they hold just the 1.48M distinct states before one (depth 36, 3 to 5 min on a four-core CI runner) and check that they stay empty (`NoCutOverInPiece`). `Apart0Gen4` 13.5M distinct, 46 min; `Apart1Gen4` 15.5M, 54 min; `Same0Gen4` 36.3M, 2 h 15 min; these run nightly. `Same1Gen4` 56.8M, 3 h 40 min, and `Same1Gen2` 149.3M, depth 51, 5 h 20 min (close to the six-hour job limit), also run nightly. Five did not finish in six hours, with no violation by then: `Same0Gen2` (130M distinct), `Same0Gen3` (224M), `Same1Gen3` (111M), `Apart0Gen3` (108M), `Apart1Gen3` (156M). They need another split and are not checked yet. `Same0StoodGen2` ran out of runner disk and `Same1StoodGen2` did not finish, so each is split again into `Stood{One,Several}{Dest,Other}` (`PieceStoodCounts`, `PieceDestStood`: one or several replicas stood, the promoted broker among them or not). Those eight are not measured yet |
 | `FelixShardElectSwap.cfg` | `FelixShardElectStaleSet.cfg` with a cut-over that changes the set by more than one member at once (`Swaps = 1`), fenced jointly, the set check, one generation of elections, two writes | pass, the same invariants, checked in the fifteen pieces below: one run did not finish in six hours |
 | `FelixShardElectSwap{Keep,Drop}{0,1,2}{,Stood}.cfg` | `FelixShardElectSwap.cfg` split by how its cut-over went: the new set keeps or drops the old leader, 0, 1 or 2 writes were admitted before it, and a replica had stood past the control plane's generation or not (`SplitAtCutOver`, `CutOverPiece`). `Drop0Stood` did not finish in six hours and `Drop1Stood` took 5 h 15 min, so each is split again by whether one or several replicas had promised past that generation and whether the destination was one of them (`FelixShardElectSwapDrop{0,1}Stood{One,Several}{Dest,Other}.cfg`). Each piece also checks everything before its cut-over, so together they reach every state the whole does. `QuietView` merges states that differ only in what no step reads again | pass, the same invariants. On a four-core CI runner: `Keep2` 2.46M distinct, 5 min; `Drop2` 1.45M, 5 min; `Drop1` 7.17M, 17 min; `Keep1` 9.23M, 27 min; `Drop0` 17.9M, 43 min; `Keep0` 17.7M, 53 min; `Keep2Stood` 47.9M, 1 h 58 min; `Drop2Stood` 35.5M, 2 h 9 min; `Keep1Stood` 97.0M, 2 h 49 min; `Keep0Stood` 97.1M, 2 h 50 min; `Drop0StoodSeveralOther` 5,189, 3 s; `Drop0StoodOneOther` 4.24M, 13 min; `Drop0StoodOneDest` 17.9M, 39 min; `Drop0StoodSeveralDest` 84.0M, 2 h 37 min; `Drop1StoodSeveralOther` 5,189, 2 s; `Drop1StoodOneOther` 1.91M, 3 min; `Drop1StoodOneDest` 7.17M, 12 min. Those over 45 minutes run nightly. The two `StoodSeveralOther` pieces hold no cut-over: the old leader must still lead when it cuts over, and it stops leading once it answers a fence, so besides the destination only the third member can have stood. They hold just the states before a cut-over and check that they stay empty (`NoCutOverInPiece`) |
 | `FelixShardElectRename.cfg` | `FelixShardElectSwap.cfg` with one write, generation 3 in reach (`Adopt = 3`), and the control plane naming its leader again, fenced, one generation up, once that leader reports it cannot serve a generation a recorded election moved the control plane to, or its fence at the control plane's generation is refused on either set (`Renames`, `CpRename`); `QuietView` | too big for one run (no violation in its first 5.8M distinct states); checked in the pieces below |
@@ -877,17 +877,17 @@ That needs three things the safety checks do without:
 
 - Fairness: a step an election needs is taken once it stays possible.
 - A pre-vote that a member answers yes only when it leads nothing open,
-  hears no leader and holds no log ahead of the candidate's. The code's
-  `pre_vote` lets the open leader say yes today (#1815).
+  hears no leader and holds no log ahead of the candidate's, as the
+  broker's `pre_vote` does (#1815).
 - Backoff: a candidate whose round cannot reach a majority gives it up. Real
   backoff is randomised and separates candidates within a few rounds. The
   model cannot say how few, so it allows at most `Splits` rounds, over the
   whole run, where two candidates stand at once.
 
 A candidate's own detector may be wrong (`DetectorMisfires`): it may suspect
-a leader it still hears. With the pre-vote the code asks today
-(`FelixShardElectLiveLoosePreVote.cfg`) that candidate gets the leader's yes
-and deposes a leader the rest of the set hears.
+a leader it still hears. If the open leader answered the pre-vote yes
+(`FelixShardElectLiveLoosePreVote.cfg`), that candidate would get the leader's
+yes and depose a leader the rest of the set hears.
 
 The model bounds generations, so `ElectionSettles` alone cannot see churn: a
 run that used every generation would stop electing and settle. Without
@@ -897,9 +897,9 @@ forever. `NoStandAgainstHeardLeader` rules churn out directly, since it holds
 at every step. Not covered: liveness with writes in flight, or with a wiped
 voter.
 
-Nothing in the broker elects yet; these check the design in
-`docs/replication-design.md`, "Electing without the control plane", before
-any of it is built.
+These check the design in `docs/replication-design.md`, "Electing without
+the control plane", which the broker now follows once `replica_election` is
+finalized.
 
 The ballot lives in the replica's `ballot` file, written and fsynced before
 the generation it names is answered (`DiskLog::accept_generation`); see

@@ -45,7 +45,7 @@ pub(super) fn put(key: &str, value: &[u8]) -> Bytes {
 
 pub(super) fn records(generation: u64, payloads: &[Bytes]) -> ReplicateRecords {
     ReplicateRecords {
-        checksum: felix_wire::internal::batch_checksum(payloads, &[], &[]),
+        checksum: felix_wire::internal::batch_checksum(payloads, &[], &[], &[]),
         payloads: payloads.to_vec(),
         ..batch(generation, 0, &[])
     }

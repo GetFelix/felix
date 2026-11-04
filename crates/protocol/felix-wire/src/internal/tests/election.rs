@@ -391,6 +391,67 @@ fn a_stamped_batch_round_trips_for_every_log() {
     }
 }
 
+/// A batch with header blocks keeps its own kind inside the stamp and inside
+/// the incarnation, on both sides of the wire. Every headered batch is wrapped
+/// once `ELECTION` is offered, so this is the common shape.
+#[test]
+fn a_headered_batch_round_trips_inside_the_stamp_and_the_incarnation() {
+    let InternalMessage::ReplicateRecords(plain) = replicate() else {
+        unreachable!()
+    };
+    let headered = ReplicateRecords {
+        headers: Some(vec![Some(Bytes::from_static(b"block")), None]),
+        // A block needs the generations and times beside it.
+        generations: Some(vec![GenerationStart {
+            generation: 3,
+            start_offset: 4,
+        }]),
+        times: Some(vec![1_000, 2_000]),
+        ..plain
+    };
+    let incarnated = ShardRef {
+        incarnation: Some(5),
+        ..shard()
+    };
+    let variants = [
+        (None, None),
+        (Some(11), None),
+        (None, Some(incarnated.clone())),
+        (Some(11), Some(incarnated)),
+    ];
+    for (set_generation, incarnated) in variants {
+        for marked in [false, true] {
+            let records = ReplicateRecords {
+                set_generation,
+                shard: incarnated.clone().unwrap_or_else(shard),
+                marks: if marked {
+                    vec![ProducerMark::Continues, ProducerMark::Continues]
+                } else {
+                    Vec::new()
+                },
+                ..headered.clone()
+            };
+            let message = if marked {
+                InternalMessage::ReplicateMarkedRecords(records)
+            } else {
+                InternalMessage::ReplicateRecords(records)
+            };
+            let inner = message.kind();
+            let encoded = message.encode().expect("encode");
+            let outer = InternalHeader::decode(&encoded).expect("header").kind;
+            assert_eq!(
+                outer,
+                match (set_generation, &incarnated) {
+                    (Some(_), _) => Kind::SetStamped,
+                    (None, Some(_)) => Kind::Incarnated,
+                    (None, None) => inner,
+                }
+            );
+            assert_eq!(InternalMessage::decode(encoded).expect("decode"), message);
+        }
+    }
+}
+
 #[test]
 fn a_stamp_keeps_every_other_field_of_the_batch() {
     let InternalMessage::ReplicateRecords(plain) = replicate() else {

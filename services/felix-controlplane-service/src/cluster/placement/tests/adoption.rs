@@ -2,7 +2,7 @@
 //! generation it issues is above the elected one (rule 10 of "Electing
 //! without the control plane" in docs/replication-design.md). End to end
 //! against the memory store, from the cut-over in `pending_set`.
-use super::pending_set::{fenced_move, pass, report};
+use super::pending_set::{election_store, fenced_move, pass, report};
 use super::reconciler::shard_zero;
 use super::*;
 use crate::model::ElectedLeader;
@@ -203,4 +203,143 @@ async fn an_election_on_the_old_set_is_recorded_not_adopted() {
     let taken = pass(&store).await;
     assert_eq!(taken.pending_set, None);
     assert_eq!(taken.generation, recorded.generation + 1);
+}
+
+/// The control plane named broker-a at a generation broker-b was elected at
+/// on {b, c, d}, and its own set is {a, b, c}. Answers the store and what
+/// moving past the collision wrote.
+async fn reissued_past_a_collision() -> (InMemoryStore, ShardAssignment) {
+    let store = election_store(
+        &["broker-a", "broker-b", "broker-c", "broker-d", "broker-e"],
+        true,
+    )
+    .await;
+    let named_a = store
+        .put_shard_assignment(ShardAssignment {
+            state: ShardState::Assigning,
+            ..assigned("orders", "broker-a", &["broker-b", "broker-c"])
+        })
+        .await
+        .expect("assign");
+    let next = named_a
+        .reissuing(
+            &ElectedLeader {
+                leader: "broker-b".to_string(),
+                generation: named_a.generation,
+                replicas: vec!["broker-c".to_string(), "broker-d".to_string()],
+                set_generation: named_a.generation,
+            },
+            &|_| true,
+        )
+        .expect("reissued");
+    let token = store.placement_token().await.expect("token");
+    let written = store
+        .put_shard_assignment_if(next, Some(named_a.generation), token)
+        .await
+        .expect("write");
+    let AssignmentWrite::Written(reissued) = written else {
+        panic!("not written: {written:?}");
+    };
+    assert_eq!(reissued.leader, "broker-b");
+    assert_eq!(
+        reissued.pending_set.as_ref().map(|p| p.generation),
+        Some(reissued.generation)
+    );
+    (store, reissued)
+}
+
+/// **A failover while a reissue's change is pending keeps the set the
+/// leader was elected on.** broker-b acknowledged on {b, c, d} before the
+/// collision was found, then shipped only to {a, c}, the pending set, and
+/// dies before its new generation's start reaches a majority of both. Its
+/// report names a and c caught up. The failover promotes c from the elected
+/// set and keeps d, which may hold what b acknowledged; a is not in it.
+/// Nobody stands meanwhile: the route carries the pending change.
+#[tokio::test]
+async fn a_failover_during_a_reissue_keeps_the_elected_set() {
+    let (store, reissued) = reissued_past_a_collision().await;
+    assert_eq!(
+        pass(&store).await,
+        reissued,
+        "taken without the leader's word"
+    );
+    // What the leader measured: the pending set it ships to.
+    let shipped = ShardAssignment {
+        replicas: reissued.pending_set.clone().expect("pending").replicas,
+        ..reissued.clone()
+    };
+    report(&store, &shipped, false, None).await;
+    store
+        .set_node_lifecycle("broker-b", NodeLifecycle::Down)
+        .await
+        .expect("down");
+    let promoted = pass(&store).await;
+    assert_eq!(promoted.leader, "broker-c", "{promoted:?}");
+    assert!(
+        promoted.nodes().any(|node| node == "broker-d"),
+        "{promoted:?}"
+    );
+    assert!(
+        !promoted.nodes().any(|node| node == "broker-a"),
+        "{promoted:?}"
+    );
+    assert_eq!(promoted.pending_set, None);
+}
+
+/// **The control plane's set comes back on the reissued leader's joint
+/// start**, as for a cut-over, at the next generation.
+#[tokio::test]
+async fn a_reissue_takes_the_recorded_set_on_the_leaders_joint_start() {
+    let (store, reissued) = reissued_past_a_collision().await;
+    report(&store, &reissued, false, Some(reissued.generation)).await;
+    let taken = pass(&store).await;
+    assert_eq!(taken.leader, "broker-b");
+    assert_eq!(taken.pending_set, None);
+    assert_eq!(
+        taken.nodes().map(String::as_str).collect::<BTreeSet<_>>(),
+        BTreeSet::from(["broker-a", "broker-b", "broker-c"])
+    );
+    assert_eq!(taken.generation, reissued.generation + 1);
+}
+
+/// **A leader that stands again after a reissue it could not take is
+/// recorded on the set it opened on, and the change it skipped is dropped.**
+/// The reissue came from a stale report: broker-b had already promised that
+/// generation to another candidate, so it stood one higher on {b, c, d} and
+/// opened there. The control plane names b on {b, c, d}, and drops the
+/// pending change back to {a, b, c}: only b could have taken it, and b
+/// opened past it on the set it leaves.
+#[tokio::test]
+async fn an_election_past_a_reissue_keeps_the_elected_set_recorded() {
+    let (store, reissued) = reissued_past_a_collision().await;
+    let written = store
+        .adopt_elected_leader(
+            &shard_zero(),
+            reissued.generation,
+            ElectedLeader {
+                leader: "broker-b".to_string(),
+                generation: reissued.generation + 1,
+                replicas: vec!["broker-c".to_string(), "broker-d".to_string()],
+                set_generation: reissued.generation - 1,
+            },
+        )
+        .await
+        .expect("adopt");
+    let AssignmentWrite::Written(recorded) = written else {
+        panic!("not recorded: {written:?}");
+    };
+    assert_eq!(recorded.leader, "broker-b");
+    assert_eq!(
+        recorded
+            .nodes()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from(["broker-b", "broker-c", "broker-d"]),
+        "the control plane records b on a set it did not open on"
+    );
+    assert_eq!(
+        recorded.pending_set, None,
+        "a change only b could take, and b opened past it on the set it leaves"
+    );
+    assert_eq!(recorded.generation, reissued.generation + 1);
 }

@@ -106,6 +106,7 @@ impl PeerRequestHandler for BrokerPeerHandler {
             }
             InternalMessage::Fence(request) => self.replica.fence(sender, request).await,
             InternalMessage::ReplicateFetch(request) => self.replica.fetch(sender, request).await,
+            InternalMessage::PreVote(request) => self.replica.pre_vote(request).await,
             // Responses have no business arriving as requests, and a broker that
             // answered one would be inventing a request that was never made.
             other => InternalMessage::ForwardPublishError(ForwardPublishError {

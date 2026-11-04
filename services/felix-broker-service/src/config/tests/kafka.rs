@@ -33,6 +33,23 @@ fn defaults_are_tls_on_and_advertise_the_bind_address() {
     assert_eq!(config.max_connections, 1024);
     assert_eq!(config.max_connections_per_ip, 128);
     assert_eq!(config.auth_timeout_ms, 10_000);
+    assert!(!config.record_headers, "keys and headers are opt-in");
+}
+
+#[test]
+fn record_headers_are_read_as_true_or_false() {
+    let record_headers = |value: &str| {
+        parse(&[
+            ("FELIX_KAFKA_LISTEN", "127.0.0.1:9092"),
+            ("FELIX_KAFKA_RECORD_HEADERS", value),
+        ])
+        .map(|config| config.expect("on").record_headers)
+    };
+    assert!(record_headers("true").expect("true"));
+    assert!(record_headers("1").expect("1"));
+    assert!(!record_headers("false").expect("false"));
+    assert!(!record_headers("0").expect("0"));
+    assert!(record_headers("yes").is_err());
 }
 
 #[test]
@@ -69,6 +86,7 @@ fn malformed_values_fail_startup_rather_than_defaulting() {
         vec![listen, ("FELIX_KAFKA_ADVERTISE_ADDR", "no-port")],
         vec![listen, ("FELIX_KAFKA_ADVERTISE_ADDR", "host:0")],
         vec![listen, ("FELIX_KAFKA_TLS", "yes")],
+        vec![listen, ("FELIX_KAFKA_RECORD_HEADERS", "maybe")],
         vec![listen, ("FELIX_KAFKA_MAX_CONNECTIONS", "0")],
         vec![listen, ("FELIX_KAFKA_MAX_CONNECTIONS", "many")],
         vec![listen, ("FELIX_KAFKA_MAX_CONNECTIONS_PER_IP", "-1")],

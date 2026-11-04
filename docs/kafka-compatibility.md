@@ -69,8 +69,10 @@ destination.
 - Fetch sessions (KIP-227). The listener answers with session id 0, which tells
   the client to send full fetches every time.
 - Leader epochs. Reported as -1, meaning unknown.
-- Keys, headers and producer timestamps. A record has a value and the broker's
-  append time only; a produced key and headers are dropped.
+- Producer timestamps. A record's time is the broker's append time; the one a
+  producer sent is dropped. A produced key and headers are dropped too unless
+  `FELIX_KAFKA_RECORD_HEADERS` is on (see [Keys, headers and
+  timestamps](#keys-headers-and-timestamps)).
 - OAUTHBEARER and re-authentication. A token is checked once, when the
   connection authenticates.
 - Topic ids (Fetch v13 and later).
@@ -119,10 +121,11 @@ raises it. A fetch below the log start or past the tail gets
 Offset-for-time is a binary search over the records' append timestamps, the
 same search the native `offset_for_time` request uses.
 
-**Records.** The value is the Felix payload. There is no key and there are no
-headers. The timestamp is the broker's append time in milliseconds, reported as
-`CreateTime` on fetch. A produced record's key, headers and timestamp are
-dropped (see [Produce](#produce)).
+**Records.** The value is the Felix payload. A record that was stored with a key
+or headers (from a Kafka producer or a Felix client) comes back with them; one
+stored without has a null key and no headers. The timestamp is the broker's
+append time in milliseconds, reported as `CreateTime` on fetch. A produced
+record's timestamp is dropped (see [Produce](#produce)).
 
 **Brokers and replicas.** The Kafka broker id is a stable FNV-1a hash of the
 Felix node id, folded to a non-negative `i32`, so every broker names every other
@@ -163,6 +166,7 @@ Felix publish makes. `InitProducerId` needs only an authenticated connection.
 | `acks=all` on a `Quorum` stream and no majority in time | `REQUEST_TIMED_OUT` | Retries; idempotence keeps the retry from writing twice |
 | Leadership moved after the write and before a majority held it | `NOT_LEADER_OR_FOLLOWER` | Re-sends to the new leader |
 | v0 or v1 message set | `UNSUPPORTED_FOR_MESSAGE_FORMAT` | Fails the produce |
+| A header name starting with `felix.`, or one Felix cannot store (empty), with `FELIX_KAFKA_RECORD_HEADERS` on and the broker accepting record headers | `INVALID_RECORD` | Fails the produce. Produce v8 and later carry the reason; older versions get the code alone |
 | Bad CRC, truncated batch, unknown codec | `CORRUPT_MESSAGE` | Retries, then fails |
 | Batch decompresses past 16 MiB | `MESSAGE_TOO_LARGE` | Fails the produce |
 | Idempotent batch ahead of the next sequence | `OUT_OF_ORDER_SEQUENCE_NUMBER` | Fatal for the idempotent producer |
@@ -304,14 +308,42 @@ broker even if the client pipelines several.
 
 ### Keys, headers and timestamps
 
-Felix records are a payload and an append time. A produced record's key has
-already chosen the partition by the time it arrives, so records with the same
-key still land on the same shard in order; the key is then dropped. Headers are
-dropped too, rather than refused, because producers add them without being asked
-(tracing interceptors, for one) and refusing would break them for data nobody
-reads here. Both are counted in `felix_kafka_produce_dropped_total{field}`. A
-null value is stored as an empty payload. Carrying keys and headers would need
-a new record format, and nothing reading Felix streams uses them today.
+With `FELIX_KAFKA_RECORD_HEADERS=true`, a produced record's key and headers are
+stored with it, in order, as the record's [key and headers
+block](protocol.md#extended-frames-and-record-headers), and a fetch returns
+them. A record with neither has no block, so its bytes are what they always
+were. The key still picks the partition on the producer's side too, so records
+with the same key land on the same shard in order.
+
+The variable is off by default because the first stored block moves the logs to
+storage format v8, which an older build refuses to open, and nearly every Kafka
+producer sends keys. Turning it on is that one-way step, so it is never a side
+effect of enabling the listener. Off, the key and headers are dropped and
+counted, as they were before the option existed.
+
+A few rules come from Felix's record model:
+
+- A null header value is stored as an empty value and comes back empty. Felix
+  values are not nullable.
+- A header name starting with `felix.` is reserved for Felix's own listeners.
+  The produce is refused with `INVALID_RECORD`, since a consumer must be able
+  to trust that such a header came from the broker. An empty header name is
+  refused the same way. Only Produce v8 and later clients see the message;
+  older ones get the error code alone.
+- A name that repeats in one record comes back once, with its last value.
+  Kafka's decoder keeps one value per name.
+- A null value is stored as an empty payload.
+- The block's bytes count toward the tenant's publish quota with the payload.
+
+Storing them also needs the broker to accept headers: a broker outside a cluster
+does unless `FELIX_RECORD_HEADERS=false`, and a clustered one does once its
+fleet has finalized `record_headers`. Without both, the key and headers are
+dropped, not refused, so producers that add them without being asked (tracing
+interceptors, for one) keep working. Dropped ones are counted in
+`felix_kafka_produce_dropped_total{field}`; a `felix.` name is not looked at
+while they are dropped.
+
+The producer's timestamp is always dropped.
 
 ### acks
 
@@ -426,6 +458,7 @@ All of these are read by the broker. The listener is off unless
 | `FELIX_KAFKA_DEFAULT_NAMESPACE` | unset | Namespace for topic names without a dot. |
 | `FELIX_KAFKA_MAX_CONNECTIONS` | `1024` | Connections served at once. Extra ones are closed on arrival. |
 | `FELIX_KAFKA_MAX_CONNECTIONS_PER_IP` | `128` | Connections one source IP may hold, checked before the total. `0` is unlimited. |
+| `FELIX_KAFKA_RECORD_HEADERS` | `false` | Store a produced record's key and headers instead of dropping them. The first stored one moves the logs to storage format v8, which an older build refuses to open, so this is the one-way step (see [Upgrades](https://docs.getfelix.dev/deployment/upgrades/#record_headers)). Also needs the broker to accept record headers. |
 | `FELIX_KAFKA_AUTH_TIMEOUT_MS` | `10000` | How long a connection has to finish SASL before it is closed. Until then each request is capped at 64 KiB, which is far more than `ApiVersions` and the SASL exchange need. |
 
 With TLS on, the listener serves the same certificate the QUIC listeners do:

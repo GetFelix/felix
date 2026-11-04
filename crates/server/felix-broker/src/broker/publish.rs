@@ -196,6 +196,11 @@ impl Broker {
         if headers.is_some() && handle.state.durable.is_some() && !self.records_headers() {
             return Err(BrokerError::RecordHeadersNotEnabled);
         }
+        // Before the offsets are consumed, so a crash cannot leave a v8
+        // record in a directory that does not say so.
+        if headers.is_some() && handle.state.durable.is_some() {
+            self.mark_headers_stored().await?;
+        }
 
         // What subscribers are told is what replay will find: on a durable
         // stream, only a publisher the log stores.

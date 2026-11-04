@@ -43,6 +43,7 @@ pub mod peer;
 
 pub mod confirmed;
 pub mod driver;
+pub mod election;
 mod follower;
 pub mod halted;
 mod incarnation;

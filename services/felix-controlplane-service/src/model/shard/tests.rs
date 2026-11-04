@@ -628,3 +628,132 @@ fn elected_and_issued_generations_are_bounded() {
     assert!(check_elected_generation(7, 8 + ELECTION_GENERATION_WINDOW).is_err());
     assert!(check_elected_generation(i64::MAX as u64 - 1, i64::MAX as u64 + 1).is_err());
 }
+
+/// **A collided generation moves on under the elected leader, on the set it
+/// was elected on.** broker-b was elected at 7 on {b, c, d} while the control
+/// plane named broker-a there on {a, b, c}. A majority of {b, c, d} may hold
+/// records no majority of {a, b, c} does, so the next generation leaves the
+/// elected set for the control plane's as a pending change: a failover
+/// meanwhile promotes from the elected set, and the control plane's comes
+/// back only once the leader reports its start record on both. Elected on
+/// {b, d, e}, the leader shipping to {a, b, c} could never reach a majority
+/// of the set being left, so it is named on {b, d, e} alone.
+#[test]
+fn reissuing_over_another_elected_set_leaves_it_as_a_pending_change() {
+    let named_a = assignment();
+    let next = named_a
+        .reissuing(
+            &elected("broker-b", &["broker-c", "broker-d"], 7, 6),
+            &|_| true,
+        )
+        .expect("reissued");
+    assert_eq!(next.leader, "broker-b");
+    assert_eq!(next.generation, 8);
+    assert_eq!(next.replicas, vec!["broker-c", "broker-d"]);
+    let pending = next
+        .pending_set
+        .as_ref()
+        .expect("the recorded set is pending");
+    assert_eq!(pending.generation, 8);
+    assert_eq!(
+        pending.replicas.iter().collect::<BTreeSet<_>>(),
+        BTreeSet::from([&"broker-a".to_string(), &"broker-c".to_string()])
+    );
+    assert_eq!(next.validate(), Ok(()));
+    assert_eq!(
+        next.check_pending_generation(Some(&named_a), 8),
+        Ok(()),
+        "the store's next generation is the pending one"
+    );
+
+    let apart = named_a
+        .reissuing(
+            &elected("broker-b", &["broker-d", "broker-e"], 7, 6),
+            &|_| true,
+        )
+        .expect("reissued");
+    assert_eq!(apart.leader, "broker-b");
+    assert_eq!(apart.replicas, vec!["broker-d", "broker-e"]);
+    assert_eq!(apart.pending_set, None);
+    assert_eq!(apart.generation, 8);
+
+    // Elected on the recorded set, it is named as is.
+    let same = named_a
+        .reissuing(
+            &elected("broker-b", &["broker-c", "broker-a"], 7, 6),
+            &|_| true,
+        )
+        .expect("reissued");
+    assert_eq!(same.leader, "broker-b");
+    assert_eq!(same.pending_set, None);
+    assert_eq!(
+        same.nodes().collect::<BTreeSet<_>>(),
+        named_a.nodes().collect::<BTreeSet<_>>()
+    );
+
+    // Outside the recorded set, or while a change is pending, it is left alone.
+    assert_eq!(
+        named_a.reissuing(
+            &elected("broker-d", &["broker-b", "broker-e"], 7, 6),
+            &|_| true
+        ),
+        None
+    );
+    let pending_change = ShardAssignment {
+        pending_set: Some(PendingSet {
+            replicas: vec!["broker-b".to_string(), "broker-d".to_string()],
+            generation: 7,
+        }),
+        ..assignment()
+    };
+    assert_eq!(
+        pending_change.reissuing(
+            &elected("broker-b", &["broker-d", "broker-e"], 7, 6),
+            &|_| true
+        ),
+        None
+    );
+}
+
+/// **A collided generation still moves on when an elected member left the
+/// catalog.** broker-b was elected at 7 on {b, c, d}, and broker-d has since
+/// been deleted. A write naming it would be refused on every report, leaving
+/// the shard on a leader that never opens, so broker-b is named on the
+/// control plane's set instead.
+#[test]
+fn reissuing_names_the_recorded_set_when_an_elected_member_is_unknown() {
+    let named_a = assignment();
+    let next = named_a
+        .reissuing(
+            &elected("broker-b", &["broker-c", "broker-d"], 7, 6),
+            &|node| node != "broker-d",
+        )
+        .expect("reissued");
+    assert_eq!(next.leader, "broker-b");
+    assert_eq!(next.generation, 8);
+    assert_eq!(next.pending_set, None);
+    assert_eq!(
+        next.nodes().collect::<BTreeSet<_>>(),
+        named_a.nodes().collect::<BTreeSet<_>>()
+    );
+}
+
+/// **A leader elected on another set at the window's edge is named one past
+/// it, in one write.** Taking only the generation would name broker-a at 23,
+/// where broker-b opened, and refusing the adoption would leave broker-a to be
+/// renamed past 23 on this set alone, without the elected set's records. The
+/// window is measured on the elected generation, as for any adoption.
+#[test]
+fn an_elected_set_at_the_window_edge_is_reissued_one_past_it() {
+    let named_a = assignment();
+    let edge = named_a.generation + ELECTION_GENERATION_WINDOW;
+    let on_other = elected("broker-b", &["broker-c", "broker-d"], edge, 6);
+    let next = named_a
+        .adopting_elected_set(&on_other, &|_| true)
+        .expect("reissued past the edge");
+    assert_eq!(
+        (next.leader.as_str(), next.generation),
+        ("broker-b", edge + 1)
+    );
+    assert!(next.pending_set.is_some(), "the recorded set is pending");
+}

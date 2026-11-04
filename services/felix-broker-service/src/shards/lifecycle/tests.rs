@@ -813,7 +813,10 @@ mod recording_where_a_leadership_begins {
 
     /// Leading a generation is accepting it from itself. A broker whose log
     /// already answered another node at that generation must not lead it
-    /// too, or the shard has two leaders at one generation.
+    /// too, or the shard has two leaders at one generation. Nor does it lead
+    /// one older than its ballot: a control plane reissuing an elected leader
+    /// from a report older than its deposition names such a generation, and
+    /// the open fails before any fence goes out.
     #[tokio::test]
     async fn a_generation_promised_to_another_node_is_not_led() {
         let (storage, _dir) = storage(3).await;
@@ -835,6 +838,13 @@ mod recording_where_a_leadership_begins {
             .await
             .expect("a newer generation");
         assert_eq!(log.accepted_leader().as_deref(), Some("broker-a"));
+        log.accept_generation(6, Some("broker-c"))
+            .await
+            .expect("deposed");
+        store
+            .open(&key(0), 5, 0, true)
+            .await
+            .expect_err("superseded by broker-c's generation 6");
     }
 
     /// A cache shard's log is opened lazily on first use, not here, so there is

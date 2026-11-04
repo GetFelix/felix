@@ -569,6 +569,19 @@ fn a_restored_directory_rotates_even_after_a_same_boot_crash() {
     assert_eq!(syncs(), before, "a rotation needs no sync");
 }
 
+/// The record-headers marker survives being recorded twice and is all a later
+/// start needs to read.
+#[test]
+fn the_record_headers_marker_is_kept_once_recorded() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    assert!(!has_record_headers(dir.path()).expect("read"));
+    record_headers_stored(dir.path()).expect("record");
+    record_headers_stored(dir.path()).expect("record again");
+    assert!(has_record_headers(dir.path()).expect("read"));
+    assert!(!head_trimmed(dir.path()).expect("read"));
+    assert!(!dir.path().join("record-headers.tmp").exists());
+}
+
 /// The head-trim marker survives being recorded twice and is all a later
 /// start needs to read.
 #[test]
