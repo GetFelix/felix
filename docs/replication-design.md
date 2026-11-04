@@ -2089,7 +2089,18 @@ exchange per follower and log. Two fences for one shard could already run at
 once, from two leaders or over two connections, and the log's ballot settles
 them under its own lock. See `docs/internal-protocol.md`, "The transport".
 
-> `a_read_round_fence_and_a_ping_do_not_wait_behind_promotion_fences`.
+Answers can go out in any order, but a follower still runs one leader's
+promotion fences one at a time, across all of that leader's shards. Each can
+open a log and write a ballot, and a burst of them together slows the
+publishes the follower is already replicating. A read round's fence is at the
+generation the log already took, writes nothing, and usually skips that queue
+(right after a restart, a log's first one waits once). A fence waits at most 2
+seconds for its turn, so one stuck on its disk does not hold up its leader's
+other promotions for longer than that.
+
+> `a_read_round_fence_and_a_ping_do_not_wait_behind_promotion_fences`,
+> `a_leaders_promotion_fences_take_turns_and_a_read_round_does_not_wait`,
+> `a_fence_runs_without_its_turn_once_the_wait_is_up`.
 
 Catch-up for a new or lagging follower is a bounded `read_range` from the leader,
 with sealed-segment checksums to verify wholesale rather than record by record,
