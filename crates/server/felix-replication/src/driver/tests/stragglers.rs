@@ -1085,3 +1085,45 @@ async fn a_refusing_follower_and_a_dead_one_ship_the_record_without_a_busy_loop(
     );
     driver.stop().await;
 }
+
+/// **Two slow followers answering out of step still make a mark.** Four
+/// replicas, so the mark needs both b and c; d does not answer. b and c each
+/// take longer than the gap between appends, and their exchanges are a
+/// half-step apart, so each pass hears one of them as a busy answer while the
+/// other is still in flight from that same pass. A pass that ended on the busy
+/// answer would count one of them at a time and never the two together.
+#[tokio::test(start_paused = true)]
+async fn two_slow_followers_out_of_step_make_a_mark() {
+    let (broker, _dir) = super::quorum::quorum_leader(3, 4).await;
+    let router = router(LOCAL, &["broker-b", "broker-c", "broker-d"], 4);
+    let marks = Arc::new(QuorumMarks::new());
+    let peers = Arc::new(ShiftingPeer::default());
+    peers.delay("broker-d", SLOW);
+    let driver = driver_with(
+        Arc::clone(&peers),
+        &broker,
+        &router,
+        &marks,
+        &Arc::default(),
+    );
+    let rtt = Duration::from_millis(700);
+    peers.delay("broker-b", rtt);
+    append(&broker, 0).await;
+    tokio::time::sleep(rtt / 2).await;
+    peers.delay("broker-c", rtt);
+    let watched = watch_key(&key());
+    let mut tail = 4;
+    // Appends keep coming, as publishers retrying on the mark send them.
+    for _ in 0..20 {
+        append(&broker, 0).await;
+        tail += 1;
+        tokio::time::sleep(rtt / 2).await;
+    }
+    // Both answer every round trip, so the mark trails by about that much.
+    let mark = marks.offset(&watched, 4);
+    assert!(
+        mark >= Some(tail - 4),
+        "the mark stayed at {mark:?} with the tail at {tail} and both live followers answering",
+    );
+    driver.stop().await;
+}
