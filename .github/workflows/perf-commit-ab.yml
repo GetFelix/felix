@@ -59,11 +59,7 @@ jobs:
             # One target directory per checkout: the two share crate names.
             (cd "$side" && CARGO_TARGET_DIR="$PWD/target" cargo test --release -p felix-broker \
               --test commit_throughput --no-run --message-format=json \
-              | python3 -c 'import sys,json
-for l in sys.stdin:
-    try: m=json.loads(l)
-    except ValueError: continue
-    if m.get("executable") and m["target"]["name"]=="commit_throughput": print(m["executable"])' \
+              | python3 ../candidate/scripts/perf/test_binary_path.py commit_throughput \
               > "../$side.bin")
           done
 
