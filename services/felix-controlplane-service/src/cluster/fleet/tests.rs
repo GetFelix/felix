@@ -190,13 +190,25 @@ fn the_election_features_cannot_be_finalized_yet() {
         matches!(&refused, Err(StoreError::Conflict(message)) if message.contains("generation_start")),
         "{refused:?}"
     );
-    assert!(check_prerequisites(&set(&["generation_start"]), "joint_fence").is_ok());
+    assert!(
+        check_prerequisites(
+            &set(&[
+                "generation_start",
+                "stream_incarnations",
+                "cache_incarnations"
+            ]),
+            "joint_fence"
+        )
+        .is_ok()
+    );
     assert!(
         check_prerequisites(
             &set(&[
                 "generation_start",
                 "majority_ack",
                 "lease_free_reads",
+                "stream_incarnations",
+                "cache_incarnations",
                 "joint_fence"
             ]),
             "replica_election"
@@ -205,10 +217,11 @@ fn the_election_features_cannot_be_finalized_yet() {
     );
 }
 
-/// A broker of this build: it offers `ELECTION` and names start holders.
+/// A broker of this build that offers `ELECTION`: it also names start
+/// holders and keeps a wiped copy from voting.
 fn offering_election(id: &str, features: &[&str]) -> Node {
     let mut reported = features.to_vec();
-    reported.extend(["peer_election", "start_holders"]);
+    reported.extend(["peer_election", "start_holders", "non_voting"]);
     at(id, NodeLifecycle::Live, &reported)
 }
 
@@ -227,12 +240,12 @@ fn joint_fence_is_refused_while_a_serving_broker_lacks_election() {
         // Down brokers do not count.
         at("c", NodeLifecycle::Down, &[]),
     ];
-    let message = conflict(check_election(&nodes, "joint_fence", false, true));
+    let message = conflict(check_election(&nodes, "joint_fence", false));
     assert!(
         message.contains("broker(s) b do not offer the ELECTION"),
         "{message}"
     );
-    assert!(check_election(&nodes[..1], "joint_fence", false, true).is_ok());
+    assert!(check_election(&nodes[..1], "joint_fence", false).is_ok());
 }
 
 /// A broker that never names start holders would keep a replaced copy a
@@ -243,27 +256,37 @@ fn joint_fence_is_refused_while_a_serving_broker_names_no_start_holders() {
         offering_election("a", &["joint_fence"]),
         at("b", NodeLifecycle::Live, &["joint_fence", "peer_election"]),
     ];
-    let message = conflict(check_election(&nodes, "joint_fence", false, true));
+    let message = conflict(check_election(&nodes, "joint_fence", false));
     assert!(
         message.contains("broker(s) b do not report which followers hold"),
         "{message}"
     );
-    assert!(check_election(&nodes[..1], "joint_fence", false, true).is_ok());
+    assert!(check_election(&nodes[..1], "joint_fence", false).is_ok());
     // Election itself does not ask for them.
-    assert!(check_election(&nodes, "replica_election", true, true).is_ok());
+    assert!(check_election(&nodes, "replica_election", true).is_ok());
 }
 
+/// A broker that lets a wiped copy vote could elect it or count its acks
+/// before it holds them, so joint fences wait for every serving broker to
+/// report `non_voting`, whatever order builds were released in.
 #[test]
-fn joint_fence_is_refused_until_it_is_ready() {
-    let nodes = [offering_election("a", &["joint_fence"])];
-    let message = conflict(check_election(&nodes, "joint_fence", false, false));
+fn joint_fence_is_refused_while_a_serving_broker_lets_a_wiped_copy_vote() {
+    let nodes = [
+        offering_election("a", &["joint_fence"]),
+        at(
+            "b",
+            NodeLifecycle::Live,
+            &["joint_fence", "peer_election", "start_holders"],
+        ),
+    ];
+    let message = conflict(check_election(&nodes, "joint_fence", false));
     assert!(
-        message.contains("cannot finalize joint_fence") && message.contains("re-admit"),
+        message.contains("broker(s) b let a wiped copy vote"),
         "{message}"
     );
-    assert!(check_election(&nodes, "joint_fence", false, true).is_ok());
-    // The flag gates only joint_fence.
-    assert!(check_election(&nodes, "replica_election", true, false).is_ok());
+    assert!(check_election(&nodes[..1], "joint_fence", false).is_ok());
+    // Election itself does not ask for it.
+    assert!(check_election(&nodes, "replica_election", true).is_ok());
 }
 
 #[test]
@@ -272,29 +295,53 @@ fn replica_election_is_refused_while_a_serving_broker_lacks_election() {
         offering_election("a", &["replica_election"]),
         at("b", NodeLifecycle::Draining, &["replica_election"]),
     ];
-    let message = conflict(check_election(&nodes, "replica_election", true, true));
+    let message = conflict(check_election(&nodes, "replica_election", true));
     assert!(
         message.contains("broker(s) b do not offer the ELECTION"),
         "{message}"
     );
-    assert!(check_election(&nodes[..1], "replica_election", true, true).is_ok());
+    assert!(check_election(&nodes[..1], "replica_election", true).is_ok());
 }
 
 #[test]
 fn replica_election_is_refused_below_the_metadata_level() {
     let nodes = [offering_election("a", &["replica_election"])];
-    let message = conflict(check_election(&nodes, "replica_election", false, true));
+    let message = conflict(check_election(&nodes, "replica_election", false));
     assert!(
         message.contains("metadata level") && message.contains("does not have"),
         "{message}"
     );
     // joint_fence needs no metadata level.
-    assert!(check_election(&nodes, "joint_fence", false, true).is_ok());
+    assert!(check_election(&nodes, "joint_fence", false).is_ok());
+}
+
+/// Under joint_fence a broker opens a new stream or cache only once its
+/// shard's incarnation says nothing came before it (#1862).
+#[test]
+fn joint_fence_is_refused_until_incarnations_are_finalized() {
+    for missing in ["stream_incarnations", "cache_incarnations"] {
+        let have: Vec<&str> = [
+            "generation_start",
+            "stream_incarnations",
+            "cache_incarnations",
+        ]
+        .into_iter()
+        .filter(|name| *name != missing)
+        .collect();
+        let message = conflict(check_prerequisites(&set(&have), "joint_fence"));
+        assert!(message.contains(missing), "{message}");
+    }
 }
 
 #[test]
 fn replica_election_is_refused_until_joint_fence_and_the_rest_are_finalized() {
-    let all = ["generation_start", "majority_ack", "lease_free_reads"];
+    let all = [
+        "generation_start",
+        "majority_ack",
+        "lease_free_reads",
+        "stream_incarnations",
+        "cache_incarnations",
+    ];
     let message = conflict(check_prerequisites(&set(&all), "replica_election"));
     assert!(message.contains("joint_fence"), "{message}");
     for missing in all {
@@ -315,5 +362,5 @@ fn replica_election_is_refused_until_joint_fence_and_the_rest_are_finalized() {
 #[test]
 fn other_features_pass_the_election_check() {
     let nodes = [at("a", NodeLifecycle::Live, &["majority_ack"])];
-    assert!(check_election(&nodes, "majority_ack", false, false).is_ok());
+    assert!(check_election(&nodes, "majority_ack", false).is_ok());
 }

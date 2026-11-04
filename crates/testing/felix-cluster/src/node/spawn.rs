@@ -113,6 +113,11 @@ pub(crate) fn spawn_broker(
     if config.power_loss {
         command.env("FELIX_STORAGE_POWER_LOSS_ROOT", &storage);
     }
+    if config.joint_fence {
+        command
+            .env("FELIX_INTERNAL_ELECTION", "true")
+            .env("FELIX_TEST_FLEET_FEATURES", joint_fence_features());
+    }
     command.envs(config.broker_env.iter().map(|(key, value)| (key, value)));
     if let Some(env) = config.node_env.get(index) {
         command.envs(env.iter().map(|(key, value)| (key, value)));
@@ -184,4 +189,16 @@ pub fn broker_binary() -> Result<PathBuf> {
         "felix-broker not found at {}; build it first with `cargo build -p felix-broker-service --bin felix-broker`",
         candidate.display()
     ))
+}
+
+/// What a broker of this build reports, plus `joint_fence` and the
+/// `ELECTION` capability it offers under `FELIX_INTERNAL_ELECTION`.
+fn joint_fence_features() -> String {
+    use felix_common::fleet::{IMPLEMENTED, JOINT_FENCE, NON_VOTING, PEER_ELECTION, START_HOLDERS};
+    IMPLEMENTED
+        .iter()
+        .chain(&[JOINT_FENCE, PEER_ELECTION, START_HOLDERS, NON_VOTING])
+        .map(|feature| feature.name())
+        .collect::<Vec<_>>()
+        .join(",")
 }

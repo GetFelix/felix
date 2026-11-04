@@ -192,6 +192,14 @@ pub const PEER_ELECTION: FleetFeature = FleetFeature::new("peer_election");
 /// adds it to its report.
 pub const START_HOLDERS: FleetFeature = FleetFeature::new("start_holders");
 
+/// Not a feature: how a broker reports that, under [`JOINT_FENCE`], it marks
+/// a wiped copy of its own a learner and its leaders leave a learner's
+/// answers out of their marks. A build that does not would let a wiped copy
+/// vote and count, so the control plane finalizes [`JOINT_FENCE`] only when
+/// every serving broker reports this. Kept out of [`IMPLEMENTED`], like
+/// [`PEER_ELECTION`].
+pub const NON_VOTING: FleetFeature = FleetFeature::new("non_voting");
+
 /// The most features one gate tracks. A report longer than this is cut, which
 /// only ever leaves features off.
 pub const MAX_FEATURES: usize = 64;
@@ -232,18 +240,25 @@ pub fn missing<'a>(required: &'a BTreeSet<String>, offered: &BTreeSet<String>) -
 /// feature that needs no other, or a name this build does not know.
 pub fn prerequisites(feature: &str) -> &'static [FleetFeature] {
     const BY_FOLLOWERS: &[FleetFeature] = &[GENERATION_START, MAJORITY_ACK];
+    // A replaced copy stops being a learner only once it holds its
+    // generation's start record, which leaders write under generation_start.
+    // A joint fence opens a new stream or cache only on knowing its shard
+    // came first, which a broker tells only from an incarnation above 0.
+    const FOR_JOINT_FENCE: &[FleetFeature] =
+        &[GENERATION_START, STREAM_INCARNATIONS, CACHE_INCARNATIONS];
     const FOR_ELECTION: &[FleetFeature] = &[
         GENERATION_START,
         MAJORITY_ACK,
         LEASE_FREE_READS,
+        STREAM_INCARNATIONS,
+        CACHE_INCARNATIONS,
         JOINT_FENCE,
     ];
     if feature == REPLICA_ELECTION.name() {
         FOR_ELECTION
-    } else if feature == MAJORITY_ACK.name() || feature == JOINT_FENCE.name() {
-        // A replaced copy stops being a learner only once it holds its
-        // generation's start record, which leaders write under
-        // generation_start.
+    } else if feature == JOINT_FENCE.name() {
+        FOR_JOINT_FENCE
+    } else if feature == MAJORITY_ACK.name() {
         &[GENERATION_START]
     } else if feature == LEASE_FREE_READS.name() || feature == FENCED_CACHES.name() {
         BY_FOLLOWERS
@@ -286,6 +301,14 @@ impl FleetView<'_> {
             .iter()
             .position(|reported| reported == feature.name())
             .is_some_and(|bit| self.enabled & (1 << bit) != 0)
+    }
+
+    /// Whether this broker reported `feature`, so the fleet could ever
+    /// enable it here.
+    pub fn reports(&self, feature: FleetFeature) -> bool {
+        self.reported
+            .iter()
+            .any(|reported| reported == feature.name())
     }
 
     /// Whether this process had taken a registration's answer when the view
