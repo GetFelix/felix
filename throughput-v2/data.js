@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793828282380,
+  "lastUpdate": 1793828817509,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -45032,6 +45032,58 @@ window.BENCHMARK_DATA = {
             "range": "3994.16",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 818938.48\nmean: 820385.43\nstdev: 3994.16\ncv: 0.49%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "05985026347bb873042b9858da502dd47e4111ef",
+          "message": "fix(replication): a checked answer counts toward the mark after its pass (#1895) (#1897)\n\n* test(replication): two slow followers answering out of step never make a mark (repro, fails on main)\n\n* fix(replication): a checked answer counts toward the mark after its pass while the copy is unchanged (#1895)\n\n* docs(replication): which answers the mark counts, and for how long (#1895)\n\nSpec-Unaffected: FelixShard.tla models per-pass counting (EndPass clears\n`checked`, MarkCounts requires m \\in checked[b]), so the spec now checks a\nstricter rule than the code runs. The model change (keep `checked` across\nreports, drop f on any Probe that changes sid or incarnation, count\nmin(confirmed, the offset Answer vouched for)) is described in the PR and\nleft for a follow-up with its own TLC runs.\n\n* fix(replication): a failed request stops a follower counting on its earlier answer (#1895)\n\n* fix(replication): a learner's earlier answer still names it holding the start (#1895)\n\nvouched_at zeroed learners and halted followers, so the holds_start report\nbuilt from the same view never named a learner, which #1893 relies on. The\nmarks already leave them out through counts().\n\nSpec-Unaffected: the view the marks read still drops learners and halted followers through counts(); only the holds_start report sees them again, as on main.\n\n* fix(replication): a halted follower's earlier vouch no longer names it holding the start (#1895)\n\nA learner is still reported; a halted copy is not shipped to or pinged, so\nadmitting it into a new set on a pre-halt vouch could stall the change.\n\nSpec-Unaffected: only the holds_start report changes; the marks already left halted followers out through counts().\n\n* test(replication): the unknown-set test's kept set names no earlier sets\n\nMain's tests do not build without it (#1915 carries the same fix).",
+          "timestamp": "2026-11-04T13:41:15-08:00",
+          "tree_id": "620c5613cdf6108e0ebd1c586e70489b711a53c3",
+          "url": "https://github.com/GetFelix/felix/commit/05985026347bb873042b9858da502dd47e4111ef"
+        },
+        "date": 1793828816875,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 344830.85,
+            "range": "10655.84",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 344830.85\nmean: 345581.43\nstdev: 10655.84\ncv: 3.08%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 344830.85,
+            "range": "10655.84",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 344830.85\nmean: 345581.43\nstdev: 10655.84\ncv: 3.08%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81100.32,
+            "range": "444.94",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81100.32\nmean: 81016.95\nstdev: 444.94\ncv: 0.55%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 811003.19,
+            "range": "4449.36",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 811003.19\nmean: 810169.55\nstdev: 4449.36\ncv: 0.55%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
