@@ -2240,9 +2240,20 @@ the control plane is upgraded.
 quorum mark at the leader's generation is the committed high-water mark:
 consumer-group polls hand out nothing at or past it, Kafka `Fetch` returns
 nothing past it and reports it as the high watermark and last stable offset,
-and `ListOffsets` latest is the mark. Before the first mark of a generation it
-is zero. `Leader` streams, shards placed without replicas and single-node
-brokers are unbounded, as their commit point is local durability.
+and `ListOffsets` latest is the mark. Before the first mark of a generation,
+as right after a failover onto this broker, there is no bound to give: zero
+would send a reader asking for `latest` back to the start of the log. Kafka
+`Fetch` answers empty. `ListOffsets` for `latest` is refused as Kafka refuses
+it while a new leader's high watermark catches up: `OFFSET_NOT_AVAILABLE` from
+v5 and `LEADER_NOT_AVAILABLE` before, both retriable. Earliest and timestamp
+queries are still answered, bounded at the log start. Group polls, seeks and
+describes are refused as `shard_unavailable` with reason `not_ready`. `Leader`
+streams, shards placed without replicas and single-node brokers are unbounded, as their commit point is local durability. A shard
+without replicas is unbounded only on the broker that serves it. Elsewhere,
+such as on a leader deposed by a move to a route with no replicas, the bound
+is refused, so that broker hands out nothing past the mark. Held batches stay
+held, `read_committed` and group polls, seeks and describes are refused, and
+Kafka `Fetch` and `ListOffsets` answer `NOT_LEADER_OR_FOLLOWER` (#1852).
 
 QUIC subscriptions are gated too. A durable batch past the mark joins a
 per-stream hold under its commit turn, so the hold is in offset order; when the

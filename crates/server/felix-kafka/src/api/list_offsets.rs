@@ -10,7 +10,7 @@ use kafka_protocol::messages::list_offsets_response::{
     ListOffsetsPartitionResponse, ListOffsetsTopicResponse,
 };
 
-use crate::cluster::Principal;
+use crate::cluster::{Principal, Unreadable};
 use crate::service::Shared;
 
 /// The special timestamps a request may ask for instead of a time.
@@ -39,7 +39,7 @@ pub(super) async fn answer(
             )
             .await
             {
-                Ok(readable) => offset_for(&readable, partition.timestamp).await,
+                Ok(readable) => offset_for(&readable, partition.timestamp, version).await,
                 Err(error) => Err(error),
             };
             match found {
@@ -67,13 +67,22 @@ pub(super) async fn answer(
 async fn offset_for(
     readable: &super::partition::Readable,
     timestamp: i64,
+    version: i16,
 ) -> Result<(i64, i64), ResponseError> {
     let log = &readable.log;
     let storage = |err: felix_broker::BrokerError| crate::errors::from_broker(&err);
     let base = log.readable_base();
     // The high watermark, not the log end: an offset past the commit point is
     // not one a consumer may start from.
-    let tail = readable.high_watermark(log.tail_offset().await.map_err(storage)?);
+    let end = log.tail_offset().await.map_err(storage)?;
+    let tail = match readable.high_watermark(end) {
+        Ok(tail) => tail,
+        Err(Unreadable::NotServed) => return Err(ResponseError::NotLeaderOrFollower),
+        // A new leader with no mark yet has no `latest` to give, but the
+        // other queries are answered with the log start as their bound.
+        Err(Unreadable::Settling) if timestamp == LATEST => return Err(settling(version)),
+        Err(Unreadable::Settling) => readable.floor(end),
+    };
     match timestamp {
         LATEST => Ok((-1, tail as i64)),
         EARLIEST => Ok((-1, base as i64)),
@@ -97,6 +106,18 @@ async fn offset_for(
             }))
         }
         _ => Err(ResponseError::InvalidRequest),
+    }
+}
+
+/// The refusal for `latest` while a new leader has no mark, as Kafka answers
+/// it while a new leader's high watermark catches up: `OFFSET_NOT_AVAILABLE`
+/// from v5, which older clients do not know, and `LEADER_NOT_AVAILABLE`
+/// before it. Both are retriable.
+fn settling(version: i16) -> ResponseError {
+    if version >= 5 {
+        ResponseError::OffsetNotAvailable
+    } else {
+        ResponseError::LeaderNotAvailable
     }
 }
 

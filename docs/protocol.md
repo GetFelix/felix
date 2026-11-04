@@ -563,7 +563,11 @@ shards needs one request per shard; nothing cuts across them.
 `group_seek` moves the group's cursor, backwards or forwards. `earliest` is the
 oldest record the shard still holds, `latest` its committed tail when the seek
 lands (held to the quorum mark on a `Quorum` stream, as a poll is), and an
-`offset` outside those two is refused with `invalid_request`. With `if_new` the
+`offset` outside those two is refused with `invalid_request`. A `Quorum` leader
+that has no committed mark at its generation yet, just after a promotion, has no
+committed tail to give: `group_seek`, `group_describe` and a consumer's first
+`group_poll` are refused with `shard_unavailable` and reason `not_ready` until
+the first mark. Retry them. With `if_new` the
 group is moved only if it does not exist yet: it has no cursor and nothing has
 been handed out from it. That is how a group is created somewhere other than
 offset 0, and it is safe to send on every start of a consumer. `if_new` is left
