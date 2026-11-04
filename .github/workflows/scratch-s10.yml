@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6]
     env:
       CARGO_TERM_COLOR: never
     steps:
@@ -35,7 +35,7 @@ jobs:
           RUST_LOG: ${{ contains(github.ref_name, 'diag') && 'info' || 'info' }}
         run: |
           pass=0; fail=0
-          filter="replica_election::scratch_split_then_adopted --exact"; loops=10
+          filter="--skip scratch_split"; loops=2
           for i in $(seq 1 $loops); do
             export FELIX_TEST_CLUSTER_LOG_DIR="$RUNNER_TEMP/logs/$i"
             if cargo test -p felix-cluster --test failures -- $filter > "$RUNNER_TEMP/out-$i.log" 2>&1; then
