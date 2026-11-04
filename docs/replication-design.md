@@ -2238,8 +2238,13 @@ the control plane is upgraded.
 quorum mark at the leader's generation is the committed high-water mark:
 consumer-group polls hand out nothing at or past it, Kafka `Fetch` returns
 nothing past it and reports it as the high watermark and last stable offset,
-and `ListOffsets` latest is the mark. Before the first mark of a generation it
-is zero. `Leader` streams, shards placed without replicas and single-node
+and `ListOffsets` latest is the mark. Before the first mark of a generation,
+as right after a failover onto this broker, there is no bound to give: zero
+would send a reader asking for `latest` back to the start of the log. Kafka
+`Fetch` answers empty, `ListOffsets` answers `OFFSET_NOT_AVAILABLE`, which
+Kafka itself answers while a new leader's high watermark catches up and
+clients retry, and group polls, seeks and describes are refused as
+`shard_unavailable` with reason `not_ready`. `Leader` streams, shards placed without replicas and single-node
 brokers are unbounded, as their commit point is local durability. A shard
 without replicas is unbounded only on the broker that serves it. Elsewhere,
 such as on a leader deposed by a move to a route with no replicas, the bound

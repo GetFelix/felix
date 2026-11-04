@@ -551,7 +551,7 @@ async fn a_shard_moved_to_no_replicas_is_refused_where_it_is_no_longer_served() 
     let quorum = Some(felix_broker::ConsistencyLevel::Quorum);
     assert_eq!(
         read_bound(quorum, &stream, Some(&marks), Some(&deposed)),
-        Err(NotServed)
+        Err(Unreadable::NotServed)
     );
 
     // The new leader serves it with no replicas: its majority is itself.
@@ -565,6 +565,56 @@ async fn a_shard_moved_to_no_replicas_is_refused_where_it_is_no_longer_served() 
     assert_eq!(
         read_bound(quorum, &stream, Some(&marks), Some(&leader)),
         Ok(None)
+    );
+}
+
+/// A shard served here with replicas, led at `generation`.
+struct Replicated {
+    generation: u64,
+}
+
+impl ShardServing for Replicated {
+    fn replicated(&self, _key: &ShardKey) -> bool {
+        true
+    }
+
+    fn generation(&self, _key: &ShardKey) -> Option<u64> {
+        Some(self.generation)
+    }
+
+    fn lease_valid(&self) -> bool {
+        true
+    }
+
+    fn record_ack_refusal(&self) {}
+}
+
+/// A broker that just took a shard over has no mark at its generation yet.
+/// `read_bound` says so rather than answer zero, which a seek to `latest` or
+/// a Kafka `ListOffsets` would read as the end of the log and rewind to its
+/// start.
+#[test]
+fn read_bound_is_settling_until_the_new_generation_has_a_mark() {
+    use felix_broker::ReadBound;
+    let quorum = Some(felix_broker::ConsistencyLevel::Quorum);
+    let stream = key("orders");
+    let marks = QuorumMarks::new();
+    marks.publish(&stream, 3, 5);
+
+    let promoted = Replicated { generation: 4 };
+    assert_eq!(
+        read_bound(quorum, &stream, Some(&marks), Some(&promoted)),
+        Err(Unreadable::Settling)
+    );
+    assert_eq!(
+        committed_bound(&stream, &marks, &promoted),
+        ReadBound::Settling
+    );
+
+    marks.publish(&stream, 4, 7);
+    assert_eq!(
+        read_bound(quorum, &stream, Some(&marks), Some(&promoted)),
+        Ok(Some(7))
     );
 }
 

@@ -23,7 +23,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use super::partition::Readable;
-use crate::cluster::Principal;
+use crate::cluster::{Principal, Unreadable};
 use crate::service::Shared;
 
 /// The longest a fetch waits, whatever the client asked for. Clients ask for
@@ -187,7 +187,14 @@ async fn read_partition(
     // not out of range, only not readable yet, so it is answered empty.
     let high_watermark = match readable.high_watermark(tail) {
         Ok(high_watermark) => high_watermark,
-        Err(error) => return answer.with_error_code(error.code()).with_high_watermark(-1),
+        // A new leader with no mark yet knows of nothing committed past the
+        // log start, so the fetch is answered empty and the consumer polls on.
+        Err(Unreadable::Settling) => readable.floor(tail),
+        Err(error @ Unreadable::NotServed) => {
+            return answer
+                .with_error_code(ResponseError::from(error).code())
+                .with_high_watermark(-1);
+        }
     };
     let answer = answer
         .with_high_watermark(high_watermark as i64)

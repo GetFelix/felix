@@ -86,6 +86,25 @@ async fn latest_is_refused_once_the_shard_is_not_served_here() {
     );
 }
 
+/// A broker that just took a shard over has no commit point yet. `latest`
+/// is refused with a code clients retry, not answered with the log start,
+/// which a consumer resetting to `latest` would start from.
+#[tokio::test]
+async fn latest_is_refused_while_a_new_leader_settles() {
+    let fixture = Fixture::anonymous().await;
+    fixture.stream("orders", "created", 1, true).await;
+    fixture
+        .publish("orders", "created", 0, &["a", "b", "c"])
+        .await;
+    fixture.cluster.settle("created", 0);
+    let mut client = fixture.connect();
+    let (error, _, _) = answer(&mut client, 0, -1, 1).await;
+    assert_eq!(
+        error,
+        kafka_protocol::ResponseError::OffsetNotAvailable.code()
+    );
+}
+
 #[tokio::test]
 async fn a_time_finds_the_first_record_at_or_after_it() {
     let fixture = Fixture::anonymous().await;

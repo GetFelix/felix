@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use felix_broker::{Broker, GroupKey};
+use felix_replication::quorum::Unreadable;
 use felix_wire::{GroupRecord, StartPosition};
 use tokio::sync::Notify;
 use tokio::sync::futures::OwnedNotified;
@@ -22,7 +23,7 @@ use crate::serving::commit_ops;
 use crate::serving::quic::client_error::ClientError;
 use crate::serving::quic::handlers::publish::PublishContext;
 use crate::shards::lifecycle::fence::{self, FenceGuard};
-use crate::shards::routing::{Dispatch, dispatch};
+use crate::shards::routing::{Dispatch, Reason, dispatch};
 use crate::shards::{ShardKey, ShardKind};
 
 /// Longest a waiting poll goes without looking again unprompted.
@@ -357,8 +358,9 @@ async fn read_end(
 }
 
 /// The quorum mark a group may read to, `None` when the shard has none.
-/// Refused once this broker no longer serves the shard: zero there is not a
-/// position, and a seek to `latest` would rewind the group to it.
+/// Refused once this broker no longer serves the shard, or while it has no
+/// mark at its generation yet: zero there is not a position, and a seek to
+/// `latest` would rewind the group to it.
 async fn committed_bound(
     broker: &Broker,
     publish_ctx: &PublishContext,
@@ -373,7 +375,13 @@ async fn committed_bound(
         publish_ctx.marks.as_deref(),
         publish_ctx.ingress.as_deref(),
     )
-    .map_err(|_| crate::shards::lifecycle::fence::Fenced::NotServing.into())
+    .map_err(|unreadable| match unreadable {
+        Unreadable::NotServed => crate::shards::lifecycle::fence::Fenced::NotServing.into(),
+        Unreadable::Settling => ClientError::unavailable(
+            &Reason::NotReady,
+            "this broker has no committed mark for the shard yet",
+        ),
+    })
 }
 
 /// What a consumer does with a record it was handed.
@@ -539,7 +547,7 @@ impl Owned {
         {
             if unsettled {
                 return Err(ClientError::unavailable(
-                    &crate::shards::routing::Reason::NotReady,
+                    &Reason::NotReady,
                     "group state is not served here until replication has started for the shard",
                 ));
             }

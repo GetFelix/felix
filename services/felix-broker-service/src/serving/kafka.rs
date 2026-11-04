@@ -250,7 +250,7 @@ impl Cluster for BrokerCluster {
         &self,
         shard: &ShardRef<'_>,
         handle: &StreamHandle,
-    ) -> Result<Option<u64>, felix_kafka::NotServed> {
+    ) -> Result<Option<u64>, felix_kafka::Unreadable> {
         let key = Self::key(shard);
         felix_replication::quorum::read_bound(
             Some(handle.consistency()),
@@ -258,7 +258,10 @@ impl Cluster for BrokerCluster {
             self.marks.as_deref(),
             self.ingress.as_deref(),
         )
-        .map_err(|_| felix_kafka::NotServed)
+        .map_err(|unreadable| match unreadable {
+            felix_replication::quorum::Unreadable::NotServed => felix_kafka::Unreadable::NotServed,
+            felix_replication::quorum::Unreadable::Settling => felix_kafka::Unreadable::Settling,
+        })
     }
 
     fn admit_produce(&self, tenant_id: &str, records: u64, bytes: u64) -> Duration {

@@ -1012,16 +1012,17 @@ pub async fn await_cache_quorum<S: ShardServing + ?Sized>(
 /// shard this broker serves with no replicas, where the leader alone is the
 /// majority -- the same cases [`await_quorum`] acknowledges without waiting.
 ///
-/// Zero while this broker has no mark for the shard at its current
-/// generation: nothing is known to be on a majority yet. [`NotServed`] once
-/// it does not serve a `Quorum` shard at all, so a caller refuses rather
-/// than answer zero as if it were a real position.
+/// [`Unreadable::Settling`] while this broker serves the shard but has no
+/// mark for it at its current generation, as right after a failover onto it,
+/// and [`Unreadable::NotServed`] once it does not serve a `Quorum` shard at
+/// all. Either way the caller has no position to answer with: zero would
+/// send a reader asking for the end of the log to its start.
 pub fn read_bound<S: ShardServing + ?Sized>(
     consistency: Option<felix_broker::ConsistencyLevel>,
     shard: &crate::ShardKey,
     marks: Option<&QuorumMarks>,
     ingress: Option<&S>,
-) -> Result<Option<u64>, NotServed> {
+) -> Result<Option<u64>, Unreadable> {
     if consistency != Some(felix_broker::ConsistencyLevel::Quorum) {
         return Ok(None);
     }
@@ -1030,16 +1031,24 @@ pub fn read_bound<S: ShardServing + ?Sized>(
     };
     // Serving first, as in [`committed_bound`]: a shard moved to a route with
     // no replicas is unbounded only where it is now served.
-    let generation = ingress.generation(shard).ok_or(NotServed)?;
+    let generation = ingress.generation(shard).ok_or(Unreadable::NotServed)?;
     if !ingress.replicated(shard) {
         return Ok(None);
     }
-    Ok(Some(marks.offset(shard, generation).unwrap_or(0)))
+    marks
+        .offset(shard, generation)
+        .map(Some)
+        .ok_or(Unreadable::Settling)
 }
 
-/// [`read_bound`]'s answer for a `Quorum` shard this broker does not serve.
+/// Why [`read_bound`] has no bound for a `Quorum` shard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NotServed;
+pub enum Unreadable {
+    /// This broker does not serve the shard.
+    NotServed,
+    /// This broker serves the shard but has no mark at its generation yet.
+    Settling,
+}
 
 /// Hold a counter add on a `Quorum` cache until a majority of the shard's
 /// replica set holds the counter log up to `end`, or answer a counter read
@@ -1142,9 +1151,9 @@ pub async fn await_counter_quorum<S: ShardServing + ?Sized>(
 /// The committed mark for readers of one shard, as the broker core asks for
 /// it (see `felix_broker::ReadBound`).
 ///
-/// [`read_bound`] with two more answers. `Settling` while this broker leads
-/// the shard but has no mark for its generation: zero would tell a new reader
-/// to start at the beginning of the log. `Refused` once it may not serve the
+/// [`read_bound`]'s answers, plus a lease check. `Settling` while this broker
+/// leads the shard but has no mark for its generation: zero would tell a new
+/// reader to start at the beginning of the log. `Refused` once it may not serve the
 /// shard at all -- the shard is led elsewhere, or its lease lapsed on a
 /// shard that still needs it ([`sessions_skip_lease`]) -- so a reader
 /// waiting on the mark stops and resumes where the shard is served.

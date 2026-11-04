@@ -301,7 +301,7 @@ async fn a_quorum_group_poll_stops_at_the_quorum_mark() {
             ..ClusterContext::default()
         },
     );
-    let take = || async {
+    let poll_once = || {
         poll(
             &leader.broker,
             &publish_ctx,
@@ -316,14 +316,20 @@ async fn a_quorum_group_poll_stops_at_the_quorum_mark() {
             None,
             None,
         )
-        .await
-        .expect("poll")
-        .into_iter()
-        .map(|record| record.offset)
-        .collect::<Vec<_>>()
+    };
+    let take = || async {
+        poll_once()
+            .await
+            .expect("poll")
+            .into_iter()
+            .map(|record| record.offset)
+            .collect::<Vec<_>>()
     };
 
-    assert!(take().await.is_empty(), "no majority holds anything yet");
+    // No mark at this generation yet: refused, as a shard not served here is,
+    // so the consumer retries rather than reads from zero.
+    let refused = poll_once().await.expect_err("polled with no mark");
+    assert_eq!(refused.code(), &felix_wire::ErrorCode::ShardUnavailable);
     marks.publish(&leader::stream_key(leader::QUORUM), leader::GENERATION, 2);
     assert_eq!(take().await, vec![0, 1]);
     assert!(take().await.is_empty(), "handed out past the mark");
@@ -770,6 +776,85 @@ async fn the_read_end_of_a_shard_no_longer_served_here_is_refused() {
         .await
         .expect_err("answered for a shard served elsewhere");
     assert_eq!(refused.code(), &felix_wire::ErrorCode::ShardUnavailable);
+}
+
+/// Right after a failover onto this broker it has no mark at its generation
+/// yet. A seek to `latest`, and a describe, are refused with a retriable
+/// code rather than answered with zero, which would rewind the group to the
+/// start of the log.
+#[tokio::test]
+async fn a_seek_to_latest_is_refused_until_the_new_generation_has_a_mark() {
+    let leader = Leader::start().await;
+    leader
+        .broker
+        .publish_batch(
+            TENANT,
+            NAMESPACE,
+            leader::QUORUM,
+            0,
+            &[Bytes::from_static(b"a"), Bytes::from_static(b"b")],
+        )
+        .await
+        .expect("publish");
+    let key = leader::stream_key(leader::QUORUM);
+    // The last mark is the previous leader's.
+    let marks = Arc::new(felix_replication::quorum::QuorumMarks::new());
+    marks.publish(&key, leader::GENERATION - 1, 2);
+    let publish_ctx = build_publish_context(
+        Arc::clone(&leader.broker),
+        &BrokerConfig::default(),
+        ClusterContext {
+            ingress: Some(Arc::clone(&leader.ingress)),
+            marks: Some(Arc::clone(&marks)),
+            ..ClusterContext::default()
+        },
+    );
+    let seek_latest = || {
+        seek(
+            &leader.broker,
+            &publish_ctx,
+            None,
+            TENANT,
+            NAMESPACE,
+            leader::QUORUM,
+            0,
+            GROUP,
+            StartPosition::Latest,
+            false,
+        )
+    };
+
+    let refused = seek_latest().await.expect_err("seeked with no mark");
+    assert_eq!(refused.code(), &felix_wire::ErrorCode::ShardUnavailable);
+    let refused = describe(
+        &leader.broker,
+        &publish_ctx,
+        TENANT,
+        NAMESPACE,
+        leader::QUORUM,
+        0,
+        GROUP,
+    )
+    .await
+    .expect_err("described with no mark");
+    assert_eq!(refused.code(), &felix_wire::ErrorCode::ShardUnavailable);
+
+    marks.publish(&key, leader::GENERATION, 2);
+    let (_, log, owned) = reader_and_log(
+        &leader.broker,
+        &publish_ctx,
+        TENANT,
+        NAMESPACE,
+        leader::QUORUM,
+        0,
+    )
+    .expect("served here");
+    assert_eq!(
+        read_end(&leader.broker, &publish_ctx, &owned, &log)
+            .await
+            .expect("read end"),
+        2
+    );
 }
 
 #[tokio::test]

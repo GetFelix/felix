@@ -344,6 +344,25 @@ async fn a_fetch_is_refused_once_the_shard_is_not_served_here() {
     assert!(partition.records.as_ref().is_none_or(|r| r.is_empty()));
 }
 
+/// While a new leader has no commit point a fetch is answered empty, not
+/// refused, so the consumer keeps polling and reads once the mark lands.
+#[tokio::test]
+async fn a_fetch_is_empty_while_a_new_leader_settles() {
+    let fixture = Fixture::anonymous().await;
+    fixture.stream("orders", "created", 1, true).await;
+    fixture.publish("orders", "created", 0, &["r0", "r1"]).await;
+    fixture.cluster.settle("created", 0);
+    let mut client = fixture.connect();
+
+    let response = client
+        .call(&request(&[("orders.created", 0, 1)], 1, 0), 11)
+        .await;
+    let partition = only(&response);
+    assert_eq!(partition.error_code, 0);
+    assert_eq!(partition.high_watermark, 0);
+    assert!(records(partition).is_empty());
+}
+
 /// **A fetch stops at the commit point, not the log's end.** On a `Quorum`
 /// shard a record past the quorum mark can be lost at failover and its
 /// offset reused, so a consumer that read it would hold a position the next
