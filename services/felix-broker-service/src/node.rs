@@ -42,7 +42,7 @@ use tokio_util::task::TaskTracker;
 use crate::cluster::{controlplane_http, credential};
 use crate::config::{self, DurableStorageConfig};
 use crate::serving::auth::{BrokerAuth, ControlPlaneKeyStore, TenantCatalog};
-use crate::serving::mqtt::BrokerMounts;
+use crate::serving::mqtt::{BrokerMounts, BrokerWrites};
 use crate::serving::tls::ClientTls;
 use felix_replication as replication;
 
@@ -393,6 +393,13 @@ where
         &client_tls,
         &auth,
         BrokerMounts::new(Arc::clone(&broker), ingress_router.clone()),
+        BrokerWrites::new(
+            Arc::clone(&broker),
+            ingress_router.clone(),
+            Some(Arc::clone(&quorum_marks)),
+            std::time::Duration::from_millis(config.publish_quorum_timeout_ms.max(1)),
+        )
+        .with_quotas(Arc::clone(&limits.tenant_rates)),
     )?;
     let mut accept_tasks = listeners::spawn_accept_loops(
         &quic_servers,

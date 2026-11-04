@@ -41,7 +41,7 @@ impl Authenticator for Recorder {
             .unwrap_or_default()
             .to_string();
         self.threads.lock().expect("lock").push(name);
-        Ok(Principal::new(tenant_id))
+        Ok(Principal::anonymous(tenant_id))
     }
 }
 
@@ -105,8 +105,14 @@ fn start_with_tls(
     tls: Option<Arc<rustls::ServerConfig>>,
     auth: Arc<dyn Authenticator>,
 ) -> Running {
-    let listener =
-        MqttListener::bind(config, tls, auth, Arc::new(felix_mqtt::NoMounts)).expect("bind");
+    let listener = MqttListener::bind(
+        config,
+        tls,
+        auth,
+        Arc::new(felix_mqtt::NoMounts),
+        Arc::new(felix_mqtt::NoWrites),
+    )
+    .expect("bind");
     let addr = listener.local_addr().expect("addr");
     let ws_addr = listener.ws_local_addr().expect("ws addr");
     let shutdown = CancellationToken::new();
@@ -219,6 +225,7 @@ async fn binding_a_taken_port_is_an_error_not_a_panic() {
         None,
         Arc::new(Recorder::default()),
         Arc::new(felix_mqtt::NoMounts),
+        Arc::new(felix_mqtt::NoWrites),
     )
     .err()
     .expect("the port is taken");

@@ -662,7 +662,10 @@ with its publisher, once `publisher_principal` is, or on a single broker with
 `head_trim` is, or from the start on a single broker (see
 [`head_trim`](#head_trim)); and v8 for a record with a key or headers, once
 `record_headers` is, or from the start on a single broker (see
-[`record_headers`](#record_headers)). Each of those is the one-way
+[`record_headers`](#record_headers)). Every MQTT message carries headers, so an
+MQTT publish to a mounted stream is what moves that stream's logs to v8;
+mounting the stream is the explicit step that opts in, and a broker that
+refuses headers refuses the MQTT publish too. Each of those is the one-way
 step. Consumer-group cursors are not in the segment format but have a layout
 of their own: a cluster moves to the newer one once
 [`group_cursor_dependencies`](#group_cursor_dependencies) is finalized, and a

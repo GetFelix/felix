@@ -294,6 +294,7 @@ Served by the MQTT listener, when `FELIX_MQTT_LISTEN` is set. See [MQTT](/featur
 | `felix_mqtt_connections` | gauge | - | Open MQTT connections. |
 | `felix_mqtt_connections_total` | counter | - | MQTT connections that reached the connection loop. |
 | `felix_mqtt_refused_total` | counter | `reason` | Connections or requests the listener turned away, by `reason`. The reasons are listed in [observability](/features/observability/). |
+| `felix_mqtt_published_total` | counter | `qos` | Messages written to a mounted stream, by `qos` (`0` or `1`). |
 
 ## Control plane: placement
 

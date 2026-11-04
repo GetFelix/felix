@@ -131,6 +131,12 @@ impl MqttListenerConfig {
                 1,
                 65_535,
             )? as u16,
+            max_inflight: number(
+                "FELIX_MQTT_MAX_INFLIGHT",
+                defaults.max_inflight.into(),
+                1,
+                65_535,
+            )? as u16,
         };
         let ws = ws_config(&get, &number)?;
         Ok(Some(Self {
