@@ -90,6 +90,27 @@ fn commit_refusals_are_classified() {
 }
 
 #[test]
+fn a_version_mismatch_has_its_own_status() {
+    let refused = felix_client::PublishRefused {
+        reason: PublishRefusalReason::VersionMismatch {
+            key: "k".into(),
+            version: Some(3),
+        },
+        message: "k holds 3".into(),
+    };
+    assert_eq!(
+        classify(&anyhow::Error::new(refused).context("commit")),
+        FELIX_STATUS_VERSION_MISMATCH
+    );
+    // Another refusal reason is not a version mismatch.
+    let other = felix_client::PublishRefused {
+        reason: PublishRefusalReason::OffsetMismatch { tail: 4 },
+        message: "tail 4".into(),
+    };
+    assert_eq!(classify(&anyhow::Error::new(other)), FELIX_STATUS_ERROR);
+}
+
+#[test]
 fn a_publish_whose_ack_was_lost_is_outcome_unknown() {
     let err = anyhow::Error::new(felix_client::AckLost {
         reason: "connection lost".into(),

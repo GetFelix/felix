@@ -788,6 +788,10 @@ typedef void (*FelixTrimCallback)(void *user_data,
 // features are still reported as `FELIX_STATUS_ERROR`.
 #define FELIX_STATUS_UNSUPPORTED 28
 
+// A commit required a key to hold a version it does not hold. Nothing was
+// written; read the key again and decide whether to retry.
+#define FELIX_STATUS_VERSION_MISMATCH 29
+
 // Only records published after the subscription is made.
 #define FELIX_START_LATEST 0
 
