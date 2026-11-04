@@ -432,8 +432,12 @@ ASSUME AckByFollowers => Quorum /\ ~CheckAtCommit /\ ~AckChecksLease
 \* Cache shards are checked with follower acks and failover alone, the only
 \* way the broker acknowledges a cache write without the lease.
 ASSUME Counters \in BOOLEAN /\ CounterCatchUp \in BOOLEAN
+\* Spares are allowed only where they join through a cut-over (`Swap`). The
+\* cut-over waits for its destination to hold the old leader's counter log;
+\* a joining spare gets the counter log only through `ShipCounter`.
 ASSUME Counters => /\ AckByFollowers /\ ~LabelOnReceipt /\ ~Resends
-                   /\ ~Handoff /\ ~Cancel /\ ~StageMove /\ MaxMoves = 0 /\ Spares = {}
+                   /\ ~Handoff /\ ~Cancel /\ ~StageMove /\ MaxMoves = 0
+                   /\ (Spares = {} \/ (Swaps > 0 /\ ~ReplaceOnPromote /\ ~Grow))
 ASSUME Eps < L /\ Margin >= 0
 \* Self-election is checked on the fenced, follower-acked path alone. A
 \* staged copy is left out to keep the state space small.
@@ -672,6 +676,14 @@ ReplacedIdLearner == TRUE
 SetlessFences == FALSE
 SetlessSeesMarker == TRUE
 CounterFenceSeesLearner == TRUE
+\* `CountersJoint`: under `JointFence`, while a set change is pending the
+\* counter mark needs a majority of the old set too, as the cache log's does
+\* (`counter_level` in crates/server/felix-replication/src/driver/shard.rs).
+\* `FlipChecksCounters`: the control plane takes the new set only once the
+\* counter log's start record is held as well (`CounterLevel::start_held`,
+\* read by `joint_start`).
+CountersJoint == TRUE
+FlipChecksCounters == TRUE
 GroupLogs == FALSE
 KeepSetDropsMark == FALSE
 IdlessCreation == FALSE
@@ -776,7 +788,6 @@ ASSUME KeepSetDropsMark => GroupLogs
 ASSUME IdlessCreation \/ GenOneExempt => WipedNonVoter
 ASSUME Creates => Elections > 0 /\ SetCheck /\ Spares = {}
 ASSUME NamedFenceSkipsBallot => FlipNewGeneration
-ASSUME FlipNewGeneration => ~Counters
 
 \* Wipes and crashes on the fenced path, where the promoted leader checks the
 \* identities the report named. With `UnprobedStart` the first leader knows
@@ -1503,6 +1514,10 @@ Ship(b, f) ==
 \* Whether `m` holds the first `k` records of `b`'s log.
 HoldsPrefix(m, b, k) ==
     Len(log[m]) >= k /\ Len(log[b]) >= k /\ \A j \in 1..k : Same(log[m][j], log[b][j])
+
+\* `m` holds all of `b`'s counter log.
+CHoldsPrefix(m, b) ==
+    Len(clog[m]) >= Len(clog[b]) /\ \A j \in 1..Len(clog[b]) : Same(clog[m][j], clog[b][j])
 
 \* Whether `b`'s start at `g` is acknowledged for the flip. Under
 \* `StintStarts`, the last start record at `g` is under `b`'s mark: a leader
@@ -2233,6 +2248,9 @@ Elect(f) ==
     /\ fencing' = [fencing EXCEPT ![f] = TRUE]
     /\ answered' = [answered EXCEPT ![f] = {}]
     /\ confirmed' = [confirmed EXCEPT ![f] = [m \in Brokers |-> 0]]
+    \* Counter-fence answers from an earlier generation do not count at this one.
+    /\ canswered' = [canswered EXCEPT ![f] = {}]
+    /\ cconfirmed' = [cconfirmed EXCEPT ![f] = [m \in Brokers |-> 0]]
     \* A replica standing while a set change is pending fences the old set too.
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, hbOut, hbAt,
                     log, hwm, halted, acked, writes, staleCommit, opened, ackGen,
@@ -2296,7 +2314,10 @@ CommitCounter(b) ==
 ShipCounter(b, f) ==
     /\ Counters
     /\ bgen[b] > 0 /\ f /= b
-    /\ f \in Members(b)
+    \* While a change is pending the model ships to the old set too, which
+    \* only widens the check: the code ships a counter log to the route's set
+    \* alone (`shard.rs`).
+    /\ f \in FenceMembers(b)
     \* A non-voter copies the counter log in `CatchUp`, which counts nothing.
     /\ ~NonVoter(f)
     /\ bgen[f] = 0
@@ -2320,9 +2341,17 @@ ShipCounter(b, f) ==
 \* As `HeldAtGen`, on the counter log: the counter mark counts only past a
 \* record of the leader's own generation (`quorum::counted_offset`).
 CHeldAtGen(b, i) ==
-    /\ StartRecord => clog[b][i].g = bgen[b]
-    /\ LeaderMajority(b, { m \in Brokers \ {b} : cconfirmed[b][m] >= i }
-                         \cup (IF promised[b] = bgen[b] THEN {b} ELSE {}))
+    LET held == { m \in Brokers \ {b} : cconfirmed[b][m] >= i }
+                \cup (IF promised[b] = bgen[b] THEN {b} ELSE {})
+    IN /\ StartRecord => clog[b][i].g = bgen[b]
+       /\ LeaderMajority(b, held)
+       /\ CountersJoint /\ JointFence /\ oldSet[b] /= {} => MajorityOf(held, oldSet[b])
+
+\* Whether `b`'s counter log has its start record at generation `g` under
+\* the counter mark, for a flip under `FlipChecksCounters`.
+CStartHeld(b, g) ==
+    Counters /\ FlipChecksCounters =>
+        \E i \in 1..chwm[b] : i <= Len(clog[b]) /\ clog[b][i] = Start(g)
 
 AckCounters(b) ==
     /\ Counters
@@ -2823,6 +2852,9 @@ Swap(v, f, views) ==
     /\ f \in CpSet \ {leader} /\ f \notin halted /\ f \notin cpLearner
     /\ queued[leader] = 0 /\ pending[leader] = 0
     /\ HoldsPrefix(f, leader, Len(log[leader]))
+    \* The drained report needs the destination level on every log the shard
+    \* has (`drain_ready`), the counter log included.
+    /\ Counters => CHoldsPrefix(f, leader)
     /\ Elections > 0 => MayPromise(f, f, gen + 1)
     /\ Cas(v)
     /\ \E S \in SUBSET (CpSet \cup out) :
@@ -2852,6 +2884,9 @@ Swap(v, f, views) ==
     /\ fencing' = [fencing EXCEPT ![f] = TRUE]
     /\ answered' = [answered EXCEPT ![f] = {}]
     /\ confirmed' = [confirmed EXCEPT ![f] = [m \in Brokers |-> 0]]
+    \* The counter fence's answers and cursors belong to a generation too.
+    /\ canswered' = [canswered EXCEPT ![f] = {}]
+    /\ cconfirmed' = [cconfirmed EXCEPT ![f] = [m \in Brokers |-> 0]]
     /\ moves' = moves + 1
     /\ UNCHANGED << now, clock, inflight, hbOut, hbAt, hwm, halted, acked, writes,
                     staleCommit, draining, successor, staged, joining, leaving, joinedAt,
@@ -2873,6 +2908,7 @@ CpFlip ==
         /\ mine[l] = cpNext /\ setGen[l] = cpNextGen /\ oldSet[l] /= {}
         /\ bgen[l] > 0 /\ ~fencing[l]
         /\ StartAcked(l, bgen[l])
+        /\ CStartHeld(l, bgen[l])
     /\ out' = (out \cup CpSet) \ cpNext
     /\ cpNext' = {} /\ cpNextGen' = 0 /\ UNCHANGED << cutOver, splits >>
     /\ ver' = ver + 1
@@ -2899,6 +2935,7 @@ CpFlip ==
 \* at it.
 FlipReported ==
     /\ StartAcked(leader, gen)
+    /\ CStartHeld(leader, gen)
     /\ \/ /\ bgen[leader] = gen /\ ~fencing[leader]
           /\ mine[leader] = cpNext /\ setGen[leader] = cpNextGen /\ oldSet[leader] /= {}
        \* A stale report: the joint open happened. This also admits a report
@@ -2932,8 +2969,11 @@ CpFlipNamed ==
             /\ confirmed' = [confirmed EXCEPT ![leader] = [m \in Brokers |-> 0]]
             /\ setGen' = [setGen EXCEPT ![leader] = gen + 1]
             /\ oldSet' = [oldSet EXCEPT ![leader] = {}]
+            \* The counter log is fenced again too.
+            /\ canswered' = [canswered EXCEPT ![leader] = {}]
+            /\ cconfirmed' = [cconfirmed EXCEPT ![leader] = [m \in Brokers |-> 0]]
        ELSE UNCHANGED << bgen, bexpiry, queued, pending, promised, ballot, fencing, answered,
-                         confirmed, setGen, oldSet >>
+                         confirmed, setGen, oldSet, canswered, cconfirmed >>
     /\ UNCHANGED << now, clock, leader, inflight, hbOut, hbAt, log, hwm, halted, acked, writes,
                     staleCommit, draining, successor, stopped, moves, cpView, staged, mine,
                     joining, leaving, joinedAt, opened, installed, ackGen >>
@@ -3044,9 +3084,10 @@ Decide(v, f, views) ==
           \/ Reseat(v, f, views) \/ GrowSet(v, f, views) \/ Seat(v, f, views)
           \/ SeatFence(v, f, views) \/ TrimFence(v, views) \/ TrimSet(v, f, views)
           \/ UndoFence(v, f, views) \/ Undo(v, f, views)
-          \/ Swap(v, f, views) \/ CpAdopt(v, f, views) \/ Reclaim(v, views)
-          \/ CpRename(v, views)
+          \/ CpAdopt(v, f, views) \/ Reclaim(v, views) \/ CpRename(v, views)
        /\ UNCHANGED << counterVars, expect, inherited, seen, seenInc, fenceIds >>
+    \/ /\ Swap(v, f, views)
+       /\ UNCHANGED << clog, chwm, cacked, expect, inherited, seen, seenInc, fenceIds >>
 
 -----------------------------------------------------------------------------
 (* Wipes. A follower loses its data directory and comes back empty, under *)
@@ -3487,7 +3528,7 @@ Next ==
            /\ UNCHANGED << counterVars, heard, sid, seen, seenInc, wipes, registered, inc, restarting,
                            expect, inherited, leftDirty, gaveUp, fenceIds, wipeVars, named >>
         \/ ObserveFence(b) /\ UNCHANGED quietVars
-        \/ Elect(b) /\ UNCHANGED quietVars
+        \/ Elect(b) /\ UNCHANGED << clog, chwm, cacked, heard, idVars, named, wipeVars >>
         \/ GiveUpRound(b) /\ UNCHANGED quietVars
         \/ FailStop(b) /\ UNCHANGED quietVars
         \/ FinishChange(b) /\ UNCHANGED quietVars
@@ -3528,7 +3569,7 @@ Next ==
         \/ AckCounters(b) /\ UNCHANGED loudVars
     \/ LoseReport /\ UNCHANGED quietVars
     \/ ~CpDown /\ CpFlip /\ UNCHANGED quietVars
-    \/ ~CpDown /\ CpFlipNamed /\ UNCHANGED quietVars
+    \/ ~CpDown /\ CpFlipNamed /\ UNCHANGED << clog, chwm, cacked, heard, idVars, named, wipeVars >>
     \/ ~CpDown /\ (\E p \in Planners : Snapshot(p)) /\ UNCHANGED quietVars
     \/ ~CpDown /\ DeliverReport /\ UNCHANGED << counterVars, idVars, wipeVars >>
 
@@ -3772,6 +3813,16 @@ StagedCopyNeverDelaysAck ==
 CountersHeldByLeader ==
     \A b \in Brokers : (bgen[b] = gen /\ ~fencing[b]) =>
         \A id \in cacked : \E i \in 1..Len(clog[b]) : clog[b][i].id = id
+
+\* Every acknowledged counter update is on a majority of the set the control
+\* plane records, as AckedOnMajority for the cache log: the old set while a
+\* change is pending, the new set after the flip.
+CountersOnSetMajority ==
+    Quorum =>
+        \A id \in cacked :
+            LET holders == { b \in Counted : \E i \in 1..Len(clog[b]) : clog[b][i].id = id }
+            IN \/ Cardinality(holders) * 2 > Cardinality(Counted)
+               \/ Cardinality(Counted) = 4 /\ Cardinality(holders) = 2
 
 \* Every acknowledged counter update is on a majority of the replicas.
 \* A non-voter is credited as `AckedOnMajority` credits it.
