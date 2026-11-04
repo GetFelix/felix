@@ -723,10 +723,9 @@ NamedFenceSkipsBallot == FALSE
 \* `CpDown`: the control plane takes no step. `FailStops`: how many brokers
 \* may stop for good, as `halted` ones. `PreVoteAsked`: the pre-vote counts
 \* a yes only from a live member that leads nothing open, hears no leader and
-\* holds no log ahead of the asker's. `pre_vote` in felix-replication's
-\* replica/election.rs lacks the first: the open leader answers yes (#1815).
-\* Off, any live member that hears no leader, the leader itself included, as
-\* the code does today. The code's refusals on a stale generation or set are
+\* holds no log ahead of the asker's, as `pre_vote` in felix-replication's
+\* replica/election.rs does (#1815). Off, any live member that hears no
+\* leader says yes, the leader itself included. The code's refusals on a stale generation or set are
 \* not modelled. `Backoff`: a candidate whose round failed gives it up
 \* (`GiveUpRound`), and at most `Splits` times in a whole behaviour does a
 \* candidate stand while another's round is open. That is the randomised
@@ -734,6 +733,33 @@ NamedFenceSkipsBallot == FALSE
 \* say how few, so it takes a bound below the generations `Elections`
 \* allows.
 CpDown == FALSE
+\* `Reissues`: under `Adopt`, when the control plane named one leader at the
+\* generation another was elected and opened at, it moves the shard to the
+\* next generation under the elected one (CpReissue).
+Reissues == FALSE
+\* `ReissuePending`: when the set the reissued leader was elected on is not
+\* the control plane's, the reissue records it as the set being left, with
+\* the control plane's pending (`reissue_past_collision`). Off, the control
+\* plane keeps its set and the reissued leader alone fences the elected one
+\* beside it (`logged_besides` in
+\* crates/server/felix-replication/src/promotion/joint.rs).
+ReissuePending == TRUE
+\* `StandsAboveKeptSet`: a candidate stands no lower than the generation of
+\* the set it keeps, since the joint fence refuses a set newer than its
+\* generation (`set_before` in promotion/joint.rs). Only a set learned from a
+\* refusal (RefuseStaleSet), which the code never keeps, can be newer. Off
+\* elsewhere, which only adds behaviours.
+StandsAboveKeptSet == FALSE
+\* `RefusalLearnsSet`: a candidate whose fence is refused for a stale set
+\* keeps the newer set the refusal names. The code only stops standing
+\* (promotion.rs keeps no set from a refusal); learning it adds behaviours.
+RefusalLearnsSet == TRUE
+\* `LearnsLeavingSet`: a follower learning a leader's set during a change
+\* takes the leader's set being left, as a broker does from a fence, or from
+\* a batch with the control plane's set being left (replica/election.rs). Off,
+\* it keeps its own old set as the one being left, which loses acknowledged
+\* writes (FelixShardElectReissueReplaceBatchSet.cfg).
+LearnsLeavingSet == TRUE
 \* `DetectorMisfires`: a candidate may suspect a leader it still hears, as a
 \* failure detector can be wrong. Only its own yes is affected.
 DetectorMisfires == FALSE
@@ -1082,7 +1108,9 @@ LearnSet(f, b) ==
     IF SetCheck
     THEN /\ setGen' = [setGen EXCEPT ![f] = setGen[b]]
          /\ mine' = [mine EXCEPT ![f] = mine[b]]
-         /\ oldSet' = [oldSet EXCEPT ![f] = oldSet[b]]
+         /\ oldSet' = [oldSet EXCEPT ![f] = IF LearnsLeavingSet \/ oldSet[b] = {} THEN oldSet[b]
+                                             ELSE IF setGen[f] < setGen[b] THEN {mine[f]}
+                                             ELSE oldSet[f]]
     ELSE UNCHANGED << setGen, mine, oldSet >>
 
 \* Whether a broker is a candidate rather than the leader the control plane
@@ -2182,10 +2210,12 @@ RefuseStaleSet(b, f) ==
     /\ fencing[b] /\ bgen[b] > 0 /\ f /= b
     /\ f \in FenceMembers(b)
     /\ setGen[f] > setGen[b]
-    /\ setGen' = [setGen EXCEPT ![b] = setGen[f]]
-    /\ mine' = [mine EXCEPT ![b] = mine[f]]
+    /\ IF RefusalLearnsSet
+       THEN /\ setGen' = [setGen EXCEPT ![b] = setGen[f]]
+            /\ mine' = [mine EXCEPT ![b] = mine[f]]
+            /\ oldSet' = [oldSet EXCEPT ![b] = oldSet[f]]
+       ELSE UNCHANGED << setGen, mine, oldSet >>
     /\ answered' = [answered EXCEPT ![b] = {}]
-    /\ oldSet' = [oldSet EXCEPT ![b] = oldSet[f]]
     /\ bgen' = [bgen EXCEPT ![b] = 0]
     /\ fencing' = [fencing EXCEPT ![b] = FALSE]
     /\ queued' = [queued EXCEPT ![b] = 0]
@@ -2269,6 +2299,7 @@ Elect(f) ==
     \* `Adopt` bounds them too, or neither ends.
     /\ Adopt > 0 => promised[f] < Adopt
     /\ SetCheck => f \in mine[f] /\ setGen[f] > 0
+    /\ StandsAboveKeptSet => setGen[f] <= promised[f] + 1
     /\ ~WipeWaits(f) /\ WipeFloor(f, f, promised[f] + 1) /\ ~NonVoter(f)
     \* Pre-vote: a majority of its set, itself included, no longer hears a leader.
     \* Under `DetectorMisfires` the candidate's own suspicion may be wrong.
@@ -2785,19 +2816,76 @@ CpHoldsSetOf(b) ==
     IF cpNext = {} THEN mine[b] = CpSet
     ELSE mine[b] = cpNext /\ setGen[b] = cpNextGen
 
+\* What a broker takes when the control plane names it at a new generation.
+takeVars == << bgen, bexpiry, queued, pending, stopped, promised, ballot, fencing,
+               answered, confirmed, mine, setGen, oldSet >>
+
+\* The write naming `b`, elected at `g` on `E`, at `g + 1` in the control
+\* plane's set `S` (`reissuing` in services/felix-controlplane-service/src/
+\* model/shard.rs). With `pends` and `E /= S`, a majority of `E` may hold
+\* records no majority of `S` does, so `E` becomes the recorded set and `S`
+\* the pending one, as a cut-over writes them (Swap). The leader ships to
+\* the pending set alone, so that change completes only if `S` and `b` hold
+\* a majority of `E`; otherwise `E` is named alone. Without `pends` the
+\* control plane keeps `S` and `b` fences `E` beside it (`logged_besides` in
+\* crates/server/felix-replication/src/promotion/joint.rs).
+\* `b` takes the new generation only if it may still promise it
+\* (`accept_led_generation` in services/felix-broker-service/src/shards/
+\* lifecycle.rs); otherwise it never opens there.
+ReissueAt(b, g, E, S, pends) ==
+    LET joint == pends /\ E /= S /\ 2 * Cardinality(E \cap (S \cup {b})) > Cardinality(E)
+        alone == pends /\ E /= S /\ ~joint
+    IN
+    /\ gen' = g + 1
+    /\ leader' = b
+    /\ cpExpiry' = now + L
+    /\ report' = NoReport
+    /\ draining' = FALSE
+    /\ IF pends /\ E /= S THEN out' = Brokers \ (E \cup staged) ELSE UNCHANGED out
+    /\ IF joint THEN cpNext' = S /\ cpNextGen' = g + 1 /\ UNCHANGED << cutOver, splits >>
+       ELSE UNCHANGED nextVars
+    /\ IF MayPromise(b, b, g + 1)
+       THEN /\ bgen' = [bgen EXCEPT ![b] = g + 1]
+            /\ bexpiry' = [bexpiry EXCEPT ![b] = clock[b] + L]
+            /\ queued' = [queued EXCEPT ![b] = 0]
+            /\ pending' = [pending EXCEPT ![b] = 0]
+            /\ stopped' = [stopped EXCEPT ![b] = FALSE]
+            /\ Promise(b, b, g + 1)
+            /\ fencing' = [fencing EXCEPT ![b] = TRUE]
+            /\ answered' = [answered EXCEPT ![b] = {}]
+            /\ confirmed' = [confirmed EXCEPT ![b] = [m \in Brokers |-> 0]]
+            /\ IF SetCheck
+               THEN /\ mine' = [mine EXCEPT ![b] = IF alone THEN E ELSE S]
+                    /\ setGen' = [setGen EXCEPT ![b] = g + 1]
+                    /\ oldSet' = [oldSet EXCEPT ![b] = IF E /= S /\ ~alone THEN {E} ELSE {}]
+               ELSE UNCHANGED << mine, setGen, oldSet >>
+       ELSE UNCHANGED takeVars
+
 \* Under `Adopt`, the control plane hears from a leader that opened above the
-\* generation it read, one it never named. With `AdoptMatch`, if the leader's
-\* set is the one the control plane records, it becomes the control plane's
-\* leader at that generation; otherwise only the generation is taken, so every
-\* later one the control plane issues is above it. While a cut-over is
-\* pending, the set that matches is the pending one: a leader on the old set
-\* would be fenced by the new set's higher set generation, so the control
-\* plane takes only its generation. A pending-set leader adopted here keeps
-\* the change pending until CpFlip; after the flip it matches `CpSet`.
-\* Without `AdoptMatch` it adopts whatever set the leader has. A conditional
-\* write like any other (`Cas`), so a planner acting on an old read loses to
-\* a newer write.
+\* generation it read, one it never named, in one conditional write (`Cas`)
+\* (`adopting_elected_set` in services/felix-controlplane-service/src/model/
+\* shard.rs). With `AdoptMatch`:
+\* - if the leader's set is the one the control plane records, or while a
+\*   cut-over is pending the pending set at its generation, and the leader
+\*   is in the recorded set and not a joining copy, it becomes the control
+\*   plane's leader at that generation, the change staying pending until
+\*   CpFlip;
+\* - if it is the control plane's own leader, elected on the set being left
+\*   while a change is pending, it opened past the change, which only it
+\*   could take, so the change is dropped;
+\* - if it is in the recorded set but was elected on another, that set is
+\*   written as the set being left and the recorded one as pending from it,
+\*   at the next generation (ReissueAt), because a majority of the elected
+\*   set may hold records no majority of the recorded one does;
+\* - if it is outside the recorded set, its set becomes the recorded set at
+\*   its generation.
+\* Otherwise (the control plane's leader on another set, a change pending or
+\* a copy joining) only the generation is taken, so every later one the
+\* control plane issues is above it. A leader on the old set of a pending
+\* change would be fenced by the new set's higher set generation.
+\* Without `AdoptMatch` it adopts whatever set the leader has.
 \* Bounded by `Adopt`, or elections and adoptions never end.
+
 CpAdopt(v, b, views) ==
     /\ bgen[b] > v.gen /\ bgen[b] <= Adopt
     /\ ~fencing[b]
@@ -2805,22 +2893,78 @@ CpAdopt(v, b, views) ==
     /\ Cas(v)
     /\ ver' = ver + 1
     /\ cpView' = views
-    /\ gen' = bgen[b]
-    /\ IF AdoptMatch => CpHoldsSetOf(b)
-       THEN /\ leader' = b
+    /\ LET g == bgen[b]
+           E == mine[b]
+           S == CpSet
+           \* The control plane's own leader opened past a pending change on
+           \* the set being left. Only it could take the change, so the
+           \* change is dropped.
+           skipped == cpNext /= {} /\ leader = b /\ joining = {} /\ E = S
+           recordedOnly == \/ leader = b \/ cpNext /= {} \/ joining /= {}
+                           \/ ~SetCheck \/ E \cap staged /= {}
+       IN
+       IF AdoptMatch => CpHoldsSetOf(b) /\ b \in CpSet /\ b \notin joining
+       THEN /\ gen' = g
+            /\ leader' = b
             /\ cpExpiry' = now + L
             /\ report' = NoReport
             /\ draining' = FALSE
             \* Without `AdoptMatch` the adopted set replaces a pending one.
             /\ (IF AdoptMatch THEN UNCHANGED nextVars
                 ELSE cpNext' = {} /\ cpNextGen' = 0 /\ UNCHANGED << cutOver, splits >>)
-       ELSE UNCHANGED << leader, cpExpiry, report, draining, nextVars >>
-    /\ UNCHANGED << now, clock, inflight, bgen, bexpiry, hbOut, hbAt, log, hwm, halted,
-                    queued, pending, acked, writes, staleCommit >>
-    /\ UNCHANGED << successor, stopped, moves, staged, out, mine,
-                    joining, leaving, joinedAt >>
-    /\ UNCHANGED << promised, fencing, answered, confirmed, ballot, opened, setGen, oldSet,
-                    installed, ackGen >>
+            /\ UNCHANGED << out, takeVars >>
+       ELSE IF skipped
+       THEN /\ gen' = g
+            /\ cpNext' = {} /\ cpNextGen' = 0 /\ UNCHANGED << cutOver, splits >>
+            /\ UNCHANGED << leader, cpExpiry, report, draining, out, takeVars >>
+       ELSE IF recordedOnly
+       THEN /\ gen' = g
+            /\ UNCHANGED << leader, cpExpiry, report, draining, nextVars, out, takeVars >>
+       ELSE IF b \in S
+       THEN ReissueAt(b, g, E, S, TRUE)
+       ELSE /\ gen' = g
+            /\ leader' = b
+            /\ cpExpiry' = now + L
+            /\ report' = NoReport
+            /\ draining' = FALSE
+            /\ out' = Brokers \ (E \cup staged)
+            /\ UNCHANGED << nextVars, takeVars >>
+    /\ UNCHANGED << now, clock, inflight, hbOut, hbAt, log, hwm, halted,
+                    acked, writes, staleCommit >>
+    /\ UNCHANGED << successor, moves, staged, joining, leaving, joinedAt >>
+    /\ UNCHANGED << opened, installed, ackGen >>
+
+\* Under `Reissues`, the control plane named a leader at the generation `b`
+\* was elected at, and `b` opened there. Ballots let only one of the two open,
+\* so the named one never will. On `b`'s report the control plane writes the
+\* next generation with `b` as leader (ReissueAt), a conditional write like a
+\* promotion (`reissue_past_collision` in
+\* services/felix-controlplane-service/src/api/nodes/reports.rs). Only `b` is
+\* named: it opened at the collided generation, so it holds everything
+\* acknowledged up to it, on whichever set. Not while a change is pending or a
+\* copy is joining, nor when `b` is outside the control plane's set. The
+\* model takes `b`'s elected set to be the set it knows when the report is
+\* read; the report says the set `b` opened on at the collided generation,
+\* which differs only if `b` learned a set since. The report may be old: the
+\* write checks only the generation, so `b` may since have stood again or
+\* stepped down. Nothing bounds these but `Elections` and `Suspicions`, which
+\* bound the generations that can collide. Successor and move fields are left
+\* as they are: they mean something only while draining, which this ends.
+
+CpReissue(v, b, views) ==
+    /\ Reissues
+    /\ v.leader /= b /\ v.gen = gen
+    /\ <<gen, b>> \in opened
+    /\ cpNext = {} /\ joining = {} /\ b \in CpSet
+    /\ ReissuePending /\ SetCheck /\ mine[b] /= CpSet => mine[b] \cap staged = {}
+    /\ Cas(v)
+    /\ ver' = ver + 1
+    /\ cpView' = views
+    /\ ReissueAt(b, gen, mine[b], CpSet, ReissuePending /\ SetCheck)
+    /\ UNCHANGED << now, clock, inflight, hbOut, hbAt, log, hwm, halted,
+                    acked, writes, staleCommit >>
+    /\ UNCHANGED << successor, moves, staged, joining, leaving, joinedAt >>
+    /\ UNCHANGED << opened, installed, ackGen >>
 
 \* What a cut-over found, for `SplitAtCutOver`: whether the new set keeps the
 \* old leader, how many writes had been admitted, and how many replicas had
@@ -3141,6 +3285,7 @@ Decide(v, f, views) ==
           \/ SeatFence(v, f, views) \/ TrimFence(v, views) \/ TrimSet(v, f, views)
           \/ UndoFence(v, f, views) \/ Undo(v, f, views)
           \/ CpAdopt(v, f, views) \/ Reclaim(v, views) \/ CpRename(v, views)
+          \/ CpReissue(v, f, views)
        /\ UNCHANGED << counterVars, expect, inherited, seen, seenInc, fenceIds >>
     \/ /\ Swap(v, f, views)
        /\ UNCHANGED << clog, chwm, cacked, expect, inherited, seen, seenInc, fenceIds >>
@@ -3654,6 +3799,34 @@ LeaderSettled ==
 \* Elections end with a leader that stays: none is missing for good, and
 \* candidates do not depose each other forever.
 ElectionSettles == <>[]LeaderSettled
+
+\* The control plane's leader can never open at the control plane's
+\* generation: another broker was elected there, opened, and still leads.
+Collided ==
+    \E b \in Brokers :
+        b /= leader /\ bgen[b] = gen /\ ~fencing[b] /\ <<gen, b>> \in opened
+
+\* The control plane's steps on an elected leader's report, taken once they
+\* stay possible: adopting a leader elected past its generation, and moving
+\* past one it collided with.
+ReportFairness ==
+    \A b \in Brokers :
+        /\ WF_vars(CpAdopt(Now, b, cpView)
+                   /\ UNCHANGED << counterVars, expect, inherited, seen, seenInc, fenceIds,
+                                   heard, decideIdVars, named >>)
+        /\ WF_vars(CpReissue(Now, b, cpView)
+                   /\ UNCHANGED << counterVars, expect, inherited, seen, seenInc, fenceIds,
+                                   heard, decideIdVars, named >>)
+
+ReissueSpec == Spec /\ Fairness /\ ReportFairness
+
+\* A generation whose leader can never open does not stay the control
+\* plane's while the leader elected there leads. Once that leader is deposed
+\* a later election moves the generation on, which the model bounds, so it
+\* cannot ask for that.
+CollisionSuperseded ==
+    \A g \in 1..(Adopt + Suspicions + 1) :
+        (gen = g /\ Collided) ~> (gen /= g \/ ~Collided)
 
 \* Nobody stands against an open leader that a majority of its set hears:
 \* pre-vote keeps a working leader in place. With the control plane down, a

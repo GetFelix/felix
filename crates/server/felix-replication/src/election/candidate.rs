@@ -8,7 +8,7 @@
 //! generation, and the shard opens through the promotion path with a
 //! candidate's fence.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::{BuildHasher, Hasher};
 use std::sync::Arc;
 use std::time::Duration;
@@ -325,14 +325,38 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
     {
         return ctx.ineligible(key, "past the generations the control plane adopts");
     }
-    let place = match pre_vote(ctx, key, &log, &kept.current, generation).await {
-        Ok(place) => place,
-        Err(answers) => {
-            ctx.held_back(key, "the pre-vote found no majority", &answers);
+    let first = match pre_vote(ctx, key, &log, &kept.current, generation).await {
+        Ok(first) if first.majority() => first,
+        Ok(lost) => {
+            ctx.held_back(key, "the pre-vote found no majority", &lost.answers());
+            return Round::Failed;
+        }
+        Err(why) => {
+            ctx.held_back(key, "the pre-vote found no majority", &why);
             return Round::Failed;
         }
     };
-    tokio::time::sleep(PLACE_DELAY * place).await;
+    if first.place > 0 {
+        tokio::time::sleep(PLACE_DELAY * first.place).await;
+        // A voter ahead that stood meanwhile has its ballot on disk, but its
+        // fence may not have reached this broker yet under load. Standing
+        // anyway splits the vote at one generation and both candidates lose
+        // it. Asking again sees the ballot whatever the fence's latency. Only
+        // a refusal counts: a voter silent this time proves nothing.
+        let again = pre_vote(ctx, key, &log, &kept.current, generation).await;
+        if let Some(changed) = again
+            .as_ref()
+            .ok()
+            .and_then(|again| first.granted.iter().find(|node| again.refused(node)))
+        {
+            ctx.held_back(
+                key,
+                "a voter that said yes refused when asked again",
+                changed,
+            );
+            return Round::Failed;
+        }
+    }
     // Someone may have stood meanwhile, or the leader come back.
     let still = ctx.suspects.current().contains(&route.leader.node_id)
         && log.accepted_generation() < generation
@@ -445,20 +469,57 @@ async fn shard_log(broker: &Broker, key: &ShardKey) -> Option<StreamLog> {
         .await
 }
 
-/// Ask the other voters of `set` whether they would take `generation`.
-/// Returns this broker's place in the order to stand in, or without a
-/// majority, itself included, the answers it got.
-///
-/// The place counts voters ahead of it: those that refused because their
-/// log is ahead, and those that granted with a lower node id, which may hold
-/// an equal log.
+/// The answers to one pre-vote.
+#[derive(Debug, PartialEq, Eq)]
+struct PreVoted {
+    /// Voters ahead of this broker: those that refused because their log is
+    /// ahead, and those that granted with a lower node id, which may hold an
+    /// equal log.
+    place: u32,
+    /// The other voters that said yes.
+    granted: BTreeSet<String>,
+    /// The other voters that said no, and why.
+    refused: Vec<(String, PreVoteRefusal)>,
+    /// Voters in the set, this broker included.
+    voters: usize,
+}
+
+impl PreVoted {
+    /// A majority of the set said yes, this broker included.
+    fn majority(&self) -> bool {
+        (self.granted.len() + 1) * 2 > self.voters
+    }
+
+    fn refused(&self, node: &str) -> bool {
+        self.refused.iter().any(|(refuser, _)| refuser == node)
+    }
+
+    /// What the voters answered, for the log.
+    fn answers(&self) -> String {
+        let refused: Vec<String> = self
+            .refused
+            .iter()
+            .map(|(node, refusal)| format!("{node}: {refusal:?}"))
+            .collect();
+        format!(
+            "{} of {} voters with this broker, {} answered, refused by [{}]",
+            self.granted.len() + 1,
+            self.voters,
+            self.granted.len() + self.refused.len(),
+            refused.join(", ")
+        )
+    }
+}
+
+/// Ask the other voters of `set` whether they would take `generation`. A
+/// voter that does not answer in time is neither.
 async fn pre_vote<R: PeerRequester + Send + Sync + 'static>(
     ctx: &Ctx<R>,
     key: &ShardKey,
     log: &StreamLog,
     set: &Membership,
     generation: u64,
-) -> Result<u32, String> {
+) -> Result<PreVoted, String> {
     let local = ctx.router.local_node_id();
     let end = log
         .tail_offset()
@@ -520,35 +581,29 @@ async fn pre_vote<R: PeerRequester + Send + Sync + 'static>(
         }
     }
     let answers = rounds.await;
-    let mut granted = 1;
-    let mut place = 0;
-    let heard = answers.iter().flatten().count();
-    let refused: Vec<String> = answers
-        .iter()
-        .flatten()
-        .filter_map(|(node, refusal)| Some(format!("{node}: {:?}", refusal.as_ref()?)))
-        .collect();
+    let mut voted = PreVoted {
+        place: 0,
+        granted: BTreeSet::new(),
+        refused: Vec::new(),
+        voters: voters.len(),
+    };
     for (node, refusal) in answers.into_iter().flatten() {
         match refusal {
             None => {
-                granted += 1;
+                voted.granted.insert(node.to_string());
                 if node < local {
-                    place += 1;
+                    voted.place += 1;
                 }
             }
-            Some(PreVoteRefusal::LogBehind) => place += 1,
-            Some(_) => {}
+            Some(refusal) => {
+                if refusal == PreVoteRefusal::LogBehind {
+                    voted.place += 1;
+                }
+                voted.refused.push((node.to_string(), refusal));
+            }
         }
     }
-    if granted * 2 > voters.len() {
-        Ok(place)
-    } else {
-        Err(format!(
-            "{granted} of {} voters with this broker, {heard} answered, refused by [{}]",
-            voters.len(),
-            refused.join(", ")
-        ))
-    }
+    Ok(voted)
 }
 
 /// Whether the shard opened at `generation`: its start record is written.

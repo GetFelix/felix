@@ -1563,6 +1563,21 @@ named, or one whose leader is draining. A follower replacement does not stop
 it: the new generation keeps the joining copy, and the replacement goes on
 under the same leader.
 
+**When a newer ballot holds the generation**, the leader reports the same
+refusal with an empty `promised_to`. An election that persists its ballot
+and never opens leaves the candidate, and the replicas that answered it, at
+a generation no assignment names. A leader placement names below that ballot
+cannot open: its own open is refused if its own ballot is newer, and otherwise
+the replicas holding the ballot refuse its fence. Placement never heard of the
+ballot, so without the report it would keep naming a generation that can
+never serve. The broker reports it on that evidence alone: its own ballot
+newer than the open, or a replica answering its fence with a newer ballot. Placement names the leader one
+generation up each time (`set_unknown`), so it climbs past the ballot within
+a few reports; candidates never stand more than
+`ELECTION_GENERATION_WINDOW` (16) past the control plane, so this is
+bounded. A ballot the control plane did issue was for a newer assignment,
+and placement ignores a refusal of an older generation.
+
 **When the leader cannot learn the set it leaves**, it may report the same
 refusal with an empty `promised_to`. Under `joint_fence` every open is fenced,
 and the fence needs the set at the generation before. A leader restarted at
@@ -1796,7 +1811,7 @@ after the fence.
 
 | Metric | Meaning |
 | --- | --- |
-| `felix_shard_move_steps_total{step}` | move steps written: `stage`, `fence`, `cut_over`, `abandon`, `halted` (the destination halted), `timed_out`, `stalled` (a restore's copy stopped moving), `reseat`, `restore`, `seat`, `take_pending_set` (a pending replica set taken on the leader's report), `pending_set_timed_out`, `pending_set_dropped`, `pending_set_cancelled` (one dropped), `readmit` (a replaced copy named by its new storage id and held as a learner), `election_refused` (a leader named again above a generation promised to an elected broker), `set_unknown` (a leader named again above a generation whose set before it could not learn), and an operator's `cancel`, `retake` and `discard` |
+| `felix_shard_move_steps_total{step}` | move steps written: `stage`, `fence`, `cut_over`, `abandon`, `halted` (the destination halted), `timed_out`, `stalled` (a restore's copy stopped moving), `reseat`, `restore`, `seat`, `take_pending_set` (a pending replica set taken on the leader's report), `pending_set_timed_out`, `pending_set_dropped`, `pending_set_cancelled` (one dropped), `readmit` (a replaced copy named by its new storage id and held as a learner), `election_refused` (a leader named again above a generation promised to an elected broker), `set_unknown` (a leader named again above a generation whose set before it could not learn, or that a newer ballot holds), and an operator's `cancel`, `retake` and `discard` |
 | `felix_shards_under_replicated` | shards with fewer copies on serving brokers than their replication factor; non-zero for longer than the restore delay plus a copy means no broker can take the copy, or placement is paused |
 | `felix_shard_replicas_missing` | the copies those shards are missing between them |
 | `felix_shard_replicas_halted` | copies whose leader reports it has stopped shipping to them; counted as missing, kept out of placement, and replaced after the restore delay |

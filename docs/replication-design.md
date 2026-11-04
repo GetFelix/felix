@@ -1305,7 +1305,13 @@ elected leader waits for the lease until the control plane is back (issue
 3. *Standing in order.* A follower that won its pre-vote waits for its place
    in the set's order by (last generation, length), ties broken by node id,
    lower first: 300 ms per place, so in a set of three the second waits
-   300 ms and the third 600 ms. The replica furthest ahead usually stands
+   300 ms and the third 600 ms. The first in the order does not wait. One
+   that waited asks again, and does not
+   stand if a voter that said yes now refuses (one that does not answer
+   counts for nothing). A voter ahead that stood meanwhile has its ballot on
+   disk and refuses, even when its fence has
+   not reached the waiting follower yet, so the two do not split one
+   generation. The replica furthest ahead usually stands
    alone. A candidate whose round fails (refused, or split with another)
    backs off for a random 200 to 800 ms before it tries again, doubling the
    upper end on each failure up to 3 s.
@@ -1433,7 +1439,13 @@ elected leader waits for the lease until the control plane is back (issue
     names it again at the next generation, on the same set. That generation
     is above the one promised away, so it opens and fences, and its
     followers depose the elected leader. The control plane acts on that
-    report, never on silence (`CpRename` in the model).
+    report, never on silence (`CpRename` in the model). A ballot left by
+    an election that never opened works the same way: the control plane
+    never saw that generation, so it may name a leader below it. That
+    leader's open, or its fence on a majority holding the ballot, is
+    refused for the newer generation, and it reports the refusal naming no
+    node. The control plane names it one generation up each time until it
+    is past the ballot (issue #1914).
 
 **Why it is safe.** Ballots give one leader per generation: each generation
 is fenced on one set, any two majorities of one set share a replica, and

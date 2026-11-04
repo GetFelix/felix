@@ -6,4 +6,5 @@
 //! starvation") gives the commands, and `.github/workflows/scale-nightly.yml`
 //! runs both sizes by name.
 
+mod failover_heal;
 mod lease_starvation;
