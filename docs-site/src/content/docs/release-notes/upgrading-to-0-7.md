@@ -138,10 +138,12 @@ Later control-plane changes are on `main`:
   (`member_storage_ids`): Postgres migration `0039`, Raft metadata level 22.
 - A copy whose storage was replaced is a learner until it is re-admitted, and
   a leader reports where its generation started (`holds_start`): migration
-  `0040`, level 23. Finalizing `joint_fence` needs that level.
+  `0040`, level 23. Finalizing `joint_fence` needs that level, and
+  `generation_start`, `stream_incarnations` and `cache_incarnations`
+  finalized first.
 - A stream can carry an MQTT mount: migration `0041`, level 24.
-- A leader's report can say which generation it refused because it was
-  promised to another broker, so the control plane names it again above that
+- A leader that could not serve a generation because it had promised it to
+  another node reports the refusal, and placement names it again at a higher
   generation (#1730): migration `0042`, level 25.
 - An elected leader is adopted on the replica set it was elected on: level
   26, with no Postgres migration. Finalizing `replica_election` needs that
@@ -168,9 +170,8 @@ upgrade above:
    `lease_free_reads`, and `fenced_caches` if you want caches elected. Each
    has its own cautions in [Upgrades and
    compatibility](/deployment/upgrades/#runbook-rolling-out-a-fleet-feature).
-4. Finalize `stream_incarnations` and `cache_incarnations`. Do this before
-   `joint_fence`: under `joint_fence`, a new stream or cache created without an
-   incarnation never finishes opening (#1862).
+4. Finalize `stream_incarnations` and `cache_incarnations`. `joint_fence` is
+   refused until both are finalized.
 5. Finalize `joint_fence`, dry run first:
 
    ```bash

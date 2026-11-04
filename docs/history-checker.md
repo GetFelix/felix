@@ -446,10 +446,12 @@ faults a failing run printed, implement `Nemesis`.
 > and injects and heals at least one fault of each family. The order puts a
 > shard move fourth and a drain sixth, so both run on every PR.
 > `adversarial_faults_heal_and_every_shard_serves_again`: a 150-second
-> lease-free campaign on four brokers that goes round the compound kinds
-> leaves a valid history, every shard serves again after each heal, and at
-> least one `Isolate`, one `KillTwo` and one `RestartLoop` are injected and
-> healed. The healed `Isolate` means a partition caused a failover.
+> lease-free campaign on four brokers that goes round the compound kinds,
+> starting with the three it checks for so a slow run is less likely to end
+> before them, leaves a valid history, every shard serves again after each
+> heal, and at least one `Isolate`, one `KillTwo` and one `RestartLoop` are
+> injected and healed. The healed `Isolate` means a partition caused a
+> failover.
 > `a_power_loss_or_a_control_plane_crash_loses_nothing_acknowledged`: a
 > 60-second lease-free campaign that alternates the two leaves a valid
 > history, and injects and heals at least one `ControlPlaneCrash` and, on

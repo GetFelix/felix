@@ -182,6 +182,31 @@ async fn a_cut_over_swapping_two_members_waits_for_the_old_majority() {
     assert_eq!(own.leaving.map(|old| old.generation), Some(4));
 }
 
+/// **A joint fence the set being left promised away is refused.** The new
+/// set {broker-a, broker-x, broker-z} answers, a majority, but broker-b and
+/// broker-c, two of the old set's three voters, promised the generation to
+/// broker-d. Only broker-x is left of the old set, so no retry reaches its
+/// majority and the shard says who holds the promise instead of staying
+/// pending. Without the old set's count, the new set's answers alone opened.
+#[tokio::test]
+async fn a_joint_fence_the_set_being_left_promised_away_is_refused() {
+    let mut replicas = replicas_with(&["broker-x", "broker-z"]);
+    replicas.ballots = true;
+    for id in ["broker-b", "broker-c"] {
+        replicas.get(id).holds(id, 4, 0, &["a"]).await;
+        promised_to(&replicas, id, "broker-d").await;
+    }
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+    kept_before(&leader, &["broker-x", "broker-b", "broker-c"], &[]).await;
+
+    let outcome = fence(&replicas, &leader, true).await;
+
+    let Outcome::Refused { promised_to, .. } = outcome else {
+        panic!("opened on a majority of the new set alone: {outcome:?}");
+    };
+    assert_eq!(promised_to, "broker-d");
+}
+
 /// **A joint fence never counts a learner.** The set being left is
 /// {broker-x, broker-b} with this broker as a learner. Counting it, broker-x's
 /// answer would make two of three; only the voters count, and one of two is
@@ -1026,4 +1051,40 @@ fn a_log_set_differing_only_in_learners_is_fenced_beside_the_one_before() {
         crate::promotion::joint::logged_besides(Some(&stored), &swapped(), &set(&[]), None);
 
     assert_eq!(besides, Some(stored.current));
+}
+
+/// **A log set naming another copy of a member is fenced beside the set
+/// before, and each counts only the copy it names.** The watch saw
+/// {broker-x, broker-b, broker-c} with broker-b's current copy, while
+/// broker-a's log keeps the same names with an older copy of broker-b, which
+/// may have acknowledged with broker-c. With broker-c down, broker-x and
+/// broker-b's current copy are a majority of the set before but hold none of
+/// the log set's records, so the fence stays closed until broker-c answers.
+#[tokio::test]
+async fn a_log_set_naming_another_copy_is_fenced_beside_the_one_before() {
+    let mut replicas = replicas_with(&["broker-x", "broker-z"]);
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+    kept_naming(
+        &leader,
+        &["broker-x", "broker-b", "broker-c"],
+        &[],
+        &[("broker-b", storage_of("broker-old"))],
+    )
+    .await;
+    let mut prior = prior_xbc();
+    if let Some(before) = prior.before.as_mut() {
+        Arc::make_mut(before).member_storage_ids =
+            [("broker-b".to_string(), storage_of("broker-b").to_hex())].into();
+    }
+
+    replicas.get_mut("broker-c").reachable = false;
+    let outcome = fence_after(&replicas, &leader, true, Some(prior.clone())).await;
+    let Outcome::Pending { why, .. } = &outcome else {
+        panic!("opened without a voter majority of the log's copies: {outcome:?}");
+    };
+    assert!(why.contains("2 of 3 and 1 of 3 voters"), "{why}");
+
+    replicas.get_mut("broker-c").reachable = true;
+    let outcome = fence_after(&replicas, &leader, true, Some(prior)).await;
+    assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
 }
