@@ -832,7 +832,7 @@ SplitAtCutOver == FALSE
 \* selectors then read: `PieceKeeps` whether the promoted broker's own set is
 \* the control plane's, which a recorded-only adoption can leave apart;
 \* `PieceDestStood` whether the promoted broker had stood; `PieceGens` the
-\* generations the failover may take ({} for any). The rest as for a
+\* generations the failover may take (`Nat` for any). The rest as for a
 \* cut-over.
 SplitAtFailover == FALSE
 \* The pieces check under QuietView, which is sound only under these.
@@ -844,7 +844,7 @@ PieceWrites == 0
 PieceStood == FALSE
 PieceStoodCounts == Nat
 PieceDestStood == BOOLEAN
-PieceGens == {}
+PieceGens == Nat
 OneStood == {1}
 SeveralStood == 2..Cardinality(Brokers)
 JustYes == {TRUE}
@@ -2846,7 +2846,7 @@ CutOverPiece ==
        /\ (t[3] > 0) = PieceStood
        /\ t[3] \in (IF PieceStood THEN PieceStoodCounts ELSE {0})
        /\ t[4] \in PieceDestStood
-       /\ Len(t) < 5 \/ PieceGens = {} \/ t[5] \in PieceGens
+       /\ Len(t) < 5 \/ t[5] \in PieceGens
 
 \* For a piece whose cut-overs no behaviour reaches: it holds only the states
 \* before a cut-over, which every piece checks, so it is useful only as proof
