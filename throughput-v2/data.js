@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793820084466,
+  "lastUpdate": 1793822581728,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -44824,6 +44824,58 @@ window.BENCHMARK_DATA = {
             "range": "20547.85",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1236660.76\nmean: 1236819.43\nstdev: 20547.85\ncv: 1.66%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1014-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "47785e96d71b8566090c84eb4b35971686ec5ea7",
+          "message": "fix(controlplane): a built snapshot never replaces a newer installed one (#1908)\n\n* fix(controlplane): a built snapshot never replaces a newer installed one (#1745)\n\nOpenraft builds snapshots in a detached task, so a build that captured\nits state before an install of a newer snapshot could persist after it\nand overwrite it. The log was already purged up to the newer snapshot,\nso a restart asked for entries that were gone and the member refused to\nstart.\n\npersist_snapshot now reads the stored snapshot meta inside the write\ntransaction and skips the write when the stored last log index is at or\npast the new one. redb serializes write transactions, so nothing lands\nbetween the check and the write. install_snapshot also refuses to move\nthe applied cursor backwards, which would apply entries twice.\n\nSpec-Unaffected: no TLA model covers the control-plane Raft store; it is openraft plus redb, and the docs/formal specs model shard replication only.\n\n* docs(controlplane): name the install crash window openraft's purge order leaves (#1745)\n\nSpec-Unaffected: comments and docs only.",
+          "timestamp": "2026-11-04T11:58:13-08:00",
+          "tree_id": "16f185729bbae5a3231f00a7a4da45c43eb84273",
+          "url": "https://github.com/GetFelix/felix/commit/47785e96d71b8566090c84eb4b35971686ec5ea7"
+        },
+        "date": 1793822581049,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 756097.27,
+            "range": "66909.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 756097.27\nmean: 716959.19\nstdev: 66909.56\ncv: 9.33%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 756097.27,
+            "range": "66909.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 756097.27\nmean: 716959.19\nstdev: 66909.56\ncv: 9.33%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 169724.42,
+            "range": "1393.55",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 169724.42\nmean: 169139.28\nstdev: 1393.55\ncv: 0.82%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1697244.15,
+            "range": "13935.48",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1697244.15\nmean: 1691392.73\nstdev: 13935.48\ncv: 0.82%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
