@@ -1141,20 +1141,24 @@ pub async fn await_counter_quorum<S: ShardServing + ?Sized>(
 /// to start at the beginning of the log. `Refused` once it may not serve the
 /// shard at all -- the shard is led elsewhere, or its lease lapsed on a
 /// shard that still needs it ([`sessions_skip_lease`]) -- so a reader
-/// waiting on the mark stops and resumes where the shard is served. Only
-/// asked for `Quorum` shards.
+/// waiting on the mark stops and resumes where the shard is served.
+/// `Unbounded` only for a shard this broker serves with no replicas, whose
+/// majority is the leader alone. Only asked for `Quorum` shards.
 pub fn committed_bound<S: ShardServing + ?Sized>(
     key: &crate::ShardKey,
     marks: &QuorumMarks,
     ingress: &S,
 ) -> felix_broker::ReadBound {
     use felix_broker::ReadBound;
-    if !ingress.replicated(key) {
-        return ReadBound::Unbounded;
-    }
+    // Serving comes first: a deposed leader whose shard moved to a route with
+    // no replicas would otherwise read it as unreplicated and release what it
+    // holds uncommitted.
     let Some(generation) = ingress.generation(key) else {
         return ReadBound::Refused;
     };
+    if !ingress.replicated(key) {
+        return ReadBound::Unbounded;
+    }
     if !sessions_skip_lease(key, generation, marks) && !ingress.lease_valid() {
         return ReadBound::Refused;
     }

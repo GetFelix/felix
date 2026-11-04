@@ -2240,7 +2240,11 @@ consumer-group polls hand out nothing at or past it, Kafka `Fetch` returns
 nothing past it and reports it as the high watermark and last stable offset,
 and `ListOffsets` latest is the mark. Before the first mark of a generation it
 is zero. `Leader` streams, shards placed without replicas and single-node
-brokers are unbounded, as their commit point is local durability.
+brokers are unbounded, as their commit point is local durability. A shard
+without replicas is unbounded only on the broker that serves it. Elsewhere,
+such as on a leader deposed by a move to a route with no replicas, the bound
+is `Refused`, so that broker releases nothing it held and `read_committed`
+stops there (#1852).
 
 QUIC subscriptions are gated too. A durable batch past the mark joins a
 per-stream hold under its commit turn, so the hold is in offset order; when the

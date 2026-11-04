@@ -497,6 +497,66 @@ fn readers_keep_the_mark_without_the_lease_where_followers_decide_it() {
     );
 }
 
+/// A shard routed with no replicas, served here at `generation` or not at all.
+struct Unreplicated {
+    generation: Option<u64>,
+}
+
+impl ShardServing for Unreplicated {
+    fn replicated(&self, _key: &ShardKey) -> bool {
+        false
+    }
+
+    fn generation(&self, _key: &ShardKey) -> Option<u64> {
+        self.generation
+    }
+
+    fn lease_valid(&self) -> bool {
+        true
+    }
+
+    fn record_ack_refusal(&self) {}
+}
+
+/// A deposed leader whose shard moved to a route with no replicas refuses its
+/// readers. Read as unbounded, it would release batches it held for the mark
+/// and let a history read run past it, though nothing committed them.
+#[tokio::test]
+async fn a_shard_moved_to_no_replicas_is_refused_where_it_is_no_longer_served() {
+    use felix_broker::ReadBound;
+    let stream = key("orders");
+    let marks = QuorumMarks::new();
+    marks.publish(&stream, 3, 5);
+
+    let deposed = Unreplicated { generation: None };
+    assert_eq!(
+        committed_bound(&stream, &marks, &deposed),
+        ReadBound::Refused
+    );
+    let read = await_readable(
+        Some(felix_broker::ConsistencyLevel::Quorum),
+        &stream,
+        Some(&marks),
+        Some(&deposed),
+        9,
+        QUICK,
+    )
+    .await;
+    assert!(
+        matches!(read, Err(QuorumError::LeadershipLost { .. })),
+        "{read:?}"
+    );
+
+    // The new leader serves it with no replicas: its majority is itself.
+    let leader = Unreplicated {
+        generation: Some(4),
+    };
+    assert_eq!(
+        committed_bound(&stream, &marks, &leader),
+        ReadBound::Unbounded
+    );
+}
+
 /// A broker holding a `Quorum` cache with a log and counters, for the cache
 /// and counter waits.
 async fn quorum_cache_broker(dir: &std::path::Path) -> felix_broker::Broker {
