@@ -1009,7 +1009,7 @@ pub async fn await_cache_quorum<S: ShardServing + ?Sized>(
 /// for a different record, so a reader that saw it would hold a position the
 /// new leader's log contradicts. `None` means no bound: a `Leader` stream,
 /// whose commit point is local durability, a single-node broker, or a shard
-/// placed without replicas, where the leader alone is the majority -- the
+/// this broker serves with no replicas, where the leader alone is the majority -- the
 /// same cases [`await_quorum`] acknowledges without waiting.
 ///
 /// Zero while this broker has no mark for the shard at its current
@@ -1026,12 +1026,14 @@ pub fn read_bound<S: ShardServing + ?Sized>(
     let (Some(marks), Some(ingress)) = (marks, ingress) else {
         return None;
     };
-    if !ingress.replicated(shard) {
-        return None;
-    }
+    // Serving first, as in [`committed_bound`]: a shard moved to a route with
+    // no replicas is unbounded only where it is now served.
     let Some(generation) = ingress.generation(shard) else {
         return Some(0);
     };
+    if !ingress.replicated(shard) {
+        return None;
+    }
     Some(marks.offset(shard, generation).unwrap_or(0))
 }
 

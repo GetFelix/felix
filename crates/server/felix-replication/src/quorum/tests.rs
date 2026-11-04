@@ -547,6 +547,13 @@ async fn a_shard_moved_to_no_replicas_is_refused_where_it_is_no_longer_served() 
         "{read:?}"
     );
 
+    // Kafka and group polls ask `read_bound`: nothing past zero.
+    let quorum = Some(felix_broker::ConsistencyLevel::Quorum);
+    assert_eq!(
+        read_bound(quorum, &stream, Some(&marks), Some(&deposed)),
+        Some(0)
+    );
+
     // The new leader serves it with no replicas: its majority is itself.
     let leader = Unreplicated {
         generation: Some(4),
@@ -554,6 +561,10 @@ async fn a_shard_moved_to_no_replicas_is_refused_where_it_is_no_longer_served() 
     assert_eq!(
         committed_bound(&stream, &marks, &leader),
         ReadBound::Unbounded
+    );
+    assert_eq!(
+        read_bound(quorum, &stream, Some(&marks), Some(&leader)),
+        None
     );
 }
 
