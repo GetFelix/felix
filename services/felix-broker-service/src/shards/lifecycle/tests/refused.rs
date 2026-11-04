@@ -112,3 +112,48 @@ async fn a_superseded_generation_is_recorded_as_refused() {
     assert_eq!(held.phase(&key(0)), Phase::Active);
     assert_eq!(held.fence().refused_at(&key(0)), None);
 }
+
+/// **Named below a generation it let go of, the shard is refused, naming no
+/// node** (#1914). A withdrawn standing leaves the shard closed at its ballot,
+/// above the control plane's generation, and the assignment that follows is
+/// older than that. Dropped as a replay, it was never reported, so the
+/// control plane never named this broker past the ballot.
+#[test]
+fn an_assignment_below_a_withdrawn_standing_is_refused() {
+    let mut own = lifecycle();
+    // The standing at 6 opens, then is withdrawn: the route goes back to the
+    // old leader, and the shard is released.
+    own.observe(&key(0), Some(&assigned_to("broker-a", 6)));
+    own.opened(&key(0), 6);
+    assert!(matches!(
+        own.observe(&key(0), Some(&assigned_to("broker-b", 4))),
+        Action::Release { .. }
+    ));
+    own.released(&key(0), 6);
+
+    assert_eq!(
+        own.observe(&key(0), Some(&assigned_to("broker-a", 5))),
+        Action::None
+    );
+    assert_eq!(
+        own.fence().refused_at(&key(0)),
+        Some(RefusedGeneration::set_unknown(5)),
+    );
+
+    // Named at the ballot, it opens there.
+    assert!(matches!(
+        own.observe(&key(0), Some(&assigned_to("broker-a", 6))),
+        Action::Open { generation: 6, .. }
+    ));
+}
+
+/// **A replayed older assignment for a shard still served says nothing.**
+#[test]
+fn a_replay_below_a_served_generation_is_not_refused() {
+    let mut own = lifecycle();
+    own.observe(&key(0), Some(&assigned_to("broker-a", 6)));
+    own.opened(&key(0), 6);
+
+    own.observe(&key(0), Some(&assigned_to("broker-a", 5)));
+    assert_eq!(own.fence().refused_at(&key(0)), None);
+}

@@ -104,6 +104,16 @@ impl ShardFence {
             .insert(key.clone(), (generation, promised_to.to_string()));
     }
 
+    /// `key` was assigned here at `generation` after this broker had taken a
+    /// newer one itself: refused, naming no node, unless a refusal at or above
+    /// it is already held.
+    pub(crate) fn superseded(&self, key: &ShardKey, generation: u64) {
+        let mut refused = self.refused.write();
+        if refused.get(key).is_none_or(|(at, _)| *at < generation) {
+            refused.insert(key.clone(), (generation, String::new()));
+        }
+    }
+
     /// `key` opened at `generation`, so a refusal at or below it no longer
     /// holds the shard back and is not reported again.
     pub(crate) fn opened_at(&self, key: &ShardKey, generation: u64) {
