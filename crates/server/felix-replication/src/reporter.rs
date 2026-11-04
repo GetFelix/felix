@@ -177,9 +177,20 @@ pub struct ShardReport {
     /// this pass answered them, and for a cache its counter log's too. Only
     /// a follower that gave a storage identity is listed.
     pub holds_start: Vec<String>,
+    /// Set when this broker leads the shard by election, at a generation the
+    /// control plane did not name.
+    pub elected: Option<felix_common::membership::ElectedLeadership>,
 }
 
 impl ShardReport {
+    /// This report, naming the elected leadership it is from, if any.
+    pub(super) fn with_elected(
+        self,
+        elected: Option<felix_common::membership::ElectedLeadership>,
+    ) -> Self {
+        Self { elected, ..self }
+    }
+
     /// This report, as one measured on the log of `incarnation`.
     pub(super) fn at_incarnation(self, incarnation: u64) -> Self {
         Self {
@@ -263,6 +274,7 @@ pub(super) fn shard_report(
         joint_start_acked: None,
         refused: None,
         holds_start: Vec::new(),
+        elected: None,
         inherited_storage: followers
             .iter()
             .filter(|follower| follower.storage_id.is_none())
@@ -426,7 +438,7 @@ async fn send_reports(to: &ReportTo, reports: &[ShardReport]) -> Vec<bool> {
                 inherited_storage_ids: report.inherited_storage.iter().cloned().collect(),
                 joint_start_acked: report.joint_start_acked,
                 holds_start: report.holds_start.iter().cloned().collect(),
-                elected: None,
+                elected: report.elected.clone(),
                 refused: report.refused.clone(),
             })
             .collect(),

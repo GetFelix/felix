@@ -194,7 +194,7 @@ pub(crate) fn check_prerequisites(
 /// unless `metadata_level_ready` says the control plane keeps the pending
 /// replica set and adopts elected leaders.
 /// Any other feature passes. Under Raft the finalize also needs every member
-/// at metadata level 21 (`replica_election`) or 23 (`joint_fence`), which the
+/// at metadata level 26 (`replica_election`) or 23 (`joint_fence`), which the
 /// store checks as it proposes.
 ///
 /// Checked when the operator asks, like [`check_prerequisites`]: a Raft member
@@ -256,11 +256,10 @@ where
     Ok(())
 }
 
-/// Whether `replica_election` may be finalized. The metadata it needs (the
-/// pending replica set and adoption) is in, but the election driver (#1009
-/// S9) flips this only once joint fences (S5), two-majority acks (S6b) and
-/// the wiped-voter guard (S8) are in too.
-pub(crate) const ELECTION_METADATA_LEVEL_READY: bool = false;
+/// Whether `replica_election` may be finalized: the control plane keeps the
+/// pending replica set and adopts elected leaders, and brokers that report
+/// the feature stand for election. `joint_fence` must be finalized first.
+pub(crate) const ELECTION_METADATA_LEVEL_READY: bool = true;
 
 /// The features a cluster created on this release starts with. A finalize
 /// is one-way so that an upgraded fleet can still roll back before it, and a
@@ -457,10 +456,23 @@ async fn finalize_in_order(
     if !store.every_member_current().await {
         return (enabled, true);
     }
+    let Ok(nodes) = store.list_nodes().await else {
+        return (enabled, true);
+    };
     let mut again = false;
     for feature in NEW_CLUSTER {
         let name = feature.name();
         if enabled.contains(name) || check_prerequisites(&enabled, name).is_err() {
+            continue;
+        }
+        // The operator's readiness gates hold here too; the store does not
+        // check them.
+        if let Err(err) = check_election(&nodes, name, ELECTION_METADATA_LEVEL_READY) {
+            tracing::info!(
+                feature = name,
+                error = %err,
+                "not finalizing a fleet feature for a new cluster",
+            );
             continue;
         }
         match store.finalize_fleet_feature(name).await {

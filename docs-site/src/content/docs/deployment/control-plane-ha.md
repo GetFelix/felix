@@ -102,6 +102,11 @@ one makes shards unavailable for the rest of the outage but does not take
 brokers out of the cluster. A broker that is marked down for any other reason
 registers again on its next heartbeat.
 
+A shard whose leader dies during the outage is not replaced until the control
+plane is back, unless the fleet has finalized `replica_election`: then its
+replicas elect a new leader themselves. See [Failover without the control
+plane](/deployment/failover-without-control-plane/).
+
 ## Probes
 
 | Path | Question | Wire it to |

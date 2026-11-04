@@ -372,9 +372,9 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
     }
 
     /// What to report as refused at `route`'s generation: an open refused
-    /// there, or a fence a majority answered with a promise to another node.
-    /// The shard still fences again after the second, in case the set has
-    /// changed since.
+    /// there, or a fence refused by a promise to another node
+    /// ([`crate::promotion::Outcome::Refused`]). The shard still fences again
+    /// after the second, in case the set has changed since.
     fn refusal(&self, key: &ShardKey, route: &felix_router::Route) -> Option<RefusedGeneration> {
         self.refused_open(key, route).or_else(|| {
             self.states
@@ -629,7 +629,8 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                 .map(|replica| replica.node_id.clone())
                 .collect();
             self.fences.push(Box::pin(async move {
-                let (key, generation, outcome) =
+                // Held until the shard has opened.
+                let (key, generation, outcome, fencing) =
                     fence_one(cx.requester, cx.broker, cx.router, key, route, cx.marks).await;
                 let (took, why) = match &outcome {
                     Outcome::Pending { why, took } | Outcome::Refused { why, took, .. } => {
@@ -645,6 +646,15 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                     _ => None,
                 };
                 let opened = open_fenced(cx.gate, &key, generation, outcome).await;
+                // Survives the adoption that drops the standing, which the
+                // set-keeping rule reads (see `opened_elected`).
+                if opened
+                    && fencing.is_some()
+                    && let Some(elections) = cx.marks.elections()
+                {
+                    elections.opened(&key, generation);
+                }
+                drop(fencing);
                 let why = why.or_else(|| {
                     (!opened).then(|| "the fence was taken but the shard stayed closed".into())
                 });

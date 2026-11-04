@@ -332,6 +332,20 @@ pub trait WriteFence: Send + Sync {
     /// up at, found none ahead of this broker's copy (`reclaimable`), or
     /// found one ahead.
     fn probed(&self, _key: &crate::ShardKey, _generation: u64, _reclaimable: bool) {}
+
+    /// Whether this process has opened `key` to serve at `generation` or a
+    /// later one. A route naming this broker at a generation it has not
+    /// opened since it started may be one it led only before a restart.
+    fn opened_since(&self, _key: &crate::ShardKey, _generation: u64) -> bool {
+        true
+    }
+
+    /// Whether `key` waits at `generation` for the promotion fence of a
+    /// leader that took it over on the lease. Such a shard has not opened yet
+    /// either, but was not led here before a restart.
+    fn promoting(&self, _key: &crate::ShardKey, _generation: u64) -> bool {
+        false
+    }
 }
 
 /// A fence that holds nothing back: every shard is quiet.
@@ -551,14 +565,19 @@ pub async fn replicate_once_with<R: PeerRequester + Sync>(
     }
 }
 
-async fn fence_one<R: PeerRequester>(
+/// A fenced shard: its key, the generation fenced at, and how the fence went.
+/// The guard keeps the candidate from withdrawing the standing, and rides
+/// along until the shard has opened.
+type Fenced<'a> = (ShardKey, u64, Outcome, Option<crate::election::Fencing<'a>>);
+
+async fn fence_one<'a, R: PeerRequester>(
     requester: &R,
     broker: &Arc<Broker>,
     router: &ShardRouter,
     key: ShardKey,
     route: felix_router::Route,
-    marks: &QuorumMarks,
-) -> (ShardKey, u64, Outcome) {
+    marks: &'a QuorumMarks,
+) -> Fenced<'a> {
     // Before registration answers, the fleet view is empty for want of an
     // answer and every feature reads as off, so the lease would stand in for
     // a fence the fleet may already require.
@@ -571,6 +590,7 @@ async fn fence_one<R: PeerRequester>(
                 why: why.into(),
                 took: Vec::new(),
             },
+            None,
         );
     }
     // Once the followers decide acknowledgements, a shard never opens on the
@@ -589,7 +609,17 @@ async fn fence_one<R: PeerRequester>(
                 .with_local_storage(marks.local_storage())
                 .with_replaced_storage(marks.replaced_storage())
         });
-    let outcome = promotion::fence_shard(
+    // This broker's own standing for election, if that is what the route is.
+    let candidacy = marks
+        .elections()
+        .and_then(|elections| elections.candidacy(&key, route.generation));
+    // Held until the shard has opened, which is after every shard in the pass
+    // has fenced, so the candidate does not withdraw a standing still opening.
+    let fencing = marks
+        .elections()
+        .filter(|_| candidacy.is_some())
+        .map(|elections| elections.fencing(&key, route.generation));
+    let outcome = promotion::fence_shard_as(
         requester,
         broker,
         router.local_node_id(),
@@ -597,6 +627,7 @@ async fn fence_one<R: PeerRequester>(
         &route,
         lease_fallback,
         joint.as_ref(),
+        candidacy.as_ref(),
     )
     .await;
     // A fence taken on another incarnation's logs, which a recreate at the
@@ -609,7 +640,7 @@ async fn fence_one<R: PeerRequester>(
             took: Vec::new(),
         }
     };
-    (key, route.generation, outcome)
+    (key, route.generation, outcome, fencing)
 }
 
 /// Fence each shard this broker was just promoted to lead, and open the ones
@@ -622,7 +653,7 @@ async fn open_promoted<R: PeerRequester>(
     promoted: Vec<(ShardKey, felix_router::Route)>,
     marks: &QuorumMarks,
 ) -> bool {
-    let outcomes: Vec<(ShardKey, u64, Outcome)> = futures::stream::iter(
+    let outcomes: Vec<Fenced<'_>> = futures::stream::iter(
         promoted
             .into_iter()
             .map(|(key, route)| fence_one(requester, broker, router, key, route, marks)),
@@ -631,8 +662,16 @@ async fn open_promoted<R: PeerRequester>(
     .collect()
     .await;
     let mut pending = false;
-    for (key, generation, outcome) in outcomes {
-        pending |= !open_fenced(gate, &key, generation, outcome).await;
+    for (key, generation, outcome, fencing) in outcomes {
+        let opened = open_fenced(gate, &key, generation, outcome).await;
+        if opened
+            && fencing.is_some()
+            && let Some(elections) = marks.elections()
+        {
+            elections.opened(&key, generation);
+        }
+        pending |= !opened;
+        drop(fencing);
     }
     pending
 }
@@ -685,7 +724,7 @@ async fn open_fenced(
                 generation,
                 promised_to = %promised_to,
                 why = %why,
-                "a majority promised the generation to another node; reporting the refusal",
+                "a replica promised the generation to another node and no majority took it; reporting the refusal",
             );
             false
         }

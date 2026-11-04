@@ -4,7 +4,7 @@
 
 use felix_wire::internal::PeerCapabilities;
 
-use super::quorum::{follower_ack_marks, quorum_leader};
+use super::quorum::{follower_ack_marks, follower_ack_marks_adopted, quorum_leader};
 use super::*;
 
 /// Stores every batch, records what it was stamped with, and says which
@@ -70,20 +70,46 @@ impl PeerRequester for Followers {
     }
 }
 
-async fn pass(followers: &Followers, broker: &Arc<Broker>, marks: &QuorumMarks) {
+async fn pass<R: PeerRequester + Sync>(followers: &R, broker: &Arc<Broker>, marks: &QuorumMarks) {
+    pass_with(followers, broker, marks, &Unfenced).await;
+}
+
+async fn pass_with<R: PeerRequester + Sync>(
+    followers: &R,
+    broker: &Arc<Broker>,
+    marks: &QuorumMarks,
+    fence: &dyn WriteFence,
+) {
     let router = router(LOCAL, &["broker-b", "broker-c"], 4);
-    replicate_once(
+    replicate_once_with(
         followers,
         broker,
         &router,
+        fence,
+        &NoGate,
         marks,
         None,
         &mut HashMap::new(),
         &mut HashMap::new(),
         &mut HashMap::new(),
         &mut HashMap::new(),
+        &Rebuilds::disabled(),
+        &MoveThrottle::unlimited(),
     )
     .await;
+}
+
+/// A broker that has not opened any shard since it started.
+struct Restarted;
+
+impl WriteFence for Restarted {
+    fn quiesced(&self, _key: &crate::ShardKey) -> bool {
+        true
+    }
+
+    fn opened_since(&self, _key: &crate::ShardKey, _generation: u64) -> bool {
+        false
+    }
 }
 
 async fn stream_log(broker: &Broker) -> felix_broker::StreamLog {
@@ -263,4 +289,571 @@ async fn under_joint_fence_a_shipping_leader_keeps_no_set_when_the_one_before_is
     pass(&Followers::new(true, &["broker-b"]), &broker, &marks).await;
 
     assert_eq!(stream_log(&broker).await.set_generation(), 2);
+}
+
+/// **A leader elected on the route's members keeps that set at the
+/// generation it was elected on, even after a restart.** It was elected at 4
+/// on the set of generation 3, and the control plane named it at 4 on the
+/// same members. A restart lost the election, which lives in memory, and the
+/// shard has not opened since. Keeping the set at 4 would refuse the next
+/// leader elected on the set of 3, so the set stays at 3 and batches carry 3.
+#[tokio::test]
+async fn a_restarted_elected_leader_keeps_the_set_it_was_elected_on() {
+    use felix_storage::disk_log::{Member, Membership, ReplicaSet};
+
+    let (broker, _dir) = quorum_leader(3, 4).await;
+    let log = stream_log(&broker).await;
+    log.accept_generation(3, Some(LOCAL)).await.expect("ballot");
+    log.accept_set(ReplicaSet {
+        current: Membership {
+            generation: 3,
+            members: [LOCAL, "broker-b", "broker-c"]
+                .map(|node| Member {
+                    node: node.to_string(),
+                    storage: None,
+                    learner: false,
+                    wiped: false,
+                })
+                .to_vec(),
+        },
+        leaving: None,
+    })
+    .await
+    .expect("the set it was elected on");
+    log.accept_generation(4, Some(LOCAL))
+        .await
+        .expect("its own ballot");
+    let followers = Followers::new(true, &["broker-b", "broker-c"]);
+
+    pass_with(&followers, &broker, &follower_ack_marks(), &Restarted).await;
+
+    assert_eq!(stream_log(&broker).await.set_generation(), 3);
+    assert_eq!(
+        followers.stamps(),
+        vec![
+            ("broker-b".to_string(), Some(3)),
+            ("broker-c".to_string(), Some(3)),
+        ]
+    );
+}
+
+/// A broker whose shard waits for the promotion fence of a lease takeover.
+struct Promoting;
+
+impl WriteFence for Promoting {
+    fn quiesced(&self, _key: &crate::ShardKey) -> bool {
+        true
+    }
+
+    fn opened_since(&self, _key: &crate::ShardKey, _generation: u64) -> bool {
+        false
+    }
+
+    fn promoting(&self, _key: &crate::ShardKey, _generation: u64) -> bool {
+        true
+    }
+}
+
+/// **A leader promoted on the lease does not stamp the set it took over.**
+/// It holds the old leader's set of 3 on the same members while its fence at
+/// 4 runs, and its gate has not opened. That is not a restarted elected
+/// leader: stamping 3 would send the old set to the old leader as a fence.
+#[tokio::test]
+async fn a_leader_promoted_on_the_lease_does_not_stamp_the_set_below() {
+    let (broker, _dir) = quorum_leader(3, 4).await;
+    let log = stream_log(&broker).await;
+    log.accept_generation(3, Some("broker-b"))
+        .await
+        .expect("ballot");
+    log.accept_set(set_of_three(3))
+        .await
+        .expect("the old leader's set");
+    log.accept_generation(4, Some(LOCAL))
+        .await
+        .expect("its own ballot");
+    let followers = Followers::new(true, &["broker-b", "broker-c"]);
+
+    pass_with(&followers, &broker, &follower_ack_marks(), &Promoting).await;
+
+    assert!(
+        followers
+            .stamps()
+            .iter()
+            .all(|(_, stamp)| *stamp != Some(3)),
+        "a lease promotion stamped an older set: {:?}",
+        followers.stamps()
+    );
+}
+
+/// **An elected leader the control plane adopted keeps the set it was
+/// elected on.** It stood at 4 on the set of 3 and opened once its fence
+/// finished; the control plane then named it at 4, which drops the election's
+/// entry. Keeping the set at 4 would make it the only copy counting 4,
+/// so it would refuse the next leader elected on the set of 3 for good.
+#[tokio::test]
+async fn an_adopted_elected_leader_keeps_the_set_it_was_elected_on() {
+    let (broker, _dir) = quorum_leader(3, 4).await;
+    let log = stream_log(&broker).await;
+    log.accept_generation(3, Some(LOCAL)).await.expect("ballot");
+    log.accept_set(set_of_three(3))
+        .await
+        .expect("the set it was elected on");
+    log.accept_generation(4, Some(LOCAL))
+        .await
+        .expect("its own ballot");
+    let followers = Followers::new(true, &["broker-b", "broker-c"]);
+
+    let marks = follower_ack_marks();
+    let elections = Arc::new(crate::election::Elections::new(
+        LOCAL,
+        Arc::new(tokio::sync::Notify::new()),
+    ));
+    elections.record(
+        key(),
+        crate::election::Elected {
+            leader: LOCAL.to_string(),
+            generation: 4,
+            set: set_of_three(3).current,
+            leaving: None,
+            incarnation: 0,
+        },
+    );
+    elections.opened(&key(), 4);
+    // The control plane adopted it, and the overlay dropped the entry.
+    elections.withdraw(&key(), 4);
+    marks.set_elections(elections);
+
+    pass(&followers, &broker, &marks).await;
+
+    assert_eq!(stream_log(&broker).await.set_generation(), 3);
+    assert_eq!(
+        followers.stamps(),
+        vec![
+            ("broker-b".to_string(), Some(3)),
+            ("broker-c".to_string(), Some(3)),
+        ]
+    );
+}
+
+fn set_of_three(generation: u64) -> felix_storage::disk_log::ReplicaSet {
+    use felix_storage::disk_log::{Member, Membership, ReplicaSet};
+
+    ReplicaSet {
+        current: Membership {
+            generation,
+            members: [LOCAL, "broker-b", "broker-c"]
+                .map(|node| Member {
+                    node: node.to_string(),
+                    storage: None,
+                    learner: false,
+                    wiped: false,
+                })
+                .to_vec(),
+        },
+        leaving: None,
+    }
+}
+
+/// **A leader that opened the next generation on the same members keeps
+/// the set at it.** The control plane bumped the shard from 3 to 4 without
+/// changing its members (a pending set taken, a reissue) and this broker
+/// opened it at 4 unfenced. Keeping the set at 3 would leave every copy at 3,
+/// and a later promotee with no record of 3 could never fence the shard.
+#[tokio::test]
+async fn a_leader_opened_at_a_bump_on_the_same_members_keeps_the_new_set() {
+    use felix_storage::disk_log::{Member, Membership, ReplicaSet};
+
+    let (broker, _dir) = quorum_leader(3, 4).await;
+    let log = stream_log(&broker).await;
+    log.accept_generation(3, Some(LOCAL)).await.expect("ballot");
+    log.accept_set(ReplicaSet {
+        current: Membership {
+            generation: 3,
+            members: [LOCAL, "broker-b", "broker-c"]
+                .map(|node| Member {
+                    node: node.to_string(),
+                    storage: None,
+                    learner: false,
+                    wiped: false,
+                })
+                .to_vec(),
+        },
+        leaving: None,
+    })
+    .await
+    .expect("the set of 3");
+    log.accept_generation(4, Some(LOCAL))
+        .await
+        .expect("the open's ballot");
+    let followers = Followers::new(true, &["broker-b", "broker-c"]);
+
+    pass(&followers, &broker, &follower_ack_marks()).await;
+
+    assert_eq!(stream_log(&broker).await.set_generation(), 4);
+    assert_eq!(
+        followers.stamps(),
+        vec![
+            ("broker-b".to_string(), Some(4)),
+            ("broker-c".to_string(), Some(4)),
+        ]
+    );
+}
+
+/// Refuses every batch to `behind` as a route that is behind, takes every
+/// fence, and records the batches' stamps and the fences.
+struct BehindFollower {
+    behind: &'static str,
+    stamps: Mutex<Vec<(String, Option<u64>)>>,
+    fences: Mutex<Vec<(String, felix_wire::internal::Fence)>>,
+}
+
+impl PeerRequester for BehindFollower {
+    async fn request(
+        &self,
+        node_id: &str,
+        _addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, PeerError> {
+        let batch = match message {
+            InternalMessage::ReplicateRecords(batch)
+            | InternalMessage::ReplicateMarkedRecords(batch) => batch,
+            InternalMessage::Fence(fence) => {
+                self.fences
+                    .lock()
+                    .expect("lock")
+                    .push((node_id.to_string(), fence));
+                return Ok(InternalMessage::FenceOk(felix_wire::internal::FenceOk {
+                    correlation_id: 0,
+                    log_end: 0,
+                    commit_offset: 0,
+                    last_generation: 0,
+                }));
+            }
+            other => panic!("unexpected {other:?}"),
+        };
+        self.stamps
+            .lock()
+            .expect("lock")
+            .push((node_id.to_string(), batch.set_generation));
+        if node_id == self.behind {
+            return Ok(InternalMessage::ReplicateError(
+                felix_wire::internal::ReplicateError {
+                    correlation_id: 0,
+                    code: felix_wire::internal::ErrorCode::StaleRoute,
+                    expected_offset: 0,
+                    detail: "behind".to_string(),
+                },
+            ));
+        }
+        Ok(InternalMessage::ReplicateOk(ReplicateOk {
+            correlation_id: 0,
+            durable_offset: batch.first_offset + batch.payloads.len() as u64,
+            learner: false,
+        }))
+    }
+
+    fn recorded_capabilities(&self, _node_id: &str) -> Option<PeerCapabilities> {
+        Some(PeerCapabilities::ELECTION)
+    }
+
+    fn offers_election(&self) -> bool {
+        true
+    }
+}
+
+/// `LOCAL` leading by election at 4, on the set of generation 3, in a fleet
+/// that finalized `replica_election`.
+fn elected_marks(leader: &str) -> QuorumMarks {
+    use felix_common::fleet::{FleetGate, GENERATION_START, MAJORITY_ACK, REPLICA_ELECTION};
+
+    let names = [
+        GENERATION_START.name(),
+        MAJORITY_ACK.name(),
+        REPLICA_ELECTION.name(),
+    ];
+    let fleet = FleetGate::new(names);
+    fleet.restart(names);
+    with_election(leader, QuorumMarks::with_fleet(Arc::new(fleet)))
+}
+
+/// `marks` with `leader` recorded as elected at 4 on the set of 3.
+fn with_election(leader: &str, marks: QuorumMarks) -> QuorumMarks {
+    use felix_storage::disk_log::{Member, Membership};
+
+    let elections = Arc::new(crate::election::Elections::new(
+        LOCAL,
+        Arc::new(tokio::sync::Notify::new()),
+    ));
+    elections.record(
+        key(),
+        crate::election::Elected {
+            leader: leader.to_string(),
+            generation: 4,
+            set: Membership {
+                generation: 3,
+                members: [LOCAL, "broker-b", "broker-c"]
+                    .map(|node| Member {
+                        node: node.to_string(),
+                        storage: None,
+                        learner: false,
+                        wiped: false,
+                    })
+                    .to_vec(),
+            },
+            leaving: None,
+            incarnation: 0,
+        },
+    );
+    marks.set_elections(elections);
+    marks
+}
+
+/// **An elected leader stamps the set it stood on, and sends its fence again
+/// to a follower whose route is behind.** No control-plane route carries the
+/// elected generation, so a follower that missed the fence (a leader cut off
+/// during the election) refuses every batch until the fence comes again. A
+/// follower that takes the batches gets no fence. A leader the control plane
+/// named sends the set it keeps instead, since a batch teaches no set being
+/// left that the follower's view lacks.
+#[tokio::test]
+async fn an_elected_leader_fences_a_follower_whose_route_is_behind_again() {
+    for (leader, candidate, set_generation) in [(LOCAL, true, 3), ("broker-z", false, 4)] {
+        let (broker, _dir) = quorum_leader(3, 4).await;
+        stream_log(&broker)
+            .await
+            .accept_generation(4, Some(LOCAL))
+            .await
+            .expect("own ballot");
+        let followers = BehindFollower {
+            behind: "broker-b",
+            stamps: Mutex::new(Vec::new()),
+            fences: Mutex::new(Vec::new()),
+        };
+        let marks = elected_marks(leader);
+
+        pass(&followers, &broker, &marks).await;
+
+        let stamp = (leader == LOCAL).then_some(3).or(Some(4));
+        let stamps = followers.stamps.lock().expect("lock").clone();
+        assert!(
+            stamps.iter().all(|(_, stamped)| *stamped == stamp),
+            "stamped {stamps:?}, expected {stamp:?}"
+        );
+        let fences = followers.fences.lock().expect("lock").clone();
+        assert_eq!(fences.len(), 1, "{fences:?}");
+        let (node, fence) = &fences[0];
+        assert_eq!(node, "broker-b");
+        assert_eq!(fence.shard.generation, 4);
+        assert_eq!(fence.log, felix_wire::internal::ReplicaLog::Stream);
+        let election = fence.election.as_ref().expect("a fence naming its set");
+        assert_eq!(election.candidate, candidate);
+        assert_eq!(election.set.generation, set_generation);
+    }
+}
+
+/// **A fleet that has not finalized `replica_election` sends no kept set
+/// again.** The leader the control plane named leaves a follower whose route
+/// is behind to catch up from the control plane: in a mixed fleet that
+/// follower may be the old leader, which the promotion chose not to fence.
+#[tokio::test]
+async fn without_replica_election_a_route_behind_follower_gets_no_fence() {
+    let (broker, _dir) = quorum_leader(3, 4).await;
+    stream_log(&broker)
+        .await
+        .accept_generation(4, Some(LOCAL))
+        .await
+        .expect("own ballot");
+    let followers = BehindFollower {
+        behind: "broker-b",
+        stamps: Mutex::new(Vec::new()),
+        fences: Mutex::new(Vec::new()),
+    };
+    let marks = with_election("broker-z", follower_ack_marks_adopted(true));
+
+    pass(&followers, &broker, &marks).await;
+
+    let fences = followers.fences.lock().expect("lock").clone();
+    assert!(fences.is_empty(), "fenced in a mixed fleet: {fences:?}");
+    assert!(
+        !followers.stamps.lock().expect("lock").is_empty(),
+        "the follower was shipped to"
+    );
+}
+
+/// Takes every fence, and says it offers `ELECTION`.
+struct FenceTaker;
+
+impl PeerRequester for FenceTaker {
+    async fn request(
+        &self,
+        _node_id: &str,
+        _addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, PeerError> {
+        let fence = match message {
+            InternalMessage::Fence(fence) => fence,
+            // Shipping begins once the shard has opened.
+            InternalMessage::ReplicateRecords(batch)
+            | InternalMessage::ReplicateMarkedRecords(batch) => {
+                return Ok(InternalMessage::ReplicateOk(ReplicateOk {
+                    correlation_id: 0,
+                    durable_offset: batch.first_offset + batch.payloads.len() as u64,
+                    learner: false,
+                }));
+            }
+            other => panic!("unexpected {other:?}"),
+        };
+        Ok(InternalMessage::FenceOk(felix_wire::internal::FenceOk {
+            correlation_id: fence.correlation_id,
+            log_end: 0,
+            commit_offset: 0,
+            last_generation: 0,
+        }))
+    }
+
+    async fn capabilities(
+        &self,
+        _node_id: &str,
+        _addr: SocketAddr,
+    ) -> std::result::Result<PeerCapabilities, PeerError> {
+        Ok(crate::promotion::REQUIRED.union(PeerCapabilities::ELECTION))
+    }
+
+    fn recorded_capabilities(&self, _node_id: &str) -> Option<PeerCapabilities> {
+        Some(crate::promotion::REQUIRED.union(PeerCapabilities::ELECTION))
+    }
+
+    fn offers_election(&self) -> bool {
+        true
+    }
+}
+
+/// Opens the shard and records whether its standing was still marked as
+/// being fenced when the open ran.
+struct WatchedOpen {
+    elections: Arc<crate::election::Elections>,
+    awaiting: Mutex<Option<u64>>,
+    held: Mutex<Vec<bool>>,
+}
+
+impl WatchedOpen {
+    fn new(elections: &Arc<crate::election::Elections>) -> Self {
+        Self {
+            elections: Arc::clone(elections),
+            awaiting: Mutex::new(Some(4)),
+            held: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::promotion::PromotionGate for WatchedOpen {
+    fn awaiting(&self, _key: &crate::ShardKey) -> Option<u64> {
+        *self.awaiting.lock().expect("lock")
+    }
+
+    async fn open(&self, _key: &crate::ShardKey, generation: u64) -> bool {
+        self.held
+            .lock()
+            .expect("lock")
+            .push(self.elections.is_fencing(&key(), generation));
+        *self.awaiting.lock().expect("lock") = None;
+        true
+    }
+}
+
+/// **A standing is kept until its shard has opened.** The shard opens after
+/// every shard in the pass has fenced, and the candidate withdraws a standing
+/// nothing is fencing, which would burn the generation or open the shard at
+/// one the candidate no longer stands for.
+#[tokio::test]
+async fn a_standing_is_kept_until_its_shard_opens() {
+    let (broker, _dir) = quorum_leader(3, 4).await;
+    let marks = elected_marks(LOCAL);
+    let elections = Arc::clone(marks.elections().expect("elections"));
+    let gate = WatchedOpen::new(&elections);
+    let router = router(LOCAL, &["broker-b", "broker-c"], 4);
+
+    replicate_once_with(
+        &FenceTaker,
+        &broker,
+        &router,
+        &Unfenced,
+        &gate,
+        &marks,
+        None,
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+        &Rebuilds::disabled(),
+        &MoveThrottle::unlimited(),
+    )
+    .await;
+
+    assert_eq!(
+        *gate.held.lock().expect("lock"),
+        [true],
+        "the standing was marked fenced while the shard opened"
+    );
+    assert!(
+        !elections.is_fencing(&key(), 4),
+        "the standing is released once the shard has opened"
+    );
+    assert!(
+        elections.opened_elected(&key(), 4, 0),
+        "an adoption must not make the open read as a plain bump"
+    );
+}
+
+/// **The running driver keeps a standing until its shard has opened too.**
+/// Its shards fence and open in their own futures, apart from the pass that
+/// [`a_standing_is_kept_until_its_shard_opens`] drives.
+#[tokio::test]
+async fn the_running_driver_keeps_a_standing_until_its_shard_opens() {
+    let (broker, _dir) = quorum_leader(3, 4).await;
+    let marks = Arc::new(elected_marks(LOCAL));
+    let elections = Arc::clone(marks.elections().expect("elections"));
+    let gate = Arc::new(WatchedOpen::new(&elections));
+    let driver = spawn(
+        Arc::new(FenceTaker),
+        Arc::clone(&broker),
+        router(LOCAL, &["broker-b", "broker-c"], 4),
+        Arc::new(Unfenced),
+        Arc::clone(&gate) as Arc<dyn crate::promotion::PromotionGate>,
+        Published {
+            marks,
+            halted: Arc::new(crate::halted::HaltedReplicas::new()),
+            status: Arc::default(),
+        },
+        None,
+        Duration::from_secs(300),
+        Arc::default(),
+        RebuildPolicy::default(),
+        MoveThrottle::unlimited(),
+        CancellationToken::new(),
+    );
+
+    let opened = tokio::time::timeout(Duration::from_secs(10), async {
+        while gate.held.lock().expect("lock").is_empty() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(opened.is_ok(), "the shard never opened");
+    assert!(
+        gate.held.lock().expect("lock")[0],
+        "the standing was marked fenced while the shard opened"
+    );
+    let recorded = tokio::time::timeout(Duration::from_secs(10), async {
+        while !elections.opened_elected(&key(), 4, 0) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(
+        recorded.is_ok(),
+        "an adoption must not make the open read as a plain bump"
+    );
+    driver.stop().await;
 }

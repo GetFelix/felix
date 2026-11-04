@@ -8,11 +8,12 @@ use crate::store::{AssignmentWrite, ControlPlaneStore};
 
 pub(super) async fn run(store: &dyn ControlPlaneStore) {
     let _ = store.register_node(node("broker-z", 7599)).await;
+    let _ = store.register_node(node("broker-w", 7598)).await;
     a_leader_elected_on_the_set_is_adopted_at_its_generation(store).await;
     a_planner_on_an_older_read_loses_to_adoption(store).await;
     an_adoption_on_an_older_read_loses(store).await;
     an_election_not_above_the_generation_is_not_adopted(store).await;
-    an_election_on_another_set_moves_only_the_generation(store).await;
+    an_election_on_another_set_is_named_on_it(store).await;
     every_write_after_an_adoption_issues_above_it(store).await;
     an_election_on_the_old_set_is_recorded_not_adopted(store).await;
     an_election_on_the_pending_set_is_adopted_and_stays_pending(store).await;
@@ -226,13 +227,16 @@ async fn an_election_not_above_the_generation_is_not_adopted(store: &dyn Control
     );
 }
 
-/// **A leader on a set the control plane does not record is not adopted, but
-/// its generation is taken**: x stays the leader, at y's generation, so the
-/// next write is above it.
-async fn an_election_on_another_set_moves_only_the_generation(store: &dyn ControlPlaneStore) {
+/// **A leader elected on another set is named on it.** y, in x's set, was
+/// elected on {x, y}: it leads at the generation after its own, on {x, y},
+/// with x's set pending from it, so a failover cannot promote from x's set
+/// alone. w, outside x's set, elected on {w, x}: it leads at its own
+/// generation on {w, x}. Elected on a set naming a node the catalog does
+/// not hold, only the generation is taken, since no write can name it.
+async fn an_election_on_another_set_is_named_on_it(store: &dyn ControlPlaneStore) {
     let current = three(store).await;
     let at = current.generation + 2;
-    let recorded = written(
+    let within = written(
         store
             .adopt_elected_leader(
                 &key(0),
@@ -240,10 +244,58 @@ async fn an_election_on_another_set_moves_only_the_generation(store: &dyn Contro
                 elected("broker-y", at, &["broker-x"], 0),
             )
             .await
+            .expect("adopt within"),
+    );
+    assert_eq!(
+        within,
+        ShardAssignment {
+            leader: "broker-y".to_string(),
+            replicas: vec!["broker-x".to_string()],
+            generation: at + 1,
+            pending_set: Some(PendingSet {
+                replicas: vec!["broker-x".to_string(), "broker-z".to_string()],
+                generation: at + 1,
+            }),
+            ..current
+        }
+    );
+
+    let current = three(store).await;
+    let at = current.generation + 2;
+    let outside = written(
+        store
+            .adopt_elected_leader(
+                &key(0),
+                current.generation,
+                elected("broker-w", at, &["broker-x"], 0),
+            )
+            .await
+            .expect("adopt outside"),
+    );
+    assert_eq!(
+        outside,
+        ShardAssignment {
+            leader: "broker-w".to_string(),
+            replicas: vec!["broker-x".to_string()],
+            generation: at,
+            ..current
+        }
+    );
+
+    let current = three(store).await;
+    let at = current.generation + 2;
+    let unknown = written(
+        store
+            .adopt_elected_leader(
+                &key(0),
+                current.generation,
+                elected("broker-y", at, &["broker-gone"], 0),
+            )
+            .await
             .expect("record"),
     );
     assert_eq!(
-        recorded,
+        unknown,
         ShardAssignment {
             generation: at,
             ..current

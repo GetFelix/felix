@@ -129,17 +129,32 @@ pub(super) async fn adopt_elected_leader(
             current: Some(current.generation),
         });
     }
-    let Some(adopted) = current.adopting(elected) else {
+    let mut known = std::collections::BTreeSet::new();
+    for node in std::iter::once(&elected.leader).chain(&elected.replicas) {
+        match super::nodes::get_node(store, node).await {
+            Ok(_) => {
+                known.insert(node.as_str());
+            }
+            Err(StoreError::NotFound(_)) => {}
+            Err(err) => return Err(err),
+        }
+    }
+    let Some(adopted) = current.adopting_elected_set(elected, &|node| known.contains(node)) else {
         return Ok(AssignmentWrite::Stale {
             current: Some(current.generation),
         });
     };
+    // Measured on the elected generation: a reissue names the elected
+    // leader one past it.
+    crate::model::check_elected_generation(current.generation, elected.generation)
+        .map_err(StoreError::Conflict)?;
+    let generation = adopted.generation;
     write_shard_assignment(
         store,
         adopted,
         Some(Some(expected_generation)),
         None,
-        Some(elected.generation),
+        Some(generation),
     )
     .await
 }
@@ -263,11 +278,13 @@ async fn write_shard_assignment(
                 Some(elected) if elected <= existing.generation => {
                     return Ok(AssignmentWrite::Stale { current });
                 }
-                Some(elected) => {
-                    crate::model::check_elected_generation(existing.generation, elected)
-                        .map_err(StoreError::Conflict)?;
-                    elected
+                // The adoption checked the window on the elected generation.
+                Some(elected) if elected > i64::MAX as u64 => {
+                    return Err(StoreError::Conflict(format!(
+                        "generation {elected} is past the last the control plane can issue"
+                    )));
                 }
+                Some(elected) => elected,
                 None => crate::model::next_generation(existing.generation)
                     .map_err(StoreError::Conflict)?,
             };

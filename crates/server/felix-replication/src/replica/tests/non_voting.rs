@@ -268,6 +268,44 @@ async fn a_set_naming_its_storage_id_readmits_it_after_catch_up() {
     assert_eq!(log.member_is_learner(LOCAL), Some(false));
 }
 
+/// **A start record older than the set's generation re-admits nothing.**
+/// Only the start of the generation that names this copy follows everything
+/// the set being left held; an older one may not.
+#[tokio::test]
+async fn an_older_start_record_leaves_the_copy_a_learner() {
+    let (broker, _dir) = broker_with_storage().await;
+    let handler = handler(&broker, 6, OWN);
+    wiped_at_5(&handler).await;
+    let answer = settled(|| handler.fence(SENDER, readmission(6, OWN))).await;
+    assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
+    let log = log_of(&broker).await;
+
+    let older = ReplicateRecords {
+        set_generation: Some(6),
+        generations: Some(vec![GenerationStart {
+            generation: 5,
+            start_offset: 0,
+        }]),
+        ..batch(6, 0, &["a"])
+    };
+    let answer =
+        settled(|| handler.apply(SENDER, older.clone(), felix_broker::LogKind::Stream)).await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    assert_eq!(log.member_is_learner(LOCAL), Some(true));
+
+    let answer =
+        settled(|| handler.apply(SENDER, stamped(6, 1, &["b"]), felix_broker::LogKind::Stream))
+            .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    assert_eq!(log.member_is_learner(LOCAL), Some(false));
+}
+
 /// **A re-admitted copy keeps the ballot its catch-up took.** Before the
 /// wipe it may have promised any generation up to the one it caught up at,
 /// to a candidate it no longer knows of. Holding that leader's ballot, it

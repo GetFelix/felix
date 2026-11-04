@@ -782,3 +782,255 @@ async fn an_elected_leaders_report_is_adopted_once_replica_election_is_finalized
     assert_eq!(assignment.generation, at);
     assert_eq!(assignment.replicas, vec!["broker-y"]);
 }
+
+/// **A generation claimed twice moves on.** The control plane named broker-y
+/// at the generation broker-x was elected at while it was down. Ballots let
+/// only broker-x open there, so broker-y never can; the shard would have no
+/// leader until something else moved it. broker-x's report moves it to the
+/// next generation, under broker-x since it stood on the recorded set.
+#[tokio::test]
+async fn an_elected_leader_reporting_a_collided_generation_moves_the_shard_on() {
+    let (store, keys) = one_shard_cluster().await;
+    let election = felix_common::fleet::REPLICA_ELECTION.name();
+    for id in ["broker-x", "broker-y"] {
+        let mut node = store.get_node(id).await.expect("node");
+        node.status.features = [election.to_string()].into();
+        store.register_node(node).await.expect("offer the feature");
+    }
+    store
+        .finalize_fleet_feature(election)
+        .await
+        .expect("finalize");
+    let named_y = store
+        .put_shard_assignment(ShardAssignment {
+            key: shard_zero(),
+            leader: "broker-y".to_string(),
+            replicas: vec!["broker-x".to_string()],
+            generation: 0,
+            state: ShardState::Active,
+            successor: None,
+            joining: None,
+            move_started_at_millis: None,
+            move_reason: None,
+            incarnation: 0,
+            fence_storage_ids: Default::default(),
+            member_storage_ids: Default::default(),
+            learners: Default::default(),
+            pending_set: None,
+        })
+        .await
+        .expect("assign");
+    let at = named_y.generation;
+    let mut shard = shard_json(0, at, 10, &["broker-y"]);
+    shard["elected"] = serde_json::json!({
+        "leader": "broker-x",
+        "generation": at,
+        "replicas": ["broker-y"],
+        "set_generation": at,
+    });
+    let state = app_state_ready(Arc::clone(&store) as _);
+    // Judged against the new assignment, the report itself is stale.
+    let _ = post_report(state.clone(), &keys, serde_json::json!([shard.clone()])).await;
+    let assignment = store
+        .get_shard_assignment(&shard_zero())
+        .await
+        .expect("get");
+    assert_eq!(assignment.generation, at + 1, "{assignment:?}");
+    assert_eq!(assignment.leader, "broker-x");
+    assert_eq!(assignment.replicas, vec!["broker-y"]);
+
+    // The same report again moves nothing: the generations no longer match.
+    let _ = post_report(state, &keys, serde_json::json!([shard])).await;
+    let again = store
+        .get_shard_assignment(&shard_zero())
+        .await
+        .expect("get");
+    assert_eq!(again, assignment);
+}
+
+/// **A collided generation whose elected leader is not in the control
+/// plane's set is left alone.** Naming another member at the next generation
+/// would fence only a majority of the control plane's set, which may miss
+/// what the elected leader acknowledged on its own.
+#[tokio::test]
+async fn a_collision_is_left_alone_when_the_elected_leader_is_outside_the_set() {
+    let (store, keys) = one_shard_cluster().await;
+    let election = felix_common::fleet::REPLICA_ELECTION.name();
+    for id in ["broker-x", "broker-y"] {
+        let mut node = store.get_node(id).await.expect("node");
+        node.status.features = [election.to_string()].into();
+        store.register_node(node).await.expect("offer the feature");
+    }
+    store
+        .finalize_fleet_feature(election)
+        .await
+        .expect("finalize");
+    let named_y = store
+        .put_shard_assignment(ShardAssignment {
+            key: shard_zero(),
+            leader: "broker-y".to_string(),
+            replicas: Vec::new(),
+            generation: 0,
+            state: ShardState::Active,
+            successor: None,
+            joining: None,
+            move_started_at_millis: None,
+            move_reason: None,
+            incarnation: 0,
+            fence_storage_ids: Default::default(),
+            member_storage_ids: Default::default(),
+            learners: Default::default(),
+            pending_set: None,
+        })
+        .await
+        .expect("assign");
+    let at = named_y.generation;
+    let mut shard = shard_json(0, at, 10, &["broker-y"]);
+    shard["elected"] = serde_json::json!({
+        "leader": "broker-x",
+        "generation": at,
+        "replicas": ["broker-y"],
+        "set_generation": at,
+    });
+    let state = app_state_ready(Arc::clone(&store) as _);
+    let _ = post_report(state, &keys, serde_json::json!([shard])).await;
+    assert_eq!(
+        store
+            .get_shard_assignment(&shard_zero())
+            .await
+            .expect("get"),
+        named_y
+    );
+}
+
+/// broker-x, broker-y and broker-z with `replica_election` finalized, and
+/// the shard named to broker-y on {x, y}.
+async fn named_y_beside_z() -> (
+    Arc<crate::store::memory::InMemoryStore>,
+    crate::auth::felix_token::TenantSigningKeys,
+    ShardAssignment,
+) {
+    let (store, keys) = one_shard_cluster().await;
+    let mut z = store.get_node("broker-y").await.expect("node");
+    z.node_id = "broker-z".to_string();
+    z.spec.advertise_addr = "10.0.0.4:7102".to_string();
+    store.register_node(z).await.expect("register z");
+    let election = felix_common::fleet::REPLICA_ELECTION.name();
+    for id in ["broker-x", "broker-y", "broker-z"] {
+        let mut node = store.get_node(id).await.expect("node");
+        node.status.features = [election.to_string()].into();
+        store.register_node(node).await.expect("offer the feature");
+    }
+    store
+        .finalize_fleet_feature(election)
+        .await
+        .expect("finalize");
+    let named_y = store
+        .put_shard_assignment(ShardAssignment {
+            key: shard_zero(),
+            leader: "broker-y".to_string(),
+            replicas: vec!["broker-x".to_string()],
+            generation: 0,
+            state: ShardState::Active,
+            successor: None,
+            joining: None,
+            move_started_at_millis: None,
+            move_reason: None,
+            incarnation: 0,
+            fence_storage_ids: Default::default(),
+            member_storage_ids: Default::default(),
+            learners: Default::default(),
+            pending_set: None,
+        })
+        .await
+        .expect("assign");
+    (store, keys, named_y)
+}
+
+/// broker-x's report that it was elected at `at` on {x, z}.
+fn elected_on_x_z(at: u64, set_generation: u64) -> serde_json::Value {
+    let mut shard = shard_json(0, at, 10, &["broker-z"]);
+    shard["elected"] = serde_json::json!({
+        "leader": "broker-x",
+        "generation": at,
+        "replicas": ["broker-z"],
+        "set_generation": set_generation,
+    });
+    shard
+}
+
+/// x leads at `generation` on {x, z}. A change to {x, y} could never
+/// complete: x would ship to y alone, which is no majority of {x, z}.
+fn assert_named_on_x_z(assignment: &ShardAssignment, generation: u64) {
+    assert_eq!(assignment.generation, generation, "{assignment:?}");
+    assert_eq!(assignment.leader, "broker-x");
+    assert_eq!(assignment.replicas, vec!["broker-z"]);
+    assert_eq!(assignment.pending_set, None);
+}
+
+/// **A generation claimed twice on another set moves on with that set.**
+/// broker-x was elected on {x, z} while the control plane named broker-y on
+/// {x, y}. The next generation names x on {x, z}, so the majority of it that
+/// holds what x acknowledged is fenced and kept.
+#[tokio::test]
+async fn a_collision_on_another_set_moves_on_with_the_elected_set() {
+    let (store, keys, named_y) = named_y_beside_z().await;
+    let at = named_y.generation;
+    let state = app_state_ready(Arc::clone(&store) as _);
+    let _ = post_report(state, &keys, serde_json::json!([elected_on_x_z(at, at)])).await;
+    let assignment = store
+        .get_shard_assignment(&shard_zero())
+        .await
+        .expect("get");
+    assert_named_on_x_z(&assignment, at + 1);
+}
+
+/// **An election past the control plane's that it can take only as a
+/// generation moves on in the same report.** broker-x was elected on
+/// {x, w}, and w is not in the catalog, so adoption takes the generation
+/// alone and leaves broker-y named at the generation x opened at. Waiting
+/// for x's next report would let a failover in between promote y, which
+/// ballots will never let open there.
+#[tokio::test]
+async fn an_election_taken_as_a_generation_only_moves_on_in_the_same_report() {
+    let (store, keys, named_y) = named_y_beside_z().await;
+    let at = named_y.generation + 2;
+    let mut shard = shard_json(0, at, 10, &["broker-w"]);
+    shard["elected"] = serde_json::json!({
+        "leader": "broker-x",
+        "generation": at,
+        "replicas": ["broker-w"],
+        "set_generation": named_y.generation,
+    });
+    let state = app_state_ready(Arc::clone(&store) as _);
+    let _ = post_report(state, &keys, serde_json::json!([shard])).await;
+    let assignment = store
+        .get_shard_assignment(&shard_zero())
+        .await
+        .expect("get");
+    assert_eq!(assignment.generation, at + 1, "{assignment:?}");
+    assert_eq!(assignment.leader, "broker-x");
+    assert_eq!(assignment.replicas, vec!["broker-y"]);
+    assert_eq!(assignment.pending_set, None);
+}
+
+/// **An election on another set past the control plane's is named on it.**
+/// Taking only the generation would leave broker-y named at the generation x
+/// opened at, and a failover could then promote from {x, y} alone.
+#[tokio::test]
+async fn an_election_on_another_set_is_adopted_on_it() {
+    let (store, keys, named_y) = named_y_beside_z().await;
+    let at = named_y.generation + 2;
+    let state = app_state_ready(Arc::clone(&store) as _);
+    let _ = post_report(
+        state,
+        &keys,
+        serde_json::json!([elected_on_x_z(at, named_y.generation)]),
+    )
+    .await;
+    let assignment = store
+        .get_shard_assignment(&shard_zero())
+        .await
+        .expect("get");
+    assert_named_on_x_z(&assignment, at + 1);
+}
