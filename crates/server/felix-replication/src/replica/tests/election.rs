@@ -248,7 +248,13 @@ async fn only_a_wiped_learner_learns_a_set_without_the_set_before_it() {
             stale, !learns,
             "learner {learner}, wiped {wiped}: {answer:?}"
         );
-        if !learns {
+        if learns {
+            assert!(
+                matches!(answer, InternalMessage::ReplicateOk(_)),
+                "{answer:?}"
+            );
+            assert_eq!(stream_log(&broker).await.set_generation(), 4);
+        } else {
             assert_eq!(stream_log(&broker).await.set_generation(), 3);
         }
     }
