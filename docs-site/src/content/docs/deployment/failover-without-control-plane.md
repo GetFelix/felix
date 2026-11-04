@@ -68,8 +68,8 @@ control plane is down. A crashes.
    to disk for a pre-vote. B needs a majority, counting itself.
 3. **Waiting its place.** The replicas are ordered by how far ahead their logs
    are. B waits 300 ms for each replica ahead of it, so the one with the most
-   data usually stands alone. A replica that waited asks again and goes on only
-   if every member that said yes still does. One ahead of it that has already
+   data usually stands alone. A replica that waited asks again and stops if a
+   member that said yes now says no. One ahead of it that has already
    stood now says no, so the two do not stand against each other.
 4. **Ballot.** B writes its ballot for the next generation to disk.
 5. **Fence.** B fences the replica set as a candidate. C gives its ballot and

@@ -37,6 +37,8 @@ fn key() -> ShardKey {
 struct Voters {
     answers: Vec<(&'static str, Option<PreVoteRefusal>)>,
     then: Vec<(&'static str, Option<PreVoteRefusal>)>,
+    /// Nodes that do not answer from their second ask on.
+    silent_again: Vec<&'static str>,
     asked: Mutex<Vec<String>>,
 }
 
@@ -57,6 +59,11 @@ impl PeerRequester for Voters {
             asked.push(node_id.to_string());
             again
         };
+        if again && self.silent_again.contains(&node_id) {
+            return Err(PeerError::Disconnected {
+                node_id: node_id.to_string(),
+            });
+        }
         let (_, refusal) = again
             .then(|| self.then.iter().find(|(node, _)| *node == node_id))
             .flatten()
@@ -201,6 +208,7 @@ fn voters(c: Option<PreVoteRefusal>) -> Voters {
             ("broker-c", c),
         ],
         then: Vec::new(),
+        silent_again: Vec::new(),
         asked: Mutex::new(Vec::new()),
     }
 }
@@ -211,6 +219,7 @@ fn second_in_order(then: Option<PreVoteRefusal>) -> Voters {
     Voters {
         answers: vec![("broker-a", None), ("broker-c", None)],
         then: vec![("broker-a", then)],
+        silent_again: Vec::new(),
         asked: Mutex::new(Vec::new()),
     }
 }
@@ -232,6 +241,19 @@ async fn a_voter_ahead_that_stood_meanwhile_is_not_stood_against() {
     let log = shard_log(&broker, &key()).await.expect("log");
     assert_eq!(log.accepted_generation(), 3, "no ballot");
     assert!(ctx.elections.get(&key()).is_none());
+}
+
+/// **A voter silent when asked again does not stop a candidate**: silence
+/// is not evidence that anyone stood.
+#[tokio::test(start_paused = true)]
+async fn a_voter_silent_when_asked_again_does_not_stop_the_candidate() {
+    let (broker, _dir) = follower().await;
+    let mut voters = second_in_order(None);
+    voters.silent_again = vec!["broker-a", "broker-c"];
+    let ctx = ctx(&broker, voters);
+
+    let (_, elected) = stand_and_watch(&ctx).await;
+    assert_eq!(elected.generation, 4);
 }
 
 /// **A candidate second in the order stands once its voters still agree**
@@ -542,6 +564,7 @@ async fn the_place_counts_the_voters_ahead() {
             pre_vote(&ctx, &key(), &log, &set(3), 4)
                 .await
                 .ok()
+                .filter(PreVoted::majority)
                 .map(|voted| voted.place)
         }
     };
@@ -628,7 +651,12 @@ async fn a_slow_dial_carries_over_to_the_next_round() {
     };
     let log = shard_log(&ctx.broker, &key()).await.expect("log");
 
-    assert!(pre_vote(&ctx, &key(), &log, &set(3), 4).await.is_err());
+    assert!(
+        !pre_vote(&ctx, &key(), &log, &set(3), 4)
+            .await
+            .expect("answers")
+            .majority()
+    );
     tokio::time::sleep(BACKOFF_FIRST_TOP).await;
     assert_eq!(
         pre_vote(&ctx, &key(), &log, &set(3), 4)

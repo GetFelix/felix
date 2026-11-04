@@ -1305,9 +1305,10 @@ elected leader waits for the lease until the control plane is back (issue
 3. *Standing in order.* A follower that won its pre-vote waits for its place
    in the set's order by (last generation, length), ties broken by node id,
    lower first: 300 ms per place, so in a set of three the second waits
-   300 ms and the third 600 ms. After its wait it asks again, and stands only
-   if every voter that said yes still does. A voter ahead that stood
-   meanwhile has its ballot on disk and now refuses, even when its fence has
+   300 ms and the third 600 ms. After its wait it asks again, and does not
+   stand if a voter that said yes now refuses (one that does not answer
+   counts for nothing). A voter ahead that stood meanwhile has its ballot on
+   disk and refuses, even when its fence has
    not reached the waiting follower yet, so the two do not split one
    generation. The replica furthest ahead usually stands
    alone. A candidate whose round fails (refused, or split with another)

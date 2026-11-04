@@ -326,9 +326,13 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
         return ctx.ineligible(key, "past the generations the control plane adopts");
     }
     let first = match pre_vote(ctx, key, &log, &kept.current, generation).await {
-        Ok(first) => first,
-        Err(answers) => {
-            ctx.held_back(key, "the pre-vote found no majority", &answers);
+        Ok(first) if first.majority() => first,
+        Ok(lost) => {
+            ctx.held_back(key, "the pre-vote found no majority", &lost.answers());
+            return Round::Failed;
+        }
+        Err(why) => {
+            ctx.held_back(key, "the pre-vote found no majority", &why);
             return Round::Failed;
         }
     };
@@ -337,22 +341,20 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
         // A voter ahead that stood meanwhile has its ballot on disk, but its
         // fence may not have reached this broker yet under load. Standing
         // anyway splits the vote at one generation and both candidates lose
-        // it. Asking again sees the ballot whatever the fence's latency: a
-        // voter that took the generation since no longer says yes.
-        match pre_vote(ctx, key, &log, &kept.current, generation).await {
-            Ok(again) if first.granted.is_subset(&again.granted) => {}
-            Ok(_) => {
-                ctx.held_back(
-                    key,
-                    "a voter took the generation while this broker waited its place",
-                    "",
-                );
-                return Round::Failed;
-            }
-            Err(answers) => {
-                ctx.held_back(key, "the pre-vote found no majority", &answers);
-                return Round::Failed;
-            }
+        // it. Asking again sees the ballot whatever the fence's latency. Only
+        // a refusal counts: a voter silent this time proves nothing.
+        let again = pre_vote(ctx, key, &log, &kept.current, generation).await;
+        if let Some(changed) = again
+            .as_ref()
+            .ok()
+            .and_then(|again| first.granted.iter().find(|node| again.refused(node)))
+        {
+            ctx.held_back(
+                key,
+                "a voter that said yes refused when asked again",
+                changed,
+            );
+            return Round::Failed;
         }
     }
     // Someone may have stood meanwhile, or the leader come back.
@@ -467,7 +469,7 @@ async fn shard_log(broker: &Broker, key: &ShardKey) -> Option<StreamLog> {
         .await
 }
 
-/// A pre-vote a majority granted.
+/// The answers to one pre-vote.
 #[derive(Debug, PartialEq, Eq)]
 struct PreVoted {
     /// Voters ahead of this broker: those that refused because their log is
@@ -476,10 +478,41 @@ struct PreVoted {
     place: u32,
     /// The other voters that said yes.
     granted: BTreeSet<String>,
+    /// The other voters that said no, and why.
+    refused: Vec<(String, PreVoteRefusal)>,
+    /// Voters in the set, this broker included.
+    voters: usize,
 }
 
-/// Ask the other voters of `set` whether they would take `generation`.
-/// Without a majority, itself included, returns the answers it got.
+impl PreVoted {
+    /// A majority of the set said yes, this broker included.
+    fn majority(&self) -> bool {
+        (self.granted.len() + 1) * 2 > self.voters
+    }
+
+    fn refused(&self, node: &str) -> bool {
+        self.refused.iter().any(|(refuser, _)| refuser == node)
+    }
+
+    /// What the voters answered, for the log.
+    fn answers(&self) -> String {
+        let refused: Vec<String> = self
+            .refused
+            .iter()
+            .map(|(node, refusal)| format!("{node}: {refusal:?}"))
+            .collect();
+        format!(
+            "{} of {} voters with this broker, {} answered, refused by [{}]",
+            self.granted.len() + 1,
+            self.voters,
+            self.granted.len() + self.refused.len(),
+            refused.join(", ")
+        )
+    }
+}
+
+/// Ask the other voters of `set` whether they would take `generation`. A
+/// voter that does not answer in time is neither.
 async fn pre_vote<R: PeerRequester + Send + Sync + 'static>(
     ctx: &Ctx<R>,
     key: &ShardKey,
@@ -548,36 +581,29 @@ async fn pre_vote<R: PeerRequester + Send + Sync + 'static>(
         }
     }
     let answers = rounds.await;
-    let mut granted = BTreeSet::new();
-    let mut place = 0;
-    let heard = answers.iter().flatten().count();
-    let refused: Vec<String> = answers
-        .iter()
-        .flatten()
-        .filter_map(|(node, refusal)| Some(format!("{node}: {:?}", refusal.as_ref()?)))
-        .collect();
+    let mut voted = PreVoted {
+        place: 0,
+        granted: BTreeSet::new(),
+        refused: Vec::new(),
+        voters: voters.len(),
+    };
     for (node, refusal) in answers.into_iter().flatten() {
         match refusal {
             None => {
-                granted.insert(node.to_string());
+                voted.granted.insert(node.to_string());
                 if node < local {
-                    place += 1;
+                    voted.place += 1;
                 }
             }
-            Some(PreVoteRefusal::LogBehind) => place += 1,
-            Some(_) => {}
+            Some(refusal) => {
+                if refusal == PreVoteRefusal::LogBehind {
+                    voted.place += 1;
+                }
+                voted.refused.push((node.to_string(), refusal));
+            }
         }
     }
-    if (granted.len() + 1) * 2 > voters.len() {
-        Ok(PreVoted { place, granted })
-    } else {
-        Err(format!(
-            "{} of {} voters with this broker, {heard} answered, refused by [{}]",
-            granted.len() + 1,
-            voters.len(),
-            refused.join(", ")
-        ))
-    }
+    Ok(voted)
 }
 
 /// Whether the shard opened at `generation`: its start record is written.
