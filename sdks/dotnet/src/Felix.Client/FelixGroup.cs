@@ -8,6 +8,9 @@ namespace Felix;
 /// calls after the client is disposed throw <see cref="ObjectDisposedException"/>.
 /// Polling and settling need the consume permission; creating, seeking, deleting, discarding
 /// and redriving need the group-management permission.
+/// Polls, seeks and describes retry a refusal inside the client; a
+/// <see cref="FelixStatus.ShardUnavailable"/> that still comes back changed nothing and is
+/// safe to retry, as after a failover while the new leader has no committed tail yet.
 /// </summary>
 public sealed class FelixGroup
 {

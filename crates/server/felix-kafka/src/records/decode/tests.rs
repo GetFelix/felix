@@ -5,7 +5,12 @@ use kafka_protocol::records::{
     TimestampType,
 };
 
-use super::{MAX_BATCH_BYTES, Refused, decode};
+use super::{Batch, MAX_BATCH_BYTES, Refused};
+
+/// Decode without keeping keys and headers, the plain case.
+fn decode(records: Bytes) -> Result<Vec<Batch>, Refused> {
+    super::decode(records, false)
+}
 
 fn record(sequence: i32, value: &[u8]) -> Record {
     Record {
@@ -96,6 +101,92 @@ fn keys_headers_and_null_values_are_counted_and_the_value_kept() {
     let batches = decode(encode(&[keyed, headed, tombstone], Compression::None)).expect("decode");
     assert_eq!(batches[0].values, vec!["v", "w", ""]);
     assert_eq!((batches[0].keyed, batches[0].with_headers), (1, 1));
+}
+
+fn block(batch: &Batch, at: usize) -> Option<felix_wire::RecordHeaders> {
+    let blocks = batch.blocks.as_ref().expect("blocks kept");
+    blocks[at]
+        .clone()
+        .map(|block| felix_wire::RecordHeaders::decode(block).expect("block"))
+}
+
+#[test]
+fn kept_keys_and_headers_become_blocks_and_a_bare_record_has_none() {
+    let mut keyed = record(0, b"v");
+    keyed.key = Some(Bytes::from_static(b"k"));
+    let mut headed = record(1, b"w");
+    headed.headers.insert(
+        StrBytes::from_static_str("trace"),
+        Some(Bytes::from_static(b"1")),
+    );
+    headed
+        .headers
+        .insert(StrBytes::from_static_str("nil"), None);
+    let mut empty_key = record(2, b"x");
+    empty_key.key = Some(Bytes::new());
+    let bare = record(3, b"y");
+
+    let batches = super::decode(
+        encode(&[keyed, headed, empty_key, bare], Compression::None),
+        true,
+    )
+    .expect("decode");
+    let batch = &batches[0];
+    assert_eq!(batch.values, vec!["v", "w", "x", "y"]);
+    assert_eq!(
+        block(batch, 0).expect("block").key,
+        Some(Bytes::from_static(b"k"))
+    );
+    let headed = block(batch, 1).expect("block");
+    assert_eq!(headed.key, None);
+    assert_eq!(
+        headed.headers,
+        vec![
+            ("trace".to_string(), Bytes::from_static(b"1")),
+            ("nil".to_string(), Bytes::new()),
+        ],
+        "order is kept and a null value is stored empty"
+    );
+    assert_eq!(block(batch, 2).expect("block").key, Some(Bytes::new()));
+    assert!(
+        block(batch, 3).is_none(),
+        "neither key nor headers, no block"
+    );
+}
+
+#[test]
+fn a_batch_with_no_keys_or_headers_has_no_blocks_at_all() {
+    let batches =
+        super::decode(encode(&[record(0, b"a")], Compression::None), true).expect("decode");
+    assert!(batches[0].blocks.is_none());
+}
+
+#[test]
+fn a_reserved_or_empty_header_name_is_an_invalid_record() {
+    for name in ["felix.mqtt.topic", "felix.", ""] {
+        let mut record = record(0, b"a");
+        record
+            .headers
+            .insert(StrBytes::from_string(name.to_string()), None);
+        let refused = super::decode(encode(&[record], Compression::None), true).unwrap_err();
+        assert!(
+            matches!(refused, Refused::Invalid(_)),
+            "{name:?}: {refused:?}"
+        );
+    }
+}
+
+#[test]
+fn a_reserved_header_name_is_only_looked_at_when_headers_are_kept() {
+    let mut record = record(0, b"a");
+    record
+        .headers
+        .insert(StrBytes::from_static_str("felix.mqtt.topic"), None);
+    let batches = decode(encode(&[record], Compression::None)).expect("dropped as before");
+    assert_eq!(
+        (batches[0].with_headers, batches[0].blocks.is_none()),
+        (1, true)
+    );
 }
 
 #[test]

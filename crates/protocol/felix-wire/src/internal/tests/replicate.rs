@@ -10,9 +10,11 @@ fn the_batch_checksum_separates_a_different_split_of_the_same_bytes() {
         &[Bytes::from_static(b"ab"), Bytes::from_static(b"c")],
         &[],
         &[],
+        &[],
     );
     let other = batch_checksum(
         &[Bytes::from_static(b"a"), Bytes::from_static(b"bc")],
+        &[],
         &[],
         &[],
     );
@@ -26,14 +28,17 @@ fn the_batch_checksum_is_stable_and_order_sensitive() {
     let reversed = [Bytes::from_static(b"bb"), Bytes::from_static(b"a")];
 
     assert_eq!(
-        batch_checksum(&batch, &[], &[]),
-        batch_checksum(&batch, &[], &[])
+        batch_checksum(&batch, &[], &[], &[]),
+        batch_checksum(&batch, &[], &[], &[])
     );
     assert_ne!(
-        batch_checksum(&batch, &[], &[]),
-        batch_checksum(&reversed, &[], &[])
+        batch_checksum(&batch, &[], &[], &[]),
+        batch_checksum(&reversed, &[], &[], &[])
     );
-    assert_eq!(batch_checksum(&[], &[], &[]), batch_checksum(&[], &[], &[]));
+    assert_eq!(
+        batch_checksum(&[], &[], &[], &[]),
+        batch_checksum(&[], &[], &[], &[])
+    );
 }
 
 /// The cache variants share a body with the stream ones and must still be told
@@ -52,6 +57,7 @@ fn a_cache_replication_batch_is_not_a_stream_one() {
         commit_offset: None,
         generations: None,
         publishers: Vec::new(),
+        headers: None,
         set_generation: None,
     };
     let stream = InternalMessage::ReplicateRecords(body.clone());
@@ -85,6 +91,7 @@ fn the_four_replication_kinds_are_distinguishable() {
         commit_offset: None,
         generations: None,
         publishers: Vec::new(),
+        headers: None,
         set_generation: None,
     };
     let encoded: Vec<_> = [
@@ -118,12 +125,12 @@ fn marks_are_covered_by_the_checksum_and_absent_marks_change_nothing() {
     };
     let marked = [opens, ProducerMark::Continues];
     assert_ne!(
-        batch_checksum(&batch, &marked, &[]),
-        batch_checksum(&batch, &[], &[])
+        batch_checksum(&batch, &marked, &[], &[]),
+        batch_checksum(&batch, &[], &[], &[])
     );
     assert_ne!(
-        batch_checksum(&batch, &marked, &[]),
-        batch_checksum(&batch, &[opens, ProducerMark::None], &[])
+        batch_checksum(&batch, &marked, &[], &[]),
+        batch_checksum(&batch, &[opens, ProducerMark::None], &[], &[])
     );
 }
 
@@ -154,6 +161,7 @@ fn a_commit_offset_travels_as_the_committed_kind_for_every_log() {
         commit_offset: Some(8),
         generations: None,
         publishers: Vec::new(),
+        headers: None,
         set_generation: None,
     };
     for message in [
@@ -196,6 +204,7 @@ fn generations_travel_as_the_labelled_kind_for_every_log() {
             },
         ]),
         publishers: Vec::new(),
+        headers: None,
         set_generation: None,
     };
     let opens = ProducerMark::Opens {
@@ -238,6 +247,7 @@ fn an_absent_commit_offset_must_be_zero() {
         commit_offset: None,
         generations: Some(Vec::new()),
         publishers: Vec::new(),
+        headers: None,
         set_generation: None,
     });
     let encoded = message.encode().expect("encode");
@@ -263,6 +273,7 @@ fn a_labelled_fetch_is_its_own_kind() {
     let fetch = |labelled| {
         InternalMessage::ReplicateFetch(ReplicateFetch {
             timed: false,
+            headers: false,
             correlation_id: 42,
             shard: shard(),
             log: ReplicaLog::Stream,
@@ -301,6 +312,7 @@ fn a_generation_start_mark_round_trips_and_an_unknown_mark_is_refused() {
         commit_offset: None,
         generations: None,
         publishers: Vec::new(),
+        headers: None,
         set_generation: None,
     };
     let message = InternalMessage::ReplicateMarkedRecords(batch);
@@ -350,6 +362,7 @@ fn a_trim_mark_round_trips_with_its_floor() {
         commit_offset: Some(3),
         generations: None,
         publishers: vec![None, Some(Bytes::from_static(b"svc"))],
+        headers: None,
         set_generation: None,
     };
     assert!(batch.holds_trim());
@@ -384,12 +397,13 @@ fn publishers_travel_with_the_marks_and_are_checksummed() {
             correlation_id: 3,
             shard: shard(),
             first_offset: 10,
-            checksum: batch_checksum(&payloads, &marks, &publishers),
+            checksum: batch_checksum(&payloads, &marks, &publishers, &[]),
             payloads: payloads.clone(),
             marks: marks.clone(),
             commit_offset: None,
             generations: None,
             publishers: publishers.clone(),
+            headers: None,
             set_generation: None,
         };
         let message = if marks.is_empty() {
@@ -403,15 +417,16 @@ fn publishers_travel_with_the_marks_and_are_checksummed() {
     }
 
     assert_ne!(
-        batch_checksum(&payloads, &[], &publishers),
-        batch_checksum(&payloads, &[], &[])
+        batch_checksum(&payloads, &[], &publishers, &[]),
+        batch_checksum(&payloads, &[], &[], &[])
     );
     assert_ne!(
-        batch_checksum(&payloads, &[], &publishers),
+        batch_checksum(&payloads, &[], &publishers, &[]),
         batch_checksum(
             &payloads,
             &[],
-            &[None, None, Some(Bytes::from_static(b"alice"))]
+            &[None, None, Some(Bytes::from_static(b"alice"))],
+            &[]
         )
     );
 }
@@ -428,6 +443,7 @@ fn timed(times: Option<Vec<u64>>, generations: Option<Vec<GenerationStart>>) -> 
         generations,
         publishers: Vec::new(),
         times,
+        headers: None,
         set_generation: None,
     }
 }
@@ -516,6 +532,7 @@ fn a_timed_fetch_is_its_own_kind() {
             max_bytes: 1 << 20,
             labelled,
             timed,
+            headers: false,
         })
     };
     assert_eq!(fetch(true, true).kind(), Kind::ReplicateTimedFetch);
@@ -576,4 +593,185 @@ fn a_learners_answer_is_its_own_kind_and_a_voters_is_unchanged() {
         InternalMessage::decode(learner_bytes).expect("decode"),
         InternalMessage::ReplicateOk(learner)
     );
+}
+
+fn blocks(blocks: &[Option<&'static [u8]>]) -> Option<Vec<Option<Bytes>>> {
+    Some(
+        blocks
+            .iter()
+            .map(|block| block.map(Bytes::from_static))
+            .collect(),
+    )
+}
+
+/// A timed batch whose first record carries a block.
+fn headered(headers: Option<Vec<Option<Bytes>>>) -> ReplicateRecords {
+    ReplicateRecords {
+        headers,
+        ..timed(
+            Some(vec![1_000, 2_000]),
+            Some(vec![GenerationStart {
+                generation: 3,
+                start_offset: 4,
+            }]),
+        )
+    }
+}
+
+/// A batch with a block is its own kind, the timed body followed by the
+/// blocks, and it round-trips for a stream's records with the offer it needs.
+#[test]
+fn a_headered_batch_is_its_own_kind_and_round_trips() {
+    let body = headered(blocks(&[Some(b"block"), None]));
+    let message = InternalMessage::ReplicateRecords(body.clone());
+    assert_eq!(message.kind(), Kind::ReplicateHeaderedRecords);
+    assert_eq!(
+        message.required_capability(),
+        Some(PeerCapabilities::RECORD_HEADERS)
+    );
+    let bytes = message.encode().expect("encode");
+    assert_eq!(
+        InternalHeader::decode(&bytes).expect("header").kind,
+        Kind::ReplicateHeaderedRecords
+    );
+    assert_eq!(
+        InternalMessage::decode(bytes.clone()).expect("decode"),
+        message
+    );
+
+    // The blocks follow the timed body unchanged.
+    let timed = InternalMessage::ReplicateRecords(headered(None))
+        .encode()
+        .expect("encode");
+    assert_eq!(
+        bytes[InternalHeader::LEN..timed.len()],
+        timed[InternalHeader::LEN..]
+    );
+}
+
+/// A batch no record of which has a block is what it was before blocks
+/// existed, whether or not the sender carries an all-empty vector.
+#[test]
+fn a_batch_without_a_block_is_byte_for_byte_the_timed_one() {
+    let timed = InternalMessage::ReplicateRecords(headered(None));
+    let empty = InternalMessage::ReplicateRecords(headered(blocks(&[None, None])));
+    assert_eq!(empty.kind(), Kind::ReplicateTimedRecords);
+    assert_eq!(empty.required_capability(), None);
+    assert_eq!(
+        empty.encode().expect("encode"),
+        timed.encode().expect("encode")
+    );
+}
+
+/// The headers count must match the payloads, on the way out and on the way
+/// in: a block paired with the wrong record would be stored under it.
+#[test]
+fn headers_that_differ_in_count_from_the_payloads_are_refused() {
+    let short = InternalMessage::ReplicateRecords(headered(blocks(&[Some(b"block")])));
+    assert!(matches!(
+        short.encode(),
+        Err(Error::InvalidRecordHeaders(_))
+    ));
+
+    // The section is last: a count, then 1 + 4 + 5 bytes and 1 byte.
+    let good = InternalMessage::ReplicateRecords(headered(blocks(&[Some(b"block"), None])))
+        .encode()
+        .expect("encode");
+    let mut forged = good.to_vec();
+    let count_at = forged.len() - (4 + 10 + 1);
+    assert_eq!(&forged[count_at..count_at + 4], &2u32.to_be_bytes());
+    forged[count_at..count_at + 4].copy_from_slice(&3u32.to_be_bytes());
+    assert!(matches!(
+        InternalMessage::decode(Bytes::from(forged)),
+        Err(Error::InvalidRecordHeaders(_))
+    ));
+}
+
+/// A headered frame holding no block has two encodings if it is read, so it
+/// is refused; trailing bytes after the section are refused too.
+#[test]
+fn a_headered_frame_must_hold_a_block_and_end_with_its_section() {
+    let good = InternalMessage::ReplicateRecords(headered(blocks(&[Some(b"block"), None])))
+        .encode()
+        .expect("encode");
+
+    let mut empty = good.to_vec();
+    empty.truncate(empty.len() - (4 + 10 + 1));
+    empty.extend_from_slice(&2u32.to_be_bytes());
+    empty.extend_from_slice(&[0, 0]);
+    let length = (empty.len() - InternalHeader::LEN) as u32;
+    empty[8..12].copy_from_slice(&length.to_be_bytes());
+    assert!(matches!(
+        InternalMessage::decode(Bytes::from(empty)),
+        Err(Error::InvalidRecordHeaders(_))
+    ));
+
+    let mut trailing = good.to_vec();
+    trailing.push(0);
+    let length = (trailing.len() - InternalHeader::LEN) as u32;
+    trailing[8..12].copy_from_slice(&length.to_be_bytes());
+    assert!(InternalMessage::decode(Bytes::from(trailing)).is_err());
+}
+
+/// Blocks ride only the timed layout. A batch without generations or times
+/// cannot carry them, and is refused rather than sent without them.
+#[test]
+fn blocks_without_generations_and_times_are_not_encoded() {
+    let body = ReplicateRecords {
+        headers: blocks(&[Some(b"block"), None]),
+        ..timed(None, None)
+    };
+    assert!(matches!(
+        InternalMessage::ReplicateRecords(body).encode(),
+        Err(Error::InvalidRecordHeaders(_))
+    ));
+}
+
+/// A block covered by the checksum is a block a follower can tell differs
+/// from the leader's. Without it, two records alike in everything else
+/// would pass as the same.
+#[test]
+fn the_checksum_changes_when_only_a_header_differs() {
+    let payloads = [Bytes::from_static(b"a"), Bytes::from_static(b"b")];
+    let none = batch_checksum(&payloads, &[], &[], &[]);
+    let one = batch_checksum(&payloads, &[], &[], &blocks(&[Some(b"x"), None]).unwrap());
+    let other = batch_checksum(&payloads, &[], &[], &blocks(&[Some(b"y"), None]).unwrap());
+    let moved = batch_checksum(&payloads, &[], &[], &blocks(&[None, Some(b"x")]).unwrap());
+    assert_ne!(none, one);
+    assert_ne!(one, other);
+    assert_ne!(one, moved);
+    // No block anywhere checksums as a batch that never had the section.
+    assert_eq!(
+        none,
+        batch_checksum(&payloads, &[], &[], &blocks(&[None, None]).unwrap())
+    );
+}
+
+/// A headered fetch is its own kind with the timed fetch's body.
+#[test]
+fn a_headered_fetch_is_its_own_kind() {
+    let fetch = |timed, headers| {
+        InternalMessage::ReplicateFetch(ReplicateFetch {
+            correlation_id: 42,
+            shard: shard(),
+            log: ReplicaLog::Stream,
+            from_offset: 100,
+            max_bytes: 1 << 20,
+            labelled: true,
+            timed,
+            headers,
+        })
+    };
+    let headered = fetch(true, true);
+    assert_eq!(headered.kind(), Kind::ReplicateHeaderedFetch);
+    assert_eq!(
+        headered.required_capability(),
+        Some(PeerCapabilities::RECORD_HEADERS)
+    );
+    // Blocks ride the timed layout, so an untimed fetch cannot ask.
+    assert_eq!(fetch(false, true).kind(), Kind::ReplicateLabelledFetch);
+    let plain = fetch(true, false).encode().expect("encode");
+    let bytes = headered.encode().expect("encode");
+    assert_eq!(plain[InternalHeader::LEN..], bytes[InternalHeader::LEN..]);
+    assert_eq!(InternalMessage::decode(bytes).expect("decode"), headered);
 }

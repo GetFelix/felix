@@ -1523,15 +1523,21 @@ migration for it.
 
 **When the election is recorded and not adopted**, the assignment still names
 the old leader, now at the elected generation. That leader cannot serve there,
-in one of two ways:
+in one of three ways:
 
 - It promised the generation to the elected broker before it heard of the
   assignment, so its open fails.
 - It started to open first, persisting its own promise, but a majority of
   the set promised the generation to the elected broker, so its fence can
   never reach a majority.
+- A replica promised the generation to another broker and every other
+  replica that did not take the fence was unreachable or timed out. A retry
+  at this generation would wait on those for as long as they stay down, so
+  this counts as a refusal too. It does not when a replica answered from a
+  copy the failover's report did not name, or under a joint fence: the fence
+  keeps waiting then, since a rename would reset the copies it checks.
 
-Either way it says so in its report, with `refused` set to the `generation`
+In each case it says so in its report, with `refused` set to the `generation`
 it refused and the node it `promised_to`, and repeats it each tick. The
 follower suspicion above cannot help, since the followers follow the elected
 leader.

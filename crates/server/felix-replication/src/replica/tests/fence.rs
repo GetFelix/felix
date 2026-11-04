@@ -233,6 +233,62 @@ async fn an_empty_replica_answers_with_an_empty_log() {
     );
 }
 
+/// **A leader's promotion fences take turns; a read round's does not wait.**
+/// While one of the leader's fences holds its turn, a fence at a new
+/// generation waits, another leader's does not, and the read round's fence at
+/// the generation the log already took is answered at once (#1796).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_leaders_promotion_fences_take_turns_and_a_read_round_does_not_wait() {
+    let (broker, _dir) = broker_with_storage().await;
+    let handler = Arc::new(ReplicaHandler::new(
+        Arc::clone(&broker),
+        router_with(&[LOCAL], 4),
+    ));
+    taken(&handler.fence(SENDER, fence(5)).await);
+    let soon = std::time::Duration::from_millis(500);
+    // Under the turn's 2 s cap, so an answer this fast did not wait for it.
+    let answered = std::time::Duration::from_millis(1_500);
+
+    let turn = handler.fence_turn(SENDER).await.expect("the turn is free");
+    let read_round = tokio::time::timeout(answered, handler.fence(SENDER, fence(5))).await;
+    taken(&read_round.expect("a read round's fence does not wait for the turn"));
+    let other = tokio::time::timeout(answered, handler.fence(Some("broker-b"), fence(6))).await;
+    assert!(
+        other.is_ok(),
+        "another leader's fence does not wait for this one's turn"
+    );
+
+    let promotion = tokio::spawn({
+        let handler = Arc::clone(&handler);
+        async move { handler.fence(SENDER, fence(7)).await }
+    });
+    tokio::time::sleep(soon).await;
+    assert!(
+        !promotion.is_finished(),
+        "a promotion fence waits for its leader's turn"
+    );
+    drop(turn);
+    taken(&promotion.await.expect("the fence task"));
+}
+
+/// A fence whose leader's turn stays taken runs anyway once the wait is up,
+/// so one stuck fence cannot hold up the leader's others past its timeout.
+#[tokio::test]
+async fn a_fence_runs_without_its_turn_once_the_wait_is_up() {
+    let (broker, _dir) = broker_with_storage().await;
+    let handler = ReplicaHandler::new(broker, router_with(&[LOCAL], 4));
+    let _turn = handler.fence_turn(SENDER).await.expect("the turn is free");
+    let waited = tokio::time::timeout(
+        std::time::Duration::from_secs(4),
+        handler.fence_turn(SENDER),
+    )
+    .await;
+    assert!(
+        waited.expect("the wait for a turn is bounded").is_none(),
+        "the turn was never released, so the fence runs without it"
+    );
+}
+
 /// A fence from a leader older than one this replica has accepted is itself
 /// refused: that leader has been superseded too. Asked again at the same
 /// generation, as after a lost answer, it is answered again.
@@ -361,6 +417,7 @@ async fn a_group_log_answers_the_fence_and_the_fetch() {
 fn fetch(generation: u64, from_offset: u64) -> felix_wire::internal::ReplicateFetch {
     felix_wire::internal::ReplicateFetch {
         timed: false,
+        headers: false,
         correlation_id: 4,
         shard: batch(generation, 0, &[]).shard,
         log: ReplicaLog::Stream,
@@ -406,7 +463,7 @@ async fn only_the_leader_that_fenced_the_replica_reads_its_tail() {
     );
     assert_eq!(
         records.checksum,
-        batch_checksum(&records.payloads, &[], &[])
+        batch_checksum(&records.payloads, &[], &[], &[])
     );
 }
 
@@ -456,7 +513,7 @@ async fn a_long_tail_is_fetched_over_the_transport() {
             }
         })
         .collect();
-    marked.checksum = batch_checksum(&marked.payloads, &marked.marks, &[]);
+    marked.checksum = batch_checksum(&marked.payloads, &marked.marks, &[], &[]);
     let answer = handler
         .apply(SENDER, marked, felix_broker::LogKind::Stream)
         .await;

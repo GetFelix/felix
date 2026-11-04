@@ -60,6 +60,7 @@ fn forward() -> InternalMessage {
         ack: AckMode::OnCommit,
         payloads: vec![bytes::Bytes::from_static(b"payload")],
         credential: String::new(),
+        headers: None,
     })
 }
 

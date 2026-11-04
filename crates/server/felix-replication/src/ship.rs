@@ -260,11 +260,20 @@ async fn ship_batch<R: PeerRequester>(
         return Progress::UpToDate;
     }
 
-    // Headers replicate in the next change of #1688. Until then this path
-    // never ships such a record bare: a follower that acked it would hold a
-    // different record than the leader. What precedes it still goes. The
-    // promotion catch-up fetch (`replica.rs`) does not carry headers yet either.
-    if let Some(at) = records.iter().position(|record| record.headers.is_some()) {
+    let offered = requester.recorded_capabilities(&cursor.node_id);
+    // Headers ride the timed layout, so a follower that refused the committed
+    // kinds cannot be sent them either.
+    let carries_headers = !cursor.legacy_frames
+        && offered.is_some_and(|offered| {
+            offered.contains(labels_needed(log_kind))
+                && offered.contains(PeerCapabilities::RECORD_TIMES)
+                && offered.contains(PeerCapabilities::RECORD_HEADERS)
+        });
+    // A follower that cannot read the blocks is never sent such a record
+    // bare: it would acknowledge a different record than the leader's. What
+    // precedes it still goes.
+    if !carries_headers && let Some(at) = records.iter().position(|record| record.headers.is_some())
+    {
         records.truncate(at);
         if records.is_empty() {
             if HEADER_REFUSALS_LOGGED.due(&format!(
@@ -276,8 +285,8 @@ async fn ship_batch<R: PeerRequester>(
                     stream = %shard.stream,
                     shard = shard.shard,
                     offset = cursor.next_offset,
-                    "cannot replicate a record with headers yet; the follower stays behind it, \
-                     and this shard cannot rebuild, drain or move until headers replicate",
+                    "this follower does not offer `record_headers`; it stays behind a record \
+                     with headers, and this shard cannot rebuild, drain or move until it is upgraded",
                 );
             }
             metrics::record_shipped(metrics::OUTCOME_HEADERS_UNSUPPORTED);
@@ -298,7 +307,7 @@ async fn ship_batch<R: PeerRequester>(
         Vec::new()
     };
     let publishers = felix_broker::replication::publishers_to_wire(&records);
-    let offered = requester.recorded_capabilities(&cursor.node_id);
+    let headers = felix_broker::replication::headers_to_wire(&records);
     // Without them the follower stamps the records with its own clock, and a
     // failover shifts every inherited record's time by the replication delay.
     let times = offered
@@ -317,7 +326,12 @@ async fn ship_batch<R: PeerRequester>(
         correlation_id: 0,
         shard: shard.clone(),
         first_offset,
-        checksum: batch_checksum(&payloads, &marks, &publishers),
+        checksum: batch_checksum(
+            &payloads,
+            &marks,
+            &publishers,
+            headers.as_deref().unwrap_or_default(),
+        ),
         payloads,
         marks,
         // A follower that refused the committed kind is sent what it reads.
@@ -331,6 +345,7 @@ async fn ship_batch<R: PeerRequester>(
         publishers,
         // Sent only on a labelled batch; see `ReplicateRecords::times`.
         times,
+        headers,
         set_generation: stamp_set(
             requester,
             offered,

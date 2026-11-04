@@ -135,9 +135,11 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
 
     let cluster = Arc::new(cluster);
     let hold = Arc::new(AtomicBool::new(false));
+    let placement_lock = Arc::new(tokio::sync::Mutex::new(()));
     let (control_url, control_task) = control::Control::new(
         Arc::clone(&cluster),
         Arc::clone(&hold),
+        Arc::clone(&placement_lock),
         Arc::clone(&link),
         Arc::clone(&bare.requests),
         MOVABLE_STREAM,
@@ -197,6 +199,7 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
         async move {
             loop {
                 tokio::time::sleep(Duration::from_millis(500)).await;
+                let _pass = placement_lock.lock().await;
                 if !hold.load(Ordering::SeqCst) {
                     held.place_shards().await;
                 }

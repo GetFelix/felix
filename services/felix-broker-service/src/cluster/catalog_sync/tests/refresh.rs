@@ -178,13 +178,14 @@ fn records() -> ReplicateRecords {
             incarnation: Some(7),
         },
         first_offset: 0,
-        checksum: batch_checksum(&payloads, &[], &[]),
+        checksum: batch_checksum(&payloads, &[], &[], &[]),
         payloads,
         marks: Vec::new(),
         commit_offset: None,
         generations: None,
         publishers: Vec::new(),
         times: None,
+        headers: None,
         set_generation: None,
     }
 }

@@ -414,7 +414,7 @@ every publish that carries headers (`feature_not_enabled`, reason
 `record_headers`), so the logs stay at storage format v7. Subscribers still
 read headers a log already holds, so turning it off later does not hide them.
 In a cluster this has no effect: headers are a fleet feature, and a cluster
-member does not enable them until they replicate.
+member does not enable them until its fleet has finalized `record_headers`.
 
 **Type**: Boolean
 
@@ -2289,7 +2289,7 @@ absent. They are listed in that script rather than here.
 | `FELIX_REGION_ID` | `local` | Region this instance reports. |
 | `FELIX_MQTT_LISTEN` | unset | `ip:port` the MQTT listener binds (MQTT 3.1.1 and 5.0). Unset turns the listener off: nothing is bound and no runtime is built. See [MQTT](/features/mqtt/). |
 | `FELIX_MQTT_TLS` | `true` | Serve TLS on the MQTT listener with the broker's client certificate. `false` serves plain TCP: tokens cross the network in clear text. |
-| `FELIX_MQTT_ANONYMOUS_TENANT` | unset | Development switch: an MQTT connection that sends no username and password acts as this tenant. A connection that sends a wrong token is still refused. Leave unset in production. |
+| `FELIX_MQTT_ANONYMOUS_TENANT` | unset | Development switch: an MQTT connection that sends no username and password acts as this tenant and may publish to every stream mounted for it. A connection that sends a wrong token is still refused. Leave unset in production. |
 | `FELIX_MQTT_WORKER_THREADS` | `2` | Threads in the MQTT listener's own runtime. A connection flood spends these, not the threads serving QUIC. |
 | `FELIX_MQTT_MAX_CONNECTIONS` | `100000` | MQTT connections served at once. The next one is closed on arrival and counted in `felix_mqtt_refused_total{reason="connection_limit"}`. |
 | `FELIX_MQTT_MAX_CONNECTIONS_PER_IP` | `1024` | MQTT connections one source IP may hold, checked before the total. Higher than Kafka's because device fleets often share one NAT address. `0` is unlimited. Refusals are counted under `reason="per_ip_limit"`. |
@@ -2298,6 +2298,7 @@ absent. They are listed in that script rather than here.
 | `FELIX_MQTT_MAX_PACKET_BYTES` | `1048576` | Largest MQTT packet. A larger one closes the connection. Sent to 5.0 clients as `Maximum Packet Size`. |
 | `FELIX_MQTT_MAX_TOPIC_BYTES` | `1024` | Longest MQTT topic name or filter, in bytes. |
 | `FELIX_MQTT_MAX_TOPIC_LEVELS` | `16` | Most `/`-separated levels in an MQTT topic name or filter. |
+| `FELIX_MQTT_MAX_INFLIGHT` | `64` | Most QoS 1 publishes one MQTT connection may have waiting for the stream's acknowledgement, from 1 to 65535. Sent to 5.0 clients as `Receive Maximum`; a client past it is disconnected with reason 0x93 (`receive_maximum_exceeded`). A 3.1.1 client is held to it by the broker not reading the connection until the publishes are written. |
 | `FELIX_MQTT_MAX_SUBSCRIPTIONS` | `64` | Most filters in one MQTT `SUBSCRIBE`. |
 | `FELIX_MQTT_WS_LISTEN` | unset | `ip:port` for MQTT over WebSockets, for browser apps. Needs `FELIX_MQTT_LISTEN` too: both sockets share its runtime, TLS setting, connection limits and connect rate. Serves `wss` when `FELIX_MQTT_TLS` is on, `ws` otherwise. See [MQTT](/features/mqtt/#browsers-and-websockets). |
 | `FELIX_MQTT_WS_ALLOWED_ORIGINS` | unset | Comma-separated `Origin` values a browser may connect from, written as `scheme://host[:port]` with no path or trailing slash, such as `https://app.example.com`. `*` allows any. Unset refuses every request that carries an `Origin`: browsers always send one, most other clients do not (the Python `paho-mqtt` client does). An entry that could never match fails startup. Refusals are counted under `reason="ws_origin"`. |
@@ -2329,6 +2330,7 @@ absent. They are listed in that script rather than here.
 | `FELIX_KAFKA_DEFAULT_NAMESPACE` | unset | Namespace a topic name without a dot is looked up in. Unset means such a topic names nothing. |
 | `FELIX_KAFKA_MAX_CONNECTIONS` | `1024` | Kafka connections served at once. The next one is closed on arrival and counted in `felix_kafka_refused_total{reason="connection_limit"}`. |
 | `FELIX_KAFKA_MAX_CONNECTIONS_PER_IP` | `128` | Kafka connections one source IP may hold, checked before the total, so one host cannot take every slot. Refusals are counted in `felix_kafka_refused_total{reason="per_ip_limit"}`. `0` is unlimited. |
+| `FELIX_KAFKA_RECORD_HEADERS` | `false` | Store a produced record's key and headers instead of dropping them (counted in `felix_kafka_produce_dropped_total`). `true` or `false` (`1` and `0` also work); anything else fails startup. The first stored one moves the logs to storage format v8, which an older build refuses to open, so this is the one-way step. Needs the broker to accept record headers too: see `FELIX_RECORD_HEADERS` and the `record_headers` fleet feature. |
 | `FELIX_KAFKA_AUTH_TIMEOUT_MS` | `10000` | How long a Kafka connection has to finish SASL. Until it does, each request is capped at 64 KiB. A connection past the deadline is closed and counted under `reason="auth_timeout"`, an oversized unauthenticated request under `reason="unauthenticated_frame_size"`. Does not apply with `FELIX_KAFKA_ANONYMOUS_TENANT`, where every connection starts authenticated. |
 | `FELIX_REGION_BRIDGES` | unset | The same allowlist as the control plane's. A broker forwards a request to a shard's leader only in its own `FELIX_REGION_ID` or a region it has a bridge to, and refuses the rest as `shard_unavailable` with reason `region_not_routable`. Unset forwards within the broker's own region only. A malformed pair fails startup. |
 | `FELIX_NODE_TOKEN` / `FELIX_NODE_TOKEN_FILE` | unset | Access credential this broker presents to the control plane, on every call including the metadata feeds it seeds from (which require `node.view:cluster:*`). Required with `FELIX_NODE_ID`. A standalone broker may omit it, but then its sync is refused and it says so at startup. The file form is re-read every 30s, on a standalone broker as on a cluster member, so whatever mints the credential (a Vault agent, SPIRE, a sidecar) can rotate it without a restart. A replacement that is already expired is declined rather than adopted. A broker joining a cluster refuses to start with an expiring token supplied by value and no refresh file, because nothing could then renew it. |
