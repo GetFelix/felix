@@ -90,7 +90,7 @@ impl Cluster {
             if config.joint_fence {
                 cluster
                     .finalize_fleet_features(
-                        &["generation_start", "majority_ack", "joint_fence"],
+                        &["majority_ack", "joint_fence"],
                         Duration::from_secs(20),
                     )
                     .await

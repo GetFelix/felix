@@ -160,13 +160,18 @@ fn election_features_are_declared_and_not_implemented() {
                 .contains(feature.name())
         );
     }
-    assert_eq!(prerequisites(JOINT_FENCE.name()), &[GENERATION_START]);
+    assert_eq!(
+        prerequisites(JOINT_FENCE.name()),
+        &[GENERATION_START, STREAM_INCARNATIONS, CACHE_INCARNATIONS]
+    );
     assert_eq!(
         prerequisites(REPLICA_ELECTION.name()),
         &[
             GENERATION_START,
             MAJORITY_ACK,
             LEASE_FREE_READS,
+            STREAM_INCARNATIONS,
+            CACHE_INCARNATIONS,
             JOINT_FENCE
         ]
     );

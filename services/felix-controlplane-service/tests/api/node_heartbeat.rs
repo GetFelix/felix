@@ -543,6 +543,8 @@ async fn election_features_are_refused_with_their_reason() {
         "generation_start",
         "majority_ack",
         "lease_free_reads",
+        "stream_incarnations",
+        "cache_incarnations",
         "joint_fence",
         "replica_election",
     ];
@@ -550,7 +552,15 @@ async fn election_features_are_refused_with_their_reason() {
     // Reports the features but not ELECTION.
     let response = app.clone().oneshot(register(&all)).await.expect("request");
     assert_eq!(response.status(), StatusCode::OK);
-    for feature in &all[..3] {
+    // A new stream opens under joint_fence only with an incarnation (#1862).
+    let response = app
+        .clone()
+        .oneshot(finalize("generation_start", false))
+        .await
+        .expect("request");
+    assert_eq!(response.status(), StatusCode::OK);
+    refused("stream_incarnations, cache_incarnations", "joint_fence").await;
+    for feature in &all[1..5] {
         let response = app
             .clone()
             .oneshot(finalize(feature, false))

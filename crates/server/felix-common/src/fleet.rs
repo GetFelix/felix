@@ -240,18 +240,25 @@ pub fn missing<'a>(required: &'a BTreeSet<String>, offered: &BTreeSet<String>) -
 /// feature that needs no other, or a name this build does not know.
 pub fn prerequisites(feature: &str) -> &'static [FleetFeature] {
     const BY_FOLLOWERS: &[FleetFeature] = &[GENERATION_START, MAJORITY_ACK];
+    // A replaced copy stops being a learner only once it holds its
+    // generation's start record, which leaders write under generation_start.
+    // A joint fence opens a new stream or cache only on knowing its shard
+    // came first, which a broker tells only from an incarnation above 0.
+    const FOR_JOINT_FENCE: &[FleetFeature] =
+        &[GENERATION_START, STREAM_INCARNATIONS, CACHE_INCARNATIONS];
     const FOR_ELECTION: &[FleetFeature] = &[
         GENERATION_START,
         MAJORITY_ACK,
         LEASE_FREE_READS,
+        STREAM_INCARNATIONS,
+        CACHE_INCARNATIONS,
         JOINT_FENCE,
     ];
     if feature == REPLICA_ELECTION.name() {
         FOR_ELECTION
-    } else if feature == MAJORITY_ACK.name() || feature == JOINT_FENCE.name() {
-        // A replaced copy stops being a learner only once it holds its
-        // generation's start record, which leaders write under
-        // generation_start.
+    } else if feature == JOINT_FENCE.name() {
+        FOR_JOINT_FENCE
+    } else if feature == MAJORITY_ACK.name() {
         &[GENERATION_START]
     } else if feature == LEASE_FREE_READS.name() || feature == FENCED_CACHES.name() {
         BY_FOLLOWERS

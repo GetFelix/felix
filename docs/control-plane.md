@@ -197,11 +197,16 @@ release. An older control plane sends no `fleet_features`, which leaves every
 broker with nothing enabled.
 
 `joint_fence` and `replica_election` are declared the same way: the first
-after `generation_start`, the second after `generation_start`, `majority_ack`,
-`lease_free_reads` and the first. A replaced copy stops being a learner only
-once it holds its generation's start record, which leaders write only under
-`generation_start`. No build reports either feature yet, so a finalize of
-either is refused (`the_election_features_cannot_be_finalized_yet`), and a
+after `generation_start`, `stream_incarnations` and `cache_incarnations`, the
+second after those, `majority_ack`, `lease_free_reads` and the first. A
+replaced copy stops being a learner only once it holds its generation's start
+record, which leaders write only under `generation_start`. Under joint fences
+a broker opens a new stream's or cache's shard only once it knows nothing came
+before the shard's first assignment, and it can tell that only from an
+incarnation above 0. Without the incarnations, no stream or quorum cache
+created after the finalize would open
+(`joint_fence_is_refused_until_incarnations_are_finalized`). No build reports
+either feature yet, so a finalize of either is refused (`the_election_features_cannot_be_finalized_yet`), and a
 new cluster does not start with them. A broker that offers the `ELECTION`
 peer capability reports it as `peer_election`, which no build does yet.
 Every broker from #1737 on also reports `start_holders`: its leaders name, in
@@ -917,7 +922,10 @@ checks the first four itself.
    keeps a mixed fleet safe.
 2. Every serving broker reports `joint_fence` and `peer_election`. No release
    does yet: they join a broker's report with the election driver.
-3. `generation_start` is finalized.
+3. `generation_start`, `stream_incarnations` and `cache_incarnations` are
+   finalized. A cluster created on 0.7 has all three; an upgraded one
+   finalizes the incarnations first, or no stream or quorum cache created
+   after the finalize could open its first shard.
 4. Under Raft, every member is at metadata level 23.
 5. On Postgres, every control-plane instance runs a release with learners
    (migration 0040) before the finalize. Nothing checks this: an older

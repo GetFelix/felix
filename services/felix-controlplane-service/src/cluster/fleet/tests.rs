@@ -189,13 +189,25 @@ fn the_election_features_cannot_be_finalized_yet() {
         matches!(&refused, Err(StoreError::Conflict(message)) if message.contains("generation_start")),
         "{refused:?}"
     );
-    assert!(check_prerequisites(&set(&["generation_start"]), "joint_fence").is_ok());
+    assert!(
+        check_prerequisites(
+            &set(&[
+                "generation_start",
+                "stream_incarnations",
+                "cache_incarnations"
+            ]),
+            "joint_fence"
+        )
+        .is_ok()
+    );
     assert!(
         check_prerequisites(
             &set(&[
                 "generation_start",
                 "majority_ack",
                 "lease_free_reads",
+                "stream_incarnations",
+                "cache_incarnations",
                 "joint_fence"
             ]),
             "replica_election"
@@ -302,9 +314,33 @@ fn replica_election_is_refused_below_the_metadata_level() {
     assert!(check_election(&nodes, "joint_fence", false).is_ok());
 }
 
+/// Under joint_fence a broker opens a new stream or cache only once its
+/// shard's incarnation says nothing came before it (#1862).
+#[test]
+fn joint_fence_is_refused_until_incarnations_are_finalized() {
+    for missing in ["stream_incarnations", "cache_incarnations"] {
+        let have: Vec<&str> = [
+            "generation_start",
+            "stream_incarnations",
+            "cache_incarnations",
+        ]
+        .into_iter()
+        .filter(|name| *name != missing)
+        .collect();
+        let message = conflict(check_prerequisites(&set(&have), "joint_fence"));
+        assert!(message.contains(missing), "{message}");
+    }
+}
+
 #[test]
 fn replica_election_is_refused_until_joint_fence_and_the_rest_are_finalized() {
-    let all = ["generation_start", "majority_ack", "lease_free_reads"];
+    let all = [
+        "generation_start",
+        "majority_ack",
+        "lease_free_reads",
+        "stream_incarnations",
+        "cache_incarnations",
+    ];
     let message = conflict(check_prerequisites(&set(&all), "replica_election"));
     assert!(message.contains("joint_fence"), "{message}");
     for missing in all {
