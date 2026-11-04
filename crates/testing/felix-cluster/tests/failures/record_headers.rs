@@ -111,6 +111,13 @@ async fn headers_published_through_a_forward_survive_the_leader() {
         .find(|node| *node != leader)
         .expect("a broker that does not own the shard");
 
+    // The harness's startup probe may already have been forwarded through
+    // `ingress`, so only forwards counted after this point are ours.
+    let forwards_before = cluster
+        .metric(&ingress, "felix_broker_forwards_total")
+        .await
+        .expect("metrics")
+        .unwrap_or(0.0);
     let mut published = Vec::new();
     for trace in ["one", "two", "three"] {
         let offset = publish_headered(&cluster, &ingress, trace).await;
@@ -121,7 +128,7 @@ async fn headers_published_through_a_forward_survive_the_leader() {
         .await
         .expect("metrics");
     assert!(
-        forwarded.is_some_and(|count| count > 0.0),
+        forwarded.is_some_and(|count| count > forwards_before),
         "{ingress} forwarded nothing, so this did not test forwarding",
     );
 
