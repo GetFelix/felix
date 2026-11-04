@@ -1060,6 +1060,14 @@ impl PeerRequester for AllDownBut {
 /// leaves it. Four replicas, so the mark needs `broker-c` as well as
 /// `broker-b`.
 async fn mark_with_earlier_vouch(change: impl FnOnce(&mut FollowerCursor)) -> u64 {
+    mark_with_earlier_vouch_from(&OneSlow, change).await
+}
+
+/// [`mark_with_earlier_vouch`] with the followers `requester` plays.
+async fn mark_with_earlier_vouch_from(
+    requester: &impl PeerRequester,
+    change: impl FnOnce(&mut FollowerCursor),
+) -> u64 {
     let (broker, _dir) = super::quorum::quorum_leader(5, 4).await;
     let router = router(LOCAL, &["broker-b", "broker-c", "broker-d"], 4);
     let marks = super::quorum::follower_ack_marks();
@@ -1086,7 +1094,7 @@ async fn mark_with_earlier_vouch(change: impl FnOnce(&mut FollowerCursor)) -> u6
 
     let (mut group, mut dead, mut counters) = (HashMap::new(), HashMap::new(), HashMap::new());
     let pass = replicate_once(
-        &OneSlow,
+        requester,
         &broker,
         &router,
         &marks,
@@ -1107,6 +1115,59 @@ async fn mark_with_earlier_vouch(change: impl FnOnce(&mut FollowerCursor)) -> u6
 #[tokio::test(start_paused = true)]
 async fn an_earlier_passs_checked_answer_counts_toward_the_mark() {
     assert_eq!(mark_with_earlier_vouch(|_| {}).await, 5);
+}
+
+/// Like [`OneSlow`], but `broker-b` answers only after 100 ms and
+/// `broker-c`'s request fails after 10 ms, as one whose process died under a
+/// pooled connection does once the request times out.
+struct LateAndFailed;
+
+impl PeerRequester for LateAndFailed {
+    async fn request(
+        &self,
+        node_id: &str,
+        addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, PeerError> {
+        match node_id {
+            "broker-b" => tokio::time::sleep(Duration::from_millis(100)).await,
+            "broker-c" => {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                return Err(PeerError::Unavailable {
+                    node_id: node_id.to_string(),
+                    detail: "timed out".to_string(),
+                });
+            }
+            _ => {}
+        }
+        OneSlow.request(node_id, addr, message).await
+    }
+
+    async fn identity(
+        &self,
+        node_id: &str,
+        addr: SocketAddr,
+    ) -> std::result::Result<PeerIdentity, PeerError> {
+        OneSlow.identity(node_id, addr).await
+    }
+}
+
+/// **An earlier answer stops counting once a request to that follower
+/// fails.** The probe may have read a pooled connection older than a crash,
+/// so a failed request is the first sign the copy may be gone, and counting
+/// on through it let a wiped copy stand in the majority.
+#[tokio::test(start_paused = true)]
+async fn an_earlier_answer_stops_counting_when_a_request_fails() {
+    // Behind at three, so the leader ships to it.
+    let mark = mark_with_earlier_vouch_from(&LateAndFailed, |cursor| {
+        cursor.next_offset = 3;
+        cursor.confirmed = 3;
+        if let Some(vouched) = &mut cursor.vouched {
+            vouched.offset = 3;
+        }
+    })
+    .await;
+    assert_eq!(mark, 0, "counted a follower whose request failed");
 }
 
 /// **It counts only for the copy that gave it.** A cursor that has since

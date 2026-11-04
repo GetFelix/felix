@@ -4,5 +4,5 @@
   followers that kept answering in different passes were never counted
   together. An answer now keeps counting after its pass, for what it said the
   follower holds, until the leader sees that follower's copy change: a new
-  storage identity or incarnation, or an exchange that has not yet found the
-  same copy again.
+  storage identity or incarnation, a request to it that fails, or an exchange
+  that has not yet found the same copy again.

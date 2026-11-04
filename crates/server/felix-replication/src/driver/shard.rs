@@ -2469,8 +2469,8 @@ async fn reship_last<R: PeerRequester>(
 /// says which copy is there now.
 ///
 /// It also keeps the shard's [`Unconfirmed`] set honest while the exchange
-/// runs: an answer from any copy but the one the probe found puts the
-/// follower back in it at once, not when the exchange ends.
+/// runs: an answer from any copy but the one the probe found, or a failed
+/// request, puts the follower back in it at once, not when the exchange ends.
 struct Witness<'r, R> {
     inner: &'r R,
     answered: parking_lot::Mutex<Vec<PeerIdentity>>,
@@ -2560,12 +2560,18 @@ impl<R: PeerRequester> PeerRequester for Witness<'_, R> {
         addr: SocketAddr,
         message: InternalMessage,
     ) -> std::result::Result<(InternalMessage, PeerIdentity), PeerError> {
-        let (answer, identity) = self
-            .inner
-            .request_identified(node_id, addr, message)
-            .await?;
-        self.record(identity);
-        Ok((answer, identity))
+        match self.inner.request_identified(node_id, addr, message).await {
+            Ok((answer, identity)) => {
+                self.record(identity);
+                Ok((answer, identity))
+            }
+            Err(error) => {
+                // The probe may have read a connection older than a crash,
+                // so a failed request is the first sign the copy is gone.
+                self.unconfirmed.lock().insert(node_id.to_string());
+                Err(error)
+            }
+        }
     }
 }
 

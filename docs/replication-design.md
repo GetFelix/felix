@@ -2436,18 +2436,23 @@ connection whose identity is the cursor's said it holds (`Witness`,
 `FollowerCursor::vouched`). That answer may come from an earlier pass. From
 the moment an exchange starts until its probe finds the copy the answer came
 from, the follower counts for nothing (`Unconfirmed`, `vouched_only`). An
-answer from another identity starts the cursor over. A follower that is down
-keeps counting on its last answer only if its probe still finds the same
-copy, and a probe that fails leaves it counting for nothing; the majority
-that answers carries the mark.
+answer from another identity starts the cursor over, and a request that
+fails puts the follower back to counting for nothing. A follower that is down
+keeps counting on its last answer only while its probe found the same copy
+and no request to it has failed since. A probe that fails leaves it counting
+for nothing. So does a follower whose exchange from an earlier pass is still
+waiting on a request: it keeps counting on its last answer until that
+request fails. The majority that answers carries the mark.
 
 The probe settles less than an answer, because it reads the pooled
 connection's handshake, and that connection can outlive the process it was
 opened to (below). A follower wiped since its last answer, behind a
 connection that still names the old copy, is counted on that answer until the
-leader hears from the new copy. The old copy did hold those records when it
-answered, and a copy wiped a moment after its answer in the same pass is no
-different.
+leader hears from the new copy or a request to it fails. That can take up to
+the request timeout, since a request over the dead connection waits that
+long. The old copy did hold those records when it answered. Losing them
+also takes the leader failing inside that window, with a next majority that
+holds no other copy.
 
 A follower level with the leader is sent nothing, so on an idle shard it
 would never answer. On a shard whose publishes wait on the mark, while this
