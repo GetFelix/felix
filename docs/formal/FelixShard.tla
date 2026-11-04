@@ -3024,6 +3024,12 @@ PromisedAway(m, b, g) == promised[m] = g /\ ballot[m] /= {} /\ ballot[m] /= {b}
 \* That covers a leader that never took the generation and one that took it
 \* and is still fencing; a joint fence is refused when either set is out of
 \* reach. Read live, as `Reclaim` reads its measurement.
+\*
+\* The code also stays pending when a member declined for another reason
+\* (a short copy, a newer promise): the model has no state for why a member
+\* did not answer, so it renames there too. That over-approximates the
+\* rename, which only adds behaviours, so every property checked still holds
+\* of the code; it can overstate liveness for that case.
 RenameDue ==
     LET left == { m \in FenceMembers(leader) : ~PromisedAway(m, leader, gen) }
         stillFencing == bgen[leader] = gen /\ fencing[leader]

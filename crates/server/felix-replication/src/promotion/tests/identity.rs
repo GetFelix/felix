@@ -242,3 +242,27 @@ async fn a_promise_away_beside_another_copy_stays_pending() {
     };
     assert!(why.contains("another copy"), "{why}");
 }
+
+/// **A promise away is not blamed when another replica refused for its own
+/// reason.** b promised the generation to another node and c refused the
+/// fence for something a rename does not cure, so the fence waits and
+/// reports c's reason instead of moving the shard up.
+#[tokio::test]
+async fn a_promise_away_beside_another_refusal_stays_pending() {
+    let mut replicas = Replicas::new();
+    replicas.ballots = true;
+    replicas
+        .get("broker-b")
+        .holds("broker-b", 4, 0, &["a"])
+        .await;
+    promised_to(&replicas, "broker-b", "broker-d").await;
+    replicas.get_mut("broker-c").refuses = Some("copy is short of the tail");
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route(), true, None).await;
+
+    let Outcome::Pending { why, .. } = outcome else {
+        panic!("{outcome:?}");
+    };
+    assert!(why.contains("broker-c refused: copy is short"), "{why}");
+}
