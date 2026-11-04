@@ -712,6 +712,13 @@ finalize it. See the runbook above.
 | `INTERNAL_VERSION` | Cutover again, in both directions |
 | `FORMAT_VERSION` | **Not possible.** Restore from backup |
 
+A broker rolled back from 0.7 can refuse a shard's replica set file. In the
+short window before a 0.7 broker reads whether `joint_fence` is finalized, it
+keeps older replica sets in that file, and an older build fails to open a log
+whose file has them. Start the broker on 0.7 again and roll it back once the
+shard's next replica set is written; a broker that knows `joint_fence` is off
+drops the older sets at that write.
+
 ## What this does not cover
 
 Topology, install steps and replacing a persistent volume are on
