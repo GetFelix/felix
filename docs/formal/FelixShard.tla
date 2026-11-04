@@ -3016,7 +3016,11 @@ PromisedAway(m, b, g) == promised[m] = g /\ ballot[m] /= {} /\ ballot[m] /= {b}
 \* the generation to another node (`PromisedAway` in
 \* services/felix-broker-service/src/shards/lifecycle.rs), or its fence there
 \* can never reach a majority, since too many of its set did
-\* (`Outcome::Refused` in crates/server/felix-replication/src/promotion.rs).
+\* (`Outcome::Refused` in crates/server/felix-replication/src/promotion.rs),
+\* or one of its set did and the fence is still pending with every other
+\* member that has not taken it silent. That last case is not a joint fence,
+\* and not one where a member took the promise from a copy the fence does not
+\* count (FenceCounts): a rename resets the copies the next fence checks.
 \* That covers a leader that never took the generation and one that took it
 \* and is still fencing; a joint fence is refused when either set is out of
 \* reach. Read live, as `Reclaim` reads its measurement.
@@ -3027,7 +3031,10 @@ RenameDue ==
        /\ bgen[leader] < gen \/ stillFencing
        /\ \/ PromisedAway(leader, leader, gen)
           \/ ~LeaderMajority(leader, left \cap Members(leader))
-          \/ stillFencing /\ left /= FenceMembers(leader)
+          \/ /\ stillFencing /\ left /= FenceMembers(leader)
+             /\ ~(JointFence /\ oldSet[leader] /= {})
+             /\ \A m \in left :
+                    promised[m] = gen /\ ballot[m] = {leader} => m \in answered[leader]
           \/ /\ stillFencing /\ JointFence /\ oldSet[leader] /= {}
              /\ ~MajorityOf(left \cup {leader}, oldSet[leader])
 
@@ -3035,8 +3042,8 @@ RenameDue ==
 \* generation, the same set and any pending change kept, once that leader
 \* reports it cannot serve the control plane's generation: a recorded
 \* election moved the control plane past it, or it is still fencing there
-\* and too many of its set promised a candidate, or one did and the fence
-\* has not opened (`election_refused`,
+\* and too many of its set promised a candidate, or one did and the rest
+\* are silent (`election_refused`,
 \* `move_step` in services/felix-controlplane-service/src/cluster/placement/moves.rs).
 \* Not while a move drains its leader, which ends through its own steps. The
 \* leader fences there as at any new term: its open failed, so the broker
