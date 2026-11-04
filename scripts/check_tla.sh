@@ -239,6 +239,18 @@ expectations=(
   "FelixShardElectRenameDue violates NeverRenameDue"
   "FelixShardElectRenameFencingDue violates NeverRenameWhileFencing"
   "FelixShardElectAdoptPromote pass"
+  "FelixShardElectAdoptFailoverApart0Gen2 pass"
+  "FelixShardElectAdoptFailoverApart1Gen2 pass"
+  "FelixShardElectAdoptFailoverApart0StoodGen2 pass"
+  "FelixShardElectAdoptFailoverApart1StoodGen2 pass"
+  "FelixShardElectAdoptFailoverSame0StoodGen3 pass"
+  "FelixShardElectAdoptFailoverApart0StoodGen3 pass"
+  "FelixShardElectAdoptFailoverSame1StoodGen3 pass"
+  "FelixShardElectAdoptFailoverApart1StoodGen3 pass"
+  "FelixShardElectAdoptFailoverSame0StoodGen4 pass"
+  "FelixShardElectAdoptFailoverApart0StoodGen4 pass"
+  "FelixShardElectAdoptFailoverSame1StoodGen4 pass"
+  "FelixShardElectAdoptFailoverApart1StoodGen4 pass"
   "FelixShardSwapCounters pass"
   "FelixShardSwapCountersFlipUnchecked violates CountersOnSetMajority"
   "FelixShardSwapCountersNewSetOnly violates CountersOnSetMajority"
@@ -414,6 +426,13 @@ fi
 # stand wrote, so the StoodOneDest pieces should reach the same states as the
 # pieces where nobody stood; that is argued, not measured. Its
 # witnesses and the two rename walks stay registered.
+# FelixShardElectAdoptFailover is checked in pieces split at the first
+# failover (FelixShardElectAdoptFailover{Same,Apart}{0,1}{,Stood}Gen{2,3,4}).
+# The twelve registered above are empty: no first failover reaches them, and
+# each checks it stays so. FelixShardElectAdoptFailover{Same0,Apart0,Apart1,Same1}Gen4
+# and Same1Gen2 run nightly. Same{0,1}Gen{2,3} without Same1Gen2, Apart{0,1}Gen3
+# did not finish in six hours, so nothing checks them yet. Same{0,1}StoodGen2
+# are split again (Stood{One,Several}{Dest,Other}) and not measured yet.
 
 # Minutes each of the longer configurations takes on a four-core CI runner,
 # from the `Finished in` lines of a CI run (a new one is a guess until it has
@@ -472,6 +491,18 @@ weights=(
   "FelixShardElectAdopt 11"
   "FelixShardElectPreVote 1"
   "FelixShardElectAdoptPromote 10"
+  "FelixShardElectAdoptFailoverApart0Gen2 5"
+  "FelixShardElectAdoptFailoverApart1Gen2 5"
+  "FelixShardElectAdoptFailoverApart0StoodGen2 5"
+  "FelixShardElectAdoptFailoverApart1StoodGen2 5"
+  "FelixShardElectAdoptFailoverSame0StoodGen3 4"
+  "FelixShardElectAdoptFailoverApart0StoodGen3 4"
+  "FelixShardElectAdoptFailoverSame1StoodGen3 3"
+  "FelixShardElectAdoptFailoverApart1StoodGen3 5"
+  "FelixShardElectAdoptFailoverSame0StoodGen4 5"
+  "FelixShardElectAdoptFailoverApart0StoodGen4 4"
+  "FelixShardElectAdoptFailoverSame1StoodGen4 3"
+  "FelixShardElectAdoptFailoverApart1StoodGen4 5"
   "FelixShardSwapCounters 40"
   "FelixShardSessionsSubscriber 2"
   "FelixShardSuspicion 2"
