@@ -391,17 +391,22 @@ where
         },
     )
     .await?;
+    let mqtt_writes = BrokerWrites::new(
+        Arc::clone(&broker),
+        ingress_router.clone(),
+        Some(Arc::clone(&quorum_marks)),
+        std::time::Duration::from_millis(config.publish_quorum_timeout_ms.max(1)),
+    )
+    .with_quotas(Arc::clone(&limits.tenant_rates));
+    let mqtt_writes = match &peers {
+        Some(pool) => mqtt_writes.with_forwarding(Arc::clone(pool), config.forward_budget()),
+        None => mqtt_writes,
+    };
     let mqtt = listeners::bind_mqtt(
         &client_tls,
         &auth,
         BrokerMounts::new(Arc::clone(&broker), ingress_router.clone()),
-        BrokerWrites::new(
-            Arc::clone(&broker),
-            ingress_router.clone(),
-            Some(Arc::clone(&quorum_marks)),
-            std::time::Duration::from_millis(config.publish_quorum_timeout_ms.max(1)),
-        )
-        .with_quotas(Arc::clone(&limits.tenant_rates)),
+        mqtt_writes,
     )?;
     let mut accept_tasks = listeners::spawn_accept_loops(
         &quic_servers,

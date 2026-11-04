@@ -287,10 +287,11 @@ would mean one connection per shard owner. A forwarded publish passes the same
 per-shard write fence on the owner as a direct one, so a deposed owner refuses
 it with `shard_unavailable`, which is safe to retry.
 
-The first publishing slice has to confirm that a forwarded publish carries its
-producer sequence end to end. If the internal protocol does not carry it today,
-adding it is a negotiated internal-protocol change on the forwarding path, which
-does not touch the QUIC client publish path.
+A forwarded MQTT batch carries its producer id and sequence in
+`SequencedForwardPublish`, a negotiated internal kind (`docs/internal-protocol.md`,
+"A forward that names its producer"). The QUIC client publish path does not use
+it. An owner that predates it is never sent one, and the listener refuses the
+message `not_owner` instead.
 
 ```mermaid
 sequenceDiagram

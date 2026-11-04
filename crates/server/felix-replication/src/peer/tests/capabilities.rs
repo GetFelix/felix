@@ -163,7 +163,8 @@ async fn two_current_brokers_learn_each_others_capabilities() {
         .union(PeerCapabilities::BALLOTS)
         .union(PeerCapabilities::PING)
         .union(PeerCapabilities::HEAD_TRIM)
-        .union(PeerCapabilities::RECORD_HEADERS);
+        .union(PeerCapabilities::RECORD_HEADERS)
+        .union(PeerCapabilities::SEQUENCED_FORWARDS);
     assert_eq!(theirs, offered);
     assert_eq!(pool.known_capabilities().get(PEER), Some(offered));
     // A caller reads an identity whether or not it gives one, replaces
@@ -502,6 +503,7 @@ async fn a_broker_with_the_fence_off_neither_offers_nor_answers_it() {
             .union(PeerCapabilities::PING)
             .union(PeerCapabilities::HEAD_TRIM)
             .union(PeerCapabilities::RECORD_HEADERS)
+            .union(PeerCapabilities::SEQUENCED_FORWARDS)
     );
     let err = pool
         .request(PEER, listener.addr, fence())
@@ -956,6 +958,8 @@ fn record_headers_are_offered_with_the_labels_and_times_they_ride_on() {
         }
         .capabilities();
         assert!(offered.contains(PeerCapabilities::RECORD_HEADERS));
+        // A sequenced forward is a headered one with the producer after it.
+        assert!(offered.contains(PeerCapabilities::SEQUENCED_FORWARDS));
         assert!(offered.contains(PeerCapabilities::GENERATION_LABELS));
         assert!(offered.contains(PeerCapabilities::RECORD_TIMES));
     }

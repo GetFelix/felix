@@ -102,8 +102,11 @@ impl InternalMessage {
     /// The kind this message is sent as.
     pub fn kind(&self) -> Kind {
         match self {
-            // The credential decides the kind, so a forwarder that has one
-            // always sends the kind an owner will check it on.
+            // A named producer decides the kind first: dropping it would lose
+            // the owner's duplicate check. Then the credential, so a
+            // forwarder that has one always sends the kind an owner will
+            // check it on.
+            Self::ForwardPublish(m) if m.producer.is_some() => Kind::SequencedForwardPublish,
             Self::ForwardPublish(m)
                 if m.headers
                     .as_deref()
@@ -177,6 +180,11 @@ impl InternalMessage {
                 | Kind::HeaderedForwardPublish
         )
         .then_some(PeerCapabilities::RECORD_HEADERS);
+        let headers = if self.kind() == Kind::SequencedForwardPublish {
+            Some(PeerCapabilities::RECORD_HEADERS.union(PeerCapabilities::SEQUENCED_FORWARDS))
+        } else {
+            headers
+        };
         match (election, headers) {
             (Some(election), Some(headers)) => Some(election.union(headers)),
             (election, headers) => election.or(headers),

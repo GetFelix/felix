@@ -156,7 +156,9 @@ was down during the finalize too.
 older release has nothing to roll back to, so its first broker registration
 finalizes every feature its brokers report, in order, except
 `publisher_principal`, which stays an opt-in because it grows every record by
-its publisher's id. The control plane treats a cluster as new when no stream
+its publisher's id, and `joint_fence` and `replica_election`, which an operator
+finalizes (see [Failover without the control
+plane](/deployment/failover-without-control-plane/#turning-it-on)). The control plane treats a cluster as new when no stream
 or cache was ever created and no broker has registered twice, and, under the
 Raft backend, only once every member runs this release. It finalizes
 through the same checks as the command below, so a feature some broker does
@@ -571,6 +573,11 @@ anyway is refused as invalid (`unsupported frame flags`) and nothing is stored.
   `headers_unsupported` in `felix_broker_replication_shipped_total`. The
   finalize needs every broker to report the feature, so no follower is held
   once it is done.
+- **MQTT forwards** need the owner to be on a build that offers
+  `SEQUENCED_FORWARDS` too. During a rolling upgrade, an MQTT message that
+  reaches an upgraded broker for a shard an older broker owns is refused
+  `not_owner`, which is what every broker did before forwarding existed. It
+  is forwarded once the owner is upgraded.
 - **Kafka keys and headers** reach this format only with
   `FELIX_KAFKA_RECORD_HEADERS=true`, which is off by default. Enabling the
   Kafka listener alone never moves a log to v8, though nearly every Kafka
