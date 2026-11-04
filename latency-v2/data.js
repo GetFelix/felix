@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793833652742,
+  "lastUpdate": 1793834671275,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -57288,6 +57288,72 @@ window.BENCHMARK_DATA = {
             "range": "533.70",
             "unit": "us",
             "extra": "trials: 5\nmedian: 566.00\nmean: 782.00\nstdev: 533.70\ncv: 68.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1f83329a72ca3351effb197ed93cbef10acfd4f8",
+          "message": "fix(replication): a leader named below a ballot no assignment issued reports the generation refused (#1914) (#1916)\n\n* test(cluster): every shard of a killed leader serves again, with and without election (#1914)\n\n* test(replication): name the kept sets in the joint set-before test\n\n* fix(replication): a leader named below a ballot no assignment issued reports the generation refused (#1914)\n\n* test(cluster): find each shard's leader from the assignments\n\n* fix(replication): end the fence at the first newer ballot and report it; review fixes\n\n* docs(changelog): superseded generations are reported refused (#1914)\n\n* test(cluster): the failover repro marks a broker down on a deployment's schedule (#1914)\n\nThe harness control plane expired a broker in 1 s and re-placed its shards\nbefore the 5 s election suspicion, so no election stood. ClusterConfig gains\nnode_expiry; failover_heal sets 15 s and 300 streams by default, so more\nshards stand than can at once while placement waits.\n\n* fix(shards): an assignment below a withdrawn standing is reported refused (#1914)\n\nA standing withdrawn above the control plane's generation leaves the shard\nclosed at its ballot, so the assignment naming this broker below it was\ndropped as a replay and never reported. The failover repro showed every\nremaining stuck shard in that state.\n\n* docs(changelog): an assignment below a withdrawn standing (#1914)\n\n* fix(shards): an assignment below a standing still fencing is reported refused too (#1914)\n\nThe control plane's assignment names this broker, so the withdrawal never\nreleases the shard: it stayed fencing at its ballot, and the third repro\nrun showed the remaining stuck shards there.\n\n* fix(election): a candidate second in the order asks again before it stands (#1914)\n\nBoth survivors of a lost leader stood at one generation and split: the one\nsecond in the order checked only its own log after its 300 ms wait, and the\nfirst candidate's fence had not reached it yet under load. It now asks its\nvoters again and stands only if every voter that said yes still does; a voter\nahead that stood refuses with its ballot on disk, whatever the fence's latency.\n\nSpec-Unaffected: the second pre-vote only adds a precondition to Elect, so it removes behaviours and adds none.\n\n* fix(election): only a voter's refusal on the second ask stops a candidate (#1914)\n\nA voter silent the second time proves nothing about another standing, so it\nno longer stops the candidate.\n\nSpec-Unaffected: the second pre-vote only adds a precondition to Elect.\n\n* fix(replication): review fixes for the refusal and split-vote changes (#1914)\n\nOne replica's newer ballot ends a fence, so the docs say a replica rather than\na majority; the split-vote changelog no longer claims candidates that cannot\nhear each other stop splitting; the fencing-standing test follows the rename\nto the ballot through to serving.\n\nSpec-Unaffected: comments, docs and tests only.",
+          "timestamp": "2026-11-04T15:20:28-08:00",
+          "tree_id": "402eb61deec3a4403d99e138c6efc30e9c6d388e",
+          "url": "https://github.com/GetFelix/felix/commit/1f83329a72ca3351effb197ed93cbef10acfd4f8"
+        },
+        "date": 1793834664310,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 95,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 95.00\nmean: 94.60\nstdev: 0.55\ncv: 0.58%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 126,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 126.00\nmean: 126.20\nstdev: 0.84\ncv: 0.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 187,
+            "range": "58.72",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 187.00\nmean: 208.60\nstdev: 58.72\ncv: 28.15%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 133,
+            "range": "2.59",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 133.00\nmean: 133.80\nstdev: 2.59\ncv: 1.93%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 258,
+            "range": "25.35",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 258.00\nmean: 270.40\nstdev: 25.35\ncv: 9.38%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 468,
+            "range": "64.19",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 468.00\nmean: 427.60\nstdev: 64.19\ncv: 15.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
