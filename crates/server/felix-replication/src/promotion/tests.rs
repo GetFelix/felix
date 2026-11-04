@@ -263,6 +263,14 @@ impl Replicas {
         self.replicas.get_mut(node_id).expect("replica")
     }
 
+    fn sent_to(&self, node_id: &str) -> bool {
+        self.sent
+            .lock()
+            .expect("lock")
+            .iter()
+            .any(|(node, _)| node == node_id)
+    }
+
     fn sent(&self, kind: Kind) -> Vec<String> {
         self.sent
             .lock()

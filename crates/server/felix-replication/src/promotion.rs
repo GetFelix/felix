@@ -415,6 +415,7 @@ async fn fence_log<R: PeerRequester>(
                     candidate: false,
                     set: set.clone(),
                     leaving: Some(joint.leaving_for(&node_id).clone()),
+                    earlier: joint.earlier_for(&node_id),
                 }),
                 (None, Some(set)) => {
                     let offered = match requester.recorded_capabilities(&node_id) {
@@ -427,6 +428,7 @@ async fn fence_log<R: PeerRequester>(
                             candidate: false,
                             set: set.clone(),
                             leaving: None,
+                            earlier: Vec::new(),
                         })
                 }
                 (_, None) => None,

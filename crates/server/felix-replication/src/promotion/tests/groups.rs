@@ -662,6 +662,7 @@ async fn wiped_group_leader() -> (Arc<Broker>, TempDir) {
             members,
         },
         leaving: None,
+        earlier: Vec::new(),
     })
     .await
     .expect("set");

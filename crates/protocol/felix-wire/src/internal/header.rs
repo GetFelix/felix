@@ -210,6 +210,13 @@ pub enum Kind {
     /// separate kind so an answer that does not say it is one stays byte for
     /// byte what an older leader reads.
     ReplicateLearnerOk = 47,
+    /// `ElectionFence` followed by the older sets the fence also needs a
+    /// majority of: a count (at least one) and the sets. Sent only to a peer
+    /// that offered [`PeerCapabilities::KEPT_SETS`]; a fence with no older
+    /// set travels as kind 41, byte for byte as before.
+    ///
+    /// [`PeerCapabilities::KEPT_SETS`]: super::PeerCapabilities::KEPT_SETS
+    ElectionKeptFence = 48,
 }
 
 impl Kind {
@@ -264,6 +271,7 @@ impl Kind {
             45 => Ok(Kind::LeaseForwardCacheOp),
             46 => Ok(Kind::LeaseForwardCacheOk),
             47 => Ok(Kind::ReplicateLearnerOk),
+            48 => Ok(Kind::ElectionKeptFence),
             other => Err(Error::UnsupportedInternalKind(other)),
         }
     }

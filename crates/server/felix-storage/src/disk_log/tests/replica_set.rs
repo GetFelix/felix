@@ -20,6 +20,7 @@ fn set_at(generation: u64) -> ReplicaSet {
                 .collect(),
         },
         leaving: None,
+        earlier: Vec::new(),
     }
 }
 
@@ -261,4 +262,158 @@ async fn the_wiped_mark_outlives_sets_that_leave_the_copy_out() {
     log.accept_set(without_b(8)).await.expect("accept");
     log.accept_set(set_at(9)).await.expect("accept");
     assert!(!log.member_is_wiped("b"));
+}
+
+fn named(generation: u64, nodes: &[&str]) -> Membership {
+    Membership {
+        generation,
+        members: nodes
+            .iter()
+            .map(|node| Member {
+                node: (*node).to_string(),
+                storage: None,
+                learner: false,
+                wiped: false,
+            })
+            .collect(),
+    }
+}
+
+fn joint(current: Membership, leaving: Membership) -> ReplicaSet {
+    ReplicaSet {
+        current,
+        leaving: Some(leaving),
+        earlier: Vec::new(),
+    }
+}
+
+/// Two fences in a row that never opened: the second must not overwrite
+/// the older set the first was leaving, or a failover from this log would
+/// open without the writes only that set holds (#1881).
+#[tokio::test]
+async fn sets_of_unopened_generations_are_carried_into_a_newer_set() {
+    let dir = tempdir().expect("tempdir");
+    let log = open(&dir, FsyncMode::OnCommit);
+    log.accept_set(joint(
+        named(2, &["b", "c", "d"]),
+        named(1, &["a", "b", "c"]),
+    ))
+    .await
+    .expect("accept");
+    log.accept_set(joint(
+        named(3, &["a", "c", "d"]),
+        named(2, &["b", "c", "d"]),
+    ))
+    .await
+    .expect("accept");
+    let kept = log.replica_set().expect("set");
+    assert_eq!(kept.leaving, Some(named(2, &["b", "c", "d"])));
+    assert_eq!(kept.earlier, vec![named(1, &["a", "b", "c"])]);
+    // On disk before it returned.
+    drop(log);
+    let log = open(&dir, FsyncMode::OnCommit);
+    assert_eq!(log.replica_set().expect("set").earlier, kept.earlier);
+
+    // Lease churn at the same set changes nothing but the generation.
+    log.accept_set(joint(
+        named(4, &["a", "c", "d"]),
+        named(3, &["a", "c", "d"]),
+    ))
+    .await
+    .expect("accept");
+    let kept = log.replica_set().expect("set");
+    assert_eq!(
+        kept.earlier,
+        vec![named(2, &["b", "c", "d"]), named(1, &["a", "b", "c"])]
+    );
+}
+
+/// A record of the kept set's generation is the evidence it opened: the
+/// sets before it are dropped, and only then.
+#[tokio::test]
+async fn earlier_sets_are_dropped_once_the_log_holds_a_record_of_the_kept_generation() {
+    let dir = tempdir().expect("tempdir");
+    let log = open(&dir, FsyncMode::OnCommit);
+    log.accept_set(joint(
+        named(2, &["b", "c", "d"]),
+        named(1, &["a", "b", "c"]),
+    ))
+    .await
+    .expect("accept");
+    // An epoch with nothing written in it is no evidence.
+    log.record_generation(2, 0).expect("generation");
+    assert!(!log.holds_records_of(2));
+    log.record_generation(3, 0).expect("generation");
+    log.append(&records(&["at three"])).await.expect("append");
+    assert!(!log.holds_records_of(2));
+    assert!(log.holds_records_of(3));
+    log.accept_set(joint(
+        named(3, &["a", "c", "d"]),
+        named(2, &["b", "c", "d"]),
+    ))
+    .await
+    .expect("accept");
+    assert_eq!(
+        log.replica_set().expect("set").earlier,
+        vec![named(1, &["a", "b", "c"])]
+    );
+    log.accept_set(joint(
+        named(4, &["a", "b", "d"]),
+        named(3, &["a", "c", "d"]),
+    ))
+    .await
+    .expect("accept");
+    assert_eq!(log.replica_set().expect("set").earlier, Vec::new());
+}
+
+/// A batch's leader opened its generation, so a set raised by one carries
+/// nothing older.
+#[tokio::test]
+async fn an_opened_set_carries_nothing() {
+    let dir = tempdir().expect("tempdir");
+    let log = open(&dir, FsyncMode::OnCommit);
+    log.accept_set(joint(
+        named(2, &["b", "c", "d"]),
+        named(1, &["a", "b", "c"]),
+    ))
+    .await
+    .expect("accept");
+    log.accept_opened_set(ReplicaSet {
+        current: named(3, &["a", "c", "d"]),
+        leaving: None,
+        earlier: Vec::new(),
+    })
+    .await
+    .expect("accept");
+    let kept = log.replica_set().expect("set");
+    assert_eq!((kept.leaving, kept.earlier), (None, Vec::new()));
+}
+
+/// Past the file's limit the raise fails and nothing changes: refusing the
+/// fence that asked is safe, forgetting a set is not.
+#[tokio::test]
+async fn more_earlier_sets_than_the_file_keeps_fail_the_raise() {
+    let dir = tempdir().expect("tempdir");
+    let log = open(&dir, FsyncMode::OnCommit);
+    let nodes = |g: u64| vec![format!("n{g}"), "x".to_string(), "y".to_string()];
+    let mut generation = 1;
+    let result = loop {
+        let names = nodes(generation);
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        let result = log
+            .accept_set(ReplicaSet {
+                current: named(generation, &names),
+                leaving: None,
+                earlier: Vec::new(),
+            })
+            .await;
+        if result.is_err() || generation > set::MAX_EARLIER_SETS as u64 + 2 {
+            break result;
+        }
+        generation += 1;
+    };
+    assert!(result.is_err(), "a set past the limit was kept");
+    let kept = log.replica_set().expect("set");
+    assert_eq!(kept.current.generation, generation - 1);
+    assert_eq!(kept.earlier.len(), set::MAX_EARLIER_SETS);
 }

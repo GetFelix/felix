@@ -59,6 +59,10 @@ fuzz_target!(|data: &[u8]| {
             Kind::ElectionFence | Kind::SetStamped | Kind::PreVote | Kind::PreVoteAnswer
         );
         match header.kind {
+            Kind::ElectionKeptFence => assert_eq!(
+                message.required_capability(),
+                Some(PeerCapabilities::ELECTION.union(PeerCapabilities::KEPT_SETS))
+            ),
             _ if election_kind => assert_eq!(
                 message.required_capability(),
                 Some(PeerCapabilities::ELECTION)

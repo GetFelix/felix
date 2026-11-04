@@ -801,6 +801,24 @@ impl StreamLog {
         self.log.accept_set(set).await.map_err(BrokerError::from)
     }
 
+    /// [`Self::accept_set`] for a set whose generation opened. See
+    /// `DiskLog::accept_opened_set`.
+    pub async fn accept_opened_set(
+        &self,
+        set: felix_storage::disk_log::ReplicaSet,
+    ) -> Result<felix_storage::disk_log::SetCheck> {
+        self.log
+            .accept_opened_set(set)
+            .await
+            .map_err(BrokerError::from)
+    }
+
+    /// Whether this log holds a record written at `generation`. See
+    /// `DiskLog::holds_records_of`.
+    pub fn holds_records_of(&self, generation: u64) -> bool {
+        self.log.holds_records_of(generation)
+    }
+
     /// Whether the kept set lists `node` as a learner. See
     /// `DiskLog::member_is_learner`.
     pub fn member_is_learner(&self, node: &str) -> Option<bool> {

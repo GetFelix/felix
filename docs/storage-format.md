@@ -772,13 +772,16 @@ set is pending the set being left.
  0   4  magic        u32  "FLRS"
  4   2  version      u16  1
  6   2  flags        u16  bit 0: a set being left follows;
-                          bit 1: a wiped mark follows; other bits must be 0
+                          bit 1: a wiped mark follows;
+                          bit 2: earlier sets follow; other bits must be 0
  8   .  set          the current set
  .   .  leaving      the set being left, only when flags bit 0 is set
  .   .  wiped        this copy's wiped mark, only when flags bit 1 is set:
                        2  node_len   u16  at most 1024
                        n  node       utf-8 node id the copy answers as
                        1  learner    u8   1 while still a learner, else 0
+ .   .  earlier      only when flags bit 2 is set: a count (u16, 1 to 16),
+                     then that many sets, newest first
  .   4  crc          u32  crc32 over everything before it
 ```
 
@@ -809,6 +812,15 @@ section survives all of those, and each newer set that lists the copy gets the
 mark copied onto its entry. Only re-admission ends it. A build that predates
 the mark refuses the file, as it would any unknown flag; brokers set it only
 once `joint_fence` is finalized and the build allows it.
+
+The earlier sets are older sets a fence may still need a majority of: sets
+of generations this log holds no record of, and the sets their fences were
+leaving. Accepting a newer set carries the kept ones forward until the log
+holds a record of the set being replaced, so they are dropped only on
+evidence that a later generation opened. Each is older than the current set
+and no two name the same members. A file without them is byte for byte what
+an older build writes; a build that predates them refuses a file that has
+them, which fails the open rather than forget a set.
 
 A set is refused, on write and on read, when it lists a node id twice or a
 storage id twice, or when the set being left is not older than the current one.

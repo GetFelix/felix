@@ -94,6 +94,7 @@ fn fence_with(
             candidate,
             set,
             leaving,
+            earlier: Vec::new(),
         }),
     }
 }
@@ -175,6 +176,7 @@ async fn a_voting_copy_still_answers_a_candidate() {
     log.accept_set(felix_storage::disk_log::ReplicaSet {
         current: crate::replica_set::membership(&set(5, OWN)),
         leaving: None,
+        earlier: Vec::new(),
     })
     .await
     .expect("set");

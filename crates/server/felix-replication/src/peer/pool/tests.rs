@@ -226,6 +226,7 @@ fn election_messages_need_election() {
                 members: Vec::new(),
             },
             leaving: None,
+            earlier: Vec::new(),
         }),
     });
     assert_eq!(

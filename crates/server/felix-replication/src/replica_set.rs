@@ -39,6 +39,7 @@ pub(crate) fn kept(route: &Route, learner: Option<&str>) -> ReplicaSet {
     ReplicaSet {
         current: membership(&view(route, learner)),
         leaving: None,
+        earlier: Vec::new(),
     }
 }
 

@@ -867,6 +867,7 @@ async fn a_broker_without_election_refuses_the_election_kinds() {
                 members: Vec::new(),
             },
             leaving: None,
+            earlier: Vec::new(),
         }),
     });
     let stamped = InternalMessage::ReplicateRecords(ReplicateRecords {

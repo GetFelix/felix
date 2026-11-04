@@ -199,6 +199,7 @@ async fn under_joint_fence_a_shipping_leader_keeps_the_set_it_leaves() {
         log.accept_set(ReplicaSet {
             current: before,
             leaving: None,
+            earlier: Vec::new(),
         })
         .await
         .expect("the set before");
@@ -249,6 +250,7 @@ async fn under_joint_fence_a_shipping_leader_keeps_no_set_when_the_one_before_is
                 .to_vec(),
         },
         leaving: None,
+        earlier: Vec::new(),
     })
     .await
     .expect("an older set");
