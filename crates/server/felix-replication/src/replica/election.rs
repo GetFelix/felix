@@ -275,7 +275,7 @@ impl ReplicaHandler {
     /// [`Self::mark_local`] marks it.
     fn keeps_wiped_learner(&self, log: &felix_broker::StreamLog, set: &Membership) -> bool {
         (self.is_learner(log) && self.is_wiped(log))
-            || (self.non_voting_gate() == Some(true) && self.names_other_in(log, set))
+            || (self.joint_gate() == Some(true) && self.names_other_in(log, set))
     }
 
     fn names_other_in(&self, log: &felix_broker::StreamLog, set: &Membership) -> bool {
@@ -310,8 +310,7 @@ impl ReplicaHandler {
     /// either mark.
     fn mark_local(&self, log: &felix_broker::StreamLog, mut set: ReplicaSet) -> ReplicaSet {
         let local = self.router.local_node_id();
-        let evidence =
-            self.non_voting_gate() == Some(true) && self.names_other_in(log, &set.current);
+        let evidence = self.joint_gate() == Some(true) && self.names_other_in(log, &set.current);
         let learner = self.is_learner(log) || evidence;
         let wiped = self.is_wiped(log) || evidence;
         let leaving = set
@@ -343,7 +342,7 @@ impl ReplicaHandler {
         log: &felix_broker::StreamLog,
         set: &Membership,
     ) -> Option<InternalMessage> {
-        (self.non_voting_gate().is_none() && !self.is_learner(log) && self.names_other_in(log, set))
+        (self.joint_gate().is_none() && !self.is_learner(log) && self.names_other_in(log, set))
             .then(|| undecided(correlation_id, key))
     }
 
@@ -396,7 +395,7 @@ impl ReplicaHandler {
             Some(election) => self.names_other_in_view(own, &election.set),
             None => self.replaced_copy_of(own, request.shard.generation, false),
         };
-        match self.non_voting_gate() {
+        match self.joint_gate() {
             _ if !learner && !evidence => return None,
             None if !learner => return Some(undecided(correlation_id, key)),
             Some(false) if !learner => return None,

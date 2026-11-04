@@ -483,8 +483,8 @@ async fn follower_features_are_finalized_after_generation_start() {
 
 /// The election features are refused over the API while a serving broker does
 /// not offer `ELECTION`, and `replica_election` is refused before
-/// `joint_fence`. Even with everything offered `joint_fence` is refused until
-/// the control plane re-admits learners (#1737).
+/// `joint_fence`. `joint_fence` also waits for brokers that name start holders
+/// and keep a wiped copy from voting.
 #[tokio::test]
 async fn election_features_are_refused_with_their_reason() {
     let store = store();
@@ -543,6 +543,8 @@ async fn election_features_are_refused_with_their_reason() {
         "generation_start",
         "majority_ack",
         "lease_free_reads",
+        "stream_incarnations",
+        "cache_incarnations",
         "joint_fence",
         "replica_election",
     ];
@@ -550,7 +552,15 @@ async fn election_features_are_refused_with_their_reason() {
     // Reports the features but not ELECTION.
     let response = app.clone().oneshot(register(&all)).await.expect("request");
     assert_eq!(response.status(), StatusCode::OK);
-    for feature in &all[..3] {
+    // A new stream opens under joint_fence only with an incarnation (#1862).
+    let response = app
+        .clone()
+        .oneshot(finalize("generation_start", false))
+        .await
+        .expect("request");
+    assert_eq!(response.status(), StatusCode::OK);
+    refused("stream_incarnations, cache_incarnations", "joint_fence").await;
+    for feature in &all[1..5] {
         let response = app
             .clone()
             .oneshot(finalize(feature, false))
@@ -568,8 +578,8 @@ async fn election_features_are_refused_with_their_reason() {
     refused("finalize joint_fence first", "replica_election").await;
 
     // Offering ELECTION is not enough: joint_fence also waits for brokers
-    // that name start holders, and stays refused until the control plane
-    // re-admits learners, so replica_election waits behind it.
+    // that name start holders and keep a wiped copy from voting, and
+    // replica_election waits behind it.
     let mut offered = all.to_vec();
     offered.push("peer_election");
     let response = app
@@ -586,7 +596,7 @@ async fn election_features_are_refused_with_their_reason() {
         .await
         .expect("request");
     assert_eq!(response.status(), StatusCode::OK);
-    refused("re-admit a learner", "joint_fence").await;
+    refused("let a wiped copy vote", "joint_fence").await;
     let response = app
         .clone()
         .oneshot(finalize("joint_fence", true))
@@ -601,6 +611,29 @@ async fn election_features_are_refused_with_their_reason() {
             .expect("enabled")
             .contains("joint_fence")
     );
+
+    offered.push("non_voting");
+    let response = app
+        .clone()
+        .oneshot(register(&offered))
+        .await
+        .expect("request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let response = app
+        .clone()
+        .oneshot(finalize("joint_fence", false))
+        .await
+        .expect("request");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        store
+            .enabled_fleet_features()
+            .await
+            .expect("enabled")
+            .contains("joint_fence")
+    );
+    // The election driver is not in yet.
+    refused("metadata level", "replica_election").await;
 }
 
 /// A storage identity is 32 lowercase hex digits. Anything else is refused

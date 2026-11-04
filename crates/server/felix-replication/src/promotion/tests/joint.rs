@@ -182,6 +182,31 @@ async fn a_cut_over_swapping_two_members_waits_for_the_old_majority() {
     assert_eq!(own.leaving.map(|old| old.generation), Some(4));
 }
 
+/// **A joint fence the set being left promised away is refused.** The new
+/// set {broker-a, broker-x, broker-z} answers, a majority, but broker-b and
+/// broker-c, two of the old set's three voters, promised the generation to
+/// broker-d. Only broker-x is left of the old set, so no retry reaches its
+/// majority and the shard says who holds the promise instead of staying
+/// pending. Without the old set's count, the new set's answers alone opened.
+#[tokio::test]
+async fn a_joint_fence_the_set_being_left_promised_away_is_refused() {
+    let mut replicas = replicas_with(&["broker-x", "broker-z"]);
+    replicas.ballots = true;
+    for id in ["broker-b", "broker-c"] {
+        replicas.get(id).holds(id, 4, 0, &["a"]).await;
+        promised_to(&replicas, id, "broker-d").await;
+    }
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+    kept_before(&leader, &["broker-x", "broker-b", "broker-c"], &[]).await;
+
+    let outcome = fence(&replicas, &leader, true).await;
+
+    let Outcome::Refused { promised_to, .. } = outcome else {
+        panic!("opened on a majority of the new set alone: {outcome:?}");
+    };
+    assert_eq!(promised_to, "broker-d");
+}
+
 /// **A joint fence never counts a learner.** The set being left is
 /// {broker-x, broker-b} with this broker as a learner. Counting it, broker-x's
 /// answer would make two of three; only the voters count, and one of two is

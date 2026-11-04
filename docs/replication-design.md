@@ -965,13 +965,12 @@ once it has caught up with a leader that was chosen without it. This is the
 rule [#1331](https://github.com/GetFelix/felix/issues/1331) adopted, and what
 Raft does with a new member. Without `joint_fence` brokers answer as before.
 
-The rule is built but still switched off. The control plane now re-admits a
-learner and keeps placement off one ([#1737](https://github.com/GetFelix/felix/issues/1737);
-see "How the control plane re-admits a copy" below). What is missing is an
-end-to-end cluster test of the whole sequence. Until it lands the control
-plane refuses to finalize `joint_fence`, and brokers check their own switch
-too, for a fleet that finalized it on an earlier release
-(`NON_VOTING_READY` in `crates/server/felix-replication/src/quorum.rs`).
+The control plane re-admits a learner and keeps placement off one
+([#1737](https://github.com/GetFelix/felix/issues/1737); see "How the control
+plane re-admits a copy" below), and the cluster test `failures/learners.rs`
+follows a wiped copy through a failover until it counts again. Brokers report that they follow the rule
+(`non_voting`), and the control plane finalizes `joint_fence` only once every
+serving broker does.
 
 ```mermaid
 sequenceDiagram
@@ -1134,16 +1133,19 @@ only the copy it named.
 
 **Before the gate is known.** Whether a set naming another id makes a copy a
 learner depends on the `joint_fence` gate, which the broker learns only when
-it registers, after its peer listener is up. Until then such a request is
-refused as `Unavailable` and nothing is written. Everything else answers as
-before, so a broker that restarts with its data serves before it registers.
-A mark already on disk holds whatever the gate says.
+it registers, after its peer listener is up. A broker that does not report
+`joint_fence` knows the answer already: registration would refuse it if the
+fleet had the feature, so it treats the gate as off. For one that does, until
+then such a request is
+refused as `Unavailable` and nothing is written. A request for a copy that
+holds a promise answers as before, so a broker that restarts with its data
+keeps serving the shards it held. A request for a copy with no promise is
+handled as if the gate were on: it is refused, or refused retryably until a
+fresh confirmed read of the control plane backs its leader. A mark already on
+disk holds whatever the gate says.
 
-Not covered yet, and needed before elections (#1009 S9):
+Not covered yet, and needed before elections (#1009):
 
-- An end-to-end cluster test of the sequence above, and the switch
-  `NON_VOTING_READY`, which stays off until it passes. The full list is
-  "Turning on joint fences" in `docs/control-plane.md`.
 - The model's group logs (`GroupLogs`) stand in the counter log's place:
   one log beside the records, not the dead-letter and cursor pair, and the
   model waits for a majority where the code, short of answers, takes the
@@ -4132,15 +4134,15 @@ production broker sends or reads a set yet. With it on:
 
 The control plane's finalize gates are in place too: `joint_fence` is refused
 before `generation_start` and while a serving broker does not report that it
-offers the `ELECTION` peer capability or names start holders in its reports
-(`start_holders`), and `replica_election` is refused until `joint_fence` and its
+offers the `ELECTION` peer capability, names start holders in its reports
+(`start_holders`) or keeps a wiped copy from voting (`non_voting`), and
+`replica_election` is refused until `joint_fence` and its
 other prerequisites are finalized, every serving broker offers `ELECTION`,
 and the control plane has the metadata level for the pending replica set and
-adoption (level 21 under Raft, which every member must report). A broker
+adoption (level 26 under Raft, which every member must report). A broker
 offers `ELECTION` only with `FELIX_INTERNAL_ELECTION` on, and then reports
-`peer_election`, `joint_fence` and `replica_election`. The control plane
-still refuses `joint_fence` until it can keep placement off a learner end to
-end (`JOINT_FENCE_READY`), so neither feature can be finalized yet.
+`peer_election`, `joint_fence` and `replica_election`, so both features can
+be finalized only once every serving broker runs with it on.
 
 The control plane's side of rule 8 is built. Under `replica_election`, a
 cut-over that changes the set of a shard whose replicas elect names the new
@@ -4174,8 +4176,8 @@ leader](control-plane.md#adopting-an-elected-leader)). In the model that is
 
 Joint fences and the fenced next-generation open are built too, dormant
 behind `joint_fence`. A broker reports that feature only when it offers
-`ELECTION`, and the control plane refuses to finalize it for now (above);
-the cluster test reports it through `FELIX_TEST_FLEET_FEATURES`.
+`ELECTION` (above); the cluster tests turn it on with
+`ClusterConfig::joint_fence`.
 Once it is finalized on a broker that offers `ELECTION`:
 
 - The generation right after one a broker serves is fenced before it serves,
@@ -4419,9 +4421,9 @@ Three rules keep an election from getting stuck:
   leader only while the shard is open there at its route's generation, so a
   stale route naming it cannot block the next election either.
 
-Elections need `joint_fence` finalized first, and the control plane refuses
-to finalize it until learners can be re-admitted (`JOINT_FENCE_READY`). Until
-that changes, no fleet stands for election.
+Elections need `joint_fence` finalized first, which the control plane allows
+once every serving broker offers `ELECTION`, names start holders and keeps a
+wiped copy from voting.
 
 The broker refuses to stand in two cases the model allows, which costs
 availability only: while its kept set has a pending change (a set being left
