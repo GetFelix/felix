@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793809800239,
+  "lastUpdate": 1793812804353,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -44668,6 +44668,58 @@ window.BENCHMARK_DATA = {
             "range": "71216.77",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1186530.97\nmean: 1172189.24\nstdev: 71216.77\ncv: 6.08%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6f3c6dbc365f053070cb1bbdcaa6ea12601cc8a0",
+          "message": "feat(mqtt): forward a publish to the shard's owner under its producer sequence (#1691) (#1891)\n\n* WIP mqtt forwarding\n\n* WIP mqtt forwarding: tests and harness\n\n* docs(mqtt): forwarding to the shard's owner\n\n* fix(mqtt): review findings on forwarding\n\n* test(mqtt): deterministic leadership move, cluster test keeps forwards in flight\n\n* chore: spec pairing note\n\nSpec-Unaffected: the forward owner's ownership, fence and generation gates and the publish path's ordering are unchanged; a sequenced forward reuses the idempotent claim the Kafka path already uses.",
+          "timestamp": "2026-11-04T09:08:09-08:00",
+          "tree_id": "024a13411dad6a1869df6f7a24c2892770b5f385",
+          "url": "https://github.com/GetFelix/felix/commit/6f3c6dbc365f053070cb1bbdcaa6ea12601cc8a0"
+        },
+        "date": 1793812803244,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 360065.23,
+            "range": "8554.75",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 360065.23\nmean: 354667.51\nstdev: 8554.75\ncv: 2.41%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 360065.23,
+            "range": "8554.75",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 360065.23\nmean: 354667.51\nstdev: 8554.75\ncv: 2.41%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81579.39,
+            "range": "4369.44",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81579.39\nmean: 79833.24\nstdev: 4369.44\ncv: 5.47%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 815793.92,
+            "range": "43694.43",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 815793.92\nmean: 798332.44\nstdev: 43694.43\ncv: 5.47%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
