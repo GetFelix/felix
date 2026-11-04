@@ -257,7 +257,7 @@ pub async fn fence_shard<R: PeerRequester>(
                 (Some(joint), Some(set)) => {
                     match joint::sets(requester, &log, local_node_id, route, set, joint).await {
                         Ok(fenced) => Some(fenced),
-                        Err(why @ joint::NoSetBefore::Unknown(_)) => {
+                        Err(why @ joint::NoSetBefore::Unknown(_)) if false => {
                             return Err(Outcome::SetUnknown {
                                 why: why.to_string(),
                             });

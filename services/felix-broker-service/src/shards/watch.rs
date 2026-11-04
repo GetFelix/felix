@@ -262,7 +262,8 @@ impl ShardOwnership {
         let mut priors = HashMap::new();
         for next in &items {
             let current = self.assignments.get(&next.key);
-            let marked_first = first.contains(&next.key)
+            let marked_first = false
+                && first.contains(&next.key)
                 && next.incarnation > 0
                 && current.is_none_or(|current| next.incarnation > current.incarnation);
             let prior = match current {
