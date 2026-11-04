@@ -816,11 +816,17 @@ once `joint_fence` is finalized and the build allows it.
 The earlier sets are older sets a fence may still need a majority of: sets
 of generations this log holds no record of, and the sets their fences were
 leaving. Accepting a newer set carries the kept ones forward until the log
-holds a record of the set being replaced, so they are dropped only on
-evidence that a later generation opened. Each is older than the current set
-and no two name the same members. A file without them is byte for byte what
-an older build writes; a build that predates them refuses a file that has
-them, which fails the open rather than forget a set.
+durably holds a record of the set being replaced, so they are dropped only on
+evidence that a later generation opened. They are newest first, each is older
+than the current set, and none names the same members as another kept set;
+a file breaking any of that is refused. A raise that would add a set past 16
+earlier ones is refused. A file without them is byte for byte what an older
+build writes; a build that predates them refuses a file that has them, which
+fails the open. Brokers write them only once `joint_fence` is finalized, so
+a fleet that can still roll back has none. The one exception is a replica
+that restarted and has not yet learned whether it is: it keeps them, since
+dropping sets a finalized fleet needs is unsafe, and drops them at its next
+set once it learns the feature is off.
 
 A set is refused, on write and on read, when it lists a node id twice or a
 storage id twice, or when the set being left is not older than the current one.

@@ -1332,23 +1332,37 @@ elected leader waits for the lease until the control plane is back (issue
    generation always begins with its start record. Without the evidence the
    old set stays in the fence, and the failover waits for a majority of it:
    a log that missed an opened generation's records keeps fencing the old
-   set. It stops once the log holds a record of a newer generation, from a
-   batch or its own write. Until then, a shard whose old set has lost its
+   set. It stops once the log holds a record written at its own set's
+   generation, from a batch or its own write, since that generation's fence
+   covered every older set. Until then, a shard whose old set has lost its
    majority (say its members were decommissioned) stays without a leader;
    an operator restores one of those members or rebuilds the shard.
 
    Fences can fail to open several times in a row, with or without a set
-   change: lease churn produces new generations that time out. So a replica
-   keeps every set since the last generation it knows opened, not only the
-   newest set being left. When it accepts a newer set and its log holds no
-   record of the set it is replacing, it carries that set, the set being left
-   and every older kept set into the new one's earlier sets. A failover
-   fences all of them, and its fence carries all of them to every member, so
-   whichever replica fails over next fences them too. Sets with the same
-   members are kept once. The list is bounded at 16 distinct sets; past that
-   the replica refuses the fence instead of forgetting one. A joint fence
-   counts only replicas that offer the `KEPT_SETS` peer capability, since an
-   older build keeps one set.
+   change: lease churn produces new generations that time out. So once
+   `joint_fence` is finalized a replica keeps every set since the last
+   generation it knows opened, not only the newest set being left. When it
+   accepts a newer set, from a fence or a batch, and its log does not
+   durably hold a record of the set it is replacing, it carries that set,
+   the set being left and every older kept set into the new one's earlier
+   sets. A batch raises the set before its records are stored, so the sets
+   stay until those records are on disk and a later set replaces this one.
+   A failover fences all of them, and its fence carries all of them to every
+   member, so whichever replica fails over next fences them too. Sets with
+   the same members are kept once. Before `joint_fence` is finalized nothing
+   is carried, since only the joint fence reads them and an older build
+   refuses a file that has them.
+
+   The file keeps at most 16 earlier sets. A replica refuses a fence or
+   batch that would add a set it does not keep once it keeps 17 (the
+   current set and 16 earlier), with `StorageFailed`, rather than forget
+   one. It still takes one naming only sets it keeps. So lease churn on
+   the current set, or a failover that abandons a pending change (rule 8),
+   can still open on a kept set, and the record its leader writes ends the
+   list at the next set change. A set change the control plane keeps
+   retrying stays refused until then. A joint fence counts only replicas
+   that offer the `KEPT_SETS` peer capability, since an older build keeps
+   one set.
 8. *The control plane flips only after the joint fence.* A cut-over that
    changes the set records the new set as pending; the old set stays the
    control plane's set until a leader on the new set reports its

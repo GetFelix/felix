@@ -504,3 +504,33 @@ fn an_earlier_set_must_be_older_and_a_count_of_zero_does_not_decode() {
     body.extend_from_slice(&0u16.to_be_bytes());
     assert_eq!(decode(&sealed(body)), None);
 }
+
+/// The file keeps earlier sets newest first and each once; any other order
+/// or a repeat is damage, not a second spelling of the same sets.
+#[test]
+fn earlier_sets_out_of_order_or_repeated_do_not_decode() {
+    let with = |earlier: &[Membership]| {
+        let mut body = changing(8).encode(None).unwrap();
+        body.truncate(body.len() - 4);
+        body[7] |= FLAG_EARLIER as u8;
+        body.extend_from_slice(&(earlier.len() as u16).to_be_bytes());
+        for set in earlier {
+            set.encode_into(&mut body);
+        }
+        sealed(body)
+    };
+    let sets = with_earlier(8).earlier;
+    assert!(decode(&with(&sets)).is_some());
+    let reversed: Vec<_> = sets.iter().rev().cloned().collect();
+    assert_eq!(decode(&with(&reversed)), None);
+    let repeated = Membership {
+        generation: sets[1].generation - 1,
+        ..sets[0].clone()
+    };
+    assert_eq!(decode(&with(&[sets[0].clone(), repeated])), None);
+    let as_leaving = Membership {
+        generation: 2,
+        ..changing(8).leaving.unwrap()
+    };
+    assert_eq!(decode(&with(&[sets[0].clone(), as_leaving])), None);
+}

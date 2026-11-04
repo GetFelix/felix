@@ -77,6 +77,15 @@ impl Durability {
         *self.durable_tx.borrow()
     }
 
+    /// The end of what a crash keeps, for a log whose tail is `tail`. Under
+    /// `FsyncMode::None` nothing is ever flushed, so the tail is all there is.
+    pub(super) fn survives_crash_upto(&self, tail: Offset) -> Offset {
+        match self.mode {
+            FsyncMode::None => tail,
+            _ => tail.min(self.durable_upto()),
+        }
+    }
+
     /// How many flushes have actually been issued.
     ///
     /// The direct measure of group commit: N appends that coalesce produce far

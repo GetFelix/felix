@@ -294,13 +294,13 @@ fn joint(current: Membership, leaving: Membership) -> ReplicaSet {
 async fn sets_of_unopened_generations_are_carried_into_a_newer_set() {
     let dir = tempdir().expect("tempdir");
     let log = open(&dir, FsyncMode::OnCommit);
-    log.accept_set(joint(
+    log.accept_set_keeping_earlier(joint(
         named(2, &["b", "c", "d"]),
         named(1, &["a", "b", "c"]),
     ))
     .await
     .expect("accept");
-    log.accept_set(joint(
+    log.accept_set_keeping_earlier(joint(
         named(3, &["a", "c", "d"]),
         named(2, &["b", "c", "d"]),
     ))
@@ -315,7 +315,7 @@ async fn sets_of_unopened_generations_are_carried_into_a_newer_set() {
     assert_eq!(log.replica_set().expect("set").earlier, kept.earlier);
 
     // Lease churn at the same set changes nothing but the generation.
-    log.accept_set(joint(
+    log.accept_set_keeping_earlier(joint(
         named(4, &["a", "c", "d"]),
         named(3, &["a", "c", "d"]),
     ))
@@ -334,7 +334,7 @@ async fn sets_of_unopened_generations_are_carried_into_a_newer_set() {
 async fn earlier_sets_are_dropped_once_the_log_holds_a_record_of_the_kept_generation() {
     let dir = tempdir().expect("tempdir");
     let log = open(&dir, FsyncMode::OnCommit);
-    log.accept_set(joint(
+    log.accept_set_keeping_earlier(joint(
         named(2, &["b", "c", "d"]),
         named(1, &["a", "b", "c"]),
     ))
@@ -347,7 +347,7 @@ async fn earlier_sets_are_dropped_once_the_log_holds_a_record_of_the_kept_genera
     log.append(&records(&["at three"])).await.expect("append");
     assert!(!log.holds_records_of(2));
     assert!(log.holds_records_of(3));
-    log.accept_set(joint(
+    log.accept_set_keeping_earlier(joint(
         named(3, &["a", "c", "d"]),
         named(2, &["b", "c", "d"]),
     ))
@@ -357,7 +357,7 @@ async fn earlier_sets_are_dropped_once_the_log_holds_a_record_of_the_kept_genera
         log.replica_set().expect("set").earlier,
         vec![named(1, &["a", "b", "c"])]
     );
-    log.accept_set(joint(
+    log.accept_set_keeping_earlier(joint(
         named(4, &["a", "b", "d"]),
         named(3, &["a", "c", "d"]),
     ))
@@ -366,10 +366,10 @@ async fn earlier_sets_are_dropped_once_the_log_holds_a_record_of_the_kept_genera
     assert_eq!(log.replica_set().expect("set").earlier, Vec::new());
 }
 
-/// A batch's leader opened its generation, so a set raised by one carries
-/// nothing older.
+/// Without `joint_fence` nothing reads earlier sets, and a file holding them
+/// is one an older build refuses, so a rollback could not open the shard.
 #[tokio::test]
-async fn an_opened_set_carries_nothing() {
+async fn a_set_kept_without_earlier_sets_writes_none() {
     let dir = tempdir().expect("tempdir");
     let log = open(&dir, FsyncMode::OnCommit);
     log.accept_set(joint(
@@ -378,19 +378,53 @@ async fn an_opened_set_carries_nothing() {
     ))
     .await
     .expect("accept");
-    log.accept_opened_set(ReplicaSet {
-        current: named(3, &["a", "c", "d"]),
-        leaving: None,
-        earlier: Vec::new(),
+    log.accept_set(ReplicaSet {
+        earlier: vec![named(1, &["a", "b", "c"])],
+        ..joint(named(3, &["a", "c", "d"]), named(2, &["b", "c", "d"]))
     })
     .await
     .expect("accept");
-    let kept = log.replica_set().expect("set");
-    assert_eq!((kept.leaving, kept.earlier), (None, Vec::new()));
+    assert_eq!(log.replica_set().expect("set").earlier, Vec::new());
+    let bytes = std::fs::read(dir.path().join("replica-set")).expect("file");
+    let flags = u16::from_be_bytes(bytes[6..8].try_into().expect("flags"));
+    assert_eq!(flags, 1, "only the set being left follows");
 }
 
-/// Past the file's limit the raise fails and nothing changes: refusing the
-/// fence that asked is safe, forgetting a set is not.
+/// A record a crash could still lose is no evidence: dropping the sets on it
+/// would leave the log with neither the record nor the sets.
+#[tokio::test]
+async fn a_record_not_yet_durable_drops_nothing() {
+    let dir = tempdir().expect("tempdir");
+    let log = open(
+        &dir,
+        FsyncMode::Periodic {
+            interval: std::time::Duration::from_secs(3600),
+        },
+    );
+    log.accept_set_keeping_earlier(joint(
+        named(2, &["b", "c", "d"]),
+        named(1, &["a", "b", "c"]),
+    ))
+    .await
+    .expect("accept");
+    log.record_generation(2, 0).expect("generation");
+    log.append(&records(&["at two"])).await.expect("append");
+    assert!(log.holds_records_of(2));
+    log.accept_set_keeping_earlier(joint(
+        named(3, &["a", "c", "d"]),
+        named(2, &["b", "c", "d"]),
+    ))
+    .await
+    .expect("accept");
+    assert_eq!(
+        log.replica_set().expect("set").earlier,
+        vec![named(1, &["a", "b", "c"])]
+    );
+}
+
+/// Past the file's limit a raise adding a set fails and nothing changes:
+/// refusing the fence that asked is safe, forgetting a set is not. One
+/// naming only kept sets still fits, even without the set being left.
 #[tokio::test]
 async fn more_earlier_sets_than_the_file_keeps_fail_the_raise() {
     let dir = tempdir().expect("tempdir");
@@ -401,9 +435,13 @@ async fn more_earlier_sets_than_the_file_keeps_fail_the_raise() {
         let names = nodes(generation);
         let names: Vec<&str> = names.iter().map(String::as_str).collect();
         let result = log
-            .accept_set(ReplicaSet {
+            .accept_set_keeping_earlier(ReplicaSet {
                 current: named(generation, &names),
-                leaving: None,
+                leaving: (generation > 1).then(|| {
+                    let before = nodes(generation - 1);
+                    let before: Vec<&str> = before.iter().map(String::as_str).collect();
+                    named(generation - 1, &before)
+                }),
                 earlier: Vec::new(),
             })
             .await;
@@ -415,5 +453,24 @@ async fn more_earlier_sets_than_the_file_keeps_fail_the_raise() {
     assert!(result.is_err(), "a set past the limit was kept");
     let kept = log.replica_set().expect("set");
     assert_eq!(kept.current.generation, generation - 1);
-    assert_eq!(kept.earlier.len(), set::MAX_EARLIER_SETS);
+    assert_eq!(kept.earlier.len(), set::MAX_EARLIER_SETS - 1);
+
+    // A fence naming only kept sets still fits, so one can open and end it.
+    for nodes in [&kept.current, kept.earlier.last().expect("oldest")] {
+        log.accept_set_keeping_earlier(ReplicaSet {
+            current: Membership {
+                generation,
+                members: nodes.members.clone(),
+            },
+            leaving: None,
+            earlier: Vec::new(),
+        })
+        .await
+        .expect("a fence on a kept set is taken");
+        generation += 1;
+    }
+    assert_eq!(
+        log.replica_set().expect("set").earlier.len(),
+        set::MAX_EARLIER_SETS
+    );
 }

@@ -146,6 +146,7 @@ pub async fn fence_shard<R: PeerRequester>(
     lease_fallback: bool,
     joint: Option<&Joint<'_>>,
 ) -> Outcome {
+    let joint_fence = joint.is_some();
     let replicas: Vec<_> = route
         .replicas
         .iter()
@@ -286,6 +287,7 @@ pub async fn fence_shard<R: PeerRequester>(
                     local_node_id,
                     route,
                     under_joint.as_ref().map(|fenced| &fenced.before),
+                    joint_fence,
                 )
                 .await?;
             }
@@ -940,6 +942,7 @@ async fn keep_own_set(
     local_node_id: &str,
     route: &Route,
     leaving: Option<&felix_storage::disk_log::Membership>,
+    joint_fence: bool,
 ) -> Result<(), Outcome> {
     match log
         .accept_generation(route.generation, Some(local_node_id))
@@ -967,7 +970,7 @@ async fn keep_own_set(
     }
     let mut set = crate::replica_set::kept(route, None);
     set.leaving = leaving.cloned();
-    match log.accept_set(set).await {
+    match crate::replica_set::accept(log, set, joint_fence).await {
         Ok(felix_storage::disk_log::SetCheck::Stale { known }) => Err(Outcome::pending(
             format!("this broker counts the set of generation {known}, newer than this one"),
             Vec::new(),

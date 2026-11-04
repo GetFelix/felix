@@ -1064,7 +1064,7 @@ async fn kept_two_unopened(leader: &Broker) {
             named(3, [LEADER, "broker-y", "broker-w"]),
         ),
     ] {
-        log.accept_set(ReplicaSet {
+        log.accept_set_keeping_earlier(ReplicaSet {
             current,
             leaving: Some(leaving),
             earlier: Vec::new(),
@@ -1087,6 +1087,21 @@ async fn a_failover_fences_the_sets_of_two_unopened_fences() {
     ]);
     for down in ["broker-x", "broker-w", "broker-u", "broker-v"] {
         replicas.get_mut(down).reachable = false;
+    }
+    // Members keep earlier sets only once `joint_fence` is finalized, and
+    // then answer only while they hold a promise.
+    for member in ["broker-z", "broker-u"] {
+        let replica = replicas.get_mut(member);
+        replica.handler = ReplicaHandler::new(Arc::clone(&replica.broker), router_for(member, 3))
+            .with_fleet(Arc::new(joint_fence_marks(true)));
+        replica
+            .broker
+            .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+            .await
+            .expect("log")
+            .accept_generation(1, Some(LEADER))
+            .await
+            .expect("ballot");
     }
     let (leader, _dir) = leader_holding(1, &["a"]).await;
     kept_two_unopened(&leader).await;

@@ -504,7 +504,12 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         })
         .flatten();
     if let Some(kept) = kept
-        && let Err(err) = log.accept_set(kept).await
+        && let Err(err) = crate::replica_set::accept(
+            &log,
+            kept,
+            marks.fleet_supports(felix_common::fleet::JOINT_FENCE),
+        )
+        .await
     {
         tracing::warn!(
             stream = %key.stream,

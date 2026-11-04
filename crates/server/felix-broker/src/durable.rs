@@ -801,14 +801,14 @@ impl StreamLog {
         self.log.accept_set(set).await.map_err(BrokerError::from)
     }
 
-    /// [`Self::accept_set`] for a set whose generation opened. See
-    /// `DiskLog::accept_opened_set`.
-    pub async fn accept_opened_set(
+    /// [`Self::accept_set`] keeping earlier sets, once `joint_fence` is
+    /// finalized. See `DiskLog::accept_set_keeping_earlier`.
+    pub async fn accept_set_keeping_earlier(
         &self,
         set: felix_storage::disk_log::ReplicaSet,
     ) -> Result<felix_storage::disk_log::SetCheck> {
         self.log
-            .accept_opened_set(set)
+            .accept_set_keeping_earlier(set)
             .await
             .map_err(BrokerError::from)
     }

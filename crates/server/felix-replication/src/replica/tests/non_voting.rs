@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use felix_common::fleet::{FleetGate, JOINT_FENCE};
 use felix_storage::StorageId;
+use felix_storage::disk_log::{Member, Membership, ReplicaSet};
 use felix_wire::internal::{
     Fence, FenceElection, GenerationStart, PreVote, PreVoteRefusal, ReplicaLog, ReplicaSetView,
     SetMember,
@@ -1290,4 +1291,55 @@ async fn learner_batch_cost() {
     }
     let apply = started.elapsed() / BATCHES as u32;
     eprintln!("learner batch apply (no promise, 1 record) {apply:?}");
+}
+
+fn kept_set(generation: u64, nodes: &[&str]) -> Membership {
+    Membership {
+        generation,
+        members: nodes
+            .iter()
+            .map(|node| Member {
+                node: (*node).to_string(),
+                storage: None,
+                learner: false,
+                wiped: false,
+            })
+            .collect(),
+    }
+}
+
+/// **A batch that raises the set keeps the sets of unopened fences** until
+/// its records are on disk. One whose records never land (here a gap) must
+/// not leave the log with neither those records nor the sets a failover
+/// from it needs to fence.
+#[tokio::test]
+async fn a_batch_that_is_not_stored_keeps_the_earlier_sets() {
+    let (broker, _dir) = broker_with_storage().await;
+    let fleet = felix_common::fleet::FleetGate::new([felix_common::fleet::JOINT_FENCE.name()]);
+    fleet.restart([felix_common::fleet::JOINT_FENCE.name()]);
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5)).with_fleet(
+        Arc::new(crate::quorum::QuorumMarks::with_fleet(Arc::new(fleet))),
+    );
+    let unopened = kept_set(4, &[LOCAL, "broker-x", "broker-y"]);
+    let left = kept_set(3, &[LOCAL, "broker-c", "broker-d"]);
+    let log = log_of(&broker).await;
+    log.accept_generation(4, Some("broker-x"))
+        .await
+        .expect("ballot");
+    log.accept_set_keeping_earlier(ReplicaSet {
+        current: unopened.clone(),
+        leaving: Some(left.clone()),
+        earlier: Vec::new(),
+    })
+    .await
+    .expect("set");
+
+    let answer = handler
+        .apply(SENDER, stamped(5, 3, &["a"]), felix_broker::LogKind::Stream)
+        .await;
+
+    assert_eq!(refusal(&answer).code, ErrorCode::LogGap, "{answer:?}");
+    let set = log_of(&broker).await.replica_set().expect("set");
+    assert_eq!(set.current.generation, 5, "the batch raised the set");
+    assert_eq!(set.earlier, vec![unopened, left]);
 }

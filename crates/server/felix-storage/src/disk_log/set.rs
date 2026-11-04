@@ -22,10 +22,11 @@
 //! newer set may list the copy only as leaving, or not at all, and name it
 //! again later, and none of that may end the mark.
 //!
-//! And it keeps the older sets a fence that never opened still needs
-//! ([`ReplicaSet::earlier`]). A set is dropped from them only once the log
-//! holds a record of a newer generation, never on silence, so a failover
-//! from this log fences every set that may still hold an acknowledged write.
+//! Once `joint_fence` is finalized it also keeps the older sets a fence that
+//! never opened still needs ([`ReplicaSet::earlier`]). They are dropped only
+//! once the log durably holds a record of a newer generation, never on
+//! silence, so a failover from this log fences every set that may still hold
+//! an acknowledged write.
 //!
 //! `DiskLog::accept_set` and the open's reading of the file live here.
 
@@ -53,8 +54,8 @@ const FLAG_WIPED: u16 = 2;
 /// forget a set.
 const FLAG_EARLIER: u16 = 4;
 /// Most earlier sets the file keeps. Each is a distinct member list, so only
-/// a run of unopened set changes reaches it; past it `accept_set` fails and
-/// the fence or batch that asked is refused.
+/// a run of unopened set changes reaches it; then a raise adding a set fails
+/// and the fence or batch that asked is refused.
 pub(super) const MAX_EARLIER_SETS: usize = 16;
 /// Member flags: a storage id follows; the member does not vote; this copy
 /// found it lost what it held.
@@ -116,9 +117,9 @@ pub struct ReplicaSet {
     pub leaving: Option<Membership>,
     /// Older sets a fence may still need a majority of besides `leaving`,
     /// newest first: sets of generations this log holds no record of, and
-    /// the sets their fences named. [`DiskLog::accept_set`] carries them
-    /// into each newer set until the log holds a record of the set it
-    /// replaces.
+    /// the sets their fences named. [`DiskLog::accept_set_keeping_earlier`]
+    /// carries them into each newer set until the log holds a record of the
+    /// set it replaces.
     pub earlier: Vec<Membership>,
 }
 
@@ -213,8 +214,9 @@ impl ReplicaSet {
     }
 
     /// What both `encode` and `decode` insist on: sizes within the file's
-    /// limits, no member listed twice, and a set being left that is older than
-    /// the one replacing it.
+    /// limits, no member listed twice, a set being left that is older than
+    /// the one replacing it, and earlier sets that are older still, newest
+    /// first, each naming members no other kept set names.
     fn check(&self) -> Result<()> {
         self.current.check()?;
         if let Some(leaving) = &self.leaving {
@@ -228,13 +230,53 @@ impl ReplicaSet {
         if self.earlier.len() > MAX_EARLIER_SETS {
             return Err(invalid("more earlier sets than the file allows"));
         }
-        for earlier in &self.earlier {
+        for (i, earlier) in self.earlier.iter().enumerate() {
             earlier.check()?;
             if earlier.generation >= self.current.generation {
                 return Err(invalid("an earlier set must be older than the current one"));
             }
+            let before = &self.earlier[..i];
+            if before
+                .last()
+                .is_some_and(|newer| newer.generation < earlier.generation)
+            {
+                return Err(invalid("earlier sets must be kept newest first"));
+            }
+            let repeated = std::iter::once(&self.current)
+                .chain(&self.leaving)
+                .chain(before)
+                .any(|other| other.same_members(earlier));
+            if repeated {
+                return Err(invalid(
+                    "an earlier set repeats the members of another kept set",
+                ));
+            }
         }
         Ok(())
+    }
+
+    /// Every set kept, current first.
+    fn all(&self) -> impl Iterator<Item = &Membership> {
+        std::iter::once(&self.current)
+            .chain(&self.leaving)
+            .chain(&self.earlier)
+    }
+
+    /// How many distinct member lists the set keeps.
+    fn distinct_sets(&self) -> usize {
+        let mut seen: Vec<&Membership> = Vec::new();
+        for set in self.all() {
+            if !seen.iter().any(|other| other.same_members(set)) {
+                seen.push(set);
+            }
+        }
+        seen.len()
+    }
+
+    /// Whether this names a member list `kept` does not.
+    fn adds_to(&self, kept: &ReplicaSet) -> bool {
+        self.all()
+            .any(|set| !kept.all().any(|other| other.same_members(set)))
     }
 
     /// Add `sets` to the earlier sets, skipping any that names the same
@@ -242,10 +284,7 @@ impl ReplicaSet {
     /// them newest first.
     fn carry(&mut self, sets: impl IntoIterator<Item = Membership>) {
         for set in sets {
-            let kept = std::iter::once(&self.current)
-                .chain(&self.leaving)
-                .chain(&self.earlier)
-                .any(|kept| kept.same_members(&set));
+            let kept = self.all().any(|kept| kept.same_members(&set));
             if !kept && !set.members.is_empty() {
                 self.earlier.push(set);
             }
@@ -275,11 +314,9 @@ impl DiskLog {
     /// leaving entry can start the mark but never makes an existing one a
     /// learner.
     ///
-    /// Unless this log holds a record of the kept set's generation, the kept
-    /// set, the set it was leaving and its earlier sets are carried into
-    /// `set`'s earlier sets: that generation may never have opened, so a
-    /// majority of any of them may hold an acknowledged write no newer set
-    /// does.
+    /// Without earlier sets: `set.earlier` is ignored and none are kept, so
+    /// the file stays one an older build reads. For a fleet that has not
+    /// finalized `joint_fence`, where nothing reads them.
     ///
     /// Returns once a raised set is on disk, so a caller that answers at it
     /// afterwards has made a promise that survives a restart. A caller that
@@ -289,10 +326,18 @@ impl DiskLog {
         self.raise_set(set, false).await
     }
 
-    /// [`Self::accept_set`] for a set whose generation is known to have
-    /// opened, because its leader shipped a batch at it: the sets before it
-    /// are not carried.
-    pub async fn accept_opened_set(&self, set: ReplicaSet) -> Result<SetCheck> {
+    /// [`Self::accept_set`] keeping earlier sets, once `joint_fence` is
+    /// finalized. Unless this log holds a record of the kept set's
+    /// generation, the kept set, the set it was leaving and its earlier sets
+    /// are carried into `set`'s earlier sets: that generation may never have
+    /// opened, so a majority of any of them may hold an acknowledged write no
+    /// newer set does.
+    ///
+    /// A raise that would keep a set not kept already is refused once the
+    /// file would hold more than [`MAX_EARLIER_SETS`] besides the current
+    /// set. That leaves room for a raise naming only kept sets, so a fence
+    /// on a kept set can still open and drop them.
+    pub async fn accept_set_keeping_earlier(&self, set: ReplicaSet) -> Result<SetCheck> {
         self.raise_set(set, true).await
     }
 
@@ -304,7 +349,7 @@ impl DiskLog {
         holds_records_in(&self.inner, generation)
     }
 
-    async fn raise_set(&self, mut set: ReplicaSet, opened: bool) -> Result<SetCheck> {
+    async fn raise_set(&self, mut set: ReplicaSet, keep_earlier: bool) -> Result<SetCheck> {
         if let Some(found) = check_set(self.set_generation(), set.current.generation) {
             return Ok(found);
         }
@@ -317,16 +362,28 @@ impl DiskLog {
             if let Some(found) = check_set(known, set.current.generation) {
                 return Ok(found);
             }
-            let kept = inner.replica_set.read().clone();
-            if let Some(kept) = kept
-                && !opened
-                && !holds_records_in(&inner, kept.current.generation)
-            {
-                set.carry(
-                    std::iter::once(kept.current)
-                        .chain(kept.leaving)
-                        .chain(kept.earlier),
-                );
+            if keep_earlier {
+                // In the file's order and without repeats, whatever the sender sent.
+                let sent = std::mem::take(&mut set.earlier);
+                set.carry(sent);
+                let kept = inner.replica_set.read().clone();
+                if let Some(kept) = kept {
+                    if !holds_durable_records_in(&inner, kept.current.generation) {
+                        set.carry(
+                            std::iter::once(kept.current.clone())
+                                .chain(kept.leaving.clone())
+                                .chain(kept.earlier.clone()),
+                        );
+                    }
+                    if set.distinct_sets() > MAX_EARLIER_SETS + 1 && set.adds_to(&kept) {
+                        return Err(invalid(
+                            "the replica set file already keeps as many sets as it allows; \
+                             a fence on a set it keeps must open first",
+                        ));
+                    }
+                }
+            } else {
+                set.earlier.clear();
             }
             let mut wiped = inner.wiped.read().clone();
             // Not the earlier sets: they are old views, and a mark they
@@ -459,6 +516,21 @@ impl DiskLog {
 /// for the newest; one that starts where the next does wrote nothing.
 fn holds_records_in(inner: &LogInner, generation: u64) -> bool {
     let tail = inner.segments.read().tail_offset();
+    holds_records_before(inner, generation, tail)
+}
+
+/// [`holds_records_in`] counting only records a crash keeps: dropping kept
+/// sets on a record a crash then loses would leave the log with neither.
+fn holds_durable_records_in(inner: &LogInner, generation: u64) -> bool {
+    let tail = inner.segments.read().tail_offset();
+    holds_records_before(
+        inner,
+        generation,
+        inner.durability.survives_crash_upto(tail),
+    )
+}
+
+fn holds_records_before(inner: &LogInner, generation: u64, tail: u64) -> bool {
     let epochs = inner.epochs.lock();
     let entries = epochs.entries();
     entries

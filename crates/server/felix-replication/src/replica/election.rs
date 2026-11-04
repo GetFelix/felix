@@ -99,12 +99,13 @@ impl ReplicaHandler {
         log: &felix_broker::StreamLog,
         election: &FenceElection,
     ) -> Option<InternalMessage> {
+        let joint = self.keeps_earlier_sets();
         keep(
             correlation_id,
             key,
             log,
             self.mark_local(log, kept_from(election)),
-            false,
+            joint,
         )
         .await
     }
@@ -161,15 +162,25 @@ impl ReplicaHandler {
             return Some(refusal);
         }
         let was_learner = self.is_learner(log);
-        // The batch's leader opened its generation, so nothing older is
-        // carried.
-        if let Some(refusal) = keep(correlation_id, key, log, self.mark_local(log, set), true).await
+        // The kept sets are carried even though the batch's leader opened:
+        // they are dropped only once this log holds the batch's records.
+        let joint = self.keeps_earlier_sets();
+        if let Some(refusal) =
+            keep(correlation_id, key, log, self.mark_local(log, set), joint).await
         {
             return Some(refusal);
         }
         // Marked by this batch: it was checked as a voter's, so it is refused
         // and comes again to be checked as a learner's.
         (!was_learner && self.is_learner(log)).then(|| undecided(correlation_id, key))
+    }
+
+    /// Whether a set kept here keeps earlier sets: once `joint_fence` is
+    /// finalized, and while the gate is unread, since dropping sets a
+    /// finalized fleet needs is unsafe and writing them only costs a
+    /// rollback in that window.
+    fn keeps_earlier_sets(&self) -> bool {
+        self.joint_gate() != Some(false)
     }
 
     /// Whether this copy's log lists it as a learner: a set named another
@@ -359,9 +370,12 @@ impl ReplicaHandler {
         // check; learning it would mask that.
         if let Some(election) = &request.election
             && election.set.generation <= request.shard.generation
-            && let Err(err) = log
-                .accept_set(self.mark_local(log, kept_from(election)))
-                .await
+            && let Err(err) = crate::replica_set::accept(
+                log,
+                self.mark_local(log, kept_from(election)),
+                self.keeps_earlier_sets(),
+            )
+            .await
         {
             tracing::warn!(error = %err, "could not keep the set a fence carried");
         }
@@ -673,22 +687,16 @@ fn kept_from(election: &FenceElection) -> ReplicaSet {
     }
 }
 
-/// `opened`: `set`'s generation is known to have opened, so the storage
-/// carries nothing older into it.
+/// `joint`: the fleet finalized `joint_fence`, so earlier sets are kept.
 async fn keep(
     correlation_id: u64,
     key: &felix_router::ShardKey,
     log: &felix_broker::StreamLog,
     set: ReplicaSet,
-    opened: bool,
+    joint: bool,
 ) -> Option<InternalMessage> {
     let sent = set.current.generation;
-    let raised = if opened {
-        log.accept_opened_set(set).await
-    } else {
-        log.accept_set(set).await
-    };
-    match raised {
+    match crate::replica_set::accept(log, set, joint).await {
         Ok(SetCheck::Current | SetCheck::Raised) => None,
         // Raised by another request since the check above.
         Ok(SetCheck::Stale { known }) => Some(refuse_stale(correlation_id, key, sent, known)),
