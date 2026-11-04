@@ -175,6 +175,11 @@ durability wait, plus, on a `Quorum` stream, until the commits ahead of it
 reach the committed mark. Commits without conditions share the gate and do no
 other work for it. Plain publishes do not take it.
 
+The wait is capped at five seconds, since every commit on the shard queues
+behind it. Past that (a `Quorum` shard whose mark has stalled, say) the commit
+is refused with `shard_unavailable` / `not_ready`, having written nothing, and
+can be retried.
+
 A refusal is `publish_refused` with `version_mismatch`, `key` and `version`
 (absent when the key holds no value). Sent only to a broker that advertised
 `FEATURE_COMMIT_IF_VERSION`; an older broker would ignore `if_version` and

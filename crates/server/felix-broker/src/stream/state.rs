@@ -570,6 +570,23 @@ impl StreamState {
         }
     }
 
+    /// Where the ring ends: the state view reflects every commit below it.
+    pub(crate) fn ring_end(&self) -> u64 {
+        self.log_state.lock().next_seq
+    }
+
+    /// Install a view rebuilt from the log below `end`, which is past the
+    /// ring's end: records there reached the disk but not the ring, as when
+    /// a hold was discarded. Refused if the ring has since passed `end`.
+    pub(crate) fn install_state_view_through(&self, view: StateView, end: u64) -> bool {
+        let mut state = self.log_state.lock();
+        if state.next_seq > end {
+            return false;
+        }
+        state.state_view = Some(view);
+        true
+    }
+
     /// Install a view rebuilt from the log below `end`, if nothing reached
     /// the ring since. Otherwise the view has missed a commit and the caller
     /// rebuilds again.

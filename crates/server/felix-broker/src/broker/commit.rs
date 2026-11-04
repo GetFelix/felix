@@ -15,6 +15,9 @@ use super::shards::StreamHandle;
 use crate::commit::{CommitRecord, StateOp, StateView, VersionCheck};
 use crate::error::{BrokerError, Result};
 
+/// How long a checked commit waits for the commits ahead of it.
+const SETTLE_LIMIT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Bytes read from the log per page while rebuilding a state view.
 const REBUILD_PAGE_BYTES: usize = 1 << 20;
 
@@ -104,7 +107,15 @@ impl Broker {
         } else {
             shared = None;
             exclusive = Some(handle.state.commit_gate.write().await);
-            settle_commits(handle, log).await?;
+            let end = settle_commits(handle, log).await?;
+            // Records below `end` the ring never got, from a discarded hold,
+            // are on disk and may be committed; the view must count them.
+            if handle.state.ring_end() < end {
+                let view = rebuild_view(handle, log, end).await?;
+                if !handle.state.install_state_view_through(view, end) {
+                    return Err(BrokerError::StateViewBusy);
+                }
+            }
             for check in checks {
                 let read = self.state_get(handle, &check.key).await?;
                 if read.version != check.required {
@@ -153,31 +164,7 @@ impl Broker {
                 }
                 Err(end) => end,
             };
-            // A view rebuilt from disk must hold only committed records. The ring
-            // is bounded by the hold, but a promoted leader's `next_seq` covers
-            // everything it inherited, committed or not.
-            match handle.read_bound() {
-                bound if bound.covers(end) => {}
-                crate::ReadBound::Refused => {
-                    return Err(BrokerError::StateNotReadable(crate::NotReadable::Refused));
-                }
-                _ => return Err(BrokerError::StateNotReadable(crate::NotReadable::Settling)),
-            }
-            let mut view = StateView::default();
-            let mut next = log.readable_base();
-            while next < end {
-                let page = log.read_log_from(next, REBUILD_PAGE_BYTES).await?;
-                for record in page.records.into_iter().filter(|r| r.offset < end) {
-                    if record.mark.is_commit() {
-                        let commit = CommitRecord::decode(&record.payload)?;
-                        view.apply(record.offset, &commit.ops);
-                    }
-                }
-                if page.next <= next {
-                    break;
-                }
-                next = page.next;
-            }
+            let view = rebuild_view(handle, log, end).await?;
             handle.state.install_state_view(view, end);
         }
         Err(BrokerError::StateViewBusy)
@@ -190,13 +177,54 @@ impl Broker {
 /// The caller holds the commit gate exclusively, so no commit claims while
 /// this waits. Under it, a commit whose turn has resolved is in the view, in
 /// the hold, or gone; the hold is then waited out below the same offset.
-async fn settle_commits(handle: &StreamHandle, log: &crate::durable::StreamLog) -> Result<()> {
+async fn settle_commits(handle: &StreamHandle, log: &crate::durable::StreamLog) -> Result<u64> {
     let order = &handle.state.commit_sequencer;
     // Before the tail, so a reset in between ends the wait instead of
     // leaving it on an offset the new log may not reach.
     let generation = order.generation();
     let end = log.tail_offset().await?;
-    order.settled(end, generation).await;
-    handle.state.held.settled(end).await;
-    Ok(())
+    let settled = async {
+        order.settled(end, generation).await;
+        handle.state.held.settled(end).await;
+    };
+    // Bounded: every commit on the shard waits behind this one, and on a
+    // `Quorum` shard whose mark has stalled the hold may not drain.
+    tokio::time::timeout(SETTLE_LIMIT, settled)
+        .await
+        .map_err(|_| BrokerError::StateNotReadable(crate::NotReadable::Settling))?;
+    Ok(end)
+}
+
+/// The state as the log holds it below `end`.
+async fn rebuild_view(
+    handle: &StreamHandle,
+    log: &crate::durable::StreamLog,
+    end: u64,
+) -> Result<StateView> {
+    // A view rebuilt from disk must hold only committed records. The ring
+    // is bounded by the hold, but a promoted leader's `next_seq` covers
+    // everything it inherited, committed or not.
+    match handle.read_bound() {
+        bound if bound.covers(end) => {}
+        crate::ReadBound::Refused => {
+            return Err(BrokerError::StateNotReadable(crate::NotReadable::Refused));
+        }
+        _ => return Err(BrokerError::StateNotReadable(crate::NotReadable::Settling)),
+    }
+    let mut view = StateView::default();
+    let mut next = log.readable_base();
+    while next < end {
+        let page = log.read_log_from(next, REBUILD_PAGE_BYTES).await?;
+        for record in page.records.into_iter().filter(|r| r.offset < end) {
+            if record.mark.is_commit() {
+                let commit = CommitRecord::decode(&record.payload)?;
+                view.apply(record.offset, &commit.ops);
+            }
+        }
+        if page.next <= next {
+            break;
+        }
+        next = page.next;
+    }
+    Ok(view)
 }

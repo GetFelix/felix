@@ -405,3 +405,47 @@ async fn a_checked_commit_waits_for_a_held_commit_ahead_of_it() {
         "{checked:?}"
     );
 }
+
+/// **Discarding the hold drops the state view too.** A held commit the next
+/// leader goes on to commit is on disk here; a view kept from before it would
+/// let a check pass against the version that commit replaced.
+#[tokio::test]
+async fn a_discarded_hold_does_not_leave_a_stale_view() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (broker, bound) = broker(dir.path(), ConsistencyLevel::Quorum).await;
+    let handle = broker
+        .resolve_stream_handle("t1", "ns", "orders", 0)
+        .await
+        .expect("handle");
+    assert_eq!(commit(&broker, b"seed", vec![put("k", b"0")]).await, 0);
+    assert_eq!(get(&broker, "k").await.version, Some(0));
+    *bound.0.lock() = ReadBound::Committed(1);
+    assert_eq!(commit(&broker, b"w", vec![put("k", b"1")]).await, 1);
+    assert_eq!(broker.discard_uncommitted("t1", "ns", "orders", 0).await, 1);
+
+    // The next leader committed it.
+    *bound.0.lock() = ReadBound::Committed(2);
+    let checked = broker
+        .commit_to_handle_checked(
+            &handle,
+            Bytes::from_static(b"c"),
+            vec![put("k", b"2")],
+            None,
+            &[super::VersionCheck {
+                key: "k".to_owned(),
+                required: Some(0),
+            }],
+            None,
+        )
+        .await;
+    assert!(
+        matches!(
+            checked,
+            Err(BrokerError::VersionMismatch {
+                version: Some(1),
+                ..
+            })
+        ),
+        "{checked:?}"
+    );
+}
