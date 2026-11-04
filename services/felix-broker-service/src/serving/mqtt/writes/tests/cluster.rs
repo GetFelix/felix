@@ -401,20 +401,27 @@ async fn a_local_write_whose_leadership_moved_is_sent_to_the_new_owner() {
     let writes = BrokerWrites::new(
         Arc::clone(&broker),
         Some(Arc::clone(&ingress)),
-        Some(marks),
+        Some(Arc::clone(&marks)),
         Duration::from_secs(1),
     )
     .with_forwarding(Arc::clone(&owner), Duration::from_secs(3));
 
-    let moved = tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        show(&ingress, OWNER, GENERATION + 1);
+    // Moved once the batch is in the log here, so its quorum wait is what
+    // learns of it.
+    let moved = tokio::spawn({
+        let broker = Arc::clone(&broker);
+        async move {
+            while stored(&broker).await.is_empty() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            show(&ingress, OWNER, GENERATION + 1);
+            // What the lifecycle does once this broker stops leading it.
+            marks.forget(&shard());
+        }
     });
-    writes
-        .write(batch(0, 41, &["plant/a"]))
-        .await
-        .expect("answered by the new owner");
-    moved.await.expect("view");
+    let written = writes.write(batch(0, 41, &["plant/a"])).await;
+    moved.abort();
+    written.expect("answered by the new owner");
 
     assert_eq!(stored(&broker).await.len(), 1, "written here first");
     let sent = owner.sent();

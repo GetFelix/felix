@@ -5,6 +5,8 @@
 //! harness runs a prebuilt `target/<profile>/felix-broker`; build it first with
 //! `cargo build -p felix-broker-service --bin felix-broker`.
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 
 use felix_cluster::{Cluster, ClusterConfig, StreamSpec, ports};
@@ -59,43 +61,67 @@ async fn qos1_through_a_non_owner_survives_a_failover_without_duplicates() {
         }
     }
 
-    // Killed with no warning, so a forward to it can lose its answer.
+    // Published without a pause from before the kill until after a new owner
+    // serves, so forwards are in flight when the owner dies. Killed with no
+    // warning, so a forward to it can lose its answer.
+    let acked = Arc::new(AtomicU32::new(5));
+    let stop = Arc::new(AtomicBool::new(false));
     let publishing = {
         let tenant = cluster.tenant_id.clone();
         let token = cluster.client_token();
         let port = port_of[&ingress];
+        let (acked, stop) = (Arc::clone(&acked), Arc::clone(&stop));
         tokio::spawn(async move {
             let mut retried = Vec::new();
-            for i in 5..15 {
+            let mut i = 5;
+            while !stop.load(Ordering::Acquire) {
                 if publish_with(&tenant, &token, port, i).await > 1 {
                     retried.push(i);
                 }
+                i += 1;
+                acked.store(i, Ordering::Release);
             }
             retried
         })
     };
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    felix_cluster::wait::until(Duration::from_secs(30), "publishing under way", || {
+        let acked = Arc::clone(&acked);
+        async move { acked.load(Ordering::Acquire) >= 8 }
+    })
+    .await
+    .expect("publishing");
     cluster.stop_node(&owner).await.expect("kill the owner");
     let new_owner = new_owner(&cluster, &owner).await;
+    let served = acked.load(Ordering::Acquire);
+    felix_cluster::wait::until(
+        Duration::from_secs(60),
+        "publishing after the failover",
+        || {
+            let acked = Arc::clone(&acked);
+            async move { acked.load(Ordering::Acquire) >= served + 3 }
+        },
+    )
+    .await
+    .expect("publishing after the failover");
+    stop.store(true, Ordering::Release);
     retried.extend(publishing.await.expect("publisher"));
 
-    // Forwarding still works once the new owner serves: through whichever
-    // live broker does not own the shard now, first try.
+    // Through whichever live broker does not own the shard now. Its routes
+    // may still name the dead owner for a moment, so a try may be refused.
     let other = cluster
         .node_ids()
         .into_iter()
         .find(|node| node != &owner && node != &new_owner)
         .expect("a live non-owner");
-    for i in 15..18 {
-        assert_eq!(
-            publish_until_acked(&cluster, port_of[&other], i).await,
-            1,
-            "m{i} through {other} after the failover"
-        );
+    let last = acked.load(Ordering::Acquire);
+    for i in last..last + 3 {
+        if publish_until_acked(&cluster, port_of[&other], i).await > 1 {
+            retried.push(i);
+        }
     }
 
     let stored = read_back(&cluster, &new_owner).await;
-    for i in 0..18 {
+    for i in 0..last + 3 {
         let copies = stored.iter().filter(|p| **p == format!("m{i}")).count();
         assert!(copies >= 1, "acknowledged m{i} was lost: {stored:?}");
         if !retried.contains(&i) {
