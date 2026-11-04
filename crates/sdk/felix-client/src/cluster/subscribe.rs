@@ -361,7 +361,8 @@ impl Client {
     /// Returns the plain [`crate::Subscription`], not a [`ClusterSubscription`]:
     /// a followed subscription resubscribes without the bound after a move,
     /// which would run past `end`. If the shard moves mid-range the
-    /// subscription ends with [`crate::Subscription::shard_moved`] set, and the
+    /// subscription fails with [`crate::SubscriptionLost`] (or, in the live
+    /// phase, ends with [`crate::Subscription::shard_moved`] set), and the
     /// caller continues from the offset after its last event with a new
     /// range.
     pub async fn subscribe_range(

@@ -1116,3 +1116,48 @@ async fn history_alone_stops_before_its_end() {
     .expect("history");
     assert_eq!(sink.offsets(), vec![1, 2]);
 }
+
+/// A record past the end does not hide the records below it that the ring
+/// or the queue dropped: the gap is paged from disk before the replay stops.
+#[tokio::test]
+async fn a_replay_fills_a_hole_below_its_end_before_stopping() {
+    let (broker, _dir) = durable_broker().await;
+    publish(&broker, &["a", "b", "c", "d", "e", "f", "g", "h"]).await;
+    let mut subscription = broker
+        .subscribe(TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("subscribe");
+    let mut sink = Recorder::default();
+    // The ring holds only offset 7, so 3..7 is a hole below the end.
+    let backlog = vec![felix_broker::RingRecord {
+        offset: 7,
+        payload: payload("h"),
+        publisher: None,
+        headers: None,
+        timestamp_micros: None,
+    }];
+    let reached = write_replay(
+        &mut sink,
+        &broker,
+        TENANT,
+        NAMESPACE,
+        STREAM,
+        0,
+        SUBSCRIPTION,
+        Some(HistoryRange {
+            from_offset: 0,
+            until_offset: 3,
+        }),
+        backlog,
+        7,
+        &mut subscription,
+        64,
+        1024 * 1024,
+        SKIPS,
+        Some(6),
+    )
+    .await
+    .expect("replay");
+    assert!(reached);
+    assert_eq!(sink.offsets(), vec![0, 1, 2, 3, 4, 5]);
+}

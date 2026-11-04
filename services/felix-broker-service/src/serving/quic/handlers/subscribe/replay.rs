@@ -133,18 +133,19 @@ pub(super) async fn write_replay<S: EventSink>(
             break;
         }
         let offset = record.offset;
-        if offset >= cap {
-            reached = true;
-            break;
-        }
         // A hole in the ring is paged from disk like a hole in the queue
         // below. It is usually a generation-start record, which the read
-        // turns into a skip for the record after it.
+        // turns into a skip for the record after it. Filled up to `end`
+        // even when this record lies past it.
         if offset > replay.next {
             if let Some(ready) = batch.take() {
                 replay.write(&ready).await?;
             }
-            replay.history_until(offset).await?;
+            replay.history_until(offset.min(cap)).await?;
+        }
+        if offset >= cap {
+            reached = true;
+            break;
         }
         if offset < replay.next {
             continue;
@@ -182,13 +183,14 @@ pub(super) async fn write_replay<S: EventSink>(
         }
         for envelope in ready {
             if let Some(base) = envelope.base_offset() {
+                if base > replay.next {
+                    // The queue dropped records. Page the gap from disk, up
+                    // to `end` even when this batch lies past it.
+                    replay.history_until(base.min(cap)).await?;
+                }
                 if base >= cap {
                     reached = true;
                     break;
-                }
-                if base > replay.next {
-                    // The queue dropped records. Page the gap from disk.
-                    replay.history_until(base).await?;
                 }
                 if base + envelope.len() as u64 <= replay.next {
                     // Entirely covered by history already written.

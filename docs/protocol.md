@@ -307,7 +307,7 @@ for the stream. A reader that cannot tolerate gaps relies on
 `end` (optional, `u64`) bounds the subscription: it delivers `[start, end)` of a
 durable stream shard and then ends with [`subscription_ended`](#subscriptionended-server---client).
 It needs negotiated event offsets and a durable stream, and is refused with
-`invalid_request` otherwise. An `end` at or below the committed tail is read from
+`invalid_request` otherwise. An `end` at or below the log tail is read from
 history alone and never joins fanout; one above it replays up to the tail, then
 follows live delivery and cuts the batch that crosses `end`. A bounded
 subscription also ends at its first queue drop with `subscription_lagged`,

@@ -1603,17 +1603,19 @@ mod subscribing_to_a_range_1 {
             .subscribe_range("acme", "prod", "matches", 0, StartPosition::Offset(start), end)
             .await?;
         while let Some(event) = range.next_event().await? {
-            apply(event.offset.unwrap_or_default(), &event.payload);
+            if let Some(offset) = event.offset {
+                apply(offset, &event.payload);
+            }
         }
         if !range.reached_end() {
-            // The stream closed early, for example because the shard moved. Start a
-            // new range after the last offset applied.
+            // The stream closed without reaching `end`. Start a new range after the
+            // last offset applied.
         }
         Ok(())
     }
 }
 
-/// rust/subscribing.md line 203: "Offsets are how you notice a drop", block 1.
+/// rust/subscribing.md line 206: "Offsets are how you notice a drop", block 1.
 mod offsets_are_how_you_notice_a_drop_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1637,7 +1639,7 @@ mod offsets_are_how_you_notice_a_drop_1 {
     }
 }
 
-/// rust/subscribing.md line 227: "A consumer that survives a restart", block 1.
+/// rust/subscribing.md line 230: "A consumer that survives a restart", block 1.
 mod a_consumer_that_survives_a_restart_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1699,7 +1701,7 @@ mod a_consumer_that_survives_a_restart_1 {
     }
 }
 
-/// rust/subscribing.md line 284: "Where a subscription joined", block 1.
+/// rust/subscribing.md line 287: "Where a subscription joined", block 1.
 mod where_a_subscription_joined_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1714,7 +1716,7 @@ mod where_a_subscription_joined_1 {
     }
 }
 
-/// rust/subscribing.md line 317: "When a shard moves", block 1.
+/// rust/subscribing.md line 320: "When a shard moves", block 1.
 mod when_a_shard_moves_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1735,7 +1737,7 @@ mod when_a_shard_moves_1 {
     }
 }
 
-/// rust/subscribing.md line 345: "When a subscription falls behind", block 1.
+/// rust/subscribing.md line 348: "When a subscription falls behind", block 1.
 mod when_a_subscription_falls_behind_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1767,7 +1769,7 @@ mod when_a_subscription_falls_behind_1 {
     }
 }
 
-/// rust/subscribing.md line 377: "Multiple Subscriptions", block 1.
+/// rust/subscribing.md line 380: "Multiple Subscriptions", block 1.
 mod multiple_subscriptions_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1803,7 +1805,7 @@ mod multiple_subscriptions_1 {
     }
 }
 
-/// rust/subscribing.md line 410: "Async Event Processing", block 1.
+/// rust/subscribing.md line 413: "Async Event Processing", block 1.
 mod async_event_processing_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1833,7 +1835,7 @@ mod async_event_processing_1 {
     }
 }
 
-/// rust/subscribing.md line 436: "Subscription Lifecycle", block 1.
+/// rust/subscribing.md line 439: "Subscription Lifecycle", block 1.
 mod subscription_lifecycle_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;

@@ -176,17 +176,20 @@ let mut range = client
     .subscribe_range("acme", "prod", "matches", 0, StartPosition::Offset(start), end)
     .await?;
 while let Some(event) = range.next_event().await? {
-    apply(event.offset.unwrap_or_default(), &event.payload);
+    if let Some(offset) = event.offset {
+        apply(offset, &event.payload);
+    }
 }
 if !range.reached_end() {
-    // The stream closed early, for example because the shard moved. Start a
-    // new range after the last offset applied.
+    // The stream closed without reaching `end`. Start a new range after the
+    // last offset applied.
 }
 ```
 
 A range below the committed tail is read from disk and never joins fanout.
-Falling behind ends the range with `SubscriptionLagged`, which says where to
-resume. `subscribe_range` fails without sending anything when the broker does not
+Falling behind ends the range with a `SubscriptionLagged` error, which says
+where to resume, and a shard that moves mid-range surfaces as an error from
+`next_event` too, so resume after the last offset applied. `subscribe_range` fails without sending anything when the broker does not
 advertise `FEATURE_SUBSCRIBE_END`, rather than letting an older broker run on
 into live delivery. `Client::subscribe_range` finds the broker that leads the
 shard but does not follow a move, since a followed subscription would resume
