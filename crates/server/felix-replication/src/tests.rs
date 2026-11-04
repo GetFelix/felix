@@ -21,7 +21,8 @@ use felix_broker::DurableStorage;
 use felix_broker::StreamLog;
 use felix_storage::log::{FsyncMode, LogConfig};
 use felix_wire::internal::{
-    ErrorCode, InternalMessage, ReplicaLog, ReplicateRecords, ShardRef, batch_checksum,
+    ErrorCode, InternalMessage, PeerCapabilities, ReplicaLog, ReplicateRecords, ShardRef,
+    batch_checksum,
 };
 use felix_wire::internal::{ReplicateError, ReplicateOk};
 use tempfile::TempDir;
@@ -44,6 +45,8 @@ struct ScriptedFollower {
     offered: Mutex<Vec<u64>>,
     /// Base offsets this follower was told to rebuild from.
     rebuilds: Mutex<Vec<u64>>,
+    /// What this follower said it can do, when it said.
+    capabilities: Option<PeerCapabilities>,
 }
 
 impl ScriptedFollower {
@@ -55,7 +58,19 @@ impl ScriptedFollower {
             sent: Mutex::new(Vec::new()),
             offered: Mutex::new(Vec::new()),
             rebuilds: Mutex::new(Vec::new()),
+            capabilities: None,
         }
+    }
+
+    /// This follower offered `capabilities` in its handshake.
+    fn offering(mut self, capabilities: PeerCapabilities) -> Self {
+        self.capabilities = Some(capabilities);
+        self
+    }
+
+    /// Every batch this follower was sent, as sent.
+    fn batches(&self) -> Vec<ReplicateRecords> {
+        self.sent.lock().expect("lock").clone()
     }
 
     /// Base offsets this follower was offered.
@@ -89,6 +104,10 @@ impl ScriptedFollower {
 }
 
 impl PeerRequester for ScriptedFollower {
+    fn recorded_capabilities(&self, _node_id: &str) -> Option<PeerCapabilities> {
+        self.capabilities
+    }
+
     async fn request(
         &self,
         _node_id: &str,

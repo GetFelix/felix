@@ -217,6 +217,16 @@ pub enum Kind {
     ///
     /// [`PeerCapabilities::KEPT_SETS`]: super::PeerCapabilities::KEPT_SETS
     ElectionKeptFence = 48,
+    /// `ReplicateTimedRecords` followed by each record's key-and-headers
+    /// block. An older follower refuses it rather than storing the records
+    /// without their blocks.
+    ReplicateHeaderedRecords = 49,
+    /// `ReplicateTimedFetch`, answered with `ReplicateHeaderedRecords`.
+    ReplicateHeaderedFetch = 50,
+    /// `AuthorizedForwardPublish` followed by each record's key-and-headers
+    /// block. An older owner refuses it rather than writing the records
+    /// without their blocks.
+    HeaderedForwardPublish = 51,
 }
 
 impl Kind {
@@ -272,6 +282,9 @@ impl Kind {
             46 => Ok(Kind::LeaseForwardCacheOk),
             47 => Ok(Kind::ReplicateLearnerOk),
             48 => Ok(Kind::ElectionKeptFence),
+            49 => Ok(Kind::ReplicateHeaderedRecords),
+            50 => Ok(Kind::ReplicateHeaderedFetch),
+            51 => Ok(Kind::HeaderedForwardPublish),
             other => Err(Error::UnsupportedInternalKind(other)),
         }
     }

@@ -162,7 +162,8 @@ async fn two_current_brokers_learn_each_others_capabilities() {
         .union(PeerCapabilities::RECORD_TIMES)
         .union(PeerCapabilities::BALLOTS)
         .union(PeerCapabilities::PING)
-        .union(PeerCapabilities::HEAD_TRIM);
+        .union(PeerCapabilities::HEAD_TRIM)
+        .union(PeerCapabilities::RECORD_HEADERS);
     assert_eq!(theirs, offered);
     assert_eq!(pool.known_capabilities().get(PEER), Some(offered));
     // A caller reads an identity whether or not it gives one, replaces
@@ -484,7 +485,7 @@ async fn an_older_broker_dialling_in_is_answered_the_old_way() {
 /// **A broker with the fence turned off is an older broker to whoever sends
 /// one**: it offers nothing of the fence, the pool will not send it, and one
 /// sent by hand is refused as an unknown kind. Labels, forwarded offsets,
-/// record times and head trims are not the fence's, so they are still offered.
+/// record times, head trims and record headers are not the fence's, so they are still offered.
 #[tokio::test]
 async fn a_broker_with_the_fence_off_neither_offers_nor_answers_it() {
     let (listener, _noted) = listener_noting(false).await;
@@ -500,6 +501,7 @@ async fn a_broker_with_the_fence_off_neither_offers_nor_answers_it() {
             .union(PeerCapabilities::RECORD_TIMES)
             .union(PeerCapabilities::PING)
             .union(PeerCapabilities::HEAD_TRIM)
+            .union(PeerCapabilities::RECORD_HEADERS)
     );
     let err = pool
         .request(PEER, listener.addr, fence())
@@ -882,6 +884,7 @@ async fn a_broker_without_election_refuses_the_election_kinds() {
         generations: None,
         times: None,
         set_generation: Some(3),
+        headers: None,
     });
     let pre_vote = InternalMessage::PreVote(PreVote {
         correlation_id: 3,
@@ -941,4 +944,20 @@ fn election_is_offered_only_when_switched_on_with_the_fence() {
             .capabilities()
             .contains(PeerCapabilities::ELECTION)
     );
+}
+
+/// A broker offers `RECORD_HEADERS` with what a headered batch rides on, with
+/// the fence on or off: the timed layout needs the labels and the times.
+#[test]
+fn record_headers_are_offered_with_the_labels_and_times_they_ride_on() {
+    for fence in [true, false] {
+        let offered = PeerTransportConfig {
+            fence,
+            ..PeerTransportConfig::default()
+        }
+        .capabilities();
+        assert!(offered.contains(PeerCapabilities::RECORD_HEADERS));
+        assert!(offered.contains(PeerCapabilities::GENERATION_LABELS));
+        assert!(offered.contains(PeerCapabilities::RECORD_TIMES));
+    }
 }

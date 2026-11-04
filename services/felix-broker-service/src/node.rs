@@ -42,7 +42,7 @@ use tokio_util::task::TaskTracker;
 use crate::cluster::{controlplane_http, credential};
 use crate::config::{self, DurableStorageConfig};
 use crate::serving::auth::{BrokerAuth, ControlPlaneKeyStore, TenantCatalog};
-use crate::serving::mqtt::BrokerMounts;
+use crate::serving::mqtt::{BrokerMounts, BrokerWrites};
 use crate::serving::tls::ClientTls;
 use felix_replication as replication;
 
@@ -246,12 +246,12 @@ where
     } else if config.record_publishers {
         broker.record_publishers_when(|| true);
     }
-    // A record with headers is storage format v8, and replication does not
-    // ship headers yet, so a cluster member never enables them. A lone broker
-    // has no follower to lose them, and a client opts in by sending them. An
-    // operator who must keep the log readable by older builds turns publishing
-    // them off, but reads stay on so a log that holds headers still delivers
-    // them.
+    // A record with headers is storage format v8, which an older build refuses
+    // to open, so a cluster member enables them once its fleet has finalized
+    // `record_headers`. A lone broker has no older peer, and a client opts in
+    // by sending them. An operator who must keep the log readable by older
+    // builds turns publishing them off, but reads stay on so a log that holds
+    // headers still delivers them.
     if config.membership.is_some() {
         let fleet = Arc::clone(&fleet);
         broker.record_headers_when(move || fleet.supports(felix_common::fleet::RECORD_HEADERS));
@@ -393,6 +393,13 @@ where
         &client_tls,
         &auth,
         BrokerMounts::new(Arc::clone(&broker), ingress_router.clone()),
+        BrokerWrites::new(
+            Arc::clone(&broker),
+            ingress_router.clone(),
+            Some(Arc::clone(&quorum_marks)),
+            std::time::Duration::from_millis(config.publish_quorum_timeout_ms.max(1)),
+        )
+        .with_quotas(Arc::clone(&limits.tenant_rates)),
     )?;
     let mut accept_tasks = listeners::spawn_accept_loops(
         &quic_servers,

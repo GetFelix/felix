@@ -15,7 +15,8 @@ const CONNECTIONS: usize = 8;
 const PUBLISHERS_PER_CONNECTION: usize = 8;
 const PAYLOAD: usize = 256;
 const LOAD: Duration = Duration::from_secs(25);
-/// Every fleet feature but the opt-in `publisher_principal`, prerequisites first.
+/// The fleet features this run finalizes, prerequisites first. Others, such as
+/// `publisher_principal` and `record_headers`, change nothing it measures.
 const FEATURES: [&str; 10] = [
     "generation_start",
     "majority_ack",

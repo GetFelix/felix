@@ -419,7 +419,9 @@ impl StreamLog {
     /// `first_offset`. `None`, and nothing written, otherwise.
     ///
     /// `times` is each record's time, as the leader that appended it stored
-    /// it, or empty to stamp every record with this broker's clock.
+    /// it, or empty to stamp every record with this broker's clock. `headers`
+    /// is one key-and-headers block per record, as the leader stored it, or
+    /// `None` when no record has one.
     pub async fn begin_append_marked_at(
         &self,
         first_offset: Offset,
@@ -427,9 +429,9 @@ impl StreamLog {
         marks: &[RecordMark],
         publishers: &[Option<Bytes>],
         times: &[u64],
+        headers: Option<&[Option<Bytes>]>,
     ) -> Result<Option<PendingAppend>> {
-        // Replication does not ship headers, so a follower's records have none.
-        let mut records = records(payloads, marks, publishers, None, append_time_now())?;
+        let mut records = records(payloads, marks, publishers, headers, append_time_now())?;
         if times.len() == records.len() {
             for (record, time) in records.iter_mut().zip(times) {
                 record.timestamp_micros = *time;

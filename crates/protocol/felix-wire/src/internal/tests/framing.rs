@@ -89,6 +89,10 @@ fn the_existing_kind_discriminants_are_unchanged() {
         (31, Kind::ReplicateFetch),
         (38, Kind::Ping),
         (39, Kind::Pong),
+        (47, Kind::ReplicateLearnerOk),
+        (49, Kind::ReplicateHeaderedRecords),
+        (50, Kind::ReplicateHeaderedFetch),
+        (51, Kind::HeaderedForwardPublish),
     ] {
         assert_eq!(Kind::from_u16(value).expect("known"), kind);
         assert_eq!(kind as u16, value);
@@ -154,6 +158,7 @@ fn every_body_begins_with_its_correlation_id() {
         }),
         InternalMessage::ReplicateFetch(ReplicateFetch {
             timed: false,
+            headers: false,
             correlation_id: id,
             shard: shard.clone(),
             log: ReplicaLog::Stream,
@@ -172,6 +177,7 @@ fn every_body_begins_with_its_correlation_id() {
             commit_offset: None,
             generations: None,
             publishers: Vec::new(),
+            headers: None,
             set_generation: None,
         }),
         InternalMessage::ReplicateOk(ReplicateOk {

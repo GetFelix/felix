@@ -63,11 +63,18 @@ pub trait Cluster: Send + Sync + 'static {
     /// The offset below which a shard's records are committed, which is where
     /// a fetch stops and what it reports as the high watermark. `None` when
     /// everything durable here is committed: a `Leader` stream, or a shard
-    /// with no replicas. A `Quorum` shard's is its quorum mark, since a record
-    /// past it can be lost at failover and its offset reused.
-    fn committed_until(&self, shard: &ShardRef<'_>, handle: &StreamHandle) -> Option<u64> {
+    /// served here with no replicas. A `Quorum` shard's is its quorum mark,
+    /// since a record past it can be lost at failover and its offset reused.
+    /// [`Unreadable`] when this broker has no commit point to give: it no
+    /// longer serves a `Quorum` shard it was reading, or it just took one over
+    /// and has no mark yet.
+    fn committed_until(
+        &self,
+        shard: &ShardRef<'_>,
+        handle: &StreamHandle,
+    ) -> Result<Option<u64>, Unreadable> {
         let _ = (shard, handle);
-        None
+        Ok(None)
     }
 
     /// Account for `records` records of `bytes` payload that `tenant_id` is
@@ -265,3 +272,16 @@ pub fn kafka_node_id(node_id: &str) -> i32 {
 
 #[cfg(test)]
 mod tests;
+
+/// Why a `Quorum` shard has no commit point to read to here; see
+/// [`Cluster::committed_until`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unreadable {
+    /// This broker no longer serves the shard. Clients hear
+    /// `NOT_LEADER_OR_FOLLOWER` and look the leader up again.
+    NotServed,
+    /// This broker leads the shard but has no mark at its generation yet,
+    /// as right after a failover. A fetch is answered empty and `ListOffsets`
+    /// with `OFFSET_NOT_AVAILABLE`, which clients retry.
+    Settling,
+}

@@ -789,3 +789,96 @@ async fn an_explicit_queue_depth_still_caps_the_queue() {
     assert_eq!(queued, 3);
     assert!(refused.contains("queue full"), "refused by: {refused}");
 }
+
+/// A peer that offers nothing, so a headered forward is declined before it is
+/// sent.
+struct NoHeaders;
+
+impl felix_replication::peer::PeerRequester for NoHeaders {
+    async fn request(
+        &self,
+        node_id: &str,
+        _addr: std::net::SocketAddr,
+        message: felix_wire::internal::InternalMessage,
+    ) -> std::result::Result<
+        felix_wire::internal::InternalMessage,
+        felix_replication::peer::pool::PeerError,
+    > {
+        Err(felix_replication::peer::pool::PeerError::Unsupported {
+            node_id: node_id.to_string(),
+            kind: message.kind(),
+        })
+    }
+
+    fn recorded_capabilities(
+        &self,
+        _node_id: &str,
+    ) -> Option<felix_wire::internal::PeerCapabilities> {
+        Some(felix_wire::internal::PeerCapabilities::NONE)
+    }
+
+    async fn capabilities(
+        &self,
+        _node_id: &str,
+        _addr: std::net::SocketAddr,
+    ) -> std::result::Result<
+        felix_wire::internal::PeerCapabilities,
+        felix_replication::peer::pool::PeerError,
+    > {
+        Ok(felix_wire::internal::PeerCapabilities::NONE)
+    }
+}
+
+fn forward_job(headers: Option<Vec<Option<Bytes>>>) -> PublishJob {
+    PublishJob {
+        headers,
+        target: PublishTarget::Forward {
+            target: crate::serving::forward::ForwardTarget {
+                node_id: "broker-b".to_string(),
+                advertise_addr: "127.0.0.1:9".parse().expect("addr"),
+                generation: 1,
+                incarnation: 0,
+            },
+            key: crate::serving::forward::ForwardKey {
+                tenant_id: "t1".to_string(),
+                namespace: "default".to_string(),
+                stream: "demo".to_string(),
+                shard: 0,
+            },
+            ack: felix_wire::internal::AckMode::OnCommit,
+            credential: "token".to_string(),
+        },
+        payloads: vec![Bytes::from_static(b"a")],
+        response: None,
+        acked_on_enqueue: false,
+        admission_permit: None,
+        fenced: None,
+        publisher: None,
+    }
+}
+
+/// **A headered forward to an owner that lacks `RECORD_HEADERS` is refused as
+/// `feature_not_enabled`**, whether that owner was the first target or a
+/// redirect's. The same batch without headers is not mistaken for it.
+#[tokio::test]
+async fn a_headered_forward_to_an_owner_without_the_capability_is_not_enabled() {
+    let job = forward_job(Some(vec![Some(Bytes::from_static(b"block"))]));
+    let err = forward(&NoHeaders, &job, Duration::from_secs(5))
+        .await
+        .expect_err("refused");
+    let client = err.downcast_ref::<ClientError>().expect("a client error");
+    assert_eq!(
+        client.code(),
+        &felix_wire::ErrorCode::FeatureNotEnabled,
+        "{err}"
+    );
+    assert_eq!(
+        client.detail().and_then(|detail| detail.reason.as_deref()),
+        Some(felix_wire::feature_reason::RECORD_HEADERS)
+    );
+
+    let plain = forward(&NoHeaders, &forward_job(None), Duration::from_secs(5))
+        .await
+        .expect_err("refused");
+    assert!(plain.downcast_ref::<ClientError>().is_none(), "{plain}");
+}

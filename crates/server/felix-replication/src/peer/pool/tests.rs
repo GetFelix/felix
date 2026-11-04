@@ -116,6 +116,7 @@ fn a_counter_fence_needs_the_cache_fence() {
     let fetch = |log| {
         InternalMessage::ReplicateFetch(ReplicateFetch {
             timed: false,
+            headers: false,
             correlation_id: 0,
             shard: shard.clone(),
             log,
@@ -177,6 +178,7 @@ fn a_batch_holding_a_trim_needs_head_trim() {
             commit_offset: None,
             generations: None,
             times: None,
+            headers: None,
             set_generation: None,
         })
     };
@@ -262,6 +264,7 @@ fn election_messages_need_election() {
             generations: None,
             times: None,
             set_generation,
+            headers: None,
         })
     };
     assert_eq!(required_capability(&batch(None)), None);
