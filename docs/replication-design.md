@@ -3550,11 +3550,15 @@ Counting it there matters: a pass that only gave up on the answer would ask
 the follower again, and two followers each answering one pass behind would cut
 every pass short that way, with the mark never moving (#1479).
 The same holds with no busy follower. A follower level with a mark that already
-covers the tail is sent nothing, so it vouches for nothing, and the pass can
-have no majority while it waits on one follower that never answers. So once a
-follower that counts has answered, a record appended to the shard also ends
-that wait: the free follower gets the record in the next pass, and the
-unanswered exchange becomes a straggler (#1886). A tick, a route change or
+covers the tail is sent nothing. Its exchange still ends at once, but nothing
+in it vouches for the follower's position, so the mark counts it at 0. The pass
+can then have no majority while it waits on one follower that never answers.
+So once a follower that counts has answered without vouching for anything
+(sent nothing, or refused), a record appended to the shard also ends that wait:
+the free follower gets the record in the next pass, and the unanswered exchange
+becomes a straggler (#1886). A follower whose answer did vouch for its position
+does not end the wait, so with five replicas the pass still waits for a second
+healthy answer rather than cutting every pass short. A tick, a route change or
 another shard's append does not end it, since the next pass would only ask the
 same followers again.
 Its auxiliary logs wait too, so they do not

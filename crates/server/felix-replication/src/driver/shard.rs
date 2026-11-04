@@ -1185,10 +1185,17 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     let mut absorbed: Vec<String> = Vec::new();
     let mut absorbed_moved = false;
     while waiting > 0 {
-        // A counting follower that has answered is free for the next pass.
-        // Without a majority yet, the pass may be waiting on one that never
-        // answers, and a record landing meanwhile must not wait with it.
-        let free_counts = answered.iter().any(|node| counts(node));
+        // A counting follower that answered without vouching for anything
+        // (sent nothing, or refused) adds nothing here, so the pass may be
+        // waiting on one that never answers. A record landing meanwhile goes
+        // to the free one in the next pass instead. A checked answer means
+        // the rest are merely slower, and the pass keeps waiting for them.
+        let free_counts = {
+            let checked = checked.lock();
+            answered
+                .iter()
+                .any(|node| counts(node) && !checked.contains(node))
+        };
         let arrived = if busy_counts || free_counts {
             tokio::select! {
                 biased;
