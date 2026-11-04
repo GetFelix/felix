@@ -1694,6 +1694,25 @@ code. The report and the lease leave the write's path:
   Every follower the assignment names is counted, including one the node
   catalog has no address for yet, which holds nothing (see
   [Fencing a promotion](#fencing-a-promotion)).
+- **Which answers count.** A follower counts only on an answer that came from
+  the copy of the log its cursor describes (the same storage identity and
+  incarnation), and only up to what that answer said it holds. The answer
+  keeps counting after the pass that heard it ends, so two slow followers
+  that answer in different passes still make a majority together (#1895).
+  It stops counting when the leader has reason to doubt the copy:
+  - each exchange first asks the follower who it is, and until that check
+    finds the same copy the old answer counts for nothing, so a follower
+    found wiped is never counted on what its old copy held;
+  - an answer from any other copy stops it at once, and starts the cursor
+    over;
+  - a follower that restarts, even on the same storage, counts again only
+    once it answers.
+
+  A wipe the leader has not heard about yet is not caught: neither within a
+  pass nor across passes can the leader know what it has not been told.
+  `FollowerCursor::vouched_at` and `vouched_only` in
+  `crates/server/felix-replication/src` hold the rule; see
+  [Storage identities](#storage-identities) for the probe.
 - **The mark moves first.** The report still goes to the control plane every
   pass, for placement and promotion, but it is sent behind the mark and
   nothing waits for it to land.
@@ -2411,16 +2430,24 @@ The exchanges run concurrently, and the pass recounts the mark as each one
 lands, so a follower whose exchange has not got that far still carries the
 old copy's `confirmed`. Counted there, it could release records only the
 leader holds: a wiped follower that had confirmed more than the mark, beside
-one that fails at once. The probe does not settle it either, because it
-reads the pooled connection's handshake, and that connection can outlive the
-process it was opened to (below). So the mark and the counter mark count a
-follower, and a drain judges its successor level, only once one of its
-requests in this pass has been answered over a
-connection whose identity is the cursor's (`Witness`, `checked_only`). An
-answer from another identity starts the cursor over. Any other follower
-counts as holding nothing. A follower that is down counts for nothing either,
-though what it confirmed may well still be on its disk; the majority that
-answers carries the mark.
+one that fails at once. So the mark and the counter mark count a follower,
+and a drain judges its successor level, only on what an answer over a
+connection whose identity is the cursor's said it holds (`Witness`,
+`FollowerCursor::vouched`). That answer may come from an earlier pass. From
+the moment an exchange starts until its probe finds the copy the answer came
+from, the follower counts for nothing (`Unconfirmed`, `vouched_only`). An
+answer from another identity starts the cursor over. A follower that is down
+keeps counting on its last answer only if its probe still finds the same
+copy, and a probe that fails leaves it counting for nothing; the majority
+that answers carries the mark.
+
+The probe settles less than an answer, because it reads the pooled
+connection's handshake, and that connection can outlive the process it was
+opened to (below). A follower wiped since its last answer, behind a
+connection that still names the old copy, is counted on that answer until the
+leader hears from the new copy. The old copy did hold those records when it
+answered, and a copy wiped a moment after its answer in the same pass is no
+different.
 
 A follower level with the leader is sent nothing, so on an idle shard it
 would never answer. On a shard whose publishes wait on the mark, while this
