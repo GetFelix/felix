@@ -546,6 +546,17 @@ ReclaimBlind == FALSE
 \* `RenameUnfenced`: the renamed leader opens at once instead of fencing.
 Renames == FALSE
 RenameUnfenced == FALSE
+\* `SetLossUpTo`: up to that generation the leader may lose the set its
+\* generation leaves (`ForgetSet`, #1872): it learned the shard from a
+\* control-plane snapshot, or restarted after it opened. `{}` in `oldSet`
+\* stands for that unknown set: no majority of it is ever held, so the fence
+\* cannot open. The broker then reports its generation refused with no node
+\* named (`set_unknown` in promotion/joint.rs) and the control plane names it
+\* again one up (`CpRename`), only when the broker already opened that
+\* generation, so its fence there was taken. `UnknownRenamesAny` renames
+\* whenever the set is unknown, the unsafe rule.
+SetLossUpTo == 0
+UnknownRenamesAny == FALSE
 FenceChecksIds == TRUE
 UnnamedCounts == FALSE
 NameByRegistration == FALSE
@@ -1059,6 +1070,9 @@ FenceMembers(b) == Members(b) \cup (IF JointFence THEN UNION oldSet[b] ELSE {})
 
 \* Whether `held` holds a majority of every set `b` is leaving.
 MajorityOfOld(held, b) == \A o \in oldSet[b] : MajorityOf(held, o)
+
+\* Whether `b` lost the set it leaves (`ForgetSet`).
+SetUnknown(b) == {} \in oldSet[b]
 
 \* The set the control plane's assignment names.
 CpSet == ReplicaSet \cup joining
@@ -2242,6 +2256,25 @@ FinishChange(b) ==
                     nextVars, ackGen >>
     /\ UNCHANGED handoffVars
 
+\* Under `SetLossUpTo`, the leader no longer knows the set its generation
+\* leaves: it learned the shard from a snapshot while fencing, or restarted
+\* after it opened and fences the same generation again. Its log and
+\* generation stay; the fence starts over and cannot open.
+ASSUME SetLossUpTo > 0 => SetCheck /\ JointFence /\ TracksOpens
+ForgetSet(b) ==
+    /\ gen <= SetLossUpTo
+    /\ b = leader /\ bgen[b] = gen /\ ~SetUnknown(b)
+    /\ fencing' = [fencing EXCEPT ![b] = TRUE]
+    /\ answered' = [answered EXCEPT ![b] = {}]
+    /\ queued' = [queued EXCEPT ![b] = 0]
+    /\ pending' = [pending EXCEPT ![b] = 0]
+    /\ oldSet' = [oldSet EXCEPT ![b] = {{}}]
+    /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
+                    hbOut, hbAt, log, hwm, halted, acked, writes, staleCommit,
+                    promised, confirmed, ballot, opened, setGen, installed,
+                    nextVars, ackGen >>
+    /\ UNCHANGED handoffVars
+
 \* A yes to `f`'s pre-vote from `m`, under `PreVoteAsked`.
 PreVoteYes(m, f) ==
     /\ m \notin halted /\ ~Hears(m) /\ ~Ahead(m, f)
@@ -3067,7 +3100,9 @@ RenameDue ==
        /\ \/ PromisedAway(leader, leader, gen)
           \/ ~LeaderMajority(leader, left \cap Members(leader))
           \/ /\ stillFencing /\ JointFence
-             /\ ~MajorityOfOld(left \cup {leader}, leader)
+             /\ \E o \in oldSet[leader] \ {{}} : ~MajorityOf(left \cup {leader}, o)
+          \/ /\ stillFencing /\ SetUnknown(leader)
+             /\ ~UnknownRenamesAny => <<gen, leader>> \in opened
 
 \* Under `Renames`, the control plane names its leader again at the next
 \* generation, the same set and any pending change kept, once that leader
@@ -3572,6 +3607,7 @@ Next ==
         \/ GiveUpRound(b) /\ UNCHANGED quietVars
         \/ FailStop(b) /\ UNCHANGED quietVars
         \/ FinishChange(b) /\ UNCHANGED quietVars
+        \/ ForgetSet(b) /\ UNCHANGED quietVars
         \/ \E f \in Brokers :
             \/ Ship(b, f) /\ UNCHANGED quietVars
             \/ LearnHwm(b, f) /\ UNCHANGED quietVars
