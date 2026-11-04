@@ -113,11 +113,14 @@ async fn run(election: bool) {
     .await
     .expect("every stream serves before the kill");
 
-    let owners = cluster.shard_owners().await.expect("owners");
+    let owners = cluster.shard_assignments().await.expect("assignments");
     let mut led: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for name in &streams {
         let key = format!("{}/{}/{name}/0", cluster.tenant_id, cluster.namespace);
-        let owner = owners.get(&key).cloned().unwrap_or_default();
+        let owner = owners
+            .get(&key)
+            .map(|a| a.leader.clone())
+            .expect("assigned");
         led.entry(owner).or_default().push(name.clone());
     }
     let (victim, victims) = led
