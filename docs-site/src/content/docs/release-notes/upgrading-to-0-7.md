@@ -69,7 +69,7 @@ None of these is required. Each default keeps the 0.6.2 behavior.
 |---|---|
 | `FELIX_RECORD_HEADERS` *(main)* | Single broker only. `false` refuses publishes that carry headers, which keeps logs at v7 or older. Turning it off later leaves stored headers readable. A cluster follows the `record_headers` fleet feature instead. |
 | `FELIX_KAFKA_RECORD_HEADERS` *(main)* | `true` stores a Kafka producer's keys and headers with the record, which moves the logs to v8. Off by default, so the Kafka listener alone never does. |
-| `FELIX_MQTT_LISTEN`, `FELIX_MQTT_WS_LISTEN` *(main)* | Bind the MQTT listener, plain and over WebSockets. Unset leaves it off. Related `FELIX_MQTT_*` limits are in [the reference](/reference/environment-variables/). |
+| `FELIX_MQTT_LISTEN`, `FELIX_MQTT_WS_LISTEN` *(main)* | Bind the MQTT listener, plain and over WebSockets. Unset leaves it off, and the broker is then unchanged. Devices can publish; subscribing arrives in 0.8.0. Related `FELIX_MQTT_*` limits are in [the reference](/reference/environment-variables/). |
 | `FELIX_LEASE_TOKEN_KEY_FILE`, `FELIX_LEASE_TOKEN_MAX_TTL_SECONDS` *(main)* | Key file and longest lifetime for lease tokens. Without the key file a broker neither mints nor accepts them. Every broker needs the same file. |
 | `FELIX_INTERNAL_ELECTION` | Broker. `true` makes the broker offer replica elections. Every broker needs it before `joint_fence` and `replica_election` can be finalized, and keeps needing it after. See [Turning on failover without the control plane](#turning-on-failover-without-the-control-plane). |
 | `FELIX_SHARD_ELECTION_HOLD_MS`, `FELIX_SHARD_PENDING_SET_TIMEOUT_MS` | Control-plane timers for `replica_election`. Nothing uses them until that feature is finalized. |
@@ -84,7 +84,7 @@ breaking change).
 
 The ordinary order applies: control plane, then brokers one at a time, then
 clients. Back up the data directory first if you may use headers or head trim,
-because both write formats 0.6.2 cannot read.
+because both write formats 0.6.2 cannot read. The first MQTT publish to a mounted stream also stores record headers, so it counts as using headers.
 
 The `head_trim` and `record_headers` fleet features are new. They stay off after
 the brokers are upgraded, and nothing needs them unless you want to trim a
