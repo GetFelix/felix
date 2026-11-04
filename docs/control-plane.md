@@ -1567,12 +1567,11 @@ under the same leader.
 refusal with an empty `promised_to`. An election that persists its ballot
 and never opens leaves the candidate, and the replicas that answered it, at
 a generation no assignment names. A leader placement names below that ballot
-cannot open: its own open is refused if it stood itself, and otherwise the
-replicas holding the ballot refuse its fence. Placement never heard of the
+cannot open: its own open is refused if its own ballot is newer, and otherwise
+the replicas holding the ballot refuse its fence. Placement never heard of the
 ballot, so without the report it would keep naming a generation that can
 never serve. The broker reports it on that evidence alone: its own ballot
-newer than the open, or a fence that can no longer reach a majority because
-replicas answered with a newer ballot. Placement names the leader one
+newer than the open, or a replica answering its fence with a newer ballot. Placement names the leader one
 generation up each time (`set_unknown`), so it climbs past the ballot within
 a few reports; candidates never stand more than
 `ELECTION_GENERATION_WINDOW` (16) past the control plane, so this is

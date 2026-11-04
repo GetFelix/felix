@@ -29,6 +29,7 @@ const RESTART_BOUND: Duration = Duration::from_secs(45);
 /// **With `replica_election`, every shard the killed broker led serves again,
 /// during the outage and after the restart.**
 #[serial]
+#[ignore = "dispatch: scale-nightly.yml, variant failover"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn with_election_every_shard_of_a_killed_leader_serves_again() {
     run(true).await;
@@ -36,6 +37,7 @@ async fn with_election_every_shard_of_a_killed_leader_serves_again() {
 
 /// **Without election, the control plane's placement alone does the same.**
 #[serial]
+#[ignore = "dispatch: scale-nightly.yml, variant failover"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn without_election_every_shard_of_a_killed_leader_serves_again() {
     run(false).await;
@@ -136,12 +138,14 @@ async fn run(election: bool) {
 
     let killed = Instant::now();
     cluster.kill_node(&victim).expect("kill");
-    let outage = wait_served(&progress, &victims, killed, OUTAGE_BOUND).await;
+    let outage_bound = felix_cluster::wait::budget(OUTAGE_BOUND);
+    let outage = wait_served(&progress, &victims, killed, outage_bound).await;
     let outage_report = report(&cluster, &progress, &victims, killed, "outage").await;
 
     cluster.restart_node(&victim).await.expect("restart");
     let restarted = Instant::now();
-    let after = wait_served(&progress, &streams, restarted, RESTART_BOUND).await;
+    let restart_bound = felix_cluster::wait::budget(RESTART_BOUND);
+    let after = wait_served(&progress, &streams, restarted, restart_bound).await;
     let restart_report = report(&cluster, &progress, &streams, restarted, "restart").await;
 
     stop.store(true, Ordering::Release);
@@ -152,14 +156,14 @@ async fn run(election: bool) {
     let mut problems = Vec::new();
     if !outage.is_empty() {
         problems.push(format!(
-            "{} of {} shards {victim} led did not serve within {OUTAGE_BOUND:?} of the kill",
+            "{} of {} shards {victim} led did not serve within {outage_bound:?} of the kill",
             outage.len(),
             victims.len()
         ));
     }
     if !after.is_empty() {
         problems.push(format!(
-            "{} of {} shards did not serve within {RESTART_BOUND:?} of {victim}'s restart",
+            "{} of {} shards did not serve within {restart_bound:?} of {victim}'s restart",
             after.len(),
             streams.len()
         ));

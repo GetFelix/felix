@@ -1269,9 +1269,7 @@ impl ReplicaHandler {
                     correlation_id,
                     ErrorCode::FencedEpoch,
                     0,
-                    format!(
-                        "this broker accepted generation {counters}, the sender is at {generation}"
-                    ),
+                    superseded_detail(counters, generation),
                 );
             }
         }

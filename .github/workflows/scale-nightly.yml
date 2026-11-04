@@ -119,7 +119,8 @@ jobs:
           cargo test ${{ steps.variant.outputs.profile }} -p felix-cluster --test scale \
             -- --nocapture --include-ignored --test-threads 1 ${{ steps.variant.outputs.test != 'failover_heal::' && '--exact' || '' }} "${{ steps.variant.outputs.test }}" 2>&1 | tee "$RUNNER_TEMP/scale-output.txt"
           # A renamed test would otherwise match nothing and pass.
-          grep -qE '^running [1-9][0-9]* tests?' "$RUNNER_TEMP/scale-output.txt" || { echo "the canary test did not run"; exit 1; }
+          want=$([ "${{ steps.variant.outputs.test }}" = failover_heal:: ] && echo "running 2 tests" || echo "running 1 test")
+          grep -q "^$want" "$RUNNER_TEMP/scale-output.txt" || { echo "the canary test did not run"; exit 1; }
 
       - name: Summary
         if: always()
