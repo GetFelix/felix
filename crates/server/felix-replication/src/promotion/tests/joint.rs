@@ -954,6 +954,68 @@ fn only_a_set_this_broker_could_not_know_is_unknown() {
         crate::promotion::set_before(Some(&kept_at(PROMOTED - 2)), &route, None),
         Err(NoSetBefore::Skipped(PROMOTED))
     );
+    // No log keeps a set at generation 0, and nothing comes before it.
+    let first = Route {
+        generation: 0,
+        ..route
+    };
+    assert_eq!(
+        crate::promotion::set_before(None, &first, None),
+        Err(NoSetBefore::Unknown(0))
+    );
+}
+
+/// **A leader restarted at generation 0 asks for a rename on its own
+/// ballot** (#1872). A log never keeps a set at generation 0, so a shard
+/// never moved since its first assignment, restarted after `joint_fence` is
+/// finalized, has only its ballot to show it opened there. Its own ballot
+/// asks for generation 1, whose set before its watch knows; another node's
+/// ballot, or none, waits.
+#[tokio::test]
+async fn a_leader_at_generation_zero_renames_only_on_its_own_ballot() {
+    let route = Route {
+        generation: 0,
+        ..swapped()
+    };
+    let addr_of = addr_of;
+    for (ballot, renames) in [
+        (Some(LEADER), true),
+        (Some("broker-x"), false),
+        (None, false),
+    ] {
+        let replicas = replicas_with(&["broker-x", "broker-z"]);
+        let (leader, _dir) = leader_holding(0, &["a"]).await;
+        let log = leader
+            .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+            .await
+            .expect("log");
+        if let Some(ballot) = ballot {
+            log.accept_generation(0, Some(ballot))
+                .await
+                .expect("ballot");
+        }
+        log.accept_set(crate::replica_set::kept(&route, None))
+            .await
+            .expect("a set at generation 0 is taken as current");
+        assert!(log.replica_set().is_none(), "kept a set at generation 0");
+
+        let joint = Joint::new(&addr_of, None);
+        let outcome = fence_shard(
+            &replicas,
+            &leader,
+            LEADER,
+            &key(),
+            &route,
+            false,
+            Some(&joint),
+        )
+        .await;
+
+        match (&outcome, renames) {
+            (Outcome::SetUnknown { .. }, true) | (Outcome::Pending { .. }, false) => {}
+            _ => panic!("ballot {ballot:?}: {outcome:?}"),
+        }
+    }
 }
 
 /// **A set kept from another node's request is not one this broker opened**

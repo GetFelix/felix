@@ -4186,6 +4186,11 @@ Once it is finalized on a broker that offers `ELECTION`:
     naming no node, and placement names it again one generation up on the
     same set (`set_unknown`). The set that generation leaves is the one the
     log keeps, so the fence there can open.
+  - The route is at generation 0 and the log keeps no set, under the
+    broker's own ballot at 0: a shard never moved since it was placed. A
+    log never keeps a set at generation 0, and no generation comes before
+    it, so the ballot is the evidence. The broker asks for a rename as
+    above.
   - The log keeps this generation's set under another node's ballot, kept
     from that node's fence or election request: nothing proves the set
     before was fenced from here. The fence stays pending.

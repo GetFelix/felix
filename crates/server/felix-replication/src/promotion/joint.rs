@@ -265,8 +265,9 @@ pub(crate) enum NoSetBefore {
     /// This broker counts the set of this newer generation.
     Newer(u64),
     /// Nothing here names the set at the generation before this one, and
-    /// this log keeps this generation's own set. Only a later generation
-    /// can tell, and renaming to it leaves the set this log keeps. [`sets`]
+    /// this log keeps this generation's own set, or the generation is 0, at
+    /// which no log keeps one. Only a later generation can tell, and
+    /// renaming to it leaves the set this log keeps. [`sets`]
     /// returns it only when this broker also opened the generation as its
     /// leader, before `joint_fence` was on: that open already fenced the
     /// set before, so the rename skips nothing.
@@ -367,12 +368,16 @@ pub(crate) fn set_before(
         return Ok(Some(stored.current.clone()));
     }
     // Only this generation's own kept set is evidence that no earlier set
-    // still holds records this broker would leave behind.
+    // still holds records this broker would leave behind. A log never keeps
+    // a set at generation 0 (`accept_set` takes it as the one it has), and
+    // nothing precedes that generation, so there the own ballot `sets`
+    // checks stands in for it.
     match stored {
         Some(stored) if stored.current.generation == route.generation => {
             Err(NoSetBefore::Unknown(route.generation))
         }
         Some(_) => Err(NoSetBefore::Skipped(route.generation)),
+        None if route.generation == 0 => Err(NoSetBefore::Unknown(0)),
         None => Err(NoSetBefore::Unseen(route.generation)),
     }
 }

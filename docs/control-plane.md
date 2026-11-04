@@ -1497,8 +1497,9 @@ named on now, so its fence can open there. Nothing in the control plane's
 state is new for this: the empty name is stored like any other.
 
 A broker reports it only from that evidence: this generation's set and a
-ballot naming itself. A set kept from another node's fence or election
-request proves nothing was fenced from here, so that fence waits. So does
+ballot naming itself. At generation 0 the ballot alone is enough, since a log
+never keeps a set there and nothing comes before it. A set kept from
+another node's fence or election request proves nothing was fenced from here, so that fence waits. So does
 one whose log keeps no set for the shard. It may be a failover's new
 leader whose watch started from a snapshot, and the old leader, cut off but
 still running, may still be acknowledging on a majority of the old set. A
