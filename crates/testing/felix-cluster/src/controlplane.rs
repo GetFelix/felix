@@ -47,7 +47,9 @@ fn unsettled(
 /// a broker that actually stopped rather than a slow network. Short windows make
 /// a stopped broker observable in seconds instead of tens of seconds, which is
 /// what failure tests wait on.
-const LIVENESS: NodeLivenessConfig = NodeLivenessConfig {
+/// [`ClusterConfig::node_expiry`](crate::ClusterConfig::node_expiry) replaces
+/// the expiry.
+pub(crate) const LIVENESS: NodeLivenessConfig = NodeLivenessConfig {
     heartbeat_interval_ms: 200,
     expiry_timeout_ms: 1_000,
     regrant_margin_ms: None,
@@ -56,12 +58,6 @@ const LIVENESS: NodeLivenessConfig = NodeLivenessConfig {
     // backstop for anything the harness does not step itself.
     shard_reconcile_interval_ms: 500,
 };
-
-/// How long placement believes a report: twice the expiry plus a heartbeat
-/// (`report_ttl_millis` in the control plane's placement).
-pub(crate) fn report_ttl_millis() -> u64 {
-    LIVENESS.expiry_timeout_ms * 2 + LIVENESS.heartbeat_interval_ms
-}
 
 /// How long [`Runtime::stop`] waits for the runtime's threads to exit.
 const RUNTIME_STOP: Duration = Duration::from_secs(5);
@@ -72,6 +68,7 @@ pub struct ControlPlane {
     pub store: Arc<InMemoryStore>,
     keys: TenantSigningKeys,
     placement_wakes: Arc<felix_controlplane_service::cluster::placement::PlacementWakes>,
+    liveness: NodeLivenessConfig,
     /// The interval [`Self::run_placement`] was given, so a restart runs
     /// placement again: the reconciler stops with the instance it ran on.
     placement: std::sync::Mutex<Option<Duration>>,
@@ -83,6 +80,11 @@ pub struct ControlPlane {
 impl ControlPlane {
     /// Start the control plane, holding the signing keys it will issue against.
     pub async fn start(tenant_id: &str) -> Result<Self> {
+        Self::start_with(tenant_id, LIVENESS).await
+    }
+
+    /// [`Self::start`] with its own liveness timings.
+    pub(crate) async fn start_with(tenant_id: &str, liveness: NodeLivenessConfig) -> Result<Self> {
         crate::cluster::capture_control_plane();
         let store = Arc::new(InMemoryStore::new(StoreConfig {
             changes_limit: felix_controlplane_service::config::DEFAULT_CHANGES_LIMIT,
@@ -103,7 +105,13 @@ impl ControlPlane {
             .context("seed tenant signing keys")?;
 
         let addr = ports::free_tcp()?;
-        Self::serve(store, keys, addr).await
+        Self::serve(store, keys, addr, liveness).await
+    }
+
+    /// How long placement believes a report: twice the expiry plus a heartbeat
+    /// (`report_ttl_millis` in the control plane's placement).
+    pub(crate) fn report_ttl_millis(&self) -> u64 {
+        self.liveness.expiry_timeout_ms * 2 + self.liveness.heartbeat_interval_ms
     }
 
     /// Where this control plane listens.
@@ -132,6 +140,7 @@ impl ControlPlane {
             store: Arc::clone(&self.store),
             keys: self.keys.clone(),
             addr: self.addr()?,
+            liveness: self.liveness.clone(),
             placement: *self.placement.lock().expect("placement lock"),
         };
         self.shutdown().await;
@@ -143,6 +152,7 @@ impl ControlPlane {
         store: Arc<InMemoryStore>,
         keys: TenantSigningKeys,
         addr: std::net::SocketAddr,
+        liveness: NodeLivenessConfig,
     ) -> Result<Self> {
         let state = AppState {
             region: Region {
@@ -161,7 +171,7 @@ impl ControlPlane {
             ),
             bootstrap_enabled: false,
             bootstrap_tokens: Vec::new(),
-            node_liveness: LIVENESS,
+            node_liveness: liveness.clone(),
             readiness: std::sync::Arc::new(
                 felix_controlplane_service::api::readiness::Readiness::new(std::sync::Arc::new(
                     felix_controlplane_service::api::readiness::AlwaysReady,
@@ -178,6 +188,7 @@ impl ControlPlane {
         let shutdown = CancellationToken::new();
         let serve_shutdown = shutdown.clone();
         let sweep_store = Arc::clone(&store);
+        let sweep_liveness = liveness.clone();
         let (task, addr) = runtime
             .handle()
             .spawn(async move {
@@ -201,7 +212,7 @@ impl ControlPlane {
                         as Arc<
                             dyn felix_controlplane_service::store::ControlPlaneStore + Send + Sync,
                         >,
-                    LIVENESS,
+                    sweep_liveness,
                     felix_controlplane_service::raft::LeadershipGate::Always,
                     sweep_shutdown,
                 );
@@ -217,6 +228,7 @@ impl ControlPlane {
             store,
             keys,
             placement_wakes,
+            liveness,
             placement: std::sync::Mutex::new(None),
             shutdown,
             task,
@@ -284,7 +296,7 @@ impl ControlPlane {
         use felix_controlplane_service::cluster::placement::{MovePolicy, PlacementRead};
         use felix_controlplane_service::model::NodeLifecycle;
 
-        let mut read = PlacementRead::load(self.store.as_ref(), &LIVENESS)
+        let mut read = PlacementRead::load(self.store.as_ref(), &self.liveness)
             .await
             .context("read placement")?;
         for node in read.nodes.iter_mut().filter(|node| node.node_id == down) {
@@ -300,7 +312,7 @@ impl ControlPlane {
     ) -> felix_controlplane_service::cluster::placement::ReconcileOutcome {
         felix_controlplane_service::cluster::placement::reconcile_once(
             self.store.as_ref(),
-            &LIVENESS,
+            &self.liveness,
             unsettled(policy),
         )
         .await
@@ -408,7 +420,7 @@ impl ControlPlane {
             felix_controlplane_service::cluster::placement::spawn_reconciler(
                 Arc::clone(&self.store)
                     as Arc<dyn felix_controlplane_service::store::ControlPlaneStore + Send + Sync>,
-                LIVENESS,
+                self.liveness.clone(),
                 unsettled(felix_controlplane_service::cluster::placement::MovePolicy::default()),
                 interval,
                 "felix-cluster".to_string(),
@@ -480,13 +492,15 @@ pub(crate) struct StoppedControlPlane {
     store: Arc<InMemoryStore>,
     keys: TenantSigningKeys,
     addr: std::net::SocketAddr,
+    liveness: NodeLivenessConfig,
     placement: Option<Duration>,
 }
 
 impl StoppedControlPlane {
     /// Serve again, and run placement again if it was running.
     pub(crate) async fn start(self) -> Result<ControlPlane> {
-        let control_plane = ControlPlane::serve(self.store, self.keys, self.addr).await?;
+        let control_plane =
+            ControlPlane::serve(self.store, self.keys, self.addr, self.liveness).await?;
         if let Some(interval) = self.placement {
             control_plane.run_placement(interval);
         }
