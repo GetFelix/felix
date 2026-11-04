@@ -1135,7 +1135,7 @@ answered before the next request is read, because every later request on the
 connection is checked against the identity it gives.
 
 Promotion fences from one leader still take turns on each follower. Each one
-can open a log and write a ballot to disk, and hundreds of them at once slow
+can open a log and write a ballot to disk, and many of them at once slow
 the writes the follower already serves. So the follower runs one leader's
 promotion fences one at a time, and a fence waits at most 2 seconds for its
 turn before it runs anyway. A read round's fence repeats the generation the

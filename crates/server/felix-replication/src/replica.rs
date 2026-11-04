@@ -79,13 +79,13 @@ pub struct ReplicaHandler {
     /// Whether the control plane last registered this broker under another
     /// identity. See `election.rs`.
     replaced_storage: bool,
-    /// Run after an incarnation check passes, to change the catalog between
-    /// the check and the open.
     /// Each leader's turn to fence here. See [`Self::fence`].
     fence_turns: parking_lot::Mutex<HashMap<String, Arc<tokio::sync::Semaphore>>>,
     /// The generation each log last took a fence at, which a read round's
     /// fence repeats. Only paces fences; the ballot decides every one.
     fenced_at: parking_lot::Mutex<HashMap<(felix_router::ShardKey, felix_broker::LogKind), u64>>,
+    /// Run after an incarnation check passes, to change the catalog between
+    /// the check and the open.
     #[cfg(test)]
     incarnation_checked: parking_lot::Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
 }
