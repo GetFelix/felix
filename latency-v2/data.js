@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793764927798,
+  "lastUpdate": 1793773325804,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -56100,6 +56100,72 @@ window.BENCHMARK_DATA = {
             "range": "499.21",
             "unit": "us",
             "extra": "trials: 5\nmedian: 534.00\nmean: 750.40\nstdev: 499.21\ncv: 66.53%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "03c8c92e4de407b045e7acc0fb9e2cb1335e5571",
+          "message": "feat(mqtt): publish at QoS 0 and 1 to a mounted stream on the shard's owner (#1691) (#1876)\n\n* feat(mqtt): publish at QoS 0 and 1 to a mounted stream on the shard's owner (#1691)\n\nA PUBACK is queued only after the write has the acknowledgement the\nstream's consistency asks for, in the order the PUBLISHes arrived. An\nunknown outcome closes the connection without answering. Each connection\npublishes under its own producer id, one idempotent batch at a time, and\nis held to FELIX_MQTT_MAX_INFLIGHT (advertised as Receive Maximum).\n\n* fix(mqtt): bound decoding by the in-flight limit, 0x80 for a gone stream, honest resend docs (#1691)\n\n* chore(mqtt): mark the publish path as outside the model (#1691)\n\nSpec-Unaffected: the MQTT listener writes through the broker's existing owner publish path (begin_append, commit, await_quorum) and adds no lease, fence, replication or routing behaviour; serving/mqtt only maps a batch onto that path.",
+          "timestamp": "2026-11-03T22:14:39-08:00",
+          "tree_id": "8f6ee6bc0f9737578b6d93b8d4acfbd178b291f4",
+          "url": "https://github.com/GetFelix/felix/commit/03c8c92e4de407b045e7acc0fb9e2cb1335e5571"
+        },
+        "date": 1793773316997,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 114,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 114.00\nmean: 114.40\nstdev: 0.55\ncv: 0.48%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 162,
+            "range": "12.03",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 162.00\nmean: 164.20\nstdev: 12.03\ncv: 7.33%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 241,
+            "range": "59.81",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 241.00\nmean: 252.00\nstdev: 59.81\ncv: 23.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 146,
+            "range": "1.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 146.00\nmean: 145.40\nstdev: 1.52\ncv: 1.04%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 294,
+            "range": "6.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 294.00\nmean: 292.20\nstdev: 6.10\ncv: 2.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 500,
+            "range": "384.03",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 500.00\nmean: 640.80\nstdev: 384.03\ncv: 59.93%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
