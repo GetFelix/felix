@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793763486956,
+  "lastUpdate": 1793764931417,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -44148,6 +44148,58 @@ window.BENCHMARK_DATA = {
             "range": "13894.32",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1194429.16\nmean: 1202406.10\nstdev: 13894.32\ncv: 1.16%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "92561e5f199470f8c275788bf0905a32825e818d",
+          "message": "fix(conformance): the fixture settles shard moves before it holds (#1869) (#1871)\n\n* fix(conformance): settle shard moves before the fixture holds, and serialize hold with the placement pass (#1869)\n\n* fix(conformance): heal always releases hold, partition keeps an open fence, python heal timeout",
+          "timestamp": "2026-11-04T03:54:51Z",
+          "tree_id": "7f9638c0460196f851275095100839c4d0cb85d3",
+          "url": "https://github.com/GetFelix/felix/commit/92561e5f199470f8c275788bf0905a32825e818d"
+        },
+        "date": 1793764930749,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 351799.65,
+            "range": "7848.16",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 351799.65\nmean: 351265.63\nstdev: 7848.16\ncv: 2.23%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 351799.65,
+            "range": "7848.16",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 351799.65\nmean: 351265.63\nstdev: 7848.16\ncv: 2.23%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80759.95,
+            "range": "738.19",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80759.95\nmean: 81051.11\nstdev: 738.19\ncv: 0.91%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 807599.53,
+            "range": "7381.91",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 807599.53\nmean: 810511.14\nstdev: 7381.91\ncv: 0.91%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
