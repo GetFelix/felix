@@ -144,7 +144,7 @@ impl Cluster {
                 .ok_or_else(|| anyhow!("control plane is gone"))?;
             let node = spawn_broker(
                 &self.binary,
-                control_plane,
+                &control_plane.base_url,
                 &self.credentials,
                 &self.config,
                 self._root.path(),
