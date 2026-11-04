@@ -1097,7 +1097,8 @@ impl PeerRequester for ElectingFollowers {
 
 /// The first report of a leader at generation 4 under `joint_fence` whose
 /// watch saw nothing before 4, with generation 4's own set kept in its log,
-/// as a leader keeps that opened at 4 before `joint_fence` was on, or none.
+/// with its own ballot, as a leader keeps that opened at 4 before
+/// `joint_fence` was on, or none.
 /// The first report naming a refusal, or none within `within`.
 async fn joint_fence_refusal(keep_own_set: bool, within: Duration) -> Option<ShardReplicaStatus> {
     use felix_common::fleet::{FleetGate, GENERATION_START, JOINT_FENCE, MAJORITY_ACK};
@@ -1106,11 +1107,14 @@ async fn joint_fence_refusal(keep_own_set: bool, within: Duration) -> Option<Sha
     let routes = router(LOCAL, &["broker-b", "broker-c"], 4);
     if keep_own_set {
         let route = routes.snapshot().get(&key()).cloned().expect("route");
-        broker
+        let log = broker
             .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
             .await
-            .expect("log")
-            .accept_set(crate::replica_set::kept(&route, None))
+            .expect("log");
+        log.accept_generation(4, Some(LOCAL))
+            .await
+            .expect("own ballot at 4");
+        log.accept_set(crate::replica_set::kept(&route, None))
             .await
             .expect("keep generation 4's set");
     }

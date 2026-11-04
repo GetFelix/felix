@@ -1488,15 +1488,18 @@ under the same leader.
 refusal with an empty `promised_to`. Under `joint_fence` every open is fenced,
 and the fence needs the set at the generation before. A leader restarted at
 a generation it opened before `joint_fence` was finalized keeps that
-generation's set in its log but not the one before, and its watch, started
-from a snapshot, did not see the step. Placement answers the empty refusal
+generation's set and its own ballot in its log, but not the set before, and
+its watch, started from a snapshot, did not see the step. That earlier open
+already fenced the set before. Placement answers the empty refusal
 the same way (`set_unknown`): the same leader and set at the next
 generation. The set that generation leaves is the one the broker kept and is
 named on now, so its fence can open there. Nothing in the control plane's
 state is new for this: the empty name is stored like any other.
 
-A broker reports it only from that evidence. A broker whose log keeps no set
-for the shard reports nothing and its fence waits. It may be a failover's new
+A broker reports it only from that evidence: this generation's set and a
+ballot naming itself. A set kept from another node's fence or election
+request proves nothing was fenced from here, so that fence waits. So does
+one whose log keeps no set for the shard. It may be a failover's new
 leader whose watch started from a snapshot, and the old leader, cut off but
 still running, may still be acknowledging on a majority of the old set. A
 rename would fence the new set alone and lose those records. The one such
@@ -1881,9 +1884,10 @@ assignment, the one the control plane wrote when it had none for the shard.
 It is the snapshot's counterpart of an `assigned` change: a broker that
 learns a new shard from a snapshot knows nothing came before it, and its
 joint fence fences the new set alone. The control plane finds it in its
-retained change log (the last `FELIX_CONTROLPLANE_CHANGE_RETENTION_MAX_ROWS`
-changes), so an item whose `assigned` change has been trimmed is left
-unmarked. Absent never means "not first", only "not known", and a
+shard change log. The in-memory and Raft stores keep the last
+`FELIX_CONTROLPLANE_CHANGE_RETENTION_MAX_ROWS` changes, so there an item
+whose `assigned` change has been trimmed is left unmarked; Postgres keeps
+every shard change. Only a stream or cache with an incarnation is marked. Absent never means "not first", only "not known", and a
 broker treats it as unknown. A control plane that predates the field sends
 none.
 

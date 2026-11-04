@@ -374,10 +374,10 @@ pub trait ControlPlaneStore: Send + Sync {
     async fn shard_assignment_snapshot(&self) -> StoreResult<Snapshot<ShardAssignment>>;
     /// Each shard's first assignment still in the retained change log, as
     /// `(key, incarnation, generation)`: the assignment written when the
-    /// store had none for the shard. A snapshot marks an item found here so a
-    /// broker learning it there knows nothing came before it, as the
-    /// `assigned` change tells a watching one. One evicted from the log is
-    /// not listed, and its item is not marked.
+    /// store had none for the shard, at an incarnation above 0. A snapshot
+    /// marks an item found here so a broker learning it there knows nothing
+    /// came before it, as the `assigned` change tells a watching one. One
+    /// evicted from the log is not listed, and its item is not marked.
     async fn first_shard_assignments(&self) -> StoreResult<Vec<(ShardKey, u64, u64)>>;
     async fn shard_assignment_changes(
         &self,

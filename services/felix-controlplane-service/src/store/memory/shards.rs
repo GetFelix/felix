@@ -285,6 +285,7 @@ pub(super) async fn first_shard_assignments(
         .iter()
         .filter(|change| change.op == ShardAssignmentChangeOp::Assigned)
         .filter_map(|change| change.assignment.as_ref())
+        .filter(|first| first.incarnation > 0)
         .map(|first| (first.key.clone(), first.incarnation, first.generation))
         .collect())
 }

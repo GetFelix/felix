@@ -265,10 +265,11 @@ pub(crate) enum NoSetBefore {
     /// This broker counts the set of this newer generation.
     Newer(u64),
     /// Nothing here names the set at the generation before this one, and
-    /// this log keeps this generation's own set: it was fenced here at this
-    /// generation before `joint_fence` was on, or followed at it. Only a
-    /// later generation can tell, and renaming to it leaves the set this
-    /// log keeps, the one already fenced.
+    /// this log keeps this generation's own set. Only a later generation
+    /// can tell, and renaming to it leaves the set this log keeps. [`sets`]
+    /// returns it only when this broker also opened the generation as its
+    /// leader, before `joint_fence` was on: that open already fenced the
+    /// set before, so the rename skips nothing.
     Unknown(u64),
     /// As [`Self::Unknown`], but this log keeps the set of an older
     /// generation than the one before: this broker never opened the
@@ -278,6 +279,10 @@ pub(crate) enum NoSetBefore {
     /// route is the shard's first assignment. An earlier set may hold
     /// acknowledged records that a rename would leave unfenced.
     Unseen(u64),
+    /// As [`Self::Unknown`], but this broker's ballot is not its own at this
+    /// generation: the set was kept from another node's fence or election
+    /// request, which proves nothing was fenced from here.
+    NotOpened(u64),
 }
 
 impl std::fmt::Display for NoSetBefore {
@@ -287,7 +292,10 @@ impl std::fmt::Display for NoSetBefore {
                 f,
                 "this broker counts the set of generation {generation}, newer than this one"
             ),
-            Self::Unknown(generation) | Self::Skipped(generation) | Self::Unseen(generation) => {
+            Self::Unknown(generation)
+            | Self::Skipped(generation)
+            | Self::Unseen(generation)
+            | Self::NotOpened(generation) => {
                 write!(
                     f,
                     "the set before generation {generation} is not known here, so the set being \
@@ -472,7 +480,18 @@ pub(super) async fn sets<R: PeerRequester>(
     joint: &Joint<'_>,
 ) -> Result<Fenced, NoSetBefore> {
     let stored = log.replica_set();
-    let before = match set_before(stored.as_ref(), route, joint.prior.as_ref())? {
+    let before = match set_before(stored.as_ref(), route, joint.prior.as_ref()) {
+        // A rename is safe only past a generation this broker opened as
+        // leader: its own ballot there, as `keep_own_set` records it.
+        Err(NoSetBefore::Unknown(generation))
+            if log.accepted_generation() != generation
+                || log.accepted_leader().as_deref() != Some(local_node_id) =>
+        {
+            return Err(NoSetBefore::NotOpened(generation));
+        }
+        before => before?,
+    };
+    let before = match before {
         Some(before) => before,
         // Nothing before a first assignment: kept as an empty set, which
         // is no change to fence across, as in the model.

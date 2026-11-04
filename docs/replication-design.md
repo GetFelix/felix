@@ -4179,12 +4179,16 @@ Once it is finalized on a broker that offers `ELECTION`:
   does not fence the new set alone. What it does depends on what the log
   keeps, and it acts only on evidence that no earlier set can still hold
   acknowledged records:
-  - The log keeps this generation's own set: the broker fenced or followed
-    here at this generation, before `joint_fence` was on (a leader
-    restarted after the finalize). It reports the generation refused,
+  - The log keeps this generation's own set and the broker's own ballot at
+    it: the broker opened this generation as leader before `joint_fence`
+    was on (a leader restarted after the finalize), and that open fenced
+    the set before. It reports the generation refused,
     naming no node, and placement names it again one generation up on the
     same set (`set_unknown`). The set that generation leaves is the one the
     log keeps, so the fence there can open.
+  - The log keeps this generation's set under another node's ballot, kept
+    from that node's fence or election request: nothing proves the set
+    before was fenced from here. The fence stays pending.
   - The log keeps an older set than the one before: the leader skipped a
     generation it never opened, and a rename would leave that generation's
     set unfenced. The fence stays pending.

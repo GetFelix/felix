@@ -137,7 +137,6 @@ async fn every_feed_is_followed_past_a_full_page(store: &dyn ControlPlaneAuthSto
     )
     .await;
     assert_all_seen("shard assignment", &shards, &seen);
-    first_assignments_are_listed(store, &assignment(0, &nodes[0])).await;
 
     for shard in 0..count as u32 {
         store
@@ -151,41 +150,6 @@ async fn every_feed_is_followed_past_a_full_page(store: &dyn ControlPlaneAuthSto
     for node_id in &nodes {
         store.delete_node(node_id).await.expect("delete node");
     }
-}
-
-/// A shard's first assignment is listed with the incarnation and generation
-/// it was written at, and a later write of the shard is not (#1872).
-async fn first_assignments_are_listed(
-    store: &dyn ControlPlaneAuthStore,
-    assigned: &ShardAssignment,
-) {
-    let first = store
-        .get_shard_assignment(&assigned.key)
-        .await
-        .expect("first assignment");
-    let listed = store.first_shard_assignments().await.expect("first");
-    let entry = (first.key.clone(), first.incarnation, first.generation);
-    assert!(listed.contains(&entry), "{entry:?} not in {listed:?}");
-
-    store
-        .put_shard_assignment(ShardAssignment {
-            generation: first.generation,
-            ..assigned.clone()
-        })
-        .await
-        .expect("rewrite");
-    let later = store
-        .get_shard_assignment(&assigned.key)
-        .await
-        .expect("later assignment");
-    assert!(later.generation > first.generation, "{later:?}");
-    let listed = store.first_shard_assignments().await.expect("first");
-    assert!(
-        !listed
-            .iter()
-            .any(|(key, _, generation)| *key == later.key && *generation == later.generation),
-        "a later write listed as first: {listed:?}"
-    );
 }
 
 /// Follow a feed from `since` the way a broker does, until a page comes back

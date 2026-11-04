@@ -923,8 +923,9 @@ async fn a_log_set_naming_another_copy_is_fenced_beside_the_one_before() {
 }
 
 /// **Only a set the broker could not have learned asks for a new
-/// generation** (#1872). A log keeping this generation's own set was fenced
-/// or followed here at it, so a rename leaves a set already fenced. A log
+/// generation** (#1872). A log keeping this generation's own set, with this
+/// broker's own ballot there (checked in `sets`, not here), opened it as
+/// leader, so a rename leaves a set already fenced. A log
 /// keeping an older set belongs to a leader that never opened the generation
 /// in between, and a log keeping none may be a failover's new leader whose
 /// set before still acknowledges: a rename would leave that set unfenced, so
@@ -953,4 +954,32 @@ fn only_a_set_this_broker_could_not_know_is_unknown() {
         crate::promotion::set_before(Some(&kept_at(PROMOTED - 2)), &route, None),
         Err(NoSetBefore::Skipped(PROMOTED))
     );
+}
+
+/// **A set kept from another node's request is not one this broker opened**
+/// (#1872). Its log keeps the route's own generation's set, but the ballot
+/// there names broker-x, as a vote in x's election leaves it. Nothing proves
+/// the set before was fenced from here, so the fence waits instead of asking
+/// for a rename that would leave that set unfenced.
+#[tokio::test]
+async fn a_set_kept_under_another_ballot_keeps_the_fence_pending() {
+    let replicas = replicas_with(&["broker-x", "broker-z"]);
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+    let log = leader
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    log.accept_generation(PROMOTED, Some("broker-x"))
+        .await
+        .expect("ballot");
+    log.accept_set(crate::replica_set::kept(&swapped(), None))
+        .await
+        .expect("keep the set the request carried");
+
+    let outcome = fence_after(&replicas, &leader, true, None).await;
+
+    let Outcome::Pending { why, .. } = &outcome else {
+        panic!("renamed past a generation this broker never opened: {outcome:?}");
+    };
+    assert!(why.contains("is not known here"), "{why}");
 }

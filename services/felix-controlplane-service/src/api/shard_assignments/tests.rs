@@ -265,6 +265,34 @@ async fn the_snapshot_marks_only_a_first_assignment() {
         body["items"][0].clone()
     };
 
+    // Only a shard with an incarnation is marked: recreate the stream once
+    // the fleet finalized incarnations.
+    let feature = felix_common::fleet::STREAM_INCARNATIONS.name();
+    for (i, id) in ["broker-x", "broker-y"].iter().enumerate() {
+        fixture
+            .store
+            .register_node(crate::store::contract::nodes::with_features(
+                crate::store::contract::nodes::node(id, 7100 + i as u16),
+                &[feature],
+            ))
+            .await
+            .expect("report the feature");
+    }
+    fixture
+        .store
+        .finalize_fleet_feature(feature)
+        .await
+        .expect("finalize");
+    let key = crate::model::StreamKey {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "orders".to_string(),
+    };
+    let mut orders = fixture.store.get_stream(&key).await.expect("stream");
+    fixture.store.delete_stream(&key).await.expect("delete");
+    orders.incarnation = 0;
+    fixture.store.create_stream(orders).await.expect("recreate");
+
     fixture.assign("broker-x").await;
     let first = snapshot().await;
     assert_eq!(first["leader"], "broker-x");

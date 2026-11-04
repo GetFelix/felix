@@ -29,6 +29,7 @@ pub(crate) async fn run_incarnation_contract(store: Arc<dyn ControlPlaneStore>) 
     a_batch_create_answers_the_incarnation_it_stored(s).await;
     a_stream_from_before_the_finalize_is_deleted_through_0(s).await;
     a_cascading_delete_writes_tombstones(s).await;
+    a_first_assignment_is_listed_and_a_later_write_is_not(s).await;
     super::shards::an_assignment_names_the_incarnation_it_was_written_for(s).await;
     super::shards::a_recreated_stream_never_repeats_a_generation(s).await;
     super::shards::an_assignment_racing_a_recreate_names_the_stream_it_landed_on(store).await;
@@ -407,5 +408,70 @@ async fn after_the_finalize_a_deleted_name_is_created_again(store: &dyn ControlP
             .await
             .expect("names")
             .contains(&key(NAMESPACE, "late"))
+    );
+}
+
+/// **A shard's first assignment is listed with the incarnation and
+/// generation it was written at, and a later write of the shard is not**
+/// (#1872). A snapshot marks the item from this list.
+async fn a_first_assignment_is_listed_and_a_later_write_is_not(store: &dyn ControlPlaneStore) {
+    let created = store
+        .create_stream(stream(NAMESPACE, "firsts", 0))
+        .await
+        .expect("create");
+    assert_ne!(created.incarnation, 0);
+    let assigned = crate::model::ShardAssignment {
+        key: crate::model::ShardKey {
+            tenant_id: TENANT.to_string(),
+            namespace: NAMESPACE.to_string(),
+            stream: "firsts".to_string(),
+            shard: 0,
+            kind: crate::model::ShardKind::Stream,
+        },
+        leader: "broker-x".to_string(),
+        replicas: Vec::new(),
+        generation: 0,
+        state: crate::model::ShardState::Active,
+        successor: None,
+        joining: None,
+        move_started_at_millis: None,
+        move_reason: None,
+        incarnation: 0,
+        fence_storage_ids: Default::default(),
+        member_storage_ids: Default::default(),
+        learners: Default::default(),
+        pending_set: None,
+    };
+    let first = store
+        .put_shard_assignment(assigned.clone())
+        .await
+        .expect("first assignment");
+    let first = store
+        .get_shard_assignment(&first.key)
+        .await
+        .expect("read first");
+    assert_eq!(first.incarnation, created.incarnation);
+    let entry = (first.key.clone(), first.incarnation, first.generation);
+    let listed = store.first_shard_assignments().await.expect("first");
+    assert!(listed.contains(&entry), "{entry:?} not in {listed:?}");
+
+    store
+        .put_shard_assignment(crate::model::ShardAssignment {
+            leader: "broker-y".to_string(),
+            ..assigned
+        })
+        .await
+        .expect("rewrite");
+    let later = store
+        .get_shard_assignment(&first.key)
+        .await
+        .expect("read later");
+    assert!(later.generation > first.generation, "{later:?}");
+    let listed = store.first_shard_assignments().await.expect("first");
+    assert!(
+        !listed
+            .iter()
+            .any(|(key, _, generation)| *key == later.key && *generation == later.generation),
+        "a later write listed as first: {listed:?}"
     );
 }
