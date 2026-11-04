@@ -576,6 +576,173 @@ impl ShardAssignment {
         })
     }
 
+    /// What moving a generation this control plane and `elected` both claimed
+    /// writes: the next one, under the elected leader. `None` leaves it alone:
+    /// a change is pending, a copy is joining, or the elected leader is not in
+    /// this set.
+    ///
+    /// An elected set that is this one is named as is. One that differs is
+    /// written as the set being left and this one as a pending change from
+    /// it, as a cut-over writes one, because a majority of the elected set may
+    /// hold records no majority of this one does. Until the leader reports its
+    /// generation's start record on a majority of both, no follower stands
+    /// and a failover promotes from the elected set. An elected set naming a
+    /// node `known` (the catalog) does not hold cannot be written, so then
+    /// the elected leader is named on this set, as [`Self::adopting_elected_set`]
+    /// falls back to the old form.
+    pub fn reissuing(
+        &self,
+        elected: &ElectedLeader,
+        known: &dyn Fn(&str) -> bool,
+    ) -> Option<ShardAssignment> {
+        if self.pending_set.is_some()
+            || self.joining.is_some()
+            || !self.nodes().any(|node| *node == elected.leader)
+        {
+            return None;
+        }
+        let generation = next_generation(self.generation).ok()?;
+        let next = self.adopting(&ElectedLeader {
+            leader: elected.leader.clone(),
+            generation,
+            replicas: self
+                .nodes()
+                .filter(|node| **node != elected.leader)
+                .cloned()
+                .collect(),
+            set_generation: elected.set_generation,
+        })?;
+        if next.leader != elected.leader {
+            return None;
+        }
+        let mut elected_set: Vec<String> = Vec::new();
+        for node in &elected.replicas {
+            if *node != elected.leader && !elected_set.contains(node) {
+                elected_set.push(node.clone());
+            }
+        }
+        let same = elected_set.len() == next.replicas.len()
+            && elected_set.iter().all(|node| next.replicas.contains(node));
+        if same || !elected_set.iter().all(|node| known(node)) {
+            return Some(next);
+        }
+        // The leader ships to the pending set only, and counts an
+        // acknowledgement once a majority of the set being left holds it.
+        // Without such a majority among the pending set the change could
+        // never complete, so the elected set is named alone instead.
+        let shipped = elected_set
+            .iter()
+            .filter(|node| next.replicas.contains(node))
+            .count()
+            + 1;
+        if shipped * 2 <= elected_set.len() + 1 {
+            return Some(next.on_elected_set(elected));
+        }
+        Some(ShardAssignment {
+            replicas: elected_set,
+            pending_set: Some(PendingSet {
+                replicas: next.replicas.clone(),
+                generation,
+            }),
+            ..next
+        })
+    }
+
+    /// This assignment, led by `elected.leader` on the set it was elected
+    /// on, with any move or pending change ended.
+    fn on_elected_set(self, elected: &ElectedLeader) -> ShardAssignment {
+        let mut replicas: Vec<String> = Vec::new();
+        for node in &elected.replicas {
+            if *node != elected.leader && !replicas.contains(node) {
+                replicas.push(node.clone());
+            }
+        }
+        let named = |node: &String| *node == elected.leader || replicas.contains(node);
+        ShardAssignment {
+            leader: elected.leader.clone(),
+            state: match self.state {
+                ShardState::Draining => ShardState::Assigning,
+                state => state,
+            },
+            successor: None,
+            move_started_at_millis: None,
+            move_reason: None,
+            pending_set: None,
+            member_storage_ids: self
+                .member_storage_ids
+                .iter()
+                .filter(|(node, _)| named(node))
+                .map(|(node, id)| (node.clone(), id.clone()))
+                .collect(),
+            learners: self
+                .learners
+                .iter()
+                .filter(|node| named(node))
+                .cloned()
+                .collect(),
+            replicas,
+            ..self
+        }
+    }
+
+    /// [`Self::adopting`], except that an elected set other than this one is
+    /// not left unrecorded. Taking only the generation would let a later
+    /// failover promote from this set alone, and a majority of the elected
+    /// set may hold records no majority of this one does.
+    ///
+    /// With no change pending and no copy joining, a leader elected on
+    /// another set is named at once: in this set, at the generation after
+    /// the elected one, with the elected set as the set being left and this
+    /// one pending from it ([`Self::reissuing`]); outside it, at the elected
+    /// generation on the elected set, which placement then moves as it moves
+    /// any set. The rest is as [`Self::adopting`], and so is an elected set
+    /// naming a node `known` (the catalog) does not hold, which no write can
+    /// name. Applied under Raft only by members at the level that knows it
+    /// (`ELECTED_SET_LEVEL`).
+    pub fn adopting_elected_set(
+        &self,
+        elected: &ElectedLeader,
+        known: &dyn Fn(&str) -> bool,
+    ) -> Option<ShardAssignment> {
+        let adopted = self.adopting(elected)?;
+        let elected_set: BTreeSet<&String> = std::iter::once(&elected.leader)
+            .chain(elected.replicas.iter())
+            .collect();
+        // This set's own leader elected on this set while a change from it is
+        // pending: it opened past the change without taking it, and only it
+        // could, so the change is dropped as on its timeout.
+        if self.pending_set.is_some()
+            && elected.leader == self.leader
+            && self.joining.is_none()
+            && elected_set == self.nodes().collect()
+        {
+            return Some(ShardAssignment {
+                pending_set: None,
+                ..adopted
+            });
+        }
+        if adopted.leader == elected.leader
+            || self.pending_set.is_some()
+            || self.joining.is_some()
+            || !known(&elected.leader)
+            || !elected.replicas.iter().all(|node| known(node))
+        {
+            return Some(adopted);
+        }
+        if self.nodes().any(|node| *node == elected.leader) {
+            // One write at the generation after the elected one, so the
+            // window is the elected generation's and this set's leader is
+            // never named where the elected one opened. `None` only at the
+            // top of the range, which the store refuses anyway.
+            return ShardAssignment {
+                generation: elected.generation,
+                ..self.clone()
+            }
+            .reissuing(elected, known);
+        }
+        Some(adopted.on_elected_set(elected))
+    }
+
     /// Every node in the control plane's set, leader first. Not the
     /// members of a pending set.
     pub fn nodes(&self) -> impl Iterator<Item = &String> {
@@ -825,12 +992,8 @@ pub(crate) fn first_generation(incarnation: u64, change_seq: u64, from_seq: bool
 }
 
 /// How far past the control plane's generation an adopted election may land.
-/// An election takes one generation per attempt, and a leader reports within
-/// seconds of winning, so a few failed attempts between two reports is the
-/// most a healthy cluster shows. A generation far past that is a corrupt or
-/// hostile report, and taking it would push every later write toward the top
-/// of the range.
-pub(crate) const ELECTION_GENERATION_WINDOW: u64 = 16;
+/// Shared with the brokers, which do not stand past it.
+pub(crate) use felix_common::membership::ELECTION_GENERATION_WINDOW;
 
 /// The generation after `current`, or why there is none. Generations are
 /// bound as signed integers by Postgres, so the top is `i64::MAX`; a store

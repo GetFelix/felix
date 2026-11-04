@@ -911,7 +911,8 @@ before the sender raises its generation. It carries the shard (with
 generation of the sender's last record, one past its last record, and the
 generation of its set. Neither side persists anything for it. `PreVoteAnswer`
 (kind 44) is a granted byte (0 or 1) and a reason byte, 0 for a grant and
-otherwise one of: 1 the leader is still reachable, 2 the replica's log is
+otherwise one of: 1 the leader is still reachable (the replica heard it
+within the stickiness window, or is that leader itself), 2 the replica's log is
 ahead, 3 it has accepted that generation or a later one, 4 it counts a newer
 set, 5 it does not vote, 6 it holds no copy of the shard.
 

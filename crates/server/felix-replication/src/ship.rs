@@ -52,6 +52,34 @@ pub async fn ship_once_with<R: PeerRequester>(
     rebuilds: &Rebuilds,
     commit_offset: Option<u64>,
 ) -> Progress {
+    ship_once_stamped(
+        requester,
+        log,
+        shard,
+        log_kind,
+        cursor,
+        max_batch_bytes,
+        rebuilds,
+        commit_offset,
+        None,
+    )
+    .await
+}
+
+/// [`ship_once_with`], stamping `set_stamp` as the set's generation rather
+/// than the shard's own: an elected leader ships on the set it stood on.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn ship_once_stamped<R: PeerRequester>(
+    requester: &R,
+    log: &StreamLog,
+    shard: &ShardRef,
+    log_kind: felix_broker::LogKind,
+    cursor: &mut FollowerCursor,
+    max_batch_bytes: usize,
+    rebuilds: &Rebuilds,
+    commit_offset: Option<u64>,
+    set_stamp: Option<u64>,
+) -> Progress {
     ship_batch(
         requester,
         log,
@@ -62,6 +90,7 @@ pub async fn ship_once_with<R: PeerRequester>(
         rebuilds,
         commit_offset,
         None,
+        set_stamp,
     )
     .await
 }
@@ -89,6 +118,7 @@ pub(crate) async fn ship_once_until<R: PeerRequester>(
         rebuilds,
         None,
         Some(end),
+        None,
     )
     .await
 }
@@ -104,6 +134,7 @@ async fn ship_batch<R: PeerRequester>(
     rebuilds: &Rebuilds,
     commit_offset: Option<u64>,
     end: Option<u64>,
+    set_stamp: Option<u64>,
 ) -> Progress {
     if let Some(halt) = cursor.halted {
         let backing_off = cursor
@@ -315,7 +346,12 @@ async fn ship_batch<R: PeerRequester>(
         // Sent only on a labelled batch; see `ReplicateRecords::times`.
         times,
         headers,
-        set_generation: stamp_set(requester, offered, log_kind, shard.generation),
+        set_generation: stamp_set(
+            requester,
+            offered,
+            log_kind,
+            set_stamp.unwrap_or(shard.generation),
+        ),
     };
     carry_marks(&mut batch, log_kind, cursor.legacy_frames);
     // Which log this is belongs in the message kind, not in the shard
@@ -391,6 +427,10 @@ async fn ship_batch<R: PeerRequester>(
 
     let progress = read_answer(&answer);
     cursor.stalled = progress == Progress::Retry;
+    cursor.route_behind = matches!(
+        &answer,
+        InternalMessage::ReplicateError(err) if err.code == ErrorCode::StaleRoute
+    );
     match progress {
         Progress::Stored { durable_offset } => {
             // From the same answer as `confirmed`, so the two always agree.

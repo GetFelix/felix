@@ -124,11 +124,11 @@ One shard, three brokers, one control plane, discrete time.
   never does. With `Ballots` each promise names the leader it was made to
   (`ballot`), and a replica answers a fence, a batch or a read round at the
   generation it promised only from that leader. The first leader starts with
-  its set's promise, as an elected one would. Nothing in the broker elects
-  yet; the ballot is in the code now so that a later change can.
+  its set's promise, as an elected one would. The broker's election driver
+  (`felix-replication`, `election/candidate.rs`) is what elects.
 - **The set check and adoption.** The design for electing without the
   control plane (`docs/replication-design.md`, "Electing without the control
-  plane"), not built yet. With `SetCheck` each replica keeps the set it last
+  plane"), built behind `replica_election`. With `SetCheck` each replica keeps the set it last
   learned and the generation of the assignment that wrote it (`setGen`). A
   batch and a fence carry the sender's pair; a replica that knows a newer one
   refuses, and otherwise learns it. A refused candidate learns the newer set
@@ -865,17 +865,17 @@ That needs three things the safety checks do without:
 
 - Fairness: a step an election needs is taken once it stays possible.
 - A pre-vote that a member answers yes only when it leads nothing open,
-  hears no leader and holds no log ahead of the candidate's. The code's
-  `pre_vote` lets the open leader say yes today (#1815).
+  hears no leader and holds no log ahead of the candidate's, as the
+  broker's `pre_vote` does (#1815).
 - Backoff: a candidate whose round cannot reach a majority gives it up. Real
   backoff is randomised and separates candidates within a few rounds. The
   model cannot say how few, so it allows at most `Splits` rounds, over the
   whole run, where two candidates stand at once.
 
 A candidate's own detector may be wrong (`DetectorMisfires`): it may suspect
-a leader it still hears. With the pre-vote the code asks today
-(`FelixShardElectLiveLoosePreVote.cfg`) that candidate gets the leader's yes
-and deposes a leader the rest of the set hears.
+a leader it still hears. If the open leader answered the pre-vote yes
+(`FelixShardElectLiveLoosePreVote.cfg`), that candidate would get the leader's
+yes and depose a leader the rest of the set hears.
 
 The model bounds generations, so `ElectionSettles` alone cannot see churn: a
 run that used every generation would stop electing and settle. Without
@@ -885,9 +885,9 @@ forever. `NoStandAgainstHeardLeader` rules churn out directly, since it holds
 at every step. Not covered: liveness with writes in flight, or with a wiped
 voter.
 
-Nothing in the broker elects yet; these check the design in
-`docs/replication-design.md`, "Electing without the control plane", before
-any of it is built.
+These check the design in `docs/replication-design.md`, "Electing without
+the control plane", which the broker now follows once `replica_election` is
+finalized.
 
 The ballot lives in the replica's `ballot` file, written and fsynced before
 the generation it names is answered (`DiskLog::accept_generation`); see

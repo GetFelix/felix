@@ -394,7 +394,8 @@ async fn the_next_generation_of_a_served_shard_serves_at_once() {
 /// it.** broker-b stood for generation 3 and broker-c promised it. When the
 /// control plane, not having heard, hands this broker generation 3, opening
 /// at once would make two leaders of one generation; fenced, broker-c refuses
-/// and the shard stays closed.
+/// and the shard stays closed, reporting the refusal since broker-b is
+/// silent.
 #[tokio::test]
 async fn under_joint_fence_the_next_generation_is_refused_by_a_replica_that_promised_it() {
     let mut change = Change::new();
@@ -453,7 +454,11 @@ async fn under_joint_fence_the_next_generation_is_refused_by_a_replica_that_prom
     .await;
 
     assert!(
-        matches!(&outcome, Outcome::Pending { why, .. } if why.contains("broker-c")),
+        matches!(
+            &outcome,
+            Outcome::Refused { promised_to, why, .. }
+                if promised_to == "broker-b" && why.contains("broker-c")
+        ),
         "{outcome:?}"
     );
     assert!(!change.own.may_serve_at(&key, 3));

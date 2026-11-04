@@ -1384,7 +1384,7 @@ Under Raft the pending set and the joint start need metadata level 21. Below
 it a write carrying a pending set is refused with 409 before it reaches the
 log, rather than written as a cut-over that takes the new set at once, and a
 report's joint start is dropped, which keeps a change pending; finalizing
-`replica_election` itself needs level 21. Under Postgres both come with
+`replica_election` itself needs level 26. Under Postgres both come with
 migration 0038 (`pending_set`, `joint_start_acked`), each with a marker
 (`pending_set_generation`, `joint_start_acked_at`): what a member that
 predates the columns leaves behind reads as none.
@@ -1397,7 +1397,7 @@ theirs is lost, and the control plane adopts the result
 rule 10). The elected broker reports at the generation it opened at, with
 `elected` in its shard entry: `leader` (itself), `generation`, `replicas`
 (the followers of the set it fenced) and `set_generation`. A report without
-it is unchanged, and no broker sends it yet.
+it is unchanged; only a broker leading by election sends it.
 
 When the report's generation is above the assignment's, the report handler
 adopts before it judges the report, once `replica_election` is finalized.
@@ -1410,21 +1410,94 @@ elected generation itself, not the next one:
   pending set stays pending under the new leader. A move in progress ends;
   a follower replacement goes on. The report is then that leader's and is
   judged as usual.
-- **Any other set**: only the generation is taken. The leader, the set and
-  any pending set stay as they were, and the report is refused as
-  `not_leader`. A leader elected on the old set while a change is pending is
-  recorded this way: the new set's leader deposes it.
+- **Any other set**: taking only the generation would leave the elected set
+  unrecorded, and a later failover could promote from the control plane's
+  set alone while a majority of the elected set holds records no majority of
+  it does. So, with no change pending and no copy joining:
+  - an elected leader in the control plane's set leads at the generation
+    after the elected one, as a reissue names it (below);
+  - one outside it leads at the elected generation on the elected set, and
+    placement moves that set as it moves any other.
+
+  Otherwise only the generation is taken and the report is refused as
+  `not_leader`: a leader elected on the old set while a change is pending is
+  deposed by the new set's leader. The exception is the control plane's own
+  leader elected on the control plane's set while a change from it is
+  pending: it opened past the change without taking it, and only it could
+  take it, so the change is dropped as on its timeout. An elected set naming
+  a node the catalog no longer holds also has only its generation taken,
+  since no write can name that node. Under Raft, members below metadata
+  level 26 apply the older form, which takes only the generation of any
+  other set. A group finalizes `replica_election` only with every member at
+  26. The older form stays so a member that has not yet rolled to 26
+  applies the same entries the same way.
+
+  When only the generation was taken, the control plane's leader is now
+  named at the generation the elected leader opened at, which ballots never
+  let it open. The same report then moves the shard past that collision at
+  once, as described under "A generation claimed twice" below, rather than
+  waiting for the next report while a failover could be planned from the
+  control plane's set.
 
 An election more than 16 generations past the assignment's, or past
 `i64::MAX`, is refused and the report is judged as before: elections run a
 few generations at most between two reports, and a far generation would push
-every later write toward the top of the range. A store whose generation is
+every later write toward the top of the range. The window is measured on
+the elected generation, so a leader in the control plane's set elected on
+another set 16 generations past is still named, in one write, at the
+generation after. A store whose generation is
 the last it can issue refuses further writes instead of repeating one.
 
 Either way every later write, whoever makes it, is above the elected
 generation, because the store gives each write the one after the stored
 generation. A store error during adoption is logged and the report is judged
 against the assignment as it was, like a lost write.
+
+**A generation claimed twice.** The control plane can name a leader at the
+generation an election took, for example by promoting a follower when it
+returns before the elected leader's first report lands. Ballots let only one
+of the two open there. If the elected leader opened, it keeps leading and
+reporting, and the other never opens. A report at the assignment's own
+generation from a leader the control plane did not name then moves the shard
+to the next generation under that elected leader, with the same conditional,
+placement-fenced write placement uses. Only the elected leader is named: its
+log holds everything acknowledged up to the collision, on whichever set. The
+shard is left alone while a set change is pending, while a copy is joining,
+or when the elected leader is not in the control plane's set. The named
+leader follows the new one, or stops when its route moves on if it is no
+longer in the set.
+
+The write depends on the set the leader was elected on:
+
+- **The control plane's set.** The new generation names that set.
+- **Another set.** The control plane changed the set at the claimed
+  generation, and a majority of the elected set may hold records that no
+  majority of the control plane's set does. The new generation records the
+  elected set as the control plane's and its own set as a pending change
+  from it, as a cut-over does. The leader's fence needs a majority of both,
+  it counts an acknowledgement only once both hold it, and no follower
+  stands for election while the change is pending. A failover meanwhile
+  promotes from the elected set. The control plane takes its set back on
+  the leader's report that its generation's start record is on a majority
+  of both, or drops the change on the pending timeout and keeps the elected
+  set. The leader ships only to the pending set, so this needs the pending
+  set, the leader included, to hold a majority of the elected set. When it
+  does not, the change could never complete, and the new generation names
+  the elected set alone.
+- **Another set naming a node the catalog no longer holds.** No write can
+  name that node, so the new generation names the control plane's set, as
+  adoption takes only the generation in that case.
+
+A report older than the elected leader's deposition can still move the shard
+to it, but the broker does not open a generation it promised to another
+candidate or one older than its ballot. That write costs the shard a
+promotion, or, when it carries a pending change, the pending timeout. If the elected leader did not open, its candidate withdraws the
+standing within 3 s and the named leader opens as usual.
+
+One gap remains: an elected leader that restarts before its first report
+reaches the control plane forgets its standing, so nothing reports the
+collision, and the shard serves nothing until the control plane writes it
+again.
 
 A joining follower (a replacement in progress) elected leader is recorded
 only: the copy it replaces is not named in the assignment, so naming the
@@ -1450,15 +1523,21 @@ migration for it.
 
 **When the election is recorded and not adopted**, the assignment still names
 the old leader, now at the elected generation. That leader cannot serve there,
-in one of two ways:
+in one of three ways:
 
 - It promised the generation to the elected broker before it heard of the
   assignment, so its open fails.
 - It started to open first, persisting its own promise, but a majority of
   the set promised the generation to the elected broker, so its fence can
   never reach a majority.
+- A replica promised the generation to another broker and every other
+  replica that did not take the fence was unreachable or timed out. A retry
+  at this generation would wait on those for as long as they stay down, so
+  this counts as a refusal too. It does not when a replica answered from a
+  copy the failover's report did not name, or under a joint fence: the fence
+  keeps waiting then, since a rename would reset the copies it checks.
 
-Either way it says so in its report, with `refused` set to the `generation`
+In each case it says so in its report, with `refused` set to the `generation`
 it refused and the node it `promised_to`, and repeats it each tick. The
 follower suspicion above cannot help, since the followers follow the elected
 leader.

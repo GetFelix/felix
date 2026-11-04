@@ -89,7 +89,7 @@ fn replica_router(local: &str, size: usize, generation: u64) -> Arc<ShardRouter>
 }
 
 /// The route the promoted leader sees, `size` replicas in all.
-fn route_of_size(size: usize) -> Route {
+pub(super) fn route_of_size(size: usize) -> Route {
     table(LEADER, &FOLLOWERS[..size - 1], PROMOTED)
         .get(&key())
         .expect("route")
@@ -98,7 +98,7 @@ fn route_of_size(size: usize) -> Route {
 
 /// The followers of a set of `size`, keeping consumer groups and offering
 /// `capabilities`.
-fn group_replicas(size: usize, capabilities: PeerCapabilities) -> Replicas {
+pub(super) fn group_replicas(size: usize, capabilities: PeerCapabilities) -> Replicas {
     let mut replicas = Replicas::new();
     replicas.replicas.clear();
     for id in &FOLLOWERS[..size - 1] {
@@ -151,7 +151,7 @@ fn cursor(group: &str, offset: u64, end: u64, generation: u64, origin: u64) -> B
 
 /// Store `payloads` in `node_id`'s `log` as a leader at `generation` shipped
 /// them, in a set of `size`.
-async fn holds(
+pub(super) async fn holds(
     replicas: &Replicas,
     size: usize,
     node_id: &str,
