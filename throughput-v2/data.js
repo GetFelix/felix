@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793828817509,
+  "lastUpdate": 1793833655494,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -45084,6 +45084,58 @@ window.BENCHMARK_DATA = {
             "range": "4449.36",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 811003.19\nmean: 810169.55\nstdev: 4449.36\ncv: 0.55%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e5d86f0b295832bd51518828cc85f42ed6cf9d5d",
+          "message": "docs(formal): the control plane moves past a generation claimed twice (#1009) (#1847)\n\n* docs(formal): model the flip as a new generation naming the leader again (#1725)\n\nTakePendingSet writes the pending set at the next generation, naming the\ncut-over's leader again, and that leader fences the new set alone. Under\nFlipNewGeneration the model now does the same. A candidate may already\nhold that generation; the ballot keeps the two fences apart, and\nFelixShardElectSwapFlipSkipsBallot.cfg shows two leaders at one\ngeneration without it. The set-change pieces keep the old flip.\n\n* docs(formal): the flip follows a stale report too (#1725)\n\nThe control plane flips on the leader's report alone, so the leader may\nhave promised the next generation to a candidate since it sent it. The\nmodel now flips in that case as well, and the leader refuses the\ngeneration and stays as it is. Also review nits: the FlipFence comment,\nthe set-change wording in replication-design.md.\n\n* docs(formal): flip on a report from a leader that stopped leading, review wording (#1725)\n\nThe stale-report branch now covers any leader that stopped leading its\ngeneration after the joint open (lease lapse, a candidate's fence), and\nthe leader fences at the new generation whenever it may promise it.\nDocs: say who serves after a refusal, fix the replica refusal wording.\n\n* spec: election liveness with the control plane down (#1331)\n\n* docs(formal): the election liveness configurations (#1331)\n\n* spec: liveness checks a misfiring detector, the leader refuses a pre-vote (#1331)\n\nReview: the loose pre-vote's violation leaned on a dead broker's yes. A\ncandidate's own detector may now be wrong (DetectorMisfires), and the\npre-vote the code asks today, where the open leader says yes, deposes a\nleader the set still hears (#1815). Contrast configurations use the same\nbounds as the pass.\n\n* spec: the pre-vote property covers a candidate standing again (#1331)\n\n* spec: the liveness configurations say Evidence: none (#1331)\n\n* spec: the control plane moves past a generation claimed twice (#1009)\n\nCpReissue models reissue_past_collision: placement named one leader at\nthe generation another was elected and opened at, and the elected\nleader's report moves the shard to the next generation under it, on the\ncontrol plane's set, where it fences.\n\nFelixShardElectReissue.cfg checks safety beside promotion and adoption.\nFelixShardElectLiveReissue.cfg checks that the control plane does not\nstay at the collided generation while the elected leader leads\n(CollisionSuperseded, under ReissueSpec); FelixShardElectLiveNoReissue.cfg\nis the twin without the reissue, which violates it.\n\n* spec: the reissue follows the code: an old report, and a joint fence on the elected set (#1009)\n\nCpReissue now fires on a report that may be stale: the named broker takes the\nnext generation only if it may still promise it, else it never opens there.\nWhen it does, it fences the control plane's set and, jointly, the set it was\nelected on when that names other members (ReissueFencesElected, as\nlogged_besides). FelixShardElectReissueReplace.cfg exercises an elected set\nthat differs from the control plane's. FelixShardElectReissue.cfg drops to one\nsuspicion, which reaches the same states. StandsAboveKeptSet (off by default)\nlets a candidate stand no lower than its kept set's generation, as set_before\nrequires.\n\n* spec: drop an unregistered scratch configuration (#1009)\n\n* spec: a reissue onto another set is a pending set change (#1009)\n\nWhen the elected set E is not the control plane's S, the reissue records E\nas the set being left and S as pending at the new generation, shaped as a\ncut-over, as the control plane now writes it. RefusalLearnsSet lets a check\ndrop the set a refused candidate learns, which the code never keeps.\n\n* spec: adoption onto another elected set writes it with the recorded set pending (#1009)\n\nCpAdopt follows adopting_elected_set: a leader in the recorded set elected on\nanother is named at the next generation with the elected set as the set being\nleft and the recorded one pending (ReissueAt, shared with CpReissue); one\noutside it takes its set as the recorded one; the control plane's own leader\non the old set of a pending change drops the change. ReissueAt names the\nelected set alone when the recorded set and the leader hold no majority of it.\nFelixShardElectAdoptAboveKeptSet.cfg (adoption to generation 4) no longer\nbreaks AdoptedMatchesOpened.\n\n* spec: review fixes for adoption onto the elected set; LearnsLeavingSet switch (#1009)\n\n* spec: adoption's match needs the leader in the recorded set and not joining; a set learnt from a batch loses writes (#1009)\n\n* spec: cite the batch-set test for the leaving-set twin (#1009)\n\n* spec: cite the window-edge adoption test (#1009)\n\n* spec: the seeded figure-8 histories start with no splits (#1331)\n\n* spec: the code's leader leaves learner acknowledgements out (#1762)\n\n* spec: FelixShardElectAdopt cites the adoption on another set\n\nThe control plane now adopts a leader elected on another set on that set,\nso the cfg names S9's tests for it instead of the replaced\ngeneration-only one.\n\n* spec: the reissue and LearnSet write oldSet as a set of sets\n\nMerging main brought in #1879, which made oldSet the sets a pending change\nis leaving. ReissueAt and LearnSet's no-LearnsLeavingSet branch still wrote\na single set, so TypeOK failed in the walks. They now write {E} and\n{mine[f]}. The live reissue config's promotion bound reads as generation 1,\nmatching what Suspicions = 1 means elsewhere.\n\n* spec: the no-reissue twin's run time as measured",
+          "timestamp": "2026-11-04T15:02:51-08:00",
+          "tree_id": "6f73cac37f1580d1b7d9bd4277d2271634955abd",
+          "url": "https://github.com/GetFelix/felix/commit/e5d86f0b295832bd51518828cc85f42ed6cf9d5d"
+        },
+        "date": 1793833654889,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 362327.64,
+            "range": "7226.93",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 362327.64\nmean: 360983.06\nstdev: 7226.93\ncv: 2.00%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 362327.64,
+            "range": "7226.93",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 362327.64\nmean: 360983.06\nstdev: 7226.93\ncv: 2.00%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81128.73,
+            "range": "4751.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81128.73\nmean: 79374.30\nstdev: 4751.38\ncv: 5.99%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 811287.34,
+            "range": "47513.80",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 811287.34\nmean: 793742.96\nstdev: 47513.80\ncv: 5.99%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
