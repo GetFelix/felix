@@ -104,17 +104,16 @@ impl FollowerCursor {
         }
     }
 
-    /// How far this follower counts toward a mark at `generation`: what its
-    /// last checked answer vouched for, while the cursor still describes the
-    /// copy and generation that answer came from. Nothing while it does not
-    /// count at all. A copy the leader has seen change since, even only its
-    /// incarnation, has to answer again.
+    /// What this follower's last checked answer vouched for at `generation`,
+    /// while the cursor still describes the copy and generation that answer
+    /// came from. A copy the leader has seen change since, even only its
+    /// incarnation, has to answer again. A halted follower or a learner is
+    /// still reported holding what it vouched for; the marks leave it out
+    /// ([`Self::counts`]).
     pub(crate) fn vouched_at(&self, generation: u64) -> u64 {
         match self.vouched {
             Some(vouched)
-                if self.counts()
-                    && vouched.identity == self.identity()
-                    && vouched.generation == generation =>
+                if vouched.identity == self.identity() && vouched.generation == generation =>
             {
                 vouched.offset.min(self.confirmed)
             }
