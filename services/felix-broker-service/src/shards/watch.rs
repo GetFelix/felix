@@ -17,7 +17,7 @@
 //! once, and the loop then waits out the interval as it always did.
 pub mod metrics;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -118,8 +118,19 @@ enum ChangeOp {
 
 #[derive(Debug, Deserialize)]
 struct SnapshotResponse {
-    items: Vec<ShardAssignment>,
+    items: Vec<SnapshotItem>,
     next_seq: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct SnapshotItem {
+    #[serde(flatten)]
+    assignment: ShardAssignment,
+    /// The control plane wrote this as the shard's first assignment. Absent
+    /// from a control plane that predates it, which leaves a joint fence
+    /// with no set before waiting instead of fencing the new set alone.
+    #[serde(default)]
+    first_assignment: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -239,12 +250,28 @@ impl ShardOwnership {
     /// plane, and reopening on that would serve a generation a newer leader
     /// has written past.
     pub fn reset(&mut self, items: Vec<ShardAssignment>) {
+        self.reset_marked(items, &HashSet::new());
+    }
+
+    /// [`Self::reset`], with the shards whose snapshot item the control plane
+    /// marked as their first assignment. Such a shard records nothing before
+    /// it, as [`Self::assign_afresh`] does for an `assigned` change, on the
+    /// same terms: never at incarnation 0, and not at an incarnation this
+    /// broker already held it at.
+    pub(crate) fn reset_marked(&mut self, items: Vec<ShardAssignment>, first: &HashSet<ShardKey>) {
         let mut priors = HashMap::new();
         for next in &items {
             let current = self.assignments.get(&next.key);
+            let marked_first = first.contains(&next.key)
+                && next.incarnation > 0
+                && current.is_none_or(|current| next.incarnation > current.incarnation);
             let prior = match current {
                 // The same assignment again: what came before it still did.
                 Some(current) if current == next => self.priors.get(&next.key).cloned(),
+                _ if marked_first => Some(felix_router::PriorSet {
+                    generation: next.generation,
+                    before: None,
+                }),
                 _ => prior_of(current, next),
             };
             if let Some(prior) = prior {
@@ -516,7 +543,18 @@ async fn snapshot(
     }
 
     let count = response.items.len();
-    ownership.write().await.reset(response.items);
+    let first: HashSet<ShardKey> = response
+        .items
+        .iter()
+        .filter(|item| item.first_assignment)
+        .map(|item| item.assignment.key.clone())
+        .collect();
+    let items = response
+        .items
+        .into_iter()
+        .map(|item| item.assignment)
+        .collect();
+    ownership.write().await.reset_marked(items, &first);
     mm::record_snapshot(count);
     tracing::info!(
         assignments = count,

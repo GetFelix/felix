@@ -273,7 +273,7 @@ impl PeerTransportConfig {
                 .union(PeerCapabilities::GROUP_FENCE)
                 .union(PeerCapabilities::BALLOTS)
                 .union(if self.election {
-                    PeerCapabilities::ELECTION
+                    PeerCapabilities::ELECTION.union(PeerCapabilities::KEPT_SETS)
                 } else {
                     PeerCapabilities::NONE
                 })

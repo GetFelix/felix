@@ -116,6 +116,7 @@ never have dialled the one that shipped to it.
 | `1 << 13` | `FORWARD_INCARNATION` | reads a forwarded publish or cache op inside an `Incarnated` frame, and refuses one whose incarnation is not the one its routes name (see "Naming the stream incarnation") |
 | `1 << 14` | `HEAD_TRIM` | reads a head trim's mark (byte `5`) in a records batch and stores the trim record, applying its floor on a `Quorum` stream only once its commit offset passes the record. A batch holding a trim goes only to a peer that offered it |
 | `1 << 15` | `LEARNER_ACKS` | offered by a caller: it reads `ReplicateLearnerOk`, so a follower whose copy is a learner answers it with that kind (see "A learner's answers" under "Replication") |
+| `1 << 16` | `KEPT_SETS` | keeps every set an election fence names and every set its log kept from generations that never opened, and reads `ElectionKeptFence`. A joint fence counts only replicas that offer it (see "Electing without the control plane") |
 | `1 << 17` | `RECORD_HEADERS` | reads `ReplicateHeaderedRecords` and stores each record's key-and-headers block with it, answers `ReplicateHeaderedFetch`, and reads `HeaderedForwardPublish`. A peer that offers it also offers `GENERATION_LABELS` and `RECORD_TIMES`. A batch or forward holding a block goes only to a peer that offered it |
 | `1 << 18` | `SEQUENCED_FORWARDS` | reads `SequencedForwardPublish` and applies it as the named producer's idempotent batch, answering a batch its log already holds with that batch's offsets (see "A forward that names its producer"). It goes only to a peer that offered both this and `RECORD_HEADERS` |
 
@@ -901,6 +902,12 @@ set, the 16-byte storage id. Bit 1 marks a learner, which is listed and not
 counted. This is the layout of the replica-set file. A fence with none of it
 is the original kind 29.
 
+`ElectionKeptFence` (kind 48) is `ElectionFence` followed by the older sets
+the fence also needs a majority of: a count (`u16`, 1 to 16) and the sets,
+each older than the fence's set. A replica keeps them beside the set being
+left. It goes only to a peer that offered `KEPT_SETS`; a fence with no older
+set is kind 41, byte for byte as before.
+
 `SetStamped` (kind 42) wraps a records batch of any log, the same way
 `Incarnated` wraps a request: the correlation id, the generation of the set
 the sender counts (`u64`), the inner kind and the inner body. It goes outside
@@ -1046,8 +1053,9 @@ Typed, because they need different responses:
 `ReplicateTimedFetch` 37, `Incarnated` 40, `ElectionFence` 41,
 `SetStamped` 42, `PreVote` 43, `PreVoteAnswer` 44, `LeaseForwardCacheOp` 45,
 `LeaseForwardCacheOk` 46, `ReplicateLearnerOk` 47,
-`ReplicateHeaderedRecords` 49, `ReplicateHeaderedFetch` 50,
-`HeaderedForwardPublish` 51 and `SequencedForwardPublish` 52. A peer
+`ElectionKeptFence` 48, `ReplicateHeaderedRecords` 49,
+`ReplicateHeaderedFetch` 50, `HeaderedForwardPublish` 51 and
+`SequencedForwardPublish` 52. A peer
 that predates any of them rejects the
 kind rather than misreading the body, which is why
 each is a new kind rather than a field on `ReplicateRecords`: this protocol

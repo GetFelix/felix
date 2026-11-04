@@ -237,3 +237,69 @@ async fn the_confirmed_read_answers_one_shard() {
     assert_eq!(assigned["assignment"]["leader"], "broker-x");
     assert_eq!(read(7).await["assignment"], serde_json::Value::Null);
 }
+
+/// **The snapshot marks a shard's first assignment, and only that one**
+/// (#1872). A broker that learns the shard from the snapshot records nothing
+/// before it, as the `assigned` change tells a watching broker. A later
+/// write is not first, so its item carries no mark.
+#[tokio::test]
+async fn the_snapshot_marks_only_a_first_assignment() {
+    let fixture = fixture().await;
+    let snapshot = || async {
+        let request = Request::builder()
+            .uri("/v1/shard-assignments/snapshot")
+            .header("authorization", format!("Bearer {}", fixture.bearer))
+            .body(Body::empty())
+            .expect("request");
+        let response = fixture
+            .app
+            .clone()
+            .oneshot(request)
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let body: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        body["items"][0].clone()
+    };
+
+    // Only a shard with an incarnation is marked: recreate the stream once
+    // the fleet finalized incarnations.
+    let feature = felix_common::fleet::STREAM_INCARNATIONS.name();
+    for (i, id) in ["broker-x", "broker-y"].iter().enumerate() {
+        fixture
+            .store
+            .register_node(crate::store::contract::nodes::with_features(
+                crate::store::contract::nodes::node(id, 7100 + i as u16),
+                &[feature],
+            ))
+            .await
+            .expect("report the feature");
+    }
+    fixture
+        .store
+        .finalize_fleet_feature(feature)
+        .await
+        .expect("finalize");
+    let key = crate::model::StreamKey {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "orders".to_string(),
+    };
+    let mut orders = fixture.store.get_stream(&key).await.expect("stream");
+    fixture.store.delete_stream(&key).await.expect("delete");
+    orders.incarnation = 0;
+    fixture.store.create_stream(orders).await.expect("recreate");
+
+    fixture.assign("broker-x").await;
+    let first = snapshot().await;
+    assert_eq!(first["leader"], "broker-x");
+    assert_eq!(first["first_assignment"], true, "{first}");
+
+    fixture.assign("broker-y").await;
+    let later = snapshot().await;
+    assert_eq!(later["leader"], "broker-y");
+    assert_eq!(later.get("first_assignment"), None, "{later}");
+}

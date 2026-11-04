@@ -265,6 +265,14 @@ impl Replicas {
         self.replicas.get_mut(node_id).expect("replica")
     }
 
+    fn sent_to(&self, node_id: &str) -> bool {
+        self.sent
+            .lock()
+            .expect("lock")
+            .iter()
+            .any(|(node, _)| node == node_id)
+    }
+
     fn sent(&self, kind: Kind) -> Vec<String> {
         self.sent
             .lock()
@@ -1228,6 +1236,7 @@ async fn a_leader_refences_with_a_kept_set_below_its_generation() {
             members: vec![member(LEADER), member("broker-b"), member("broker-c")],
         },
         leaving: None,
+        earlier: Vec::new(),
     };
     let mut shard = batch(7, 0, &[]).shard;
     shard.generation = 7;

@@ -568,6 +568,39 @@ pub(super) async fn shard_assignment_snapshot(
     Ok(Snapshot { items, next_seq })
 }
 
+pub(super) async fn first_shard_assignments(
+    store: &PostgresStore,
+) -> StoreResult<Vec<(ShardKey, u64, u64)>> {
+    // A first assignment with an incarnation is written at the generation
+    // its change's seq gives (`model::first_generation`), so each current row
+    // is one primary-key lookup, not a scan of every change ever kept.
+    let rows = sqlx::query_as::<_, (String, String, String, i32, String, i64, i64)>(
+        r#"SELECT a.tenant_id, a.namespace, a.stream, a.shard, a.kind, a.incarnation, a.generation
+               FROM shard_assignments a
+               JOIN shard_assignment_changes c ON c.seq = a.generation
+               WHERE a.incarnation > 0 AND c.op = 'assigned'
+                 AND c.tenant_id = a.tenant_id AND c.namespace = a.namespace
+                 AND c.stream = a.stream AND c.shard = a.shard AND c.kind = a.kind
+                 AND COALESCE((c.payload->>'incarnation')::bigint, 0) = a.incarnation"#,
+    )
+    .fetch_all(&store.pool)
+    .await?;
+    rows.into_iter()
+        .map(
+            |(tenant_id, namespace, stream, shard, kind, incarnation, generation)| {
+                let key = ShardKey {
+                    tenant_id,
+                    namespace,
+                    stream,
+                    shard: shard as u32,
+                    kind: parse_shard_kind(&kind)?,
+                };
+                Ok((key, incarnation as u64, generation as u64))
+            },
+        )
+        .collect()
+}
+
 pub(super) async fn shard_assignment_changes(
     store: &PostgresStore,
     since: u64,

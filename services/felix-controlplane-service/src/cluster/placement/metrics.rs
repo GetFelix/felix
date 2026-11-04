@@ -126,6 +126,7 @@ impl MoveClock {
             | MoveStep::Trim { .. }
             | MoveStep::TakePendingSet
             | MoveStep::ElectionRefused
+            | MoveStep::SetUnknown
             | MoveStep::PendingSetTimedOut
             | MoveStep::PendingSetDropped
             | MoveStep::PendingSetCancelled

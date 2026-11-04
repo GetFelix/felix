@@ -1,6 +1,8 @@
 //! With joint fences on (`ClusterConfig::joint_fence`), a set change
 //! that swaps two members does not serve until a majority of the set it
-//! leaves has taken its fence.
+//! leaves has taken its fence. A leader that keeps its generation's set but
+//! not the one before is named again a generation up, and one that learns a
+//! new shard from a snapshot opens on the snapshot's first-assignment mark.
 //!
 //! Run with `cargo test -p felix-cluster --test failures joint_fence::`.
 use std::time::Duration;
@@ -252,5 +254,199 @@ async fn a_stream_and_a_cache_created_under_joint_fence_open() {
     )
     .await
     .expect("a quorum cache created under joint_fence opens");
+    cluster.shutdown().await;
+}
+
+/// Publish to `stream` through any broker until one is acknowledged, placing
+/// shards on each try so a refusal the leader reported is answered.
+async fn serves(cluster: &Cluster, stream: &str, what: &str) {
+    felix_cluster::wait::until(Duration::from_secs(90), what, || async {
+        cluster.place_shards().await;
+        cluster
+            .publish_via_any(stream, b"served".to_vec())
+            .await
+            .is_ok()
+    })
+    .await
+    .unwrap_or_else(|err| panic!("{what}: {err}"));
+}
+
+/// **After `joint_fence` is finalized, a rolling restart leaves every shard
+/// serving** (#1872). Each leader opened its generation before the feature
+/// was on, so its log keeps that set without the one it left, and after a
+/// restart its watch learns the shard from a snapshot, with nothing before
+/// it. Its fence cannot know the set being left, so it reports the
+/// generation refused, and placement names it again one up, whose set before
+/// it does know. The fence counter shows that path ran: a shard that served
+/// only because placement failed it over proves nothing.
+#[serial]
+#[tokio::test]
+async fn a_rolling_restart_after_joint_fence_is_finalized_serves_every_shard() {
+    const STREAMS: [&str; 3] = ["restart-a", "restart-b", "restart-c"];
+    let mut broker_env = felix_cluster::joint_fence_broker_env();
+    broker_env.push((
+        "FELIX_PUBLISH_QUORUM_TIMEOUT_MS".to_string(),
+        "2000".to_string(),
+    ));
+    let mut cluster = Cluster::start(ClusterConfig {
+        nodes: 3,
+        streams: STREAMS
+            .iter()
+            .map(|name| StreamSpec::quorum(*name, 1, 3))
+            .collect(),
+        broker_env,
+        inherit_output: std::env::var("FELIX_TEST_BROKER_OUTPUT").is_ok(),
+        ..Default::default()
+    })
+    .await
+    .expect("start cluster reporting joint_fence");
+    // Every leader keeps its set while the feature is still off.
+    for stream in STREAMS {
+        serves(&cluster, stream, "a publish before joint_fence").await;
+    }
+    cluster
+        .finalize_fleet_features(&["majority_ack", "joint_fence"], Duration::from_secs(20))
+        .await
+        .expect("finalize joint_fence");
+    for stream in STREAMS {
+        serves(&cluster, stream, "a publish under joint_fence").await;
+    }
+
+    for node in cluster.node_ids() {
+        cluster.kill_node(&node).expect("kill");
+        cluster.restart_node(&node).await.expect("restart");
+        for stream in STREAMS {
+            serves(
+                &cluster,
+                stream,
+                &format!("{stream} serves after {node} restarted"),
+            )
+            .await;
+        }
+    }
+    // Each node restarted once, so each counter covers everything since its
+    // own restart.
+    let mut set_unknown = 0.0;
+    for node in cluster.node_ids() {
+        set_unknown += cluster
+            .metric(&node, "felix_broker_fence_set_unknown_total")
+            .await
+            .expect("scrape")
+            .unwrap_or(0.0);
+    }
+    assert!(
+        set_unknown > 0.0,
+        "no restarted leader reported its set before unknown"
+    );
+    cluster.shutdown().await;
+}
+
+/// **A shard whose leader learns it only from a snapshot serves** (#1872).
+/// The leader is down when the shard is first assigned to it, so its watch
+/// takes the assignment from the snapshot it starts with. The snapshot marks
+/// the item as the shard's first assignment, so the leader knows nothing came
+/// before it and opens at that generation.
+#[serial]
+#[tokio::test]
+async fn a_shard_learned_only_from_a_snapshot_serves() {
+    const LATER: &str = "learned-from-snapshot";
+    let mut cluster = start().await;
+    let ids = cluster.node_ids();
+    let leader = ids[0].clone();
+    let replicas = vec![ids[1].clone(), ids[2].clone()];
+    cluster.kill_node(&leader).expect("kill the leader-to-be");
+
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .expect("http client");
+    let response = http
+        .post(format!(
+            "{}/v1/tenants/{}/namespaces/{}/streams",
+            cluster.control_plane_url(),
+            cluster.tenant_id,
+            cluster.namespace
+        ))
+        .bearer_auth(cluster.admin_token())
+        .json(&json!({
+            "tenant_id": cluster.tenant_id,
+            "namespace": cluster.namespace,
+            "stream": LATER,
+            "kind": "Stream",
+            "shards": 1,
+            "replication_factor": 3,
+            "retention": { "max_age_seconds": null, "max_size_bytes": null },
+            "consistency": "Quorum",
+            "delivery": "AtLeastOnce",
+            "durable": true,
+        }))
+        .send()
+        .await
+        .expect("create");
+    let status = response.status();
+    assert!(status.is_success(), "create: {status}");
+
+    // The shard's first assignment, naming the broker that is down.
+    let store = &cluster
+        .control_plane
+        .as_ref()
+        .expect("control plane running")
+        .store;
+    let assignments = store.list_shard_assignments().await.expect("assignments");
+    assert!(
+        !assignments.iter().any(|a| a.key.stream == LATER),
+        "placed before the test assigned it: {assignments:?}"
+    );
+    let mut key = assignments
+        .into_iter()
+        .find(|a| a.key.stream == STREAM)
+        .expect("the startup stream's assignment")
+        .key;
+    key.stream = LATER.to_string();
+    let first = store
+        .put_shard_assignment(felix_controlplane_service::model::ShardAssignment {
+            key,
+            leader: leader.clone(),
+            replicas: replicas.clone(),
+            generation: 0,
+            state: felix_controlplane_service::model::ShardState::Assigning,
+            // The store stamps the new stream's own.
+            incarnation: 0,
+            successor: None,
+            joining: None,
+            move_started_at_millis: None,
+            move_reason: None,
+            fence_storage_ids: Default::default(),
+            member_storage_ids: Default::default(),
+            learners: Default::default(),
+            pending_set: None,
+        })
+        .await
+        .expect("assign the new shard");
+
+    cluster.restart_node(&leader).await.expect("restart");
+    serves(&cluster, LATER, "the shard learned from a snapshot serves").await;
+
+    let now = cluster
+        .control_plane
+        .as_ref()
+        .expect("control plane running")
+        .store
+        .list_shard_assignments()
+        .await
+        .expect("assignments")
+        .into_iter()
+        .find(|a| a.key.stream == LATER)
+        .expect("still assigned");
+    assert_eq!(now.leader, leader, "placed elsewhere: {now:?}");
+    assert_eq!(
+        now.generation, first.generation,
+        "opened by a rename, not on the snapshot's mark: {now:?} after {first:?}"
+    );
+    let renamed = cluster
+        .metric(&leader, "felix_broker_fence_set_unknown_total")
+        .await
+        .expect("scrape");
+    assert_eq!(renamed, None, "the leader asked for a rename");
     cluster.shutdown().await;
 }
