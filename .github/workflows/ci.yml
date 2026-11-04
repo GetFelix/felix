@@ -760,7 +760,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: c-conformance-fixture-logs
-          path: ${{ runner.temp }}/capi-work
+          path: ${{ runner.temp }}/capi-work/**/*.log
           if-no-files-found: ignore
 
   # Same reasoning as the Python job above, and the same shape: the binding

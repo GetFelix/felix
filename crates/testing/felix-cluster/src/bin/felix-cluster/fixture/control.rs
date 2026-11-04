@@ -212,7 +212,10 @@ async fn partition(State(control): State<Arc<Control>>) -> Answer {
     // fenced, and publishes would fail as "moving" instead of unknown.
     {
         let _pass = control.placement.lock().await;
-        settle_moves(&control.cluster).await.map_err(failed)?;
+        // An earlier /fence may be holding a move open on purpose.
+        if !control.hold.load(Ordering::SeqCst) {
+            settle_moves(&control.cluster).await.map_err(failed)?;
+        }
         control.hold.store(true, Ordering::SeqCst);
     }
     let leader = control
@@ -252,8 +255,10 @@ async fn heal(State(control): State<Arc<Control>>) -> Answer {
     // timer does not start one a later request would freeze.
     {
         let _pass = control.placement.lock().await;
-        settle_moves(&control.cluster).await.map_err(failed)?;
+        let settled = settle_moves(&control.cluster).await;
+        // Release the hold even on failure, or the fixture stays wedged.
         control.hold.store(false, Ordering::SeqCst);
+        settled.map_err(failed)?;
     }
     Ok(Json(control.target(drained.as_deref().unwrap_or_default())))
 }
