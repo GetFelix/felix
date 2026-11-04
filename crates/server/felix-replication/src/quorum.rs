@@ -50,18 +50,9 @@ pub struct QuorumMarks {
     status: std::sync::OnceLock<Arc<crate::status::ShardStatusBoard>>,
     /// The storage identity of this broker's directory, set once it is known.
     local_storage: std::sync::OnceLock<(felix_storage::StorageId, bool)>,
-    /// A test's leave to mark wiped copies before [`NON_VOTING_READY`].
-    non_voting: bool,
     /// When each shard's timeout was last logged.
     timeout_logged: Mutex<HashMap<ShardKey, tokio::time::Instant>>,
 }
-
-/// Whether brokers mark a wiped copy a learner under `joint_fence` (#1331).
-/// The control plane's `JOINT_FENCE_READY` keeps a fleet from finalizing the
-/// feature until learners can be re-admitted and placement skips them
-/// (#1737), but a fleet that finalized it earlier has it on already. Flip
-/// both together.
-const NON_VOTING_READY: bool = false;
 
 /// A shard's timed-out publishes are logged at most this often: under a stall
 /// every publish in flight times out together.
@@ -152,29 +143,19 @@ impl QuorumMarks {
             .is_some_and(|fleet| fleet.supports(feature))
     }
 
-    /// Whether this build marks a wiped copy a learner and keeps it from
-    /// leading under `joint_fence`. A fleet may have finalized `joint_fence`
-    /// before the control plane could re-admit a learner, so the build
-    /// decides, not the gate alone.
-    pub(crate) fn non_voting_ready(&self) -> bool {
-        NON_VOTING_READY || self.non_voting
-    }
-
-    /// Let this broker mark wiped copies whatever [`NON_VOTING_READY`] says.
-    #[cfg(test)]
-    pub(crate) fn allow_non_voting(mut self) -> Self {
-        self.non_voting = true;
-        self
-    }
-
     /// Whether the fleet has enabled `feature`, or `None` while this broker
-    /// has not yet taken a registration's answer, when a feature missing
-    /// from the gate may still be enabled. False without a fleet.
+    /// has not yet taken a registration's answer, when a feature it reports
+    /// may still be enabled. False without a fleet, and for a feature this
+    /// broker does not report: registration refuses a broker without an
+    /// enabled feature, so it never runs with one on.
     pub(crate) fn fleet_decides(&self, feature: felix_common::fleet::FleetFeature) -> Option<bool> {
         let Some(fleet) = &self.fleet else {
             return Some(false);
         };
         let view = fleet.view();
+        if !view.reports(feature) {
+            return Some(false);
+        }
         view.adopted().then(|| view.supports(feature))
     }
 
@@ -1007,32 +988,47 @@ pub async fn await_cache_quorum<S: ShardServing + ?Sized>(
 /// A `Quorum` shard's commit point is the quorum mark, not the local tail. A
 /// record past the mark may still be lost at failover and its offset reused
 /// for a different record, so a reader that saw it would hold a position the
-/// new leader's log contradicts. `None` means no bound: a `Leader` stream,
-/// whose commit point is local durability, a single-node broker, or a shard
-/// placed without replicas, where the leader alone is the majority -- the
-/// same cases [`await_quorum`] acknowledges without waiting.
+/// new leader's log contradicts. `Ok(None)` means no bound: a `Leader`
+/// stream, whose commit point is local durability, a single-node broker, or a
+/// shard this broker serves with no replicas, where the leader alone is the
+/// majority -- the same cases [`await_quorum`] acknowledges without waiting.
 ///
-/// Zero while this broker has no mark for the shard at its current
-/// generation: nothing is known to be on a majority yet.
+/// [`Unreadable::Settling`] while this broker serves the shard but has no
+/// mark for it at its current generation, as right after a failover onto it,
+/// and [`Unreadable::NotServed`] once it does not serve a `Quorum` shard at
+/// all. Either way the caller has no position to answer with: zero would
+/// send a reader asking for the end of the log to its start.
 pub fn read_bound<S: ShardServing + ?Sized>(
     consistency: Option<felix_broker::ConsistencyLevel>,
     shard: &crate::ShardKey,
     marks: Option<&QuorumMarks>,
     ingress: Option<&S>,
-) -> Option<u64> {
+) -> Result<Option<u64>, Unreadable> {
     if consistency != Some(felix_broker::ConsistencyLevel::Quorum) {
-        return None;
+        return Ok(None);
     }
     let (Some(marks), Some(ingress)) = (marks, ingress) else {
-        return None;
+        return Ok(None);
     };
+    // Serving first, as in [`committed_bound`]: a shard moved to a route with
+    // no replicas is unbounded only where it is now served.
+    let generation = ingress.generation(shard).ok_or(Unreadable::NotServed)?;
     if !ingress.replicated(shard) {
-        return None;
+        return Ok(None);
     }
-    let Some(generation) = ingress.generation(shard) else {
-        return Some(0);
-    };
-    Some(marks.offset(shard, generation).unwrap_or(0))
+    marks
+        .offset(shard, generation)
+        .map(Some)
+        .ok_or(Unreadable::Settling)
+}
+
+/// Why [`read_bound`] has no bound for a `Quorum` shard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unreadable {
+    /// This broker does not serve the shard.
+    NotServed,
+    /// This broker serves the shard but has no mark at its generation yet.
+    Settling,
 }
 
 /// Hold a counter add on a `Quorum` cache until a majority of the shard's
@@ -1136,25 +1132,29 @@ pub async fn await_counter_quorum<S: ShardServing + ?Sized>(
 /// The committed mark for readers of one shard, as the broker core asks for
 /// it (see `felix_broker::ReadBound`).
 ///
-/// [`read_bound`] with two more answers. `Settling` while this broker leads
-/// the shard but has no mark for its generation: zero would tell a new reader
-/// to start at the beginning of the log. `Refused` once it may not serve the
+/// [`read_bound`]'s answers, plus a lease check. `Settling` while this broker
+/// leads the shard but has no mark for its generation: zero would tell a new
+/// reader to start at the beginning of the log. `Refused` once it may not serve the
 /// shard at all -- the shard is led elsewhere, or its lease lapsed on a
 /// shard that still needs it ([`sessions_skip_lease`]) -- so a reader
-/// waiting on the mark stops and resumes where the shard is served. Only
-/// asked for `Quorum` shards.
+/// waiting on the mark stops and resumes where the shard is served.
+/// `Unbounded` only for a shard this broker serves with no replicas, whose
+/// majority is the leader alone. Only asked for `Quorum` shards.
 pub fn committed_bound<S: ShardServing + ?Sized>(
     key: &crate::ShardKey,
     marks: &QuorumMarks,
     ingress: &S,
 ) -> felix_broker::ReadBound {
     use felix_broker::ReadBound;
-    if !ingress.replicated(key) {
-        return ReadBound::Unbounded;
-    }
+    // Serving comes first: a deposed leader whose shard moved to a route with
+    // no replicas would otherwise read it as unreplicated and release what it
+    // holds uncommitted.
     let Some(generation) = ingress.generation(key) else {
         return ReadBound::Refused;
     };
+    if !ingress.replicated(key) {
+        return ReadBound::Unbounded;
+    }
     if !sessions_skip_lease(key, generation, marks) && !ingress.lease_valid() {
         return ReadBound::Refused;
     }

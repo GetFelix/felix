@@ -417,6 +417,7 @@ async fn a_group_log_answers_the_fence_and_the_fetch() {
 fn fetch(generation: u64, from_offset: u64) -> felix_wire::internal::ReplicateFetch {
     felix_wire::internal::ReplicateFetch {
         timed: false,
+        headers: false,
         correlation_id: 4,
         shard: batch(generation, 0, &[]).shard,
         log: ReplicaLog::Stream,
@@ -462,7 +463,7 @@ async fn only_the_leader_that_fenced_the_replica_reads_its_tail() {
     );
     assert_eq!(
         records.checksum,
-        batch_checksum(&records.payloads, &[], &[])
+        batch_checksum(&records.payloads, &[], &[], &[])
     );
 }
 
@@ -512,7 +513,7 @@ async fn a_long_tail_is_fetched_over_the_transport() {
             }
         })
         .collect();
-    marked.checksum = batch_checksum(&marked.payloads, &marked.marks, &[]);
+    marked.checksum = batch_checksum(&marked.payloads, &marked.marks, &[], &[]);
     let answer = handler
         .apply(SENDER, marked, felix_broker::LogKind::Stream)
         .await;

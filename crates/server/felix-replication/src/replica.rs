@@ -621,6 +621,22 @@ impl ReplicaHandler {
         log_kind: felix_broker::LogKind,
     ) -> InternalMessage {
         let correlation_id = batch.correlation_id;
+        // Only a stream's records carry header blocks; storing another log's
+        // batch without them would leave it differing from the leader's.
+        if log_kind != felix_broker::LogKind::Stream
+            && batch
+                .headers
+                .as_deref()
+                .is_some_and(|headers| headers.iter().any(Option::is_some))
+        {
+            metrics::record_replicated(metrics::OUTCOME_REFUSED);
+            return refused(
+                correlation_id,
+                ErrorCode::Malformed,
+                0,
+                format!("a {log_kind:?} log's records carry no headers"),
+            );
+        }
         let key = felix_router::ShardKey {
             tenant_id: batch.shard.tenant_id.clone(),
             namespace: batch.shard.namespace.clone(),
@@ -766,6 +782,14 @@ impl ReplicaHandler {
             metrics::record_replicated(metrics::OUTCOME_ERROR);
             return refused(correlation_id, ErrorCode::StorageFailed, 0, err.to_string());
         }
+        if let Err(err) = self
+            .broker
+            .mark_headers_stored_for(batch.headers.as_deref())
+            .await
+        {
+            metrics::record_replicated(metrics::OUTCOME_ERROR);
+            return refused(correlation_id, ErrorCode::StorageFailed, 0, err.to_string());
+        }
         let mut outcome = match unverified {
             Some(expected) if batch.first_offset > expected => Ok(Err(Divergence::Gap {
                 expected,
@@ -780,6 +804,7 @@ impl ReplicaHandler {
                     &batch.marks,
                     &batch.publishers,
                     batch.times.as_deref().unwrap_or_default(),
+                    batch.headers.as_deref(),
                 )
                 .await
             }
@@ -857,6 +882,7 @@ impl ReplicaHandler {
                             &batch.marks,
                             &batch.publishers,
                             batch.times.as_deref().unwrap_or_default(),
+                            batch.headers.as_deref(),
                         )
                         .await;
                     }
@@ -1417,6 +1443,17 @@ impl ReplicaHandler {
         };
         let first_offset = records.first().map_or(from_offset, |record| record.offset);
         let publishers = replication::publishers_to_wire(&records);
+        let headers = replication::headers_to_wire(&records);
+        // A reader that did not ask for the blocks would store these records
+        // without them, so it is refused instead.
+        if headers.is_some() && !(request.labelled && request.timed && request.headers) {
+            return refused(
+                correlation_id,
+                ErrorCode::UnsupportedKind,
+                0,
+                "these records carry headers; the fetch must ask for them".to_string(),
+            );
+        }
         let times = (request.labelled && request.timed).then(|| {
             records
                 .iter()
@@ -1430,7 +1467,12 @@ impl ReplicaHandler {
             correlation_id,
             shard: request.shard,
             first_offset,
-            checksum: felix_wire::internal::batch_checksum(&payloads, &marks, &publishers),
+            checksum: felix_wire::internal::batch_checksum(
+                &payloads,
+                &marks,
+                &publishers,
+                headers.as_deref().unwrap_or_default(),
+            ),
             payloads,
             marks,
             commit_offset: None,
@@ -1439,6 +1481,7 @@ impl ReplicaHandler {
                 .then(|| generations_over(&log.generations(), first_offset, end)),
             publishers,
             times,
+            headers,
             set_generation: None,
         };
         crate::ship::carry_marks(&mut batch, log_kind, false);
@@ -1792,9 +1835,9 @@ impl ReplicaHandler {
         // so a copy with no promise, or one not yet re-admitted, cannot take
         // an unconfirmed leader on the strength of an assignment it has not
         // seen (#1331).
-        // Unread, the gate may be on: refuse as if it were. Off, or on a
-        // build that does not mark wiped copies, the read answers as before.
-        let elections = self.non_voting_gate() != Some(false);
+        // Unread, the gate may be on: refuse as if it were. Off, the read
+        // answers as before.
+        let elections = self.joint_gate() != Some(false);
         let Some(confirmed) = self.confirmed.as_ref() else {
             return elections.then(|| unbacked(correlation_id, key, generation));
         };
@@ -1877,12 +1920,6 @@ impl ReplicaHandler {
         self.joint_gate() == Some(true)
     }
 
-    /// [`Self::joint_gate`] for marking a wiped copy a learner, which also
-    /// needs this build to allow it ([`QuorumMarks::non_voting_ready`]).
-    fn non_voting_gate(&self) -> Option<bool> {
-        non_voting_gate(self.fleet.as_deref())
-    }
-
     /// Whether the fleet has `joint_fence`, or `None` while this broker has
     /// not yet taken a registration's answer. The peer listener is bound
     /// before registration, so the gate can be unread while requests arrive.
@@ -1953,17 +1990,8 @@ impl ReplicaHandler {
     }
 }
 
-/// The log a group or counter log keeps its promise in: the shard's own.
-/// See [`ReplicaHandler::non_voting_gate`].
-pub(crate) fn non_voting_gate(fleet: Option<&crate::quorum::QuorumMarks>) -> Option<bool> {
-    match fleet {
-        Some(marks) if marks.non_voting_ready() => joint_gate(Some(marks)),
-        _ => Some(false),
-    }
-}
-
 /// See [`ReplicaHandler::joint_gate`].
-fn joint_gate(fleet: Option<&crate::quorum::QuorumMarks>) -> Option<bool> {
+pub(crate) fn joint_gate(fleet: Option<&crate::quorum::QuorumMarks>) -> Option<bool> {
     match fleet {
         Some(marks) => marks.fleet_decides(felix_common::fleet::JOINT_FENCE),
         None => Some(false),

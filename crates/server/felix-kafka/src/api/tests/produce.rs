@@ -305,11 +305,12 @@ async fn ship_producer(
     let applied = felix_broker::replication::apply(
         log,
         from,
-        batch_checksum(&payloads, &marks, &[]),
+        batch_checksum(&payloads, &marks, &[], &[]),
         &payloads,
         &marks,
         &[],
         &[],
+        None,
     )
     .await
     .expect("apply")

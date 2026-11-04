@@ -394,6 +394,9 @@ foreach (var record in await group.PollAsync(maxRecords: 32, wait: TimeSpan.From
   `GroupInfo` (`Committed`, `Tail`, `InFlight`, `Owed`, `DeadLetters`; `InFlight` and `Owed` are
   leader memory and restart from zero when the leader changes). `CreateAsync`, `SeekAsync` and
   `DeleteAsync` manage the group; `DeleteAsync` says whether it existed.
+- Poll, seek and describe retry inside the client under its reconnect policy. A
+  `ShardUnavailable` failure that still comes back, as a new `Quorum` leader answers until it
+  has a committed tail, changed nothing and is safe to retry (`IsRetryable` is true).
 
 Creating, seeking and deleting a group, and discarding or redriving a dead letter, need the
 `group.manage` permission; polling, settling, listing and describing need only consumer access.

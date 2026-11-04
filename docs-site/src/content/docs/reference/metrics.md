@@ -202,7 +202,7 @@ Replication from a shard's leader to its followers, and the `Quorum` publish pat
 
 | Metric | Type | Labels | Measures |
 | --- | --- | --- | --- |
-| `felix_broker_replication_shipped_total` | counter | `outcome` | Replication batches shipped as a leader. `trim_unsupported` is a batch holding a head trim that was not sent because the follower does not offer `head_trim`; that follower stays behind until it is upgraded. `headers_unsupported` is a batch holding a record with headers, which replication does not carry yet, so it was not sent and the follower stays behind that record. |
+| `felix_broker_replication_shipped_total` | counter | `outcome` | Replication batches shipped as a leader. `trim_unsupported` is a batch holding a head trim that was not sent because the follower does not offer `head_trim`; that follower stays behind until it is upgraded. `headers_unsupported` is a batch holding a record with headers that was not sent because the follower does not offer `record_headers`; that follower stays behind the record until it is upgraded. |
 | `felix_broker_replication_lag_records` | gauge | - | How far the slowest follower is behind, in records, across every shard this broker leads. This is the loss window for `Leader` consistency. |
 | `felix_broker_replication_halted` | gauge | - | Followers replication has stopped for because their log diverged or this broker was superseded. Any non-zero value needs attention. |
 | `felix_broker_replication_rebuilding` | gauge | - | Followers being rebuilt right now. |
@@ -294,6 +294,7 @@ Served by the MQTT listener, when `FELIX_MQTT_LISTEN` is set. See [MQTT](/featur
 | `felix_mqtt_connections` | gauge | - | Open MQTT connections. |
 | `felix_mqtt_connections_total` | counter | - | MQTT connections that reached the connection loop. |
 | `felix_mqtt_refused_total` | counter | `reason` | Connections or requests the listener turned away, by `reason`. The reasons are listed in [observability](/features/observability/). |
+| `felix_mqtt_published_total` | counter | `qos` | Messages written to a mounted stream, by `qos` (`0` or `1`). |
 
 ## Control plane: placement
 

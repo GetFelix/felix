@@ -71,11 +71,20 @@ pub enum InternalMessage {
 }
 
 /// The record kinds, whichever log they are for, send as
+/// `ReplicateHeaderedRecords` once they carry header blocks on a timed batch,
 /// `ReplicateTimedRecords` once they carry generations and times,
 /// `ReplicateLabelledRecords` once they carry generations, and otherwise as
 /// `ReplicateCommittedRecords` once they carry a commit offset.
 fn records_kind(records: &ReplicateRecords, own: Kind) -> Kind {
-    if records.generations.is_some() && records.times.is_some() {
+    let timed = records.generations.is_some() && records.times.is_some();
+    if timed
+        && records
+            .headers
+            .as_deref()
+            .is_some_and(super::replicate::any_block)
+    {
+        Kind::ReplicateHeaderedRecords
+    } else if timed {
         Kind::ReplicateTimedRecords
     } else if records.generations.is_some() {
         Kind::ReplicateLabelledRecords
@@ -95,6 +104,13 @@ impl InternalMessage {
         match self {
             // The credential decides the kind, so a forwarder that has one
             // always sends the kind an owner will check it on.
+            Self::ForwardPublish(m)
+                if m.headers
+                    .as_deref()
+                    .is_some_and(super::replicate::any_block) =>
+            {
+                Kind::HeaderedForwardPublish
+            }
             Self::ForwardPublish(m) if m.credential.is_empty() => Kind::ForwardPublish,
             Self::ForwardPublish(_) => Kind::AuthorizedForwardPublish,
             Self::ForwardPublishOk(_) => Kind::ForwardPublishOk,
@@ -130,6 +146,9 @@ impl InternalMessage {
             Self::Fence(m) if m.election.is_some() => Kind::ElectionFence,
             Self::Fence(_) => Kind::Fence,
             Self::FenceOk(_) => Kind::FenceOk,
+            Self::ReplicateFetch(m) if m.labelled && m.timed && m.headers => {
+                Kind::ReplicateHeaderedFetch
+            }
             Self::ReplicateFetch(m) if m.labelled && m.timed => Kind::ReplicateTimedFetch,
             Self::ReplicateFetch(m) if m.labelled => Kind::ReplicateLabelledFetch,
             Self::ReplicateFetch(_) => Kind::ReplicateFetch,
@@ -145,11 +164,22 @@ impl InternalMessage {
     /// The capability a peer must have offered to be sent this message, if
     /// any. The pool refuses to send one the peer did not offer.
     pub fn required_capability(&self) -> Option<PeerCapabilities> {
-        match self {
+        let election = match self {
             Self::Fence(m) if m.election.is_some() => Some(PeerCapabilities::ELECTION),
             Self::PreVote(_) | Self::PreVoteAnswer(_) => Some(PeerCapabilities::ELECTION),
             _ if self.set_generation().is_some() => Some(PeerCapabilities::ELECTION),
             _ => None,
+        };
+        let headers = matches!(
+            self.kind(),
+            Kind::ReplicateHeaderedRecords
+                | Kind::ReplicateHeaderedFetch
+                | Kind::HeaderedForwardPublish
+        )
+        .then_some(PeerCapabilities::RECORD_HEADERS);
+        match (election, headers) {
+            (Some(election), Some(headers)) => Some(election.union(headers)),
+            (election, headers) => election.or(headers),
         }
     }
 
