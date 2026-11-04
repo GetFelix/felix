@@ -26,6 +26,7 @@ mod membership;
 mod partition;
 mod promotion_fence;
 mod quorum_mark_wake;
+mod record_headers;
 mod recreate;
 mod replica_set;
 mod retention_floor;

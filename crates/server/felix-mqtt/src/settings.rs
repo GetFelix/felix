@@ -28,6 +28,11 @@ pub struct Settings {
     /// Longest keepalive honoured, in seconds. A client that asks for more, or
     /// for none, gets this one.
     pub keepalive_max_secs: u16,
+    /// Most QoS 1 publishes a client may have unacknowledged. Advertised to
+    /// 5.0 clients as `Receive Maximum`; a client past it is disconnected.
+    /// Also the most publishes of any QoS held for the broker before the
+    /// connection stops reading.
+    pub max_inflight: u16,
 }
 
 impl Default for Settings {
@@ -40,6 +45,7 @@ impl Default for Settings {
             max_topic_levels: 16,
             max_subscriptions: 64,
             keepalive_max_secs: 600,
+            max_inflight: 64,
         }
     }
 }

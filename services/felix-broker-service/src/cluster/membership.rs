@@ -604,14 +604,14 @@ pub fn spawn(
                     }
                 };
                 if let Some(reason) =
-                    trimmed_join_refusal(record_in.as_deref(), &registration.fleet_features).await
+                    join_refusal(record_in.as_deref(), &registration.fleet_features).await
                 {
                     mm::record_registration(mm::KIND_REJECTED);
                     mm::record_membership_live(false);
                     tracing::error!(
                         node_id = %config.node_id,
                         error = %reason,
-                        "this broker cannot join a fleet that has not finalized head_trim",
+                        "this broker's data directory needs a fleet feature the fleet has not finalized",
                     );
                     // Registered already, so placement could pick it; leave
                     // before stopping rather than wait for the expiry.
@@ -696,36 +696,59 @@ async fn record_registration(root: &std::path::Path, incarnation: u64) {
 /// Why this broker must not serve in a fleet whose enabled features are
 /// `enabled`, or `None` when it may.
 ///
-/// A data directory under `root` that took a head trim holds records an
-/// older broker cannot decode: an older leader promoted over it would fail
-/// to read them and stall that shard. So once a log here has trimmed
-/// (`felix_storage::run_state::head_trimmed`), the fleet must have finalized
-/// `head_trim`. A marker that cannot be read counts as one.
-pub(crate) async fn trimmed_join_refusal(
+/// A data directory under `root` that took a head trim, or stored a record
+/// with headers, holds records an older broker cannot decode: an older leader
+/// promoted over it would fail to read them and stall that shard, and an
+/// older follower would be held at the first. So once a log here has done
+/// either (`felix_storage::run_state::head_trimmed`, `has_record_headers`),
+/// the fleet must have finalized `head_trim`, `record_headers`. A marker that
+/// cannot be read counts as present.
+pub(crate) async fn join_refusal(
     root: Option<&std::path::Path>,
     enabled: &BTreeSet<String>,
 ) -> Option<String> {
-    let root = root?.to_path_buf();
-    if enabled.contains(felix_common::fleet::HEAD_TRIM.name()) {
-        return None;
-    }
+    let root = root?;
+    type Marker = fn(&std::path::Path) -> felix_storage::Result<bool>;
+    let markers: [(felix_common::fleet::FleetFeature, &str, Marker); 2] = [
+        (
+            felix_common::fleet::HEAD_TRIM,
+            "has taken a head trim",
+            felix_storage::run_state::head_trimmed,
+        ),
+        (
+            felix_common::fleet::RECORD_HEADERS,
+            "has stored a record with headers",
+            felix_storage::run_state::has_record_headers,
+        ),
+    ];
     let shown = root.display().to_string();
-    let trimmed = tokio::task::spawn_blocking(move || {
-        felix_storage::run_state::head_trimmed(&root).map_err(|err| err.to_string())
-    })
-    .await
-    .unwrap_or_else(|err| Err(err.to_string()));
-    match trimmed {
-        Ok(false) => None,
-        Ok(true) => Some(format!(
-            "a log in {shown} has taken a head trim, which brokers older than head_trim cannot \
-             read; finalize head_trim for the fleet before this broker joins it"
-        )),
-        Err(err) => Some(format!(
-            "could not tell whether a log in {shown} has taken a head trim ({err}); \
-             finalize head_trim for the fleet before this broker joins it"
-        )),
+    for (feature, did, marker) in markers {
+        if enabled.contains(feature.name()) {
+            continue;
+        }
+        let root = root.to_path_buf();
+        let found =
+            tokio::task::spawn_blocking(move || marker(&root).map_err(|err| err.to_string()))
+                .await
+                .unwrap_or_else(|err| Err(err.to_string()));
+        let name = feature.name();
+        match found {
+            Ok(false) => {}
+            Ok(true) => {
+                return Some(format!(
+                    "a log in {shown} {did}, which brokers older than {name} cannot read; \
+                     finalize {name} for the fleet before this broker joins it"
+                ));
+            }
+            Err(err) => {
+                return Some(format!(
+                    "could not tell whether a log in {shown} {did} ({err}); \
+                     finalize {name} for the fleet before this broker joins it"
+                ));
+            }
+        }
     }
+    None
 }
 
 /// Start the gate over from a registration's answer.

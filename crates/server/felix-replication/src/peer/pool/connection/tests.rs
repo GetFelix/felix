@@ -99,6 +99,7 @@ mod correlation {
                 ack: AckMode::OnCommit,
                 payloads: vec![Bytes::from_static(b"hello")],
                 credential: String::new(),
+                headers: None,
             }),
             InternalMessage::ForwardPublishOk(ForwardPublishOk {
                 correlation_id: 7,
@@ -139,6 +140,7 @@ mod correlation {
                 commit_offset: None,
                 generations: None,
                 publishers: Vec::new(),
+                headers: None,
                 set_generation: None,
             }),
             InternalMessage::ReplicateOk(ReplicateOk {
@@ -177,6 +179,7 @@ mod correlation {
             }),
             InternalMessage::ReplicateFetch(ReplicateFetch {
                 timed: false,
+                headers: false,
                 correlation_id: 7,
                 shard: shard(),
                 log: ReplicaLog::Stream,
@@ -195,6 +198,7 @@ mod correlation {
                 commit_offset: None,
                 generations: None,
                 publishers: Vec::new(),
+                headers: None,
                 set_generation: None,
             }),
         ]
@@ -225,6 +229,7 @@ mod correlation {
                 ack: AckMode::OnCommit,
                 payloads: vec![Bytes::from_static(b"hello")],
                 credential: String::new(),
+                headers: None,
             }),
             99,
         );

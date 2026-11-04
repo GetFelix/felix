@@ -619,8 +619,8 @@ async fn a_commit_replicated_below_an_old_scan_refuses_a_trim() {
     let payloads: Vec<Bytes> = (90..96).map(|n| Bytes::from(format!("x{n}"))).collect();
     let mut marks = vec![ProducerMark::None; 5];
     marks.push(ProducerMark::Commit);
-    let checksum = felix_wire::internal::batch_checksum(&payloads, &marks, &[]);
-    crate::replication::apply(&log, 90, checksum, &payloads, &marks, &[], &[])
+    let checksum = felix_wire::internal::batch_checksum(&payloads, &marks, &[], &[]);
+    crate::replication::apply(&log, 90, checksum, &payloads, &marks, &[], &[], None)
         .await
         .expect("apply")
         .expect("applied");

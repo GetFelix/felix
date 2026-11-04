@@ -55,6 +55,9 @@ pub(crate) struct Control {
     /// Set while a fault is held. The fixture's placement timer skips its pass,
     /// because the next pass would finish the move this is holding open.
     hold: Arc<AtomicBool>,
+    /// Held by the placement timer for each pass, and here while `hold` is
+    /// set, so setting it waits out a pass already in flight.
+    placement: Arc<Mutex<()>>,
     link: Arc<Interposer>,
     no_commit_requests: Arc<AtomicUsize>,
     movable_stream: String,
@@ -98,6 +101,7 @@ impl Control {
     pub(crate) fn new(
         cluster: Arc<Cluster>,
         hold: Arc<AtomicBool>,
+        placement: Arc<Mutex<()>>,
         link: Arc<Interposer>,
         no_commit_requests: Arc<AtomicUsize>,
         movable_stream: &str,
@@ -106,6 +110,7 @@ impl Control {
         Self {
             cluster,
             hold,
+            placement,
             link,
             no_commit_requests,
             movable_stream: movable_stream.to_string(),
@@ -181,7 +186,10 @@ async fn fence(State(control): State<Arc<Control>>) -> Answer {
     if control.cluster.nodes.len() < 2 {
         return Err(refused("a move needs a second broker to move to"));
     }
-    control.hold.store(true, Ordering::SeqCst);
+    {
+        let _pass = control.placement.lock().await;
+        control.hold.store(true, Ordering::SeqCst);
+    }
     let owner = control
         .cluster
         .fence_shard(&control.movable_stream)
@@ -200,7 +208,16 @@ async fn partition(State(control): State<Arc<Control>>) -> Answer {
     if control.cluster.nodes.len() < 2 {
         return Err(refused("a lost quorum needs followers to lose"));
     }
-    control.hold.store(true, Ordering::SeqCst);
+    // A move left running here would be frozen by the hold with its leader
+    // fenced, and publishes would fail as "moving" instead of unknown.
+    {
+        let _pass = control.placement.lock().await;
+        // An earlier /fence may be holding a move open on purpose.
+        if !control.hold.load(Ordering::SeqCst) {
+            settle_moves(&control.cluster).await.map_err(failed)?;
+        }
+        control.hold.store(true, Ordering::SeqCst);
+    }
     let leader = control
         .cluster
         .owner(&control.quorum_stream)
@@ -234,8 +251,36 @@ async fn heal(State(control): State<Arc<Control>>) -> Answer {
             .await
             .map_err(failed)?;
     }
-    control.hold.store(false, Ordering::SeqCst);
+    // Undraining invites a rebalance back onto the broker. Finish it now so the
+    // timer does not start one a later request would freeze.
+    {
+        let _pass = control.placement.lock().await;
+        let settled = settle_moves(&control.cluster).await;
+        // Release the hold even on failure, or the fixture stays wedged.
+        control.hold.store(false, Ordering::SeqCst);
+        settled.map_err(failed)?;
+    }
     Ok(Json(control.target(drained.as_deref().unwrap_or_default())))
+}
+
+/// Step placement until no shard is mid-move. The caller holds the placement
+/// lock, so the timer cannot start a move between the last pass and the hold.
+async fn settle_moves(cluster: &Cluster) -> Result<()> {
+    let deadline = Instant::now() + TAKES_EFFECT_WITHIN;
+    loop {
+        cluster.place_shards().await;
+        let moving = cluster.moving_shards().await?;
+        if moving.is_empty() {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            bail!(
+                "shard moves did not settle, still moving: {}",
+                moving.join(", ")
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 async fn until_refused(cluster: &Cluster, node_id: &str, stream: &str) -> Result<()> {

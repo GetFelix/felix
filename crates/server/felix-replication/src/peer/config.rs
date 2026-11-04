@@ -262,7 +262,8 @@ impl PeerTransportConfig {
             .union(PeerCapabilities::FORWARD_INCARNATION)
             .union(PeerCapabilities::RECORD_TIMES)
             .union(PeerCapabilities::PING)
-            .union(PeerCapabilities::HEAD_TRIM);
+            .union(PeerCapabilities::HEAD_TRIM)
+            .union(PeerCapabilities::RECORD_HEADERS);
         if self.fence {
             labels
                 .union(PeerCapabilities::FENCE)

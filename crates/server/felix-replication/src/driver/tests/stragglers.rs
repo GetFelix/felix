@@ -926,3 +926,162 @@ async fn sibling_appends_do_not_stall_a_mark_waiting_on_two_busy_followers() {
         "shard 0's mark stalled behind shard 1's appends"
     );
 }
+
+/// How a [`Switchable`] node answers.
+#[derive(Clone, Copy)]
+enum Answer {
+    Store,
+    Refuse,
+    Hang,
+}
+
+/// Every request is answered as its node's current [`Answer`] says, and is
+/// logged with the time it was sent.
+#[derive(Default)]
+struct Switchable {
+    answers: std::sync::Mutex<Map<&'static str, Answer>>,
+    sent: std::sync::Mutex<Vec<(String, tokio::time::Instant)>>,
+}
+
+impl Switchable {
+    fn set(&self, node: &'static str, answer: Answer) {
+        self.answers.lock().expect("lock").insert(node, answer);
+    }
+
+    fn sent_count(&self, node: &str) -> usize {
+        self.sent
+            .lock()
+            .expect("lock")
+            .iter()
+            .filter(|(to, _)| to == node)
+            .count()
+    }
+
+    fn sent_since(&self, node: &str, since: tokio::time::Instant) -> bool {
+        self.sent
+            .lock()
+            .expect("lock")
+            .iter()
+            .any(|(to, at)| to == node && *at >= since)
+    }
+}
+
+impl PeerRequester for Switchable {
+    async fn request(
+        &self,
+        node_id: &str,
+        _addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, PeerError> {
+        let InternalMessage::ReplicateRecords(batch) = message else {
+            panic!("the driver sent something other than a replication batch");
+        };
+        self.sent
+            .lock()
+            .expect("lock")
+            .push((node_id.to_string(), tokio::time::Instant::now()));
+        let answer = self.answers.lock().expect("lock").get(node_id).copied();
+        match answer.unwrap_or(Answer::Store) {
+            Answer::Store => {}
+            Answer::Refuse => {
+                return Err(PeerError::Unavailable {
+                    node_id: node_id.to_string(),
+                    detail: "connection refused".to_string(),
+                });
+            }
+            Answer::Hang => tokio::time::sleep(SLOW).await,
+        }
+        Ok(InternalMessage::ReplicateOk(ReplicateOk {
+            correlation_id: 0,
+            durable_offset: batch.first_offset + batch.payloads.len() as u64,
+            learner: false,
+        }))
+    }
+}
+
+/// **A dead follower does not hold a record back from a free one.** b fell
+/// behind and then stopped answering; c is level. A pass with nothing new
+/// ships to b, and c, sent nothing, vouches for nothing, so the pass has no
+/// majority and waits on b. A record landing then must still reach c at
+/// once, not once b's request gives up.
+#[tokio::test(start_paused = true)]
+async fn a_dead_follower_does_not_hold_a_record_back_from_a_free_one() {
+    let (broker, _dir) = super::quorum::quorum_leader(3, 4).await;
+    let router = router(LOCAL, &["broker-b", "broker-c"], 4);
+    let marks = Arc::new(QuorumMarks::new());
+    let peers = Arc::new(Switchable::default());
+    let routes_changed = Arc::new(tokio::sync::Notify::new());
+    peers.set("broker-b", Answer::Refuse);
+    let driver = driver_with(
+        Arc::clone(&peers),
+        &broker,
+        &router,
+        &marks,
+        &routes_changed,
+    );
+    assert!(prompt(&marks, 0, 4, 3).await, "the first mark waited");
+
+    // A pass with nothing new for c, which reaches b and hangs there.
+    peers.set("broker-b", Answer::Hang);
+    let hung = tokio::time::Instant::now();
+    routes_changed.notify_one();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(
+        peers.sent_since("broker-b", hung),
+        "the pass never reached b",
+    );
+
+    let landed = tokio::time::Instant::now();
+    append(&broker, 0).await;
+    tokio::time::sleep(SOON).await;
+    assert!(
+        peers.sent_since("broker-c", landed),
+        "the record waited for the dead follower before it was shipped to a free one",
+    );
+    assert!(
+        prompt(&marks, 0, 4, 4).await,
+        "the mark waited on the dead follower",
+    );
+    driver.stop().await;
+}
+
+/// b refuses and c hangs, so no follower can make the majority. A record
+/// landing must still reach b at once, no mark may come without a majority,
+/// and the early end of the wait must not turn into a tight loop of passes.
+#[tokio::test(start_paused = true)]
+async fn a_refusing_follower_and_a_dead_one_ship_the_record_without_a_busy_loop() {
+    let (broker, _dir) = super::quorum::quorum_leader(3, 4).await;
+    let router = router(LOCAL, &["broker-b", "broker-c"], 4);
+    let marks = Arc::new(QuorumMarks::new());
+    let peers = Arc::new(Switchable::default());
+    let routes_changed = Arc::new(tokio::sync::Notify::new());
+    peers.set("broker-b", Answer::Refuse);
+    peers.set("broker-c", Answer::Hang);
+    let driver = driver_with(
+        Arc::clone(&peers),
+        &broker,
+        &router,
+        &marks,
+        &routes_changed,
+    );
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    let landed = tokio::time::Instant::now();
+    let before = peers.sent_count("broker-b");
+    append(&broker, 0).await;
+    tokio::time::sleep(SOON).await;
+    assert!(
+        peers.sent_since("broker-b", landed),
+        "the record waited for the dead follower before it was shipped to the free one",
+    );
+    assert!(
+        !prompt(&marks, 0, 4, 4).await,
+        "a mark was published without a majority",
+    );
+    let passes = peers.sent_count("broker-b") - before;
+    assert!(
+        passes <= 20,
+        "the pass looped without waiting: {passes} sends to b",
+    );
+    driver.stop().await;
+}

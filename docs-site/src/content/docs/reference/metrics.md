@@ -202,7 +202,7 @@ Replication from a shard's leader to its followers, and the `Quorum` publish pat
 
 | Metric | Type | Labels | Measures |
 | --- | --- | --- | --- |
-| `felix_broker_replication_shipped_total` | counter | `outcome` | Replication batches shipped as a leader. `trim_unsupported` is a batch holding a head trim that was not sent because the follower does not offer `head_trim`; that follower stays behind until it is upgraded. `headers_unsupported` is a batch holding a record with headers, which replication does not carry yet, so it was not sent and the follower stays behind that record. |
+| `felix_broker_replication_shipped_total` | counter | `outcome` | Replication batches shipped as a leader. `trim_unsupported` is a batch holding a head trim that was not sent because the follower does not offer `head_trim`; that follower stays behind until it is upgraded. `headers_unsupported` is a batch holding a record with headers that was not sent because the follower does not offer `record_headers`; that follower stays behind the record until it is upgraded. |
 | `felix_broker_replication_lag_records` | gauge | - | How far the slowest follower is behind, in records, across every shard this broker leads. This is the loss window for `Leader` consistency. |
 | `felix_broker_replication_halted` | gauge | - | Followers replication has stopped for because their log diverged or this broker was superseded. Any non-zero value needs attention. |
 | `felix_broker_replication_rebuilding` | gauge | - | Followers being rebuilt right now. |
@@ -279,7 +279,7 @@ Served by the Kafka-compatible listener. See [Kafka compatibility](/features/kaf
 | `felix_kafka_produce_records_total` | counter | - | Records produced. |
 | `felix_kafka_produce_bytes_total` | counter | - | Bytes produced. |
 | `felix_kafka_produce_duplicate_records_total` | counter | - | Produced records recognized as duplicates of an earlier retry. |
-| `felix_kafka_produce_dropped_total` | counter | `field` | Produced record fields Felix does not keep, by `field` (`key` or `headers`). |
+| `felix_kafka_produce_dropped_total` | counter | `field` | Produced keys and headers not stored, by `field` (`key` or `headers`): the listener has not opted in with `FELIX_KAFKA_RECORD_HEADERS`, or the broker does not accept record headers yet. |
 | `felix_kafka_produce_errors_total` | counter | `error` | Produce failures by error. |
 | `felix_kafka_fetch_records_total` | counter | - | Records returned to fetches. |
 | `felix_kafka_fetch_bytes_total` | counter | - | Bytes returned to fetches. |
@@ -295,6 +295,7 @@ Served by the MQTT listener, when `FELIX_MQTT_LISTEN` is set. See [MQTT](/featur
 | `felix_mqtt_connections` | gauge | - | Open MQTT connections. |
 | `felix_mqtt_connections_total` | counter | - | MQTT connections that reached the connection loop. |
 | `felix_mqtt_refused_total` | counter | `reason` | Connections or requests the listener turned away, by `reason`. The reasons are listed in [observability](/features/observability/). |
+| `felix_mqtt_published_total` | counter | `qos` | Messages written to a mounted stream, by `qos` (`0` or `1`). |
 
 ## Control plane: placement
 

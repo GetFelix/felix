@@ -82,7 +82,7 @@ fn every_request_seed_decodes() {
             for topic in produce.topic_data {
                 for partition in topic.partition_data {
                     let records = partition.records.expect("seed carries records");
-                    decode(records).unwrap_or_else(|err| panic!("{name}: {err:?}"));
+                    decode(records, true).unwrap_or_else(|err| panic!("{name}: {err:?}"));
                 }
             }
         }
@@ -93,7 +93,7 @@ fn every_request_seed_decodes() {
 fn every_record_seed_decodes() {
     for (name, seed) in RECORDS {
         let batches =
-            decode(Bytes::from_static(seed)).unwrap_or_else(|err| panic!("{name}: {err:?}"));
+            decode(Bytes::from_static(seed), true).unwrap_or_else(|err| panic!("{name}: {err:?}"));
         assert!(!batches.is_empty(), "{name}");
     }
 }
@@ -120,7 +120,7 @@ fn truncated_and_corrupted_seeds_never_panic() {
     }
     for (_, seed) in RECORDS {
         for variant in mutations(seed) {
-            let _ = decode(variant);
+            let _ = decode(variant, true);
         }
     }
 }

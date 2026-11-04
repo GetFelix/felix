@@ -1,6 +1,6 @@
 ---
 title: "MQTT"
-description: "Let MQTT devices connect to a Felix broker with a Felix token, and mount a stream at a topic prefix. Today the listener authenticates and keeps connections alive, and resolves topics to streams; publishing and subscribing are not built yet."
+description: "Let MQTT devices connect to a Felix broker with a Felix token, mount a stream at a topic prefix, and publish to it at QoS 0 and 1. Every PUBACK means the message is in the stream. Subscribing is not built yet."
 ---
 
 A Felix broker can accept MQTT connections from devices, over MQTT 3.1.1 and
@@ -8,10 +8,10 @@ A Felix broker can accept MQTT connections from devices, over MQTT 3.1.1 and
 client and read from it, with Felix's acknowledgements and durability behind
 every `PUBACK`.
 
-**Status: connections and mounts.** Today a device can connect with a Felix
-token, ping and disconnect, and you can mount a stream at a topic prefix. Every
-`PUBLISH` and `SUBSCRIBE` is still refused until the publish and subscribe paths
-land. The plan for the rest is in the
+**Status: connections, mounts and publishing.** Today a device can connect with
+a Felix token, publish at QoS 0 and 1 to a stream mounted at a topic prefix, and
+get a `PUBACK` once the message is in the stream. `SUBSCRIBE` is still refused
+until the subscribe path lands. The plan for the rest is in the
 [design](https://github.com/GetFelix/felix/blob/main/docs/mqtt-design.md).
 
 ## Turn it on
@@ -37,10 +37,9 @@ as `FELIX_MQTT_LISTEN=127.0.0.1:1883 FELIX_MQTT_TLS=false`:
 mosquitto_pub -h 127.0.0.1 -p 1883 -u my-tenant -P "$FELIX_TOKEN" -t sensors/a -m 21.5
 ```
 
-The connection is accepted and the publish is refused. At QoS 0 an MQTT client
-cannot be told no for one message, so the broker closes the connection; a 5.0
-client gets a `DISCONNECT` with reason "not authorized" first. At QoS 1 and 2 a
-5.0 client gets that reason on the acknowledgement.
+With a stream mounted at `sensors/` (next section), the connection is accepted
+and the message is written to the stream. With no mount the publish is refused;
+see [Publish to a mounted stream](#publish-to-a-mounted-stream).
 
 ## Mount a stream at a topic prefix
 
@@ -77,19 +76,71 @@ by default, and 16 levels), so a very long or deep mount leaves little room or
 none. The
 [control plane API](/api/control-plane-api/) has the exact rules.
 
-A publish to a topic under no mount is never dropped silently. A 3.1.1 client's
-connection closes. A 5.0 client at QoS 1 gets a `PUBACK` and at QoS 2 a `PUBREC`, each
-with reason 0x90 (topic name invalid), and keeps its connection; at QoS 0 it gets a `DISCONNECT` with the
-same reason. Each is counted in `felix_mqtt_refused_total{reason="unmounted"}`.
-A publish to a mounted topic is refused as before, because writing to the stream
-is the next piece of work.
-
 A connection with no credentials is refused unless the broker was started with
-`FELIX_MQTT_ANONYMOUS_TENANT=<tenant>`, which is for development only.
+`FELIX_MQTT_ANONYMOUS_TENANT=<tenant>`, which is for development only: such a
+connection may publish to every stream mounted for that tenant.
 
 A connection ends when its token expires or is revoked. A device is also closed
 if it is silent for one and a half keepalive intervals, with the interval capped
 at `FELIX_MQTT_KEEPALIVE_MAX_SECS`.
+
+## Publish to a mounted stream
+
+Publish with any MQTT client. This writes one message into the stream mounted at
+`plant/`:
+
+```bash
+mosquitto_pub -h 127.0.0.1 -p 1883 -u my-tenant -P "$FELIX_TOKEN" \
+  -t plant/7/line/3/temp -q 1 -m 21.5
+```
+
+At QoS 1 the broker answers with a `PUBACK` only once the message is written the
+way the stream asks: on the leader under its fsync policy, and on a `Quorum`
+stream on a majority of replicas as well. It is the same wait a Kafka producer
+with `acks=all` makes, so a `PUBACK` is never early. `PUBACK`s leave in the order
+the publishes arrived. QoS 0 is written with nothing sent back. QoS 2 is not
+supported: the broker tells a 5.0 client `Maximum QoS` 1.
+
+The message becomes a record: the topic name is its key, the payload is stored
+as sent, and the MQTT fields (QoS, content type, response topic, correlation
+data, expiry) and any 5.0 user properties are record headers. Every message on
+one topic goes to one shard, so a topic keeps its order. The header names are in
+[`docs/mqtt-compatibility.md`](https://github.com/GetFelix/felix/blob/main/docs/mqtt-compatibility.md#what-is-stored).
+
+Storing headers needs the broker to accept record headers, which a single broker
+does by default and a clustered one does once its fleet has finalized
+`record_headers`. The first MQTT publish to a mounted stream is what moves its
+logs to storage format v8, so mounting a stream is the step that opts in. See
+[upgrades](/deployment/upgrades/).
+
+A refused publish is always answered or counted. A publish to a topic under no
+mount, or by a token without `stream.publish` on the mounted stream, is
+refused: a 5.0 client at QoS 1
+gets a `PUBACK` with reason 0x90 or 0x87 and keeps its connection, a 3.1.1
+client's connection closes (3.1.1 cannot refuse one message). Each refusal is
+counted in `felix_mqtt_refused_total{reason}`.
+
+Three limits to know:
+
+- **One owner.** A message is written by the broker that owns the shard its topic
+  maps to. If another broker owns it, a 5.0 client at QoS 1 gets `PUBACK` 0x83
+  with the reason string `not_owner`, a 3.1.1 client's connection closes, and a
+  QoS 0 message is dropped and counted. Forwarding to the owner is the next
+  piece of work.
+- **Unknown outcome.** If leadership moves or a majority does not answer in time
+  after the message was sent, the broker cannot say whether it was written. It
+  sends neither a `PUBACK` nor an error reason, and closes the connection. Most
+  clients drop an unacknowledged message when a clean session ends, so publish
+  it again from the application after reconnecting; the stream may then hold it
+  twice.
+- **No retained messages or topic aliases.** A retained publish is refused with
+  reason 0x9A (3.1.1: the connection closes), and no topic alias is accepted.
+
+`FELIX_MQTT_MAX_INFLIGHT` (default 64) caps the QoS 1 publishes a device may have
+waiting for a `PUBACK`. A 5.0 client is told it as `Receive Maximum` and is
+disconnected with reason 0x93 if it goes past it; a 3.1.1 client is slowed by TCP
+instead. Publishes also count against the tenant's publish quota: over quota,
+the broker stops reading that connection for the delay, at most five seconds.
 
 ## Browsers and WebSockets
 

@@ -38,6 +38,10 @@ pub struct Settings {
     /// it does, its requests are also capped at a few kilobytes, so an
     /// unauthenticated peer can hold neither a connection slot nor memory.
     pub auth_timeout: Duration,
+    /// Store a produced record's key and headers when the broker accepts
+    /// record headers. Off, they are dropped and counted, so a Kafka producer
+    /// cannot move the logs to a storage format an older build refuses to open.
+    pub record_headers: bool,
 }
 
 impl Default for Settings {
@@ -47,6 +51,7 @@ impl Default for Settings {
             default_namespace: None,
             cluster_id: String::new(),
             auth_timeout: Duration::from_secs(10),
+            record_headers: false,
         }
     }
 }
