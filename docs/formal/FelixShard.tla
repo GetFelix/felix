@@ -3784,6 +3784,14 @@ NeverRenameDue == ~(RenameDue /\ bgen[leader] < gen)
 \* still fencing there (FelixShardElectRenameFencingDue.cfg).
 NeverRenameWhileFencing == ~(RenameDue /\ bgen[leader] = gen)
 
+\* The same for a leader that lost the set it leaves after it opened its
+\* generation, past the first (FelixShardReplacedSetUnknownRenames.cfg): the
+\* rename `SetLossUpTo` allows is reachable. The first generation is left out
+\* because the model starts with its leader open there.
+NeverRenameUnknownSet ==
+    ~(/\ RenameDue /\ gen > 1 /\ bgen[leader] = gen /\ fencing[leader]
+      /\ SetUnknown(leader) /\ <<gen, leader>> \in opened)
+
 \* Under `SetCheck`, once a set change opened, a majority of the new set and
 \* of the set before it know the new set, so no replica on the old set alone
 \* can gather a majority. The joint fence is what makes the second half true.
