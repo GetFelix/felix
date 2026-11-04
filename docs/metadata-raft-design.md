@@ -233,6 +233,28 @@ disaster recovery beyond quorum loss, the same snapshot format doubles as an
 export: the import path below reads either a Postgres database or a snapshot
 file.
 
+Each member keeps one snapshot on disk, and it only moves forward. Openraft
+builds snapshots in a background task, so a member can capture its state for a
+snapshot, receive a newer snapshot from the leader, and only then finish
+writing the one it built. Writing that older snapshot would be unsafe: the log
+has already been purged up to the newer one, so on restart the member would
+need entries it no longer has, and it would refuse to start.
+
+So a snapshot is written only if its last log index is past the stored one's.
+The check and the write are one redb transaction, and redb runs one write at a
+time, so nothing can land in between. A snapshot's metadata and data are
+written in that one transaction, so a crash never leaves half of one. A
+received snapshot also never moves the applied state backwards. If one ever
+arrived behind what the member has applied, the member stops with an error
+rather than apply the entries in between a second time.
+
+One crash window remains. When a member receives a snapshot from the leader,
+openraft purges the log behind it without waiting for the snapshot to be
+written. A member that crashes between the two restarts with its older
+snapshot and a log purged past it, and refuses to start. It does not diverge.
+To recover, wipe its volume and let it rejoin as described in
+[Rejoining after a lost volume](#rejoining-after-a-lost-volume).
+
 ### Group membership and bootstrap
 
 Initial members come from configuration. For the StatefulSet shape, the
