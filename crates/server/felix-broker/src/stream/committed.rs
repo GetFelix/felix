@@ -26,8 +26,8 @@ use parking_lot::Mutex;
 /// How far a reader may see into a stream shard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReadBound {
-    /// Everything durable here is committed: a `Leader` stream, a shard with
-    /// no replicas, or a broker with no cluster.
+    /// Everything durable here is committed: a `Leader` stream, a shard
+    /// served here with no replicas, or a broker with no cluster.
     Unbounded,
     /// Offsets below this are committed; the rest may yet be lost.
     Committed(u64),

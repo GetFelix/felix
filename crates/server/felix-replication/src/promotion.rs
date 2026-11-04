@@ -293,7 +293,7 @@ pub(crate) async fn fence_shard_as<R: PeerRequester>(
                             route,
                             set,
                             leaving.clone(),
-                            None,
+                            Vec::new(),
                             joint,
                         )
                         .await,
@@ -1037,6 +1037,7 @@ async fn read_all<R: PeerRequester>(
             max_bytes: FETCH_BYTES,
             labelled: false,
             timed: false,
+            headers: false,
         });
         let batch = match requester.request(node_id, addr, request).await {
             Ok(
@@ -1285,6 +1286,10 @@ async fn catch_up<R: PeerRequester>(
     // it serves.
     let timed =
         labelled && offered.is_some_and(|offered| offered.contains(PeerCapabilities::RECORD_TIMES));
+    // And with the key-and-headers blocks, or this broker would hold records
+    // that differ from the replica's once it serves.
+    let headers =
+        timed && offered.is_some_and(|offered| offered.contains(PeerCapabilities::RECORD_HEADERS));
     let mut taken_labels = labelled.then(Vec::new);
     while next < target.log_end {
         let request = InternalMessage::ReplicateFetch(ReplicateFetch {
@@ -1295,6 +1300,7 @@ async fn catch_up<R: PeerRequester>(
             max_bytes: FETCH_BYTES,
             labelled,
             timed,
+            headers,
         });
         let batch = match requester.request(from, addr, request).await {
             Ok(
@@ -1322,6 +1328,10 @@ async fn catch_up<R: PeerRequester>(
             .mark_head_trimmed_for(&batch.marks)
             .await
             .map_err(|err| err.to_string())?;
+        broker
+            .mark_headers_stored_for(batch.headers.as_deref())
+            .await
+            .map_err(|err| err.to_string())?;
         let applied = replication::apply(
             log,
             batch.first_offset,
@@ -1330,6 +1340,7 @@ async fn catch_up<R: PeerRequester>(
             &batch.marks,
             &batch.publishers,
             batch.times.as_deref().unwrap_or_default(),
+            batch.headers.as_deref(),
         )
         .await
         .map_err(|err| err.to_string())?;

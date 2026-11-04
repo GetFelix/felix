@@ -50,21 +50,27 @@ fuzz_target!(|data: &[u8]| {
     assert_eq!(re_encoded.as_ref(), data);
 
     // Property 4: a message needs `ELECTION` exactly when it travelled as one
-    // of the kinds that carry election fields, or inside an incarnation
-    // envelope that might hold one. Nothing else may be withheld from a peer
-    // that did not offer it.
+    // of the kinds that carry election fields, and `RECORD_HEADERS` exactly
+    // when it travelled as a headered kind or inside a stamped envelope that
+    // holds a headered batch. An incarnation envelope might hold either.
+    // Nothing else may be withheld from a peer that did not offer it.
     if let Ok(header) = InternalHeader::decode(&input) {
-        let election_kind = matches!(
-            header.kind,
-            Kind::ElectionFence | Kind::SetStamped | Kind::PreVote | Kind::PreVoteAnswer
-        );
+        let election = PeerCapabilities::ELECTION;
+        let headers = PeerCapabilities::RECORD_HEADERS;
+        let required = message.required_capability();
         match header.kind {
-            _ if election_kind => assert_eq!(
-                message.required_capability(),
-                Some(PeerCapabilities::ELECTION)
-            ),
             Kind::Incarnated => {}
-            _ => assert_eq!(message.required_capability(), None),
+            Kind::SetStamped => assert!(
+                required == Some(election) || required == Some(election.union(headers)),
+                "a stamped batch needs ELECTION, and RECORD_HEADERS only with blocks"
+            ),
+            Kind::ElectionFence | Kind::PreVote | Kind::PreVoteAnswer => {
+                assert_eq!(required, Some(election))
+            }
+            Kind::ReplicateHeaderedRecords
+            | Kind::ReplicateHeaderedFetch
+            | Kind::HeaderedForwardPublish => assert_eq!(required, Some(headers)),
+            _ => assert_eq!(required, None),
         }
     }
 

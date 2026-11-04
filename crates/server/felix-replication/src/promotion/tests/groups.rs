@@ -164,7 +164,7 @@ pub(super) async fn holds(
         replica_router(node_id, size, generation),
     );
     let batch = ReplicateRecords {
-        checksum: batch_checksum(payloads, &[], &[]),
+        checksum: batch_checksum(payloads, &[], &[], &[]),
         payloads: payloads.to_vec(),
         ..batch(generation, 0, &[])
     };

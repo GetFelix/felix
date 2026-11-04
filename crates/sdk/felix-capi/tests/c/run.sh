@@ -19,14 +19,21 @@ mode="${1:-offline}"
 crate="$(cd "$(dirname "$0")/../.." && pwd)"
 repo="$(cd "$crate/../../.." && pwd)"
 target="${CARGO_TARGET_DIR:-$repo/target}/debug"
-work="$(mktemp -d)"
+# FELIX_CAPI_KEEP_DIR names a directory to leave behind (the fixture logs), so
+# CI can upload it when the run fails.
+if [ -n "${FELIX_CAPI_KEEP_DIR:-}" ]; then
+  mkdir -p "$FELIX_CAPI_KEEP_DIR"
+  work="$FELIX_CAPI_KEEP_DIR"
+else
+  work="$(mktemp -d)"
+fi
 fixture_pid=""
 disposable_pid=""
 cleanup() {
   for pid in "$disposable_pid" "$fixture_pid"; do
     if [ -n "$pid" ]; then kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; fi
   done
-  rm -rf "$work"
+  if [ -z "${FELIX_CAPI_KEEP_DIR:-}" ]; then rm -rf "$work"; fi
 }
 trap cleanup EXIT
 

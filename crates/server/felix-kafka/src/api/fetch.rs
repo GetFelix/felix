@@ -23,7 +23,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use super::partition::Readable;
-use crate::cluster::Principal;
+use crate::cluster::{Principal, Unreadable};
 use crate::service::Shared;
 
 /// The longest a fetch waits, whatever the client asked for. Clients ask for
@@ -185,7 +185,19 @@ async fn read_partition(
     // Consumers read to the high watermark, which on a `Quorum` shard is the
     // commit point rather than the log's end. An offset between the two is
     // not out of range, only not readable yet, so it is answered empty.
-    let high_watermark = readable.high_watermark(tail);
+    let high_watermark = match readable.high_watermark(tail) {
+        Ok(high_watermark) => high_watermark,
+        // A new leader with no mark yet knows of nothing committed past the
+        // log start, so the fetch is answered empty and the consumer polls on.
+        // The high watermark and last stable offset can then read below the
+        // consumer's position: not out of range, though its lag reads negative.
+        Err(Unreadable::Settling) => readable.floor(tail),
+        Err(Unreadable::NotServed) => {
+            return answer
+                .with_error_code(ResponseError::NotLeaderOrFollower.code())
+                .with_high_watermark(-1);
+        }
+    };
     let answer = answer
         .with_high_watermark(high_watermark as i64)
         .with_last_stable_offset(high_watermark as i64)
