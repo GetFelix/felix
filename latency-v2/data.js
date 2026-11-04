@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793828276836,
+  "lastUpdate": 1793828814728,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -57156,6 +57156,72 @@ window.BENCHMARK_DATA = {
             "range": "525.79",
             "unit": "us",
             "extra": "trials: 5\nmedian: 688.00\nmean: 859.40\nstdev: 525.79\ncv: 61.18%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "05985026347bb873042b9858da502dd47e4111ef",
+          "message": "fix(replication): a checked answer counts toward the mark after its pass (#1895) (#1897)\n\n* test(replication): two slow followers answering out of step never make a mark (repro, fails on main)\n\n* fix(replication): a checked answer counts toward the mark after its pass while the copy is unchanged (#1895)\n\n* docs(replication): which answers the mark counts, and for how long (#1895)\n\nSpec-Unaffected: FelixShard.tla models per-pass counting (EndPass clears\n`checked`, MarkCounts requires m \\in checked[b]), so the spec now checks a\nstricter rule than the code runs. The model change (keep `checked` across\nreports, drop f on any Probe that changes sid or incarnation, count\nmin(confirmed, the offset Answer vouched for)) is described in the PR and\nleft for a follow-up with its own TLC runs.\n\n* fix(replication): a failed request stops a follower counting on its earlier answer (#1895)\n\n* fix(replication): a learner's earlier answer still names it holding the start (#1895)\n\nvouched_at zeroed learners and halted followers, so the holds_start report\nbuilt from the same view never named a learner, which #1893 relies on. The\nmarks already leave them out through counts().\n\nSpec-Unaffected: the view the marks read still drops learners and halted followers through counts(); only the holds_start report sees them again, as on main.\n\n* fix(replication): a halted follower's earlier vouch no longer names it holding the start (#1895)\n\nA learner is still reported; a halted copy is not shipped to or pinged, so\nadmitting it into a new set on a pre-halt vouch could stall the change.\n\nSpec-Unaffected: only the holds_start report changes; the marks already left halted followers out through counts().\n\n* test(replication): the unknown-set test's kept set names no earlier sets\n\nMain's tests do not build without it (#1915 carries the same fix).",
+          "timestamp": "2026-11-04T13:41:15-08:00",
+          "tree_id": "620c5613cdf6108e0ebd1c586e70489b711a53c3",
+          "url": "https://github.com/GetFelix/felix/commit/05985026347bb873042b9858da502dd47e4111ef"
+        },
+        "date": 1793828807703,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 153,
+            "range": "1.67",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 153.00\nmean: 152.60\nstdev: 1.67\ncv: 1.10%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 220,
+            "range": "33.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 220.00\nmean: 237.60\nstdev: 33.52\ncv: 14.11%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 277,
+            "range": "798.69",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 277.00\nmean: 634.40\nstdev: 798.69\ncv: 125.90%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 198,
+            "range": "1.48",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 198.00\nmean: 198.20\nstdev: 1.48\ncv: 0.75%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 395,
+            "range": "7.60",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 395.00\nmean: 392.80\nstdev: 7.60\ncv: 1.93%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 533,
+            "range": "78.82",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 533.00\nmean: 559.40\nstdev: 78.82\ncv: 14.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
