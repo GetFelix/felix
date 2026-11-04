@@ -240,7 +240,7 @@ fn a_build_that_finishes_after_a_newer_install_keeps_the_install() {
             assert_eq!(applied, Some(newer));
             assert_eq!(app.state(), b"newer");
 
-            // What openraft does once the install lands.
+            // Openraft purges the log behind an installed snapshot.
             LogStore::new(db).purge(newer).await.expect("purge");
         }
 

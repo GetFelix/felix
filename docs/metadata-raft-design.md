@@ -242,11 +242,18 @@ need entries it no longer has, and it would refuse to start.
 
 So a snapshot is written only if its last log index is past the stored one's.
 The check and the write are one redb transaction, and redb runs one write at a
-time, so nothing can land in between. A crash before that transaction commits
-leaves the previous snapshot whole: its metadata and data are written
-together. A received snapshot also never moves the applied state backwards. If
-one ever arrived behind what the member has applied, the member stops with an
-error rather than apply the entries in between a second time.
+time, so nothing can land in between. A snapshot's metadata and data are
+written in that one transaction, so a crash never leaves half of one. A
+received snapshot also never moves the applied state backwards. If one ever
+arrived behind what the member has applied, the member stops with an error
+rather than apply the entries in between a second time.
+
+One crash window remains. When a member receives a snapshot from the leader,
+openraft purges the log behind it without waiting for the snapshot to be
+written. A member that crashes between the two restarts with its older
+snapshot and a log purged past it, and refuses to start. It does not diverge.
+To recover, wipe its volume and let it rejoin as described in
+[Rejoining after a lost volume](#rejoining-after-a-lost-volume).
 
 ### Group membership and bootstrap
 

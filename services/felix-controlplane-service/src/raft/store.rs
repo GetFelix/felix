@@ -491,10 +491,11 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
         snapshot: Box<Cursor<Vec<u8>>>,
     ) -> Result<(), StorageError> {
         let data = snapshot.into_inner();
-        // Persist before replacing live state: a crash between the two
-        // leaves either the old state (snapshot re-sent) or the new
-        // (rebuilt on open) — never neither. An older snapshot is not
-        // written, so what is on disk only ever moves forward.
+        // Persist before replacing live state, so open rebuilds from this
+        // snapshot after a crash. An older snapshot is not written, so what
+        // is on disk only ever moves forward. Openraft purges the log behind
+        // this snapshot without waiting for it to be persisted, so a crash
+        // before this commit can leave the log purged past the stored one.
         self.persist_snapshot(meta, &data).await?;
         let mut applied = self.inner.applied.lock().await;
         // Openraft only installs past its committed index, so this does not
