@@ -2,6 +2,8 @@
 //! holds.
 use std::collections::BTreeMap;
 
+use felix_common::membership::RefusedGeneration;
+
 use crate::model::{HaltedCopy, ShardKey};
 
 /// Which replicas hold enough of a shard's log to lead it.
@@ -56,13 +58,19 @@ pub trait CaughtUp {
         false
     }
 
-    /// Whether `leader` reported at `generation` that it refused to open the
-    /// shard there because it had promised that generation to another node,
-    /// which the control plane recorded as elected without adopting. Only a
-    /// fresh report of exactly `generation` says so; a refusal of an older
-    /// one is not evidence about this one.
-    fn leader_refused(&self, _key: &ShardKey, _generation: u64, _leader: &str) -> bool {
-        false
+    /// The refusal `leader` reported at `generation`, if it refused to open
+    /// the shard there: because it had promised that generation to another
+    /// node, which the control plane recorded as elected without adopting,
+    /// or because its joint fence cannot learn the set the generation leaves.
+    /// Only a fresh report of exactly `generation` says so; a refusal of an
+    /// older one is not evidence about this one.
+    fn leader_refusal(
+        &self,
+        _key: &ShardKey,
+        _generation: u64,
+        _leader: &str,
+    ) -> Option<RefusedGeneration> {
+        None
     }
 
     /// Whether `leader`, which gave the shard up, may lead it again from its

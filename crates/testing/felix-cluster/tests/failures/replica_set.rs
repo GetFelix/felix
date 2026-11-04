@@ -210,6 +210,7 @@ async fn a_replica_that_left_the_set_cannot_win_a_fence() {
                 candidate: true,
                 set: old_set.clone(),
                 leaving: None,
+                earlier: Vec::new(),
             }),
         });
         let addr = cluster.node(target).expect("node").internal_addr;

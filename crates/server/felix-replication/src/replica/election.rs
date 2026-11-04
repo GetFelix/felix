@@ -99,14 +99,15 @@ impl ReplicaHandler {
         log: &felix_broker::StreamLog,
         election: &FenceElection,
     ) -> Option<InternalMessage> {
-        let set = ReplicaSet {
-            current: crate::replica_set::membership(&election.set),
-            leaving: election
-                .leaving
-                .as_ref()
-                .map(crate::replica_set::membership),
-        };
-        keep(correlation_id, key, log, self.mark_local(log, set)).await
+        let joint = self.keeps_earlier_sets();
+        keep(
+            correlation_id,
+            key,
+            log,
+            self.mark_local(log, kept_from(election)),
+            joint,
+        )
+        .await
     }
 
     /// Check a batch stamped with the generation of the sender's set, after
@@ -203,12 +204,25 @@ impl ReplicaHandler {
             return Some(refusal);
         }
         let was_learner = self.is_learner(log);
-        if let Some(refusal) = keep(correlation_id, key, log, self.mark_local(log, set)).await {
+        // The kept sets are carried even though the batch's leader opened:
+        // they are dropped only once this log holds the batch's records.
+        let joint = self.keeps_earlier_sets();
+        if let Some(refusal) =
+            keep(correlation_id, key, log, self.mark_local(log, set), joint).await
+        {
             return Some(refusal);
         }
         // Marked by this batch: it was checked as a voter's, so it is refused
         // and comes again to be checked as a learner's.
         (!was_learner && self.is_learner(log)).then(|| undecided(correlation_id, key))
+    }
+
+    /// Whether a set kept here keeps earlier sets: once `joint_fence` is
+    /// finalized, and while the gate is unread, since dropping sets a
+    /// finalized fleet needs is unsafe and writing them only costs a
+    /// rollback in that window.
+    fn keeps_earlier_sets(&self) -> bool {
+        self.joint_gate() != Some(false)
     }
 
     /// Whether this copy's log lists it as a learner: a set named another
@@ -405,17 +419,14 @@ impl ReplicaHandler {
         // check; learning it would mask that.
         if let Some(election) = &request.election
             && election.set.generation <= request.shard.generation
+            && let Err(err) = crate::replica_set::accept(
+                log,
+                self.mark_local(log, kept_from(election)),
+                self.keeps_earlier_sets(),
+            )
+            .await
         {
-            let set = ReplicaSet {
-                current: crate::replica_set::membership(&election.set),
-                leaving: election
-                    .leaving
-                    .as_ref()
-                    .map(crate::replica_set::membership),
-            };
-            if let Err(err) = log.accept_set(self.mark_local(log, set)).await {
-                tracing::warn!(error = %err, "could not keep the set a fence carried");
-            }
+            tracing::warn!(error = %err, "could not keep the set a fence carried");
         }
         tracing::warn!(
             stream = %key.stream,
@@ -727,14 +738,33 @@ fn refuse_stale(
     )
 }
 
+/// The sets a fence names, as a replica keeps them: every older set it needs
+/// a majority of, so a failover from this log fences them too (#1881).
+fn kept_from(election: &FenceElection) -> ReplicaSet {
+    ReplicaSet {
+        current: crate::replica_set::membership(&election.set),
+        leaving: election
+            .leaving
+            .as_ref()
+            .map(crate::replica_set::membership),
+        earlier: election
+            .earlier
+            .iter()
+            .map(crate::replica_set::membership)
+            .collect(),
+    }
+}
+
+/// `joint`: the fleet finalized `joint_fence`, so earlier sets are kept.
 async fn keep(
     correlation_id: u64,
     key: &felix_router::ShardKey,
     log: &felix_broker::StreamLog,
     set: ReplicaSet,
+    joint: bool,
 ) -> Option<InternalMessage> {
     let sent = set.current.generation;
-    match log.accept_set(set).await {
+    match crate::replica_set::accept(log, set, joint).await {
         Ok(SetCheck::Current | SetCheck::Raised) => None,
         // Raised by another request since the check above.
         Ok(SetCheck::Stale { known }) => Some(refuse_stale(correlation_id, key, sent, known)),

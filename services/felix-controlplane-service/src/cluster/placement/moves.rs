@@ -13,6 +13,8 @@ use super::rendezvous::{choose_replicas, promote, score};
 use super::restore::{newcomer, replacing, restore, restore_step, short};
 use super::zones::{Domain, domain, domain_of, keep_spread};
 use super::{Blocked, CaughtUp, Decision, MoveStep};
+use felix_common::membership::RefusedGeneration;
+
 use crate::model::{
     HaltedCopy, MoveReason, Node, PendingSet, ShardAssignment, ShardKey, ShardState,
 };
@@ -421,10 +423,14 @@ pub(super) fn move_step<'a>(
     // would lose its successor or its fence to the new generation.
     if existing.successor.is_none()
         && existing.state != ShardState::Draining
-        && caught_up.leader_refused(key, existing.generation, leader)
+        && let Some(refused) = caught_up.leader_refusal(key, existing.generation, leader)
     {
         return Decision::Move(
-            MoveStep::ElectionRefused,
+            if refused.is_promise() {
+                MoveStep::ElectionRefused
+            } else {
+                MoveStep::SetUnknown
+            },
             ShardAssignment {
                 generation: 0,
                 fence_storage_ids: Default::default(),
@@ -1857,8 +1863,13 @@ impl CaughtUp for AtGeneration<'_> {
         self.inner.joint_start_acked(key, generation, leader)
     }
 
-    fn leader_refused(&self, key: &ShardKey, generation: u64, leader: &str) -> bool {
-        self.inner.leader_refused(key, generation, leader)
+    fn leader_refusal(
+        &self,
+        key: &ShardKey,
+        generation: u64,
+        leader: &str,
+    ) -> Option<RefusedGeneration> {
+        self.inner.leader_refusal(key, generation, leader)
     }
 
     fn lag_records(&self, key: &ShardKey, node_id: &str) -> Option<u64> {

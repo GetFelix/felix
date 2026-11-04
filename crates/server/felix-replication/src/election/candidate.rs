@@ -259,6 +259,12 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
     {
         return ctx.ineligible(key, "the kept replica set has a change pending");
     }
+    // Earlier sets are kept only while a fence leaving them never opened, so a
+    // majority of one may hold an acknowledged write no later set does. The
+    // candidate's fence leaves one set, so it is left to the control plane.
+    if !kept.earlier.is_empty() {
+        return ctx.ineligible(key, "the kept replica set keeps earlier sets");
+    }
     // A start record at the kept set's generation is written only by the
     // leader that kept the set being left, once its joint fence took a
     // majority of it. Fencing that set again would need its dead members too.

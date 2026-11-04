@@ -218,7 +218,7 @@ leaders leave that copy's answers out of their marks. None of these names is
 a feature an operator finalizes: the finalize endpoint, and its dry run,
 refuse them by name. Finalizing `joint_fence` is refused while a serving
 broker lacks `peer_election`, `start_holders` or `non_voting`, and until
-every Raft member is at metadata level 23 (see "Turning on joint fences"
+every Raft member is at metadata level 25 (see "Turning on joint fences"
 below). These are checked only when the operator finalizes; after that a
 broker is admitted on the enabled features alone. That is enough because no
 build reports `joint_fence` without the three markers; the one way around
@@ -929,9 +929,13 @@ checks the first four itself.
    after the finalize could open its first shard. A stream or cache created
    before the incarnations were finalized carries incarnation 0, so place
    all of its shards before finalizing `joint_fence`.
-4. Under Raft, every member is at metadata level 23.
+4. Under Raft, every member is at metadata level 25: 23 for learners and
+   start holders, 25 for the refusal report that renames a shard whose fence
+   cannot learn the set it leaves.
 5. On Postgres, every control-plane instance runs a release with learners
-   (migration 0040) before the finalize. Nothing checks this: an older
+   (migration 0040) and refusal reports (migration 0042) before the
+   finalize. Without 0042 an instance drops the refusal a restarted leader
+   sends, and that shard waits. Nothing checks this: an older
    instance that writes an assignment leaves its learners unmarked for that
    generation, and they read as none, so placement could count a learner.
    The same holds after the finalize: no control-plane instance may be rolled
@@ -1559,11 +1563,44 @@ named, or one whose leader is draining. A follower replacement does not stop
 it: the new generation keeps the joining copy, and the replacement goes on
 under the same leader.
 
-Without the report the shard waits for the pending-set timeout or a lease
-lapse, as before. Under Raft the field is stored from metadata level 25 and
-dropped below it; under Postgres it is migration 0042 (`refused_generation`,
-`refused_to`), with `refused_at` as the marker that keeps what a member that
-predates the columns leaves behind from reading as a refusal.
+**When the leader cannot learn the set it leaves**, it may report the same
+refusal with an empty `promised_to`. Under `joint_fence` every open is fenced,
+and the fence needs the set at the generation before. A leader restarted at
+a generation it opened before `joint_fence` was finalized keeps that
+generation's set and its own ballot in its log, but not the set before, and
+its watch, started from a snapshot, did not see the step. That earlier open
+already fenced the set before. Placement answers the empty refusal
+the same way (`set_unknown`): the same leader and set at the next
+generation. The set that generation leaves is the one the broker kept and is
+named on now, so its fence can open there. Nothing in the control plane's
+state is new for this: the empty name is stored like any other.
+
+A broker reports it only from that evidence: this generation's set and a
+ballot naming itself, or generation 0, where a log never keeps a set and
+nothing comes before it. A set kept from another node's fence or election
+request proves nothing was fenced from here, so that fence waits. So does
+one whose log keeps no set for the shard above generation 0. It may be a
+failover's new leader whose watch started from a snapshot, and the old
+leader, cut off but still running, may still be acknowledging on a majority
+of the old set. A
+rename would fence the new set alone and lose those records. The one such
+case that is safe is a shard's first assignment. The watch sees it as an
+`assigned` change, and the snapshot marks it (`first_assignment`, see "How
+brokers follow ownership"), so a new shard whose leader learns it from a
+snapshot opens at its first generation.
+
+So a rolling restart after finalizing `joint_fence` is safe: a leader that
+comes back at a generation it opened before the finalize is named again one
+generation up. `failures/joint_fence.rs` checks that, and a shard whose
+leader learns it only from a snapshot.
+
+Without a refusal report for a promise, the shard waits for the pending-set
+timeout or a lease lapse, as before. Without one for an unknown set, it waits
+until something else writes the assignment. Under Raft the field is stored
+from metadata level 25 and dropped below it; under Postgres it is migration
+0042 (`refused_generation`, `refused_to`), with `refused_at` as the marker
+that keeps what a member that predates the columns leaves behind from
+reading as a refusal.
 
 **Postgres: finish the control-plane upgrade before finalizing
 `replica_election`.** The finalize check runs on the instance that receives
@@ -1759,7 +1796,7 @@ after the fence.
 
 | Metric | Meaning |
 | --- | --- |
-| `felix_shard_move_steps_total{step}` | move steps written: `stage`, `fence`, `cut_over`, `abandon`, `halted` (the destination halted), `timed_out`, `stalled` (a restore's copy stopped moving), `reseat`, `restore`, `seat`, `take_pending_set` (a pending replica set taken on the leader's report), `pending_set_timed_out`, `pending_set_dropped`, `pending_set_cancelled` (one dropped), `readmit` (a replaced copy named by its new storage id and held as a learner), `election_refused` (a leader named again above a generation promised to an elected broker), and an operator's `cancel`, `retake` and `discard` |
+| `felix_shard_move_steps_total{step}` | move steps written: `stage`, `fence`, `cut_over`, `abandon`, `halted` (the destination halted), `timed_out`, `stalled` (a restore's copy stopped moving), `reseat`, `restore`, `seat`, `take_pending_set` (a pending replica set taken on the leader's report), `pending_set_timed_out`, `pending_set_dropped`, `pending_set_cancelled` (one dropped), `readmit` (a replaced copy named by its new storage id and held as a learner), `election_refused` (a leader named again above a generation promised to an elected broker), `set_unknown` (a leader named again above a generation whose set before it could not learn), and an operator's `cancel`, `retake` and `discard` |
 | `felix_shards_under_replicated` | shards with fewer copies on serving brokers than their replication factor; non-zero for longer than the restore delay plus a copy means no broker can take the copy, or placement is paused |
 | `felix_shard_replicas_missing` | the copies those shards are missing between them |
 | `felix_shard_replicas_halted` | copies whose leader reports it has stopped shipping to them; counted as missing, kept out of placement, and replaced after the restore delay |
@@ -1922,6 +1959,18 @@ Output is a plain table; `--json` prints the API's response.
 there. A broker applies the snapshot and then polls, and the two together
 describe every committed change exactly once: the snapshot is read at a
 consistent point and `next_seq` is the log position at that same point.
+
+An item carries `"first_assignment": true` when it is the shard's first
+assignment, the one the control plane wrote when it had none for the shard.
+It is the snapshot's counterpart of an `assigned` change: a broker that
+learns a new shard from a snapshot knows nothing came before it, and its
+joint fence fences the new set alone. The control plane finds it in its
+shard change log. The in-memory and Raft stores keep the last
+`FELIX_CONTROLPLANE_CHANGE_RETENTION_MAX_ROWS` changes, so there an item
+whose `assigned` change has been trimmed is left unmarked; Postgres keeps
+every shard change. Only a stream or cache with an incarnation is marked. Absent never means "not first", only "not known", and a
+broker treats it as unknown. A control plane that predates the field sends
+none.
 
 **Confirmed reads.** The snapshot and the feed answer from the member's
 applied state, which a lagging Raft member serves behind.

@@ -172,6 +172,11 @@ jobs:
           - FelixShardElectWipeNonVoterGroups
           - FelixShardElectHandoff
           - FelixShardElectAdoptTwoWrites
+          - FelixShardElectAdoptFailoverSame0Gen4
+          - FelixShardElectAdoptFailoverApart0Gen4
+          - FelixShardElectAdoptFailoverApart1Gen4
+          - FelixShardElectAdoptFailoverSame1Gen2
+          - FelixShardElectAdoptFailoverSame1Gen4
           - FelixShardElectRenameKeep0StoodOneDest
           - FelixShardElectRenameKeep1StoodOneDest
           - FelixShardElectRenameDrop0StoodOneDest

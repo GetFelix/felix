@@ -1131,6 +1131,15 @@ and a joint fence treats a member kept under another storage id as a change
 of set even when the node list is the same, so the old set's majority counts
 only the copy it named.
 
+A leader names a follower in `holds_start` only on an answer from that copy in
+the same pass (one round of shipping to every follower), so a wiped copy's old
+position is never reported. A learner can finish catching up on an exchange
+that outlives its pass. The next pass then finds it holding everything the
+leader has and would send it nothing, and on a shard with no further writes
+nothing would ever name it. So each pass sends such a learner its last record
+again, and its answer puts it in the report. This stops once the copy is
+re-admitted and answers as a voter.
+
 **Before the gate is known.** Whether a set naming another id makes a copy a
 learner depends on the `joint_fence` gate, which the broker learns only when
 it registers, after its peer listener is up. A broker that does not report
@@ -1338,9 +1347,37 @@ elected leader waits for the lease until the control plane is back (issue
    generation always begins with its start record. Without the evidence the
    old set stays in the fence, and the failover waits for a majority of it:
    a log that missed an opened generation's records keeps fencing the old
-   set until the next set change, which can stall a shard whose old set has
-   lost its majority. A failover keeps only one older set, so two failovers
-   in a row whose fences both fail to open are not yet covered.
+   set. It stops once the log holds a record written at its own set's
+   generation, from a batch or its own write, since that generation's fence
+   covered every older set. Until then, a shard whose old set has lost its
+   majority (say its members were decommissioned) stays without a leader;
+   an operator restores one of those members or rebuilds the shard.
+
+   Fences can fail to open several times in a row, with or without a set
+   change: lease churn produces new generations that time out. So once
+   `joint_fence` is finalized a replica keeps every set since the last
+   generation it knows opened, not only the newest set being left. When it
+   accepts a newer set, from a fence or a batch, and its log does not
+   durably hold a record of the set it is replacing, it carries that set,
+   the set being left and every older kept set into the new one's earlier
+   sets. A batch raises the set before its records are stored, so the sets
+   stay until those records are on disk and a later set replaces this one.
+   A failover fences all of them, and its fence carries all of them to every
+   member, so whichever replica fails over next fences them too. Sets with
+   the same members are kept once. Before `joint_fence` is finalized nothing
+   is carried, since only the joint fence reads them and an older build
+   refuses a file that has them.
+
+   The file keeps at most 16 earlier sets. A replica refuses a fence or
+   batch that would add a set it does not keep once it would keep more
+   than 17 distinct sets in all, counting the current set and the set
+   being left, with `StorageFailed`, rather than forget one. It still takes one naming only sets it keeps. So lease churn on
+   the current set, or a failover that abandons a pending change (rule 8),
+   can still open on a kept set, and the record its leader writes ends the
+   list at the next set change. A set change the control plane keeps
+   retrying stays refused until then. A joint fence counts only replicas
+   that offer the `KEPT_SETS` peer capability, since an older build keeps
+   one set.
 8. *The control plane flips only after the joint fence.* A cut-over that
    changes the set records the new set as pending; the old set stays the
    control plane's set until a leader on the new set reports its
@@ -1694,6 +1731,25 @@ code. The report and the lease leave the write's path:
   Every follower the assignment names is counted, including one the node
   catalog has no address for yet, which holds nothing (see
   [Fencing a promotion](#fencing-a-promotion)).
+- **Which answers count.** A follower counts only on an answer that came from
+  the copy of the log its cursor describes (the same storage identity and
+  incarnation), and only up to what that answer said it holds. The answer
+  keeps counting after the pass that heard it ends, so two slow followers
+  that answer in different passes still make a majority together (#1895).
+  It stops counting when the leader has reason to doubt the copy:
+  - each exchange first asks the follower who it is, and until that check
+    finds the same copy the old answer counts for nothing, so a follower
+    found wiped is never counted on what its old copy held;
+  - an answer from any other copy stops it at once, and starts the cursor
+    over;
+  - a follower that restarts, even on the same storage, counts again only
+    once it answers.
+
+  A wipe the leader has not heard about yet is not caught: neither within a
+  pass nor across passes can the leader know what it has not been told.
+  `FollowerCursor::vouched_at` and `vouched_only` in
+  `crates/server/felix-replication/src` hold the rule; see
+  [Storage identities](#storage-identities) for the probe.
 - **The mark moves first.** The report still goes to the control plane every
   pass, for placement and promotion, but it is sent behind the mark and
   nothing waits for it to land.
@@ -2411,16 +2467,29 @@ The exchanges run concurrently, and the pass recounts the mark as each one
 lands, so a follower whose exchange has not got that far still carries the
 old copy's `confirmed`. Counted there, it could release records only the
 leader holds: a wiped follower that had confirmed more than the mark, beside
-one that fails at once. The probe does not settle it either, because it
-reads the pooled connection's handshake, and that connection can outlive the
-process it was opened to (below). So the mark and the counter mark count a
-follower, and a drain judges its successor level, only once one of its
-requests in this pass has been answered over a
-connection whose identity is the cursor's (`Witness`, `checked_only`). An
-answer from another identity starts the cursor over. Any other follower
-counts as holding nothing. A follower that is down counts for nothing either,
-though what it confirmed may well still be on its disk; the majority that
-answers carries the mark.
+one that fails at once. So the mark and the counter mark count a follower,
+and a drain judges its successor level, only on what an answer over a
+connection whose identity is the cursor's said it holds (`Witness`,
+`FollowerCursor::vouched`). That answer may come from an earlier pass. From
+the moment an exchange starts until its probe finds the copy the answer came
+from, the follower counts for nothing (`Unconfirmed`, `vouched_only`). An
+answer from another identity starts the cursor over, and a request that
+fails puts the follower back to counting for nothing. A follower that is down
+keeps counting on its last answer only while its probe found the same copy
+and no request to it has failed since. A probe that fails leaves it counting
+for nothing. So does a follower whose exchange from an earlier pass is still
+waiting on a request: it keeps counting on its last answer until that
+request fails. The majority that answers carries the mark.
+
+The probe settles less than an answer, because it reads the pooled
+connection's handshake, and that connection can outlive the process it was
+opened to (below). A follower wiped since its last answer, behind a
+connection that still names the old copy, is counted on that answer until the
+leader hears from the new copy or a request to it fails. That can take up to
+the request timeout, since a request over the dead connection waits that
+long. The old copy did hold those records when it answered. Losing them
+also takes the leader failing inside that window, with a next majority that
+holds no other copy.
 
 A follower level with the leader is sent nothing, so on an idle shard it
 would never answer. On a shard whose publishes wait on the mark, while this
@@ -4289,11 +4358,36 @@ Once it is finalized on a broker that offers `ELECTION`:
   when it names none; such a fence does not stay pending. For other changes the broker learns
   the set from the assignment its watch saw at that generation,
   from the set the leader before shipped with at it, or from what this
-  leader kept beside its own set. When none of those knows it (the watch
-  started from a snapshot, or skipped that generation, and the log keeps an
-  older set), the fence stays pending rather than fence the new set alone.
-  Only a shard's first assignment, on a log that keeps no set, has nothing
-  to leave. A member of the old set that no route names any more is reached
+  leader kept beside its own set. When none of those knows it, the fence
+  does not fence the new set alone. What it does depends on what the log
+  keeps, and it acts only on evidence that no earlier set can still hold
+  acknowledged records:
+  - The log keeps this generation's own set and the broker's own ballot at
+    it: the broker opened this generation as leader before `joint_fence`
+    was on (a leader restarted after the finalize), and that open fenced
+    the set before. It reports the generation refused,
+    naming no node, and placement names it again one generation up on the
+    same set (`set_unknown`). The set that generation leaves is the one the
+    log keeps, so the fence there can open.
+  - The route is at generation 0 and the log keeps no set: a shard never
+    moved since it was placed. A log never keeps a set at generation 0, and
+    no generation comes before it, so nothing can be left unfenced (only a
+    deleted stream recreated at incarnation 0 wrote before, which an open
+    without `joint_fence` ignores too). The broker asks for a rename as
+    above, and the fence at generation 1 needs a majority of the set at 0.
+  - The log keeps this generation's set under another node's ballot, kept
+    from that node's fence or election request: nothing proves the set
+    before was fenced from here. The fence stays pending.
+  - The log keeps an older set than the one before: the leader skipped a
+    generation it never opened, and a rename would leave that generation's
+    set unfenced. The fence stays pending.
+  - The log keeps no set, above generation 0: this may be a failover's new leader whose watch
+    started from a snapshot, while the old leader, cut off, still
+    acknowledges on a majority of the old set. The fence stays pending.
+    Only a shard's first assignment has nothing to leave: the watch sees
+    it as an `assigned` change, or the snapshot marks it
+    (`first_assignment`), and then the new set is fenced alone.
+  A member of the old set that no route names any more is reached
   at the address the node catalog gives, and answers even though its own
   routing view leaves it out.
 - Outside a pending cut-over, a failover can leave two sets. When the
@@ -4478,6 +4572,11 @@ with and without its learner, as any joint fence does. That is the model's
 acknowledgements on the kept set alone, because the control plane records
 that set with nothing pending (`FinishChange`). Without `joint_fence`
 finalized such a fence could never open, so the broker does not stand.
+
+A broker whose set file keeps earlier sets does not stand either. Those sets
+are kept only while a fence leaving them never opened, so a majority of one
+may hold an acknowledged write that no later set has. A candidate's fence
+leaves at most one set, so the control plane handles that shard.
 
 A replica that takes a candidate's fence records the candidate the same way,
 so it takes the candidate's batches and sends clients to it. The elected

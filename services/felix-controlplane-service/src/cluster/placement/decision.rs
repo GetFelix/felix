@@ -108,6 +108,11 @@ pub enum MoveStep {
     /// without adopting. It is named again at a new generation, above the
     /// one it promised away, on the same set.
     ElectionRefused,
+    /// The leader reported that it refused its generation because its joint
+    /// fence cannot learn the set that generation leaves, as for a shard it
+    /// learned from a snapshot. It is named again one generation up, on the
+    /// same set, whose set before is the one it is named on now.
+    SetUnknown,
     /// The shard no longer elects (its consistency changed), so a pending
     /// set can never be reported: the change is dropped.
     PendingSetDropped,
@@ -144,6 +149,7 @@ impl MoveStep {
             Self::TakePendingSet => "take_pending_set",
             Self::PendingSetTimedOut => "pending_set_timed_out",
             Self::ElectionRefused => "election_refused",
+            Self::SetUnknown => "set_unknown",
             Self::PendingSetDropped => "pending_set_dropped",
             Self::PendingSetCancelled => "pending_set_cancelled",
             Self::Readmit { .. } => "readmit",

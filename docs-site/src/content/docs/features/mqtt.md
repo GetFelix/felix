@@ -1,6 +1,6 @@
 ---
 title: "MQTT"
-description: "Let MQTT devices connect to a Felix broker with a Felix token, mount a stream at a topic prefix, and publish to it at QoS 0 and 1. Every PUBACK means the message is in the stream. Subscribing is not built yet."
+description: "Let MQTT devices connect to a Felix broker with a Felix token, mount a stream at a topic prefix, and publish to it at QoS 0 and 1. Every PUBACK means the message is in the stream. Subscribing is planned for 0.8.0."
 ---
 
 A Felix broker can accept MQTT connections from devices, over MQTT 3.1.1 and
@@ -10,8 +10,8 @@ every `PUBACK`.
 
 **Status: connections, mounts and publishing.** Today a device can connect with
 a Felix token, publish at QoS 0 and 1 to a stream mounted at a topic prefix, and
-get a `PUBACK` once the message is in the stream. `SUBSCRIBE` is still refused
-until the subscribe path lands. The plan for the rest is in the
+get a `PUBACK` once the message is in the stream. `SUBSCRIBE` is refused:
+devices cannot read from Felix over MQTT yet. Subscribing is planned for 0.8.0. The plan for the rest is in the
 [design](https://github.com/GetFelix/felix/blob/main/docs/mqtt-design.md).
 
 ## Turn it on

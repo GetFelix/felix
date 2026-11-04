@@ -1,9 +1,11 @@
 //! A move's destination while it copies: shipped to, but not counted toward
 //! the quorum, and not allowed to hold a pass for the length of the copy.
 
+use std::collections::HashSet;
 use std::time::Duration;
 
 use super::*;
+use crate::follower::FollowerCursor;
 
 /// Every answer from `slow` takes `delay`; everyone else answers at once.
 struct SlowNode {
@@ -309,4 +311,52 @@ async fn a_follower_catching_up_is_reported_a_slice_at_a_time() {
         "every pass reported broker-b further on: {reported:?}",
     );
     assert_eq!(reported.last(), Some(&Some(BATCHES as u64)));
+}
+
+const VOUCHED: u64 = 3;
+
+/// A follower that vouched for the whole log at generation 5.
+fn vouched_follower(node: &str) -> FollowerCursor {
+    let mut cursor = FollowerCursor::new(node, "10.0.0.4:7002".parse().expect("addr"), VOUCHED);
+    cursor.confirmed = VOUCHED;
+    cursor.storage_id = Some(felix_storage::StorageId::from_bytes([1; 16]));
+    cursor.vouched = Some(crate::follower::Vouched {
+        identity: cursor.identity(),
+        generation: 5,
+        offset: VOUCHED,
+    });
+    cursor
+}
+
+/// `cursor` among two voters that have answered nothing, so a mark moves only
+/// if `cursor` is counted.
+fn with_others(cursor: FollowerCursor) -> Vec<FollowerCursor> {
+    let other = |node: &str| FollowerCursor::new(node, "10.0.0.5:7002".parse().expect("addr"), 0);
+    vec![cursor, other("broker-c"), other("broker-d")]
+}
+
+/// **A halted follower's earlier vouch does not name it holding the start.**
+/// A halted copy is not shipped to or pinged; the control plane must not
+/// admit it into a new set on a vouch from before the halt.
+#[test]
+fn a_halted_follower_with_an_earlier_vouch_is_not_reported_holding_the_start() {
+    let mut halted = vouched_follower("broker-b");
+    halted.halted = Some(crate::follower::Halt::Diverged);
+    let view = vouched_only(&with_others(halted), 5, &HashSet::new());
+    assert!(crate::reporter::holders_of_start(&view, 0, None).is_empty());
+    assert_eq!(crate::quorum::quorum_offset(VOUCHED, &view), 0);
+}
+
+/// **A learner's earlier vouch still names it holding the start**, though it
+/// does not raise the mark.
+#[test]
+fn a_learner_with_an_earlier_vouch_is_reported_holding_the_start_but_not_counted() {
+    let mut learner = vouched_follower("broker-b");
+    learner.learner = true;
+    let view = vouched_only(&with_others(learner), 5, &HashSet::new());
+    assert_eq!(
+        crate::reporter::holders_of_start(&view, 0, None),
+        vec!["broker-b".to_string()]
+    );
+    assert_eq!(crate::quorum::quorum_offset(VOUCHED, &view), 0);
 }

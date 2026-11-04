@@ -505,11 +505,13 @@ impl MetaCommand {
                 26
             }
             // Finalizing joint fences lets placement write learners and read
-            // start holders, which members before level 23 would drop.
+            // start holders, which members before level 23 would drop, and
+            // relies on a leader's refusal to rename a shard whose fence
+            // cannot learn the set it leaves, which is dropped before 25.
             Self::FinalizeFleetFeature { feature }
                 if feature == felix_common::fleet::JOINT_FENCE.name() =>
             {
-                23
+                25
             }
             Self::RegisterNodeInFleet { .. } | Self::FinalizeFleetFeature { .. } => 2,
             // Writes a generation the store did not pick, which a member

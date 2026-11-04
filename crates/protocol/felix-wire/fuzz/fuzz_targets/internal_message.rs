@@ -50,7 +50,8 @@ fuzz_target!(|data: &[u8]| {
     assert_eq!(re_encoded.as_ref(), data);
 
     // Property 4: a message needs `ELECTION` exactly when it travelled as one
-    // of the kinds that carry election fields, and `RECORD_HEADERS` exactly
+    // of the kinds that carry election fields (with `KEPT_SETS` for a fence
+    // that names older sets), and `RECORD_HEADERS` exactly
     // when it travelled as a headered kind or inside a stamped envelope that
     // holds a headered batch; a sequenced forward needs `SEQUENCED_FORWARDS`
     // as well. An incarnation envelope might hold either.
@@ -60,6 +61,9 @@ fuzz_target!(|data: &[u8]| {
         let headers = PeerCapabilities::RECORD_HEADERS;
         let required = message.required_capability();
         match header.kind {
+            Kind::ElectionKeptFence => {
+                assert_eq!(required, Some(election.union(PeerCapabilities::KEPT_SETS)))
+            }
             Kind::Incarnated => {}
             Kind::SetStamped => assert!(
                 required == Some(election) || required == Some(election.union(headers)),

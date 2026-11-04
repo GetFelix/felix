@@ -166,6 +166,12 @@ impl InternalMessage {
                         }
                         None => body.put_u8(0),
                     }
+                    if !election.earlier.is_empty() {
+                        body.put_u16(election.earlier.len() as u16);
+                        for earlier in &election.earlier {
+                            put_set(&mut body, earlier);
+                        }
+                    }
                 }
             }
             Self::PreVote(m) => {
@@ -660,7 +666,7 @@ impl InternalMessage {
                 expect_empty(&body)?;
                 Ok(Self::HelloOk(message))
             }
-            Kind::Fence | Kind::ElectionFence => {
+            Kind::Fence | Kind::ElectionFence | Kind::ElectionKeptFence => {
                 let mut message = Fence {
                     correlation_id: take_u64(&mut body)?,
                     shard: ShardRef {
@@ -674,7 +680,7 @@ impl InternalMessage {
                     log: ReplicaLog::from_u8(take_u8(&mut body)?)?,
                     election: None,
                 };
-                if kind == Kind::ElectionFence {
+                if kind != Kind::Fence {
                     let candidate = take_flag(&mut body)?;
                     let set = take_set(&mut body)?;
                     let leaving = if take_flag(&mut body)? {
@@ -682,10 +688,22 @@ impl InternalMessage {
                     } else {
                         None
                     };
+                    let mut earlier = Vec::new();
+                    if kind == Kind::ElectionKeptFence {
+                        // Zero would be a second encoding of kind 41.
+                        let count = take_u16(&mut body)? as usize;
+                        if count == 0 || count > super::election::MAX_EARLIER_SETS {
+                            return Err(Error::Incomplete);
+                        }
+                        for _ in 0..count {
+                            earlier.push(take_set(&mut body)?);
+                        }
+                    }
                     let election = FenceElection {
                         candidate,
                         set,
                         leaving,
+                        earlier,
                     };
                     election.check()?;
                     message.election = Some(election);

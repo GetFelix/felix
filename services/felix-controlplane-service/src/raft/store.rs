@@ -400,15 +400,36 @@ impl StateMachineStore {
         })
     }
 
-    async fn persist_snapshot(&self, meta: &SnapshotMeta, data: &[u8]) -> Result<(), StorageError> {
+    /// Store `meta` and `data` as the current snapshot unless the stored one
+    /// is at the same log index or past it. Returns whether it wrote.
+    ///
+    /// Openraft builds snapshots in a detached task, so a build that captured
+    /// its state before an install of a newer snapshot can reach here after
+    /// it (#1745). Writing it would leave a snapshot behind the purged log,
+    /// and the member could not restart. The check reads the stored meta in
+    /// the same write transaction, and redb runs one writer at a time, so no
+    /// other snapshot can land between the check and the write.
+    async fn persist_snapshot(
+        &self,
+        meta: &SnapshotMeta,
+        data: &[u8],
+    ) -> Result<bool, StorageError> {
         // Meta and data commit together: a snapshot that exists without its
         // descriptor (or the reverse) reads as no snapshot at all.
+        let index = meta.last_log_id.map(|id| id.index);
         let meta_bytes = serde_json::to_vec(meta).map_err(write_err)?;
         let data_bytes = serde_json::to_vec(&data).map_err(write_err)?;
         blocking_write(&self.inner.db, move |db| {
             let txn = db.begin_write().map_err(write_err)?;
             {
                 let mut table = txn.open_table(META).map_err(write_err)?;
+                if let Some(stored) = table.get(KEY_SNAPSHOT_META).map_err(write_err)? {
+                    let stored: SnapshotMeta =
+                        serde_json::from_slice(stored.value()).map_err(read_err)?;
+                    if stored.last_log_id.map(|id| id.index) >= index {
+                        return Ok(false);
+                    }
+                }
                 table
                     .insert(KEY_SNAPSHOT_META, meta_bytes.as_slice())
                     .map_err(write_err)?;
@@ -416,7 +437,8 @@ impl StateMachineStore {
                     .insert(KEY_SNAPSHOT_DATA, data_bytes.as_slice())
                     .map_err(write_err)?;
             }
-            txn.commit().map_err(write_err)
+            txn.commit().map_err(write_err)?;
+            Ok(true)
         })
         .await
     }
@@ -469,11 +491,30 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
         snapshot: Box<Cursor<Vec<u8>>>,
     ) -> Result<(), StorageError> {
         let data = snapshot.into_inner();
-        // Persist before replacing live state: a crash between the two
-        // leaves either the old state (snapshot re-sent) or the new
-        // (rebuilt on open) — never neither.
+        // Persist before replacing live state, so open rebuilds from this
+        // snapshot after a crash. An older snapshot is not written, so what
+        // is on disk only ever moves forward. Openraft purges the log behind
+        // this snapshot without waiting for it to be persisted, so a crash
+        // before this commit can leave the log purged past the stored one.
         self.persist_snapshot(meta, &data).await?;
         let mut applied = self.inner.applied.lock().await;
+        // Openraft only installs past its committed index, so this does not
+        // happen. If it did, restoring would move the applied cursor back
+        // and the entries in between would be applied twice; failing stops
+        // the member instead of letting it diverge.
+        let applied_index = applied.last_applied.map(|id| id.index);
+        if applied_index > meta.last_log_id.map(|id| id.index) {
+            let err = std::io::Error::other(format!(
+                "snapshot at {:?} is behind the applied state at {:?}",
+                meta.last_log_id, applied.last_applied
+            ));
+            return Err(StorageIOError::new(
+                ErrorSubject::Snapshot(Some(meta.signature())),
+                ErrorVerb::Write,
+                AnyError::new(&err),
+            )
+            .into());
+        }
         self.inner.app.restore(&data).await;
         applied.last_applied = meta.last_log_id;
         applied.membership = meta.last_membership.clone();
@@ -524,6 +565,8 @@ impl RaftSnapshotBuilder<TypeConfig> for SnapshotBuilder {
         let store = StateMachineStore {
             inner: Arc::clone(&self.inner),
         };
+        // Skipped when a newer snapshot was installed meanwhile; openraft
+        // drops this older one when it sees it.
         store.persist_snapshot(&meta, &data).await?;
 
         Ok(Snapshot {
