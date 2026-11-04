@@ -72,6 +72,7 @@ impl Authenticator for BrokerMqttAuth {
             Ok(context) => {
                 let revocable = context.revocable;
                 Ok(Principal::new(tenant_id)
+                    .with_credential(felix_mqtt::Credential::new(token))
                     .with_permissions(context.matcher)
                     .with_expiry(context.expires_at)
                     .with_revocation(move || {

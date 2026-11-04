@@ -119,6 +119,7 @@ fn more() -> Vec<InternalMessage> {
             payloads: vec![Bytes::from_static(b"a")],
             credential: String::new(),
             headers: None,
+            producer: None,
         }),
         InternalMessage::ReplicateRebuild(ReplicateRebuild {
             correlation_id: 42,

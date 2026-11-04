@@ -72,6 +72,7 @@ async fn concurrent_requests_do_not_cross_responses() {
                 payloads: vec![],
                 credential: String::new(),
                 headers: None,
+                producer: None,
             });
             let response = pool.request(PEER, addr, request).await.expect("request");
             match response {

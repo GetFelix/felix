@@ -23,6 +23,7 @@ mod lease_free_sessions;
 mod links;
 mod majority_ack;
 mod membership;
+mod mqtt_publish;
 mod partition;
 mod promotion_fence;
 mod quorum_mark_wake;
