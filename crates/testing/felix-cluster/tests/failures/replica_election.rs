@@ -475,6 +475,78 @@ async fn a_follower_is_elected_while_the_control_plane_is_down() {
     cluster.shutdown().await;
 }
 
+/// **A follower is elected while the control plane is down.** Three brokers,
+/// RF 3. With the control plane stopped, the leader is killed: a follower
+/// opens within the bound, every acknowledged record reads back from it, it
+/// acknowledges new writes, and the control plane adopts it on its return.
+#[serial]
+#[tokio::test]
+async fn scratch_split_then_adopted() {
+    let gate_dir = tempfile::tempdir().expect("a directory for the gate");
+    let gate = gate_dir.path().join("pre-vote-gate");
+    let mut cluster = start_with(
+        3,
+        3,
+        false,
+        vec![(
+            "FELIX_TEST_PRE_VOTE_GATE".to_string(),
+            gate.display().to_string(),
+        )],
+    )
+    .await;
+    let before = assignment(&cluster).await;
+    let mut acked = publish_acked(&cluster, &before.leader, "before", 20).await;
+
+    cluster
+        .crash_control_plane()
+        .await
+        .expect("crash the control plane");
+    std::fs::write(&gate, b"").expect("close the gate");
+    cluster.kill_node(&before.leader).expect("kill the leader");
+    let both: BTreeSet<String> = before
+        .replicas
+        .iter()
+        .filter(|id| **id != before.leader)
+        .cloned()
+        .collect();
+    let _ = felix_cluster::wait::until(ELECTED_WITHIN, "both candidates at the gate", || {
+        let all = logged_by(&cluster, HELD).is_superset(&both);
+        async move { all }
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    std::fs::remove_file(&gate).expect("open the gate");
+    let mut opened = BTreeMap::new();
+    let (elected, generation) = elected_above(&cluster, before.generation, &mut opened).await;
+    assert!(
+        before.replicas.contains(&elected),
+        "{elected} is not a follower of {before:?}"
+    );
+    acked.extend(publish_acked(&cluster, &elected, "elected", 20).await);
+    let missing = missing_on(&cluster, &elected, &acked).await;
+    assert!(
+        missing.is_empty(),
+        "{elected} lost acknowledged records: {missing:?}"
+    );
+
+    cluster
+        .recover_control_plane()
+        .await
+        .expect("recover the control plane");
+    adopted(&cluster, &elected, generation).await;
+    acked.extend(publish_acked(&cluster, &elected, "adopted", 5).await);
+    let survivor: Vec<String> = before
+        .replicas
+        .iter()
+        .filter(|id| **id != elected)
+        .cloned()
+        .collect();
+    caught_up(&cluster, &survivor, generation).await;
+    read_logged(&cluster, OPENED, &mut opened);
+    assert_one_leader_per_generation(&opened, before.generation);
+    cluster.shutdown().await;
+}
+
 /// **Two followers stand at once and exactly one opens.** Five brokers,
 /// RF 5. The two lowest-id followers cannot reach each other, so neither
 /// counts the other ahead of it, and the other two cannot ask for votes at
