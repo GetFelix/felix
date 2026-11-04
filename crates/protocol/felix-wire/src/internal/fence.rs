@@ -114,7 +114,7 @@ impl PeerCapabilities {
     ///
     /// [`ReplicateRecords::headers`]: super::ReplicateRecords::headers
     /// [`ForwardPublish::headers`]: super::ForwardPublish::headers
-    pub const RECORD_HEADERS: Self = Self(1 << 16);
+    pub const RECORD_HEADERS: Self = Self(1 << 17);
 
     pub fn from_bits(bits: u64) -> Self {
         Self(bits)

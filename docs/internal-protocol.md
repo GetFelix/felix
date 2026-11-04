@@ -116,7 +116,7 @@ never have dialled the one that shipped to it.
 | `1 << 13` | `FORWARD_INCARNATION` | reads a forwarded publish or cache op inside an `Incarnated` frame, and refuses one whose incarnation is not the one its routes name (see "Naming the stream incarnation") |
 | `1 << 14` | `HEAD_TRIM` | reads a head trim's mark (byte `5`) in a records batch and stores the trim record, applying its floor on a `Quorum` stream only once its commit offset passes the record. A batch holding a trim goes only to a peer that offered it |
 | `1 << 15` | `LEARNER_ACKS` | offered by a caller: it reads `ReplicateLearnerOk`, so a follower whose copy is a learner answers it with that kind (see "A learner's answers" under "Replication") |
-| `1 << 16` | `RECORD_HEADERS` | reads `ReplicateHeaderedRecords` and stores each record's key-and-headers block with it, answers `ReplicateHeaderedFetch`, and reads `HeaderedForwardPublish`. A peer that offers it also offers `GENERATION_LABELS` and `RECORD_TIMES`. A batch or forward holding a block goes only to a peer that offered it |
+| `1 << 17` | `RECORD_HEADERS` | reads `ReplicateHeaderedRecords` and stores each record's key-and-headers block with it, answers `ReplicateHeaderedFetch`, and reads `HeaderedForwardPublish`. A peer that offers it also offers `GENERATION_LABELS` and `RECORD_TIMES`. A batch or forward holding a block goes only to a peer that offered it |
 
 #### Storage identity
 
@@ -310,7 +310,7 @@ differently, so a rolling upgrade keeps forwarding in that direction. See
 other direction.
 
 A forward whose records carry key-and-headers blocks travels as
-`HeaderedForwardPublish` (50): the authorized body, then the blocks as
+`HeaderedForwardPublish` (51): the authorized body, then the blocks as
 described under "Replication" below. It goes only to an owner that offered
 `RECORD_HEADERS`; the pool refuses to send it to any other, and the ingress
 broker answers the client that headers cannot be forwarded to that owner. A
@@ -690,7 +690,7 @@ leader.
 
 **Each record's key and headers** ride with a timed batch to a follower that
 offered `RECORD_HEADERS`. Such a batch travels as `ReplicateHeaderedRecords`
-(kind 48): the kind 36 body, then `count u32` and, per payload, a presence
+(kind 49): the kind 36 body, then `count u32` and, per payload, a presence
 byte (`0` or `1`) and, when it is `1`, `len u32` and the block exactly as the
 leader stored it. Storage does not look inside a block, and neither does
 replication. A decoder refuses a `count` that differs from the number of
@@ -834,7 +834,7 @@ offered `GENERATION_LABELS` and answered with `ReplicateLabelledRecords`, so
 the tail the leader takes keeps its generations. `ReplicateTimedFetch` (kind
 37), the same body again, goes to a replica that also offered `RECORD_TIMES`
 and is answered with `ReplicateTimedRecords`, so the tail keeps its times
-too. `ReplicateHeaderedFetch` (kind 49) goes to a replica that also offered
+too. `ReplicateHeaderedFetch` (kind 50) goes to a replica that also offered
 `RECORD_HEADERS` and is answered with `ReplicateHeaderedRecords` when any
 record in the page has a block, so the tail keeps its keys and headers. A
 replica refuses with `UnsupportedKind` a fetch that did not ask for blocks
@@ -1023,8 +1023,8 @@ Typed, because they need different responses:
 `ReplicateTimedFetch` 37, `Incarnated` 40, `ElectionFence` 41,
 `SetStamped` 42, `PreVote` 43, `PreVoteAnswer` 44, `LeaseForwardCacheOp` 45,
 `LeaseForwardCacheOk` 46, `ReplicateLearnerOk` 47,
-`ReplicateHeaderedRecords` 48, `ReplicateHeaderedFetch` 49 and
-`HeaderedForwardPublish` 50. A peer
+`ReplicateHeaderedRecords` 49, `ReplicateHeaderedFetch` 50 and
+`HeaderedForwardPublish` 51. A peer
 that predates any of them rejects the
 kind rather than misreading the body, which is why
 each is a new kind rather than a field on `ReplicateRecords`: this protocol

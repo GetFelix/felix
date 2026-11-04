@@ -213,13 +213,13 @@ pub enum Kind {
     /// `ReplicateTimedRecords` followed by each record's key-and-headers
     /// block. An older follower refuses it rather than storing the records
     /// without their blocks.
-    ReplicateHeaderedRecords = 48,
+    ReplicateHeaderedRecords = 49,
     /// `ReplicateTimedFetch`, answered with `ReplicateHeaderedRecords`.
-    ReplicateHeaderedFetch = 49,
+    ReplicateHeaderedFetch = 50,
     /// `AuthorizedForwardPublish` followed by each record's key-and-headers
     /// block. An older owner refuses it rather than writing the records
     /// without their blocks.
-    HeaderedForwardPublish = 50,
+    HeaderedForwardPublish = 51,
 }
 
 impl Kind {
@@ -274,9 +274,9 @@ impl Kind {
             45 => Ok(Kind::LeaseForwardCacheOp),
             46 => Ok(Kind::LeaseForwardCacheOk),
             47 => Ok(Kind::ReplicateLearnerOk),
-            48 => Ok(Kind::ReplicateHeaderedRecords),
-            49 => Ok(Kind::ReplicateHeaderedFetch),
-            50 => Ok(Kind::HeaderedForwardPublish),
+            49 => Ok(Kind::ReplicateHeaderedRecords),
+            50 => Ok(Kind::ReplicateHeaderedFetch),
+            51 => Ok(Kind::HeaderedForwardPublish),
             other => Err(Error::UnsupportedInternalKind(other)),
         }
     }
