@@ -23,6 +23,7 @@ on:
         options:
           - nightly
           - per-pr
+          - failover
         default: nightly
       streams:
         description: "Streams to create (empty keeps the variant's size)"
@@ -87,9 +88,11 @@ jobs:
         run: |
           case "$VARIANT" in
             nightly) echo "profile=--release" >> "$GITHUB_OUTPUT"
-                     echo "test=a_lease_cache_renews_on_time_at_felixd_scale" >> "$GITHUB_OUTPUT" ;;
+                     echo "test=lease_starvation::a_lease_cache_renews_on_time_at_felixd_scale" >> "$GITHUB_OUTPUT" ;;
             per-pr) echo "profile=" >> "$GITHUB_OUTPUT"
-                    echo "test=a_lease_cache_renews_on_time_while_shards_are_created_in_bulk" >> "$GITHUB_OUTPUT" ;;
+                    echo "test=lease_starvation::a_lease_cache_renews_on_time_while_shards_are_created_in_bulk" >> "$GITHUB_OUTPUT" ;;
+            failover) echo "profile=--release" >> "$GITHUB_OUTPUT"
+                      echo "test=failover_heal::" >> "$GITHUB_OUTPUT" ;;
             *) echo "unknown variant: $VARIANT"; exit 1 ;;
           esac
           for pair in "FELIX_SCALE_STREAMS=$STREAMS" "FELIX_SCALE_APPENDED=$APPENDED" "FELIX_SCALE_HOLD_SECS=$HOLD_SECS"; do
@@ -114,9 +117,9 @@ jobs:
         run: |
           set -o pipefail
           cargo test ${{ steps.variant.outputs.profile }} -p felix-cluster --test scale \
-            -- --nocapture --include-ignored --exact "lease_starvation::${{ steps.variant.outputs.test }}" 2>&1 | tee "$RUNNER_TEMP/scale-output.txt"
+            -- --nocapture --include-ignored --test-threads 1 ${{ steps.variant.outputs.test != 'failover_heal::' && '--exact' || '' }} "${{ steps.variant.outputs.test }}" 2>&1 | tee "$RUNNER_TEMP/scale-output.txt"
           # A renamed test would otherwise match nothing and pass.
-          grep -q '^running 1 test' "$RUNNER_TEMP/scale-output.txt" || { echo "the canary test did not run"; exit 1; }
+          grep -qE '^running [1-9][0-9]* tests?' "$RUNNER_TEMP/scale-output.txt" || { echo "the canary test did not run"; exit 1; }
 
       - name: Summary
         if: always()
@@ -125,12 +128,12 @@ jobs:
             echo "### Lease canary"
             echo
             echo '```'
-            grep -E 'lease canary:|panicked at|the lease canary failed' "$RUNNER_TEMP/scale-output.txt" | head -20 || true
+            grep -E 'lease canary:|failover heal:|panicked at|the lease canary failed|did not serve' "$RUNNER_TEMP/scale-output.txt" | head -20 || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload broker logs
-        if: failure()
+        if: failure() || matrix.variant == 'failover'
         uses: actions/upload-artifact@v7
         with:
           name: scale-logs-${{ matrix.variant }}-${{ github.run_attempt }}
