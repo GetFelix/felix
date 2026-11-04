@@ -56,7 +56,7 @@ pub const COMMAND_VERSION: u16 = 1;
 /// it the next level and raises this, so nothing proposes it until every
 /// member runs that release. New fields get their level in `fields.txt`.
 /// Never lower it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 25;
+pub const METADATA_VERSION: u16 = 26;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -251,6 +251,11 @@ pub enum MetaCommand {
         key: ShardKey,
         expected_generation: u64,
         elected: crate::model::ElectedLeader,
+        /// Level 26: a leader elected on another set is named on it
+        /// (`ShardAssignment::adopting_elected_set`) instead of the
+        /// generation alone being taken.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        elected_set: bool,
     },
     /// The placement lease goes to `holder`, advancing the token if it
     /// changes hands. Proposed only by a confirmed leader, so no expiry.
@@ -491,11 +496,13 @@ impl MetaCommand {
                 14
             }
             // Finalizing replica election lets placement write pending sets,
-            // which members before level 21 would refuse.
+            // which members before level 21 would refuse, and adoptions
+            // name a leader on the set it was elected on, which members
+            // before level 26 cannot.
             Self::FinalizeFleetFeature { feature }
                 if feature == felix_common::fleet::REPLICA_ELECTION.name() =>
             {
-                21
+                26
             }
             // Finalizing joint fences lets placement write learners and read
             // start holders, which members before level 23 would drop, and

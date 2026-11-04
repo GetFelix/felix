@@ -58,6 +58,10 @@ pub struct FollowerCursor {
     /// different one is another process, which may not hold what this one
     /// did, so the cursor starts over on it too.
     pub incarnation: Incarnation,
+    /// The follower's last answer was that its routing view is behind this
+    /// generation. An elected leader sends it the candidate fence again, since
+    /// no control-plane route will carry that generation to it.
+    pub(crate) route_behind: bool,
     /// The follower's last stored answer said its copy is a learner
     /// ([`ReplicateOk::learner`]): it lost what it promised before a wipe, so
     /// it counts toward no mark until an answer without the flag arrives.
@@ -81,6 +85,7 @@ impl FollowerCursor {
             legacy_frames: false,
             storage_id: None,
             incarnation: Incarnation::Unsent,
+            route_behind: false,
             learner: false,
         }
     }

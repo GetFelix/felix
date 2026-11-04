@@ -82,6 +82,184 @@ fn ok(answer: &InternalMessage) {
     );
 }
 
+/// A router at `generation` led by broker-a with `LOCAL` following, whose
+/// watch saw `before` (leader first) as the set right before it, or saw
+/// nothing before it when `before` is `None`.
+fn router_after(generation: u64, before: Option<&[&str]>) -> Arc<ShardRouter> {
+    let router = router_with(&[LOCAL], generation);
+    let nodes: HashMap<String, NodeRef> = ["broker-a", LOCAL, "broker-c"]
+        .iter()
+        .zip(7001..)
+        .map(|(id, port)| (id.to_string(), node(id, port)))
+        .collect();
+    let priors = before.map(|before| {
+        let prior = felix_router::PriorSet {
+            generation,
+            before: Some(Arc::new(felix_router::PlacedSet {
+                leader: before[0].to_string(),
+                replicas: before[1..].iter().map(|id| id.to_string()).collect(),
+                successor: None,
+                storage_ids: Default::default(),
+                member_storage_ids: Default::default(),
+            })),
+        };
+        (key(), prior)
+    });
+    let table = RoutingTable::build(
+        [(
+            key(),
+            "broker-a".to_string(),
+            vec![LOCAL.to_string()],
+            generation,
+        )],
+        &nodes,
+    )
+    .with_priors(priors.into_iter().collect());
+    router.publish(table, &nodes);
+    router
+}
+
+/// A control plane whose confirmed read assigns `generation` to the sender,
+/// which a copy with no promise needs under `joint_fence`.
+struct AssignedToSender(u64);
+
+#[async_trait::async_trait]
+impl crate::confirmed::ConfirmedRoutes for AssignedToSender {
+    async fn confirmed(&self, _key: &felix_router::ShardKey) -> crate::confirmed::Confirmed {
+        crate::confirmed::Confirmed::Assigned {
+            generation: self.0,
+            leader: SENDER.expect("a sender").to_string(),
+        }
+    }
+}
+
+fn refused_for_set_before(answer: &InternalMessage) -> bool {
+    matches!(
+        answer,
+        InternalMessage::ReplicateError(err)
+            if err.code == ErrorCode::StaleRoute
+                && err.detail.contains("does not know the set before")
+    )
+}
+
+fn joint_marks() -> Arc<crate::quorum::QuorumMarks> {
+    let fleet = felix_common::fleet::FleetGate::new([felix_common::fleet::JOINT_FENCE.name()]);
+    fleet.restart(Some(felix_common::fleet::JOINT_FENCE.name()));
+    Arc::new(crate::quorum::QuorumMarks::with_fleet(Arc::new(fleet)))
+}
+
+/// **Under `joint_fence` a batch teaches a set only with the control plane's
+/// set before it**, kept as the one being left, as the leader keeps it. The
+/// copy's own older set may be an elected leader's, so a follower that missed
+/// the joint fence and took its own as the set being left could stand on a
+/// set holding none of the leader's records. Without the set before, the
+/// batch is refused until a fence carries it. `LearnsLeavingSet`.
+#[tokio::test]
+async fn a_batch_under_joint_fence_learns_the_set_being_left_only_from_the_control_plane() {
+    let (broker, _dir) = broker_with_storage().await;
+    knows_set(&broker, 3).await;
+    let unknown = ReplicaHandler::new(Arc::clone(&broker), router_after(4, None))
+        .with_fleet(joint_marks())
+        .with_confirmed_routes(Arc::new(AssignedToSender(4)));
+    let answer = settled(|| {
+        unknown.apply(
+            SENDER,
+            stamped(4, 0, &["a"], 4),
+            felix_broker::LogKind::Stream,
+        )
+    })
+    .await;
+    assert!(refused_for_set_before(&answer), "{answer:?}");
+    assert_eq!(
+        stream_log(&broker).await.set_generation(),
+        3,
+        "nothing is learned from a refused batch"
+    );
+
+    let watched = ReplicaHandler::new(
+        Arc::clone(&broker),
+        router_after(4, Some(&["broker-a", LOCAL, "broker-c"])),
+    )
+    .with_fleet(joint_marks())
+    .with_confirmed_routes(Arc::new(AssignedToSender(4)));
+    let answer = settled(|| {
+        watched.apply(
+            SENDER,
+            stamped(4, 0, &["a"], 4),
+            felix_broker::LogKind::Stream,
+        )
+    })
+    .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    let set = stream_log(&broker).await.replica_set().expect("a set");
+    assert_eq!(set.current.generation, 4);
+    let leaving = set
+        .leaving
+        .expect("the set before is kept as the one being left");
+    assert_eq!(leaving.generation, 3);
+    let nodes: Vec<&str> = leaving.members.iter().map(|m| m.node.as_str()).collect();
+    assert_eq!(nodes, vec!["broker-a", LOCAL, "broker-c"]);
+}
+
+/// **Only a wiped learner learns a set from a batch without the set before
+/// it.** A wiped voter votes and a staged learner may lead, so either could
+/// stand on the new set without fencing the one being left; both are refused
+/// until a fence carries it. `LearnsLeavingSet`.
+#[tokio::test]
+async fn only_a_wiped_learner_learns_a_set_without_the_set_before_it() {
+    for (learner, wiped, learns) in [
+        (true, true, true),
+        (false, true, false),
+        (true, false, false),
+    ] {
+        let (broker, _dir) = broker_with_storage().await;
+        stream_log(&broker)
+            .await
+            .accept_set(ReplicaSet {
+                current: Membership {
+                    generation: 3,
+                    members: vec![Member {
+                        node: LOCAL.to_string(),
+                        storage: None,
+                        learner,
+                        wiped,
+                    }],
+                },
+                leaving: None,
+            })
+            .await
+            .expect("set");
+        let handler = ReplicaHandler::new(Arc::clone(&broker), router_after(4, None))
+            .with_fleet(joint_marks())
+            .with_confirmed_routes(Arc::new(AssignedToSender(4)));
+        let answer = settled(|| {
+            handler.apply(
+                SENDER,
+                stamped(4, 0, &["a"], 4),
+                felix_broker::LogKind::Stream,
+            )
+        })
+        .await;
+        let stale = refused_for_set_before(&answer);
+        assert_eq!(
+            stale, !learns,
+            "learner {learner}, wiped {wiped}: {answer:?}"
+        );
+        if learns {
+            assert!(
+                matches!(answer, InternalMessage::ReplicateOk(_)),
+                "{answer:?}"
+            );
+            assert_eq!(stream_log(&broker).await.set_generation(), 4);
+        } else {
+            assert_eq!(stream_log(&broker).await.set_generation(), 3);
+        }
+    }
+}
+
 /// **A fence counting an older set is refused, naming the newer one**, and
 /// takes no ballot: a sender that has not seen the latest set must not gather
 /// a majority from replicas that have. `RefuseStaleSet`.
@@ -328,11 +506,38 @@ async fn a_fence_carrying_a_set_ahead_of_its_generation_is_refused() {
         .await);
 }
 
-/// **A batch is stamped with its own generation**: a stamp that names another
-/// set is refused as retryable, even when the routing view has it, and the
-/// batch stores nothing.
+/// A batch stamped with a set this replica does not know, at another
+/// generation than the batch's own, is refused for now: no route has that
+/// set, so only a fence can carry it.
 #[tokio::test]
-async fn a_batch_stamped_with_another_generation_than_its_own_is_refused() {
+async fn a_batch_stamped_with_an_unknown_set_at_another_generation_is_refused() {
+    let (broker, _dir) = broker_with_storage().await;
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 6));
+    handler
+        .apply(SENDER, batch(6, 0, &["a"]), felix_broker::LogKind::Stream)
+        .await;
+    knows_set(&broker, 3).await;
+
+    let answer = handler
+        .apply(
+            SENDER,
+            stamped(6, 1, &["b"], 5),
+            felix_broker::LogKind::Stream,
+        )
+        .await;
+
+    assert_eq!(refusal(&answer).code, ErrorCode::StaleRoute);
+    assert!(refusal(&answer).code.is_retryable());
+    assert_eq!(stream_log(&broker).await.set_generation(), 3);
+    assert_eq!(held(&broker).await, vec!["a"]);
+}
+
+/// **An elected leader's batch is taken.** It stamps the set it stood on,
+/// which is older than the generation it leads, since standing does not
+/// change the set. The replica keeps that set, so there is nothing to learn
+/// (`SetCurrent`).
+#[tokio::test]
+async fn a_batch_stamped_with_the_set_this_replica_keeps_is_taken() {
     let (broker, _dir) = broker_with_storage().await;
     let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 6));
     handler
@@ -348,8 +553,202 @@ async fn a_batch_stamped_with_another_generation_than_its_own_is_refused() {
         )
         .await;
 
-    assert_eq!(refusal(&answer).code, ErrorCode::StaleRoute);
-    assert!(refusal(&answer).code.is_retryable());
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "expected the batch to be stored, got {answer:?}"
+    );
     assert_eq!(stream_log(&broker).await.set_generation(), 5);
-    assert_eq!(held(&broker).await, vec!["a"]);
+    assert_eq!(held(&broker).await, vec!["a", "b"]);
+}
+
+fn pre_vote_at(generation: u64) -> felix_wire::internal::PreVote {
+    felix_wire::internal::PreVote {
+        correlation_id: 3,
+        shard: batch(generation, 0, &[]).shard,
+        log: ReplicaLog::Stream,
+        last_generation: 0,
+        log_end: 0,
+        set_generation: 0,
+    }
+}
+
+/// **The leader refuses a pre-vote against itself** from a follower whose log
+/// equals its own (#1815). A follower that has not heard a leader grants it.
+#[tokio::test]
+async fn the_leader_refuses_a_pre_vote_against_itself() {
+    for (leader, refusal) in [
+        (
+            LOCAL,
+            Some(felix_wire::internal::PreVoteRefusal::LeaderReachable),
+        ),
+        ("broker-a", None),
+    ] {
+        let (broker, _dir) = broker_with_storage().await;
+        if leader == LOCAL {
+            opened_at(&broker, 6).await;
+        }
+        let others: Vec<&str> = ["broker-a", LOCAL, "broker-c"]
+            .into_iter()
+            .filter(|node| *node != leader)
+            .collect();
+        let handler = ReplicaHandler::new(Arc::clone(&broker), router_led_by(leader, &others, 6))
+            .with_stickiness(Duration::ZERO);
+        let answer = handler.pre_vote(pre_vote_at(7)).await;
+        let InternalMessage::PreVoteAnswer(answer) = answer else {
+            panic!("expected an answer, got {answer:?}");
+        };
+        assert_eq!(answer.refusal, refusal, "led by {leader}");
+    }
+}
+
+/// This broker's log as a leader's that opened at `generation`.
+async fn opened_at(broker: &Broker, generation: u64) {
+    let log = stream_log(broker).await;
+    log.accept_generation(generation, Some(LOCAL))
+        .await
+        .expect("ballot");
+    begin(&log, generation).await;
+    log.append_generation_start(generation)
+        .await
+        .expect("start record");
+}
+
+/// Note where `generation` begins, as the lifecycle's open does.
+async fn begin(log: &felix_broker::StreamLog, generation: u64) {
+    let tail = log.tail_offset().await.expect("tail");
+    log.record_generation(generation, tail).expect("begins");
+}
+
+fn pre_vote_answer(answer: InternalMessage) -> Option<felix_wire::internal::PreVoteRefusal> {
+    let InternalMessage::PreVoteAnswer(answer) = answer else {
+        panic!("expected an answer, got {answer:?}");
+    };
+    answer.refusal
+}
+
+/// **A route naming this broker leader refuses a pre-vote only while the
+/// shard is open here at its generation.** A route can name it long after it
+/// stopped serving, and refusing then keeps a live majority from electing.
+#[tokio::test]
+async fn only_a_leader_open_at_its_routes_generation_refuses_a_pre_vote() {
+    let (broker, _dir) = broker_with_storage().await;
+    let handler = ReplicaHandler::new(
+        Arc::clone(&broker),
+        router_led_by(LOCAL, &["broker-a", "broker-c"], 6),
+    )
+    .with_stickiness(Duration::ZERO);
+    stream_log(&broker)
+        .await
+        .accept_generation(6, Some(LOCAL))
+        .await
+        .expect("ballot");
+    assert_eq!(
+        pre_vote_answer(handler.pre_vote(pre_vote_at(7)).await),
+        None
+    );
+
+    begin(&stream_log(&broker).await, 6).await;
+    assert_eq!(
+        pre_vote_answer(handler.pre_vote(pre_vote_at(7)).await),
+        Some(felix_wire::internal::PreVoteRefusal::LeaderReachable)
+    );
+}
+
+/// **A leader cut off while the others elected takes the elected leader's
+/// fence when it comes again**, records that leader, and then grants a
+/// pre-vote once it goes quiet. Before the fence it refuses the new leader's
+/// batches as behind, since no route names the elected generation, and
+/// refuses pre-votes as the leader its stale route names. This is the
+/// follower's side; the leader sending the fence again is tested in the
+/// driver.
+#[tokio::test]
+async fn a_cut_off_leader_takes_the_elected_leaders_fence() {
+    let (broker, _dir) = broker_with_storage().await;
+    let marks = Arc::new(crate::quorum::QuorumMarks::new());
+    let elections = Arc::new(crate::election::Elections::new(
+        LOCAL,
+        Arc::new(tokio::sync::Notify::new()),
+    ));
+    marks.set_elections(Arc::clone(&elections));
+    let handler = ReplicaHandler::new(
+        Arc::clone(&broker),
+        router_led_by(LOCAL, &["broker-a", "broker-c"], 6),
+    )
+    .with_stickiness(Duration::ZERO)
+    .with_fleet(marks);
+    opened_at(&broker, 6).await;
+    let elected = Some("broker-a");
+
+    let answer = handler
+        .apply(
+            elected,
+            stamped(7, 1, &["x"], 6),
+            felix_broker::LogKind::Stream,
+        )
+        .await;
+    assert_eq!(refusal(&answer).code, ErrorCode::StaleRoute);
+    let at_8 = || felix_wire::internal::PreVote {
+        last_generation: 6,
+        log_end: 1,
+        set_generation: 6,
+        ..pre_vote_at(8)
+    };
+    assert_eq!(
+        pre_vote_answer(handler.pre_vote(at_8()).await),
+        Some(felix_wire::internal::PreVoteRefusal::LeaderReachable)
+    );
+
+    ok(&handler
+        .fence(elected, election_fence(7, voters(6), true))
+        .await);
+    let log = stream_log(&broker).await;
+    assert_eq!(log.accepted_generation(), 7);
+    assert_eq!(log.accepted_leader().as_deref(), Some("broker-a"));
+    let recorded = elections.get(&key()).expect("the elected leader");
+    assert_eq!(
+        (
+            recorded.leader.as_str(),
+            recorded.generation,
+            recorded.set.generation
+        ),
+        ("broker-a", 7, 6)
+    );
+    assert_eq!(pre_vote_answer(handler.pre_vote(at_8()).await), None);
+}
+
+/// **Only a candidate's fence that is taken records its sender**: a fence
+/// from a leader the control plane named records nothing, and neither does a
+/// refused candidate.
+#[tokio::test]
+async fn only_a_taken_candidate_fence_records_its_sender() {
+    let (broker, _dir) = broker_with_storage().await;
+    let marks = Arc::new(crate::quorum::QuorumMarks::new());
+    let elections = Arc::new(crate::election::Elections::new(
+        LOCAL,
+        Arc::new(tokio::sync::Notify::new()),
+    ));
+    marks.set_elections(Arc::clone(&elections));
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4))
+        .with_stickiness(Duration::ZERO)
+        .with_fleet(marks);
+
+    ok(&handler
+        .fence(SENDER, election_fence(5, voters(5), false))
+        .await);
+    assert!(elections.get(&key()).is_none(), "a named leader's fence");
+
+    // The set is older than the one this replica now keeps.
+    let answer = handler
+        .fence(Some("broker-c"), election_fence(6, voters(4), true))
+        .await;
+    assert_eq!(refusal(&answer).code, ErrorCode::StaleSet);
+    assert!(elections.get(&key()).is_none(), "a refused candidate");
+
+    ok(&handler
+        .fence(Some("broker-c"), election_fence(6, voters(5), true))
+        .await);
+    assert_eq!(
+        elections.get(&key()).map(|elected| elected.leader),
+        Some("broker-c".to_string())
+    );
 }

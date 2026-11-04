@@ -79,6 +79,7 @@ fn report(stream: &str) -> ShardReport {
         joint_start_acked: None,
         refused: None,
         holds_start: Default::default(),
+        elected: None,
     }
 }
 

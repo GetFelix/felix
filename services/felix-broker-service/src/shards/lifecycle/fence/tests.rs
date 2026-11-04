@@ -66,6 +66,27 @@ fn reopening_at_a_new_generation_admits_again() {
     assert!(fence.enter(&stream, 1).is_none());
 }
 
+/// What tells the replication driver a route naming this broker is one it
+/// opened, rather than one it led only before a restart.
+#[test]
+fn opened_since_counts_every_open_and_outlives_a_close() {
+    use felix_replication::driver::WriteFence;
+
+    let fence = ShardFence::default();
+    let stream = key(ShardKind::Stream);
+    assert!(!fence.opened_since(&stream, 0), "never opened");
+
+    fence.open(&stream, 3);
+    fence.close(&stream);
+    assert!(fence.opened_since(&stream, 3));
+    assert!(fence.opened_since(&stream, 2));
+    assert!(!fence.opened_since(&stream, 4));
+    assert!(
+        !fence.opened_since(&key(ShardKind::Cache), 3),
+        "a cache of the same name is another shard"
+    );
+}
+
 #[tokio::test]
 async fn quiesce_waits_for_the_last_write_in_flight() {
     let fence = Arc::new(ShardFence::default());

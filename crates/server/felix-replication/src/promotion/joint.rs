@@ -398,10 +398,17 @@ pub(crate) fn set_before(
 /// may hold one that acknowledged. A failover's fence needs a majority of
 /// both, as `Promote` fences the promoted broker's own set. A pending
 /// cut-over leaves only the recorded set.
+///
+/// Without a watch prior, `before` is this log's own set at the generation
+/// before, which is the route's set and not the control plane's when a
+/// change was pending at it: the control plane's is the one the leader kept
+/// as leaving, and the shard fails over from it. So that kept set is fenced
+/// too.
 pub(super) fn logged_besides(
     stored: Option<&ReplicaSet>,
     route: &Route,
     before: &Membership,
+    prior: Option<&PriorSet>,
 ) -> Option<Membership> {
     if route
         .pending
@@ -411,8 +418,22 @@ pub(super) fn logged_besides(
     {
         return None;
     }
-    let logged = &stored?.current;
-    (logged.generation < route.generation && !same_set(logged, before)).then(|| logged.clone())
+    let stored = stored?;
+    let logged = &stored.current;
+    if logged.generation < route.generation && !same_set(logged, before) {
+        return Some(logged.clone());
+    }
+    let watched = prior.is_some_and(|prior| prior.generation == route.generation);
+    stored
+        .leaving
+        .as_ref()
+        .filter(|leaving| {
+            !watched
+                && Some(logged.generation) == route.generation.checked_sub(1)
+                && !leaving.members.is_empty()
+                && !same_set(leaving, before)
+        })
+        .cloned()
 }
 
 /// The set `stored` keeps as left by its own set's fence, when `opened` is
@@ -538,9 +559,10 @@ pub(super) async fn sets<R: PeerRequester>(
             members: Vec::new(),
         },
     };
-    let mut besides: Vec<Membership> = logged_besides(stored.as_ref(), route, &before)
-        .into_iter()
-        .collect();
+    let mut besides: Vec<Membership> =
+        logged_besides(stored.as_ref(), route, &before, joint.prior.as_ref())
+            .into_iter()
+            .collect();
     if !before.members.is_empty()
         && let Some(stored) = stored.as_ref()
     {
@@ -550,6 +572,20 @@ pub(super) async fn sets<R: PeerRequester>(
             besides.push(unopened);
         }
     }
+    Ok(across(requester, local_node_id, route, set, before, besides, joint).await)
+}
+
+/// The fence for `route` leaving `before`, and each of `besides` when more
+/// sets are being left: jointly when the voters differ.
+pub(super) async fn across<R: PeerRequester>(
+    requester: &R,
+    local_node_id: &str,
+    route: &Route,
+    set: &ReplicaSetView,
+    before: Membership,
+    besides: Vec<Membership>,
+    joint: &Joint<'_>,
+) -> Fenced {
     let olds = || std::iter::once(&before).chain(&besides);
     let new_voters: BTreeSet<String> = set
         .members
@@ -598,10 +634,10 @@ pub(super) async fn sets<R: PeerRequester>(
     if before.members.is_empty()
         || (!replaced && old_voters.iter().all(|old| old.voters == new_voters))
     {
-        return Ok(Fenced {
+        return Fenced {
             before,
             joint: None,
-        });
+        };
     }
 
     let route_nodes = std::iter::once(&route.leader).chain(&route.replicas);
@@ -644,10 +680,10 @@ pub(super) async fn sets<R: PeerRequester>(
         new_voters,
         local: local_node_id.to_string(),
     };
-    Ok(Fenced {
+    Fenced {
         before,
         joint: Some(joint),
-    })
+    }
 }
 
 /// Whether `log` holds a record written at `generation`: a leader writes one
@@ -663,7 +699,7 @@ async fn holds_records_of(log: &felix_broker::StreamLog, generation: u64) -> boo
         .any(|epoch| epoch.generation == generation && epoch.start_offset < tail)
 }
 
-fn view(set: &Membership) -> ReplicaSetView {
+pub(crate) fn view(set: &Membership) -> ReplicaSetView {
     ReplicaSetView {
         generation: set.generation,
         members: set

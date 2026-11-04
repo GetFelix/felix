@@ -154,7 +154,9 @@ async fn a_fenced_move_is_left_to_its_own_steps() {
             ElectedLeader {
                 leader: "broker-d".to_string(),
                 generation: fenced.generation + AHEAD,
-                replicas: vec!["broker-b".to_string(), "broker-c".to_string()],
+                // A node the catalog lacks, so only the generation is taken:
+                // a known elected set would be named.
+                replicas: vec!["broker-b".to_string(), "broker-gone".to_string()],
                 set_generation: fenced.generation,
             },
         )
