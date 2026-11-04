@@ -6,6 +6,7 @@
 
 mod fetch;
 mod groups;
+mod headers;
 mod limits;
 mod list_offsets;
 mod metadata;
@@ -16,7 +17,7 @@ mod sasl;
 mod versions;
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -31,7 +32,9 @@ use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 use tokio_util::sync::CancellationToken;
 
-use crate::cluster::{Cluster, Endpoint, Placement, Principal, ShardRef, WriteError, WritePermit};
+use crate::cluster::{
+    Cluster, Endpoint, Placement, Principal, ShardRef, Unreadable, WriteError, WritePermit,
+};
 use crate::service::{KafkaService, Settings};
 
 pub(super) const TENANT: &str = "t1";
@@ -49,7 +52,7 @@ pub(super) struct FakeCluster {
     /// What the next consistency wait answers, when not success.
     pub(super) consistency_error: Mutex<Option<WriteError>>,
     /// Commit points by `(stream, shard)`; a shard without one is unbounded.
-    committed: Mutex<HashMap<(String, u32), u64>>,
+    committed: Mutex<HashMap<(String, u32), Result<u64, Unreadable>>>,
     /// What `admit_produce` answers.
     pub(super) produce_hold: Mutex<std::time::Duration>,
     /// Every `admit_produce` call, as `(tenant, records, bytes)`.
@@ -121,12 +124,17 @@ impl Cluster for FakeCluster {
         }
     }
 
-    fn committed_until(&self, shard: &ShardRef<'_>, _handle: &StreamHandle) -> Option<u64> {
+    fn committed_until(
+        &self,
+        shard: &ShardRef<'_>,
+        _handle: &StreamHandle,
+    ) -> Result<Option<u64>, Unreadable> {
         self.committed
             .lock()
             .expect("lock")
             .get(&(shard.stream.to_string(), shard.shard))
             .copied()
+            .transpose()
     }
 
     fn admit_produce(&self, tenant_id: &str, records: u64, bytes: u64) -> std::time::Duration {
@@ -151,7 +159,24 @@ impl FakeCluster {
         self.committed
             .lock()
             .expect("lock")
-            .insert((stream.to_string(), shard), offset);
+            .insert((stream.to_string(), shard), Ok(offset));
+    }
+
+    /// Stop serving a shard's commit point, as a `Quorum` shard that moved
+    /// away after its read was placed here.
+    pub(super) fn stop_serving(&self, stream: &str, shard: u32) {
+        self.committed
+            .lock()
+            .expect("lock")
+            .insert((stream.to_string(), shard), Err(Unreadable::NotServed));
+    }
+
+    /// Lead a shard with no mark yet, as a broker just after a failover.
+    pub(super) fn settle(&self, stream: &str, shard: u32) {
+        self.committed
+            .lock()
+            .expect("lock")
+            .insert((stream.to_string(), shard), Err(Unreadable::Settling));
     }
 
     pub(super) fn add_broker(&self, node_id: &str, host: &str, port: u16) {
@@ -167,6 +192,8 @@ pub(super) struct Fixture {
     pub(super) broker: Arc<Broker>,
     pub(super) cluster: Arc<FakeCluster>,
     service: KafkaService,
+    /// What the broker's record-headers gate answers.
+    headers_accepted: Arc<AtomicBool>,
     _dir: TempDir,
 }
 
@@ -215,6 +242,9 @@ impl Fixture {
         let broker =
             Arc::new(Broker::new(EphemeralCache::new().into()).with_durable_storage(storage));
         broker.allow_head_trims_when(|| true);
+        let headers_accepted = Arc::new(AtomicBool::new(false));
+        let gate = Arc::clone(&headers_accepted);
+        broker.record_headers_when(move || gate.load(Ordering::SeqCst));
         broker.register_tenant(TENANT).await.expect("tenant");
         let cluster = Arc::new(FakeCluster {
             placements: Mutex::new(HashMap::new()),
@@ -233,8 +263,41 @@ impl Fixture {
             broker,
             cluster,
             service,
+            headers_accepted,
             _dir: dir,
         }
+    }
+
+    /// Make the broker accept record headers, as a finalized fleet does.
+    pub(super) fn accept_headers(&self) {
+        self.headers_accepted.store(true, Ordering::SeqCst);
+    }
+
+    /// Publish as a Felix client does, with a key and headers block per record.
+    pub(super) async fn publish_with_blocks(
+        &self,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        records: &[(&str, Option<felix_wire::RecordHeaders>)],
+    ) {
+        let handle = self
+            .broker
+            .resolve_stream_handle(TENANT, namespace, stream, shard)
+            .await
+            .expect("handle");
+        let payloads: Vec<Bytes> = records
+            .iter()
+            .map(|(value, _)| Bytes::copy_from_slice(value.as_bytes()))
+            .collect();
+        let blocks: Vec<Option<Bytes>> = records
+            .iter()
+            .map(|(_, block)| block.as_ref().map(|block| block.encode().expect("block")))
+            .collect();
+        self.broker
+            .publish_batch_with_outcome(&handle, &payloads, None, Some(&blocks))
+            .await
+            .expect("publish");
     }
 
     /// Register a stream, creating its namespace.

@@ -364,7 +364,7 @@ pub mod trim_reason {
 /// is not a head trim (see [`trim_reason::HEAD_TRIM`]).
 pub mod feature_reason {
     /// The publish carries record headers and the broker does not accept them,
-    /// or it was forwarded to another broker, which cannot carry them yet.
+    /// or it was forwarded to a shard owner that does not accept them yet.
     pub const RECORD_HEADERS: &str = "record_headers";
 }
 

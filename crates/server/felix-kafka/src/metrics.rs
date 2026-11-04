@@ -57,7 +57,8 @@ pub(crate) fn duplicate(records: u64) {
     metrics::counter!("felix_kafka_produce_duplicate_records_total").increment(records);
 }
 
-/// Record keys and headers dropped because Felix records cannot carry them.
+/// Record keys and headers dropped because the listener has not opted in to
+/// storing them or the broker does not accept record headers.
 pub(crate) fn dropped(keys: u64, headers: u64) {
     if keys > 0 {
         metrics::counter!("felix_kafka_produce_dropped_total", "field" => "key").increment(keys);

@@ -118,6 +118,8 @@ async fn a_stalled_forward_does_not_hold_up_another_shard() {
 #[derive(Default)]
 struct ApplyOrder {
     applied: parking_lot::Mutex<Vec<Bytes>>,
+    /// The header blocks each forward arrived with.
+    headers: parking_lot::Mutex<Vec<Option<Vec<Option<Bytes>>>>>,
     seen: AtomicUsize,
 }
 
@@ -132,6 +134,7 @@ impl felix_replication::peer::PeerRequestHandler for ApplyOrder {
         tokio::time::sleep(Duration::from_millis(100u64.saturating_sub(n * 20))).await;
         if let InternalMessage::ForwardPublish(publish) = &request {
             self.applied.lock().extend(publish.payloads.iter().cloned());
+            self.headers.lock().push(publish.headers.clone());
         }
         InternalMessage::ForwardPublishOk(ForwardPublishOk {
             correlation_id: request.correlation_id(),
@@ -220,24 +223,47 @@ async fn forwards_to_one_shard_reach_the_owner_in_order() {
     stop.cancel();
 }
 
-/// A forward does not carry record headers yet, so one that has them is
-/// refused with an answer rather than sent without them, which would tell the
-/// client they were kept.
-#[tokio::test]
-async fn a_forward_with_headers_is_refused_not_stripped() {
+/// A forward that carries record headers reaches the owner with them, as its
+/// own frame, so the owner stores what the client sent through this broker.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_forward_with_headers_reaches_the_owner_with_them() {
     let broker = Arc::new(broker_with_stream().await);
+    let owner = Arc::new(ApplyOrder::default());
+    let server = felix_replication::peer::PeerServer::bind(
+        "broker-b".to_string(),
+        &felix_replication::peer::PeerTransportConfig {
+            bind: "127.0.0.1:0".parse().expect("addr"),
+            ..felix_replication::peer::PeerTransportConfig::default()
+        },
+        owner.clone(),
+    )
+    .expect("bind the owner");
+    let owner_addr = server.local_addr().expect("addr");
+    let stop = CancellationToken::new();
+    tokio::spawn(server.serve(stop.clone()));
+    let peers = felix_replication::peer::PeerPool::new(
+        "broker-a".to_string(),
+        felix_replication::peer::PeerTransportConfig::default(),
+        CancellationToken::new(),
+    )
+    .expect("bind a peer pool");
     let ctx = build_publish_context(
         Arc::clone(&broker),
         &BrokerConfig::default(),
-        ClusterContext::default(),
+        ClusterContext {
+            peers: Some(peers),
+            ..ClusterContext::default()
+        },
     );
+    let blocks = vec![Some(Bytes::from_static(b"block")), None];
+
     let (tx, rx) = oneshot::channel();
     let forward = PublishJob {
-        headers: Some(vec![Some(Bytes::from_static(b"block"))]),
+        headers: Some(blocks.clone()),
         target: PublishTarget::Forward {
             target: ForwardTarget {
                 node_id: "broker-b".to_string(),
-                advertise_addr: "127.0.0.1:9".parse().expect("addr"),
+                advertise_addr: owner_addr,
                 generation: 1,
                 incarnation: 0,
             },
@@ -250,7 +276,7 @@ async fn a_forward_with_headers_is_refused_not_stripped() {
             ack: felix_wire::internal::AckMode::OnCommit,
             credential: "token".to_string(),
         },
-        payloads: vec![Bytes::from_static(b"forwarded")],
+        payloads: vec![Bytes::from_static(b"a"), Bytes::from_static(b"b")],
         response: Some(tx.into()),
         acked_on_enqueue: false,
         admission_permit: None,
@@ -262,15 +288,9 @@ async fn a_forward_with_headers_is_refused_not_stripped() {
             .await
             .expect("queued")
     );
-    let answer = tokio::time::timeout(Duration::from_secs(2), rx)
-        .await
-        .expect("the forward is answered")
-        .expect("a response");
-    let refusal = answer.expect_err("refused");
-    assert!(
-        refusal
-            .to_string()
-            .contains("record headers cannot be forwarded"),
-        "{refusal}"
-    );
+    let answered = tokio::time::timeout(Duration::from_secs(5), rx).await;
+    assert!(matches!(answered, Ok(Ok(Ok(_)))), "{answered:?}");
+
+    assert_eq!(*owner.headers.lock(), vec![Some(blocks)]);
+    stop.cancel();
 }

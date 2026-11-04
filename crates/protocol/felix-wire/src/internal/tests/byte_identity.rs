@@ -23,6 +23,7 @@ fn records(first_offset: u64, payloads: &[&'static [u8]]) -> ReplicateRecords {
         commit_offset: None,
         generations: None,
         times: None,
+        headers: None,
         set_generation: None,
     }
 }
@@ -62,6 +63,7 @@ fn more() -> Vec<InternalMessage> {
             max_bytes: 1 << 20,
             labelled,
             timed,
+            headers: false,
         })
     };
     let all_capabilities = PeerCapabilities::FENCE
@@ -116,6 +118,7 @@ fn more() -> Vec<InternalMessage> {
             ack: AckMode::OnCommit,
             payloads: vec![Bytes::from_static(b"a")],
             credential: String::new(),
+            headers: None,
         }),
         InternalMessage::ReplicateRebuild(ReplicateRebuild {
             correlation_id: 42,

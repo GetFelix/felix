@@ -49,12 +49,13 @@ fn a_cache_batch_with_a_start_record_travels_in_a_layout_with_marks() {
             incarnation: None,
         },
         first_offset: 3,
-        checksum: batch_checksum(&payloads, &marks, &[]),
+        checksum: batch_checksum(&payloads, &marks, &[], &[]),
         payloads,
         marks,
         publishers: Vec::new(),
         commit_offset: None,
         generations: None,
+        headers: None,
         set_generation: None,
     };
 
@@ -71,6 +72,11 @@ fn a_cache_batch_with_a_start_record_travels_in_a_layout_with_marks() {
     assert_eq!(received.marks, sent.marks);
     assert_eq!(
         received.checksum,
-        batch_checksum(&received.payloads, &received.marks, &received.publishers)
+        batch_checksum(
+            &received.payloads,
+            &received.marks,
+            &received.publishers,
+            &[]
+        )
     );
 }

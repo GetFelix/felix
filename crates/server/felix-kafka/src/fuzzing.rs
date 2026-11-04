@@ -35,7 +35,7 @@ pub fn record_batches(bytes: &[u8]) {
 }
 
 fn record_batches_bytes(bytes: Bytes) {
-    let Ok(batches) = decode::decode(bytes) else {
+    let Ok(batches) = decode::decode(bytes, true) else {
         return;
     };
     for batch in batches {

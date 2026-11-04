@@ -22,6 +22,10 @@
 //! removes it, so a broker can refuse to join a fleet that has not finalized
 //! `head_trim` without opening every log. See [`record_head_trimmed`].
 //!
+//! `<durable root>/record-headers` says the same of a record with a key or
+//! headers block (storage format v8) and `record_headers`. See
+//! [`record_headers_stored`].
+//!
 //! `<durable root>/replaced-storage` says the control plane once registered
 //! this node under another storage id, so this directory may lack copies the
 //! node held. See [`record_replaced`].
@@ -283,6 +287,26 @@ pub fn record_head_trimmed(root: &Path) -> Result<()> {
 /// counts: it is renamed into place whole, and it is never removed.
 pub fn head_trimmed(root: &Path) -> Result<bool> {
     root.join(HEAD_TRIMMED_FILE_NAME)
+        .try_exists()
+        .map_err(StorageError::Io)
+}
+
+/// The record-headers marker's name under the durable root. Not a directory,
+/// so shard discovery passes over it.
+pub const RECORD_HEADERS_FILE_NAME: &str = "record-headers";
+
+/// Record, durably, that a log under `root` is about to store a record with
+/// a key or headers block. Call before the first such record is written: a
+/// crash after the record and before the marker would let the directory join
+/// an older fleet.
+pub fn record_headers_stored(root: &Path) -> Result<()> {
+    write_atomically(root, RECORD_HEADERS_FILE_NAME, b"record_headers\n", true)
+}
+
+/// Whether a log under `root` may hold a record with headers. Only the
+/// file's presence counts: it is renamed into place whole, and never removed.
+pub fn has_record_headers(root: &Path) -> Result<bool> {
+    root.join(RECORD_HEADERS_FILE_NAME)
         .try_exists()
         .map_err(StorageError::Io)
 }
