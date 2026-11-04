@@ -2183,6 +2183,10 @@ FlipFence(b) == ~Candidate(b) /\ setGen[b] = bgen[b] /\ oldSet[b] = {} /\ cpNext
 AnswerFence(b, f) ==
     /\ fencing[b] /\ bgen[b] > 0 /\ f /= b /\ f \notin halted
     /\ f \in FenceMembers(b)
+    \* A leader that lost the set it leaves asks no one: `fence_shard` in
+    \* promotion.rs returns when `joint::sets` cannot find it, before
+    \* `fence_log`.
+    /\ ~SetUnknown(b)
     /\ IF Elections > 0
        THEN \/ MayPromise(f, b, bgen[b])
             \/ NamedFenceSkipsBallot /\ FlipFence(b) /\ promised[f] <= bgen[b]
