@@ -4193,7 +4193,10 @@ production broker sends or reads a set yet. With it on:
   its own set and fences with it.
 
 The control plane's finalize gates are in place too: `joint_fence` is refused
-before `generation_start` and while a serving broker does not report that it
+before `generation_start`, `stream_incarnations` and `cache_incarnations` (a
+joint fence opens a new stream or cache only on knowing its shard came first,
+which a broker tells only from an incarnation above 0), and while a serving
+broker does not report that it
 offers the `ELECTION` peer capability, names start holders in its reports
 (`start_holders`) or keeps a wiped copy from voting (`non_voting`), and
 `replica_election` is refused until `joint_fence` and its

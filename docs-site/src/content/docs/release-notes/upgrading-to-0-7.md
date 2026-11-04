@@ -45,8 +45,9 @@ features and rollback.
   - After that, 0.6.2 refuses to open the log. There is no rollback except
     restoring a backup.
   - `FELIX_RECORD_HEADERS=false` keeps v8 off. It does not affect v7.
-  - Headers work on a single broker only for now, since replication does not
-    ship them.
+  - A single broker accepts headers from the start. A cluster accepts them
+    once it finalizes `record_headers` (see
+    [`record_headers`](/deployment/upgrades/#record_headers)).
   - A single broker allows trims from the start and writes a `head-trimmed`
     marker. That data directory cannot join a cluster until the cluster has
     finalized `head_trim` (see [`head_trim`](/deployment/upgrades/#head_trim)).
@@ -66,13 +67,14 @@ None of these is required. Each default keeps the 0.6.2 behavior.
 
 | Setting | What it does |
 |---|---|
-| `FELIX_RECORD_HEADERS` *(main)* | Single broker only. `false` refuses publishes that carry headers, which keeps logs at v7 or older. Turning it off later leaves stored headers readable. |
+| `FELIX_RECORD_HEADERS` *(main)* | Single broker only. `false` refuses publishes that carry headers, which keeps logs at v7 or older. Turning it off later leaves stored headers readable. A cluster follows the `record_headers` fleet feature instead. |
+| `FELIX_KAFKA_RECORD_HEADERS` *(main)* | `true` stores a Kafka producer's keys and headers with the record, which moves the logs to v8. Off by default, so the Kafka listener alone never does. |
 | `FELIX_MQTT_LISTEN`, `FELIX_MQTT_WS_LISTEN` *(main)* | Bind the MQTT listener, plain and over WebSockets. Unset leaves it off. Related `FELIX_MQTT_*` limits are in [the reference](/reference/environment-variables/). |
 | `FELIX_LEASE_TOKEN_KEY_FILE`, `FELIX_LEASE_TOKEN_MAX_TTL_SECONDS` *(main)* | Key file and longest lifetime for lease tokens. Without the key file a broker neither mints nor accepts them. Every broker needs the same file. |
 | `FELIX_SHARD_ELECTION_HOLD_MS`, `FELIX_SHARD_PENDING_SET_TIMEOUT_MS` | Control-plane timers for `replica_election`, which no broker offers yet. Nothing uses them today. |
 
-In a cluster, headers are refused whatever `FELIX_RECORD_HEADERS` says, because
-the `record_headers` fleet feature is not implemented yet.
+In a cluster, headers are refused until the fleet finalizes `record_headers`,
+whatever `FELIX_RECORD_HEADERS` says.
 
 ## Upgrade order
 
@@ -83,24 +85,29 @@ The ordinary order applies: control plane, then brokers one at a time, then
 clients. Back up the data directory first if you may use headers or head trim,
 because both write formats 0.6.2 cannot read.
 
-The `head_trim` fleet feature is new. It stays off after the brokers are
-upgraded, and nothing needs it unless you want to trim a stream. To turn it on,
-once every broker runs the new build:
+The `head_trim` and `record_headers` fleet features are new. They stay off after
+the brokers are upgraded, and nothing needs them unless you want to trim a
+stream or store record keys and headers in a cluster. To turn one on, once
+every broker runs the new build:
 
 ```bash
 felix-controlplane admin features finalize head_trim --dry-run
 felix-controlplane admin features finalize head_trim
 ```
 
+Use `record_headers` in place of `head_trim` for headers. The two do not
+depend on each other or on the fleet features from 0.6.
+
 The dry run names any live or draining broker that lacks the feature. A broker
 that is down is not counted and is refused later if it returns on the old
 build, so replace or retire it first. After the finalize, watch
-`felix_broker_fleet_feature_enabled{feature="head_trim"}` reach 1 on each
+`felix_broker_fleet_feature_enabled{feature="head_trim"}` (or `record_headers`) reach 1 on each
 broker, or read `GET /v1/fleet/features`.
 
 Finalizing is one-way. A cluster created on the new build finalizes it at the
 first broker registration. See [`head_trim`](/deployment/upgrades/#head_trim)
-for what a trim writes and what an older broker does with it, and
+and [`record_headers`](/deployment/upgrades/#record_headers)
+for what each writes and what an older broker does with it, and
 [Rollback](/deployment/upgrades/#rollback) for the limits above.
 
 ## Control plane changes
@@ -140,7 +147,8 @@ Later control-plane changes are on `main`:
   a leader reports where its generation started (`holds_start`): migration
   `0040`, level 23. Finalizing `joint_fence` needs that level, and
   `generation_start`, `stream_incarnations` and `cache_incarnations`
-  finalized first.
+  finalized first. No broker reports `joint_fence` yet, so the control plane
+  refuses the finalize; it is not something to plan around in 0.7.
 - A stream can carry an MQTT mount: migration `0041`, level 24.
 - A leader that could not serve a generation because it had promised it to
   another node reports the refusal, and placement names it again at a higher
@@ -177,8 +185,9 @@ of about 25. No action is needed; the pool sizes are ceilings.
 A client can trim a stream's oldest records at the tail it expects
 (`trim_before`, `felixctl stream trim`); a cursor error now says where to resume
 and carries the trim's headers; a single broker accepts and delivers record
-headers; the Rust client has lease tokens; and a broker can serve MQTT (the last
-four are on `main`). See
+headers, on a cluster once it finalizes `record_headers`; the Rust client has
+lease tokens; and a broker can serve MQTT, where a device can publish at QoS 0
+and 1 (the last four are on `main`). See
 [what Felix is for](/getting-started/what-felix-is-for/) for the status of each.
 
 ## Packaging
