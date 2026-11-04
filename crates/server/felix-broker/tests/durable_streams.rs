@@ -2071,3 +2071,49 @@ async fn a_subscribers_queue_size_is_its_own() {
         .expect("publish");
     assert_eq!(queued_offsets(&mut small), vec![12]);
 }
+
+/// A range ending at or below the tail needs no subscriber: the broker says
+/// so without registering one. A range reaching past it does.
+#[tokio::test]
+async fn a_range_below_the_tail_is_answered_without_a_subscriber() {
+    let dir = tempdir().expect("dir");
+    let broker = broker_with_small_ring(&dir, 4).await;
+    register(&broker, "orders", true).await;
+    for i in 0..10 {
+        broker
+            .publish("t1", "default", "orders", payload(&format!("v{i:02}")))
+            .await
+            .expect("publish");
+    }
+
+    let join = broker
+        .history_to("t1", "default", "orders", 0, StartPosition::Offset(2), 10)
+        .await
+        .expect("history")
+        .expect("below the tail");
+    assert_eq!((join.start_offset, join.live_offset), (2, 10));
+    assert!(
+        broker
+            .history_to("t1", "default", "orders", 0, StartPosition::Offset(2), 11)
+            .await
+            .expect("history")
+            .is_none(),
+        "an end past the tail needs live delivery"
+    );
+    assert_eq!(
+        broker
+            .registered_subscribers("t1", "default", "orders", 0)
+            .await
+            .expect("count"),
+        0
+    );
+
+    register(&broker, "chatter", false).await;
+    assert!(
+        broker
+            .history_to("t1", "default", "chatter", 0, StartPosition::Latest, 1)
+            .await
+            .is_err(),
+        "an in-memory stream has no offsets to bound"
+    );
+}

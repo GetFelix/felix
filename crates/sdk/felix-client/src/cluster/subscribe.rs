@@ -356,6 +356,37 @@ impl Client {
             .with_context(|| format!("ask how many shards {stream} has"))
     }
 
+    /// [`Connection::subscribe_range`], on whichever broker leads the shard.
+    ///
+    /// Returns the plain [`crate::Subscription`], not a [`ClusterSubscription`]:
+    /// a followed subscription resubscribes without the bound after a move,
+    /// which would run past `end`. If the shard moves mid-range the
+    /// subscription ends with [`crate::Subscription::shard_moved`] set, and the
+    /// caller continues from the offset after its last event with a new
+    /// range.
+    pub async fn subscribe_range(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        start: felix_wire::StartPosition,
+        end: u64,
+    ) -> Result<crate::Subscription> {
+        let key = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            stream.to_string(),
+            shard,
+        );
+        self.on_group_read(key, |client| async move {
+            client
+                .subscribe_range(tenant_id, namespace, stream, shard, start, end)
+                .await
+        })
+        .await
+    }
+
     /// [`Connection::read`], on whichever broker leads the shard.
     #[allow(clippy::too_many_arguments)]
     pub async fn read(

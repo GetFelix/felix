@@ -171,6 +171,7 @@ async fn subscribe(
             subscription_id: None,
             shard: None,
             queue_capacity: None,
+            end: None,
         },
     )
     .await?;

@@ -421,6 +421,16 @@ pub const FEATURE_HEAD_TRIM: u32 = 0x0000_0010;
 /// a refusal to mint. A client checks the bit before setting the field.
 pub const FEATURE_LEASE_TOKEN: u32 = 0x0000_0020;
 
+/// The broker honours `end` on `subscribe`: a subscription that stops at an
+/// offset, ending with `subscription_ended`.
+///
+/// An extended bit, in `server_features_hi`. Advertised by a *broker*: an
+/// older broker ignores the unknown field and runs on into live delivery, so
+/// a client checks the bit before sending `end`. Only the broker answers with
+/// the new frame, and only to a subscribe that carried `end`, so no other
+/// client sees it.
+pub const FEATURE_SUBSCRIBE_END: u32 = 0x0000_0040;
+
 /// Every extended feature bit this version implements: bits that travel in
 /// `client_features_hi` / `server_features_hi` rather than the first word.
 pub const KNOWN_FEATURES_HI: u32 = FEATURE_INSPECT
@@ -428,7 +438,8 @@ pub const KNOWN_FEATURES_HI: u32 = FEATURE_INSPECT
     | FEATURE_PUBLISH_WIDTH
     | FEATURE_EXPLICIT_SHARD
     | FEATURE_HEAD_TRIM
-    | FEATURE_LEASE_TOKEN;
+    | FEATURE_LEASE_TOKEN
+    | FEATURE_SUBSCRIBE_END;
 
 /// The peer reads the other side's extended feature word.
 ///

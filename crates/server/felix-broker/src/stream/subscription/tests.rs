@@ -208,3 +208,42 @@ fn drops_below_a_covered_offset_are_forgotten() {
     lag.dropped(15);
     assert_eq!(lag.first_dropped(), Some(15));
 }
+
+/// A receiver told to end at an offset cuts the batch that straddles it, then
+/// yields `None` with nothing more published, and says why.
+#[tokio::test]
+async fn a_receiver_ends_at_its_end_offset() {
+    let (tx, subscription) = resuming_at(100);
+    let (mut receiver, _guard) = subscription.into_parts();
+    receiver.end_at(104);
+
+    deliver(&tx, 100, &["a", "b"]);
+    deliver(&tx, 102, &["c", "d", "e"]);
+    deliver(&tx, 105, &["f"]);
+
+    let first = receiver.recv().await.expect("a batch");
+    assert_eq!(first.payloads(), &[payload("a"), payload("b")]);
+    assert!(!receiver.reached_end());
+    let cut = receiver.recv().await.expect("the cut batch");
+    assert_eq!(cut.base_offset(), Some(102));
+    assert_eq!(cut.payloads(), &[payload("c"), payload("d")]);
+    assert!(receiver.reached_end());
+    assert!(receiver.recv().await.is_none());
+}
+
+/// A batch that ends exactly at the bound ends the subscription without
+/// waiting for the next publish, which may never come.
+#[tokio::test]
+async fn a_receiver_ends_when_a_batch_reaches_the_end_exactly() {
+    let (tx, subscription) = resuming_at(100);
+    let (mut receiver, _guard) = subscription.into_parts();
+    receiver.end_at(103);
+
+    deliver(&tx, 100, &["a", "b", "c"]);
+
+    let batch = receiver.recv().await.expect("a batch");
+    assert_eq!(batch.payloads().len(), 3);
+    assert!(receiver.reached_end());
+    assert!(receiver.try_recv().is_err());
+    assert!(receiver.recv().await.is_none());
+}

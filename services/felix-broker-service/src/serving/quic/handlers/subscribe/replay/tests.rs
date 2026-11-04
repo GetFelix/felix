@@ -229,8 +229,10 @@ async fn replay_as(
         max_events,
         1024 * 1024,
         format,
+        None,
     )
     .await
+    .map(|_| ())
 }
 
 /// History is paged from disk in order, and the offsets on the wire are the log
@@ -1002,4 +1004,115 @@ fn a_block_counts_toward_a_replay_batchs_byte_limit() {
         .push(1, payload("bbbbb"), 0, None, None, Some(key))
         .expect("15 bytes each: the second is over 20");
     assert_eq!(closed.payloads.len(), 1);
+}
+
+/// With an end, a replay stops before it, whether it falls in the disk
+/// history or the ring backlog, and says it got there.
+#[tokio::test]
+async fn a_replay_stops_before_its_end() {
+    let (broker, _dir) = durable_broker().await;
+    publish(&broker, &["a", "b", "c", "d", "e", "f"]).await;
+
+    for (end, expected) in [(2, vec![0, 1]), (5, vec![0, 1, 2, 3, 4])] {
+        let mut subscription = broker
+            .subscribe(TENANT, NAMESPACE, STREAM, 0)
+            .await
+            .expect("subscribe");
+        let mut sink = Recorder::default();
+        let backlog = (3..6)
+            .map(|offset| felix_broker::RingRecord {
+                offset,
+                payload: payload("x"),
+                publisher: None,
+                headers: None,
+                timestamp_micros: None,
+            })
+            .collect();
+        let reached = write_replay(
+            &mut sink,
+            &broker,
+            TENANT,
+            NAMESPACE,
+            STREAM,
+            0,
+            SUBSCRIPTION,
+            Some(HistoryRange {
+                from_offset: 0,
+                until_offset: 3,
+            }),
+            backlog,
+            3,
+            &mut subscription,
+            64,
+            1024 * 1024,
+            SKIPS,
+            Some(end),
+        )
+        .await
+        .expect("replay");
+        assert!(reached);
+        assert_eq!(sink.offsets(), expected, "end {end}");
+    }
+}
+
+/// A replay whose range does not reach the end leaves the rest to live
+/// delivery.
+#[tokio::test]
+async fn a_replay_short_of_its_end_is_not_over() {
+    let (broker, _dir) = durable_broker().await;
+    publish(&broker, &["a", "b"]).await;
+    let mut subscription = broker
+        .subscribe(TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("subscribe");
+    let mut sink = Recorder::default();
+    let reached = write_replay(
+        &mut sink,
+        &broker,
+        TENANT,
+        NAMESPACE,
+        STREAM,
+        0,
+        SUBSCRIPTION,
+        Some(HistoryRange {
+            from_offset: 0,
+            until_offset: 2,
+        }),
+        Vec::new(),
+        2,
+        &mut subscription,
+        64,
+        1024 * 1024,
+        SKIPS,
+        Some(10),
+    )
+    .await
+    .expect("replay");
+    assert!(!reached);
+    assert_eq!(sink.offsets(), vec![0, 1]);
+}
+
+/// A bounded range below the tail is read from disk alone.
+#[tokio::test]
+async fn history_alone_stops_before_its_end() {
+    let (broker, _dir) = durable_broker().await;
+    publish(&broker, &["a", "b", "c", "d"]).await;
+    let mut sink = Recorder::default();
+    write_history(
+        &mut sink,
+        &broker,
+        TENANT,
+        NAMESPACE,
+        STREAM,
+        0,
+        SUBSCRIPTION,
+        1,
+        3,
+        64,
+        1024 * 1024,
+        SKIPS,
+    )
+    .await
+    .expect("history");
+    assert_eq!(sink.offsets(), vec![1, 2]);
 }

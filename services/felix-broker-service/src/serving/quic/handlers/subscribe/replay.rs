@@ -79,6 +79,10 @@ pub(crate) struct EventFormat {
 /// On a `Quorum` stream a page stops at the committed mark and the next waits
 /// for it (see `Broker::read_committed`): the history range is closed, but
 /// part of it can be past the mark when this broker has just taken the shard.
+///
+/// With `end`, nothing at or above it is written. Returns whether the replay
+/// reached `end`, in which case the subscription is over and live delivery
+/// never starts.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn write_replay<S: EventSink>(
     event_send: &mut S,
@@ -95,7 +99,9 @@ pub(super) async fn write_replay<S: EventSink>(
     max_events: usize,
     max_bytes: usize,
     format: EventFormat,
-) -> Result<()> {
+    end: Option<u64>,
+) -> Result<bool> {
+    let cap = end.unwrap_or(u64::MAX);
     let mut replay = Replay {
         sink: event_send,
         broker,
@@ -117,12 +123,20 @@ pub(super) async fn write_replay<S: EventSink>(
     };
 
     if let Some(range) = history {
-        replay.history_until(range.until_offset).await?;
+        replay.history_until(range.until_offset.min(cap)).await?;
     }
 
+    let mut reached = replay.next >= cap;
     let mut batch = ReplayBatch::new(max_events, max_bytes);
     for record in backlog {
+        if reached {
+            break;
+        }
         let offset = record.offset;
+        if offset >= cap {
+            reached = true;
+            break;
+        }
         // A hole in the ring is paged from disk like a hole in the queue
         // below. It is usually a generation-start record, which the read
         // turns into a skip for the record after it.
@@ -159,12 +173,19 @@ pub(super) async fn write_replay<S: EventSink>(
     // arrive. It terminates because each pass only handles what was already
     // queued, and a pass that finds nothing ends it.
     for _ in 0..MAX_CATCH_UP_PASSES {
+        if reached {
+            break;
+        }
         let ready = subscription.drain_ready();
         if ready.is_empty() {
             break;
         }
         for envelope in ready {
             if let Some(base) = envelope.base_offset() {
+                if base >= cap {
+                    reached = true;
+                    break;
+                }
                 if base > replay.next {
                     // The queue dropped records. Page the gap from disk.
                     replay.history_until(base).await?;
@@ -184,6 +205,10 @@ pub(super) async fn write_replay<S: EventSink>(
                     .unwrap_or(replay.next);
                 if offset < replay.next {
                     continue;
+                }
+                if offset >= cap {
+                    reached = true;
+                    break;
                 }
                 let skipped = replay.deliver(offset);
                 let headers = replay.headers(
@@ -205,11 +230,48 @@ pub(super) async fn write_replay<S: EventSink>(
             if let Some(chunk) = batch.take() {
                 replay.write(&chunk).await?;
             }
+            if reached {
+                break;
+            }
         }
     }
     // Drops the catch-up filled from disk are not a lag.
     subscription.covered_below(replay.next);
-    Ok(())
+    Ok(reached || replay.next >= cap)
+}
+
+/// Write `[from, end)` from disk and nothing else: a bounded subscription
+/// whose range lies below the tail needs no live edge to pin.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn write_history<S: EventSink>(
+    event_send: &mut S,
+    broker: &Arc<Broker>,
+    tenant_id: &str,
+    namespace: &str,
+    stream: &str,
+    shard: u32,
+    subscription_id: u64,
+    from: u64,
+    end: u64,
+    max_events: usize,
+    max_bytes: usize,
+    format: EventFormat,
+) -> Result<()> {
+    let mut replay = Replay {
+        sink: event_send,
+        broker,
+        tenant_id,
+        namespace,
+        stream,
+        shard,
+        subscription_id,
+        max_events,
+        max_bytes,
+        format,
+        next: from,
+        skipped: 0,
+    };
+    replay.history_until(end).await
 }
 
 /// One subscription's replay, and how far it has got.

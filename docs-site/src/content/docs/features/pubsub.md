@@ -373,16 +373,26 @@ ordering rules that make the cursor safe.
 
 ### Reading a range, without subscribing
 
-A subscription has no end. Replay from an offset runs on into live delivery
-until the client unsubscribes. To read a fixed slice of a durable stream, such
-as one match's events or a page of history in a UI, use a range read
-(`stream_read` on the wire, `Connection::read` in Rust). It returns one page of
+A subscription has no end unless you give it one. Replay from an offset runs on
+into live delivery until the client unsubscribes. To read a fixed slice of a
+durable stream, such as one match's events or a page of history in a UI, either
+subscribe with an end offset or use a range read.
+
+A subscription with an `end` (`subscribe_range` in Rust) delivers the records
+from its start up to, but not including, `end`, then finishes with a
+`subscription_ended` frame. It keeps the binary event path, so it is the faster
+choice for exporting a large range. A range below the committed tail is read
+from disk and never joins fanout; a range reaching past it follows live
+delivery and stops at `end`. If the subscription falls behind, it ends with a
+lag error like any other and you resume from the offset it names.
+
+A range read (`stream_read` on the wire, `Connection::read` in Rust) returns one page of
 committed records from a start offset, stopping before an end offset, with the
 offset to read the next page from. Nothing is registered with the stream's
 fanout, so the broker does no live work for it. A page is capped in records and
 bytes, and it never waits: once it reaches what is committed it comes back short.
-It is a request and response over JSON, one round trip per page. For bulk
-export, a subscription is still the faster path.
+It is a request and response over JSON, one round trip per page, which suits a
+UI page or a small slice better than bulk export.
 
 ### Exactly-once delivery is not offered
 
