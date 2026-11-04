@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793773325804,
+  "lastUpdate": 1793776606723,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -56166,6 +56166,72 @@ window.BENCHMARK_DATA = {
             "range": "384.03",
             "unit": "us",
             "extra": "trials: 5\nmedian: 500.00\nmean: 640.80\nstdev: 384.03\ncv: 59.93%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7904b90ec6aea753da5a0099742a2018be8810cf",
+          "message": "fix(replication): a deposed leader's read bound is refused after a move to no replicas (#1867)\n\n* fix(replication): a deposed leader's read bound is refused after a move to no replicas (#1852)\n\ncommitted_bound returned Unbounded for a shard whose route has no replicas\nbefore checking that this broker serves it. A leader deposed by a move to an\nRF 1 route then released batches it held for the mark and let read_committed\nrun past it. Check serving first; a served shard with no replicas stays\nunbounded.\n\n* fix(replication): read_bound checks serving first too (#1852)\n\nKafka Fetch, ListOffsets and group polls ask read_bound, which had the same\norder as committed_bound. A deposed leader now answers zero there.\n\n* chore: record that the shard model is unaffected (#1852)\n\nSpec-Unaffected: FelixShardSessions already models a deposed leader delivering only up to its own mark (DeliverTo = \"mark\"); this makes the code match it for a shard moved to a route with no replicas.\n\n* fix(replication): group and Kafka reads refuse a shard no longer served (#1852)\n\nread_bound answered zero for a Quorum shard this broker no longer serves.\nA group seek to latest that raced a move wrote zero under its guard, and a\nKafka ListOffsets latest clamped zero up to the log start, so consumers\nrewound. read_bound now says NotServed; group operations refuse as fenced\nand Kafka answers NOT_LEADER_OR_FOLLOWER.\n\nSpec-Unaffected: FelixShardSessions already has a deposed leader hand out nothing past its mark; this refuses instead of answering zero.\n\n* fix(replication): a new leader with no mark refuses latest instead of answering zero (#1852)\n\nread_bound answered zero while this broker served a Quorum shard with no\nmark at its generation, so ListOffsets latest and a group seek to latest\nrewound to the log start right after a failover. It now answers Settling:\nKafka ListOffsets returns OFFSET_NOT_AVAILABLE, Fetch stays empty, and\ngroup polls, seeks and describes are refused as shard_unavailable\n(not_ready).\n\n* fix(kafka): ListOffsets settling answers per version; earliest still answered (#1852)\n\nListOffsets latest on a new Quorum leader with no mark answers\nOFFSET_NOT_AVAILABLE from v5 and LEADER_NOT_AVAILABLE before, as Kafka\ndoes. Earliest and timestamp queries are answered with the log start as\ntheir bound. Client docs say group poll, seek and describe are safe to\nretry on shard_unavailable.",
+          "timestamp": "2026-11-04T07:09:54Z",
+          "tree_id": "565dfc6184a60b7c3628d0249af09f04116026e7",
+          "url": "https://github.com/GetFelix/felix/commit/7904b90ec6aea753da5a0099742a2018be8810cf"
+        },
+        "date": 1793776599896,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 153,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 153.00\nmean: 152.20\nstdev: 1.30\ncv: 0.86%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 205,
+            "range": "2.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 205.00\nmean: 204.60\nstdev: 2.07\ncv: 1.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 262,
+            "range": "5.26",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 262.00\nmean: 261.80\nstdev: 5.26\ncv: 2.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 198,
+            "range": "11.32",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 198.00\nmean: 202.80\nstdev: 11.32\ncv: 5.58%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 390,
+            "range": "205.68",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 390.00\nmean: 471.60\nstdev: 205.68\ncv: 43.61%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 584,
+            "range": "615.13",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 584.00\nmean: 851.40\nstdev: 615.13\ncv: 72.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
