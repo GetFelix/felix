@@ -1088,3 +1088,25 @@ async fn a_log_set_naming_another_copy_is_fenced_beside_the_one_before() {
     let outcome = fence_after(&replicas, &leader, true, Some(prior)).await;
     assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
 }
+
+/// **A promise away is not refused while a set is being left.** broker-b
+/// promised the generation to broker-d and broker-c is down, so the old set
+/// holds only broker-x's answer. A rename resets the copies the next joint
+/// fence checks, so the fence waits instead of reporting a refusal.
+#[tokio::test]
+async fn a_joint_fence_with_one_promise_away_and_one_silent_stays_pending() {
+    let mut replicas = replicas_with(&["broker-x", "broker-z"]);
+    replicas.ballots = true;
+    replicas
+        .get("broker-b")
+        .holds("broker-b", 4, 0, &["a"])
+        .await;
+    promised_to(&replicas, "broker-b", "broker-d").await;
+    replicas.get_mut("broker-c").reachable = false;
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+    kept_before(&leader, &["broker-x", "broker-b", "broker-c"], &[]).await;
+
+    let outcome = fence(&replicas, &leader, true).await;
+
+    assert!(matches!(outcome, Outcome::Pending { .. }), "{outcome:?}");
+}

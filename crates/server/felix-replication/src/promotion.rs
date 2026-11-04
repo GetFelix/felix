@@ -94,10 +94,12 @@ pub enum Outcome {
     Fenced { caught_up_from: Option<String> },
     /// Some replica did not offer the fence, so the shard opens on the lease.
     Lease { lacking: String },
-    /// Not yet, and not in this attempt: so many replicas promised this
-    /// generation to `promised_to` that no majority is left to take it. The
-    /// shard stays closed, and this broker reports the refusal so the
-    /// control plane names it again above the generation (#1730).
+    /// Not yet, and not in this attempt: a replica promised this generation
+    /// to `promised_to`, and either so many did that no majority is left to
+    /// take it or every other replica that did not take it was unreachable
+    /// or timed out. The shard stays closed,
+    /// and this broker reports the refusal so the control plane names it
+    /// again above the generation (#1730).
     Refused {
         promised_to: String,
         why: String,
@@ -534,6 +536,9 @@ async fn fence_log<R: PeerRequester>(
     // Answers from a copy the report did not name: they took the promise,
     // which still refuses the old leader, but count for nothing here.
     let mut other_copies = 0;
+    // Replicas that answered no in some way other than a promise away or
+    // silence, which a refusal below may not blame on the promise.
+    let mut declined = 0;
     // Why the replicas that refused did, for the shard's status: a refusal
     // that no retry gets past names its way out there.
     let mut refusals: Vec<String> = Vec::new();
@@ -667,6 +672,17 @@ async fn fence_log<R: PeerRequester>(
                     answer = ?other.as_ref().map(InternalMessage::kind),
                     "a replica did not take the fence",
                 );
+                let silent = matches!(
+                    other,
+                    Err(PeerError::Unavailable { .. }
+                        | PeerError::Handshake { .. }
+                        | PeerError::Disconnected { .. }
+                        | PeerError::Timeout { .. }
+                        | PeerError::ShuttingDown)
+                );
+                if !silent {
+                    declined += 1;
+                }
                 if let Ok(InternalMessage::ReplicateError(err)) = other {
                     refusals.push(format!("{node_id} refused: {}", err.detail));
                 }
@@ -695,6 +711,19 @@ async fn fence_log<R: PeerRequester>(
         for refusal in &refusals {
             why.push_str("; ");
             why.push_str(refusal);
+        }
+        // A promise away never comes back, so with the rest only silent a
+        // retry here can wait forever on a replica that is gone; the refusal
+        // moves the shard up. Not when an answer from another copy or a
+        // joint set's count kept the majority out: a rename resets the
+        // copies the next fence checks, so that case waits instead.
+        let explained = joint.is_none() && other_copies == 0 && declined == 0;
+        if let Some((_, promised_to)) = promised_away.first().filter(|_| explained) {
+            return Err(Outcome::Refused {
+                promised_to: promised_to.clone(),
+                why,
+                took: took(&answered),
+            });
         }
         return Err(Outcome::pending(why, took(&answered)));
     }
