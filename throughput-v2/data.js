@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793888675820,
+  "lastUpdate": 1793892866489,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -45760,6 +45760,58 @@ window.BENCHMARK_DATA = {
             "range": "4740.48",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1212987.52\nmean: 1212266.16\nstdev: 4740.48\ncv: 0.39%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "712051d0efd46f3532ab91769878110363eb7896",
+          "message": "fix(placement): never promote a follower on a broker that has deregistered (#1977) (#1981)\n\nPlacement never promotes a follower on a broker that has deregistered: the departed set is carried apart from the draining fallback. Fixes #1977.",
+          "timestamp": "2026-11-05T06:54:22-08:00",
+          "tree_id": "7bb28ac737638c8a2bb49b07008aaf11e5470ece",
+          "url": "https://github.com/GetFelix/felix/commit/712051d0efd46f3532ab91769878110363eb7896"
+        },
+        "date": 1793892865936,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 476641.17,
+            "range": "37328.43",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 476641.17\nmean: 477926.08\nstdev: 37328.43\ncv: 7.81%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 476641.17,
+            "range": "37328.43",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 476641.17\nmean: 477926.08\nstdev: 37328.43\ncv: 7.81%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 112454.46,
+            "range": "1923.70",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 112454.46\nmean: 112608.63\nstdev: 1923.70\ncv: 1.71%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1124544.57,
+            "range": "19237.03",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1124544.57\nmean: 1126086.30\nstdev: 19237.03\ncv: 1.71%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
