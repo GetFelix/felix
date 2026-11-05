@@ -89,9 +89,12 @@ impl WakeKind {
 
 /// Where a shard waits for a slot. See [`Shards::fill`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Queue {
-    /// An append, a write waiting on the mark, or an answer that moved a
-    /// follower: work a client may be waiting on.
+pub(super) enum Queue {
+    /// An append since the shard was last asked: a write is waiting on this
+    /// pass now, and the pass is short.
+    Appended,
+    /// A write waiting on the mark, a shard new here or just opened, a move,
+    /// or an answer that moved a follower: work a client may be waiting on.
     Urgent,
     /// Nothing new: the tick's pass, or a follower to try again.
     Refresh,
@@ -101,11 +104,32 @@ enum Queue {
 }
 
 impl Queue {
+    fn of(appended: bool, urgent: bool) -> Self {
+        if appended {
+            Self::Appended
+        } else if urgent {
+            Self::Urgent
+        } else {
+            Self::Refresh
+        }
+    }
+
+    /// Lower starts sooner; a shard queued again moves up, never down.
+    fn rank(self) -> u8 {
+        match self {
+            Self::Appended => 0,
+            Self::Urgent => 1,
+            Self::Refresh => 2,
+            Self::Fence => 3,
+        }
+    }
+
     fn index(self) -> usize {
         match self {
             Self::Urgent => 0,
             Self::Refresh => 1,
             Self::Fence => 2,
+            Self::Appended => 3,
         }
     }
 }
@@ -229,14 +253,13 @@ struct ShardState {
     again: bool,
     /// That ask was urgent ([`Queue::Urgent`]).
     again_urgent: bool,
-    /// Waiting for a slot, in which queue, and since when.
-    queued: Option<(Queue, tokio::time::Instant)>,
+    /// That ask came with an append ([`Queue::Appended`]).
+    again_appended: bool,
+    /// Waiting for a slot: in which queue, since when, and the ticket its
+    /// queue entry carries.
+    queued: Option<(Queue, tokio::time::Instant, u64)>,
     /// The bit an append to this shard sets in [`AppendedShards`].
     slot: Option<u16>,
-    /// The generation at which the last pass left every follower holding the
-    /// whole log with nothing under way. A scan woken by an append skips the
-    /// shard while that holds and nothing was appended to it.
-    settled_at: Option<u64>,
     /// The last pass left the mark below the tail, or no follower holding
     /// all of it: a write may be waiting on the next pass.
     owed: bool,
@@ -255,6 +278,16 @@ struct ShardState {
     /// by too many replicas to open, or could not learn the set it leaves.
     /// Reported each tick, as a refused open is.
     fence_refused: Option<RefusedGeneration>,
+    /// After the shard opened, a follower refused it for a newer generation
+    /// and no majority is left without it
+    /// ([`crate::follower::refused_without_majority`]). Reported each tick.
+    ship_refused: Option<RefusedGeneration>,
+    /// The last pass found this broker's own ballot past the generation it
+    /// leads. Reported each tick, as a refused open is.
+    ballot_refused: Option<RefusedGeneration>,
+    /// The ballot past the led generation the passes have seen, and since
+    /// when. Reported only once it outlasts [`super::BALLOT_ABOVE_FOR`].
+    ballot_above_since: Option<(u64, tokio::time::Instant)>,
     /// What its last pass left.
     last: Option<LastPass>,
 }
@@ -309,16 +342,36 @@ pub(super) struct Shards<'a, R> {
     /// When each shard this broker gave up was last probed.
     probed: HashMap<ShardKey, tokio::time::Instant>,
     pub(super) reports: FuturesUnordered<BoxFuture<'a, Reported>>,
-    /// Shards waiting for a pass slot, oldest first. A key whose state no
-    /// longer names the queue is stale and skipped.
-    urgent: VecDeque<ShardKey>,
-    refresh: VecDeque<ShardKey>,
+    /// Shards waiting for a pass slot, oldest first, each with the ticket it
+    /// was queued with. An entry whose ticket the shard's state no longer
+    /// holds is stale and skipped: a shard that started or moved queue and
+    /// then queued again waits at the back, not in its old place.
+    appended: VecDeque<(ShardKey, u64)>,
+    urgent: VecDeque<(ShardKey, u64)>,
+    refresh: VecDeque<(ShardKey, u64)>,
     /// Shards waiting for a fence slot.
-    fencing: VecDeque<ShardKey>,
+    fencing: VecDeque<(ShardKey, u64)>,
+    /// The last ticket handed out.
+    tickets: u64,
+    /// Shards with `queued` set, per [`Queue`].
+    queued_in: [usize; 4],
     /// Shards with `queued` set.
     waiting: usize,
     /// Urgent shards started in a row while a refresh waited.
     refresh_passed_over: usize,
+    /// Appended shards started in a row while an urgent one waited.
+    urgent_passed_over: usize,
+    /// The table the last full scan read. An append wake scans in full only
+    /// when the table has changed since.
+    scanned_table: Option<Arc<felix_router::RoutingTable>>,
+    /// Shards whose route names this broker as leader, by the bit an append
+    /// to them sets, as of [`Self::scanned_table`].
+    led_slots: HashMap<u16, Vec<ShardKey>>,
+    /// Of those, the ones moving.
+    moving: Vec<ShardKey>,
+    /// Of those, the ones this broker does not lead yet (withheld, or an
+    /// open refused). Each append wake checks them again.
+    not_led: HashSet<ShardKey>,
     metrics: DriverMetrics,
 }
 
@@ -339,11 +392,19 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             alone: HashMap::new(),
             probed: HashMap::new(),
             reports: FuturesUnordered::new(),
+            appended: VecDeque::new(),
             urgent: VecDeque::new(),
             refresh: VecDeque::new(),
             fencing: VecDeque::new(),
+            tickets: 0,
+            queued_in: [0; 4],
             waiting: 0,
             refresh_passed_over: 0,
+            urgent_passed_over: 0,
+            scanned_table: None,
+            led_slots: HashMap::new(),
+            moving: Vec::new(),
+            not_led: HashSet::new(),
             metrics: DriverMetrics::new(),
         }
     }
@@ -379,10 +440,12 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
     /// two, in case the set has changed since.
     fn refusal(&self, key: &ShardKey, route: &felix_router::Route) -> Option<RefusedGeneration> {
         self.refused_open(key, route).or_else(|| {
-            self.states
-                .get(key)?
+            let state = self.states.get(key)?;
+            state
                 .fence_refused
                 .clone()
+                .or_else(|| state.ship_refused.clone())
+                .or_else(|| state.ballot_refused.clone())
                 .filter(|refused| {
                     refused.generation == route.generation
                         && route.leader.node_id == self.cx.router.local_node_id()
@@ -392,6 +455,12 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
 
     /// Give the shards led here that want one a pass, and forget the ones no
     /// longer led here.
+    ///
+    /// An append wake with the table unchanged since the last full scan
+    /// visits only the shards it can ask ([`Self::scan_appended`]). Appends
+    /// wake the driver many times a second, and a walk of the whole table on
+    /// each took most of the task every pass is polled on, so a write's pass
+    /// waited behind scans (#1987).
     pub(super) fn scan(&mut self, wake: WakeKind) {
         self.scan += 1;
         self.metrics.scanned(wake.index());
@@ -399,6 +468,96 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         // Taken on every scan: one that passes every shard covers the bits.
         let appended = self.cx.broker.appended_shards().take();
         let table = self.cx.router.snapshot();
+        let unchanged = self
+            .scanned_table
+            .as_ref()
+            .is_some_and(|scanned| Arc::ptr_eq(scanned, &table));
+        if matches!(wake, WakeKind::Append) && unchanged {
+            self.scan_appended(&table, &appended);
+        } else {
+            self.scan_all(wake, &table, &appended);
+        }
+        self.count_rebuilds();
+    }
+
+    /// An append wake's scan: the shards appended to, owed a mark or moving,
+    /// and the ones not led at the last full scan that may be led now. These
+    /// are the only shards [`Self::asks`] passes on an append. Forgetting
+    /// shards no longer led, and the reports the tick repeats, wait for the
+    /// next full scan; a route change always gets one.
+    fn scan_appended(&mut self, table: &felix_router::RoutingTable, appended: &Appended) {
+        let mut visit: Vec<ShardKey> = appended
+            .slots()
+            .filter_map(|slot| self.led_slots.get(&slot))
+            .flatten()
+            .cloned()
+            .collect();
+        visit.extend(
+            self.states
+                .iter()
+                .filter(|(_, state)| state.owed)
+                .map(|(key, _)| key.clone()),
+        );
+        visit.extend(self.moving.iter().cloned());
+        visit.extend(
+            self.not_led
+                .iter()
+                .filter(|key| !self.states.contains_key(*key))
+                .cloned(),
+        );
+        let mut asked: HashSet<ShardKey> = HashSet::with_capacity(visit.len());
+        for key in visit {
+            if asked.contains(&key) {
+                continue;
+            }
+            let Some(route) = table.get(&key).filter(|route| self.leads(&key, route)) else {
+                continue;
+            };
+            if let Some((urgent, cuts)) = self.asks(&key, route, WakeKind::Append, appended) {
+                self.want(&key, urgent, cuts);
+                self.cx
+                    .status
+                    .note_wake(&watch_key(&key), WakeKind::Append.name());
+                asked.insert(key);
+            }
+        }
+        // As in a full scan: a pass waiting on a slow follower gives its slot
+        // up once shards wait for one.
+        if self.queued_for_pass() {
+            for (key, state) in &self.states {
+                if let Some(next) = &state.running
+                    && !asked.contains(key)
+                {
+                    next.wanted.notify_one();
+                }
+            }
+        }
+        self.fill();
+    }
+
+    /// Every shard in `table`: ask the ones led here, report the ones refused
+    /// or given up, forget the ones no longer led, and index the table for
+    /// the append wakes that follow.
+    fn scan_all(
+        &mut self,
+        wake: WakeKind,
+        table: &Arc<felix_router::RoutingTable>,
+        appended: &Appended,
+    ) {
+        let local = self.cx.router.local_node_id();
+        self.led_slots.clear();
+        self.moving.clear();
+        for (key, route) in table.iter() {
+            if route.leader.node_id != local {
+                continue;
+            }
+            let slot = AppendedShards::slot(&key.tenant_id, &key.namespace, &key.stream, key.shard);
+            self.led_slots.entry(slot).or_default().push(key.clone());
+            if route.draining || route.pending.is_some() {
+                self.moving.push(key.clone());
+            }
+        }
+        self.scanned_table = Some(Arc::clone(table));
         let live: Vec<ShardKey> = table
             .iter()
             .filter(|(key, route)| self.leads(key, route))
@@ -430,7 +589,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             let Some(route) = table.get(key) else {
                 continue;
             };
-            match self.asks(key, route, wake, &appended) {
+            match self.asks(key, route, wake, appended) {
                 Some((urgent, cuts)) => {
                     self.want(key, urgent, cuts);
                     self.cx.status.note_wake(&watch_key(key), wake.name());
@@ -438,7 +597,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                 // A pass that has published its mark and waits on a slow
                 // follower holds its slot until told the next pass is wanted;
                 // with shards waiting, that is now.
-                None if !self.urgent.is_empty() || !self.refresh.is_empty() => {
+                None if self.queued_for_pass() => {
                     if let Some(next) = self.states.get(key).and_then(|s| s.running.as_ref()) {
                         next.wanted.notify_one();
                     }
@@ -451,10 +610,21 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         // a belief about a follower under a leadership that has ended. One
         // with a pass under way is dropped when the pass ends.
         let led: HashSet<&ShardKey> = live.iter().collect();
+        self.not_led = self
+            .led_slots
+            .values()
+            .flatten()
+            .filter(|key| !led.contains(key))
+            .cloned()
+            .collect();
+        let queued_in = &mut self.queued_in;
         let mut dropped = 0;
         self.states.retain(|key, state| {
             let keep = state.running.is_some() || led.contains(key);
-            dropped += usize::from(!keep && state.queued.is_some());
+            if !keep && let Some((queue, ..)) = state.queued {
+                queued_in[queue.index()] -= 1;
+                dropped += 1;
+            }
             keep
         });
         self.waiting -= dropped;
@@ -477,7 +647,46 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         self.cx.marks.retain(&led_keys);
         let led_keys: HashSet<&crate::ShardKey> = led_keys.iter().collect();
         self.cx.status.retain(|key| led_keys.contains(key));
+    }
 
+    /// Whether a shard waits for a pass slot.
+    fn queued_for_pass(&self) -> bool {
+        [Queue::Appended, Queue::Urgent, Queue::Refresh]
+            .iter()
+            .any(|queue| self.queued_in[queue.index()] > 0)
+    }
+
+    /// Entries in the pass queues, stale ones included.
+    #[cfg(test)]
+    pub(super) fn queue_entries(&self) -> usize {
+        self.appended.len() + self.urgent.len() + self.refresh.len()
+    }
+
+    /// Queue `key` as the scan would, for tests that place entries exactly.
+    #[cfg(test)]
+    pub(super) fn queue_for_test(&mut self, key: &ShardKey, queue: Queue) {
+        self.enqueue(key, queue);
+    }
+
+    /// Take `key` out of its queue as a start does, leaving its old entries.
+    #[cfg(test)]
+    pub(super) fn leave_queue_for_test(&mut self, key: &ShardKey) {
+        self.dequeue(key);
+    }
+
+    /// Whether a pass is under way for `key`.
+    #[cfg(test)]
+    pub(super) fn runs(&self, key: &ShardKey) -> bool {
+        self.states.get(key).is_some_and(|s| s.running.is_some())
+    }
+
+    /// Whether a shard waits in the refresh queue.
+    #[cfg(test)]
+    pub(super) fn refresh_waits(&self) -> bool {
+        self.queued_in[Queue::Refresh.index()] > 0
+    }
+
+    fn count_rebuilds(&mut self) {
         // Slots in use are whatever the cursors still say is rebuilding. A
         // cursor discarded on a generation change or a lost shard took its
         // slot with it, and nothing else would give it back. Only counted
@@ -512,18 +721,19 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         // it before then would wake the driver in a loop.
         let idle = || {
             self.states
-                .values()
-                .filter(|state| state.running.is_none() && state.queued.is_none())
+                .iter()
+                .filter(|(_, state)| state.running.is_none() && state.queued.is_none())
         };
-        if idle().any(|state| state.last.as_ref().is_some_and(|last| last.drain_pending)) {
+        if idle().any(|(_, state)| state.last.as_ref().is_some_and(|last| last.drain_pending)) {
             Some(DRAIN_RETRY)
-        } else if idle().any(|state| state.fence_pending) {
+        } else if idle().any(|(_, state)| state.fence_pending) {
             // The soonest a fence is due. A shard with none set has its
             // fence still to start, so it goes at the usual spacing.
             let now = tokio::time::Instant::now();
+            let table = self.cx.router.snapshot();
             idle()
-                .filter(|state| state.fence_pending)
-                .map(|state| {
+                .filter(|(key, state)| state.fence_pending && self.fences_at_route(key, &table))
+                .map(|(_, state)| {
                     state
                         .fence_after
                         .map_or(FENCE_RETRY, |after| after.saturating_duration_since(now))
@@ -534,14 +744,27 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         }
     }
 
+    /// Whether [`Self::want`] would fence `key` now: this broker leads its
+    /// route and the gate awaits the route's generation. A pending fence
+    /// that fails this has nothing to retry until the route or the gate
+    /// moves, and counting it would make [`Self::retry_in`] answer zero
+    /// forever once its backoff has passed.
+    fn fences_at_route(&self, key: &ShardKey, table: &felix_router::RoutingTable) -> bool {
+        table.get(key).is_some_and(|route| {
+            self.leads(key, route)
+                && self.cx.gate.awaiting(&watch_key(key)) == Some(route.generation)
+        })
+    }
+
     /// Another pass for every shard [`Self::retry_in`] was waiting on.
     pub(super) fn retry(&mut self) {
+        let table = self.cx.router.snapshot();
         let waiting: Vec<ShardKey> = self
             .states
             .iter()
-            .filter(|(_, state)| {
+            .filter(|(key, state)| {
                 state.running.is_none()
-                    && (state.fence_pending
+                    && ((state.fence_pending && self.fences_at_route(key, &table))
                         || state.last.as_ref().is_some_and(|last| last.drain_pending))
             })
             .map(|(key, _)| key.clone())
@@ -554,10 +777,13 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
     /// Whether a scan woken by `wake` asks `key` for a pass: `Some((urgent,
     /// cuts))` if so. See [`Self::want`].
     ///
-    /// Woken by an append, a scan skips a shard whose last pass settled at
-    /// the route's generation and that nothing was appended to since: its
-    /// pass would ship nothing. The tick passes it anyway, which is what
-    /// refreshes its report and retries a log that rides it.
+    /// Woken by an append, a scan asks only the shards appended to, the ones
+    /// owed a mark, and the ones moving. The rest wait for the tick, which
+    /// passes every shard: it refreshes the report and retries a follower that
+    /// is gone. A shard left with work enqueued itself when its pass ended,
+    /// and a busy follower's answer that moves its cursor asks for a pass.
+    /// Asked on every append anywhere, a shard with a dead follower would take
+    /// a slot from the shards with writes waiting on them (#1944).
     fn asks(
         &mut self,
         key: &ShardKey,
@@ -565,7 +791,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         wake: WakeKind,
         appended: &Appended,
     ) -> Option<(bool, bool)> {
-        let busy = self.busy.get(key).is_some_and(|nodes| !nodes.is_empty());
+        let append = matches!(wake, WakeKind::Append);
         let Some(state) = self.states.get_mut(key) else {
             return Some((true, false));
         };
@@ -578,14 +804,14 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         if dirty || state.owed || moving {
             return Some((true, dirty));
         }
-        let settled = state.settled_at == Some(route.generation) && !busy;
-        (!matches!(wake, WakeKind::Append) || !settled).then_some((false, false))
+        (!append).then_some((false, false))
     }
 
     /// Start a pass for `key`, or ask for one once the pass under way ends,
     /// or queue it for a slot. `urgent` puts it in [`Queue::Urgent`]. `cuts`
     /// is whether the wake may be new data for the pass under way to stop
-    /// waiting for; the pass checks this shard's tail before it does.
+    /// waiting for; the pass checks this shard's tail before it does. It also
+    /// puts the shard in [`Queue::Appended`].
     fn want(&mut self, key: &ShardKey, urgent: bool, cuts: bool) {
         let table = self.cx.router.snapshot();
         let Some(route) = table.get(key).filter(|route| self.leads(key, route)) else {
@@ -595,6 +821,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         if let Some(next) = &state.running {
             state.again = true;
             state.again_urgent |= urgent;
+            state.again_appended |= cuts;
             if cuts {
                 next.appended
                     .store(true, std::sync::atomic::Ordering::Release);
@@ -620,6 +847,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             let state = self.states.get_mut(key).expect("inserted above");
             state.again = false;
             state.again_urgent = false;
+            state.again_appended = false;
             state.running = Some(Arc::default());
             let cx = self.cx;
             let (key, route) = (key.clone(), route.clone());
@@ -675,20 +903,14 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             return;
         }
         if self.passes.len() >= SHARD_CONCURRENCY {
-            self.enqueue(
-                key,
-                if urgent {
-                    Queue::Urgent
-                } else {
-                    Queue::Refresh
-                },
-            );
+            self.enqueue(key, Queue::of(cuts, urgent));
             return;
         }
         self.dequeue(key);
         let state = self.states.get_mut(key).expect("inserted above");
         state.again = false;
         state.again_urgent = false;
+        state.again_appended = false;
         let Some((entry, aux)) = take_work(
             key,
             route,
@@ -698,7 +920,6 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             &mut self.counters,
         ) else {
             state.last = Some(LastPass::idle(self.scan));
-            state.settled_at = Some(route.generation);
             state.owed = false;
             self.report_alone(key, route.generation);
             self.cx.status.put(
@@ -747,35 +968,53 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         let Some(state) = self.states.get_mut(key) else {
             return;
         };
+        // A first pass is slow while the followers open their copies. Written
+        // to already, a bulk of new shards would otherwise fill the appended
+        // queue and put an append's short pass behind them again.
+        let queue = if queue == Queue::Appended && state.last.is_none() {
+            Queue::Urgent
+        } else {
+            queue
+        };
         let since = match state.queued {
             // Moved up, or out of the fence queue once its fence is done
             // with, so it waits for the slot it now needs.
-            Some((Queue::Refresh, since)) if queue == Queue::Urgent => since,
-            Some((Queue::Fence, since)) if queue != Queue::Fence => since,
+            Some((held, since, _)) if held != Queue::Fence && queue.rank() < held.rank() => {
+                self.queued_in[held.index()] -= 1;
+                since
+            }
+            Some((held @ Queue::Fence, since, _)) if queue != Queue::Fence => {
+                self.queued_in[held.index()] -= 1;
+                since
+            }
             Some(_) => return,
             None => {
                 self.waiting += 1;
                 tokio::time::Instant::now()
             }
         };
-        state.queued = Some((queue, since));
+        self.tickets += 1;
+        state.queued = Some((queue, since, self.tickets));
+        self.queued_in[queue.index()] += 1;
         match queue {
+            Queue::Appended => &mut self.appended,
             Queue::Urgent => &mut self.urgent,
             Queue::Refresh => &mut self.refresh,
             Queue::Fence => &mut self.fencing,
         }
-        .push_back(key.clone());
+        .push_back((key.clone(), self.tickets));
         self.metrics.waiting(self.waiting);
     }
 
     /// `key` is starting: whatever queue entry it has is now stale. Records
     /// how long it waited.
     fn dequeue(&mut self, key: &ShardKey) {
-        if let Some((queue, since)) = self
+        if let Some((queue, since, _)) = self
             .states
             .get_mut(key)
             .and_then(|state| state.queued.take())
         {
+            self.queued_in[queue.index()] -= 1;
             self.waiting -= 1;
             self.metrics.waiting(self.waiting);
             self.metrics.waited(queue.index(), since.elapsed());
@@ -783,49 +1022,92 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
     }
 
     /// Hand free slots to the shards waiting for one, in the order they
-    /// asked: urgent ones first, but never more than [`REFRESH_SHARE`] in a
-    /// row while a refresh waits, so a steady stream of appends elsewhere
-    /// cannot hold a shard's refresh back for good.
+    /// asked within each queue: appended ones first, then urgent, then
+    /// refresh, but never more than [`REFRESH_SHARE`] in a row from a queue
+    /// ahead while one behind waits, so a steady stream of appends elsewhere
+    /// cannot hold a shard back for good.
+    ///
+    /// Appended goes ahead of urgent because a fresh append's pass is short
+    /// and a client waits on it now. Urgent also holds every shard new here
+    /// or just opened, and a bulk create puts hundreds there at once, each
+    /// pass slow while its followers open their copies. A lease renewal
+    /// behind them in one queue waited seconds (#1987).
     fn fill(&mut self) {
+        // With nothing left in a queue every entry in it is stale.
+        for (queue, entries) in [
+            (Queue::Appended, &mut self.appended),
+            (Queue::Urgent, &mut self.urgent),
+            (Queue::Refresh, &mut self.refresh),
+            (Queue::Fence, &mut self.fencing),
+        ] {
+            if self.queued_in[queue.index()] == 0 {
+                entries.clear();
+            }
+        }
         while self.passes.len() < SHARD_CONCURRENCY {
-            let refresh_due = !self.refresh.is_empty()
-                && (self.urgent.is_empty() || self.refresh_passed_over >= REFRESH_SHARE);
-            let (queue, key) = match if refresh_due {
-                self.refresh.pop_front().map(|key| (Queue::Refresh, key))
+            let waits = |queue: Queue| self.queued_in[queue.index()] > 0;
+            let (appended_waits, urgent_waits, refresh_waits) = (
+                waits(Queue::Appended),
+                waits(Queue::Urgent),
+                waits(Queue::Refresh),
+            );
+            let queue = if refresh_waits
+                && ((!appended_waits && !urgent_waits) || self.refresh_passed_over >= REFRESH_SHARE)
+            {
+                Queue::Refresh
+            } else if urgent_waits && (!appended_waits || self.urgent_passed_over >= REFRESH_SHARE)
+            {
+                Queue::Urgent
             } else {
-                self.urgent.pop_front().map(|key| (Queue::Urgent, key))
-            } {
-                Some(next) => next,
-                None => break,
+                Queue::Appended
             };
-            if !self.waits_in(&key, queue) {
+            let Some((key, ticket)) = match queue {
+                Queue::Appended => &mut self.appended,
+                Queue::Urgent => &mut self.urgent,
+                _ => &mut self.refresh,
+            }
+            .pop_front() else {
+                break;
+            };
+            if !self.waits_in(&key, queue, ticket) {
                 continue;
             }
             self.refresh_passed_over = match queue {
-                Queue::Urgent if !self.refresh.is_empty() => self.refresh_passed_over + 1,
+                Queue::Refresh => 0,
+                _ if refresh_waits => self.refresh_passed_over + 1,
+                _ => 0,
+            };
+            // Kept across a refresh start: reset there, a refresh due every
+            // fifth start would keep the urgent queue waiting for good.
+            self.urgent_passed_over = match queue {
+                Queue::Appended if urgent_waits => self.urgent_passed_over + 1,
+                Queue::Refresh if urgent_waits => self.urgent_passed_over,
                 _ => 0,
             };
             // Before `want`, which may return without starting it: a shard
             // left marked queued but in no queue would never queue again.
             self.dequeue(&key);
-            self.want(&key, queue == Queue::Urgent, false);
+            self.want(&key, queue != Queue::Refresh, false);
         }
         while self.fences.len() < FENCE_CONCURRENCY {
-            let Some(key) = self.fencing.pop_front() else {
+            let Some((key, ticket)) = self.fencing.pop_front() else {
                 break;
             };
-            if self.waits_in(&key, Queue::Fence) {
+            if self.waits_in(&key, Queue::Fence, ticket) {
                 self.dequeue(&key);
                 self.want(&key, true, false);
             }
         }
     }
 
-    /// Whether `key` still waits in `queue`, rather than having started or
-    /// moved to another since it was queued there.
-    fn waits_in(&self, key: &ShardKey, queue: Queue) -> bool {
+    /// Whether `key` still waits in `queue` under `ticket`, rather than
+    /// having started or moved since it was queued there.
+    fn waits_in(&self, key: &ShardKey, queue: Queue, ticket: u64) -> bool {
         self.states.get(key).is_some_and(|state| {
-            state.running.is_none() && state.queued.is_some_and(|(held, _)| held == queue)
+            state.running.is_none()
+                && state
+                    .queued
+                    .is_some_and(|(held, _, at)| held == queue && at == ticket)
         })
     }
 
@@ -974,12 +1256,9 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
     /// left under way.
     pub(super) fn fold(&mut self, scan: u64, pass: ShardPass<'a>) {
         let key = pass.key.clone();
-        let led = self
-            .cx
-            .router
-            .snapshot()
-            .get(&key)
-            .is_some_and(|route| self.leads(&key, route));
+        let table = self.cx.router.snapshot();
+        let route = table.get(&key);
+        let led = route.is_some_and(|route| self.leads(&key, route));
         if !self.states.contains_key(&key) {
             self.cx.status.forget(&watch_key(&key));
             self.fill();
@@ -987,7 +1266,16 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         }
         if !led {
             // Lost while the pass ran. Its exchanges go with it.
-            self.states.remove(&key);
+            if let Some((queue, ..)) = self.states.remove(&key).and_then(|state| state.queued) {
+                self.queued_in[queue.index()] -= 1;
+                self.waiting -= 1;
+                self.metrics.waiting(self.waiting);
+            }
+            // Still named leader, so led again without a route change: the
+            // append wakes check it as they check one not led at a full scan.
+            if route.is_some_and(|route| route.leader.node_id == self.cx.router.local_node_id()) {
+                self.not_led.insert(key.clone());
+            }
             self.cx.status.forget(&watch_key(&key));
             self.fill();
             return;
@@ -1006,6 +1294,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             again,
             drain_pending,
             behind,
+            ballot_above,
             ..
         } = pass;
         // Busy from earlier passes too: a follower this pass launched nobody
@@ -1042,15 +1331,17 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             .cx
             .marks
             .offset_at(&watch_key(&key), incarnation, generation);
-        let owed = behind || tail.is_some_and(|tail| mark.is_some_and(|mark| mark < tail));
-        let settled = !owed
-            && !copying
-            && !again
-            && !drain_pending
-            && exchanges.is_empty()
-            && straggling.is_empty()
-            && self.busy.get(&key).is_none_or(HashMap::is_empty)
-            && tail.is_some_and(|tail| level(&cursors, &aux, tail));
+        // Only while some follower is answering: with every one of them out
+        // of reach, a pass on each append could not raise the mark, and the
+        // tick retries them (#1944). One that refused a batch for its routing
+        // view and then took the fence sent again is in reach: the next pass
+        // brings it level.
+        let reachable = cursors
+            .followers
+            .iter()
+            .any(|cursor| cursor.halted.is_none() && (!cursor.stalled || cursor.refused));
+        let owed =
+            reachable && (behind || tail.is_some_and(|tail| mark.is_some_and(|mark| mark < tail)));
         self.cx
             .status
             .pass_ended(&watch_key(&key), scan, mark, outstanding);
@@ -1065,6 +1356,10 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                 behind,
             },
         );
+        let ship_refused = crate::follower::refused_without_majority(
+            &cursors.followers,
+            cursors.learner.as_deref(),
+        );
         self.streams.insert(key.clone(), cursors);
         self.group.insert(key.clone(), aux.group);
         self.dead_letters.insert(key.clone(), aux.dead_letters);
@@ -1074,7 +1369,44 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             state.held.append(&mut next.answered.lock());
         }
         state.owed = owed;
-        state.settled_at = settled.then_some(generation);
+        let report = ship_refused.is_some() && state.ship_refused.is_none();
+        state.ship_refused = ship_refused.map(|ballot| {
+            if report {
+                tracing::warn!(
+                    stream = %key.stream,
+                    shard = key.shard,
+                    generation,
+                    ballot,
+                    "a follower took a newer generation and no majority is left without it; \
+                     reporting the generation refused",
+                );
+            }
+            RefusedGeneration::set_unknown(generation)
+        });
+        let now = tokio::time::Instant::now();
+        state.ballot_above_since = ballot_above.map(|ballot| match state.ballot_above_since {
+            Some((seen, since)) if seen == ballot => (ballot, since),
+            _ => (ballot, now),
+        });
+        // A promotion's ballot lands before its route; only one that stays
+        // means a standing here was given up.
+        let ballot_above = state
+            .ballot_above_since
+            .filter(|(_, since)| now.duration_since(*since) >= super::BALLOT_ABOVE_FOR)
+            .map(|(ballot, _)| ballot);
+        if let Some(ballot) = ballot_above
+            && state.ballot_refused.is_none()
+        {
+            tracing::warn!(
+                stream = %key.stream,
+                shard = key.shard,
+                generation,
+                ballot,
+                "this broker's own ballot is past the generation it leads, so no write \
+                 there can be acknowledged; reporting the generation refused",
+            );
+        }
+        state.ballot_refused = ballot_above.map(|_| RefusedGeneration::set_unknown(generation));
         state.last = Some(LastPass {
             scan,
             halted,
@@ -1083,6 +1415,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             drain_pending,
             tail,
         });
+        let appended = std::mem::take(&mut state.again_appended);
         let mut urgent = std::mem::take(&mut state.again_urgent) || copying || again || owed;
         let mut again = std::mem::take(&mut state.again) || copying || again;
         let held = std::mem::take(&mut state.held);
@@ -1106,14 +1439,10 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         // Behind the shards already waiting, so a shard with steady work
         // gives its slot up rather than keeping it pass after pass.
         if again {
-            self.enqueue(
-                &key,
-                if urgent {
-                    Queue::Urgent
-                } else {
-                    Queue::Refresh
-                },
-            );
+            self.enqueue(&key, Queue::of(appended, urgent));
+        }
+        if let Some(refused) = self.states.get(&key).and_then(|s| s.ship_refused.clone()) {
+            self.report_refusal(key, refused);
         }
         self.fill();
     }
@@ -1140,7 +1469,6 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             state.held.append(&mut next.answered.lock());
         }
         state.fence_pending = !opened;
-        state.settled_at = None;
         let failures = match state.fence_failures {
             _ if opened => 0,
             (at, failures) if at == generation => failures.saturating_add(1),
@@ -1175,8 +1503,9 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                 behind: false,
             },
         );
+        let appended = std::mem::take(&mut state.again_appended);
         if opened || std::mem::take(&mut state.again) {
-            self.want(&key, true, false);
+            self.want(&key, true, appended);
         }
         if let Some(refused) = refused {
             self.report_refusal(key, refused);
@@ -1339,6 +1668,22 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             && cursor.halted.is_none()
             && !cursor.stalled
             && tail.is_some_and(|tail| cursor.next_offset < tail);
+        // A straggler's refusal for its routing view leaves the shard owed,
+        // as a pass that took it would: the next pass is what resolves it.
+        // Only while the mark is short of the tail, or every level shard of
+        // a follower stuck behind would take a pass on each append.
+        let behind = self
+            .states
+            .get(&key)
+            .and_then(|state| state.last.as_ref())
+            .is_some_and(|last| last.behind);
+        let refused_behind = current
+            && cursor.halted.is_none()
+            && cursor.refused
+            && tail.is_some_and(|tail| cursor.next_offset < tail && (mark < tail || behind));
+        if refused_behind && let Some(state) = self.states.get_mut(&key) {
+            state.owed = true;
+        }
         let at = (generation, incarnation);
         let mut moved = put_back(self.streams.get_mut(&key), at, cursor) || counts_for_more || owed;
         for (entries, cursor) in [
@@ -1369,22 +1714,6 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         let behind = lasts().any(|last| last.behind);
         (halted, worst_lag, finished, behind)
     }
-}
-
-/// Whether every follower answered for the whole log up to `tail`, and every
-/// log riding it has nothing in the way: nothing halted, rebuilding or
-/// unanswered. Anything else is work for the next pass.
-fn level(cursors: &ShardCursors, aux: &AuxCursors, tail: u64) -> bool {
-    let quiet =
-        |cursor: &FollowerCursor| cursor.halted.is_none() && !cursor.rebuilding && !cursor.stalled;
-    cursors
-        .followers
-        .iter()
-        .all(|cursor| quiet(cursor) && cursor.next_offset >= tail && cursor.confirmed >= tail)
-        && [&aux.group, &aux.dead_letters, &aux.counters]
-            .iter()
-            .flat_map(|entry| entry.followers.iter())
-            .all(quiet)
 }
 
 /// Put an ended exchange's cursor in place of its stale copy, if the cursors

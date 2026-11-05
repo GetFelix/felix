@@ -621,7 +621,7 @@ impl ReplicaHandler {
         // The leader itself refuses: it hears its own leadership, and a yes
         // from it lets one follower whose detector misfired win a majority
         // against it (#1815, `NoStandAgainstHeardLeader`).
-        if self.heard_leader_within(&key) || self.leads(&key, &log) {
+        if self.heard_leader_within(&key) || self.leads(&key, &log) || self.fencing(&key, &log) {
             return answer(Some(PreVoteRefusal::LeaderReachable));
         }
         let Ok(end) = log.tail_offset().await else {
@@ -654,6 +654,30 @@ impl ReplicaHandler {
                     .generations()
                     .last()
                     .is_some_and(|epoch| epoch.generation == route.generation)
+        })
+    }
+
+    /// Whether this broker won `key` by election at its route's generation
+    /// and stands there, before its fence or during it, or has opened it. [`Self::leads`] needs a
+    /// start record, which an open writes only once `generation_start` is
+    /// finalized, and a yes before it lets a follower this broker just fenced
+    /// take the next generation (#1914). Bounded by the standing, unlike a
+    /// route alone, and by [`Elections::defer_for`] from its first fence: a
+    /// standing that never starts its generation must not hold off its
+    /// followers for good.
+    ///
+    /// [`Elections::defer_for`]: crate::election::Elections::with_defer_for
+    fn fencing(&self, key: &felix_router::ShardKey, log: &felix_broker::StreamLog) -> bool {
+        let Some(elections) = self.fleet.as_ref().and_then(|marks| marks.elections()) else {
+            return false;
+        };
+        self.router.snapshot().get(key).is_some_and(|route| {
+            route.leader.node_id == self.router.local_node_id()
+                && route.generation >= log.accepted_generation()
+                && (elections.stands_at(key, route.generation)
+                    || elections.is_fencing(key, route.generation)
+                    || elections.opened_at(key, route.generation))
+                && elections.fenced_within_defer(key, route.generation)
         })
     }
 

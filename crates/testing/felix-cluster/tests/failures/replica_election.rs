@@ -475,6 +475,130 @@ async fn a_follower_is_elected_while_the_control_plane_is_down() {
     cluster.shutdown().await;
 }
 
+/// The incarnation each of `nodes` is registered under. A broker the control
+/// plane marked down registers again under a new one.
+async fn incarnations(cluster: &Cluster, nodes: &[String]) -> BTreeMap<String, u64> {
+    let mut registered = BTreeMap::new();
+    for id in nodes {
+        let node = store(cluster).get_node(id).await.expect("registered node");
+        registered.insert(id.clone(), node.status.incarnation);
+    }
+    registered
+}
+
+/// **A follower is elected while the control plane is paused.** A paused
+/// control plane takes every request and answers none, so each one waits out
+/// its timeout, where a crashed one fails at once. Three brokers, RF 3. With
+/// the control plane paused the leader is killed: a follower opens at the
+/// first generation it stands for (or the next, after a split round), serves
+/// within the bound, and the control plane adopts it when it resumes without
+/// marking a live broker down for the pause.
+#[serial]
+#[tokio::test]
+async fn a_follower_is_elected_while_the_control_plane_is_paused() {
+    let mut cluster = start(3, 3, false).await;
+    let before = assignment(&cluster).await;
+    let mut acked = publish_acked(&cluster, &before.leader, "before", 20).await;
+    let registered = incarnations(&cluster, &before.replicas).await;
+
+    cluster
+        .pause_control_plane()
+        .expect("pause the control plane");
+    cluster.kill_node(&before.leader).expect("kill the leader");
+    let mut opened = BTreeMap::new();
+    let (elected, generation) = elected_above(&cluster, before.generation, &mut opened).await;
+    let mut stood = BTreeMap::new();
+    read_logged(&cluster, STOOD, &mut stood);
+    assert!(
+        generation <= before.generation + 2,
+        "the election burned generations: opened at {generation} from {}; stood {stood:?}",
+        before.generation
+    );
+    assert!(
+        before.replicas.contains(&elected),
+        "{elected} is not a follower of {before:?}"
+    );
+    acked.extend(publish_acked(&cluster, &elected, "elected", 20).await);
+    let missing = missing_on(&cluster, &elected, &acked).await;
+    assert!(
+        missing.is_empty(),
+        "{elected} lost acknowledged records: {missing:?}"
+    );
+
+    cluster.resume_control_plane();
+    adopted(&cluster, &elected, generation).await;
+    acked.extend(publish_acked(&cluster, &elected, "adopted", 5).await);
+    let survivor: Vec<String> = before
+        .replicas
+        .iter()
+        .filter(|id| **id != elected)
+        .cloned()
+        .collect();
+    caught_up(&cluster, &survivor, generation).await;
+    assert_eq!(
+        incarnations(&cluster, &before.replicas).await,
+        registered,
+        "the control plane marked a live broker down for its own pause"
+    );
+    read_logged(&cluster, OPENED, &mut opened);
+    assert_one_leader_per_generation(&opened, before.generation);
+    cluster.shutdown().await;
+}
+
+/// **A leader restarted while the control plane is paused does not keep its
+/// shards.** It cannot serve until the control plane seeds it, so it must not
+/// read as alive to the followers watching it: they suspect it and elect one
+/// of themselves. It restarts on the same ports, so the followers' pings
+/// reach it, and suspicion waits five seconds here, so it is up and answering
+/// before anyone suspects the killed one.
+#[serial]
+#[tokio::test]
+async fn a_leader_restarted_while_the_control_plane_is_paused_is_replaced() {
+    let mut cluster = start_with(
+        3,
+        3,
+        false,
+        vec![(
+            "FELIX_LEADER_SUSPECT_AFTER_MS".to_string(),
+            "5000".to_string(),
+        )],
+    )
+    .await;
+    let before = assignment(&cluster).await;
+    let mut acked = publish_acked(&cluster, &before.leader, "before", 20).await;
+
+    cluster
+        .pause_control_plane()
+        .expect("pause the control plane");
+    cluster.kill_node(&before.leader).expect("kill the leader");
+    cluster
+        .start_node_unready_in_place(&before.leader)
+        .expect("start the leader again without waiting for it");
+
+    let mut opened = BTreeMap::new();
+    let (elected, generation) = elected_above(&cluster, before.generation, &mut opened).await;
+    assert!(
+        before.replicas.contains(&elected),
+        "{elected} is not a follower of {before:?}"
+    );
+    acked.extend(publish_acked(&cluster, &elected, "elected", 5).await);
+    let missing = missing_on(&cluster, &elected, &acked).await;
+    assert!(
+        missing.is_empty(),
+        "{elected} lost acknowledged records: {missing:?}"
+    );
+
+    cluster.resume_control_plane();
+    cluster
+        .await_node_ready(&before.leader)
+        .await
+        .expect("the restarted broker comes up once the control plane answers");
+    adopted(&cluster, &elected, generation).await;
+    read_logged(&cluster, OPENED, &mut opened);
+    assert_one_leader_per_generation(&opened, before.generation);
+    cluster.shutdown().await;
+}
+
 /// **Two followers stand at once and exactly one opens.** Five brokers,
 /// RF 5. The two lowest-id followers cannot reach each other, so neither
 /// counts the other ahead of it, and the other two cannot ask for votes at

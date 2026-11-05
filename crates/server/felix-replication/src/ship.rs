@@ -136,6 +136,8 @@ async fn ship_batch<R: PeerRequester>(
     end: Option<u64>,
     set_stamp: Option<u64>,
 ) -> Progress {
+    // Set again only by the follower's answer to this batch.
+    cursor.refused = false;
     if let Some(halt) = cursor.halted {
         let backing_off = cursor
             .rebuild_refused
@@ -431,6 +433,9 @@ async fn ship_batch<R: PeerRequester>(
         &answer,
         InternalMessage::ReplicateError(err) if err.code == ErrorCode::StaleRoute
     );
+    // Not a refusal such as a full disk or a credential: passes on every
+    // append could not move those, and would take slots from other shards.
+    cursor.refused = cursor.route_behind;
     match progress {
         Progress::Stored { durable_offset } => {
             // From the same answer as `confirmed`, so the two always agree.
@@ -461,6 +466,17 @@ async fn ship_batch<R: PeerRequester>(
         }
         Progress::Halted(halt) => {
             cursor.halted = Some(halt);
+            cursor.superseded_by = match &answer {
+                InternalMessage::ReplicateError(err) if err.code == ErrorCode::FencedEpoch => {
+                    crate::replica::superseded_by(&err.detail, shard.generation)
+                }
+                _ => None,
+            };
+            cursor.assigned_newer = matches!(
+                &answer,
+                InternalMessage::ReplicateError(err) if err.code == ErrorCode::FencedEpoch
+                    && crate::replica::assigned_newer(&err.detail, shard.generation)
+            );
             tracing::error!(
                 node_id = %cursor.node_id,
                 stream = %shard.stream,

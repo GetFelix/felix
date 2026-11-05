@@ -38,8 +38,10 @@
 //!   reactor worker.
 //! * An `fsync` genuinely blocks, for milliseconds on slow hardware. It runs on
 //!   the log's own flush thread so it cannot stall a reactor thread, and does
-//!   not queue behind other work on the shared blocking pool. Flushes are
-//!   grouped, so one runs for many appends.
+//!   not queue behind other work on the shared blocking pool. The durable
+//!   mark write that follows it runs there too (inline after an io_uring
+//!   fsync): on a busy filesystem journal a write waits like a sync. Flushes
+//!   are grouped, so one runs for many appends.
 //! * `read_range` may touch cold blocks, so it runs entirely on `spawn_blocking`.
 //!   It is a replay and catch-up path, not the publish hot path.
 
@@ -618,6 +620,28 @@ impl DiskLog {
             epochs::store(&self.inner.dir, &epochs)?;
         }
         Ok(())
+    }
+
+    /// Whether [`DiskLog::label_generations`] with these arguments would
+    /// change the stored history, and so write and fsync it.
+    pub fn relabels(&self, from: Offset, generations: &[Epoch]) -> bool {
+        let epochs = self.inner.epochs.lock();
+        let mut labelled = epochs.clone();
+        labelled.truncate_from(from);
+        for epoch in generations {
+            labelled.record(epoch.generation, epoch.start_offset.max(from));
+        }
+        labelled.entries() != epochs.entries()
+    }
+
+    /// Whether `AppendOnlyLog::record_generation` with these arguments would
+    /// change the stored history, and so write and fsync it.
+    pub fn records_generation(&self, generation: u64, start_offset: Offset) -> bool {
+        self.inner
+            .epochs
+            .lock()
+            .clone()
+            .record(generation, start_offset)
     }
 
     /// Note that the leader wrote `generation`'s start record at `offset`.

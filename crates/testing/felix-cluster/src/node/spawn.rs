@@ -1,5 +1,6 @@
 //! Starting a broker process.
 
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -11,7 +12,9 @@ use super::{
 use crate::proxy::Links;
 use crate::{ClusterConfig, Credentials, pki, ports};
 
-/// Start one broker process, behind `links` when the cluster proxies them.
+/// Start one broker process, behind `links` when the cluster proxies them, on
+/// `same_ports` (client, internal) when given.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_broker(
     binary: &PathBuf,
     control_plane_url: &str,
@@ -20,18 +23,27 @@ pub(crate) fn spawn_broker(
     root: &Path,
     index: usize,
     links: Option<&Links>,
+    same_ports: Option<(SocketAddr, SocketAddr)>,
 ) -> Result<BrokerNode> {
     let node_id = format!("broker-{index}");
-    // A run, not a single port: with several listeners the broker binds
-    // `client_addr.port() + n`, and those have to be free too.
-    let client_addr = if config.quic_listeners > 1 {
-        ports::free_udp_run(config.quic_listeners)?
-    } else {
-        ports::free_udp()?
+    let (client_addr, internal_addr) = match same_ports {
+        Some(ports) => ports,
+        None => {
+            // A run, not a single port: with several listeners the broker
+            // binds `client_addr.port() + n`, and those have to be free too.
+            let client_addr = if config.quic_listeners > 1 {
+                ports::free_udp_run(config.quic_listeners)?
+            } else {
+                ports::free_udp()?
+            };
+            // Each pick closes its socket, so the OS can hand the same port
+            // out again.
+            let client_ports =
+                client_addr.port()..client_addr.port() + config.quic_listeners as u16;
+            let internal_addr = ports::free_udp_except(|port| client_ports.contains(&port))?;
+            (client_addr, internal_addr)
+        }
     };
-    // Each pick closes its socket, so the OS can hand the same port out again.
-    let client_ports = client_addr.port()..client_addr.port() + config.quic_listeners as u16;
-    let internal_addr = ports::free_udp_except(|port| client_ports.contains(&port))?;
     let (advertise_addr, control_plane_url) = match links {
         Some(links) => {
             let route = links.route(&node_id, internal_addr)?;

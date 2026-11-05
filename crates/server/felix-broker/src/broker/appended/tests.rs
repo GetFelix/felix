@@ -53,3 +53,15 @@ async fn only_the_mark_that_sets_a_bit_wakes() {
     appended.mark(7);
     assert!(notified.as_mut().enable());
 }
+
+#[test]
+fn slots_lists_every_marked_bit_once() {
+    let appended = AppendedShards::default();
+    for slot in [0, 63, 64, 700, 4095] {
+        appended.mark(slot);
+    }
+    appended.mark(700);
+    let taken: Vec<u16> = appended.take().slots().collect();
+    assert_eq!(taken, vec![0, 63, 64, 700, 4095]);
+    assert_eq!(appended.take().slots().count(), 0);
+}

@@ -7,6 +7,7 @@
 //! In tests, metrics recorder initialization is cached to avoid conflicts, and subscriber initialization is adapted accordingly.
 
 pub(crate) mod backup;
+pub mod log_writer;
 pub(crate) mod tenants;
 pub mod timings;
 
@@ -48,7 +49,8 @@ pub(crate) fn init_observability(service_name: &str) -> PrometheusHandle {
 
         // Use environment variable for log filtering; default to "info" if unset or invalid.
         let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-        let fmt_layer = tracing_subscriber::fmt::layer();
+        // Off the calling thread: see `log_writer`.
+        let fmt_layer = tracing_subscriber::fmt::layer().with_writer(log_writer::install());
         let registry = tracing_subscriber::registry().with(filter).with(fmt_layer);
 
         if let Some(provider) = provider {

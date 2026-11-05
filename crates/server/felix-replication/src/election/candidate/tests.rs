@@ -197,6 +197,9 @@ fn ctx(broker: &Arc<Broker>, voters: Voters) -> Ctx<Voters> {
         elections,
         suspects,
         held_back: Default::default(),
+        deferring: Default::default(),
+        stood: Default::default(),
+        named_here: Default::default(),
         pre_vote_gate: None,
     }
 }
@@ -647,6 +650,9 @@ async fn a_slow_dial_carries_over_to_the_next_round() {
         elections,
         suspects,
         held_back: Default::default(),
+        deferring: Default::default(),
+        stood: Default::default(),
+        named_here: Default::default(),
         pre_vote_gate: None,
     };
     let log = shard_log(&ctx.broker, &key()).await.expect("log");
@@ -788,5 +794,170 @@ async fn a_standing_promised_away_is_withdrawn() {
         .await
         .expect("a newer fence");
     step_down_promised_away(&ctx).await;
+    assert!(ctx.elections.get(&key()).is_none());
+}
+
+/// **A follower that took another leader's fence above the route does not
+/// stand against it** while it does not suspect that leader and that leader
+/// still answers as fencing or leading (#1914). Its view may still name the
+/// dead leader; standing would take the fenced leader's last follower away
+/// with a ballot nothing ever opens. Once it suspects that leader too, it
+/// stands.
+#[tokio::test(start_paused = true)]
+async fn a_follower_of_a_newer_leader_it_does_not_suspect_does_not_stand() {
+    let (broker, _dir) = follower().await;
+    let log = shard_log(&broker, &key()).await.expect("log");
+    log.accept_generation(4, Some("broker-c"))
+        .await
+        .expect("ballot");
+    let ctx = ctx(
+        &broker,
+        Voters {
+            answers: vec![
+                ("broker-a", None),
+                ("broker-c", Some(PreVoteRefusal::LeaderReachable)),
+            ],
+            ..voters(None)
+        },
+    );
+    let route = ctx.router.snapshot().get(&key()).expect("route").clone();
+    assert_eq!(stand(&ctx, &key(), &route).await, Round::Ineligible);
+    assert_eq!(log.accepted_generation(), 4);
+
+    ctx.suspects.publish(BTreeSet::from([
+        "broker-a".to_string(),
+        "broker-c".to_string(),
+    ]));
+    let (_, elected) = tokio::time::timeout(Duration::from_secs(30), stand_and_watch(&ctx))
+        .await
+        .expect("never stood");
+    assert_eq!(elected.generation, 5);
+}
+
+/// **A follower stands over a newer leader that answers as stood down**
+/// (#1914): one that restarted and dropped its standing says yes to the
+/// pre-vote, and it is not suspected, being alive. Without this the shard
+/// waits out the defer bound with the control plane down.
+#[tokio::test(start_paused = true)]
+async fn a_follower_stands_once_the_newer_leader_has_stood_down() {
+    let (broker, _dir) = follower().await;
+    let log = shard_log(&broker, &key()).await.expect("log");
+    log.accept_generation(4, Some("broker-c"))
+        .await
+        .expect("ballot");
+    let ctx = ctx(
+        &broker,
+        Voters {
+            answers: vec![
+                ("broker-a", Some(PreVoteRefusal::LeaderReachable)),
+                ("broker-c", Some(PreVoteRefusal::LeaderReachable)),
+            ],
+            then: vec![("broker-c", None)],
+            ..voters(None)
+        },
+    );
+    let route = ctx.router.snapshot().get(&key()).expect("route").clone();
+    assert_eq!(stand(&ctx, &key(), &route).await, Round::Ineligible);
+
+    let (_, elected) = tokio::time::timeout(Duration::from_secs(30), stand_and_watch(&ctx))
+        .await
+        .expect("never stood");
+    assert_eq!(elected.generation, 5);
+}
+
+/// **A follower defers to a newer leader only while that leader may still
+/// open** (#1914). One that took the fence and never started its generation,
+/// alive but stuck fencing or done with the shard, would otherwise hold the
+/// shard until the control plane is back. Once that leader's start record is
+/// here, it opened and reached this copy, and the follower keeps deferring.
+#[tokio::test(start_paused = true)]
+async fn a_follower_stands_over_a_newer_leader_that_never_starts() {
+    for started in [false, true] {
+        let (broker, _dir) = follower().await;
+        let log = shard_log(&broker, &key()).await.expect("log");
+        log.accept_generation(4, Some("broker-c"))
+            .await
+            .expect("ballot");
+        if started {
+            let start = log.append_generation_start(4).await.expect("start");
+            log.record_generation(4, start).expect("epoch");
+        }
+        // Broker-c still answers as fencing; broker-a's yes is the majority.
+        let ctx = ctx(
+            &broker,
+            Voters {
+                answers: vec![
+                    ("broker-a", None),
+                    ("broker-c", Some(PreVoteRefusal::LeaderReachable)),
+                ],
+                ..voters(None)
+            },
+        );
+        let route = ctx.router.snapshot().get(&key()).expect("route").clone();
+        assert_eq!(stand(&ctx, &key(), &route).await, Round::Ineligible);
+
+        tokio::time::advance(ctx.elections.defer_for()).await;
+        if started {
+            assert_eq!(stand(&ctx, &key(), &route).await, Round::Ineligible);
+            assert_eq!(log.accepted_generation(), 4, "no ballot");
+            continue;
+        }
+        let (_, elected) = tokio::time::timeout(Duration::from_secs(30), stand_and_watch(&ctx))
+            .await
+            .expect("never stood");
+        assert_eq!(elected.generation, 5);
+    }
+}
+
+/// **A broker the control plane named leader does not stand against the
+/// leader its routes still name** (#1933). The lifecycle takes the ballot
+/// before the routes catch up; standing then would raise this copy's ballot
+/// past the generation it serves, and it would never count a mark there.
+#[tokio::test(start_paused = true)]
+async fn a_broker_named_leader_does_not_stand_before_its_routes_catch_up() {
+    let (broker, _dir) = follower().await;
+    let ctx = ctx(&broker, voters(None));
+    let log = shard_log(&broker, &key()).await.expect("log");
+    log.accept_generation(4, Some(LOCAL)).await.expect("ballot");
+    let route = ctx.router.snapshot().get(&key()).expect("route").clone();
+
+    assert_eq!(stand(&ctx, &key(), &route).await, Round::Ineligible);
+    assert!(ctx.requester.asked.lock().expect("lock").is_empty());
+    assert_eq!(log.accepted_generation(), 4);
+    assert!(ctx.elections.get(&key()).is_none());
+
+    // A ballot this process does not remember writing holds it off only so
+    // long, as one a standing left before a restart.
+    tokio::time::sleep(NAMED_HERE_FOR).await;
+    let (_, elected) = stand_and_watch(&ctx).await;
+    assert_eq!(elected.generation, 5);
+}
+
+/// **A standing withdrawn here stands again a generation up**: its own
+/// ballot does not hold it off as one the control plane named.
+#[tokio::test(start_paused = true)]
+async fn a_withdrawn_standing_stands_again() {
+    let (broker, _dir) = follower().await;
+    let ctx = ctx(&broker, voters(None));
+    let (_, elected) = stand_and_watch(&ctx).await;
+    assert_eq!(elected.generation, 4);
+    ctx.elections.withdraw(&key(), 4);
+
+    let (_, elected) = stand_and_watch(&ctx).await;
+    assert_eq!(elected.generation, 5);
+}
+
+/// **A round whose routes moved on while it asked writes no ballot** (#1933):
+/// the leader it suspected is no longer the one named.
+#[tokio::test(start_paused = true)]
+async fn a_round_on_routes_that_moved_on_writes_no_ballot() {
+    let (broker, _dir) = follower().await;
+    let mut ctx = ctx(&broker, voters(None));
+    let stale = ctx.router.snapshot().get(&key()).expect("route").clone();
+    ctx.router = router(4);
+    let log = shard_log(&broker, &key()).await.expect("log");
+
+    assert_eq!(stand(&ctx, &key(), &stale).await, Round::Failed);
+    assert_eq!(log.accepted_generation(), 3);
     assert!(ctx.elections.get(&key()).is_none());
 }

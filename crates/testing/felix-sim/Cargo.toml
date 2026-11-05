@@ -19,7 +19,7 @@ bytes = { workspace = true }
 felix-broker = { path = "../../server/felix-broker" }
 felix-broker-service = { path = "../../../services/felix-broker-service", features = ["sim"] }
 felix-cluster = { path = "../felix-cluster" }
-felix-common = { path = "../../server/felix-common" }
+felix-common = { path = "../../server/felix-common", features = ["sim"] }
 felix-controlplane-service = { path = "../../../services/felix-controlplane-service" }
 felix-replication = { path = "../../server/felix-replication" }
 felix-router = { path = "../../server/felix-router" }

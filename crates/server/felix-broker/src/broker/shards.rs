@@ -292,7 +292,9 @@ impl Broker {
         // has always had, so nothing needs migrating; every other shard gets its
         // own, which is what the replication driver has always opened.
         Ok(Some(
-            storage.open_stream(tenant_id, namespace, stream, shard)?,
+            storage
+                .open_stream_off_runtime(tenant_id, namespace, stream, shard)
+                .await?,
         ))
     }
 

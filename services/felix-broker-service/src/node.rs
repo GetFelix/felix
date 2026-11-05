@@ -114,6 +114,10 @@ where
     // it. Until then auth cannot tell an unknown tenant from one not yet
     // synced, so it lets both through to the JWKS fetch.
     let catalog_seeded = CancellationToken::new();
+    // Cancelled once every listener is bound. Readiness waits on it too: a
+    // bind that fails after `/ready` said yes looks like a crash, not a
+    // start-up to retry.
+    let listening = CancellationToken::new();
 
     let cluster = cluster::shard_state(&config);
     let ingress_router = cluster
@@ -391,6 +395,7 @@ where
         &draining,
         &seeded,
         seeded_rx,
+        &listening,
     );
 
     // Filled by the shard tasks, carried by the heartbeat.
@@ -400,9 +405,23 @@ where
     // The same, for the peer listener's handshake, which must tell "not
     // registered yet" from incarnation 0 and learn when it changes.
     let (registered, registered_watch) = tokio::sync::watch::channel(None);
+    // Its own client: the heartbeat runs on a runtime of its own, and a pooled
+    // connection belongs to the runtime that opened it.
+    let heartbeat_link = config
+        .membership
+        .as_ref()
+        .and(config.controlplane_url.as_deref())
+        .map(|base_url| {
+            replication::controlplane_link::HttpControlPlaneLink::new(
+                crate::cluster::controlplane_client::build()
+                    .expect("the control-plane client built once already"),
+                base_url,
+            )
+        });
     let membership = membership::spawn(
         &config,
-        &link,
+        heartbeat_link,
+        true,
         gate_readiness_on_sync,
         &seeded,
         &lease,
@@ -433,6 +452,9 @@ where
             .controlplane_url
             .as_deref()
             .map(|base_url| (&membership_client, base_url, &credential)),
+        // Peers suspect a broker that cannot serve clients yet, so they stand
+        // for the shards it leads instead of waiting on it.
+        gate_readiness_on_sync.then_some(&seeded),
         &peer_listener_shutdown,
     )?;
     let shard_tasks = cluster::spawn_shard_tasks(cluster::ShardTaskDeps {
@@ -455,6 +477,9 @@ where
         prefetch: peer_listener.prefetch,
         sync_shutdown: &sync_shutdown,
     });
+
+    // After the last bind: anything bound below here could fail after ready.
+    listening.cancel();
 
     // Only while the shard watch runs is there anything to hand off, and
     // anything to tell this broker when it is done.

@@ -216,9 +216,16 @@ async fn a_change_that_always_fails_does_not_replay_the_changes_before_it() -> R
         None,
     ));
 
-    // The first pass deletes the old stream and creates the new one.
+    // The first pass deletes the old stream and creates the new one. Waits on
+    // the registry, not the storage incarnation: that is settled before the
+    // new stream's log opens and the stream is registered.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    while broker.stream_incarnation("t1", "ns", "orders") != Some(6) {
+    while broker
+        .stream_metadata("t1", "ns", "orders")
+        .await
+        .map(|metadata| metadata.incarnation)
+        != Some(6)
+    {
         assert!(
             tokio::time::Instant::now() < deadline,
             "the delete was never applied"
