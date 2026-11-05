@@ -446,8 +446,15 @@ async fn adopt_if_elected(
     };
     // This control plane named another leader at the very generation the
     // reporter was elected at. Ballots let only one of them open there, and
-    // the reporter is serving, so the named one never will.
-    let collided = shard.generation == assignment.generation && assignment.leader != node_id;
+    // the reporter is serving, so the named one never will. Naming the
+    // reporter on another set collides too: the record is not the set it
+    // opened on. A pending change or joining copy cannot be reissued, so
+    // those are left to the next write rather than looked up on every report.
+    let collided = shard.generation == assignment.generation
+        && (assignment.leader != node_id
+            || (assignment.pending_set.is_none()
+                && assignment.joining.is_none()
+                && !assignment.names_elected_set(&elected.clone().into())));
     if elected.leader != node_id
         || elected.generation != shard.generation
         || (shard.generation <= assignment.generation && !collided)
@@ -473,6 +480,8 @@ async fn adopt_if_elected(
     {
         Ok(crate::store::AssignmentWrite::Written(written)) => {
             let adopted = written.leader == node_id;
+            let named_on_elected_set =
+                adopted && written.names_elected_set(&elected.clone().into());
             tracing::info!(
                 node_id = %node_id,
                 generation = written.generation,
@@ -482,12 +491,13 @@ async fn adopt_if_elected(
                 "an elected leader reported; the control plane took its generation",
             );
             // Taken as a generation only (below level 26, or an elected set
-            // naming a node the catalog lacks), it now names another leader at
-            // the elected one: move past that at once rather than on the next
-            // report, so a failover planned meanwhile does not leave the
-            // elected set unfenced. Placement wakes only after, so its write
-            // cannot win the generation first.
-            let result = if !adopted && written.generation == elected.generation {
+            // naming a node the catalog lacks), it now names another leader,
+            // or this one on another set, at the elected generation: move past
+            // that at once rather than on the next report, so a failover
+            // planned meanwhile does not leave the elected set unfenced.
+            // Placement wakes only after, so its write cannot win the
+            // generation first.
+            let result = if !named_on_elected_set && written.generation == elected.generation {
                 reissue_past_collision(state, node_id, key, elected, written).await
             } else {
                 Ok(written)

@@ -512,22 +512,7 @@ impl ShardAssignment {
         if elected.generation <= self.generation {
             return None;
         }
-        let members: BTreeSet<&String> = std::iter::once(&elected.leader)
-            .chain(elected.replicas.iter())
-            .collect();
-        let matches = match &self.pending_set {
-            Some(pending) => {
-                pending.generation == elected.set_generation
-                    && Some((members, pending.generation)) == self.pending_members()
-                    && self.nodes().any(|node| *node == elected.leader)
-            }
-            None => members == self.nodes().collect(),
-        };
-        // The copy a joining follower replaces is not recorded, so naming the
-        // joining copy leader could not drop it from the set (RF + 1 for
-        // good) or end the replacement consistently: only the generation is
-        // taken, and the replacement goes on under its own leader.
-        let matches = matches && self.joining.as_ref() != Some(&elected.leader);
+        let matches = self.names_elected_set(elected);
         // Set only by a promotion, and this is none.
         let recorded = ShardAssignment {
             generation: elected.generation,
@@ -574,6 +559,28 @@ impl ShardAssignment {
             }),
             ..recorded
         })
+    }
+
+    /// Whether `elected` opened on this assignment's set, so adopting it can
+    /// name its leader here: the set itself, or while a change is pending, the
+    /// pending set at its generation with a leader from the old set too.
+    pub(crate) fn names_elected_set(&self, elected: &ElectedLeader) -> bool {
+        let members: BTreeSet<&String> = std::iter::once(&elected.leader)
+            .chain(elected.replicas.iter())
+            .collect();
+        let matches = match &self.pending_set {
+            Some(pending) => {
+                pending.generation == elected.set_generation
+                    && Some((members, pending.generation)) == self.pending_members()
+                    && self.nodes().any(|node| *node == elected.leader)
+            }
+            None => members == self.nodes().collect(),
+        };
+        // The copy a joining follower replaces is not recorded, so naming the
+        // joining copy leader could not drop it from the set (RF + 1 for
+        // good) or end the replacement consistently: only the generation is
+        // taken, and the replacement goes on under its own leader.
+        matches && self.joining.as_ref() != Some(&elected.leader)
     }
 
     /// What moving a generation this control plane and `elected` both claimed
@@ -721,7 +728,10 @@ impl ShardAssignment {
                 ..adopted
             });
         }
-        if adopted.leader == elected.leader
+        // Not `adopted.leader == elected.leader`: when this set's own leader
+        // was elected on another set, that holds with only the generation
+        // taken, and the record would then differ from the set it opened on.
+        if self.names_elected_set(elected)
             || self.pending_set.is_some()
             || self.joining.is_some()
             || !known(&elected.leader)
