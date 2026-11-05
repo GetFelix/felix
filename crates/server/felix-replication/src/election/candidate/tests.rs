@@ -144,6 +144,11 @@ fn set(generation: u64) -> Membership {
 
 /// A broker holding a `Quorum` stream whose log keeps the set at 3.
 async fn follower() -> (Arc<Broker>, tempfile::TempDir) {
+    copy_promised_to("broker-a").await
+}
+
+/// As [`follower`], with generation 3 promised to `leader`.
+async fn copy_promised_to(leader: &str) -> (Arc<Broker>, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("tempdir");
     let storage = DurableStorage::open(
         dir.path(),
@@ -175,7 +180,7 @@ async fn follower() -> (Arc<Broker>, tempfile::TempDir) {
         .await
         .expect("stream");
     let log = shard_log(&broker, &key()).await.expect("log");
-    log.accept_generation(3, Some("broker-a"))
+    log.accept_generation(3, Some(leader))
         .await
         .expect("ballot");
     log.accept_set(ReplicaSet {
@@ -1021,6 +1026,95 @@ async fn a_shard_stuck_on_a_live_leader_heals_by_election() {
     assert_eq!(log.accepted_leader().as_deref(), Some(LOCAL));
     shutdown.cancel();
     task.await.expect("run");
+}
+
+/// **A leader whose own ballot is above its route stands for itself** with
+/// the control plane down (#1914, the model's `SelfSuspicion`). The control
+/// plane named `LOCAL` at 2; it was elected at 3 and opened, then restarted,
+/// which forgets the election. The driver's open at 2 is refused for its
+/// own ballot, and its followers took its fence and start record at 3, so
+/// neither suspects anything. Once the shard bound passes, `LOCAL` stands at
+/// 4 and both followers grant. Not before the bound.
+#[tokio::test(start_paused = true)]
+async fn a_leader_refused_for_its_own_ballot_stands_for_itself() {
+    let mut copies = Vec::new();
+    for _ in 0..3 {
+        let (broker, dir) = copy_promised_to(LOCAL).await;
+        start(&broker, 3).await;
+        copies.push((broker, dir));
+    }
+    let handlers = [("broker-a", &copies[0].0), ("broker-c", &copies[2].0)]
+        .into_iter()
+        .map(|(node, broker)| {
+            let handler =
+                crate::replica::ReplicaHandler::new(Arc::clone(broker), router_led(node, LOCAL, 2));
+            (node.to_string(), handler)
+        })
+        .collect();
+    let b = &copies[1].0;
+    let mut ctx = ctx_with(b, Cluster { handlers });
+    ctx.router = router_led(LOCAL, LOCAL, 2);
+    ctx.suspects.publish(BTreeSet::new());
+    let ctx = Arc::new(ctx);
+    let shutdown = CancellationToken::new();
+    let task = tokio::spawn(run(Arc::clone(&ctx), shutdown.clone()));
+    let log = shard_log(b, &key()).await.expect("log");
+
+    tokio::time::sleep(ctx.shard_after - SHARD_SCAN * 2).await;
+    assert_eq!(log.accepted_generation(), 3, "stood before the bound");
+
+    let stood = async {
+        while log.accepted_generation() < 4 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    };
+    tokio::time::timeout(SHARD_SCAN * 4, stood)
+        .await
+        .expect("never stood");
+    assert_eq!(log.accepted_leader().as_deref(), Some(LOCAL));
+    let elected = ctx.elections.get(&key()).expect("recorded");
+    assert_eq!((elected.leader.as_str(), elected.generation), (LOCAL, 4));
+    shutdown.cancel();
+    task.await.expect("run");
+}
+
+/// **A leader is not stuck on a ballot its election holds**, while the route
+/// naming that election is yet to be published, nor on a ballot it promised
+/// another broker, which that broker's fence decides.
+#[tokio::test(start_paused = true)]
+async fn a_leader_is_stuck_only_on_its_own_unelected_ballot() {
+    let (broker, _dir) = copy_promised_to(LOCAL).await;
+    let mut ctx = ctx(&broker, voters(None));
+    ctx.router = router_led(LOCAL, LOCAL, 2);
+    let route = ctx.router.snapshot().get(&key()).expect("route").clone();
+    let log = shard_log(&broker, &key()).await.expect("log");
+    ctx.elections.record(
+        key(),
+        Elected {
+            leader: LOCAL.to_string(),
+            generation: 3,
+            set: set(3),
+            leaving: None,
+            incarnation: 0,
+        },
+    );
+    let stuck = || ctx.shard_stuck(&key(), &route, &log, Instant::now());
+    assert!(!stuck());
+    tokio::time::advance(ctx.shard_after * 2).await;
+    assert!(!stuck(), "its election holds the ballot");
+
+    ctx.elections.withdraw(&key(), 3);
+    assert!(!stuck());
+    tokio::time::advance(ctx.shard_after).await;
+    assert!(stuck());
+
+    let (other, _other_dir) = follower().await;
+    let promised = shard_log(&other, &key()).await.expect("log");
+    tokio::time::advance(ctx.shard_after * 2).await;
+    assert!(
+        !ctx.shard_stuck(&key(), &route, &promised, Instant::now()),
+        "promised to another broker"
+    );
 }
 
 /// **An idle shard is not suspected** however long its leader is silent:

@@ -256,6 +256,13 @@ broker's route names itself, so its copy refuses the elected leader. Once that
 has lasted the bound, the elected leader fences its replica set again one
 generation up, and the refused copy follows it.
 
+It also covers a leader that was elected, then restarted while the control
+plane was down. The restart forgets the election, so the broker goes back to
+the control plane's older route for that shard, and it cannot open there:
+its own copy already promised the newer generation to itself. After the
+bound, it stands for the shard again one generation up, and its followers
+vote for it.
+
 ## How it is checked
 
 The election is modelled in TLA+ ([`docs/formal/`](https://github.com/GetFelix/felix/blob/main/docs/formal/README.md)), and each rule above has a

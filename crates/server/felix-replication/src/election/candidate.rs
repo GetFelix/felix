@@ -122,17 +122,34 @@ impl<R> Ctx<R> {
     /// behind the route, which its leader has yet to fence; the copies it
     /// fenced decide. The clock restarts when the route or the ballot
     /// changes, so with the control plane up its own rename comes first.
+    ///
+    /// A route naming this broker is stuck when its own ballot is above the
+    /// route's generation and nothing elected holds that ballot: the driver's
+    /// open at the route's generation is refused for good, and with the
+    /// control plane down nobody else renames the shard. Its followers took
+    /// its fence, so it is the only one that can stand.
     fn shard_stuck(&self, key: &ShardKey, route: &Route, log: &StreamLog, now: Instant) -> bool {
         if self.shard_after.is_zero() {
             return false;
         }
+        let local = self.router.local_node_id();
         let accepted = log.accepted_generation();
-        let started = log
-            .generations()
-            .iter()
-            .any(|epoch| epoch.generation == accepted);
+        let blocked = if route.leader.node_id == local {
+            accepted > route.generation
+                && log.accepted_leader().as_deref() == Some(local)
+                && self
+                    .elections
+                    .get(key)
+                    .is_none_or(|elected| elected.generation < accepted)
+        } else {
+            let started = log
+                .generations()
+                .iter()
+                .any(|epoch| epoch.generation == accepted);
+            accepted >= route.generation && !started
+        };
         let mut quiet = self.quiet.lock().expect("quiet lock");
-        if accepted == 0 || accepted < route.generation || started {
+        if accepted == 0 || !blocked {
             quiet.remove(key);
             return false;
         }
@@ -171,12 +188,7 @@ impl<R> Ctx<R> {
         let mut followed = HashSet::new();
         let mut stuck = HashSet::new();
         for (key, route) in self.router.snapshot().iter() {
-            let follows = route.leader.node_id != local
-                && route
-                    .replicas
-                    .iter()
-                    .any(|replica| replica.node_id == local);
-            if !follows {
+            if !holds_copy(route, local) {
                 continue;
             }
             followed.insert(key.clone());
@@ -398,13 +410,8 @@ async fn run<R: PeerRequester + Send + Sync + 'static>(
             if in_flight.len() >= STANDING_AT_ONCE {
                 break;
             }
-            let follows = route.leader.node_id != local
-                && route
-                    .replicas
-                    .iter()
-                    .any(|replica| replica.node_id == local);
             let broker_suspected = names.contains(&route.leader.node_id);
-            if !follows
+            if !holds_copy(route, local)
                 || !(broker_suspected || stuck.contains(key))
                 || in_flight.contains_key(key)
                 || backoff.get(key).is_some_and(|backoff| backoff.until > now)
@@ -426,6 +433,17 @@ async fn run<R: PeerRequester + Send + Sync + 'static>(
             });
         }
     }
+}
+
+/// Whether this broker holds a copy of `route`'s shard: a follower, or the
+/// leader the route names, which [`Ctx::shard_stuck`] checks for standing
+/// against its own ballot.
+fn holds_copy(route: &Route, local: &str) -> bool {
+    route.leader.node_id == local
+        || route
+            .replicas
+            .iter()
+            .any(|replica| replica.node_id == local)
 }
 
 /// `FELIX_TEST_PRE_VOTE_GATE`, honoured in debug builds only.

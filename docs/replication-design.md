@@ -1335,6 +1335,18 @@ elected leader waits for the lease until the control plane is back (issue
    control plane up, the refused broker's report renames the shard first,
    which ends the collision and the clock.
 
+   A leader can also be stuck on its own ballot. The control plane named it
+   at one generation, it was then elected one higher and opened, and it
+   restarted with the control plane down. A restart forgets the election, so
+   its route names it at the old generation, and its open there is refused
+   for its own newer ballot. Its followers took its fence and start record,
+   so none of them is stuck, and its broker answers pings. So a broker whose
+   route names it leader, whose copy holds its own ballot above the route's
+   generation, and which has no election recorded at that ballot, counts
+   the shard stuck too. After the same bound it stands like any follower:
+   pre-vote, ballot one generation up, the kept set's fence. Its followers
+   grant once they have not heard a leader within S.
+
    The clock restarts whenever the route's generation or leader, or the
    copy's ballot, changes. With the control plane up, it renames a stuck
    leader first (a refused report at once, or its stuck-leader backstop after
