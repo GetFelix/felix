@@ -602,7 +602,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         && elected.is_none()
         && !elected_on_route_set
         && log.set_generation() < route.generation
-        && log.accepted_generation() >= route.generation)
+        && log.accepted_generation() == route.generation)
         .then(|| {
             kept_with_leaving(
                 &log,
