@@ -291,3 +291,34 @@ async fn a_failed_writer_sync_stops_later_flushes() {
         .expect_err("flush after a failed writer sync");
     assert_eq!(log.durable_offset(), 0);
 }
+
+/// How often opening a log at `path` flushes `path` itself.
+fn dir_syncs_opening(path: &std::path::Path, base: Option<Offset>) -> usize {
+    crate::io::DIR_SYNCS.with(|syncs| syncs.borrow_mut().clear());
+    let log = match base {
+        Some(base) => DiskLog::open_at(path, "t/ns/s/0", config(FsyncMode::OnCommit), base),
+        None => DiskLog::open(path, "t/ns/s/0", config(FsyncMode::OnCommit)),
+    }
+    .expect("open");
+    drop(log);
+    crate::io::DIR_SYNCS.with(|syncs| syncs.borrow().iter().filter(|dir| *dir == path).count())
+}
+
+/// **Opening a log flushes its directory once.** The first segment, its index
+/// and the durable mark all get their entries from that one flush, which comes
+/// after the last of them is created and before the open returns. A bulk
+/// create opens hundreds of logs, and every extra flush there waits on the
+/// filesystem's journal.
+#[tokio::test]
+async fn opening_a_log_flushes_its_directory_once() {
+    let dir = tempdir().expect("dir");
+    let fresh = dir.path().join("fresh");
+    assert_eq!(dir_syncs_opening(&fresh, None), 1, "a new log");
+    assert_eq!(dir_syncs_opening(&fresh, None), 1, "an existing log");
+    let placed = dir.path().join("placed");
+    assert_eq!(
+        dir_syncs_opening(&placed, Some(40)),
+        1,
+        "a log placed at a base"
+    );
+}

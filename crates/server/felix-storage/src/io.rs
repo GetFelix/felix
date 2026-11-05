@@ -399,8 +399,17 @@ fn before_sync(file: &File, kind: SyncKind) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Every directory this thread flushed, for tests that count them.
+    pub(crate) static DIR_SYNCS: std::cell::RefCell<Vec<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// [`before_sync`] for a directory flush.
 fn before_sync_dir(path: &std::path::Path) -> io::Result<()> {
+    #[cfg(test)]
+    DIR_SYNCS.with(|syncs| syncs.borrow_mut().push(path.to_path_buf()));
     injected_fault()?;
     #[cfg(all(
         target_os = "linux",

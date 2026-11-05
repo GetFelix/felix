@@ -130,6 +130,9 @@ struct MarkState {
 }
 
 impl MarkFile {
+    /// Open or create the mark. A created mark's name is durable only once
+    /// `dir` is synced, which the caller does before relying on it: the repair
+    /// rule rests on the mark existing after a power loss.
     pub(super) fn open(dir: &Path) -> std::io::Result<Self> {
         let file = std::fs::OpenOptions::new()
             .read(true)
@@ -137,9 +140,6 @@ impl MarkFile {
             .create(true)
             .truncate(false)
             .open(dir.join(mark_file_name()))?;
-        // The repair rule rests on the mark existing after a power loss, and a
-        // created file's name is durable only once its directory is synced.
-        crate::io::sync_dir(dir)?;
         Ok(Self {
             file,
             state: Mutex::new(MarkState::default()),

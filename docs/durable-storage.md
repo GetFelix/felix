@@ -626,11 +626,16 @@ created with every new path component synced into its parent. Without that, a
 power loss on a fresh node could drop a whole root, and the acknowledged records
 in it, before anything else happened to sync the storage directory. Opening an
 existing root syncs its parent again, so a root that an earlier run created but
-never synced becomes durable then.
+never synced becomes durable then. Opening a log syncs the shard directory
+itself once, after its first segment, index and durable mark exist and before
+the open returns, so all three entries are durable before anything can append.
+A crash before that sync leaves a log that recovers as fresh, and nothing was
+acknowledged in it.
 
 > `a_fresh_root_keeps_its_acknowledged_record_through_a_power_loss`,
 > `a_created_directory_survives_a_power_loss` and
-> `an_unflushed_directory_is_made_durable_when_opened` (Linux only).
+> `an_unflushed_directory_is_made_durable_when_opened` (Linux only);
+> `opening_a_log_flushes_its_directory_once`.
 
 **The power-loss suite checks all of this against simulated reboots.** A
 workload runs against a real log while a test layer records what each flush made
