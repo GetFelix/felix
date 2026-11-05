@@ -254,6 +254,38 @@ impl DurableStorage {
         Ok(StreamLog { log })
     }
 
+    /// [`DurableStorage::open_stream`], creating or recovering the log on the
+    /// blocking pool: that fsyncs files and directories, and on a runtime
+    /// worker a slow disk stalls every task queued behind it. A log already
+    /// open is returned without leaving the worker.
+    pub async fn open_stream_off_runtime(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+    ) -> Result<StreamLog> {
+        if let Some(log) = self.opened_stream_for(tenant, namespace, stream, shard, None) {
+            return Ok(log);
+        }
+        let storage = self.clone();
+        let scope = (
+            tenant.to_string(),
+            namespace.to_string(),
+            stream.to_string(),
+        );
+        let opened = tokio::task::spawn_blocking(move || {
+            let (tenant, namespace, stream) = &scope;
+            storage.open_stream(tenant, namespace, stream, shard)
+        })
+        .await;
+        match opened {
+            Ok(log) => log,
+            Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
+            Err(_) => Err(BrokerError::Storage("the runtime is shutting down".into())),
+        }
+    }
+
     /// One stream shard's log if this broker has it open, without opening it.
     pub fn opened_stream(
         &self,
@@ -761,6 +793,26 @@ impl StreamLog {
             .map_err(BrokerError::from)
     }
 
+    /// [`StreamLog::record_generation`], with the write, when there is one,
+    /// on the blocking pool: it fsyncs a file and a directory.
+    pub async fn record_generation_off_runtime(
+        &self,
+        generation: u64,
+        start_offset: Offset,
+    ) -> Result<bool> {
+        if !self.log.records_generation(generation, start_offset) {
+            return self.record_generation(generation, start_offset);
+        }
+        let log = self.clone();
+        match tokio::task::spawn_blocking(move || log.record_generation(generation, start_offset))
+            .await
+        {
+            Ok(recorded) => recorded,
+            Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
+            Err(_) => Err(BrokerError::Storage("the runtime is shutting down".into())),
+        }
+    }
+
     /// Label the records from `from` on with the generations that wrote them.
     /// See `DiskLog::label_generations`.
     pub fn label_generations(
@@ -771,6 +823,24 @@ impl StreamLog {
         self.log
             .label_generations(from, generations)
             .map_err(BrokerError::from)
+    }
+
+    /// [`StreamLog::label_generations`], with the write, when there is one,
+    /// on the blocking pool: it fsyncs a file and a directory.
+    pub async fn label_generations_off_runtime(
+        &self,
+        from: Offset,
+        generations: Vec<felix_storage::log::Epoch>,
+    ) -> Result<()> {
+        if !self.log.relabels(from, &generations) {
+            return self.label_generations(from, &generations);
+        }
+        let log = self.clone();
+        match tokio::task::spawn_blocking(move || log.label_generations(from, &generations)).await {
+            Ok(labelled) => labelled,
+            Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
+            Err(_) => Err(BrokerError::Storage("the runtime is shutting down".into())),
+        }
     }
 
     /// The highest generation a leader of this shard was accepted at here.

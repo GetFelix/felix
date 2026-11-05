@@ -41,9 +41,11 @@ async fn stall_while(open: impl std::future::Future<Output = ()>) -> (Duration, 
     open.await;
     let took = started.elapsed();
     ticker.abort();
+    let mut ticks = ticks.lock().expect("ticks").clone();
+    // The open's end counts as a tick, so a runtime that never got to tick
+    // shows its whole stall.
+    ticks.push(Instant::now());
     let longest = ticks
-        .lock()
-        .expect("ticks")
         .windows(2)
         .map(|pair| pair[1] - pair[0])
         .max()

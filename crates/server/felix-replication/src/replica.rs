@@ -964,6 +964,7 @@ impl ReplicaHandler {
                         batch.shard.generation,
                         batch.generations.as_deref(),
                     )
+                    .await
                 {
                     tracing::warn!(
                         stream = %key.stream,
@@ -2308,7 +2309,7 @@ fn unverified_from(
 /// what they keep. A batch from a sender that predates labels says only who
 /// sent it, so its generation is taken to start where the batch appended: an
 /// overclaim when the sender inherited the records, which is why labels exist.
-pub(crate) fn label_appended(
+pub(crate) async fn label_appended(
     log: &felix_broker::StreamLog,
     from: u64,
     durable: u64,
@@ -2325,9 +2326,12 @@ pub(crate) fn label_appended(
                     start_offset: start.start_offset,
                 })
                 .collect();
-            log.label_generations(from, &epochs)
+            log.label_generations_off_runtime(from, epochs).await
         }
-        None => log.record_generation(sender_generation, from).map(|_| ()),
+        None => log
+            .record_generation_off_runtime(sender_generation, from)
+            .await
+            .map(|_| ()),
     }
 }
 

@@ -114,7 +114,8 @@ async fn a_followers_first_batch_opens_its_log_off_the_runtime() {
     });
     let started = Instant::now();
     let answer = handler.apply(Some(LEADER), batch(1), LogKind::Stream).await;
-    let took = started.elapsed();
+    let end = Instant::now();
+    let took = end - started;
     ticker.abort();
     felix_storage::fault::set_fsync_delay(Duration::ZERO);
 
@@ -123,9 +124,11 @@ async fn a_followers_first_batch_opens_its_log_off_the_runtime() {
         "the batch was refused: {:?}",
         answer.kind()
     );
+    let mut ticks = ticks.lock().expect("ticks").clone();
+    // The batch's end counts as a tick, so a runtime that never got to tick
+    // shows its whole stall.
+    ticks.push(end);
     let longest = ticks
-        .lock()
-        .expect("ticks")
         .windows(2)
         .map(|pair| pair[1] - pair[0])
         .max()

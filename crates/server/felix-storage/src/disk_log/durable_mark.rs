@@ -127,6 +127,9 @@ pub(super) struct MarkFile {
 struct MarkState {
     /// The furthest mark written since the last rewind.
     last: Option<DurableMark>,
+    /// The thread that wrote it.
+    #[cfg(test)]
+    writer: Option<String>,
 }
 
 impl MarkFile {
@@ -155,7 +158,17 @@ impl MarkFile {
         }
         crate::io::write_at(&self.file, &mark.encode(), 0)?;
         state.last = Some(mark);
+        #[cfg(test)]
+        {
+            state.writer = std::thread::current().name().map(str::to_string);
+        }
         Ok(())
+    }
+
+    /// The thread that wrote the last mark [`MarkFile::record`] recorded.
+    #[cfg(test)]
+    pub(super) fn writer(&self) -> Option<String> {
+        self.state.lock().writer.clone()
     }
 
     /// Sync whatever the mark last recorded. For a clean shutdown, so the

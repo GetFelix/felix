@@ -195,3 +195,17 @@ async fn a_late_seal_does_not_move_the_mark_back() {
         other => panic!("expected corruption, got {other:?}"),
     }
 }
+
+/// **A flush writes the mark on the log's flush thread.** The mark is a file
+/// write, and on a busy filesystem journal a write waits as a sync does. On
+/// the caller's thread, a runtime worker, it would stall every task queued
+/// behind it.
+#[tokio::test]
+async fn a_flush_writes_the_mark_off_the_callers_thread() {
+    let dir = tempdir().expect("dir");
+    let log = DiskLog::open(dir.path(), "t/ns/s/0", config()).expect("open");
+    log.append(&batch("synced", 10)).await.expect("append");
+    log.sync().await.expect("sync");
+    assert!(load(dir.path()).expect("mark").synced_bytes > SEGMENT_HEADER_LEN);
+    assert_eq!(log.inner.mark.writer().as_deref(), Some("felix-flush"));
+}
