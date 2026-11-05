@@ -770,7 +770,7 @@ WithdrawsStuck == FALSE
 \* `promotion.rs`). Off, those stay silent. `OwnBallotRefused`: the fence's
 \* step on the leader's own log reports the same refusal (`keep_own_set` in
 \* promotion.rs); off, it stays pending.
-\* The rest follow the dead-end census of #1914, each off as on main.
+\* The rest follow the list of dead ends in #1914, each off as on main.
 \* `OverlayRefused`: a member that took a candidate's fence above the
 \* fence's generation answers "at generation X" from its in-memory election
 \* (replica.rs `check_role`), which the fence parses as a refusal and counts
@@ -4034,10 +4034,6 @@ CpFairness ==
                /\ UNCHANGED << counterVars, expect, inherited, seen, seenInc, fenceIds,
                                heard, decideIdVars, named, cpGone >>)
 
-\* With the control plane up and every stopped broker back, the leader it
-\* names ends up serving, and stays.
-CpLeaderServes == <>[]LeaderServes
-
 \* With the control plane stopped for good at some point and every stopped
 \* broker back, elections alone get a leader serving: a candidate's stand
 \* timeout, a restart and the leader's mark are taken once they stay
@@ -4064,6 +4060,10 @@ ServesWith(l) ==
     /\ LeaderMajority(l, Backers(l))
 
 ElectedServes == \E l \in Brokers : ServesWith(l)
+
+\* With the control plane up and every stopped broker back, the leader it
+\* names ends up serving, with a majority taking its batches, and stays.
+CpLeaderServes == <>[](LeaderServes /\ ServesWith(leader))
 
 CpDownServes == <>[]ElectedServes
 

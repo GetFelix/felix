@@ -242,6 +242,7 @@ expectations=(
   "FelixShardElectReissue pass"
   "FelixShardElectReissueReplace pass"
   "FelixShardElectReissueReplaceBatchSet violates AckedHeldByLeader"
+  "FelixShardElectAdoptAboveKeptSet violates AdoptedMatchesOpened"
   "FelixShardElectAdoptFailoverApart0Gen2 pass"
   "FelixShardElectAdoptFailoverApart1Gen2 pass"
   "FelixShardElectAdoptFailoverApart0StoodGen2 pass"
