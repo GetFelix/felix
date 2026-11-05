@@ -114,6 +114,8 @@ jobs:
         timeout-minutes: 25
         env:
           FELIX_TEST_CLUSTER_LOG_DIR: ${{ runner.temp }}/cluster-logs
+          # Replication and election decisions are what trace a stuck shard.
+          RUST_LOG: ${{ matrix.variant == 'failover' && 'info,felix_replication=debug,felix_broker_service=debug' || 'info' }}
         run: |
           set -o pipefail
           cargo test ${{ steps.variant.outputs.profile }} -p felix-cluster --test scale \
@@ -133,6 +135,12 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Compress broker logs
+        if: failure() || matrix.variant == 'failover'
+        run: |
+          find "$RUNNER_TEMP/cluster-logs" -type f -name '*.log*' ! -name '*.gz' -exec gzip -f {} + || true
+          du -sh "$RUNNER_TEMP/cluster-logs" || true
+
       - name: Upload broker logs
         if: failure() || matrix.variant == 'failover'
         uses: actions/upload-artifact@v7
@@ -141,7 +149,7 @@ jobs:
           path: |
             ${{ runner.temp }}/cluster-logs
             ${{ runner.temp }}/scale-output.txt
-          retention-days: 14
+          retention-days: 7
 
       - name: Report
         if: ${{ always() && job.status != 'cancelled' && github.event_name == 'schedule' }}

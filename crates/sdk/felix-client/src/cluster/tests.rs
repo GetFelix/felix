@@ -22,6 +22,7 @@ mod stale_width;
 mod stub_broker;
 mod timeouts;
 mod token_fetch;
+mod unreachable_redirect;
 
 use std::time::Duration;
 
