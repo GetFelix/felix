@@ -40,6 +40,8 @@ use crate::cluster::credential::NodeCredential;
 use crate::cluster::feed_cursor::BehindCursor;
 use pass::sync_into;
 
+pub(crate) use fetch::{CatalogFetch, HttpSource};
+
 /// Polls the control plane forever, applying changes as they arrive.
 ///
 /// Kept as the plain entry point because it is part of this crate's public API
@@ -92,10 +94,29 @@ pub(crate) async fn start_sync_with_signal(
     broker: Arc<Broker>,
     base_url: String,
     interval: Duration,
-    mut seeded: Option<tokio::sync::oneshot::Sender<()>>,
+    seeded: Option<tokio::sync::oneshot::Sender<()>>,
     credential: Option<NodeCredential>,
 ) -> Result<()> {
     let client = crate::cluster::controlplane_client::build()?;
+    sync_loop(
+        broker,
+        &HttpSource::new(client, base_url),
+        interval,
+        seeded,
+        credential,
+    )
+    .await
+}
+
+/// [`start_sync_with_signal`] over any [`CatalogFetch`], so the simulator
+/// runs this loop, cadence and seeding rule included, over its own link.
+pub(crate) async fn sync_loop(
+    broker: Arc<Broker>,
+    source: &impl CatalogFetch,
+    interval: Duration,
+    mut seeded: Option<tokio::sync::oneshot::Sender<()>>,
+    credential: Option<NodeCredential>,
+) -> Result<()> {
     // Sequence cursors for each change feed; 0 means "not yet seeded".
     let mut state = SyncState::new();
     let mut asked_gap = MIN_ASKED_GAP;
@@ -109,8 +130,7 @@ pub(crate) async fn start_sync_with_signal(
         // ones before it.
         match sync_into(
             &broker,
-            &client,
-            &base_url,
+            source,
             bearer.as_deref().map(String::as_str),
             &mut state,
         )

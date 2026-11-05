@@ -15,11 +15,18 @@ use serde::Serialize;
 pub(crate) struct FakeLink {
     calls: Arc<Mutex<Vec<&'static str>>>,
     replies: Arc<Mutex<HashMap<&'static str, serde_json::Value>>>,
+    statuses: Arc<Mutex<HashMap<&'static str, StatusCode>>>,
 }
 
 impl FakeLink {
     pub(crate) fn reply(self, call: &'static str, body: serde_json::Value) -> Self {
         self.replies.lock().unwrap().insert(call, body);
+        self
+    }
+
+    /// Answer `call` with an empty body and this status.
+    pub(crate) fn status(self, call: &'static str, status: StatusCode) -> Self {
+        self.statuses.lock().unwrap().insert(call, status);
         self
     }
 
@@ -29,6 +36,12 @@ impl FakeLink {
 
     fn answer(&self, call: &'static str) -> Result<LinkResponse> {
         self.calls.lock().unwrap().push(call);
+        if let Some(status) = self.statuses.lock().unwrap().get(call) {
+            return Ok(LinkResponse {
+                status: *status,
+                body: Default::default(),
+            });
+        }
         Ok(match self.replies.lock().unwrap().get(call) {
             Some(body) => LinkResponse {
                 status: StatusCode::OK,

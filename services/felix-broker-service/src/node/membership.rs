@@ -10,6 +10,7 @@ use crate::cluster::credential::{self, NodeCredential};
 use crate::cluster::lease::LeaseState;
 use crate::cluster::membership::{self, MembershipTask};
 use crate::config::BrokerConfig;
+use felix_replication::controlplane_link::ControlPlaneLink;
 
 /// Keep the node credential current for as long as the broker runs, cluster
 /// member or not: refresh it when there is a refresh token to rotate, and
@@ -64,9 +65,9 @@ pub(super) fn keep_credential_current(
 /// `serving`, because advertising a node placement can route to before it can
 /// answer is worse than advertising it a moment late.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn spawn(
+pub(super) fn spawn<L: ControlPlaneLink + Clone>(
     config: &BrokerConfig,
-    membership_client: &reqwest::Client,
+    link: &Option<L>,
     gate_readiness_on_sync: bool,
     seeded: &CancellationToken,
     lease: &Option<Arc<LeaseState>>,
@@ -79,8 +80,8 @@ pub(super) fn spawn(
     data_dir: Option<&std::path::Path>,
     sync_shutdown: &CancellationToken,
 ) -> Option<MembershipTask> {
-    match (&config.membership, &config.controlplane_url) {
-        (Some(membership_config), Some(base_url)) => {
+    match (&config.membership, link) {
+        (Some(membership_config), Some(link)) => {
             let serving = if gate_readiness_on_sync {
                 seeded.clone()
             } else {
@@ -99,10 +100,7 @@ pub(super) fn spawn(
                 .clone()
                 .expect("a cluster member has a credential");
             Some(membership::spawn(
-                felix_replication::controlplane_link::HttpControlPlaneLink::new(
-                    membership_client.clone(),
-                    base_url,
-                ),
+                link.clone(),
                 membership_config.clone(),
                 node_credential,
                 serving,
@@ -133,20 +131,15 @@ pub(super) fn spawn(
 pub(super) async fn registered(
     config: &BrokerConfig,
     durable: bool,
-    client: &reqwest::Client,
+    link: &Option<impl ControlPlaneLink>,
     credential: &Option<NodeCredential>,
 ) -> anyhow::Result<Option<membership::Registered>> {
-    let (true, Some(membership), Some(base_url), Some(credential)) = (
-        durable,
-        &config.membership,
-        &config.controlplane_url,
-        credential,
-    ) else {
+    let (true, Some(membership), Some(link), Some(credential)) =
+        (durable, &config.membership, link, credential)
+    else {
         return Ok(None);
     };
-    let link =
-        felix_replication::controlplane_link::HttpControlPlaneLink::new(client.clone(), base_url);
-    membership::await_registered(&link, &membership.node_id, credential).await
+    membership::await_registered(link, &membership.node_id, credential).await
 }
 
 /// The initial lease: conservative, and invalid until the first heartbeat.
