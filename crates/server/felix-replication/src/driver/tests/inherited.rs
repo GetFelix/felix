@@ -1,5 +1,6 @@
-//! Naming a follower this leader has not reached by the identity its
-//! promotion was decided on (#1574).
+//! What a promoted leader says of followers it has not reached yet: the
+//! identity its promotion named them by (#1574), and that none of them holds
+//! the log it inherited (#1922).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -229,4 +230,91 @@ async fn a_later_generation_inherits_no_names() {
     let report = later.reports.last().expect("a report");
     assert_eq!(report.generation, 5);
     assert!(report.inherited_storage.is_empty(), "{report:?}");
+}
+
+/// Marks as a fleet that finalized acknowledging `Quorum` streams and caches
+/// by their followers' answers.
+fn by_followers() -> QuorumMarks {
+    use felix_common::fleet::{FENCED_CACHES, FleetGate, GENERATION_START, MAJORITY_ACK};
+    let names = [
+        GENERATION_START.name(),
+        MAJORITY_ACK.name(),
+        FENCED_CACHES.name(),
+    ];
+    let fleet = FleetGate::new(names);
+    fleet.observe(names);
+    QuorumMarks::with_fleet(Arc::new(fleet))
+}
+
+/// A `Quorum` leader promoted at generation 3 over 2 records an earlier
+/// leader wrote, as after a failover.
+async fn inheriting_at_3() -> (Arc<Broker>, TempDir) {
+    let (broker, dir) =
+        super::reports::registered_leader(2, felix_broker::ConsistencyLevel::Quorum).await;
+    broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log")
+        .record_generation(3, 2)
+        .expect("record");
+    (broker, dir)
+}
+
+/// **A leader acknowledging by its followers names none of them before they
+/// hold what it inherited (#1922).** The earlier leader may have acknowledged
+/// both records on a majority this leader's set no longer contains, as when a
+/// failover swapped a member out. Named at offset 0, an empty follower could
+/// be promoted next and open on a fence answered only by brokers that never
+/// held them, losing an acknowledged write.
+#[tokio::test]
+async fn a_leader_acknowledging_by_followers_names_none_before_they_answer() {
+    let (broker, _dir) = inheriting_at_3().await;
+    let marks = by_followers();
+    assert!(marks.serving().streams_by_followers);
+    let requester = UnreachableFollowers {
+        handshake: std::time::Duration::from_millis(20),
+    };
+
+    let pass = replicate_once(
+        &requester,
+        &broker,
+        &router(LOCAL, &["broker-b", "broker-c"], 3),
+        &marks,
+        None,
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+    )
+    .await;
+
+    let report = pass.reports.last().expect("a report");
+    assert!(
+        report.caught_up.is_empty(),
+        "followers holding none of the inherited log were offered for promotion: {:?}",
+        report.caught_up,
+    );
+}
+
+/// The same leader names a follower once it answers holding the inherited
+/// log, so placement has a candidate again.
+#[tokio::test]
+async fn a_leader_acknowledging_by_followers_names_one_holding_what_it_inherited() {
+    let (broker, _dir) = inheriting_at_3().await;
+
+    let pass = replicate_once(
+        &AcceptingFollower::default(),
+        &broker,
+        &router(LOCAL, &["broker-b"], 3),
+        &by_followers(),
+        None,
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+    )
+    .await;
+
+    let report = pass.reports.last().expect("a report");
+    assert_eq!(report.caught_up, vec!["broker-b".to_string()]);
 }

@@ -2942,10 +2942,19 @@ acknowledges a record on A and B while C lags, A dies and B is promoted, B
 reports before C answers and names C, B dies, and C is promoted without the
 record. So wherever promotion trusts the report, the bound is never below
 where the leader's generation begins in its own log, or its whole log if no
-start was recorded. A cache's counter log gets the same floor. A stream shard
-that acknowledges by its followers skips it, and so does a cache shard under
-`fenced_caches`, for both its logs, because its promoted leader
-fences a majority and takes the furthest log before it serves.
+start was recorded. A cache's counter log gets the same floor.
+
+The floor holds when the followers decide the mark too (`majority_ack`, and
+`fenced_caches` for a cache). The promoted leader fences a majority and takes
+the furthest log, but that only helps when the majority it reaches holds the
+records. A failover that swaps a member for a spare can leave a majority of the
+new set without them (issue 1922). With four brokers and three replicas: B
+leads B, C and D and acknowledges a record on B and D while C lags. D is
+promoted and A replaces B, so the set is A, C and D. If D reported A and C
+before they answered and then died, A could be promoted, fence A, C and D
+together with A, B and C, get answers from A and C (a majority of both), and
+open without the record. Named only once they hold what D inherited, neither A
+nor C is a candidate until D has shipped the record to it.
 
 The cost is availability. Right after a failover no follower is named until
 one has copied everything the new leader inherited, including a tail the old
@@ -2957,7 +2966,10 @@ with the floor it would not have been named until it had copied that tail.
 `FelixShardReportFromAnswers.cfg` counts followers by their answers without
 the floor and loses the record, and `FelixShardReportFloor.cfg` passes
 (`a_new_leader_names_no_follower_before_it_answers`,
-`a_new_cache_leader_names_no_follower_missing_inherited_counters`). The
+`a_new_cache_leader_names_no_follower_missing_inherited_counters`, and with the
+followers deciding the mark
+`a_leader_acknowledging_by_followers_names_none_before_they_answer` and
+`a_cache_leader_acknowledging_by_followers_names_none_missing_inherited_counters`). The
 cluster test `a_move_cut_short_by_kills_promotes_no_follower_short_of_the_log`
 replays issue 878 in lease mode: no follower is promoted until the destination
 returns. With `majority_ack` finalized the cut-over is fenced with no lease

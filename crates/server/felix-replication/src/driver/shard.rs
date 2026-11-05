@@ -646,12 +646,14 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 .offset_at(&watch_key(key), incarnation, route.generation)
                 .unwrap_or(0),
         );
-        // Nor below the log this leader inherited, while promotion trusts the
-        // report: an earlier leader may have acknowledged any of it. Without
-        // the floor, a new leader whose followers have not answered yet names
-        // all of them. Acknowledging by the followers, the promoted leader
-        // fences a majority and takes the furthest log instead.
-        if by_followers || stepped_down() {
+        // Nor below the log this leader inherited: an earlier leader may have
+        // acknowledged any of it. Without the floor, a new leader whose
+        // followers have not answered yet names all of them. Acknowledging by
+        // the followers does not lift it: after a failover that changed the
+        // set, a majority of the new one can lack the inherited records, and
+        // a follower named without them fences only brokers that lack them
+        // too (#1922).
+        if stepped_down() {
             promised
         } else {
             promised.max(inherited.min(tail))
@@ -1995,16 +1997,6 @@ async fn counter_level(
             .offset(&watch_key(key), route.generation)
             .unwrap_or(0),
     );
-    // Named only once it holds the updates this leader inherited, as for the
-    // shard's own log, while promotion trusts the report; with no recorded
-    // start, all of them. Acknowledging by the followers, the promoted leader
-    // fences a majority and takes the furthest counter log instead.
-    let inherited = start.map_or(tail, |start| start.min(tail));
-    let floor = if by_followers || stepped_down {
-        acknowledged
-    } else {
-        acknowledged.max(inherited)
-    };
     // The joint start counts from this stint's start record, as `own_start`
     // does for the shard's own log: an earlier stint at this generation may
     // have acknowledged updates on the old set alone.
@@ -2012,6 +2004,15 @@ async fn counter_level(
         log.stint_start(route.generation)
             .map_or(first, |stint| stint.max(first))
     });
+    // Named only once it holds the updates this leader inherited, from this
+    // stint's start as for the shard's own log and for the same reason, by
+    // followers or not; with no recorded start, all of them.
+    let inherited = stint.map_or(tail, |start| start.min(tail));
+    let floor = if stepped_down {
+        acknowledged
+    } else {
+        acknowledged.max(inherited)
+    };
     Some(CounterLevel {
         acknowledged,
         level: caught_up(floor, followers),
