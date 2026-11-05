@@ -97,10 +97,10 @@ pub enum Outcome {
     /// Not yet, and not in this attempt: a replica promised this generation
     /// to `promised_to`, and either so many did that no majority is left to
     /// take it or every other replica that did not take it was unreachable
-    /// or timed out. Or, with `promised_to` empty, a replica's ballot holds a
-    /// newer generation, which may be one no assignment named. The shard stays closed,
-    /// and this broker reports the refusal so the control plane names it
-    /// again above the generation (#1730).
+    /// or timed out. Or, with `promised_to` empty, a replica's ballot, or this
+    /// broker's own, holds a newer generation, which may be one no assignment
+    /// named. The shard stays closed, and this broker reports the refusal so
+    /// the control plane names it again above the generation (#1730).
     Refused {
         promised_to: String,
         why: String,
@@ -1165,14 +1165,28 @@ async fn keep_own_set(
             felix_storage::disk_log::GenerationCheck::Current
             | felix_storage::disk_log::GenerationCheck::Raised,
         ) => {}
-        Ok(other) => {
-            return Err(Outcome::pending(
-                format!(
-                    "this broker cannot lead generation {}: {other:?}",
+        // This broker's own ballot is past the generation, as a standing it
+        // withdrew leaves, or promised it to another node. Neither changes, so
+        // a retry here never opens; the report moves the shard up (#1914).
+        Ok(felix_storage::disk_log::GenerationCheck::Superseded { accepted }) => {
+            return Err(Outcome::Refused {
+                promised_to: String::new(),
+                why: format!(
+                    "this broker cannot lead generation {}: its own ballot holds {accepted}",
                     route.generation
                 ),
-                Vec::new(),
-            ));
+                took: Vec::new(),
+            });
+        }
+        Ok(felix_storage::disk_log::GenerationCheck::Promised { leader }) => {
+            return Err(Outcome::Refused {
+                why: format!(
+                    "this broker cannot lead generation {}: it promised it to {leader}",
+                    route.generation
+                ),
+                promised_to: leader,
+                took: Vec::new(),
+            });
         }
         Err(err) => {
             return Err(Outcome::pending(

@@ -1261,3 +1261,113 @@ async fn a_fence_with_no_kept_set_reports_no_refusal() {
         "asked for a rename with no evidence nothing came before"
     );
 }
+
+/// Takes every fence and offers `ELECTION`, so the leader keeps its own
+/// ballot and set once a majority has fenced.
+struct ElectingFenceTakers;
+
+impl PeerRequester for ElectingFenceTakers {
+    async fn request(
+        &self,
+        _node_id: &str,
+        _addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, PeerError> {
+        match message {
+            InternalMessage::Fence(fence) => {
+                Ok(InternalMessage::FenceOk(felix_wire::internal::FenceOk {
+                    correlation_id: fence.correlation_id,
+                    log_end: 0,
+                    commit_offset: 0,
+                    last_generation: 0,
+                }))
+            }
+            other => panic!("unexpected {:?}", other.kind()),
+        }
+    }
+
+    async fn capabilities(
+        &self,
+        _node_id: &str,
+        _addr: SocketAddr,
+    ) -> std::result::Result<felix_wire::internal::PeerCapabilities, PeerError> {
+        Ok(crate::promotion::REQUIRED.union(felix_wire::internal::PeerCapabilities::ELECTION))
+    }
+
+    fn offers_election(&self) -> bool {
+        true
+    }
+}
+
+/// The first refusal a leader promoted at 4 reports after its replicas all
+/// took the fence, with its own log's ballot set by `ballot` beforehand.
+async fn own_ballot_refusal(ballot: (u64, &str)) -> Option<ShardReplicaStatus> {
+    let (broker, _dir) = leader_with(3).await;
+    let log = broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    log.accept_generation(ballot.0, Some(ballot.1))
+        .await
+        .expect("ballot");
+    let (control_plane, received) = recording_control_plane().await;
+    let shutdown = CancellationToken::new();
+    let driver = spawn(
+        Arc::new(ElectingFenceTakers),
+        broker,
+        router(LOCAL, &["broker-b", "broker-c"], 4),
+        Arc::new(Unfenced),
+        Arc::new(FencingAtFour),
+        published(),
+        Some(control_plane.reporter(shutdown.clone())),
+        Duration::from_millis(50),
+        Arc::default(),
+        RebuildPolicy::default(),
+        MoveThrottle::unlimited(),
+        shutdown.clone(),
+    );
+    let refusal = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let found = received
+                .lock()
+                .expect("lock")
+                .iter()
+                .find(|report| report.refused.is_some())
+                .cloned();
+            if let Some(report) = found {
+                return report;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .ok();
+    shutdown.cancel();
+    driver.stop().await;
+    refusal
+}
+
+/// **A leader whose own ballot is past the generation it was named at
+/// reports the generation refused** (#1914). A standing it withdrew leaves
+/// that ballot, and its replicas, which never took it, fence fine; the
+/// control plane hears nothing else, so without the report the shard stays
+/// closed for good, as felixd's scale run found after the restart.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_leader_behind_its_own_ballot_reports_the_refusal() {
+    let report = own_ballot_refusal((7, LOCAL))
+        .await
+        .expect("no report of the generation its own ballot passed");
+    assert_eq!(report.generation, 4);
+    assert_eq!(report.refused, Some(RefusedGeneration::set_unknown(4)));
+}
+
+/// **A leader that promised its generation to another node reports the
+/// refusal naming that node.**
+#[tokio::test(flavor = "multi_thread")]
+async fn a_leader_that_promised_its_generation_away_reports_the_refusal() {
+    let report = own_ballot_refusal((4, "broker-d"))
+        .await
+        .expect("no report of the generation promised away");
+    assert_eq!(report.generation, 4);
+    assert_eq!(report.refused, Some(refused(4)));
+}
