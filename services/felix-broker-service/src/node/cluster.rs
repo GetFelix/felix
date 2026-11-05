@@ -134,6 +134,7 @@ pub(super) fn bind_peer_listener(
     incarnation: tokio::sync::watch::Receiver<Option<u64>>,
     unclean: Option<Arc<replication::unclean::UncleanStart>>,
     controlplane: Option<(&reqwest::Client, &str, &Option<NodeCredential>)>,
+    serving: Option<&CancellationToken>,
     peer_shutdown: &CancellationToken,
 ) -> Result<PeerListener> {
     Ok(
@@ -182,6 +183,10 @@ pub(super) fn bind_peer_listener(
                 }
                 .with_storage_identity(storage_id)
                 .with_node_incarnation(incarnation);
+                let server = match serving {
+                    Some(serving) => server.with_serving(serving.clone()),
+                    None => server,
+                };
                 match &peer_config.tls {
                     Some(tls) => tracing::info!(
                         addr = %server.local_addr()?,
@@ -376,10 +381,15 @@ pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
                 .as_ref()
                 .filter(|pool| replication::peer::PeerRequester::offers_election(pool.as_ref()))
                 .map(|_| {
-                    let elections = Arc::new(replication::election::Elections::new(
-                        router.local_node_id(),
-                        Arc::clone(&assignments_changed),
-                    ));
+                    let elections = Arc::new(
+                        replication::election::Elections::new(
+                            router.local_node_id(),
+                            Arc::clone(&assignments_changed),
+                        )
+                        .with_defer_for(
+                            replication::suspicion::SuspicionConfig::from_env().defer_for,
+                        ),
+                    );
                     quorum_marks.set_elections(Arc::clone(&elections));
                     elections
                 });
@@ -392,6 +402,7 @@ pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
                 Arc::clone(ownership),
                 Arc::clone(&assignments_changed),
                 Duration::from_millis(config.controlplane_sync_interval_ms),
+                ingress.fence().lease().cloned(),
                 sync_shutdown.clone(),
             ));
             let feed = shard_routing::spawn_feed(

@@ -1006,10 +1006,15 @@ impl ShardReaders {
     ///
     /// A shard whose sessions need no lease ([`ShardFence::sessions_lease_free`])
     /// is left serving at the lapse. Its readers end instead when a follower
-    /// refuses it for a newer leader ([`ShardFence::depose`]), or when no
-    /// majority has confirmed it for a lease duration. The rounds that check
-    /// run only while the lease is lapsed; while it holds, a new assignment
-    /// reaches this broker the usual way.
+    /// says the control plane assigned a newer generation, or this broker took
+    /// one itself ([`ShardFence::depose`]), or when no
+    /// majority has confirmed it for a lease duration
+    /// ([`ShardFence::unheard`]). The rounds that check run only while the
+    /// lease is lapsed; while it holds, a new assignment reaches this broker
+    /// the usual way. Silence alone names no newer leader, and the shard's
+    /// `Quorum` writes go on wherever a majority answers, so rounds go on for
+    /// a shard ended for silence, lease or no lease, and the first one
+    /// confirmed admits its readers again.
     ///
     /// [`ShardFence::sessions_lease_free`]: fence::ShardFence::sessions_lease_free
     /// [`ShardFence::depose`]: fence::ShardFence::depose
@@ -1026,6 +1031,8 @@ impl ShardReaders {
         // Lease-free shards kept serving past the lapse, and when a majority
         // last confirmed each.
         let mut unleased: HashMap<ShardKey, (u64, tokio::time::Instant)> = HashMap::new();
+        // Shards ended for silence, and the generation, until heard again.
+        let mut unheard: HashMap<ShardKey, u64> = HashMap::new();
         loop {
             let probe = (lease.usable() / 4).max(std::time::Duration::from_millis(100));
             tokio::select! {
@@ -1056,44 +1063,72 @@ impl ShardReaders {
                         }
                     }
                 }
-                _ = tokio::time::sleep(probe), if !unleased.is_empty() => {
+                _ = tokio::time::sleep(probe), if !unleased.is_empty() || !unheard.is_empty() => {
+                    unheard.retain(|key, generation| {
+                        fence.is_open_at(key, *generation)
+                            && !fence.names_newer_leader(key, *generation)
+                    });
+                    // A renewed lease alone does not clear silence: the
+                    // routes it serves on may predate a promotion made while
+                    // it was cut off. Only a round says no one replaced it.
                     if lease.is_valid_now() {
                         unleased.clear();
-                        continue;
                     }
-                    self.probe(&fence, &marks, &mut unleased, lease.usable()).await;
+                    self.probe(&fence, &marks, &mut unleased, &mut unheard, lease.usable())
+                        .await;
                 }
             }
         }
     }
 
-    /// One round for each lease-free shard kept past the lapse. A shard no
-    /// majority has confirmed for `silence` is deposed, which ends its readers
-    /// on the next turn of [`Self::watch_leadership`].
+    /// One round for each lease-free shard kept past the lapse, and for each
+    /// one ended for silence. A shard no majority has confirmed for `silence`
+    /// is marked [`fence::ShardFence::unheard`], which ends its readers on the
+    /// next turn of [`Self::watch_leadership`]; one confirmed again is heard
+    /// and serves its readers again.
     async fn probe(
         &self,
         fence: &fence::ShardFence,
         marks: &felix_replication::quorum::QuorumMarks,
         unleased: &mut HashMap<ShardKey, (u64, tokio::time::Instant)>,
+        unheard: &mut HashMap<ShardKey, u64>,
         silence: std::time::Duration,
     ) {
         let check = marks.reads_by_round();
-        let rounds = unleased.iter().map(|(key, (generation, _))| async move {
+        let probed = unleased
+            .iter()
+            .map(|(key, (generation, _))| (key.clone(), *generation))
+            .chain(
+                unheard
+                    .iter()
+                    .map(|(key, generation)| (key.clone(), *generation)),
+            );
+        let rounds = probed.map(|(key, generation)| async move {
             let confirmed = match check {
-                Some(check) => check.confirm(key, *generation).await.is_ok(),
+                Some(check) => check.confirm(&key, generation).await.is_ok(),
                 None => false,
             };
-            (key.clone(), confirmed)
+            (key, generation, confirmed)
         });
         let now = tokio::time::Instant::now();
-        for (key, confirmed) in futures::future::join_all(rounds).await {
-            let Some((generation, heard)) = unleased.get_mut(&key) else {
+        for (key, generation, confirmed) in futures::future::join_all(rounds).await {
+            if unheard.get(&key) == Some(&generation) {
+                if confirmed {
+                    unheard.remove(&key);
+                    fence.heard(&key, generation);
+                    unleased.insert(key, (generation, now));
+                }
+                continue;
+            }
+            let Some((_, heard)) = unleased.get_mut(&key) else {
                 continue;
             };
             if confirmed {
                 *heard = now;
             } else if now.saturating_duration_since(*heard) >= silence {
-                fence.depose(&key, *generation);
+                unleased.remove(&key);
+                fence.unheard(&key, generation);
+                unheard.insert(key, generation);
             }
         }
     }
@@ -1358,6 +1393,36 @@ impl DurableShardStore {
 }
 
 impl DurableShardStore {
+    /// A stream shard's log, at `incarnation` when it is not 0, opened on the
+    /// blocking pool. Opening a new log takes several fsyncs, and a bulk create
+    /// opens hundreds at once: on the runtime's workers a slow disk would stall
+    /// everything else they run.
+    async fn open_stream_log(
+        &self,
+        key: &ShardKey,
+        incarnation: u64,
+    ) -> anyhow::Result<felix_broker::StreamLog> {
+        let storage = std::sync::Arc::clone(&self.storage);
+        let key = key.clone();
+        let opened = tokio::task::spawn_blocking(move || match incarnation {
+            0 => storage.open_stream(&key.tenant_id, &key.namespace, &key.stream, key.shard),
+            incarnation => storage.open_stream_for(
+                &key.tenant_id,
+                &key.namespace,
+                &key.stream,
+                key.shard,
+                None,
+                incarnation,
+            ),
+        })
+        .await;
+        match opened {
+            Ok(log) => log.map_err(|err| anyhow::anyhow!("open shard log: {err}")),
+            Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
+            Err(err) => Err(anyhow::anyhow!("open shard log: {err}")),
+        }
+    }
+
     /// The shard's own log, stream or cache, at `incarnation` when it is not
     /// 0. `None` for a cache this store cannot reach.
     async fn own_log(
@@ -1366,38 +1431,18 @@ impl DurableShardStore {
         incarnation: u64,
     ) -> anyhow::Result<Option<felix_broker::StreamLog>> {
         match key.kind {
-            ShardKind::Stream => match incarnation {
-                0 => {
-                    self.storage
-                        .open_stream(&key.tenant_id, &key.namespace, &key.stream, key.shard)
-                }
-                incarnation => self.storage.open_stream_for(
-                    &key.tenant_id,
-                    &key.namespace,
-                    &key.stream,
-                    key.shard,
-                    None,
-                    incarnation,
-                ),
-            }
-            .map(Some)
-            .map_err(|err| anyhow::anyhow!("open shard log: {err}")),
+            ShardKind::Stream => self.open_stream_log(key, incarnation).await.map(Some),
             ShardKind::Cache => {
                 let Some(starts) = &self.generation_starts else {
                     return Ok(None);
                 };
-                Ok(starts
-                    .broker
-                    .shard_log_for(
-                        felix_broker::LogKind::Cache,
-                        &key.tenant_id,
-                        &key.namespace,
-                        &key.stream,
-                        key.shard,
-                        None,
-                        (incarnation != 0).then_some(incarnation),
-                    )
-                    .await)
+                Ok(open_broker_log(
+                    &starts.broker,
+                    felix_broker::LogKind::Cache,
+                    key,
+                    incarnation,
+                )
+                .await)
             }
         }
     }
@@ -1433,19 +1478,7 @@ impl DurableShardStore {
             return Ok(());
         }
         for kind in GROUP_LOGS {
-            let Some(log) = starts
-                .broker
-                .shard_log_for(
-                    kind,
-                    &key.tenant_id,
-                    &key.namespace,
-                    &key.stream,
-                    key.shard,
-                    None,
-                    (incarnation != 0).then_some(incarnation),
-                )
-                .await
-            else {
+            let Some(log) = open_broker_log(&starts.broker, kind, key, incarnation).await else {
                 anyhow::bail!("open the shard's {kind:?} log");
             };
             if begins_here {
@@ -1476,18 +1509,7 @@ impl DurableShardStore {
             felix_broker::LogKind::Counters,
         ] {
             // No counter store configured means no counter log to mark.
-            let Some(log) = broker
-                .shard_log_for(
-                    kind,
-                    &key.tenant_id,
-                    &key.namespace,
-                    &key.stream,
-                    key.shard,
-                    None,
-                    (incarnation != 0).then_some(incarnation),
-                )
-                .await
-            else {
+            let Some(log) = open_broker_log(broker, kind, key, incarnation).await else {
                 if kind == felix_broker::LogKind::Cache {
                     anyhow::bail!("open cache shard log");
                 }
@@ -1623,20 +1645,7 @@ impl ShardStore for DurableShardStore {
         }
         // Recovery happens here: validating the tail and rebuilding indexes is
         // exactly the cost the `Opening` phase is holding writes back for.
-        let log = match incarnation {
-            0 => self
-                .storage
-                .open_stream(&key.tenant_id, &key.namespace, &key.stream, key.shard),
-            incarnation => self.storage.open_stream_for(
-                &key.tenant_id,
-                &key.namespace,
-                &key.stream,
-                key.shard,
-                None,
-                incarnation,
-            ),
-        }
-        .map_err(|err| anyhow::anyhow!("open shard log: {err}"))?;
+        let log = self.open_stream_log(key, incarnation).await?;
 
         // Where this leadership begins. Followers record what they accept, and
         // until now a leader recorded nothing — so a broker's history had a
@@ -1671,10 +1680,7 @@ impl ShardStore for DurableShardStore {
         if key.kind == ShardKind::Cache {
             return Ok(());
         }
-        let log = self
-            .storage
-            .open_stream(&key.tenant_id, &key.namespace, &key.stream, key.shard)
-            .map_err(|err| anyhow::anyhow!("open shard log to flush it: {err}"))?;
+        let log = self.open_stream_log(key, 0).await?;
         log.sync()
             .await
             .map_err(|err| anyhow::anyhow!("flush shard log: {err}"))
@@ -1933,6 +1939,12 @@ async fn apply_open(
             // control plane past a ballot it never issued (#1914).
             if err.downcast_ref::<Superseded>().is_some() {
                 lifecycle.fence().refused(&key, generation, "");
+            } else if err.downcast_ref::<GaveUp>().is_none()
+                && err.downcast_ref::<PromisedAway>().is_none()
+            {
+                // The same assignment never retries the open, so unreported
+                // this is a dead end. Once, so a lasting fault does not churn.
+                lifecycle.fence().open_failed(&key, generation);
             }
             lifecycle.open_failed(&key, generation, format!("{err:#}"));
             drop(lifecycle);
@@ -1988,7 +2000,19 @@ pub async fn record_term_start(
         .tail_offset()
         .await
         .map_err(|err| anyhow::anyhow!("read shard tail: {err}"))?;
-    if let Err(err) = log.record_generation(generation, tail) {
+    // Writes and fsyncs the generation history, so not on a runtime worker.
+    let recorded = {
+        let log = log.clone();
+        tokio::task::spawn_blocking(move || log.record_generation(generation, tail))
+            .await
+            .unwrap_or_else(|err| {
+                if err.is_panic() {
+                    std::panic::resume_unwind(err.into_panic())
+                }
+                Err(felix_broker::BrokerError::Storage(err.to_string()))
+            })
+    };
+    if let Err(err) = recorded {
         if required {
             anyhow::bail!("record where generation {generation} begins: {err}");
         }
@@ -2003,6 +2027,28 @@ pub async fn record_term_start(
         );
     }
     Ok(())
+}
+
+/// One of the broker's logs for `key`, opened on the blocking pool for the
+/// same reason as [`DurableShardStore::open_stream_log`]. `None` when the
+/// broker has no such store or refuses the incarnation.
+async fn open_broker_log(
+    broker: &std::sync::Arc<felix_broker::Broker>,
+    kind: felix_broker::LogKind,
+    key: &ShardKey,
+    incarnation: u64,
+) -> Option<felix_broker::StreamLog> {
+    broker
+        .shard_log_off_runtime(
+            kind,
+            &key.tenant_id,
+            &key.namespace,
+            &key.stream,
+            key.shard,
+            None,
+            (incarnation != 0).then_some(incarnation),
+        )
+        .await
 }
 
 /// Accept `generation` on a log this broker is about to lead, failing if the
@@ -2222,6 +2268,38 @@ pub(crate) async fn reconcile_renewed(
     assignments: &HashMap<ShardKey, ShardAssignment>,
     renewals: &HashMap<ShardKey, u64>,
 ) {
+    reconcile_reporting(lifecycle, store, assignments, renewals, &mut NoProgress).await;
+}
+
+/// What a caller of [`reconcile_reporting`] does while its pass opens shards.
+pub(crate) trait PassProgress: Send {
+    /// Whether [`PassProgress::opened`] wants to hear about the next open.
+    fn due(&self) -> bool;
+    /// A shard just opened, and `servable` is what this broker serves now.
+    /// Called with the lifecycle lock held.
+    fn opened(&mut self, servable: HashMap<ShardKey, u64>);
+}
+
+struct NoProgress;
+
+impl PassProgress for NoProgress {
+    fn due(&self) -> bool {
+        false
+    }
+
+    fn opened(&mut self, _servable: HashMap<ShardKey, u64>) {}
+}
+
+/// [`reconcile_renewed`], telling `progress` after each shard it opens. A
+/// pass can open hundreds of shards, one after another, and the caller can
+/// then route each as soon as it serves instead of after the last.
+pub(crate) async fn reconcile_reporting(
+    lifecycle: &tokio::sync::Mutex<ShardLifecycle>,
+    store: &dyn ShardStore,
+    assignments: &HashMap<ShardKey, ShardAssignment>,
+    renewals: &HashMap<ShardKey, u64>,
+    progress: &mut dyn PassProgress,
+) {
     let ready = |key: &ShardKey| {
         let incarnation = assignments
             .get(key)
@@ -2258,7 +2336,14 @@ pub(crate) async fn reconcile_renewed(
             lifecycle.lock().await.await_registration(action);
             continue;
         }
+        let opens = matches!(action, Action::Open { .. });
         apply(lifecycle, store, action).await;
+        if opens && progress.due() {
+            // Held through the publish: a fence publishes under this lock too,
+            // and the two would otherwise overwrite each other.
+            let owned = lifecycle.lock().await;
+            progress.opened(owned.servable());
+        }
     }
 }
 

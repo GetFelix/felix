@@ -20,6 +20,14 @@ Log lines are structured key-value events (tenant, stream, subscription id,
 error), so they grep and parse cleanly. There is no JSON output mode today;
 if your aggregation pipeline needs JSON, wrap the process output.
 
+The broker writes log lines to stdout from a thread of its own. A slow disk
+under a redirected stdout then delays the log, not the broker: a worker that
+logs hands the line to a queue and carries on. No line is dropped. If the
+queue fills, logging waits for it to drain. The queue is written out when the
+broker exits cleanly and when it panics. A broker killed outright (`SIGKILL`,
+the kernel's OOM killer) can lose the last lines still queued, usually a few
+milliseconds' worth.
+
 The lines worth knowing on sight:
 
 - Startup: the QUIC listen address, and whether control-plane sync is on.
@@ -539,6 +547,11 @@ restarting every instance because a dependency is down turns one outage into
 a restart loop. `/ready` says "send this instance traffic," and goes false
 first thing during shutdown so load balancers steer away before anything
 stops working. See [Graceful shutdown](/deployment/graceful-shutdown/).
+
+A broker with durable storage and a control plane starts with `/ready` false.
+It turns true once the catalog is applied, every durable stream is recovered,
+and every listener is bound. A broker that cannot bind a port exits without
+ever reporting ready, so whatever started it sees a failed start, not a crash.
 
 ## Distributed tracing
 

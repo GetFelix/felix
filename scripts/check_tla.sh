@@ -119,6 +119,8 @@ expectations=(
   "FelixShardWalkElectStaleSetReplay violates AckedHeldByLeader"
   "FelixShardWalkSparesSeatEarlyReplay violates AckedHeldByLeader"
   "FelixShardLease pass"
+  "FelixShardLeaseAnyHeartbeat violates AtMostOneServing"
+  "FelixShardLeaseRoutesHeartbeat pass"
   "FelixShardLogOrder pass"
   "FelixShardThinMargin violates AtMostOneServing"
   "FelixShardRealMarginsLease pass"
