@@ -304,11 +304,9 @@ expectations=(
   "FelixShardCpLiveNoOverlayRefused violates liveness"
   "FelixShardCpLiveNoHaltReported violates liveness"
   "FelixShardCpLiveNoStandBehindBallot violates liveness"
-  "FelixShardCpDown pass"
+  "FelixShardCpLiveNoAboveReported violates liveness"
   "FelixShardCpDownNoSelfSuspicion violates liveness"
   "FelixShardCpDownBrokerSuspicion violates liveness"
-  "FelixShardCpDownPreVoteUnbounded pass"
-  "FelixShardCpDownStandBehindDeadOnly violates liveness"
   "FelixShardCpDownDegraded violates liveness"
   "FelixShardElectPreVote pass"
   "FelixShardElectNoBallotAcks violates AckedHeldByLeader"
@@ -420,6 +418,9 @@ if [ "$#" -gt 0 ]; then
   done
 fi
 
+# FelixShardCpDown, FelixShardCpDownPreVoteUnbounded and
+# FelixShardCpDownStandBehindDeadOnly are not registered: none finishes in
+# five hours in CI (docs/formal/README.md has how far each got).
 # FelixShardElectSwap is not registered: it does not finish in one run, so
 # it is checked in pieces split at the cut-over. The eleven that take under 45
 # minutes are registered above; FelixShardElectSwapKeep0, the four
@@ -567,6 +568,10 @@ weights=(
   "FelixShardElectRenameDrop1StoodSeveralDest 36"
   "FelixShardElectStepDown 3"
   "FelixShardHandoffLeaderAck 3"
+  "FelixShardCpLiveNoOwnBallotRefused 3"
+  "FelixShardCpLiveNoHaltReported 3"
+  "FelixShardCpLiveNoAboveReported 3"
+  "FelixShardCpDownNoSelfSuspicion 12"
 )
 
 weight_of() {

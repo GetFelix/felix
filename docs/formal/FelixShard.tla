@@ -774,7 +774,12 @@ WithdrawsStuck == FALSE
 \* `Superseded` in services/felix-broker-service/src/shards/lifecycle.rs and
 \* `promotion.rs`). Off, those stay silent. `OwnBallotRefused`: the fence's
 \* step on the leader's own log reports the same refusal (`keep_own_set` in
-\* promotion.rs); off, it stays pending.
+\* promotion.rs); off, it stays pending. `AboveReported`: the control
+\* plane's leader that is not open at its generation and whose own log holds
+\* a newer one it does not stand at (it answered a candidate's fence, or
+\* stood and withdrew, after opening there) reports the generation refused.
+\* Not in the code: such a leader reports nothing, and only a new standing
+\* moves the shard on (#1951).
 \* The rest follow the list of dead ends in #1914, each off as on main.
 \* `OverlayRefused`: a member that took a candidate's fence above the
 \* fence's generation answers "at generation X" from its in-memory election
@@ -806,6 +811,7 @@ Withdraws == FALSE
 Restarts == FALSE
 SupersededRefused == TRUE
 OwnBallotRefused == FALSE
+AboveReported == FALSE
 \* `Reissues`: under `Adopt`, when the control plane named one leader at the
 \* generation another was elected and opened at, it moves the shard to the
 \* next generation under the elected one (CpReissue).
@@ -3413,9 +3419,14 @@ CannotServe ==
 Refused(left, stillFencing) ==
     \* Its own ballot is newer: the open fails, or under `OwnBallotRefused`
     \* the fence's own step does. A leader that opened at the generation
-    \* and was deposed after reports neither.
+    \* and lost it after reports neither, unless it restarted since: the
+    \* refusals it keeps are in memory, and its reopen there is refused
+    \* (`open_failed` in lifecycle.rs). A restarted leader that opened again
+    \* and then lost the generation is counted too, which the code does not
+    \* report.
     \/ /\ SupersededRefused /\ promised[leader] > gen
-       /\ bgen[leader] < gen /\ <<gen, leader>> \notin opened
+       /\ bgen[leader] < gen
+       /\ (<<gen, leader>> \notin opened \/ (Restarts /\ inc[leader] > 0))
     \/ OwnBallotRefused /\ stillFencing /\ promised[leader] > gen
     \/ ~LeaderMajority(leader, left \cap Members(leader))
     \/ /\ stillFencing /\ left /= FenceMembers(leader)
@@ -3439,6 +3450,7 @@ RenameDue ==
        /\ \/ /\ HaltReported /\ open
              /\ \E m \in Members(leader) \ {leader} : promised[m] > gen
           \/ CatchAllRename /\ ~LeaderServes /\ CannotServe
+          \/ AboveReported /\ promised[leader] > gen /\ bgen[leader] < gen
           \/ /\ bgen[leader] < gen \/ stillFencing
              /\ Refused(left, stillFencing)
 
