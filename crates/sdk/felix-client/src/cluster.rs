@@ -84,6 +84,7 @@ pub(crate) use retry::{
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::Result;
 use tokio::sync::RwLock;
@@ -196,6 +197,9 @@ pub struct Client {
     /// different answer, and a group redirect carries no fresher generation
     /// to arbitrate between the two.
     group_routes: RwLock<HashMap<ShardKey, Arc<Connection>>>,
+    /// Redirect targets that would not connect, and when. A redirect naming
+    /// one is answered by asking another broker, for a short while.
+    down_redirects: std::sync::Mutex<HashMap<SocketAddr, Instant>>,
     /// Each cache's shard owners, asked once and dropped when a request to
     /// one fails. Apart from `owners` because a cache and a stream may share
     /// a name, and its entries carry no generation to compare.
@@ -288,6 +292,7 @@ impl Client {
             owners,
             reconnecting: tokio::sync::Mutex::new(()),
             group_routes: RwLock::new(HashMap::new()),
+            down_redirects: std::sync::Mutex::new(HashMap::new()),
             cache_routes: RwLock::new(HashMap::new()),
             nodes,
         };
