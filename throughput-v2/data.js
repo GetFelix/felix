@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793918517880,
+  "lastUpdate": 1793920484753,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -46436,6 +46436,58 @@ window.BENCHMARK_DATA = {
             "range": "4825.29",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 801164.19\nmean: 801326.58\nstdev: 4825.29\ncv: 0.60%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "08e677be834e515c38287332b1327272b1266c46",
+          "message": "feat(replication): a follower stands for a shard stuck on a live leader (#1914) (#1925)\n\nA follower stands for a shard stuck on a live leader; a refusal lapses when the follower stops answering.",
+          "timestamp": "2026-11-05T15:10:04-08:00",
+          "tree_id": "0580d44d7c5522e35a6db159ebea6a7c1a7e006c",
+          "url": "https://github.com/GetFelix/felix/commit/08e677be834e515c38287332b1327272b1266c46"
+        },
+        "date": 1793920483818,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 348394.64,
+            "range": "9579.48",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 348394.64\nmean: 350063.51\nstdev: 9579.48\ncv: 2.74%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 348394.64,
+            "range": "9579.48",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 348394.64\nmean: 350063.51\nstdev: 9579.48\ncv: 2.74%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80756.22,
+            "range": "4124.80",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80756.22\nmean: 79227.81\nstdev: 4124.80\ncv: 5.21%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 807562.18,
+            "range": "41248.01",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 807562.18\nmean: 792278.15\nstdev: 41248.01\ncv: 5.21%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
