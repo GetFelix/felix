@@ -1,1 +1,2 @@
 - zstd is 0.14.3, which fixes RUSTSEC-2026-0391 (data from an abandoned stream carried into the next on a reused context).
+- The demo lockfiles take the same zstd bump (RUSTSEC-2026-0391, -0398, -0403, -0410 in zstd-safe and zstd-sys).
