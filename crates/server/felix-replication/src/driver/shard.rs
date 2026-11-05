@@ -319,6 +319,9 @@ pub(super) struct ShardPass<'a> {
     pub(super) drain_pending: bool,
     /// No follower that could still catch up holds all of the log.
     pub(super) behind: bool,
+    /// This broker's own ballot holds this newer generation, so it cannot
+    /// count a mark at the pass's generation.
+    pub(super) ballot_above: Option<u64>,
 }
 
 impl ShardPass<'_> {
@@ -342,6 +345,7 @@ impl ShardPass<'_> {
             again: false,
             drain_pending: false,
             behind: false,
+            ballot_above: None,
         }
     }
 }
@@ -547,11 +551,14 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         fence.passed(mark_key, route.generation);
     }
     // Read from the cursors the last pass left: a follower halted this way
-    // stays halted until the assignment changes.
+    // stays halted until the assignment changes. Only an assignment names a
+    // newer leader. A follower's ballot or view may be a standing that never
+    // opened, and with a majority still answering this leader serves; with
+    // none left its rounds fail and its refusal is reported.
     if entry
         .followers
         .iter()
-        .any(|cursor| cursor.halted == Some(crate::Halt::Fenced))
+        .any(|cursor| cursor.halted == Some(crate::Halt::Fenced) && cursor.assigned_newer)
     {
         fence.deposed(mark_key, route.generation);
     }
@@ -649,6 +656,23 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     if stepped_down() {
         fence.deposed(mark_key, route.generation);
     }
+    // This broker's own ballot is past the generation it leads: a promotion
+    // whose route has not landed yet, or a standing here that was withdrawn.
+    // In the second case the leader stops counting its own copy, so its marks
+    // stall while its followers confirm; the driver reports the generation
+    // refused if it lasts, to be named again one up (#1933). Not while a
+    // standing is under way at that ballot: it may yet open there.
+    let ballot_above = {
+        let accepted = log.accepted_generation();
+        (accepted > route.generation
+            && log
+                .accepted_leader()
+                .is_some_and(|leader| *leader == *route.leader.node_id)
+            && marks
+                .elections()
+                .is_none_or(|elections| elections.candidacy(key, accepted).is_none()))
+        .then_some(accepted)
+    };
     // A set change the control plane has not taken yet: a record is held
     // only when a majority of the set being left holds it too (rule 8).
     let pending = route
@@ -1818,6 +1842,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         again,
         drain_pending: route.draining && !drained,
         behind,
+        ballot_above,
     }
 }
 

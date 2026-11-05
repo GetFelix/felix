@@ -161,6 +161,31 @@ impl CounterStore {
             .await)
     }
 
+    /// What [`CounterStore::shard_log_for`] would return, when the shard is open
+    /// already; `None` without creating or recovering anything otherwise.
+    /// `None` for `incarnation` checks nothing, as [`CounterStore::shard_log`] does.
+    pub async fn opened_shard_log(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        scope: &str,
+        shard: u32,
+        incarnation: Option<u64>,
+    ) -> Option<DiskLog> {
+        let held = self
+            .incarnations
+            .resolve(tenant_id, namespace, scope)
+            .filter(|held| incarnation.is_none_or(|expected| expected == *held))?;
+        let id = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            scope.to_string(),
+            shard,
+            held,
+        );
+        Some(self.shards.get_open(&id)?.current_log().await)
+    }
+
     /// [`CounterStore::shard_log`], or [`CounterStore::shard_log_at`] with a
     /// base, only when `incarnation` is the one set for `scope`: refused with
     /// [`StorageError::Closed`] otherwise, before anything is created.

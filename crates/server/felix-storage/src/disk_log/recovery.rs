@@ -118,9 +118,9 @@ fn apply(dir: &Path, label: &str, config: &LogConfig, plan: RecoveryPlan) -> Res
         End::Refuse(detail) => Err(StorageError::Corruption(detail)),
         End::Fresh => Ok(Recovered {
             sealed: Vec::new(),
-            active: SegmentWriter::create(
+            // `DiskLog::open_shared` syncs the directory before it returns.
+            active: SegmentWriter::create_in_opening_log(
                 dir,
-                0,
                 0,
                 now_micros(),
                 config.reserve_limit_bytes(),
@@ -288,15 +288,15 @@ pub(super) fn place_empty_shard(
     if !ids.is_empty() {
         return Ok(false);
     }
-    let mut writer = SegmentWriter::create(
+    let mut writer = SegmentWriter::create_in_opening_log(
         dir,
-        0,
         base_offset,
         now_micros(),
         config.reserve_limit_bytes(),
         config.index_spacing_bytes,
     )?;
-    // Flushed before anything can append to it: a base offset that did not
+    // The header is flushed before anything can append to it, and its name by
+    // `DiskLog::open_shared`'s directory sync: a base offset that did not
     // survive a crash would leave the shard reading back as one starting at
     // zero, which is a hole rather than a shorter log.
     writer.sync()?;

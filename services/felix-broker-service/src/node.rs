@@ -480,7 +480,6 @@ where
     let (registered, registered_watch) = tokio::sync::watch::channel(None);
     let membership = membership::spawn(
         &config,
-        &membership_client,
         gate_readiness_on_sync,
         &seeded,
         &lease,

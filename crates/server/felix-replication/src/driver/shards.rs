@@ -255,6 +255,16 @@ struct ShardState {
     /// by too many replicas to open, or could not learn the set it leaves.
     /// Reported each tick, as a refused open is.
     fence_refused: Option<RefusedGeneration>,
+    /// After the shard opened, a follower refused it for a newer generation
+    /// and no majority is left without it
+    /// ([`crate::follower::refused_without_majority`]). Reported each tick.
+    ship_refused: Option<RefusedGeneration>,
+    /// The last pass found this broker's own ballot past the generation it
+    /// leads. Reported each tick, as a refused open is.
+    ballot_refused: Option<RefusedGeneration>,
+    /// The ballot past the led generation the passes have seen, and since
+    /// when. Reported only once it outlasts [`super::BALLOT_ABOVE_FOR`].
+    ballot_above_since: Option<(u64, tokio::time::Instant)>,
     /// What its last pass left.
     last: Option<LastPass>,
 }
@@ -379,10 +389,12 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
     /// two, in case the set has changed since.
     fn refusal(&self, key: &ShardKey, route: &felix_router::Route) -> Option<RefusedGeneration> {
         self.refused_open(key, route).or_else(|| {
-            self.states
-                .get(key)?
+            let state = self.states.get(key)?;
+            state
                 .fence_refused
                 .clone()
+                .or_else(|| state.ship_refused.clone())
+                .or_else(|| state.ballot_refused.clone())
                 .filter(|refused| {
                     refused.generation == route.generation
                         && route.leader.node_id == self.cx.router.local_node_id()
@@ -1020,6 +1032,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             again,
             drain_pending,
             behind,
+            ballot_above,
             ..
         } = pass;
         // Busy from earlier passes too: a follower this pass launched nobody
@@ -1079,6 +1092,10 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                 behind,
             },
         );
+        let ship_refused = crate::follower::refused_without_majority(
+            &cursors.followers,
+            cursors.learner.as_deref(),
+        );
         self.streams.insert(key.clone(), cursors);
         self.group.insert(key.clone(), aux.group);
         self.dead_letters.insert(key.clone(), aux.dead_letters);
@@ -1089,6 +1106,44 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         }
         state.owed = owed;
         state.settled_at = settled.then_some(generation);
+        let report = ship_refused.is_some() && state.ship_refused.is_none();
+        state.ship_refused = ship_refused.map(|ballot| {
+            if report {
+                tracing::warn!(
+                    stream = %key.stream,
+                    shard = key.shard,
+                    generation,
+                    ballot,
+                    "a follower took a newer generation and no majority is left without it; \
+                     reporting the generation refused",
+                );
+            }
+            RefusedGeneration::set_unknown(generation)
+        });
+        let now = tokio::time::Instant::now();
+        state.ballot_above_since = ballot_above.map(|ballot| match state.ballot_above_since {
+            Some((seen, since)) if seen == ballot => (ballot, since),
+            _ => (ballot, now),
+        });
+        // A promotion's ballot lands before its route; only one that stays
+        // means a standing here was given up.
+        let ballot_above = state
+            .ballot_above_since
+            .filter(|(_, since)| now.duration_since(*since) >= super::BALLOT_ABOVE_FOR)
+            .map(|(ballot, _)| ballot);
+        if let Some(ballot) = ballot_above
+            && state.ballot_refused.is_none()
+        {
+            tracing::warn!(
+                stream = %key.stream,
+                shard = key.shard,
+                generation,
+                ballot,
+                "this broker's own ballot is past the generation it leads, so no write \
+                 there can be acknowledged; reporting the generation refused",
+            );
+        }
+        state.ballot_refused = ballot_above.map(|_| RefusedGeneration::set_unknown(generation));
         state.last = Some(LastPass {
             scan,
             halted,
@@ -1128,6 +1183,9 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                     Queue::Refresh
                 },
             );
+        }
+        if let Some(refused) = self.states.get(&key).and_then(|s| s.ship_refused.clone()) {
+            self.report_refusal(key, refused);
         }
         self.fill();
     }
