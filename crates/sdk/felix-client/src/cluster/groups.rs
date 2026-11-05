@@ -14,13 +14,15 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
-use felix_wire::StartPosition;
+use felix_wire::{ErrorCode, RetryClass, StartPosition};
 
 use super::{Client, MAX_REDIRECTS, ShardKey, expired};
+use crate::BrokerError;
+
+use crate::client::{Connection, GroupInfo, GroupPosition};
 
 /// How long a redirect target that would not connect is left alone.
 const REDIRECT_TARGET_DOWN_FOR: Duration = Duration::from_secs(5);
-use crate::client::{Connection, GroupInfo, GroupPosition};
 
 impl Client {
     /// [`Connection::group_poll`], on whichever broker leads the shard.
@@ -698,10 +700,18 @@ impl Client {
                 .with_context(|| format!("the owner's address {addr:?} is not usable"))?;
             // A target that would not connect a moment ago is not dialled
             // again: a broker that still names it gets the question answered
-            // by another one instead of the same redirect.
+            // by another one instead of the same redirect. With no other
+            // broker left it is dialled anyway, since a slow new leader is
+            // the only way forward.
             if self.redirect_target_down(addr) {
-                client = self.another_broker(&mut asked, &error).await?;
-                continue;
+                if let Some(other) = self.another_broker(&mut asked, &error).await? {
+                    client = other;
+                    continue;
+                }
+                self.down_redirects
+                    .lock()
+                    .expect("down redirects")
+                    .remove(&addr);
             }
             if visited.iter().any(|seen| seen == &redirect.node_id) {
                 return Err(error.context(format!(
@@ -722,7 +732,10 @@ impl Client {
                     }
                     tracing::debug!(error = %err, %addr, "redirect target unreachable; asking another broker");
                     self.mark_redirect_target_down(addr);
-                    client = self.another_broker(&mut asked, &err).await?;
+                    client = match self.another_broker(&mut asked, &err).await? {
+                        Some(other) => other,
+                        None => return Err(owner_unreachable(&err)),
+                    };
                 }
             }
         }
@@ -750,28 +763,35 @@ impl Client {
     /// A connection to a broker not asked yet, skipping the ones marked down.
     /// Every broker answers a group call with the shard's owner, so any of
     /// them can stand in for the unreachable one. Errors, with `cause` as
-    /// context, when none is left to ask.
+    /// context, when none answers; `None` when none is left to ask.
     async fn another_broker(
         &self,
         asked: &mut Vec<SocketAddr>,
         cause: &anyhow::Error,
-    ) -> Result<Arc<Connection>> {
+    ) -> Result<Option<Arc<Connection>>> {
         let mut candidates = self.endpoints().await;
         candidates.retain(|addr| !asked.contains(addr) && !self.redirect_target_down(*addr));
         if candidates.is_empty() {
-            return Err(anyhow::anyhow!(
-                "the shard owner is unreachable and no other broker is left to ask"
-            )
-            .context(format!("{cause:#}")));
+            return Ok(None);
         }
-        let connected = self
-            .nodes
-            .connect_any(&candidates)
-            .await
-            .context("the shard owner is unreachable and no other broker answered")?;
+        let connected = self.nodes.connect_any(&candidates).await.map_err(|err| {
+            owner_unreachable(&anyhow::anyhow!(
+                "{cause:#}; no other broker answered: {err:#}"
+            ))
+        })?;
         asked.push(connected.dialled());
-        Ok(connected)
+        Ok(Some(connected))
     }
+}
+
+/// Nothing was applied and the owner is not reachable yet. Coded so the
+/// retry loops treat it as a redirect that has not settled, not a dead end.
+fn owner_unreachable(cause: &anyhow::Error) -> anyhow::Error {
+    anyhow::Error::new(BrokerError::new(
+        ErrorCode::NotLeader,
+        RetryClass::Redirect,
+        format!("the shard owner is unreachable and no other broker is left to ask: {cause:#}"),
+    ))
 }
 
 fn shard_key(tenant_id: &str, namespace: &str, stream: &str, shard: u32) -> ShardKey {
