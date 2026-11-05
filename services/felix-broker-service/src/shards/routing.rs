@@ -890,9 +890,9 @@ pub fn spawn_feed(
             };
             // Shards new to this pass are routed as they open, not when the
             // whole pass is done: a bulk create opens hundreds one after
-            // another. Only new shards: every other route, its priors and
-            // whether it is served stay as last published until the pass
-            // has applied its changes. Not before the first catalog, which
+            // another. Only additions: every other route and its priors stay
+            // as last published, and nothing stops being served, until the
+            // pass has applied its changes. Not before the first catalog, which
             // would publish every remote shard without an address.
             let mut early = EarlyRoutes {
                 ingress: &ingress,
@@ -956,21 +956,15 @@ struct Published {
     servable: ServableShards,
 }
 
-/// The shards new to this pass, with their assignments and priors.
-type NewShards = (
-    HashMap<ShardKey, crate::shards::watch::ShardAssignment>,
-    HashMap<felix_router::ShardKey, felix_router::PriorSet>,
-);
-
 /// The last applied assignments with this pass's new shards added, and the
-/// new shards themselves; `None` when the pass names none.
+/// new shards' priors; `None` when the pass names none.
 fn early_assignments(
     applied: &HashMap<ShardKey, crate::shards::watch::ShardAssignment>,
     assignments: &HashMap<ShardKey, crate::shards::watch::ShardAssignment>,
     priors: &HashMap<felix_router::ShardKey, felix_router::PriorSet>,
 ) -> Option<(
     HashMap<ShardKey, crate::shards::watch::ShardAssignment>,
-    NewShards,
+    HashMap<felix_router::ShardKey, felix_router::PriorSet>,
 )> {
     let added: HashMap<_, _> = assignments
         .iter()
@@ -986,17 +980,13 @@ fn early_assignments(
         .filter_map(|key| priors.get(&key).map(|prior| (key, prior.clone())))
         .collect();
     let mut routes = applied.clone();
-    routes.extend(
-        added
-            .iter()
-            .map(|(key, assignment)| (key.clone(), assignment.clone())),
-    );
-    Some((routes, (added, added_priors)))
+    routes.extend(added);
+    Some((routes, added_priors))
 }
 
 /// The view a reconcile pass publishes while it is still opening shards: the
-/// last published one, plus each new shard's route and, once it is open, its
-/// place in the servable set.
+/// last published one, plus each new shard's route and every shard that now
+/// serves at the generation routed here.
 struct EarlyRoutes<'a> {
     ingress: &'a IngressRouter,
     catalog: &'a HashMap<String, felix_router::NodeRef>,
@@ -1005,7 +995,7 @@ struct EarlyRoutes<'a> {
     /// shards' priors. `None` when there is nothing to add.
     assignments: Option<(
         HashMap<ShardKey, crate::shards::watch::ShardAssignment>,
-        NewShards,
+        HashMap<felix_router::ShardKey, felix_router::PriorSet>,
     )>,
     last: Option<std::time::Instant>,
 }
@@ -1025,15 +1015,18 @@ impl crate::shards::lifecycle::PassProgress for EarlyRoutes<'_> {
     /// The pass's own publish at the end follows regardless, so one skipped
     /// here is only late.
     fn opened(&mut self, servable: ServableShards) {
-        let Some((routes, (added, added_priors))) = &self.assignments else {
+        let Some((routes, added_priors)) = &self.assignments else {
             return;
         };
         self.last = Some(std::time::Instant::now());
+        // A shard can start serving mid-pass outside the pass too (a fence
+        // finishing publishes on its own), so take every one serving at the
+        // generation routed here. Removals wait for the pass's end.
         let mut early_servable = self.published.servable.clone();
-        early_servable.extend(added.keys().filter_map(|key| {
-            servable
+        early_servable.extend(servable.into_iter().filter(|(key, generation)| {
+            routes
                 .get(key)
-                .map(|generation| (key.clone(), *generation))
+                .is_some_and(|assignment| assignment.generation == *generation)
         }));
         let mut priors = self.published.priors.clone();
         priors.extend(

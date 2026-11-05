@@ -544,6 +544,71 @@ mod feed {
         let _ = feed.await;
     }
 
+    /// **A shard whose fence finishes mid-pass stays served.** The fence
+    /// publishes it on its own; the pass's interim publishes must not put it
+    /// back to not ready until the pass ends.
+    #[tokio::test]
+    async fn a_shard_fenced_mid_pass_stays_served() {
+        let (mut state, _router) = state(&[assignment(0, "broker-a", 1)]);
+        state.lifecycle.lock().await.fence_promotions();
+        state.store = Arc::new(SlowStore {
+            delay: Duration::from_millis(150),
+        });
+        let ingress = Arc::clone(&state.ingress);
+        let lifecycle = Arc::clone(&state.lifecycle);
+        let ownership = Arc::clone(&state.ownership);
+        let changed = Arc::clone(&state.assignments_changed);
+        let fencing = || async {
+            lifecycle
+                .lock()
+                .await
+                .counts()
+                .get(&crate::shards::lifecycle::Phase::Fencing)
+                .copied()
+                .unwrap_or(0)
+        };
+        let shutdown = CancellationToken::new();
+        let feed = spawn_feed(state, None, Duration::from_secs(60), shutdown.clone());
+        for _ in 0..200 {
+            if fencing().await == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        // Let the first pass end and publish shard 0 as not yet servable.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        ownership.write().await.reset(
+            (0..5)
+                .map(|shard| assignment(shard, "broker-a", 1))
+                .collect(),
+        );
+        changed.notify_one();
+        for _ in 0..200 {
+            if fencing().await >= 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        {
+            let mut owned = lifecycle.lock().await;
+            assert!(owned.fenced(&key(0), 1), "shard 0 was not fencing");
+            ingress.publish_servable(owned.servable());
+        }
+        // Long enough for at least one interim publish.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let mid_pass = ingress.dispatch(&key(0));
+        let opened = fencing().await;
+
+        assert!(opened < 4, "the pass ended before the check");
+        assert!(
+            matches!(mid_pass, Dispatch::Local { generation: 1 }),
+            "shard 0 went back mid-pass: {mid_pass:?}"
+        );
+        shutdown.cancel();
+        let _ = feed.await;
+    }
+
     /// A shard led elsewhere is only forwardable once the catalog supplies an
     /// address. Before that it is known and unreachable, which is the state the
     /// address book exists to leave.
