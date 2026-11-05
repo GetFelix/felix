@@ -9,6 +9,7 @@ mod control_batch;
 mod control_binary;
 mod control_message;
 mod declared_width;
+mod direct;
 mod durable_default_ack;
 mod explicit_shard;
 mod group_commit;
@@ -171,6 +172,10 @@ fn watch_key() -> crate::shards::ShardKey {
 }
 
 fn ingress_for(leader: &str, servable: bool) -> IngressRouter {
+    ingress_with_replicas(leader, servable, Vec::new())
+}
+
+fn ingress_with_replicas(leader: &str, servable: bool, replicas: Vec<String>) -> IngressRouter {
     let router = Arc::new(felix_router::ShardRouter::new(
         "broker-a",
         "us-west-2",
@@ -179,7 +184,7 @@ fn ingress_for(leader: &str, servable: bool) -> IngressRouter {
     let assignment = crate::shards::watch::ShardAssignment {
         key: watch_key(),
         leader: leader.to_string(),
-        replicas: Vec::new(),
+        replicas,
         generation: 1,
         state: "active".to_string(),
         successor: None,
