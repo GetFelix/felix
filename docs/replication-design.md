@@ -4642,11 +4642,11 @@ Five rules keep an election from getting stuck:
   up, as it does for any refused generation. A ballot from another node is
   left to the stepping-down rule (rule 5 of the protocol above), since that
   node may be standing.
-  A leader still fencing when its own copy already holds a newer ballot,
-  from anyone, can never open at its generation: the open takes that
-  generation's ballot on its own copy, which refuses it. Its fence reports
-  the generation refused at once instead of waiting for answers (issue
-  #1940).
+  That rule is for an open leader. A leader still fencing can never open
+  if its own copy already holds a newer ballot, whoever it names: the open
+  takes the generation's ballot on its own copy, which refuses it. So its
+  fence reports the generation refused at once instead of asking the set
+  (issue #1940).
 
 Elections need `joint_fence` finalized first, which the control plane allows
 once every serving broker offers `ELECTION`, names start holders and keeps a
