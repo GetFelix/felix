@@ -1543,7 +1543,7 @@ with `FLAG_BINARY_PUBLISH_ACKED`, and every `publish_idempotent`):
   broker stops reading that stream's publishes until one of its answers is
   written. Each stream has its own window, so a stream whose publishes wait
   on a stalled shard holds only its own slots, and the connection's other
-  streams keep publishing. The Rust `Client` puts each shard on a
+  streams keep publishing. The Rust `Client` moves a stalled shard onto a
   stream of its own (see below), which makes that true per shard. A broker says so by advertising
   `FEATURE_STREAM_PUBLISH_WINDOW` with the grant. A broker that predates that
   bit counts the window across the whole connection, and a client must share
@@ -1580,27 +1580,67 @@ plus its ack wait, so a broker whose oldest held answer is overdue by twice
 that closes the stream instead; the client sees the stream fail and every
 unanswered publish on it as failed.
 
-**One stream per shard.** Request order and the window are both per stream,
-so shards that share a stream share a fate: a shard stuck on a quorum wait
-holds back answers the others have committed, then fills the window and stops
-the stream. The Rust `Client` therefore sends each publish on a stream
-that carries only its shard, opened on the shard's first publish on the same
-connection. It can, because it computes the shard of every publish to pick
-the owner: keyed, unkeyed (shard 0) and idempotent alike. Which shard stream
-a keyed publish rides is worked out from the width the client connection
-keeps for the stream, asked for (`StreamShards`) on its first keyed publish
-to it, never from a caller's own idea of the shard, so every path through
-one client (plain publishes, a `Client`, an idempotent producer) puts
+**A stream of its own for a stalled shard.** Request order and the window
+are both per stream, so shards that share a stream share a fate: a shard stuck
+on a quorum wait holds back answers the others have committed, then fills the
+window and stops the stream. A stream per shard would avoid that, but each
+stream costs throughput when keys spread over many shards. So the Rust `Client`
+keeps every shard on its pooled streams while it is healthy, and gives a shard
+a stream of its own only while that shard holds its stream up. Nothing on the
+wire changes: the broker cannot tell these streams from any other, so any
+broker, old or new, sees the same frames.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Pooled
+    Pooled --> Draining: an answer is overdue at the head of its stream
+    Draining --> Own: its publishes on the pool are answered
+    Own --> Returning: it and the pool are calm for the calm period
+    Returning --> Pooled: its publishes on its own stream are answered
+```
+
+- **Evidence, not a guess.** The answer at the head of a stream is the one
+  every later answer waits behind. The client times each head. A head that
+  waits longer than eight times the stream's usual head wait, and at least
+  250 ms, is overdue, and the head's own shard is marked as stalled. A
+  publish of any other shard that finds its pooled stream's head overdue moves
+  that shard too, rather than queue behind it. Such a shard is not marked, and
+  goes back once the pool is calm. A broker that is slow for every shard raises
+  the usual wait instead of moving them all. A full window is not evidence by
+  itself: a busy healthy stream fills it too.
+- **Order across a move.** Every publish holds a claim on its shard until its
+  answer is read. The publish that moves a shard first waits for the shard's
+  claims to drain, and the shard's other publishes wait for the move, so
+  nothing of the shard is still on the old stream when the first publish goes
+  out on the new one. The way back works the same. A shard that ever publishes
+  without an ack is never moved, since such a publish has no answer to wait
+  for.
+- **No churn.** A shard on its own stream rejoins the pool after 5 s without an
+  overdue answer, on its own stream or at the pool's head. One that stalls again soon after returning stays out twice as
+  long the next time, up to 5 minutes.
+- **What it cannot fix.** A move does not reach publishes already sent. The
+  stream-mates queued behind a stalled head before it was overdue still wait
+  for that head's answer,
+  which the broker gives within its ack bound (the quorum wait plus 1.5 s, so
+  6.5 s by default). After that the stalled shard is on its own stream and the
+  mates are not held up again. A caller that puts its own timeout around a
+  publish should make it longer than the broker's ack bound, or a mate answered
+  late is counted as failed. The Rust client's own limit is 30 s.
+
+An idempotent producer's batches move the same way: the batches in flight
+drain first, so a re-sent run never straddles two streams. A shard whose
+leader moves to another broker starts on that broker's pool, since each
+broker connection keeps its own. A client moves at most
+`publish_shard_streams` shards per broker onto streams of their own at once
+(64 by default); a stalled shard past that stays on the pool. Each such stream
+is opened on the least-loaded connection.
+
+Which shard a keyed publish belongs to is worked out from the width the client
+connection keeps for the stream, asked for (`StreamShards`) on its first keyed
+publish to it, never from a caller's own idea of the shard, so every path
+through one client (plain publishes, a `Client`, an idempotent producer) puts
 a key on one writer. The width is kept until a publish is refused with
-`not_found`, since only a deleted stream can come back with another width;
-if it cannot be learned, every keyed publish to that stream goes on shard 0's
-stream. Each shard stream is placed on the least-loaded connection, so
-one hot stream's shards spread over the client's connections and the
-broker's listeners. A client keeps at most `publish_shard_streams` such
-streams per broker (16 by default); shards past that share the hashed pool,
-and a shard never changes stream while its writer lives, so its publishes
-stay in order. Nothing on the wire changes: the broker cannot tell these
-streams from any other.
+`not_found`, since only a deleted stream can come back with another width.
 
 **Why the order matters to an idempotent producer.** With answers in request
 order, the first failure a producer reads is the earliest one, never a

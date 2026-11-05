@@ -406,16 +406,15 @@ fn zero_shard_streams_from_env_is_honoured() {
     assert_eq!(config.publish_shard_streams, 0);
 }
 
-/// Shard streams default to 4: more dedicated streams measured slower when
-/// keys spread over many shards (#1406).
+/// Up to 64 shards per broker may move onto streams of their own.
 #[allow(deprecated)]
 #[test]
 #[serial_test::serial]
-fn shard_streams_default_to_four() {
+fn shard_streams_cap_defaults_to_sixty_four() {
     let quinn = quinn::ClientConfig::with_platform_verifier();
     unsafe {
         std::env::remove_var("FELIX_PUB_SHARD_STREAMS");
     }
     let config = ClientConfig::from_env_or_yaml(quinn, None).expect("config");
-    assert_eq!(config.publish_shard_streams, 4);
+    assert_eq!(config.publish_shard_streams, 64);
 }

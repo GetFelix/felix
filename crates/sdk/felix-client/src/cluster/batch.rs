@@ -5,10 +5,10 @@
 //! split by shard first. Each piece takes the route a single publish would
 //! (`publish_to_shard`): the cached owner when one is known, else the entry
 //! broker, which forwards and names the owner for next time. Pieces for
-//! different shards are sent concurrently, each on its shard's own publish
-//! stream while the client has room for one (`FELIX_PUB_SHARD_STREAMS`) and on
-//! the shared pool past that cap, which is the isolation the per-shard
-//! streams exist for.
+//! different shards are sent concurrently, each on the stream its shard is
+//! on: the pool while healthy, a stream of its own while it stalls
+//! (`FELIX_PUB_SHARD_STREAMS`), so one stalled shard does not keep holding up
+//! the others.
 //!
 //! Owners come from the cluster's shard-owner discovery, which the first
 //! publish to a stream waits for (the pieces racing it wait too, up to a

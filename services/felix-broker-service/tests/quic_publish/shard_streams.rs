@@ -1,8 +1,9 @@
-//! A stalled shard holding up only itself: the client gives each shard its
-//! own publish stream, so the request order a pipelining stream is answered
-//! in never puts one shard's answers behind another's. And what that must
-//! not cost: each shard's records still land in the order one client sent
-//! them.
+//! A stalled shard holding up only itself: once an answer at the head of a
+//! shared publish stream is overdue, the client moves the shards of that
+//! stream onto streams of their own, so the request order a pipelining stream
+//! is answered in stops putting one shard's answers behind another's. And
+//! what that must not cost: each shard's records still land in the order one
+//! client sent them.
 
 use super::*;
 use felix_broker_service::shards::routing::{IngressRouter, routing_table_from};
@@ -11,6 +12,9 @@ use felix_broker_service::shards::{ShardKey, ShardKind};
 use felix_router::{RegionRouter, ShardRouter};
 
 const NODE: &str = "broker-a";
+
+/// Longer than the least head wait the client counts as overdue (250 ms).
+const OVERDUE: Duration = Duration::from_millis(400);
 
 fn shard_key(shard: u32) -> ShardKey {
     ShardKey {
@@ -170,8 +174,9 @@ impl TwoShards {
 
 /// **A stalled shard holds up only itself.** A pipelining stream is answered
 /// in request order, so a shard whose publishes cannot commit would hold back
-/// every other shard sharing its stream. Each shard gets a stream of its own,
-/// so the healthy shard of the same stream keeps being answered.
+/// every other shard sharing its stream. Once the stalled answer is overdue,
+/// the healthy shard moves to a stream of its own and keeps being answered,
+/// under a steady load of concurrent publishes.
 #[tokio::test]
 #[serial]
 async fn a_stalled_shard_does_not_hold_up_another_shard_of_the_stream() -> Result<()> {
@@ -208,11 +213,13 @@ async fn a_stalled_shard_does_not_hold_up_another_shard_of_the_stream() -> Resul
 
     let held = fixture.stall_shard_one().await?;
     let stalled = tokio::spawn(publish(stalled_key));
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Past the least head wait the client counts as overdue.
+    tokio::time::sleep(OVERDUE).await;
     assert!(!stalled.is_finished(), "shard 1 was not stalled");
 
     for _ in 0..5 {
-        timeout(Duration::from_secs(2), publish(healthy_key.clone()))
+        let round = futures::future::try_join_all((0..8).map(|_| publish(healthy_key.clone())));
+        timeout(Duration::from_secs(2), round)
             .await
             .context("shard 0 was held up behind the stalled shard 1")??;
     }
@@ -224,13 +231,12 @@ async fn a_stalled_shard_does_not_hold_up_another_shard_of_the_stream() -> Resul
     Ok(())
 }
 
-/// **A plain `Connection` puts one stream's shards on separate streams too.** It
-/// learns the stream's width on the first keyed publish, so a hot stream's
-/// shards spread over its connections instead of sharing one stream. A
-/// stalled shard holding up the other is what sharing one would look like.
+/// **A plain `Connection` moves a stalled stream's shards apart too.** It
+/// learns the stream's width on the first keyed publish, so it can tell the
+/// healthy shard from the stalled one and move it off the stream they share.
 #[tokio::test]
 #[serial]
-async fn a_plain_clients_keyed_publishes_go_on_their_shards_own_streams() -> Result<()> {
+async fn a_plain_clients_healthy_shard_is_not_held_up_by_a_stalled_one() -> Result<()> {
     let fixture = TwoShards::start().await?;
     let client = Connection::connect(fixture.addr, "localhost", fixture.client_config()?).await?;
     let publisher = Arc::new(client.publisher().await?);
@@ -255,7 +261,7 @@ async fn a_plain_clients_keyed_publishes_go_on_their_shards_own_streams() -> Res
 
     let held = fixture.stall_shard_one().await?;
     let stalled = tokio::spawn(publish(stalled_key));
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(OVERDUE).await;
     assert!(!stalled.is_finished(), "shard 1 was not stalled");
 
     for _ in 0..5 {
@@ -275,8 +281,8 @@ async fn a_plain_clients_keyed_publishes_go_on_their_shards_own_streams() -> Res
 /// sent.** One task publishes a run of records across both shards without
 /// waiting for any answer, so nothing but the routing keeps them in order.
 /// Each shard's log must hold its records in exactly the order they were
-/// issued: every publish to one shard goes through one writer and one
-/// QUIC stream, whichever connection that stream is on.
+/// issued: a shard publishing without acks never moves, so every publish to
+/// it goes through one writer and one QUIC stream.
 #[tokio::test]
 #[serial]
 async fn spreading_a_stream_keeps_each_shards_records_in_publish_order() -> Result<()> {

@@ -24,6 +24,7 @@ use bytes::Bytes;
 use hashbrown::HashMap;
 
 use super::Publisher;
+use super::shard_streams::ShardTicket;
 use super::widths::Width;
 use super::writer::PublishWorker;
 
@@ -81,6 +82,9 @@ pub(super) struct Routed<'a> {
     /// Set for a keyed publish whose width the broker checks, when the
     /// writer may carry more than one shard of the stream over time.
     pub(super) declaration: Option<Bytes>,
+    /// The shard's claim on its place, moved into the request so it is held
+    /// until the answer is read.
+    pub(super) ticket: Option<ShardTicket>,
 }
 
 impl Deref for Routed<'_> {
@@ -93,8 +97,8 @@ impl Deref for Routed<'_> {
 
 impl Publisher {
     /// The writer for a publish with `key`: its shard's own stream when the
-    /// client can tell the shard and has or can get a stream for it, else
-    /// the pool. See [`Self::shard_of`] for which shard that is.
+    /// shard has been given one for stalling (see `ShardStreams`), else the
+    /// pool. See [`Self::shard_of`] for which shard that is.
     ///
     /// Round-robin skips the shard's stream. It asked for spreading over
     /// order, and a stream of its own would put every publish on one writer.
@@ -155,25 +159,34 @@ impl Publisher {
             let declaration = width.as_ref().and_then(|width| width.declaration.clone());
             if self.inner.sharding == PublishSharding::HashStream
                 && let (Some(shard), Some(streams)) = (shard, &self.inner.shard_streams)
-                && let Some(worker) = streams.worker(tenant_id, namespace, stream, shard).await?
+                && streams.enabled()
             {
+                let pooled = self.select_worker(tenant_id, namespace, stream)?;
+                let (own, ticket) = streams
+                    .route(tenant_id, namespace, stream, shard, pooled)
+                    .await;
+                let takes_width = own
+                    .as_ref()
+                    .map_or(pooled.takes_width, |own| own.takes_width);
                 // A stream whose broker did not negotiate the bit would carry
                 // the batch unchecked, so it is routed by the client's own
-                // width, as any publish to that broker is. Known only once
-                // the stream is open: the bit is negotiated in its own
-                // `auth`, so a stream opened for the caller's shard may go
-                // unused here. It stays open for whatever routes to that
-                // shard by the client's own width.
-                if by_given && !worker.takes_width {
+                // width, as any publish to that broker is.
+                if by_given && !takes_width {
+                    drop(ticket);
                     given = None;
                     continue;
                 }
                 // Only to a broker that negotiated it on this stream: any
                 // other cannot decode `publish_width` and would close it.
-                let declaration = declaration.filter(|_| worker.takes_width);
+                let declaration = declaration.filter(|_| takes_width);
+                let worker = match own {
+                    Some(own) => Selected::Shard(own),
+                    None => Selected::Pooled(pooled),
+                };
                 return Ok(Routed {
-                    worker: Selected::Shard(worker),
+                    worker,
                     declaration,
+                    ticket,
                 });
             }
             break width;
@@ -195,6 +208,7 @@ impl Publisher {
         Ok(Routed {
             worker: Selected::Pooled(worker),
             declaration,
+            ticket: None,
         })
     }
 
@@ -208,18 +222,19 @@ impl Publisher {
         stream: &str,
         shard: u32,
     ) -> Result<Routed<'_>> {
-        if self.inner.sharding == PublishSharding::HashStream
-            && let Some(streams) = &self.inner.shard_streams
-            && let Some(worker) = streams.worker(tenant_id, namespace, stream, shard).await?
-        {
-            return Ok(Routed {
-                worker: Selected::Shard(worker),
-                declaration: None,
-            });
-        }
+        let pooled = self.select_worker(tenant_id, namespace, stream)?;
+        let (own, ticket) = match &self.inner.shard_streams {
+            Some(streams) if self.inner.sharding == PublishSharding::HashStream => {
+                streams
+                    .route(tenant_id, namespace, stream, shard, pooled)
+                    .await
+            }
+            _ => (None, None),
+        };
         Ok(Routed {
-            worker: Selected::Pooled(self.select_worker(tenant_id, namespace, stream)?),
+            worker: own.map_or(Selected::Pooled(pooled), Selected::Shard),
             declaration: None,
+            ticket,
         })
     }
 

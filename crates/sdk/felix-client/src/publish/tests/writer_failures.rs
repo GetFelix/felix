@@ -65,6 +65,7 @@ async fn run_publisher_writer_error_drains_queue() -> Result<()> {
         request_id: Some(1),
         _permit: test_publish_permit(),
         response: resp_tx1,
+        ticket: None,
     })
     .await
     .context("send request1")?;
@@ -83,6 +84,7 @@ async fn run_publisher_writer_error_drains_queue() -> Result<()> {
         request_id: Some(2),
         _permit: test_publish_permit(),
         response: resp_tx2,
+        ticket: None,
     })
     .await
     .context("send request2")?;
@@ -161,6 +163,7 @@ async fn run_publisher_writer_ack_mismatch_drains_queue() -> Result<()> {
         request_id: Some(9),
         _permit: test_publish_permit(),
         response: resp_tx1,
+        ticket: None,
     })
     .await
     .context("send request1")?;
@@ -179,6 +182,7 @@ async fn run_publisher_writer_ack_mismatch_drains_queue() -> Result<()> {
         request_id: Some(10),
         _permit: test_publish_permit(),
         response: resp_tx2,
+        ticket: None,
     })
     .await
     .context("send request2")?;
@@ -237,6 +241,7 @@ async fn run_publisher_writer_binary_bytes_write_error_drains_queue() -> Result<
         request_id: None,
         _permit: test_publish_permit(),
         response: resp_tx1,
+        ticket: None,
     })
     .await
     .context("send binary request")?;
@@ -297,6 +302,7 @@ async fn run_publisher_writer_send_closed_drains_queue() -> Result<()> {
         request_id: Some(7),
         _permit: test_publish_permit(),
         response: resp_tx1,
+        ticket: None,
     })
     .await
     .context("send publish request")?;
@@ -362,6 +368,7 @@ async fn run_publisher_writer_publish_batch_error_drains_queue() -> Result<()> {
         request_id: Some(99),
         _permit: test_publish_permit(),
         response: resp_tx1,
+        ticket: None,
     })
     .await
     .context("send request1")?;
@@ -380,6 +387,7 @@ async fn run_publisher_writer_publish_batch_error_drains_queue() -> Result<()> {
         request_id: Some(100),
         _permit: test_publish_permit(),
         response: resp_tx2,
+        ticket: None,
     })
     .await
     .context("send request2")?;
@@ -467,6 +475,7 @@ async fn a_refused_publish_leaves_the_stream_serving_later_ones() -> Result<()> 
                 request_id: Some(request_id),
                 _permit: test_publish_permit(),
                 response,
+                ticket: None,
             };
             (request, answer)
         };
@@ -535,6 +544,7 @@ async fn a_publish_written_then_dropped_reports_a_lost_ack() -> Result<()> {
         request_id: Some(1),
         _permit: test_publish_permit(),
         response,
+        ticket: None,
     })
     .await
     .context("send request")?;

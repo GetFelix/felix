@@ -1,14 +1,14 @@
-//! Per-shard publish streams: which writer a shard gets, the cap, and what
-//! happens when a shard's writer dies.
+//! Adaptive shard streams: a shard leaves the pool only on evidence of a
+//! stall, moves only once drained, and comes back once calm.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-
-use felix_wire::AckMode;
+use std::time::Duration;
 
 use super::fake_worker;
 use crate::publish::routing::Selected;
-use crate::publish::writer::{PublishRequest, PublishWorker};
+use crate::publish::shard_streams::{CALM_FIRST, STALL_FLOOR, now_nanos};
+use crate::publish::writer::PublishWorker;
 use crate::publish::{OpenWorker, Publisher, PublisherInner};
 
 /// An opener that counts its opens and hands out fake writers, failing
@@ -60,172 +60,231 @@ async fn route(publisher: &Publisher, stream: &str, shard: u32) -> Own {
         .worker
     {
         Selected::Shard(worker) => Own::Shard(worker),
-        Selected::Pooled(worker) => Own::Pooled(worker as *const PublishWorker),
+        Selected::Pooled(_) => Own::Pooled,
     }
 }
 
 enum Own {
     Shard(Arc<PublishWorker>),
-    Pooled(*const PublishWorker),
+    Pooled,
 }
 
 impl Own {
     fn shard(self) -> Arc<PublishWorker> {
         match self {
             Self::Shard(worker) => worker,
-            Self::Pooled(_) => panic!("routed to the pool"),
+            Self::Pooled => panic!("routed to the pool"),
         }
     }
 }
 
-async fn kill(worker: &PublishWorker) {
-    let (response, answered) = tokio::sync::oneshot::channel();
-    worker
-        .tx
-        .send(PublishRequest::Finish { response })
+/// The pooled writer `shard` of `stream` rides, with its head made the
+/// shard's and overdue.
+fn stall_pooled(f: &Fixture, stream: &str, id: u64) {
+    let pooled = f
+        .publisher
+        .select_worker("t", "ns", stream)
+        .expect("pooled writer");
+    pooled.head.set(Some(id), now_nanos());
+}
+
+async fn ticket_id(publisher: &Publisher, stream: &str, shard: u32) -> u64 {
+    publisher
+        .route("t", "ns", stream, Some(b"k".as_slice()), Some(shard))
         .await
-        .expect("worker running");
-    let _ = answered.await;
-    while !worker.tx.is_closed() {
+        .expect("route")
+        .ticket
+        .as_ref()
+        .expect("a ticket")
+        .id()
+}
+
+fn own_count(f: &Fixture) -> usize {
+    f.publisher
+        .inner
+        .shard_streams
+        .as_ref()
+        .expect("shard streams")
+        .own_count()
+}
+
+#[tokio::test]
+async fn healthy_shards_ride_the_pool() {
+    let f = fixture(4);
+    for shard in 0..48 {
+        assert!(matches!(
+            route(&f.publisher, "orders", shard).await,
+            Own::Pooled
+        ));
+    }
+    assert_eq!(f.opens.load(Ordering::SeqCst), 0);
+}
+
+/// A shard whose answer is overdue at its pooled stream's head moves, but only
+/// once its publishes in flight there are answered.
+#[tokio::test(start_paused = true)]
+async fn an_overdue_shard_moves_once_drained() {
+    let f = fixture(4);
+    let held = f
+        .publisher
+        .route("t", "ns", "orders", Some(b"k".as_slice()), Some(1))
+        .await
+        .expect("route");
+    let id = held.ticket.as_ref().expect("ticket").id();
+    stall_pooled(&f, "orders", id);
+    tokio::time::advance(STALL_FLOOR * 2).await;
+    let publisher = f.publisher.clone();
+    let moving = tokio::spawn(async move { route(&publisher, "orders", 1).await.shard() });
+    for _ in 0..10 {
         tokio::task::yield_now().await;
     }
-}
-
-#[tokio::test]
-async fn a_shard_gets_a_stream_of_its_own() {
-    let f = fixture(4);
-    let own = route(&f.publisher, "orders", 1).await.shard();
     assert!(
-        !f.publisher
-            .inner
-            .workers
-            .iter()
-            .any(|worker| std::ptr::eq(worker, &*own)),
-        "a shard's stream is one of the pool's"
+        !moving.is_finished(),
+        "moved with a publish still in flight"
     );
-    assert_eq!(f.opens.load(Ordering::SeqCst), 1);
-}
-
-#[tokio::test]
-async fn one_shard_keeps_one_writer_and_shards_do_not_share() {
-    let f = fixture(4);
-    let first = route(&f.publisher, "orders", 0).await.shard();
-    let again = route(&f.publisher, "orders", 0).await.shard();
-    assert!(Arc::ptr_eq(&first, &again), "a shard moved between writers");
-    let other = route(&f.publisher, "orders", 1).await.shard();
-    assert!(!Arc::ptr_eq(&first, &other), "two shards share a writer");
-    let elsewhere = route(&f.publisher, "payments", 0).await.shard();
-    assert!(
-        !Arc::ptr_eq(&first, &elsewhere),
-        "two streams share a writer"
-    );
-    assert_eq!(f.opens.load(Ordering::SeqCst), 3);
-}
-
-/// Concurrent first publishes to a shard wait for one open, not one each.
-#[tokio::test]
-async fn concurrent_first_publishes_open_once() {
-    let f = fixture(4);
-    let (a, b) = tokio::join!(
-        route(&f.publisher, "orders", 2),
-        route(&f.publisher, "orders", 2)
-    );
-    assert!(Arc::ptr_eq(&a.shard(), &b.shard()));
-    assert_eq!(f.opens.load(Ordering::SeqCst), 1);
-}
-
-#[tokio::test]
-async fn past_the_cap_shards_fall_back_to_the_pool() {
-    let f = fixture(2);
-    let held = route(&f.publisher, "orders", 0).await.shard();
-    route(&f.publisher, "orders", 1).await.shard();
-    let Own::Pooled(pooled) = route(&f.publisher, "orders", 2).await else {
-        panic!("a shard past the cap got a stream of its own");
-    };
-    // The pool slot is the one the stream hashes to, so it stays put.
-    let expected = f
-        .publisher
-        .select_worker("t", "ns", "orders")
-        .expect("pool") as *const PublishWorker;
-    assert_eq!(pooled, expected);
-    // Shards that already hold a stream keep it.
-    assert!(Arc::ptr_eq(
-        &held,
-        &route(&f.publisher, "orders", 0).await.shard()
-    ));
+    // Another shard of the same pooled stream, with nothing in flight behind
+    // the overdue head, is not held up by the move: it leaves at once.
+    route(&f.publisher, "orders", 2).await.shard();
+    drop(held);
+    moving.await.expect("moved");
     assert_eq!(f.opens.load(Ordering::SeqCst), 2);
+    assert_eq!(own_count(&f), 2);
 }
 
-#[tokio::test]
-async fn a_shard_whose_writer_died_moves_to_a_new_stream() {
-    let f = fixture(1);
-    let first = route(&f.publisher, "orders", 0).await.shard();
-    kill(&first).await;
-    let replaced = route(&f.publisher, "orders", 0).await.shard();
-    assert!(!Arc::ptr_eq(&first, &replaced), "stayed on a dead writer");
-    assert!(!replaced.tx.is_closed());
-    // The replacement took the dead writer's slot, not a new one.
+/// Calm for long enough on its own stream, the shard rejoins the pool.
+#[tokio::test(start_paused = true)]
+async fn a_calm_shard_returns_to_the_pool() {
+    let f = fixture(4);
+    let id = ticket_id(&f.publisher, "orders", 1).await;
+    stall_pooled(&f, "orders", id);
+    tokio::time::advance(STALL_FLOOR * 2).await;
+    route(&f.publisher, "orders", 1).await.shard();
+    // Drained before the move, so the pool's head is no longer the shard's.
+    f.publisher
+        .select_worker("t", "ns", "orders")
+        .expect("pooled writer")
+        .head
+        .set(None, 0);
+    tokio::time::advance(CALM_FIRST / 2).await;
+    route(&f.publisher, "orders", 1).await.shard();
+    tokio::time::advance(CALM_FIRST).await;
     assert!(matches!(
         route(&f.publisher, "orders", 1).await,
-        Own::Pooled(_)
+        Own::Pooled
     ));
-    assert!(Arc::ptr_eq(
-        &replaced,
-        &route(&f.publisher, "orders", 0).await.shard()
-    ));
-    f.publisher
-        .publish("t", "ns", "orders", b"p".to_vec(), AckMode::PerMessage)
-        .await
-        .expect("publish on the replacement");
-    assert_eq!(f.opens.load(Ordering::SeqCst), 2);
+    assert_eq!(own_count(&f), 0);
 }
 
-/// An open that fails fails the publish instead of sending it through the
-/// pool, and the shard's next publish tries again.
-#[tokio::test]
-async fn a_failed_open_fails_the_publish_and_is_retried() {
+/// A publish dropped while it waits on its shard's move leaves the shard
+/// routable, not stuck moving.
+#[tokio::test(start_paused = true)]
+async fn a_move_dropped_midway_leaves_the_shard_routable() {
+    let f = fixture(4);
+    let held = f
+        .publisher
+        .route("t", "ns", "orders", Some(b"k".as_slice()), Some(1))
+        .await
+        .expect("route");
+    let id = held.ticket.as_ref().expect("ticket").id();
+    stall_pooled(&f, "orders", id);
+    tokio::time::advance(STALL_FLOOR * 2).await;
+    let dropped = tokio::time::timeout(Duration::from_millis(10), route(&f.publisher, "orders", 1));
+    assert!(
+        dropped.await.is_err(),
+        "the move should wait for the held publish"
+    );
+    drop(held);
+    tokio::time::timeout(Duration::from_secs(1), route(&f.publisher, "orders", 1))
+        .await
+        .expect("the shard was left moving");
+    assert_eq!(own_count(&f), f.opens.load(Ordering::SeqCst));
+}
+
+/// A shard that stalls again soon after each return stays out longer each
+/// time, so it moves a handful of times in two minutes, not every few seconds.
+#[tokio::test(start_paused = true)]
+async fn a_flapping_shard_does_not_churn() {
+    let f = fixture(4);
+    let id = ticket_id(&f.publisher, "orders", 1).await;
+    let pooled = f
+        .publisher
+        .select_worker("t", "ns", "orders")
+        .expect("pooled writer");
+    for _ in 0..20 {
+        // Stall wherever the shard is: the pool's head, or its own stream's.
+        let own = match route(&f.publisher, "orders", 1).await {
+            Own::Shard(own) => {
+                own.head.set(Some(id), now_nanos());
+                Some(own)
+            }
+            Own::Pooled => {
+                stall_pooled(&f, "orders", id);
+                None
+            }
+        };
+        tokio::time::advance(STALL_FLOOR * 2).await;
+        route(&f.publisher, "orders", 1).await;
+        // The late answer lands.
+        pooled.head.set(None, 0);
+        if let Some(own) = own {
+            own.head.set(None, 0);
+        }
+        tokio::time::advance(Duration::from_secs(6)).await;
+        route(&f.publisher, "orders", 1).await;
+    }
+    let opens = f.opens.load(Ordering::SeqCst);
+    assert!(opens <= 4, "{opens} moves in two minutes of flapping");
+}
+
+/// A shard that publishes without an ack is never moved: nothing would tell
+/// it when those publishes reached the broker.
+#[tokio::test(start_paused = true)]
+async fn an_unacked_shard_stays_put() {
+    let f = fixture(4);
+    let routed = f
+        .publisher
+        .route("t", "ns", "orders", Some(b"k".as_slice()), Some(1))
+        .await
+        .expect("route");
+    let ticket = routed.ticket.clone().expect("ticket");
+    ticket.pin();
+    let id = ticket.id();
+    drop((ticket, routed));
+    stall_pooled(&f, "orders", id);
+    tokio::time::advance(STALL_FLOOR * 2).await;
+    assert!(matches!(
+        route(&f.publisher, "orders", 1).await,
+        Own::Pooled
+    ));
+    assert_eq!(f.opens.load(Ordering::SeqCst), 0);
+}
+
+/// Past the cap, a stalled shard stays pooled.
+#[tokio::test(start_paused = true)]
+async fn past_the_cap_a_stalled_shard_stays_pooled() {
+    let f = fixture(1);
+    for shard in [1, 2] {
+        let id = ticket_id(&f.publisher, "orders", shard).await;
+        stall_pooled(&f, "orders", id);
+        tokio::time::advance(STALL_FLOOR * 2).await;
+        let own = route(&f.publisher, "orders", shard).await;
+        assert_eq!(matches!(own, Own::Shard(_)), shard == 1);
+    }
+    assert_eq!(f.opens.load(Ordering::SeqCst), 1);
+}
+
+/// A stream that cannot be opened leaves the shard on the pool, and the
+/// publish goes there.
+#[tokio::test(start_paused = true)]
+async fn a_failed_open_keeps_the_shard_pooled() {
     let f = fixture(4);
     f.fail.store(true, Ordering::SeqCst);
-    assert!(
-        f.publisher
-            .publish("t", "ns", "orders", b"p".to_vec(), AckMode::PerMessage)
-            .await
-            .is_err()
-    );
-    f.fail.store(false, Ordering::SeqCst);
-    route(&f.publisher, "orders", 0).await.shard();
-    assert_eq!(f.opens.load(Ordering::SeqCst), 1);
-}
-
-#[tokio::test]
-async fn unkeyed_and_idempotent_publishes_go_on_shard_zeros_stream() {
-    let f = fixture(4);
-    let zero = route(&f.publisher, "orders", 0).await.shard();
-    let before = zero.request_counter.load(Ordering::SeqCst);
-    f.publisher
-        .publish("t", "ns", "orders", b"p".to_vec(), AckMode::PerMessage)
-        .await
-        .expect("publish");
-    f.publisher
-        .publish_idempotent_batch("t", "ns", "orders", vec![b"p".to_vec()], 7, 0)
-        .await
-        .expect("idempotent publish");
-    assert_eq!(zero.request_counter.load(Ordering::SeqCst), before + 2);
-    assert_eq!(f.opens.load(Ordering::SeqCst), 1);
-}
-
-/// `finish` ends the shard streams too, and a finished client opens no more.
-#[tokio::test]
-async fn finish_ends_shard_streams_and_opens_no_more() {
-    let f = fixture(4);
-    let own = route(&f.publisher, "orders", 0).await.shard();
-    f.publisher.finish().await.expect("finish");
-    assert!(own.tx.is_closed());
-    assert!(
-        f.publisher
-            .publish("t", "ns", "orders", b"p".to_vec(), AckMode::PerMessage)
-            .await
-            .is_err()
-    );
-    assert_eq!(f.opens.load(Ordering::SeqCst), 1);
+    let id = ticket_id(&f.publisher, "orders", 1).await;
+    stall_pooled(&f, "orders", id);
+    tokio::time::advance(STALL_FLOOR * 2).await;
+    assert!(matches!(
+        route(&f.publisher, "orders", 1).await,
+        Own::Pooled
+    ));
+    assert_eq!(own_count(&f), 0);
 }

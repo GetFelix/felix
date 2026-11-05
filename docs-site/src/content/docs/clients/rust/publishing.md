@@ -196,9 +196,9 @@ shard switches between them; await acks where order across calls matters. After
 `publish_records_at_least_once` re-splits records under a new width, the report
 can list a shard twice.
 
-Each shard's batch uses that shard's own publish stream while the client has
-room for one (`FELIX_PUB_SHARD_STREAMS`), so a slow shard does not hold up the
-others.
+Each shard's batch takes the stream its shard is on: the pool while the shard
+is healthy, or a stream of its own once it stalls, so a slow shard does not keep
+holding up the others.
 
 ### Keys and headers
 
@@ -308,33 +308,31 @@ same writer, so each stream's publishes reach the broker in order.
 `RoundRobin` spreads load evenly across writers, but publishes to one stream
 can arrive out of order.
 
-Under `HashStream` the client goes one step further: each shard of a stream
-gets a stream of its own. The broker answers a stream's pipelined publishes in
-order, so shards sharing a stream would wait on the slowest; on separate
-streams a shard stalled on a quorum holds up only itself. Each shard stream
-is placed on the least-loaded connection, so a busy multi-shard stream
-spreads over the client's connections and the broker's listeners instead of
-riding one. The stream opens on the shard's first publish, which pays one
-extra round trip to authenticate it, and stays open. A client keeps at most
-`publish_shard_streams` of them per broker (4 by default,
-`FELIX_PUB_SHARD_STREAMS`); shards past that share the pool.
+The broker answers a stream's pipelined publishes in order, so shards that
+share a stream wait on the slowest. The client keeps healthy shards on its
+pooled streams, which is fastest when keys spread over many shards. It watches
+the publish at the head of each stream, the one every later answer waits
+behind. When that answer is overdue (eight times the stream's usual wait, and
+at least 250 ms), shards move onto streams of their own:
 
-The cap is per broker and first come, first served across every stream the
-client publishes to: the first four shards (tenant, namespace, stream, shard)
-it publishes to each get a dedicated stream, and every later shard uses the
-shared pool permanently. A stalled dedicated shard holds up only itself; a
-stalled pooled shard can hold up every other pooled shard, including other
-streams' shards.
+- The stalled shard moves once its publishes in flight are answered, so its
+  order holds. From then on it holds up only itself.
+- Any other shard that would queue behind the overdue answer moves instead,
+  after its own publishes in flight, so it stops waiting on the stalled one.
 
-Four fully isolates streams of up to four shards. Isolation matters when a
-shard can stall on its own, as with quorum waits or a dead follower on a
-replicated stream. On a wide stream any cap protects only the first N shards
-seen, so a high cap buys arbitrary partial protection at a throughput cost: on
-an 8 vCPU broker with a 48-shard stream and 256 B acked publishes, 16 streams
-measured about 97 MB/s, 4 about 125 MB/s and 0 (everything on the pool) about
-162 MB/s. For wide replicated streams that need isolation, raise
-`FELIX_PUB_SHARD_STREAMS` to the total number of shards the client publishes
-to on a broker. Adaptive dedicated streams are tracked in #1417.
+A moved shard returns to the pool once it and the pool have gone 5 s without an
+overdue answer. A shard that keeps stalling stays out longer each time, up to 5
+minutes. A client moves at most `publish_shard_streams` shards per broker at
+once (64 by default, `FELIX_PUB_SHARD_STREAMS`, `0` to keep every shard on the
+pool), each to the least-loaded connection. A shard that ever publishes with
+`AckMode::None` stays where it is, since nothing tells the client when such a
+publish has arrived.
+
+A move cannot reach publishes already sent. Publishes queued behind a stalled
+head still wait for its answer, which the broker gives within its ack bound
+(the quorum wait plus 1.5 s, 6.5 s by default). If you put your own timeout
+around a publish, make it longer than that, or a publish answered late behind
+a stalled shard is counted as failed.
 
 Each broker connection asks for a stream's width on its first keyed publish
 to it (one more round trip) and picks a key's stream from that answer alone,

@@ -24,7 +24,7 @@ pub use routing::PublishSharding;
 pub(crate) use admission::PublishAdmission;
 pub(crate) use headers::{Blocks, split_records};
 pub(crate) use routing::width_went_stale;
-pub(crate) use shard_streams::{OpenWorker, ShardStreams};
+pub(crate) use shard_streams::{HeadWatch, OpenWorker, ShardStreams};
 #[cfg(test)]
 pub(crate) use widths::REVALIDATE_TIMEOUT;
 pub(crate) use widths::{LearnWidth, StreamWidths, Width};
@@ -354,6 +354,7 @@ impl Publisher {
                 request_id: None,
                 _permit: permit,
                 response: response_tx,
+                ticket: worker.ticket.clone(),
             })
             .await
             .context("enqueue binary batch")?;
@@ -555,6 +556,9 @@ impl Publisher {
         };
         let mut acked = Vec::with_capacity(batches.len());
         if window <= 1 {
+            // Each batch routes itself. Held across those, this route's
+            // ticket would stop the shard's move that one of them waits on.
+            drop(worker);
             for (index, payloads) in batches.iter().enumerate() {
                 match self
                     .publish_idempotent_batch_routed(
@@ -678,6 +682,7 @@ impl Publisher {
                 request_id: Some(request_id),
                 _permit: permit,
                 response: response_tx,
+                ticket: worker.ticket.clone(),
             })
             .await
             .context("enqueue idempotent binary batch")?;

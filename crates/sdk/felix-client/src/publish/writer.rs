@@ -18,6 +18,7 @@ use quinn::{RecvStream, SendStream};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 
 use super::ack::read_ack;
+use super::shard_streams::{HeadWatch, STALL_FLOOR, ShardTicket, now_nanos};
 use super::{AckOutcome, Acked};
 use crate::frame_io::write_frame_parts;
 #[cfg(feature = "telemetry")]
@@ -44,6 +45,8 @@ pub(crate) struct PublishWorker {
     /// The broker on this stream answered `EXT_RECORD_HEADERS`. One that did
     /// not would refuse the extended frame and close the stream.
     pub(crate) takes_record_headers: bool,
+    /// The writer's oldest unanswered publish, for spotting a stalled shard.
+    pub(crate) head: Arc<HeadWatch>,
 }
 
 pub(crate) enum PublishRequest {
@@ -53,6 +56,8 @@ pub(crate) enum PublishRequest {
         request_id: Option<u64>,
         _permit: OwnedSemaphorePermit,
         response: oneshot::Sender<AckOutcome>,
+        /// The shard's claim on its stream, held until the answer is read.
+        ticket: Option<ShardTicket>,
     },
     BinaryBytes {
         bytes: Bytes,
@@ -69,6 +74,7 @@ pub(crate) enum PublishRequest {
         request_id: Option<u64>,
         _permit: OwnedSemaphorePermit,
         response: oneshot::Sender<AckOutcome>,
+        ticket: Option<ShardTicket>,
     },
     Finish {
         response: oneshot::Sender<AckOutcome>,
@@ -85,6 +91,7 @@ struct PendingAck {
     _permit: OwnedSemaphorePermit,
     /// This publish's slot in the publish window, freed with the answer.
     _window: Option<OwnedSemaphorePermit>,
+    ticket: Option<ShardTicket>,
     // Read only by the telemetry counters in the ack reader.
     #[cfg_attr(not(feature = "telemetry"), allow(dead_code))]
     batch_count: u64,
@@ -99,6 +106,7 @@ pub(crate) async fn run_publisher_writer_with_limit(
     _chunk_bytes: usize,
     max_frame_bytes: usize,
     window: Option<Arc<Semaphore>>,
+    head: Arc<HeadWatch>,
 ) -> Result<()> {
     // Single writer: serialize publish requests over one bi-directional
     // stream. Acked publishes pipeline — written back to back, their acks
@@ -128,6 +136,7 @@ pub(crate) async fn run_publisher_writer_with_limit(
     macro_rules! fail_worker {
         ($message:expr) => {{
             let message: String = $message;
+            head.set(None, 0);
             for stale in pending.drain(..) {
                 #[cfg(feature = "telemetry")]
                 {
@@ -159,15 +168,21 @@ pub(crate) async fn run_publisher_writer_with_limit(
             {
                 match read_ack(&mut recv, &mut ack_scratch, max_frame_bytes).await {
                     Ok((answered, answer)) => {
-                        let Some(entry) = pending
+                        let index = pending
                             .iter()
-                            .position(|entry| entry.request_id == answered)
-                            .and_then(|index| pending.remove(index))
-                        else {
+                            .position(|entry| entry.request_id == answered);
+                        let Some(entry) = index.and_then(|index| pending.remove(index)) else {
                             fail_worker!(format!(
                                 "publish failed: ack for request {answered}, which is not outstanding"
                             ));
                         };
+                        if index == Some(0) {
+                            note_head_answered(
+                                &head,
+                                entry.ticket.as_ref(),
+                                pending.front().map(head_shard),
+                            );
+                        }
                         #[cfg(feature = "telemetry")]
                         {
                             let counters = frame_counters();
@@ -208,6 +223,9 @@ pub(crate) async fn run_publisher_writer_with_limit(
     macro_rules! submit_pending {
         ($pending:expr) => {{
             pending.push_back($pending);
+            if pending.len() == 1 {
+                head.set(pending.front().map(head_shard), now_nanos());
+            }
         }};
     }
     let mut finish_response: Option<oneshot::Sender<AckOutcome>> = None;
@@ -259,6 +277,7 @@ pub(crate) async fn run_publisher_writer_with_limit(
                 request_id,
                 _permit,
                 response,
+                ticket,
             } => match message {
                 Message::PublishBatch {
                     tenant_id,
@@ -366,6 +385,9 @@ pub(crate) async fn run_publisher_writer_with_limit(
                                     .fetch_add(bytes.len() as u64, Ordering::Relaxed);
                             }
                             if ack == AckMode::None {
+                                if let Some(ticket) = &ticket {
+                                    ticket.pin();
+                                }
                                 #[cfg(feature = "telemetry")]
                                 {
                                     let counters = frame_counters();
@@ -382,6 +404,7 @@ pub(crate) async fn run_publisher_writer_with_limit(
                                     response,
                                     _permit,
                                     _window: window_permit.take(),
+                                    ticket,
                                     batch_count: 1,
                                     item_count,
                                 });
@@ -444,6 +467,9 @@ pub(crate) async fn run_publisher_writer_with_limit(
                     match write_result {
                         Ok(()) => {
                             if ack == AckMode::None {
+                                if let Some(ticket) = &ticket {
+                                    ticket.pin();
+                                }
                                 #[cfg(feature = "telemetry")]
                                 {
                                     let counters = frame_counters();
@@ -464,6 +490,7 @@ pub(crate) async fn run_publisher_writer_with_limit(
                                     response,
                                     _permit,
                                     _window: window_permit.take(),
+                                    ticket,
                                     batch_count,
                                     item_count,
                                 });
@@ -503,6 +530,7 @@ pub(crate) async fn run_publisher_writer_with_limit(
                 request_id,
                 _permit,
                 response,
+                ticket,
             } => {
                 #[cfg(not(feature = "telemetry"))]
                 let _ = (item_count, sample);
@@ -549,6 +577,9 @@ pub(crate) async fn run_publisher_writer_with_limit(
                                 .fetch_add(bytes.len() as u64, Ordering::Relaxed);
                         }
                         if ack == AckMode::None {
+                            if let Some(ticket) = &ticket {
+                                ticket.pin();
+                            }
                             #[cfg(feature = "telemetry")]
                             {
                                 let counters = frame_counters();
@@ -565,6 +596,7 @@ pub(crate) async fn run_publisher_writer_with_limit(
                                 response,
                                 _permit,
                                 _window: window_permit.take(),
+                                ticket,
                                 batch_count: 1,
                                 item_count: item_count as u64,
                             });
@@ -640,8 +672,37 @@ pub(crate) async fn run_publisher_writer(
         _chunk_bytes,
         crate::config::DEFAULT_MAX_FRAME_BYTES,
         None,
+        Arc::default(),
     )
     .await
+}
+
+/// The shard id a writer's head is tracked by: 0 for a publish with no
+/// ticket.
+fn head_shard(entry: &PendingAck) -> u64 {
+    entry.ticket.as_ref().map_or(0, ShardTicket::id)
+}
+
+/// The head, a publish of `ticket`'s shard, was answered: measure its wait,
+/// tell its shard if it was overdue, and start timing the `next` head, named
+/// by its shard id.
+pub(super) fn note_head_answered(
+    head: &HeadWatch,
+    ticket: Option<&ShardTicket>,
+    next: Option<u64>,
+) {
+    let now = now_nanos();
+    if let Some(since) = head.since() {
+        let waited = std::time::Duration::from_nanos(now.saturating_sub(since));
+        let bound = head.bound();
+        head.sample(waited);
+        if waited > STALL_FLOOR
+            && let Some(ticket) = ticket
+        {
+            ticket.answered(waited, bound);
+        }
+    }
+    head.set(next, now);
 }
 
 pub(crate) async fn drain_publish_queue(rx: &mut mpsc::Receiver<PublishRequest>, message: &str) {

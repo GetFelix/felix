@@ -173,9 +173,9 @@ mod clientconfig_1 {
             
             // Publish sharding
             publish_sharding: PublishSharding::HashStream,
-            // Client only: streams of their own for up to this many shards
-            // per broker (0 turns them off)
-            publish_shard_streams: 4,
+            // Client only: most shards moved onto streams of their own at
+            // once while they stall, per broker (0 keeps every shard pooled)
+            publish_shard_streams: 64,
 
             // Everything else, the tenant and token included, from FELIX_* variables.
             ..ClientConfig::from_env_or_yaml(quinn, None)?
@@ -1330,7 +1330,7 @@ mod publisher_sharding_1 {
     }
 }
 
-/// rust/publishing.md line 388: "Errors you can act on", block 1.
+/// rust/publishing.md line 386: "Errors you can act on", block 1.
 mod errors_you_can_act_on_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1356,7 +1356,7 @@ mod errors_you_can_act_on_1 {
     }
 }
 
-/// rust/publishing.md line 445: "Errors you can act on", block 2.
+/// rust/publishing.md line 443: "Errors you can act on", block 2.
 mod errors_you_can_act_on_2 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1375,7 +1375,7 @@ mod errors_you_can_act_on_2 {
     }
 }
 
-/// rust/publishing.md line 476: "Idempotent producers", block 1.
+/// rust/publishing.md line 474: "Idempotent producers", block 1.
 mod idempotent_producers_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1392,7 +1392,7 @@ mod idempotent_producers_1 {
     }
 }
 
-/// rust/publishing.md line 496: "Idempotent producers", block 2.
+/// rust/publishing.md line 494: "Idempotent producers", block 2.
 mod idempotent_producers_2 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1407,7 +1407,7 @@ mod idempotent_producers_2 {
     }
 }
 
-/// rust/publishing.md line 508: "Idempotent producers", block 3.
+/// rust/publishing.md line 506: "Idempotent producers", block 3.
 mod idempotent_producers_3 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1422,7 +1422,7 @@ mod idempotent_producers_3 {
     }
 }
 
-/// rust/publishing.md line 527: "Idempotent producers", block 4.
+/// rust/publishing.md line 525: "Idempotent producers", block 4.
 mod idempotent_producers_4 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;

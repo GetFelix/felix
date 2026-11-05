@@ -303,9 +303,9 @@ let config = ClientConfig {
     
     // Publish sharding
     publish_sharding: PublishSharding::HashStream,
-    // Client only: streams of their own for up to this many shards
-    // per broker (0 turns them off)
-    publish_shard_streams: 4,
+    // Client only: most shards moved onto streams of their own at
+    // once while they stall, per broker (0 keeps every shard pooled)
+    publish_shard_streams: 64,
 
     // Everything else, the tenant and token included, from FELIX_* variables.
     ..ClientConfig::from_env_or_yaml(quinn, None)?

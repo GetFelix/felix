@@ -24,6 +24,7 @@ fn publisher(takes_record_headers: bool) -> (Publisher, mpsc::Receiver<PublishRe
                 takes_width: false,
                 takes_shard: false,
                 takes_record_headers,
+                head: Default::default(),
             }]),
             PublishSharding::RoundRobin,
         )),

@@ -8,6 +8,7 @@ mod api;
 mod encoding;
 mod headers;
 mod routing;
+mod shard_moves;
 mod shard_streams;
 mod stub_broker;
 mod widths;
@@ -59,6 +60,7 @@ pub(super) fn fake_worker() -> PublishWorker {
         takes_width: true,
         takes_shard: true,
         takes_record_headers: false,
+        head: Default::default(),
     }
 }
 

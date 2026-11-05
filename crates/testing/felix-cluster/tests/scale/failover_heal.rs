@@ -31,6 +31,11 @@ const NODE_EXPIRY: Duration = Duration::from_secs(15);
 /// shard named below a ballot then climbs a generation per pass; the rest is
 /// margin for a busy runner.
 const OUTAGE_BOUND: Duration = Duration::from_secs(90);
+/// How long one publish may take. Above the broker's own ack bound (the 5 s
+/// quorum wait plus 1.5 s), so a publish answered late behind a stalled
+/// stream-mate counts as served, and a stalled shard reports its own refusal
+/// instead of a timeout.
+const PUBLISH_BOUND: Duration = Duration::from_secs(8);
 /// How long after the restart every shard must be serving.
 const RESTART_BOUND: Duration = Duration::from_secs(45);
 
@@ -308,7 +313,7 @@ async fn append(
             b"out".to_vec(),
             AckMode::PerMessage,
         );
-        let outcome = match tokio::time::timeout(Duration::from_secs(5), publish).await {
+        let outcome = match tokio::time::timeout(PUBLISH_BOUND, publish).await {
             Ok(Ok(_)) => Ok(()),
             Ok(Err(err)) => Err(format!("{err:#}")),
             Err(_) => Err("timed out".to_string()),
