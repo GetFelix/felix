@@ -1401,18 +1401,13 @@ impl DurableShardStore {
                 let Some(starts) = &self.generation_starts else {
                     return Ok(None);
                 };
-                Ok(starts
-                    .broker
-                    .shard_log_for(
-                        felix_broker::LogKind::Cache,
-                        &key.tenant_id,
-                        &key.namespace,
-                        &key.stream,
-                        key.shard,
-                        None,
-                        (incarnation != 0).then_some(incarnation),
-                    )
-                    .await)
+                Ok(open_broker_log(
+                    &starts.broker,
+                    felix_broker::LogKind::Cache,
+                    key,
+                    incarnation,
+                )
+                .await)
             }
         }
     }
@@ -1448,19 +1443,7 @@ impl DurableShardStore {
             return Ok(());
         }
         for kind in GROUP_LOGS {
-            let Some(log) = starts
-                .broker
-                .shard_log_for(
-                    kind,
-                    &key.tenant_id,
-                    &key.namespace,
-                    &key.stream,
-                    key.shard,
-                    None,
-                    (incarnation != 0).then_some(incarnation),
-                )
-                .await
-            else {
+            let Some(log) = open_broker_log(&starts.broker, kind, key, incarnation).await else {
                 anyhow::bail!("open the shard's {kind:?} log");
             };
             if begins_here {
@@ -1491,18 +1474,7 @@ impl DurableShardStore {
             felix_broker::LogKind::Counters,
         ] {
             // No counter store configured means no counter log to mark.
-            let Some(log) = broker
-                .shard_log_for(
-                    kind,
-                    &key.tenant_id,
-                    &key.namespace,
-                    &key.stream,
-                    key.shard,
-                    None,
-                    (incarnation != 0).then_some(incarnation),
-                )
-                .await
-            else {
+            let Some(log) = open_broker_log(broker, kind, key, incarnation).await else {
                 if kind == felix_broker::LogKind::Cache {
                     anyhow::bail!("open cache shard log");
                 }
@@ -2014,6 +1986,37 @@ pub async fn record_term_start(
         );
     }
     Ok(())
+}
+
+/// One of the broker's logs for `key`, opened on the blocking pool for the
+/// same reason as [`DurableShardStore::open_stream_log`]. `None` when the
+/// broker has no such store or refuses the incarnation.
+async fn open_broker_log(
+    broker: &std::sync::Arc<felix_broker::Broker>,
+    kind: felix_broker::LogKind,
+    key: &ShardKey,
+    incarnation: u64,
+) -> Option<felix_broker::StreamLog> {
+    let broker = std::sync::Arc::clone(broker);
+    let key = key.clone();
+    let runtime = tokio::runtime::Handle::current();
+    let opened = tokio::task::spawn_blocking(move || {
+        runtime.block_on(broker.shard_log_for(
+            kind,
+            &key.tenant_id,
+            &key.namespace,
+            &key.stream,
+            key.shard,
+            None,
+            (incarnation != 0).then_some(incarnation),
+        ))
+    })
+    .await;
+    match opened {
+        Ok(log) => log,
+        Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
+        Err(_) => None,
+    }
 }
 
 /// Accept `generation` on a log this broker is about to lead, failing if the

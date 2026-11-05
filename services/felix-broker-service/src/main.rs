@@ -6,10 +6,33 @@ use felix_broker_service::config;
 use felix_broker_service::node::run_with_shutdown;
 use felix_common::lifecycle;
 
-// Tokio async runtime entry point. The broker is primarily I/O-bound (QUIC + HTTP metrics)
-// and runs multiple background tasks concurrently.
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .on_thread_park(name_runtime_worker)
+        .build()
+        .context("start the async runtime")?
+        .block_on(run())
+}
+
+/// Rename a runtime worker the first time it parks. Workers and blocking-pool
+/// threads share tokio's default name, and telling them apart is how a thread
+/// sampler shows whether disk waits land on the threads that run tasks.
+fn name_runtime_worker() {
+    #[cfg(target_os = "linux")]
+    {
+        thread_local!(static NAMED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
+        if !NAMED.with(|named| named.replace(true)) {
+            // SAFETY: PR_SET_NAME reads a NUL-terminated string of at most 16
+            // bytes, which the literal is.
+            unsafe {
+                libc::prctl(libc::PR_SET_NAME, c"felix-rt-worker".as_ptr());
+            }
+        }
+    }
+}
+
+async fn run() -> Result<()> {
     // aws-lc-rs is the only rustls provider linked in. Installing it as the
     // process default means a library that asks for the default gets the same
     // provider as the configs we build explicitly, instead of panicking.
