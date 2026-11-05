@@ -1595,11 +1595,14 @@ election: a refusal at the assignment's generation is enough. That also
 covers an election it never heard of, for example one that took a majority
 while placement was failing the shard over. Naming the same leader one
 generation up is a new fenced term either way. Placement ignores a refusal of
-an older generation and one that is no longer fresh. It also skips the step while the
-shard is in a move that ends through its own steps: one with a successor
-named, or one whose leader is draining. A follower replacement does not stop
-it: the new generation keeps the joining copy, and the replacement goes on
-under the same leader.
+an older generation and one that is no longer fresh. It skips the step while
+the move's leader is draining, since that fence ends through its own steps.
+A move still copying to its destination is dropped instead: the leader that
+refused cannot ship to it, so the move would only wait for its timeout. The
+next generation drops a destination that was staged on top of the set, as an
+abandoned move does, and a later pass can start the move again. A follower replacement does not stop
+the step: the new generation keeps the joining copy, and the replacement goes
+on under the same leader.
 
 **When a newer ballot holds the generation**, the leader reports the same
 refusal with an empty `promised_to`. An election that persists its ballot

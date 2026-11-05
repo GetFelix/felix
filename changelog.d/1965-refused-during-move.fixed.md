@@ -1,0 +1,1 @@
+A shard whose leader refuses its generation (it promised it away, or already accepted a newer one) while a move is still copying to its destination no longer goes unserved until the 30-minute move timeout. Placement drops the move and names the leader again one generation up, as it does outside a move (#1965).
