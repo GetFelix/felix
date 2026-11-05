@@ -12,6 +12,10 @@ task cluster:test     # the cross-broker integration tests
 `-- --nodes 5` sets the size. Nothing else is required: no compose file, no
 images, no ports to reserve, and no state left behind.
 
+For faults that need many runs or exact timing, the deterministic simulator
+runs brokers in one process on virtual time instead; see
+[simulation.md](simulation.md).
+
 ## Peer certificates
 
 Every cluster the harness starts runs under broker-to-broker mTLS. It issues
