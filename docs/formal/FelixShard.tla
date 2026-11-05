@@ -561,6 +561,18 @@ RenameUnfenced == FALSE
 RouteLags == FALSE
 NamedHereWaits == TRUE
 OwnBallotReported == TRUE
+\* `StaleFenceAnswered`: under `RouteLags`, a member answers the stale
+\* round's fence before the round gives up, promising it the generation
+\* above (#1940). `OpenChecksOwnBallot`: a leader the control plane named
+\* opens only once its own copy takes that generation's ballot, which a newer
+\* promise there refuses (`keep_own_set` in
+\* crates/server/felix-replication/src/promotion.rs). `OwnBallotFenceRefused`:
+\* a leader still fencing below its own copy's ballot reports its generation
+\* refused (`fence_shard_as`, same file). All off by default, so the
+\* configurations from before keep their state counts.
+StaleFenceAnswered == FALSE
+OpenChecksOwnBallot == FALSE
+OwnBallotFenceRefused == FALSE
 FenceChecksIds == TRUE
 UnnamedCounts == FALSE
 NameByRegistration == FALSE
@@ -2259,6 +2271,7 @@ OpenForWrites(b) ==
     /\ fencing[b]
     /\ LeaderMajority(b, answered[b] \cup {b})
     /\ JointFence => MajorityOfOld(answered[b] \cup {b}, b)
+    /\ OpenChecksOwnBallot /\ ~Candidate(b) => promised[b] = bgen[b] /\ ballot[b] \subseteq {b}
     \* A re-admission counts the old set's majority without the wiped replica.
     /\ \A r \in readmit : r[2] = bgen[b] /\ r[3] = b /\ ~ReadmitCountsWiped =>
            MajorityOfOld((answered[b] \cup {b}) \ {r[1]}, b)
@@ -2374,10 +2387,19 @@ GiveUpRound(b) ==
 \* control plane's generation, now below its own copy's ballot (#1933). The
 \* window is the promotion's fence before anyone has answered it. The stand
 \* and the withdrawal are one step that fences nobody, the run where every
-\* other member refused. Not modelled: a member answering that fence, which
-\* leaves the leader fencing at its generation behind a promise above it. It
-\* is also allowed after a rename, whose old route names this broker in the
-\* code, which only adds behaviours; `Adopt` bounds the repeats.
+\* other member refused. Under `StaleFenceAnswered` one member may answer it
+\* first, its reply arriving after the round gave up, which leaves that
+\* member promised above the leader's generation too (#1940). Only a member
+\* not leading and already on the round's set answers, so it learns nothing;
+\* in the code it would learn the set. It is also allowed after a rename,
+\* whose old route names this broker in the code, which only adds
+\* behaviours; `Adopt` bounds the repeats.
+StaleAnswerers(f) ==
+    { m \in Members(f) \ ({f} \cup halted) :
+        /\ bgen[m] = 0 /\ MayPromise(m, f, gen + 1)
+        /\ PreVote => ~Hears(m)
+        /\ setGen[m] = setGen[f] /\ mine[m] = mine[f] /\ oldSet[m] = oldSet[f] }
+
 StandOnStaleRoute(f) ==
     /\ RouteLags /\ ~NamedHereWaits
     /\ Elections > 0
@@ -2386,7 +2408,10 @@ StandOnStaleRoute(f) ==
     /\ promised[f] = gen /\ ballot[f] = {f}
     /\ Adopt > 0 => gen < Adopt
     /\ PreVoteWon(f)
-    /\ Promise(f, f, gen + 1)
+    /\ \E took \in {{}} \cup (IF StaleFenceAnswered THEN { {m} : m \in StaleAnswerers(f) } ELSE {}) :
+           /\ promised' = [m \in Brokers |-> IF m \in took \cup {f} THEN gen + 1 ELSE promised[m]]
+           /\ ballot' = IF Ballots THEN [m \in Brokers |-> IF m \in took \cup {f} THEN {f} ELSE ballot[m]]
+                        ELSE ballot
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, fencing, answered, confirmed, opened, setVars, ackGen >>
@@ -3280,11 +3305,26 @@ BelowOwnBallot ==
 \* and driver/shards.rs).
 OwnBallotAbove == OwnBallotReported /\ BelowOwnBallot
 
+\* The control plane's leader is still fencing at its generation and its own
+\* copy holds its own ballot above it. Under `OpenChecksOwnBallot` it never
+\* opens there (#1940).
+FencingBelowOwnBallot ==
+    /\ bgen[leader] = gen /\ fencing[leader]
+    /\ promised[leader] > gen /\ ballot[leader] = {leader}
+
+\* Under `OwnBallotFenceRefused`, a leader still fencing whose own copy
+\* promised a newer generation, to anyone, reports its generation refused
+\* at once: that copy refuses the ballot its open needs, for good.
+OwnBallotFenceAbove ==
+    /\ OwnBallotFenceRefused
+    /\ bgen[leader] = gen /\ fencing[leader] /\ promised[leader] > gen
+
 RenameDue ==
     LET left == { m \in FenceMembers(leader) : ~PromisedAway(m, leader, gen) }
         stillFencing == bgen[leader] = gen /\ fencing[leader]
     IN /\ Renames
        /\ \/ OwnBallotAbove
+          \/ OwnBallotFenceAbove
           \/ RefusedAtGen(left, stillFencing)
 
 \* Under `Renames`, the control plane names its leader again at the next
@@ -3292,7 +3332,8 @@ RenameDue ==
 \* reports it cannot serve the control plane's generation: a recorded
 \* election moved the control plane past it, or it is still fencing there
 \* and too many of its set promised a candidate, or one did and the rest
-\* are silent, or it is open there below its own ballot (`election_refused`,
+\* are silent, or it is open there below its own ballot, or still fencing
+\* there below its own copy's promise (`election_refused`,
 \* `move_step` in services/felix-controlplane-service/src/cluster/placement/moves.rs).
 \* Not while a move drains its leader, which ends through its own steps. The
 \* leader fences there as at any new term: its open failed, so the broker
@@ -3899,6 +3940,9 @@ CollisionSuperseded ==
 
 \* The control plane's leader does not stay open below its own ballot.
 OwnBallotCaughtUp == BelowOwnBallot ~> ~BelowOwnBallot
+
+\* Nor does it stay fencing below its own ballot (#1940).
+OwnBallotFenceCaughtUp == FencingBelowOwnBallot ~> ~FencingBelowOwnBallot
 
 \* Nobody stands against an open leader that a majority of its set hears:
 \* pre-vote keeps a working leader in place. With the control plane down, a
