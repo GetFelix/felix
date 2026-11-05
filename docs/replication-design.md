@@ -1299,7 +1299,7 @@ elected leader waits for the lease until the control plane is back (issue
    lead the shard itself (a leader hears itself, so its yes would let one
    follower with a wrong detector depose it), it is not still fencing a
    generation it won or has just opened it (for at most
-   `FELIX_ELECTION_DEFER_FOR_MS`, 60 s by default, from its first fence:
+   `FELIX_ELECTION_DEFER_FOR_MS`, 60 s by default, from its standing:
    a standing that never writes its start record must not hold its
    followers off for good), the asker's
    log is at least as far ahead as its own by (last generation, length), and
@@ -1468,10 +1468,12 @@ elected leader waits for the lease until the control plane is back (issue
     follower's newer ballot or view does not end a leader's readers: only
     a follower saying the control plane assigned a newer generation does,
     since an election may leave a ballot behind with no leader. With a
-    majority still answering the leader serves; with none, its rounds
-    fail and it reports the generation refused. A leader whose open fails
+    majority still answering the leader serves; with none, it reports the
+    generation refused at once, and its rounds fail, so its readers end
+    once no majority has confirmed it for a lease duration. A leader whose open fails
     for any other reason, an I/O error say, reports the generation refused
-    too, since the same assignment never retries the open, and so does a
+    too, once until the shard next opens, since the same assignment never
+    retries the open, and so does a
     fence that meets a replica set newer than its own: a set never goes
     back.
 
@@ -1977,13 +1979,17 @@ plane, so its watches get the same promise. The model covers the stream case.
 For readers the lease only provides liveness: it moves them off a leader that
 has lost the shard. Without it the broker learns another way:
 
-- A replica that accepted a newer generation refuses the leader's ships with
-  `FencedEpoch`, and the follower's cursor halts (`Halt::Fenced`). The driver
-  reports it (`WriteFence::deposed`), and the first report at a generation
-  ends the shard's readers the way a move does: each gets the offset to resume
+- A replica whose confirmed read of the control plane shows a newer
+  assignment refuses the leader's ships with `FencedEpoch`, saying so, and the
+  follower's cursor halts (`Halt::Fenced`). The driver reports it
+  (`WriteFence::deposed`), and the first report at a generation ends the
+  shard's readers the way a move does: each gets the offset to resume
   from and no named owner, and the client finds the shard again. From then on
   the broker refuses new readers of the shard at that generation, lease or no
   lease.
+- So does the leader's own log taking a newer generation or set.
+  A follower's newer ballot or view alone does not: an election may leave one
+  behind with no leader, and a leader a majority still answers serves on.
 - The new assignment reaching the broker does the same, as it always has.
 - A leader that hears from no majority for a lease duration ends its readers
   too. A shard with nothing to ship exchanges nothing with its followers, so
@@ -4322,8 +4328,8 @@ production broker sends or reads a set yet. With it on:
 - A candidate's fence is refused while the replica heard its leader within
   `FELIX_LEADER_SUSPECT_AFTER_MS`.
 - A leader whose followers all offered `ELECTION` stops counting once its log
-  accepted a newer generation or keeps a newer set (rule 5), and a follower
-  answering `StaleSet` deposes it like `FencedEpoch`. A promoted leader keeps
+  accepted a newer generation or keeps a newer set (rule 5). A follower
+  answering `StaleSet` halts its cursor like `FencedEpoch`. A promoted leader keeps
   its own set and fences with it.
 
 The control plane's finalize gates are in place too: `joint_fence` is refused

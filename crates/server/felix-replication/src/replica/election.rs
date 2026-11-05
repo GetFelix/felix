@@ -659,7 +659,7 @@ impl ReplicaHandler {
     }
 
     /// Whether this broker won `key` by election at its route's generation
-    /// and is fencing it or has opened it there. [`Self::leads`] needs a
+    /// and stands there, before its fence or during it, or has opened it. [`Self::leads`] needs a
     /// start record, which an open writes only once `generation_start` is
     /// finalized, and a yes before it lets a follower this broker just fenced
     /// take the next generation (#1914). Bounded by the standing, unlike a
@@ -675,7 +675,8 @@ impl ReplicaHandler {
         self.router.snapshot().get(key).is_some_and(|route| {
             route.leader.node_id == self.router.local_node_id()
                 && route.generation >= log.accepted_generation()
-                && (elections.is_fencing(key, route.generation)
+                && (elections.stands_at(key, route.generation)
+                    || elections.is_fencing(key, route.generation)
                     || elections.opened_at(key, route.generation))
                 && elections.fenced_within_defer(key, route.generation)
         })

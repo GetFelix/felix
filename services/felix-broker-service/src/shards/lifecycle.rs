@@ -1931,14 +1931,15 @@ async fn apply_open(
                     .refused(&key, generation, &promised.promised_to);
             }
             // Reported like a promise, with no node: nothing else moves the
-            // control plane past a ballot it never issued (#1914). Any other
-            // failure too: the same assignment is never retried here, so
-            // unreported it is a dead end. The control plane names the shard
-            // again a generation up, a fresh open.
-            if err.downcast_ref::<GaveUp>().is_none()
+            // control plane past a ballot it never issued (#1914).
+            if err.downcast_ref::<Superseded>().is_some() {
+                lifecycle.fence().refused(&key, generation, "");
+            } else if err.downcast_ref::<GaveUp>().is_none()
                 && err.downcast_ref::<PromisedAway>().is_none()
             {
-                lifecycle.fence().refused(&key, generation, "");
+                // The same assignment never retries the open, so unreported
+                // this is a dead end. Once, so a lasting fault does not churn.
+                lifecycle.fence().open_failed(&key, generation);
             }
             lifecycle.open_failed(&key, generation, format!("{err:#}"));
             drop(lifecycle);

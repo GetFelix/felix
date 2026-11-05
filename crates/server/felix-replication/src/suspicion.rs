@@ -30,6 +30,7 @@ pub const DEFAULT_SUSPECT_AFTER: Duration = Duration::from_secs(5);
 /// shard. Generous: a fence or catch-up under load can take many seconds,
 /// and giving up on one costs a generation.
 pub const DEFAULT_DEFER_FOR: Duration = Duration::from_secs(60);
+const MIN_DEFER_FOR: Duration = Duration::from_secs(1);
 
 /// The shortest gap between pings, whatever `suspect_after` is.
 const MIN_PROBE_EVERY: Duration = Duration::from_millis(50);
@@ -65,7 +66,9 @@ impl SuspicionConfig {
         };
         Self {
             suspect_after: millis("FELIX_LEADER_SUSPECT_AFTER_MS", DEFAULT_SUSPECT_AFTER),
-            defer_for: millis("FELIX_ELECTION_DEFER_FOR_MS", DEFAULT_DEFER_FOR),
+            // Zero would drop the deferral altogether and let a follower
+            // stand over every standing still fencing.
+            defer_for: millis("FELIX_ELECTION_DEFER_FOR_MS", DEFAULT_DEFER_FOR).max(MIN_DEFER_FOR),
         }
     }
 

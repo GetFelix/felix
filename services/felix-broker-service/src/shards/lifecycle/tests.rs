@@ -658,9 +658,9 @@ mod driver {
         assert!(!own.may_serve(&key(0)));
     }
 
-    /// **A failed open is reported refused, naming no node** (#1914). The
-    /// same assignment never retries it, so unreported the shard stays down
-    /// on a live leader until something else changes the assignment.
+    /// **A failed open is reported refused, naming no node, once** (#1914).
+    /// The same assignment never retries it, so unreported the shard stays
+    /// down on a live leader until something else changes the assignment.
     #[tokio::test]
     async fn a_failed_open_is_reported_refused() {
         use felix_replication::driver::WriteFence;
@@ -670,6 +670,18 @@ mod driver {
 
         reconcile(&own, &store, &assignments(&[(0, "broker-a", 1)])).await;
 
+        {
+            let own = own.lock().await;
+            assert_eq!(own.phase(&key(0)), Phase::Failed);
+            assert_eq!(
+                own.fence().refused_at(&key(0)),
+                Some(felix_common::membership::RefusedGeneration::set_unknown(1)),
+            );
+        }
+
+        // Named one up and failing again, it is not reported again: a fault
+        // that lasts would otherwise bump the generation every placement pass.
+        reconcile(&own, &store, &assignments(&[(0, "broker-a", 2)])).await;
         let own = own.lock().await;
         assert_eq!(own.phase(&key(0)), Phase::Failed);
         assert_eq!(

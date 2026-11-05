@@ -870,3 +870,49 @@ async fn a_standing_that_never_starts_stops_refusing_pre_votes() {
         None
     );
 }
+
+/// **A standing refuses pre-votes from the moment it is recorded**, before
+/// the driver reaches its fence (#1914). In that gap a follower that voted
+/// for it would otherwise win the next generation with its yes.
+#[tokio::test]
+async fn a_standing_not_yet_fencing_refuses_a_pre_vote() {
+    let (broker, _dir) = broker_with_storage().await;
+    stream_log(&broker)
+        .await
+        .accept_generation(6, Some(LOCAL))
+        .await
+        .expect("ballot");
+    let marks = Arc::new(crate::quorum::QuorumMarks::new());
+    let elections = Arc::new(crate::election::Elections::new(
+        LOCAL,
+        Arc::new(tokio::sync::Notify::new()),
+    ));
+    marks.set_elections(Arc::clone(&elections));
+    let router = router_led_by(LOCAL, &["broker-a", "broker-c"], 6);
+    let key = router.snapshot().iter().next().expect("key").0.clone();
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router)
+        .with_stickiness(Duration::ZERO)
+        .with_fleet(marks);
+    elections.record(
+        key.clone(),
+        crate::election::Elected {
+            leader: LOCAL.to_string(),
+            generation: 6,
+            set: felix_storage::disk_log::Membership {
+                generation: 6,
+                members: Vec::new(),
+            },
+            leaving: None,
+            incarnation: 0,
+        },
+    );
+    assert_eq!(
+        pre_vote_answer(handler.pre_vote(pre_vote_at(7)).await),
+        Some(felix_wire::internal::PreVoteRefusal::LeaderReachable)
+    );
+    elections.withdraw(&key, 6);
+    assert_eq!(
+        pre_vote_answer(handler.pre_vote(pre_vote_at(7)).await),
+        None
+    );
+}

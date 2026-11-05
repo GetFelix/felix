@@ -1204,7 +1204,11 @@ impl PeerRequester for ElectingFollowers {
 /// with its own ballot, as a leader keeps that opened at 4 before
 /// `joint_fence` was on, or none.
 /// The first report naming a refusal, or none within `within`.
-async fn joint_fence_refusal(keep_own_set: bool, within: Duration) -> Option<ShardReplicaStatus> {
+async fn joint_fence_refusal(
+    keep_own_set: bool,
+    newer_set: bool,
+    within: Duration,
+) -> Option<ShardReplicaStatus> {
     use felix_common::fleet::{FleetGate, GENERATION_START, JOINT_FENCE, MAJORITY_ACK};
 
     let (broker, _dir) = leader_with(3).await;
@@ -1221,6 +1225,18 @@ async fn joint_fence_refusal(keep_own_set: bool, within: Duration) -> Option<Sha
         log.accept_set(crate::replica_set::kept(&route, None))
             .await
             .expect("keep generation 4's set");
+    }
+    if newer_set {
+        let route = routes.snapshot().get(&key()).cloned().expect("route");
+        let mut set = crate::replica_set::kept(&route, None);
+        set.current.generation = 9;
+        broker
+            .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+            .await
+            .expect("log")
+            .accept_set(set)
+            .await
+            .expect("keep a newer set");
     }
     let (control_plane, received) = recording_control_plane().await;
     let names = [GENERATION_START, MAJORITY_ACK, JOINT_FENCE].map(|feature| feature.name());
@@ -1274,12 +1290,23 @@ async fn joint_fence_refusal(keep_own_set: bool, within: Duration) -> Option<Sha
 /// pending and the control plane, which hears nothing, never names it again.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_fence_with_an_unknown_set_before_reports_the_generation_refused() {
-    let report = joint_fence_refusal(true, Duration::from_secs(5))
+    let report = joint_fence_refusal(true, false, Duration::from_secs(5))
         .await
         .expect("no report of the unfenceable generation");
     assert_eq!(report.generation, 4);
     assert_eq!(report.refused, Some(RefusedGeneration::set_unknown(4)));
     assert_eq!(report.leader_offset, None, "a refusal measures no tail");
+}
+
+/// **Under `joint_fence`, a leader whose own log counts a newer set reports
+/// the generation refused** (#1914): a set never goes back, so the fence
+/// never opens at this generation.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_joint_fence_under_a_newer_kept_set_reports_the_generation_refused() {
+    let report = joint_fence_refusal(false, true, Duration::from_secs(5))
+        .await
+        .expect("no report of the refused generation");
+    assert_eq!(report.refused, Some(RefusedGeneration::set_unknown(4)));
 }
 
 /// **A leader with no kept set reports no refusal** (#1872). It may be a
@@ -1288,7 +1315,7 @@ async fn a_fence_with_an_unknown_set_before_reports_the_generation_refused() {
 /// leave it unfenced. Its fence waits instead.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_fence_with_no_kept_set_reports_no_refusal() {
-    let refusal = joint_fence_refusal(false, Duration::from_secs(2)).await;
+    let refusal = joint_fence_refusal(false, false, Duration::from_secs(2)).await;
     assert_eq!(
         refusal, None,
         "asked for a rename with no evidence nothing came before"
