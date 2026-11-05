@@ -1358,6 +1358,36 @@ impl DurableShardStore {
 }
 
 impl DurableShardStore {
+    /// A stream shard's log, at `incarnation` when it is not 0, opened on the
+    /// blocking pool. Opening a new log takes several fsyncs, and a bulk create
+    /// opens hundreds at once: on the runtime's workers a slow disk would stall
+    /// everything else they run.
+    async fn open_stream_log(
+        &self,
+        key: &ShardKey,
+        incarnation: u64,
+    ) -> anyhow::Result<felix_broker::StreamLog> {
+        let storage = std::sync::Arc::clone(&self.storage);
+        let key = key.clone();
+        let opened = tokio::task::spawn_blocking(move || match incarnation {
+            0 => storage.open_stream(&key.tenant_id, &key.namespace, &key.stream, key.shard),
+            incarnation => storage.open_stream_for(
+                &key.tenant_id,
+                &key.namespace,
+                &key.stream,
+                key.shard,
+                None,
+                incarnation,
+            ),
+        })
+        .await;
+        match opened {
+            Ok(log) => log.map_err(|err| anyhow::anyhow!("open shard log: {err}")),
+            Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
+            Err(err) => Err(anyhow::anyhow!("open shard log: {err}")),
+        }
+    }
+
     /// The shard's own log, stream or cache, at `incarnation` when it is not
     /// 0. `None` for a cache this store cannot reach.
     async fn own_log(
@@ -1366,22 +1396,7 @@ impl DurableShardStore {
         incarnation: u64,
     ) -> anyhow::Result<Option<felix_broker::StreamLog>> {
         match key.kind {
-            ShardKind::Stream => match incarnation {
-                0 => {
-                    self.storage
-                        .open_stream(&key.tenant_id, &key.namespace, &key.stream, key.shard)
-                }
-                incarnation => self.storage.open_stream_for(
-                    &key.tenant_id,
-                    &key.namespace,
-                    &key.stream,
-                    key.shard,
-                    None,
-                    incarnation,
-                ),
-            }
-            .map(Some)
-            .map_err(|err| anyhow::anyhow!("open shard log: {err}")),
+            ShardKind::Stream => self.open_stream_log(key, incarnation).await.map(Some),
             ShardKind::Cache => {
                 let Some(starts) = &self.generation_starts else {
                     return Ok(None);
@@ -1623,20 +1638,7 @@ impl ShardStore for DurableShardStore {
         }
         // Recovery happens here: validating the tail and rebuilding indexes is
         // exactly the cost the `Opening` phase is holding writes back for.
-        let log = match incarnation {
-            0 => self
-                .storage
-                .open_stream(&key.tenant_id, &key.namespace, &key.stream, key.shard),
-            incarnation => self.storage.open_stream_for(
-                &key.tenant_id,
-                &key.namespace,
-                &key.stream,
-                key.shard,
-                None,
-                incarnation,
-            ),
-        }
-        .map_err(|err| anyhow::anyhow!("open shard log: {err}"))?;
+        let log = self.open_stream_log(key, incarnation).await?;
 
         // Where this leadership begins. Followers record what they accept, and
         // until now a leader recorded nothing — so a broker's history had a
@@ -1671,10 +1673,7 @@ impl ShardStore for DurableShardStore {
         if key.kind == ShardKind::Cache {
             return Ok(());
         }
-        let log = self
-            .storage
-            .open_stream(&key.tenant_id, &key.namespace, &key.stream, key.shard)
-            .map_err(|err| anyhow::anyhow!("open shard log to flush it: {err}"))?;
+        let log = self.open_stream_log(key, 0).await?;
         log.sync()
             .await
             .map_err(|err| anyhow::anyhow!("flush shard log: {err}"))
@@ -1988,7 +1987,19 @@ pub async fn record_term_start(
         .tail_offset()
         .await
         .map_err(|err| anyhow::anyhow!("read shard tail: {err}"))?;
-    if let Err(err) = log.record_generation(generation, tail) {
+    // Writes and fsyncs the generation history, so not on a runtime worker.
+    let recorded = {
+        let log = log.clone();
+        tokio::task::spawn_blocking(move || log.record_generation(generation, tail))
+            .await
+            .unwrap_or_else(|err| {
+                if err.is_panic() {
+                    std::panic::resume_unwind(err.into_panic())
+                }
+                Err(felix_broker::BrokerError::Storage(err.to_string()))
+            })
+    };
+    if let Err(err) = recorded {
         if required {
             anyhow::bail!("record where generation {generation} begins: {err}");
         }

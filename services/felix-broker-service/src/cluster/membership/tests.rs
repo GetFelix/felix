@@ -1106,3 +1106,99 @@ async fn the_refusal_names_the_missing_feature() {
     assert!(reason.contains("record_headers"), "{reason}");
     assert!(!reason.contains("head_trim"), "{reason}");
 }
+
+/// Serve the stub control plane from a thread and runtime of its own, so a
+/// test can block every worker of its own runtime and still be answered.
+fn serve_on_own_thread(state: Shared) -> (String, tokio::sync::oneshot::Sender<()>) {
+    let (addr_tx, addr_rx) = std::sync::mpsc::channel();
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        runtime.block_on(async move {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind");
+            addr_tx
+                .send(listener.local_addr().expect("addr"))
+                .expect("send addr");
+            let _ = axum::serve(listener, stub_control_plane(state))
+                .with_graceful_shutdown(async {
+                    let _ = stopped.await;
+                })
+                .await;
+        });
+    });
+    let addr = addr_rx.recv().expect("stub address");
+    (format!("http://{addr}"), stop)
+}
+
+/// **Heartbeats keep going while every broker runtime worker is blocked.**
+/// A filesystem journal stall can park every worker in a blocking write or
+/// fsync at once. The heartbeat is the lease renewal, so if it ran on those
+/// workers the broker would lose its lease and every shard it leads.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn heartbeats_continue_while_every_runtime_worker_is_blocked() {
+    let calls: Shared = Arc::default();
+    let (base_url, stop) = serve_on_own_thread(Arc::clone(&calls));
+    let serving = CancellationToken::new();
+    serving.cancel();
+    let shutdown = CancellationToken::new();
+    let task = spawn(
+        build_test_client().expect("client"),
+        base_url,
+        config(),
+        crate::cluster::credential::NodeCredential::new("a-node-token"),
+        serving,
+        shutdown.clone(),
+        Arc::new(crate::cluster::lease::LeaseState::new(Duration::from_secs(
+            30,
+        ))),
+        Arc::new(felix_common::fleet::FleetGate::new(Vec::<String>::new())),
+        Arc::default(),
+        Arc::default(),
+        tokio::sync::watch::channel(None).0,
+        None,
+        None,
+    );
+    for _ in 0..300 {
+        if !calls.lock().expect("lock").heartbeats.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        !calls.lock().expect("lock").heartbeats.is_empty(),
+        "membership never heartbeat"
+    );
+
+    // Park both workers. The test body runs on neither, so it can wait them out.
+    let parked = Arc::new(std::sync::Barrier::new(3));
+    let blockers: Vec<_> = (0..2)
+        .map(|_| {
+            let parked = Arc::clone(&parked);
+            tokio::spawn(async move {
+                parked.wait();
+                std::thread::sleep(Duration::from_millis(1500));
+            })
+        })
+        .collect();
+    parked.wait();
+    let before = calls.lock().expect("lock").heartbeats.len();
+    std::thread::sleep(Duration::from_millis(1000));
+    let during = calls.lock().expect("lock").heartbeats.len() - before;
+    for blocker in blockers {
+        blocker.await.expect("blocker");
+    }
+
+    shutdown.cancel();
+    task.handle.await.expect("membership task");
+    let _ = stop.send(());
+    // 20 ms cadence: a second holds about fifty. A handful proves the loop ran.
+    assert!(
+        during >= 10,
+        "only {during} heartbeats while the runtime's workers were blocked"
+    );
+}

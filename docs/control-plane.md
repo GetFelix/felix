@@ -418,6 +418,11 @@ The sequence:
    If the answer is `down`, the broker registers again, takes a new
    incarnation, and carries on heartbeating under it. `left` is not undone:
    that is a deregistration someone asked for.
+   Registration and heartbeats run on a thread of their own, with their own
+   runtime and HTTP client. A slow disk can block every worker of the broker's
+   main runtime at once (a filesystem journal stall under a burst of fsyncs,
+   for example), and the heartbeat is what renews the lease, so it must not
+   wait behind them.
 3. **Drain, then deregister** on SIGTERM, before connections are drained, so
    nothing new is placed here while in-flight work finishes.
 

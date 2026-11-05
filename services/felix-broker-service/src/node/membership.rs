@@ -98,8 +98,14 @@ pub(super) fn spawn(
             let node_credential = credential
                 .clone()
                 .expect("a cluster member has a credential");
+            // Its own client: the heartbeat runs on a runtime of its own, and a
+            // pooled connection belongs to the runtime that opened it.
+            let client = crate::cluster::controlplane_client::build().unwrap_or_else(|err| {
+                tracing::warn!(error = %err, "could not build the heartbeat's own HTTP client; sharing one");
+                membership_client.clone()
+            });
             Some(membership::spawn(
-                membership_client.clone(),
+                client,
                 base_url.clone(),
                 membership_config.clone(),
                 node_credential,

@@ -558,7 +558,7 @@ pub fn spawn(
 ) -> MembershipTask {
     let fatal = CancellationToken::new();
     let consecutive_failures = Arc::new(AtomicU64::new(0));
-    let handle = tokio::spawn({
+    let handle = spawn_on_own_thread({
         let fatal = fatal.clone();
         let consecutive_failures = Arc::clone(&consecutive_failures);
         let lease = Arc::clone(&lease);
@@ -667,6 +667,55 @@ pub fn spawn(
         lease,
         fleet,
     }
+}
+
+/// Run `task` on a thread of its own, with a runtime of its own.
+///
+/// The heartbeat is the lease renewal, so it must not share workers with
+/// anything that can block on disk: a broker whose every runtime worker waits
+/// on a stalled filesystem journal would otherwise stop renewing and lose its
+/// lease while it is otherwise healthy. The returned handle joins the task, and
+/// aborting it aborts the task.
+fn spawn_on_own_thread<F>(task: F) -> tokio::task::JoinHandle<()>
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    let stop = CancellationToken::new();
+    let (done, finished) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name("felix-membership".to_string())
+        .spawn({
+            let stop = stop.clone();
+            move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build the membership runtime");
+                let ended = runtime.block_on(async move {
+                    let task = tokio::spawn(task);
+                    let abort = task.abort_handle();
+                    tokio::select! {
+                        ended = task => ended,
+                        _ = stop.cancelled() => {
+                            abort.abort();
+                            Ok(())
+                        }
+                    }
+                });
+                let _ = done.send(ended);
+            }
+        })
+        .expect("start the membership thread");
+    tokio::spawn(async move {
+        // Dropped with this task, so aborting the handle stops the heartbeat.
+        let _stop = stop.drop_guard();
+        match finished.await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
+            Ok(Err(_)) => {}
+            Err(_) => panic!("the membership thread stopped without finishing"),
+        }
+    })
 }
 
 /// Note in the data directory under `root` that the node registered at
