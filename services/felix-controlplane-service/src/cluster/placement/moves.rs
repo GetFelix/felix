@@ -99,6 +99,11 @@ pub struct MovePolicy {
     /// go on, and an operator may still start one. Not configuration: each
     /// pass reads it from the store (`POST /v1/placement/pause`).
     pub paused: bool,
+    /// Brokers that deregistered while their last lease may still run.
+    /// Placement sees them as draining so what they lead stays put, but none
+    /// is promoted: a broker deregisters as it stops. Not configuration: each
+    /// pass reads it from the store.
+    pub departed: BTreeSet<String>,
     /// Where a stream with a home region may have copies: that region, and
     /// any region the allowlist bridges it to (`FELIX_REGION_BRIDGES`). A
     /// stream without one is placed anywhere.
@@ -117,6 +122,7 @@ impl Default for MovePolicy {
             restore_stall_millis: Some(DEFAULT_RESTORE_STALL_MILLIS),
             settle_millis: Some(DEFAULT_PLACEMENT_SETTLE_MILLIS),
             paused: false,
+            departed: BTreeSet::new(),
             regions: Arc::new(RegionRouter::new(String::new())),
         }
     }

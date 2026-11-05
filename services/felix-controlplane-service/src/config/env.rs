@@ -216,6 +216,7 @@ fn shard_moves_from_env() -> crate::cluster::placement::MovePolicy {
         },
         // Read from the store each pass, not configured.
         paused: false,
+        departed: defaults.departed,
         regions: defaults.regions,
     }
 }

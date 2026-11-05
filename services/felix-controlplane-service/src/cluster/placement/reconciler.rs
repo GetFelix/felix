@@ -183,6 +183,9 @@ pub struct PlacementRead {
     pub positions: ReplicaPositions,
     /// Whether placement's own moves are paused.
     pub paused: bool,
+    /// Nodes that left while their lease may still run, seen as draining in
+    /// [`Self::nodes`].
+    pub departed: std::collections::BTreeSet<String>,
 }
 
 impl PlacementRead {
@@ -218,7 +221,7 @@ impl PlacementRead {
         let positions = ReplicaPositions::new(reports, liveness, now_millis)
             .with_suspicions(suspicions, incarnations, liveness, &enabled)
             .with_nodes(&nodes, &existing);
-        let nodes = fence_departed(nodes, liveness, now_millis);
+        let (nodes, departed) = fence_departed(nodes, liveness, now_millis);
         let paused = store.moves_paused().await?;
         Ok(Self {
             streams,
@@ -227,6 +230,7 @@ impl PlacementRead {
             existing,
             positions,
             paused,
+            departed,
         })
     }
 
@@ -234,6 +238,7 @@ impl PlacementRead {
     pub fn policy(&self, policy: MovePolicy) -> MovePolicy {
         MovePolicy {
             paused: self.paused,
+            departed: self.departed.clone(),
             ..policy
         }
     }
@@ -719,18 +724,21 @@ async fn load(
 ///
 /// Draining, not gone: its shards stay where they are, or move only through a
 /// handoff it takes part in. Promoting a follower sooner is two leaders, and a
-/// deregistration involves no clock at all to stop that on its own.
+/// deregistration involves no clock at all to stop that on its own. The ids
+/// come back too: a broker that left has stopped, so it is never promoted.
 fn fence_departed(
     mut nodes: Vec<Node>,
     liveness: &crate::config::NodeLivenessConfig,
     now_millis: u64,
-) -> Vec<Node> {
+) -> (Vec<Node>, std::collections::BTreeSet<String>) {
+    let mut departed = std::collections::BTreeSet::new();
     for node in &mut nodes {
         if crate::cluster::membership::left_within_lease(node, liveness, now_millis) {
             node.status.lifecycle = crate::model::NodeLifecycle::Draining;
+            departed.insert(node.node_id.clone());
         }
     }
-    nodes
+    (nodes, departed)
 }
 
 fn fenced(key: &ShardKey, step: &str, fence: u64, token: u64) {
