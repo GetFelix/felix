@@ -38,6 +38,12 @@ pub struct History {
     pub faults: Vec<FaultEvent>,
     /// What each list's live subscriber was delivered over the whole run.
     pub subscriptions: Vec<Subscription>,
+    /// Whether a read's last record is the end of what the log held when the
+    /// read ran. A subscriber may drop its newest records, so a recorder
+    /// whose reads can do that leaves this off, and the checker then cannot
+    /// call a short read stale. A recorder whose reads cannot (the
+    /// simulator's) turns it on to get the anti-dependency edges.
+    pub exact_tails: bool,
 }
 
 /// What the checker may assume of one list.

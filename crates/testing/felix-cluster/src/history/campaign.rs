@@ -313,6 +313,7 @@ impl Campaign {
             commit_reads,
             faults,
             subscriptions,
+            exact_tails: false,
         })
     }
 
