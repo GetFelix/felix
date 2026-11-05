@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793896339865,
+  "lastUpdate": 1793903896490,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -45916,6 +45916,58 @@ window.BENCHMARK_DATA = {
             "range": "73062.28",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 797313.27\nmean: 760691.98\nstdev: 73062.28\ncv: 9.60%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e11a45c3cefe742933f0c15e02540a5918709e45",
+          "message": "fix(replication): a failed fence the driver cannot retry no longer spins its loop (#1941) (#1959)\n\nA failed fence the driver cannot retry no longer spins its loop.",
+          "timestamp": "2026-11-05T10:29:55-08:00",
+          "tree_id": "c9787dd36d79ff836d07febd16c9ad11b9665537",
+          "url": "https://github.com/GetFelix/felix/commit/e11a45c3cefe742933f0c15e02540a5918709e45"
+        },
+        "date": 1793903895576,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 355647.71,
+            "range": "29082.52",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 355647.71\nmean: 344423.63\nstdev: 29082.52\ncv: 8.44%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 355647.71,
+            "range": "29082.52",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 355647.71\nmean: 344423.63\nstdev: 29082.52\ncv: 8.44%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80541.57,
+            "range": "258.80",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80541.57\nmean: 80467.92\nstdev: 258.80\ncv: 0.32%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 805415.72,
+            "range": "2588.04",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 805415.72\nmean: 804679.20\nstdev: 2588.04\ncv: 0.32%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
