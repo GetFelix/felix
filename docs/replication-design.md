@@ -1439,7 +1439,8 @@ elected leader waits for the lease until the control plane is back (issue
     names it again at the next generation, on the same set. That generation
     is above the one promised away, so it opens and fences, and its
     followers depose the elected leader. The control plane acts on that
-    report, never on silence (`CpRename` in the model). A ballot left by
+    report, not on silence (`CpRename` in the model); the one exception,
+    a leader that shows no progress at all, is the backstop below. A ballot left by
     an election that never opened works the same way: the control plane
     never saw that generation, so it may name a leader below it. That
     leader's open, or its fence on a majority holding the ballot, is
@@ -1495,6 +1496,48 @@ and backoff, and that it does not without backoff
 (`FelixShardElectLive.cfg`, docs/formal/README.md). Against a candidate whose
 own detector is wrong, that needs the open leader to refuse the pre-vote too,
 as `pre_vote` does (#1815).
+
+**The control plane's backstop.** The detector and the followers' word are
+per broker: a follower suspects the leader's broker, not one shard on it. So
+a leader whose broker is live but whose shard is stuck at its generation is
+never suspected, deposed or elected against. A fence that never settles, an
+open that failed, or a halt that lasts until the assignment changes stays
+that way unless the broker reports it. For those the control plane renames
+the shard itself (`MoveStep::Stuck`, issue #1914):
+
+- *When.* The shard is fenced, has followers, and its leader's broker is
+  live and not draining. For `FELIX_SHARD_STUCK_LEADER_MS` (70 s by default,
+  never under two report TTLs) the control plane has seen no progress from
+  the leader at its generation. Progress is the leader's first report at
+  the generation, a report with nothing past what a majority holds, or the
+  position a majority holds moving. So an idle shard that has opened, or a
+  slow one that is still committing, is never renamed.
+- *What.* The same leader, on the same set, at the next generation, written
+  as any assignment is, conditional on the generation the pass read. That is
+  a new fenced term: the leader fences a majority of its set before it
+  serves, as at any promotion, so the term it leaves cannot acknowledge
+  beside it, and every record acknowledged before is on the majority it
+  fences.
+- *When not.* While a move, a fence, a restore or a set change is under
+  way, while a follower suspects the leader (the failover and the election
+  own it), while the last report names a newer generation (an election the
+  control plane has not adopted), and while fewer than a majority of the set
+  is live and not halted (the new term would stall the same way). A leader
+  whose broker has reported on no shard within the bound is not judged by
+  its silence: that is the broker's stall, or the control plane's, and the
+  same leader one generation up would stall with it. The clock starts again
+  at every new generation, leader incarnation or watching instance.
+- *How often.* Each rename of a shard within an hour doubles the wait for
+  the next, at most four an hour, and one pass renames at most sixteen
+  shards. Each is logged as a warning with its reason and counted in
+  `felix_shard_move_steps_total{step="stuck"}`.
+
+This is the one place the control plane acts on the absence of progress
+rather than on a report. It is safe because of what it does: it only ever
+starts a newer fenced term under the leader already named. It never moves
+leadership, declares a copy lost, or skips a fence, so being wrong costs a
+fence and a moment of writes, never a record or a second leader. A rename
+that races an election or another write loses the conditional write.
 
 **Decisions** (from the discussion on issue #1009):
 
