@@ -609,6 +609,52 @@ mod feed {
         let _ = feed.await;
     }
 
+    /// **A removal a fence publishes mid-pass stays published.** The pass
+    /// holds back its own removals, but must not put back one the fence's
+    /// publish already made.
+    #[tokio::test]
+    async fn a_shard_a_fence_unpublished_mid_pass_stays_unpublished() {
+        let (mut state, _router) = state(&[assignment(0, "broker-a", 1)]);
+        state.store = Arc::new(SlowStore {
+            delay: Duration::from_millis(150),
+        });
+        let ingress = Arc::clone(&state.ingress);
+        let lifecycle = Arc::clone(&state.lifecycle);
+        let ownership = Arc::clone(&state.ownership);
+        let changed = Arc::clone(&state.assignments_changed);
+        let local = || {
+            (1..5)
+                .filter(|shard| matches!(ingress.dispatch(&key(*shard)), Dispatch::Local { .. }))
+                .count()
+        };
+        let shutdown = CancellationToken::new();
+        let feed = spawn_feed(state, None, Duration::from_secs(60), shutdown.clone());
+        until("shard 0 to be served locally", || {
+            matches!(ingress.dispatch(&key(0)), Dispatch::Local { generation: 1 })
+        })
+        .await;
+
+        let mut next = vec![assignment(0, "broker-b", 2)];
+        next.extend((1..5).map(|shard| assignment(shard, "broker-a", 1)));
+        ownership.write().await.reset(next);
+        changed.notify_one();
+        until("a new shard to be served locally", || local() > 0).await;
+        // What a fence finishing on another shard publishes.
+        ingress.publish_servable(lifecycle.lock().await.servable());
+        // Long enough for at least one interim publish.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let mid_pass = ingress.dispatch(&key(0));
+        let opened = local();
+
+        assert!(opened < 4, "the pass ended before the check");
+        assert!(
+            !matches!(mid_pass, Dispatch::Local { .. }),
+            "shard 0 was served again mid-pass: {mid_pass:?}"
+        );
+        shutdown.cancel();
+        let _ = feed.await;
+    }
+
     /// A shard led elsewhere is only forwardable once the catalog supplies an
     /// address. Before that it is known and unreachable, which is the state the
     /// address book exists to leave.

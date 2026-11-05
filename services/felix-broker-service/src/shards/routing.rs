@@ -841,7 +841,7 @@ pub fn spawn_feed(
         let mut catalog = HashMap::new();
         // The assignments the last pass applied, to tell which are new.
         let mut applied = HashMap::new();
-        let mut published = Published::default();
+        let mut published_priors = HashMap::new();
         loop {
             let woken = tokio::select! {
                 _ = shutdown.cancelled() => return,
@@ -891,13 +891,14 @@ pub fn spawn_feed(
             // Shards new to this pass are routed as they open, not when the
             // whole pass is done: a bulk create opens hundreds one after
             // another. Only additions: every other route and its priors stay
-            // as last published, and nothing stops being served, until the
-            // pass has applied its changes. Not before the first catalog, which
+            // as last published, and only a fence's own publish stops a shard
+            // being served, until the pass has applied its changes. Not
+            // before the first catalog, which
             // would publish every remote shard without an address.
             let mut early = EarlyRoutes {
                 ingress: &ingress,
                 catalog: &catalog,
-                published: &published,
+                published_priors: &published_priors,
                 assignments: (catalog_source.is_none() || !catalog.is_empty())
                     .then(|| early_assignments(&applied, &assignments, &priors))
                     .flatten(),
@@ -937,9 +938,9 @@ pub fn spawn_feed(
             ingress.publish(
                 routing_table_from(&assignments, &catalog).with_priors(priors.clone()),
                 &catalog,
-                servable.clone(),
+                servable,
             );
-            published = Published { priors, servable };
+            published_priors = priors;
             crate::shards::watch::metrics::set_catalog_nodes(catalog.len());
             if woken {
                 routes_changed.notify_one();
@@ -947,13 +948,6 @@ pub fn spawn_feed(
             applied = assignments;
         }
     })
-}
-
-/// What the feed's last end-of-pass publish carried besides the routes.
-#[derive(Default)]
-struct Published {
-    priors: HashMap<felix_router::ShardKey, felix_router::PriorSet>,
-    servable: ServableShards,
 }
 
 /// The last applied assignments with this pass's new shards added, and the
@@ -985,12 +979,13 @@ fn early_assignments(
 }
 
 /// The view a reconcile pass publishes while it is still opening shards: the
-/// last published one, plus each new shard's route and every shard that now
-/// serves at the generation routed here.
+/// live one, plus each new shard's route and every shard that now serves at
+/// the generation routed here.
 struct EarlyRoutes<'a> {
     ingress: &'a IngressRouter,
     catalog: &'a HashMap<String, felix_router::NodeRef>,
-    published: &'a Published,
+    /// The priors of the last end-of-pass publish.
+    published_priors: &'a HashMap<felix_router::ShardKey, felix_router::PriorSet>,
     /// The last applied assignments with the new shards added, and the new
     /// shards' priors. `None` when there is nothing to add.
     assignments: Option<(
@@ -1019,16 +1014,17 @@ impl crate::shards::lifecycle::PassProgress for EarlyRoutes<'_> {
             return;
         };
         self.last = Some(std::time::Instant::now());
-        // A shard can start serving mid-pass outside the pass too (a fence
-        // finishing publishes on its own), so take every one serving at the
-        // generation routed here. Removals wait for the pass's end.
-        let mut early_servable = self.published.servable.clone();
+        // Start from what is live, not from the last end-of-pass publish: a
+        // fence finishing mid-pass publishes the servable set on its own, and
+        // that adds and removes shards. Add every shard now serving at the
+        // generation routed here; other removals wait for the pass's end.
+        let mut early_servable = self.ingress.view.load().servable.clone();
         early_servable.extend(servable.into_iter().filter(|(key, generation)| {
             routes
                 .get(key)
                 .is_some_and(|assignment| assignment.generation == *generation)
         }));
-        let mut priors = self.published.priors.clone();
+        let mut priors = self.published_priors.clone();
         priors.extend(
             added_priors
                 .iter()
