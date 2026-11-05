@@ -2016,6 +2016,13 @@ has lost the shard. Without it the broker learns another way:
   gives up, never what it delivers. While the lease holds no rounds run: a new
   assignment reaches the broker the usual way.
 
+  Unlike the endings above, silence names no newer leader, so this one is not
+  for good. The broker keeps running rounds for the shard, and the first one
+  a majority confirms at that generation, or the lease coming back, lets
+  readers in again (`ShardFence::heard`). Without that, a leader whose
+  followers came back would acknowledge `Quorum` writes, which need only
+  their answers, while refusing every reader of the records it wrote.
+
 Each of these endings runs once, over the readers registered at that moment.
 A subscribe or watch is admitted (`redirect_for`) before it registers, so one
 admitted just before an ending and registered just after would be missed. The
