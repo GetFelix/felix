@@ -6,7 +6,7 @@
 //! node's `PeerRequestHandler` on a task of its own, so it runs to the end
 //! even if the caller gives up on it, as it would on a real broker.
 //!
-//! What it keeps from the real transport:
+//! What it keeps from the real transport and listener:
 //!
 //! - Every message is encoded and decoded with the peer codec in both
 //!   directions, so a field the codec drops is dropped here too.
@@ -14,16 +14,24 @@
 //!   the pool's errors: `Unsupported` for a capability the target did not
 //!   offer, `Timeout` for an answer that never came.
 //! - The handler hears who asked only when the target keeps ballots.
+//! - Pings are answered without the handler, and a learner's ack reads as a
+//!   plain one to a caller that did not offer `LEARNER_ACKS`.
+//!
+//! What it leaves out: the listener's per-stream permits (`Overload`) and its
+//! one-at-a-time answering of an older peer's stream. Every request runs at
+//! once.
 //!
 //! Faults are per directed link ([`Link`]): a partition refuses at once, as
-//! the pool's partition injection does; a drop loses the request or its
+//! the pool's partition injection does, and loses anything crossing when it
+//! lands; a drop loses the request or its
 //! answer and leaves the caller to time out; a delay holds a message in
 //! flight. Drops are drawn from the seed the net was built with.
 //!
 //! Each [`SimNet::start`] is a new incarnation of its node. Once a node
-//! crashes or restarts, the old incarnation's [`SimPeer`] is refused and
-//! anything its handler was still answering is lost: tasks a crash leaves
-//! running cannot reach the live cluster.
+//! crashes or restarts, the old incarnation's [`SimPeer`] is refused, its
+//! handlers stop, and requests sent to it fail with `Disconnected` rather than
+//! reach the new incarnation: tasks a crash leaves running cannot reach the
+//! live cluster.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -35,8 +43,8 @@ use felix_replication::peer::identity::PeerIdentity;
 use felix_replication::peer::pool::{
     PeerError, PeerRequester, request_timeout, required_capability,
 };
-use felix_replication::peer::server::PeerRequestHandler;
-use felix_wire::internal::{InternalMessage, PeerCapabilities};
+use felix_replication::peer::server::{PeerRequestHandler, for_caller};
+use felix_wire::internal::{InternalMessage, PeerCapabilities, Pong};
 use parking_lot::Mutex;
 use tokio::sync::oneshot;
 
@@ -57,8 +65,7 @@ impl SimNet {
                     nodes: HashMap::new(),
                     links: HashMap::new(),
                     next_incarnation: 1,
-                    // Zero is xorshift's one fixed point.
-                    rng: seed | 1,
+                    rng: splitmix(seed),
                 }),
             }),
         }
@@ -75,6 +82,7 @@ impl SimNet {
             Running {
                 incarnation,
                 alive: true,
+                died: tokio::sync::watch::channel(false).0,
                 capabilities: node.capabilities,
                 identity: node.identity,
                 handler: node.handler,
@@ -95,6 +103,7 @@ impl SimNet {
         if let Some(node) = self.inner.state.lock().nodes.get_mut(node_id) {
             node.alive = false;
             node.known.clear();
+            node.died.send_replace(true);
         }
     }
 
@@ -168,15 +177,24 @@ impl SimPeer {
 
     /// Reach `node_id` without sending anything: what a dial and handshake
     /// would learn.
-    fn reach(&self, node_id: &str) -> Result<(PeerCapabilities, PeerIdentity), PeerError> {
+    fn reach(&self, node_id: &str) -> Result<Reached, PeerError> {
         let mut state = self.net.state.lock();
         state.check_sender(&self.node_id, self.incarnation)?;
         if state.link(&self.node_id, node_id).partitioned {
             return Err(partitioned(node_id));
         }
         let target = state.running(node_id)?;
-        let reached = (target.capabilities, target.identity);
-        state.record_handshake(&self.node_id, self.capabilities, node_id, reached.0);
+        let reached = Reached {
+            capabilities: target.capabilities,
+            identity: target.identity,
+            incarnation: target.incarnation,
+        };
+        state.record_handshake(
+            &self.node_id,
+            self.capabilities,
+            node_id,
+            reached.capabilities,
+        );
         Ok(reached)
     }
 }
@@ -198,7 +216,7 @@ impl PeerRequester for SimPeer {
         node_id: &str,
         _addr: SocketAddr,
     ) -> Result<PeerCapabilities, PeerError> {
-        self.reach(node_id).map(|(capabilities, _)| capabilities)
+        self.reach(node_id).map(|reached| reached.capabilities)
     }
 
     fn recorded_capabilities(&self, node_id: &str) -> Option<PeerCapabilities> {
@@ -219,7 +237,7 @@ impl PeerRequester for SimPeer {
     }
 
     async fn identity(&self, node_id: &str, _addr: SocketAddr) -> Result<PeerIdentity, PeerError> {
-        self.reach(node_id).map(|(_, identity)| identity)
+        self.reach(node_id).map(|reached| reached.identity)
     }
 
     async fn request_identified(
@@ -229,9 +247,9 @@ impl PeerRequester for SimPeer {
         message: InternalMessage,
     ) -> Result<(InternalMessage, PeerIdentity), PeerError> {
         let timeout = request_timeout(&self.net.config, &message);
-        let (capabilities, identity) = self.reach(node_id)?;
+        let reached = self.reach(node_id)?;
         if let Some(needed) = required_capability(&message)
-            && !capabilities.contains(needed)
+            && !reached.capabilities.contains(needed)
         {
             return Err(PeerError::Unsupported {
                 node_id: node_id.to_string(),
@@ -244,7 +262,9 @@ impl PeerRequester for SimPeer {
             Arc::clone(&self.net),
             Delivery {
                 from: self.node_id.clone(),
+                from_offer: self.capabilities,
                 to: node_id.to_string(),
+                to_incarnation: reached.incarnation,
                 frame,
             },
             answered,
@@ -271,7 +291,7 @@ impl PeerRequester for SimPeer {
             .lock()
             .check_sender(&self.node_id, self.incarnation)?;
         let answer = wire(&answer).ok_or_else(|| disconnected(node_id))?;
-        Ok((answer, identity))
+        Ok((answer, reached.identity))
     }
 }
 
@@ -352,26 +372,46 @@ struct Running {
     handler: Arc<dyn PeerRequestHandler>,
     /// What each peer offered in its latest handshake with this incarnation.
     known: HashMap<String, PeerCapabilities>,
+    /// Set when it crashes, and dropped when a restart replaces it: either
+    /// way the requests it was answering lose their connection.
+    died: tokio::sync::watch::Sender<bool>,
+}
+
+/// What a dial and handshake learned about one incarnation of a peer.
+struct Reached {
+    capabilities: PeerCapabilities,
+    identity: PeerIdentity,
+    incarnation: u64,
 }
 
 /// A request on its way to its target.
 struct Delivery {
     from: String,
+    /// What the sender offered, which decides how a learner's ack reads.
+    from_offer: PeerCapabilities,
     to: String,
+    /// The incarnation the sender's connection is to. Only it may answer.
+    to_incarnation: u64,
     frame: InternalMessage,
 }
 
 /// Carry `delivery` to its target, run its handler, and carry the answer back.
 ///
-/// Sends `None` for an answer lost on the way back, and drops `answered`
-/// without sending when the connection would have been lost: the target died
-/// before answering.
+/// Sends `None` for a message lost on either leg, and drops `answered`
+/// without sending when the connection would have been lost: the
+/// incarnation it was opened to is gone, or dies while answering.
 async fn deliver(
     net: Arc<Inner>,
     delivery: Delivery,
     answered: oneshot::Sender<Option<InternalMessage>>,
 ) {
-    let Delivery { from, to, frame } = delivery;
+    let Delivery {
+        from,
+        from_offer,
+        to,
+        to_incarnation,
+        frame,
+    } = delivery;
     let outbound = {
         let mut state = net.state.lock();
         let link = state.link(&from, &to);
@@ -383,37 +423,72 @@ async fn deliver(
         return;
     };
     tokio::time::sleep(delay).await;
-    let (handler, incarnation, peer) = {
+    let (handler, mut died, peer) = {
         let state = net.state.lock();
-        let Ok(target) = state.running(&to) else {
+        // A connection does not outlive the process it was opened to, even
+        // if the node is back under a new incarnation.
+        let Some(target) = state
+            .nodes
+            .get(&to)
+            .filter(|node| node.alive && node.incarnation == to_incarnation)
+        else {
             return;
         };
+        if state.link(&from, &to).partitioned {
+            drop(state);
+            let _ = answered.send(None);
+            return;
+        }
         let peer = target
             .capabilities
             .contains(PeerCapabilities::BALLOTS)
             .then(|| Arc::<str>::from(from.as_str()));
-        (Arc::clone(&target.handler), target.incarnation, peer)
+        (Arc::clone(&target.handler), target.died.subscribe(), peer)
     };
-    let answer = handler.handle_from(peer, frame).await;
-    let inbound = {
-        let mut state = net.state.lock();
-        // A target that died while answering takes its connection with it.
-        if !state
-            .nodes
-            .get(&to)
-            .is_some_and(|node| node.alive && node.incarnation == incarnation)
-        {
-            return;
+    let answer = match frame {
+        // The listener answers a ping itself, not the handler, so a broker
+        // whose handler refuses pings still reads as alive.
+        InternalMessage::Ping(ping) => InternalMessage::Pong(Pong {
+            correlation_id: ping.correlation_id,
+        }),
+        request => {
+            // A crash ends the handler with its process; the caller sees the
+            // connection drop rather than waiting on an answer.
+            let handled = tokio::select! {
+                answer = handler.handle_from(peer, request) => Some(answer),
+                _ = died.wait_for(|died| *died) => None,
+            };
+            let Some(answer) = handled else {
+                return;
+            };
+            for_caller(answer, from_offer.contains(PeerCapabilities::LEARNER_ACKS))
         }
-        let link = state.link(&to, &from);
-        (!link.partitioned && !state.drops(link)).then_some(link.delay)
     };
-    let Some(delay) = inbound else {
+    if *died.borrow() || died.has_changed().is_err() {
+        return;
+    }
+    let delay = {
+        let mut state = net.state.lock();
+        let link = state.link(&to, &from);
+        (!state.drops(link)).then_some(link.delay)
+    };
+    let Some(delay) = delay else {
         let _ = answered.send(None);
         return;
     };
     tokio::time::sleep(delay).await;
-    let _ = answered.send(Some(answer));
+    // A partition that lands while the answer crosses loses it.
+    let cut = net.state.lock().link(&to, &from).partitioned;
+    let _ = answered.send((!cut).then_some(answer));
+}
+
+/// A seed spread over all 64 bits, so nearby seeds draw unrelated drops.
+/// Never zero, which is xorshift's fixed point.
+fn splitmix(seed: u64) -> u64 {
+    let mut z = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    (z ^ (z >> 31)).max(1)
 }
 
 /// `message` as it arrives after the peer codec carries it, or `None` for one

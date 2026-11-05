@@ -759,7 +759,7 @@ async fn serve_connection(
 /// `response` as the caller reads it: a learner's answer to a caller that
 /// did not offer [`PeerCapabilities::LEARNER_ACKS`] goes as the original
 /// kind, which such a caller counts as it always has.
-fn for_caller(response: InternalMessage, learner_acks: bool) -> InternalMessage {
+pub fn for_caller(response: InternalMessage, learner_acks: bool) -> InternalMessage {
     match response {
         InternalMessage::ReplicateOk(ok) if ok.learner && !learner_acks => {
             InternalMessage::ReplicateOk(felix_wire::internal::ReplicateOk {

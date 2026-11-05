@@ -5,8 +5,12 @@ processes over real QUIC. That finds bugs, but slowly: a failover takes
 seconds of wall time, and a fault that needs a partition to land between two
 particular messages may take hundreds of runs to hit. The simulator runs
 several brokers in one test process instead, on tokio's virtual time, with
-the network and the clocks under the test's control. A run is driven by a seed,
-and a failing seed can be replayed.
+the network and the clocks under the test's control. The network's faults are
+drawn from a seed, so the same seed loses the same messages.
+
+Replaying a whole run from its seed is not possible yet. Replication draws its
+own randomness (election backoff jitter, hash map order) from the process, and
+the simulator does not seed it.
 
 It lives in `crates/testing/felix-sim`. So far that crate holds the simulated
 network; the harness that starts brokers and a control plane on it, the fault
@@ -36,20 +40,27 @@ object.
 
 `SimNet` gives each running node a `SimPeer`, its `PeerRequester`. A request
 runs on the target's handler in a task of its own, so it finishes even if the
-caller gives up, which is how a real broker behaves. It keeps the parts of the
-pool that matter to correctness:
+caller gives up, which is how a real broker behaves. It keeps these parts of
+the pool and the listener:
 
 - Each message goes through the peer codec in both directions.
 - The caller waits as long as the pool would (`peer::pool::request_timeout`).
 - A request the target never offered the capability for fails with
   `Unsupported` and is not sent (`peer::pool::required_capability`).
 - The handler is told who asked only when the target keeps ballots.
+- A ping is answered by the network, not the handler, as the listener does.
+- A learner's ack reads as a plain ack to a caller that did not offer
+  `LEARNER_ACKS` (`peer::server::for_caller`).
+
+It does not model the listener's limits. A real listener refuses with
+`Overload` past its per-stream permits, and answers an older peer's requests
+on one stream one at a time. Under simulation every request runs at once.
 
 Faults are set per directed link:
 
 | Fault | What the caller sees |
 | --- | --- |
-| `partitioned` | `Unavailable` at once, like the pool's partition file. An answer already on its way back is lost. |
+| `partitioned` | `Unavailable` at once, like the pool's partition file. A request or answer crossing when it lands is lost, and the caller times out. |
 | `drop` (a probability) | A lost request or a lost answer. Either way the caller times out; with a lost answer the handler has already run. |
 | `delay` | Each message takes that long to cross. Past the timeout the caller gives up, and the request still lands. |
 
@@ -60,13 +71,18 @@ Each `SimNet::start` is a new incarnation of a node. A crashed node is
 unreachable, and its old `SimPeer` is refused with `ShuttingDown` even after the
 node restarts. A crash leaves some short tasks running (a fence in flight, a
 confirmed read); this is what keeps them from reaching the live cluster. A
-handler that was answering when its node died loses its answer, and the caller
-sees `Disconnected`.
+request to a node that crashes before answering fails with `Disconnected` at
+the moment of the crash, and the handler stops. A request sent to the old
+incarnation never reaches the new one, as a connection does not outlive its
+process.
 
 ### Time
 
-Every deadline, backoff and stickiness window in `felix-replication` reads
-`tokio::time::Instant`, so pausing tokio's clock pauses them all. With a
+The deadlines, backoffs and stickiness windows the simulator runs read
+`tokio::time::Instant`, so pausing tokio's clock pauses them. A few readings
+in `felix-replication` still use the host clock, all on paths `SimNet` replaces
+or that decide nothing: the pool's dial backoff, the shipping log's
+rate limiter, and the reconnect jitter in `peer/config.rs`. With a
 paused runtime, tokio jumps the clock forward whenever every task is waiting,
 so a test that waits out minutes of timeouts takes far less real time.
 
