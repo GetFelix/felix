@@ -1899,8 +1899,9 @@ job runs: it was an exhaustive check per push until it stopped finishing
 A walk shows less than a check. It is sampling: a pass means the walks found
 nothing in their budget, not that nothing is there, and uniform random choice
 under-samples rare interleavings. What it adds is depth: invariants checked on
-behaviours far longer than any exhaustive configuration reaches. Each family's
-negative twin must find its violation within the same budget, which shows the
+behaviours far longer than any exhaustive configuration reaches. Each walked
+negative twin must find its violation within the same budget (the election and
+spares twins are replayed as fixed traces instead, see below), which shows the
 walks are long and varied enough to lose a record at all. A twin checks only
 the invariant it expects, so the first violation it finds is that one.
 

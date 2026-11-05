@@ -6,8 +6,9 @@ name: TLA+ walks
 # behaviours hundreds of steps long instead (the inherited-name families keep
 # their exhaustive bounds, which are too big to check exhaustively), which is
 # sampling, not proof: a
-# pass means nothing was found. Each family's negative twin must still find
+# pass means nothing was found. Each walked negative twin must still find
 # its violation within the budget, the same expectation model as ci.yml.
+# The election and spares twins are fixed-trace replays in ci.yml instead.
 # A pull request that changes the walks runs them too. See
 # docs/formal/README.md, "Long random walks".
 #
