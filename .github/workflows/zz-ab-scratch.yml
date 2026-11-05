@@ -1,0 +1,67 @@
+name: AB one test (scratch)
+
+on:
+  push:
+    branches: ["ab/**"]
+
+jobs:
+  ab:
+    name: AB ${{ matrix.mode }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [plain, cov]
+    env:
+      CARGO_TERM_COLOR: never
+      FELIX_TEST_CLUSTER_LOG_DIR: ${{ runner.temp }}/cluster-logs
+      TEST: replica_election::the_control_plane_returning_mid_election_leaves_one_leader
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.99.1"
+          components: llvm-tools-preview
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: ab-${{ matrix.mode }}
+      - name: Install cargo-llvm-cov
+        if: matrix.mode == 'cov'
+        uses: taiki-e/install-action@32e16a23c68a001a1621efca19f131f965d4d122 # cargo-llvm-cov
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Run alone 8x
+        shell: bash
+        run: |
+          set -uo pipefail
+          if [ "${{ matrix.mode }}" = cov ]; then
+            source <(cargo llvm-cov show-env --export-prefix)
+            export FELIX_TEST_TIMEOUT_SCALE=5
+          else
+            export FELIX_TEST_TIMEOUT_SCALE=3
+          fi
+          cargo build -p felix-broker-service --bin felix-broker || exit 1
+          cargo test -p felix-cluster --test failures --no-run || exit 1
+          fails=0
+          for i in $(seq 1 8); do
+            echo "=== run $i"
+            if cargo test -p felix-cluster --test failures "$TEST" -- --exact > "$RUNNER_TEMP/run$i.log" 2>&1; then
+              echo "run $i ok"
+            else
+              echo "run $i FAILED"; fails=$((fails+1))
+              grep -a "panicked\|^publish\|lost\|leader" "$RUNNER_TEMP/run$i.log" | head -20
+              mkdir -p "$RUNNER_TEMP/keep/run$i"; cp "$RUNNER_TEMP/run$i.log" "$RUNNER_TEMP/keep/run$i/"
+              cp -R "$FELIX_TEST_CLUSTER_LOG_DIR/." "$RUNNER_TEMP/keep/run$i/" 2>/dev/null || true
+            fi
+            rm -rf "$FELIX_TEST_CLUSTER_LOG_DIR"
+          done
+          echo "RESULT mode=${{ matrix.mode }} fails=$fails/8" | tee -a "$GITHUB_STEP_SUMMARY"
+          [ "$fails" = 0 ]
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: ab-${{ matrix.mode }}
+          path: ${{ runner.temp }}/keep
