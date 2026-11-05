@@ -1572,9 +1572,11 @@ the shard itself (`MoveStep::Stuck`, issue #1914):
   is live and not halted (the new term would stall the same way). A leader
   whose broker has reported on no shard within the bound is not judged by
   its silence: that is the broker's stall, or the control plane's, and the
-  same leader one generation up would stall with it. Likewise when more
-  than 64 leaders (or an eighth of those watched) are overdue at once, as a
-  network that carries pings but not shipping would leave them. The clock
+  same leader one generation up would stall with it. When more than 64
+  leaders (or an eighth of those watched) are overdue at once, only the
+  longest overdue is renamed each pass: a network that carries pings but
+  not shipping leaves them all stuck, and so does one restarted broker that
+  leads many shards, which renames do heal. The clock
   starts again at every new generation, leader incarnation, watching
   instance, or gap of half the bound in this instance's watching. A leader
   that never opened waits twice the bound, since after a restart it may

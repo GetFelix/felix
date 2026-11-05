@@ -478,9 +478,12 @@ fn only_this_leaders_own_reports_are_progress() {
 }
 
 /// Every leader stuck at once, as a network that carries pings but not
-/// shipping would leave them, is a fleet-wide fault: none is renamed.
+/// shipping would leave them, may be a fleet-wide fault: one is renamed a
+/// pass, the longest overdue, not all of them. One restarted broker leading
+/// them all looks the same, and renaming none would leave it unserved for
+/// good (#1966).
 #[test]
-fn many_stuck_at_once_renames_none() {
+fn many_stuck_at_once_renames_one_a_pass() {
     let nodes = live(&["broker-a", "broker-b", "broker-c"]);
     let existing: Vec<ShardAssignment> = (0..200).map(shard).collect();
     let reports = |at| (0..200).map(|n| report(n, 3, at, 10, 4, 4)).collect();
@@ -490,7 +493,8 @@ fn many_stuck_at_once_renames_none() {
         let now = NOW + pass * 5 * SECOND;
         stuck = observe(&mut progress, &existing, &nodes, reports(now), now);
     }
-    assert!(stuck.is_empty(), "{} stuck", stuck.len());
+    assert_eq!(stuck.len(), 1, "{stuck:?}");
+    assert!(stuck.contains_key(&(shard(0).key, 3)), "{stuck:?}");
 }
 
 /// A leader that fails at every generation it is given is renamed a handful

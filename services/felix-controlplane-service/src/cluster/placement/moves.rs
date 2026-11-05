@@ -89,8 +89,9 @@ pub(super) const MAX_STUCK_RENAMES: u32 = 4;
 pub(super) const STUCK_RENAMES_PER_PASS: usize = 16;
 
 /// Past this many leaders overdue at once (or an eighth of those watched, if
-/// more), none is renamed: that is a fleet-wide stall, and the same leaders
-/// one generation up would stall with it.
+/// more), only the longest overdue is renamed each pass: that may be a
+/// fleet-wide stall, which the same leaders one generation up would share,
+/// or one restarted broker leading many shards, which renames heal.
 pub(super) const MAX_STUCK_PER_FLEET: usize = 64;
 
 /// How long after a cluster's first broker registered a new shard waits for

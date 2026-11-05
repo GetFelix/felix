@@ -382,9 +382,13 @@ impl CopyProgress {
             watched.insert(assignment.key.clone(), watch);
         }
         self.watched = watched;
-        // Many leaders stuck at once is a fleet-wide fault, such as a
-        // network that carries pings but not shipping. Renaming them would
-        // add a fence to every one and change nothing.
+        // Many leaders stuck at once may be a fleet-wide fault, such as a
+        // network that carries pings but not shipping, where renaming them
+        // all would add a fence to every one and change nothing. It may as
+        // well be one restarted broker that leads many shards (#1966), which
+        // renames heal. Renaming none would leave either for good, so the
+        // longest overdue one is renamed each pass: churn stays at one fence a
+        // pass, and the per-shard backoff still applies.
         let overdue = stuck
             .values()
             .filter(|stuck| now.saturating_sub(stuck.since_millis) > bound)
@@ -393,9 +397,21 @@ impl CopyProgress {
             tracing::warn!(
                 overdue,
                 watched = self.watched.len(),
-                "too many leaders show no progress at once to be stuck shards; renaming none",
+                "too many leaders show no progress at once; renaming one a pass",
             );
-            return HashMap::new();
+            let Some(oldest) = stuck
+                .iter()
+                .min_by_key(|((key, _), stuck)| {
+                    (
+                        stuck.since_millis,
+                        (&key.tenant_id, &key.namespace, &key.stream, key.shard),
+                    )
+                })
+                .map(|(at, _)| at.clone())
+            else {
+                return HashMap::new();
+            };
+            stuck.retain(|at, _| *at == oldest);
         }
         stuck
     }
