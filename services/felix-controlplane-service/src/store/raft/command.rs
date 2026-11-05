@@ -628,6 +628,11 @@ pub enum MetaResponse {
     Assignment {
         assignment: ShardAssignment,
     },
+    /// The leader's shard-assignment feed `next_seq`, for
+    /// `LeaderRequest::ShardAssignmentHead`. Never the answer to a command.
+    AssignmentHead {
+        next_seq: u64,
+    },
     /// `PutShardAssignmentIf` found another generation and wrote nothing.
     StaleAssignment {
         current_generation: Option<u64>,

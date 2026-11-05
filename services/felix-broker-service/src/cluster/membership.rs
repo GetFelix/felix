@@ -133,6 +133,10 @@ struct HeartbeatRequest {
     /// plane always read.
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     suspects: BTreeSet<String>,
+    /// Set while the lease waits on the routes, which then have to reach the
+    /// answer's `assignment_seq`. Left out otherwise, as before.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    want_assignment_seq: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -154,6 +158,10 @@ struct HeartbeatResponse {
     expiry_timeout_ms: Option<u64>,
     #[serde(default)]
     fleet_features: BTreeSet<String>,
+    /// The assignment feed's head as of the accept, when asked for. Absent
+    /// from a control plane that predates it.
+    #[serde(default)]
+    assignment_seq: Option<u64>,
 }
 
 /// A registered identity, and what the control plane told us about it.
@@ -427,6 +435,7 @@ pub async fn run_heartbeat(
             HeartbeatRequest {
                 incarnation: registration.incarnation,
                 suspects,
+                want_assignment_seq: lease.awaits_routes(),
             },
             lease.usable() / LEASE_REQUEST_FRACTION,
         )
@@ -442,7 +451,7 @@ pub async fn run_heartbeat(
                     if let Some(expiry) = response.expiry_timeout_ms {
                         lease.adopt(Duration::from_millis(expiry.max(1)));
                     }
-                    lease.renew_at(sent);
+                    lease.renew_at(sent, response.assignment_seq);
                 }
                 mm::record_heartbeat_success();
                 for feature in fleet.observe(response.fleet_features.iter().map(String::as_str)) {

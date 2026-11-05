@@ -953,6 +953,14 @@ impl ControlPlaneStore for RaftStore {
         }
     }
 
+    async fn confirmed_shard_assignment_head(&self) -> StoreResult<Option<u64>> {
+        match self.ask_leader(LeaderRequest::ShardAssignmentHead).await? {
+            Some(MetaResponse::AssignmentHead { next_seq }) => Ok(Some(next_seq)),
+            Some(_) => Err(unexpected_shape("assignment head")),
+            None => Ok(None),
+        }
+    }
+
     async fn list_shard_assignments(&self) -> StoreResult<Vec<ShardAssignment>> {
         self.local().list_shard_assignments().await
     }

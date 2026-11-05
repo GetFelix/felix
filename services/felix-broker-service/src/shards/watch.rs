@@ -154,6 +154,8 @@ pub struct ShardOwnership {
     priors: HashMap<ShardKey, felix_router::PriorSet>,
     /// When the request behind the newest answer applied here started.
     as_of: Option<tokio::time::Instant>,
+    /// The feed seq the newest answer applied here brought this view to.
+    checkpoint: Option<u64>,
 }
 
 impl ShardOwnership {
@@ -163,8 +165,14 @@ impl ShardOwnership {
         self.as_of
     }
 
-    fn answered(&mut self, started: tokio::time::Instant) {
+    /// The feed seq this view is caught up to, as of the same answer.
+    pub(crate) fn checkpoint(&self) -> Option<u64> {
+        self.checkpoint
+    }
+
+    pub(crate) fn answered(&mut self, started: tokio::time::Instant, seq: u64) {
         self.as_of = Some(self.as_of.map_or(started, |was| was.max(started)));
+        self.checkpoint = Some(seq);
     }
 
     /// Apply a change, ignoring one that would move a shard backwards.
@@ -481,7 +489,7 @@ pub async fn run(
                 checkpoint = Some(seq);
                 floor = floor.max(seq);
                 mm::record_checkpoint(seq);
-                ownership.write().await.answered(started);
+                ownership.write().await.answered(started, seq);
                 // Unmoved too when a renewal waits: the feed's publish is
                 // what confirms it.
                 if moved || urgent {
@@ -517,7 +525,7 @@ pub async fn run(
                 tracing::warn!(?reason, "shard watch must resnapshot");
                 mm::record_resync(reason);
                 checkpoint = None;
-                interval
+                if urgent { Duration::ZERO } else { interval }
             }
             Err(err) => {
                 failures = failures.saturating_add(1);

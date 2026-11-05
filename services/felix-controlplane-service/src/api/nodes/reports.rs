@@ -85,12 +85,26 @@ pub(crate) async fn report_health(
         .await
         .map_err(|ref err| api_internal("read the enabled fleet features", err))?;
 
+    // After the heartbeat was recorded, so the seq covers every change
+    // committed before the broker's renewal. A broker that asks is not
+    // serving until it has one, so failing its heartbeat here costs nothing.
+    let assignment_seq = if request.want_assignment_seq {
+        state
+            .store
+            .confirmed_shard_assignment_head()
+            .await
+            .map_err(|ref err| api_internal("read the shard assignment feed's head", err))?
+    } else {
+        None
+    };
+
     Ok(Json(NodeHeartbeatResponse {
         node_id: node.node_id,
         lifecycle: node.status.lifecycle,
         heartbeat_interval_ms: state.node_liveness.heartbeat_interval_ms,
         expiry_timeout_ms: state.node_liveness.expiry_timeout_ms,
         fleet_features,
+        assignment_seq,
     }))
 }
 

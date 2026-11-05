@@ -86,12 +86,44 @@ pub struct LeaseState {
     /// Set by a surrender while routes are followed: no renewal counts until
     /// the routes are confirmed newer than it.
     routes_unconfirmed: AtomicBool,
-    /// When the first renewal after the surrender arrived. Routes fetched by a
-    /// request that started after it confirm the lease.
-    confirm_after: parking_lot::Mutex<Option<tokio::time::Instant>>,
+    /// What routes have to be newer than to confirm the renewals since the
+    /// surrender. Set by the first of them.
+    confirm: parking_lot::Mutex<Option<RoutesWanted>>,
     /// Signalled when a renewal is waiting on the routes, so the watch asks at
     /// once instead of finishing a long-poll.
     routes_wanted: tokio::sync::Notify,
+}
+
+/// The routes that confirm the renewals since a surrender.
+#[derive(Debug, Clone, Copy)]
+struct RoutesWanted {
+    /// When the first renewal arrived: routes fetched by a request that
+    /// started earlier may predate it.
+    after: tokio::time::Instant,
+    /// The assignment feed's head when the control plane accepted a renewal.
+    /// A watch answer from a Raft member that has not applied a move can be
+    /// newer than `after` and still miss it, but not reach this. `None` from
+    /// a control plane that predates it, where `after` alone decides.
+    seq: Option<u64>,
+}
+
+impl RoutesWanted {
+    fn met_by(&self, started: tokio::time::Instant, checkpoint: Option<u64>) -> bool {
+        started >= self.after
+            && self
+                .seq
+                .is_none_or(|seq| checkpoint.is_some_and(|checkpoint| checkpoint >= seq))
+    }
+
+    /// The lowest head a renewal reported: they only grow on one feed, and
+    /// one that went backwards was reset, so the lower one is the feed the
+    /// watch now reads.
+    fn add_seq(&mut self, seq: Option<u64>) {
+        self.seq = match (self.seq, seq) {
+            (Some(held), Some(seq)) => Some(held.min(seq)),
+            (held, seq) => held.or(seq),
+        };
+    }
 }
 
 impl LeaseState {
@@ -120,7 +152,7 @@ impl LeaseState {
             lapsed: tokio::sync::Notify::new(),
             routes_followed: AtomicBool::new(false),
             routes_unconfirmed: AtomicBool::new(false),
-            confirm_after: parking_lot::Mutex::new(None),
+            confirm: parking_lot::Mutex::new(None),
             routes_wanted: tokio::sync::Notify::new(),
         }
     }
@@ -141,20 +173,31 @@ impl LeaseState {
         self.routes_wanted.notified()
     }
 
+    /// Whether renewals are held until the routes are confirmed: the heartbeat
+    /// then asks for the assignment feed's head.
+    pub(crate) fn awaits_routes(&self) -> bool {
+        self.routes_unconfirmed.load(Ordering::Acquire)
+    }
+
     /// Whether a renewal is waiting for the routes to be confirmed.
     pub(crate) fn wants_routes(&self) -> bool {
-        self.routes_unconfirmed.load(Ordering::Acquire) && self.confirm_after.lock().is_some()
+        self.awaits_routes() && self.confirm.lock().is_some()
     }
 
     /// The routes in use were built from assignments fetched by a request that
-    /// started at `started`. Confirms a renewal that arrived before it.
-    pub(crate) fn routes_current(&self, started: tokio::time::Instant) {
-        if !self.routes_unconfirmed.load(Ordering::Acquire) {
+    /// started at `started`, which brought the feed to `checkpoint`. Confirms
+    /// a renewal that arrived before that request, and whose answer's feed
+    /// head the checkpoint reached.
+    pub(crate) fn routes_current(&self, started: tokio::time::Instant, checkpoint: Option<u64>) {
+        if !self.awaits_routes() {
             return;
         }
-        let mut after = self.confirm_after.lock();
-        if after.is_some_and(|after| started >= after) {
-            *after = None;
+        let mut confirm = self.confirm.lock();
+        if confirm
+            .as_ref()
+            .is_some_and(|wanted| wanted.met_by(started, checkpoint))
+        {
+            *confirm = None;
             self.routes_unconfirmed.store(false, Ordering::Release);
             if !self.remaining().is_zero() {
                 self.looks_valid.store(true, Ordering::Release);
@@ -198,19 +241,30 @@ impl LeaseState {
     /// Anchoring at arrival instead would add the round trip — and any pause in
     /// it — to a lease the control plane already started counting, which is the
     /// safety interval being spent.
-    pub(crate) fn renew_at(&self, sent: LeaseInstant) {
+    ///
+    /// `assignment_seq` is the assignment feed's head as the control plane
+    /// accepted it, when it said. After a surrender the renewal waits for
+    /// routes built from the feed at or past it (see
+    /// [`LeaseState::follow_routes`]).
+    pub(crate) fn renew_at(&self, sent: LeaseInstant, assignment_seq: Option<u64>) {
         let stamp = sent.saturating_duration_since(self.base).as_millis() as u64 + 1;
         // `fetch_max`, not `store`: two heartbeat responses can race, and an
         // out-of-order one must not move the anchor backwards and shorten the
         // lease.
         self.renewed_at_millis.fetch_max(stamp, Ordering::Release);
-        if self.routes_unconfirmed.load(Ordering::Acquire) {
-            let mut after = self.confirm_after.lock();
-            // Anchored once: moving it on every heartbeat could outrun a watch
-            // slower than the heartbeat interval for good.
-            if after.is_none() {
-                *after = Some(tokio::time::Instant::now());
-                self.routes_wanted.notify_one();
+        if self.awaits_routes() {
+            let mut confirm = self.confirm.lock();
+            match confirm.as_mut() {
+                // Anchored once: moving it on every heartbeat could outrun a
+                // watch slower than the heartbeat interval for good.
+                Some(wanted) => wanted.add_seq(assignment_seq),
+                None => {
+                    *confirm = Some(RoutesWanted {
+                        after: tokio::time::Instant::now(),
+                        seq: assignment_seq,
+                    });
+                    self.routes_wanted.notify_one();
+                }
             }
             return;
         }
@@ -221,7 +275,7 @@ impl LeaseState {
     /// path has a send instant, and using it is the point.
     #[cfg(test)]
     pub fn renew(&self) {
-        self.renew_at(self.now());
+        self.renew_at(self.now(), None);
     }
 
     /// Give up the lease immediately.
@@ -230,7 +284,7 @@ impl LeaseState {
     /// serving now rather than run out the remaining margin.
     pub fn surrender(&self) {
         if self.routes_followed.load(Ordering::Acquire) {
-            *self.confirm_after.lock() = None;
+            *self.confirm.lock() = None;
             self.routes_unconfirmed.store(true, Ordering::Release);
         }
         let held = self.looks_valid.swap(false, Ordering::AcqRel);
@@ -259,7 +313,7 @@ impl LeaseState {
     /// or was never held.
     pub fn remaining(&self) -> Duration {
         let stamp = self.renewed_at_millis.load(Ordering::Acquire);
-        if stamp == 0 || self.routes_unconfirmed.load(Ordering::Acquire) {
+        if stamp == 0 || self.awaits_routes() {
             return Duration::ZERO;
         }
         let elapsed = self.now().saturating_duration_since(self.base).as_millis() as u64 + 1;

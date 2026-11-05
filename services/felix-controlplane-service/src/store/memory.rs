@@ -661,6 +661,10 @@ impl ControlPlaneStore for InMemoryStore {
         super::ConfirmedAssignment::from_read(shards::get_shard_assignment(self, key).await)
     }
 
+    async fn confirmed_shard_assignment_head(&self) -> StoreResult<Option<u64>> {
+        Ok(Some(self.shards.read().await.changes.next_seq))
+    }
+
     async fn list_shard_assignments(&self) -> StoreResult<Vec<ShardAssignment>> {
         shards::list_shard_assignments(self).await
     }

@@ -140,16 +140,70 @@ async fn a_renewal_after_a_surrender_waits_for_newer_routes() {
         "renewed on routes from before the move"
     );
 
-    lease.routes_current(fetched_before);
+    lease.routes_current(fetched_before, None);
     assert!(
         !lease.is_valid_now(),
         "routes older than the renewal confirmed it"
     );
 
     tokio::time::advance(Duration::from_millis(10)).await;
-    lease.routes_current(tokio::time::Instant::now());
+    lease.routes_current(tokio::time::Instant::now(), None);
     assert!(!lease.wants_routes());
     assert!(lease.looks_valid());
+    assert!(lease.is_valid_now());
+}
+
+/// A watch answer from a Raft member that has not applied the move can be
+/// fetched after the renewal and still miss it. Routes confirm the renewal
+/// only once they reach the feed head the control plane accepted it at
+/// (#1955).
+#[tokio::test(start_paused = true)]
+async fn routes_short_of_the_renewals_feed_head_confirm_nothing() {
+    let lease = LeaseState::on_tokio_clock(LEASE);
+    lease.follow_routes();
+    lease.renew();
+    lease.surrender();
+    assert!(
+        lease.awaits_routes(),
+        "the heartbeat does not ask for the head"
+    );
+    lease.renew_at(lease.now(), Some(11));
+    tokio::time::advance(Duration::from_millis(10)).await;
+    let fetched_after = tokio::time::Instant::now();
+
+    lease.routes_current(fetched_after, Some(10));
+    assert!(
+        !lease.is_valid_now(),
+        "a lagging member's routes confirmed the renewal"
+    );
+    lease.routes_current(fetched_after, None);
+    assert!(
+        !lease.is_valid_now(),
+        "routes with no checkpoint confirmed it"
+    );
+
+    lease.routes_current(fetched_after, Some(11));
+    assert!(lease.is_valid_now());
+    assert!(!lease.awaits_routes());
+}
+
+/// Renewals after the first keep its anchor and never raise the head it
+/// must reach: on one feed a later head is only higher, so raising it could
+/// outrun the watch, and a lower one means the feed was reset.
+#[tokio::test(start_paused = true)]
+async fn later_renewals_only_lower_the_head_to_reach() {
+    let lease = LeaseState::on_tokio_clock(LEASE);
+    lease.follow_routes();
+    lease.renew();
+    lease.surrender();
+    lease.renew_at(lease.now(), None);
+    lease.renew_at(lease.now(), Some(11));
+    lease.renew_at(lease.now(), Some(20));
+    lease.renew_at(lease.now(), Some(7));
+    let fetched_after = tokio::time::Instant::now();
+    lease.routes_current(fetched_after, Some(6));
+    assert!(!lease.is_valid_now());
+    lease.routes_current(fetched_after, Some(7));
     assert!(lease.is_valid_now());
 }
 
@@ -229,7 +283,7 @@ async fn a_pause_between_sending_and_handling_does_not_extend_the_lease() {
     // The broker then stalls for most of the usable lease before it gets round
     // to handling the response.
     tokio::time::advance(Duration::from_millis(2_500)).await;
-    lease.renew_at(sent);
+    lease.renew_at(sent, None);
 
     // Half a second of the 3s usable window is left, measured from when the
     // control plane started counting.
@@ -261,8 +315,8 @@ async fn an_older_heartbeat_handled_late_does_not_move_the_anchor_back() {
     let second = lease.now();
 
     // The later heartbeat is handled first, then the earlier one arrives.
-    lease.renew_at(second);
-    lease.renew_at(first);
+    lease.renew_at(second, None);
+    lease.renew_at(first, None);
 
     // Still anchored at the later one: 3s of usable lease from `second`.
     tokio::time::advance(Duration::from_millis(2_999)).await;
