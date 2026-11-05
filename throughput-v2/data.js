@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793916553635,
+  "lastUpdate": 1793918517880,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -46384,6 +46384,58 @@ window.BENCHMARK_DATA = {
             "range": "117179.81",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1533401.26\nmean: 1476037.87\nstdev: 117179.81\ncv: 7.94%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2bd9b04fd9720653c5ed2597025b33dee5efd48f",
+          "message": "ci(tla): retry the tla2tools download when the checksum does not match (#2000)\n\ncheck_tla.sh retries the tla2tools.jar download on a checksum mismatch and logs what was served.",
+          "timestamp": "2026-11-05T14:34:15-08:00",
+          "tree_id": "7541136a60ccd6146f3f611e69b542eb7dad3505",
+          "url": "https://github.com/GetFelix/felix/commit/2bd9b04fd9720653c5ed2597025b33dee5efd48f"
+        },
+        "date": 1793918516892,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 352882.87,
+            "range": "20795.87",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 352882.87\nmean: 345358.95\nstdev: 20795.87\ncv: 6.02%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 352882.87,
+            "range": "20795.87",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 352882.87\nmean: 345358.95\nstdev: 20795.87\ncv: 6.02%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80116.42,
+            "range": "482.53",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80116.42\nmean: 80132.66\nstdev: 482.53\ncv: 0.60%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 801164.19,
+            "range": "4825.29",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 801164.19\nmean: 801326.58\nstdev: 4825.29\ncv: 0.60%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
