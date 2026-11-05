@@ -118,6 +118,13 @@ async fn serve(
     (format!("http://{addr}"), stop, handle)
 }
 
+fn link(
+    client: &reqwest::Client,
+    base_url: &str,
+) -> felix_replication::controlplane_link::HttpControlPlaneLink {
+    felix_replication::controlplane_link::HttpControlPlaneLink::new(client.clone(), base_url)
+}
+
 fn config() -> MembershipConfig {
     MembershipConfig {
         node_id: "broker-a".to_string(),
@@ -138,8 +145,7 @@ async fn registration_sends_the_identity_and_returns_the_incarnation() {
     let client = build_test_client().expect("client");
 
     let registration = register(
-        &client,
-        &base_url,
+        &link(&client, &base_url),
         &config(),
         &crate::cluster::credential::NodeCredential::new("a-node-token"),
         None,
@@ -175,8 +181,7 @@ async fn registration_sends_the_kafka_address_when_the_listener_is_on() {
     };
 
     register(
-        &client,
-        &base_url,
+        &link(&client, &base_url),
         &config,
         &crate::cluster::credential::NodeCredential::new("a-node-token"),
         None,
@@ -202,8 +207,7 @@ async fn registration_sends_the_zone_when_one_is_set() {
     };
 
     register(
-        &client,
-        &base_url,
+        &link(&client, &base_url),
         &config,
         &crate::cluster::credential::NodeCredential::new("a-node-token"),
         None,
@@ -228,15 +232,14 @@ async fn registration_sends_the_storage_id_as_hex_when_one_is_set() {
     let mut bytes = [0u8; 16];
     bytes[0] = 0xab;
     register(
-        &client,
-        &base_url,
+        &link(&client, &base_url),
         &config(),
         &credential,
         Some(StorageId::from_bytes(bytes)),
     )
     .await
     .expect("register");
-    register(&client, &base_url, &config(), &credential, None)
+    register(&link(&client, &base_url), &config(), &credential, None)
         .await
         .expect("register");
 
@@ -266,8 +269,7 @@ async fn a_rejected_registration_is_an_error() {
 
     let client = build_test_client().expect("client");
     let err = register(
-        &client,
-        &format!("http://{addr}"),
+        &link(&client, &format!("http://{addr}")),
         &config(),
         &crate::cluster::credential::NodeCredential::new("a-node-token"),
         None,
@@ -289,8 +291,7 @@ async fn heartbeats_carry_the_registered_incarnation() {
     let client = build_test_client().expect("client");
 
     let mut registration = register(
-        &client,
-        &base_url,
+        &link(&client, &base_url),
         &config(),
         &crate::cluster::credential::NodeCredential::new("a-node-token"),
         None,
@@ -302,8 +303,7 @@ async fn heartbeats_carry_the_registered_incarnation() {
     let shutdown = CancellationToken::new();
     let failures = Arc::new(AtomicU64::new(0));
     let beating = tokio::spawn(run_heartbeat(
-        client,
-        base_url,
+        link(&client, &base_url),
         registration,
         shutdown.clone(),
         Arc::clone(&failures),
@@ -348,8 +348,7 @@ async fn a_suspicion_is_sent_without_waiting_for_the_next_beat() {
     let (base_url, stop, handle) = serve(Arc::clone(&calls)).await;
     let client = build_test_client().expect("client");
     let mut registration = register(
-        &client,
-        &base_url,
+        &link(&client, &base_url),
         &config(),
         &crate::cluster::credential::NodeCredential::new("a-node-token"),
         None,
@@ -361,8 +360,7 @@ async fn a_suspicion_is_sent_without_waiting_for_the_next_beat() {
     let suspects = Arc::new(felix_replication::suspicion::Suspects::default());
     let shutdown = CancellationToken::new();
     let beating = tokio::spawn(run_heartbeat(
-        client,
-        base_url,
+        link(&client, &base_url),
         registration,
         shutdown.clone(),
         Arc::new(AtomicU64::new(0)),
@@ -415,8 +413,7 @@ async fn heartbeat_failures_are_counted_and_then_recovered_from() {
     let client = build_test_client().expect("client");
 
     let registration = register(
-        &client,
-        &base_url,
+        &link(&client, &base_url),
         &config(),
         &crate::cluster::credential::NodeCredential::new("a-node-token"),
         None,
@@ -426,8 +423,7 @@ async fn heartbeat_failures_are_counted_and_then_recovered_from() {
     let shutdown = CancellationToken::new();
     let failures = Arc::new(AtomicU64::new(0));
     let beating = tokio::spawn(run_heartbeat(
-        client,
-        base_url,
+        link(&client, &base_url),
         registration,
         shutdown.clone(),
         Arc::clone(&failures),
@@ -464,10 +460,10 @@ async fn draining_and_deregistering_hit_the_right_endpoints() {
     let (base_url, stop, handle) = serve(Arc::clone(&calls)).await;
     let client = build_test_client().expect("client");
 
-    drain(&client, &base_url, "broker-a", "test-token")
+    drain(&link(&client, &base_url), "broker-a", "test-token")
         .await
         .expect("drain");
-    deregister(&client, &base_url, "broker-a", "test-token")
+    deregister(&link(&client, &base_url), "broker-a", "test-token")
         .await
         .expect("deregister");
 
@@ -530,8 +526,7 @@ async fn a_refusal_and_an_outage_are_different_kinds() {
 
     let client = build_test_client().expect("client");
     let refused = register(
-        &client,
-        &format!("http://{addr}"),
+        &link(&client, &format!("http://{addr}")),
         &config(),
         &crate::cluster::credential::NodeCredential::new("a-node-token"),
         None,
@@ -548,8 +543,7 @@ async fn a_refusal_and_an_outage_are_different_kinds() {
 
     // Nothing listening: no answer at all.
     let outage = register(
-        &client,
-        &format!("http://{addr}"),
+        &link(&client, &format!("http://{addr}")),
         &config(),
         &crate::cluster::credential::NodeCredential::new("a-node-token"),
         None,
@@ -579,8 +573,7 @@ async fn a_server_error_counts_as_an_outage_not_a_refusal() {
 
     let client = build_test_client().expect("client");
     let err = register(
-        &client,
-        &format!("http://{addr}"),
+        &link(&client, &format!("http://{addr}")),
         &config(),
         &crate::cluster::credential::NodeCredential::new("a-node-token"),
         None,
@@ -620,8 +613,7 @@ async fn a_broker_marked_down_registers_again_and_resumes_heartbeating() {
     let data = tempfile::tempdir().expect("tempdir");
 
     let task = spawn(
-        client,
-        base_url,
+        link(&client, &base_url),
         config(),
         crate::cluster::credential::NodeCredential::new("a-node-token"),
         serving,
@@ -706,8 +698,7 @@ async fn a_stalled_heartbeat_is_abandoned_within_the_lease() {
         Duration::from_millis(400),
     ));
     let beating = tokio::spawn(run_heartbeat(
-        client,
-        format!("http://{addr}"),
+        link(&client, &format!("http://{addr}")),
         registration,
         shutdown.clone(),
         Arc::clone(&failures),
@@ -767,14 +758,14 @@ async fn registration_reports_features_only_when_there_are_some() {
     let client = build_test_client().expect("client");
     let credential = crate::cluster::credential::NodeCredential::new("a-node-token");
 
-    register(&client, &base_url, &config(), &credential, None)
+    register(&link(&client, &base_url), &config(), &credential, None)
         .await
         .expect("register");
     let with_features = MembershipConfig {
         features: ["jump".to_string()].into(),
         ..config()
     };
-    register(&client, &base_url, &with_features, &credential, None)
+    register(&link(&client, &base_url), &with_features, &credential, None)
         .await
         .expect("register");
 
@@ -797,8 +788,7 @@ async fn heartbeats_open_the_fleet_gate_and_never_close_it() {
     let fleet = Arc::new(felix_common::fleet::FleetGate::new(["jump"]));
 
     let registration = register(
-        &client,
-        &base_url,
+        &link(&client, &base_url),
         &config(),
         &crate::cluster::credential::NodeCredential::new("a-node-token"),
         None,
@@ -807,8 +797,7 @@ async fn heartbeats_open_the_fleet_gate_and_never_close_it() {
     .expect("register");
     let shutdown = CancellationToken::new();
     let beating = tokio::spawn(run_heartbeat(
-        client,
-        base_url,
+        link(&client, &base_url),
         registration,
         shutdown.clone(),
         Arc::new(AtomicU64::new(0)),
@@ -912,7 +901,7 @@ async fn the_lookup_reads_the_registration() {
     let client = build_test_client().expect("client");
     let credential = crate::cluster::credential::NodeCredential::new("a-node-token");
     assert_eq!(
-        registered(&client, &base_url, "broker-a", &credential)
+        registered(&link(&client, &base_url), "broker-a", &credential)
             .await
             .expect("lookup"),
         Some(Registered {
@@ -921,7 +910,7 @@ async fn the_lookup_reads_the_registration() {
         })
     );
     assert_eq!(
-        registered(&client, &base_url, "broker-z", &credential)
+        registered(&link(&client, &base_url), "broker-z", &credential)
             .await
             .expect("lookup"),
         None
@@ -945,7 +934,7 @@ async fn the_startup_lookup_waits_for_an_answer() {
         let credential = crate::cluster::credential::NodeCredential::new("a-node-token");
         let answer = tokio::time::timeout(
             Duration::from_secs(20),
-            await_registered(&client, &base_url, "broker-a", &credential),
+            await_registered(&link(&client, &base_url), "broker-a", &credential),
         )
         .await
         .expect("answered once the control plane did")
@@ -964,7 +953,11 @@ async fn the_startup_lookup_waits_for_an_answer() {
     let credential = crate::cluster::credential::NodeCredential::new("a-node-token");
     let waiting = tokio::time::timeout(
         Duration::from_millis(1500),
-        await_registered(&client, &format!("http://{addr}"), "broker-a", &credential),
+        await_registered(
+            &link(&client, &format!("http://{addr}")),
+            "broker-a",
+            &credential,
+        ),
     )
     .await;
     assert!(waiting.is_err(), "returned without an answer: {waiting:?}");
@@ -979,7 +972,7 @@ async fn a_refused_startup_lookup_fails_the_start() {
     let credential = crate::cluster::credential::NodeCredential::new("a-node-token");
     let refused = tokio::time::timeout(
         Duration::from_secs(5),
-        await_registered(&client, &base_url, "broker-a", &credential),
+        await_registered(&link(&client, &base_url), "broker-a", &credential),
     )
     .await
     .expect("a refusal is final");
@@ -996,8 +989,7 @@ async fn join_with(calls: &Shared, data: &std::path::Path) -> MembershipTask {
     serving.cancel();
     let shutdown = CancellationToken::new();
     let task = spawn(
-        build_test_client().expect("client"),
-        base_url,
+        link(&build_test_client().expect("client"), &base_url),
         config(),
         crate::cluster::credential::NodeCredential::new("a-node-token"),
         serving,
@@ -1105,4 +1097,29 @@ async fn the_refusal_names_the_missing_feature() {
         .expect("refused");
     assert!(reason.contains("record_headers"), "{reason}");
     assert!(!reason.contains("head_trim"), "{reason}");
+}
+
+/// Registration, the lookup and a lifecycle call each go through the link
+/// alone; an unset reply reads as an outage, not a refusal.
+#[tokio::test]
+async fn a_fake_link_drives_membership() {
+    use crate::test_support::fake_link::FakeLink;
+
+    let credential = crate::cluster::credential::NodeCredential::new("a-node-token");
+    let link = FakeLink::default().reply(
+        "register",
+        json!({
+            "node": { "status": { "incarnation": 4, "lifecycle": "ready" } },
+            "heartbeat_interval_ms": 20,
+        }),
+    );
+    let registration = register(&link, &config(), &credential, None)
+        .await
+        .expect("register");
+    assert_eq!(registration.incarnation, 4);
+
+    let outage = registered(&link, "broker-a", &credential).await;
+    assert!(matches!(outage, Err(MembershipError::Unavailable(_))));
+    drain(&link, "broker-a", "t").await.expect_err("no reply");
+    assert_eq!(link.calls(), ["register", "node", "lifecycle"]);
 }

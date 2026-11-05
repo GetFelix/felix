@@ -3,6 +3,7 @@
 //! - readiness polling instead of sleep
 //! - graceful shutdown so servers don't linger between tests
 
+pub(crate) mod fake_link;
 pub(crate) mod leader;
 
 use std::net::SocketAddr;

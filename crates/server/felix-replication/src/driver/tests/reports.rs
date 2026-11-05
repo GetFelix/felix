@@ -326,8 +326,10 @@ impl RecordingControlPlane {
     fn reporter(&self, shutdown: CancellationToken) -> crate::reporter::Reporter {
         crate::reporter::Reporter::spawn(
             ReportTo {
-                client: reqwest::Client::new(),
-                base_url: format!("http://{}", self.addr),
+                link: crate::controlplane_link::HttpControlPlaneLink::new(
+                    reqwest::Client::new(),
+                    &format!("http://{}", self.addr),
+                ),
                 node_id: LOCAL.to_string(),
                 token: None,
                 incarnation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -426,8 +428,10 @@ async fn a_failed_replica_report_holds_the_quorum_mark_back() {
     let report_shutdown = CancellationToken::new();
     let (reporter, _reporter_task) = crate::reporter::Reporter::spawn(
         ReportTo {
-            client: reqwest::Client::new(),
-            base_url: format!("http://{addr}"),
+            link: crate::controlplane_link::HttpControlPlaneLink::new(
+                reqwest::Client::new(),
+                &format!("http://{addr}"),
+            ),
             node_id: LOCAL.to_string(),
             token: None,
             incarnation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -618,8 +622,10 @@ async fn a_slow_control_plane_does_not_stall_the_remaining_followers() {
     let report_shutdown = CancellationToken::new();
     let (reporter, _reporter_task) = crate::reporter::Reporter::spawn(
         ReportTo {
-            client: reqwest::Client::new(),
-            base_url: format!("http://{addr}"),
+            link: crate::controlplane_link::HttpControlPlaneLink::new(
+                reqwest::Client::new(),
+                &format!("http://{addr}"),
+            ),
             node_id: LOCAL.to_string(),
             token: None,
             incarnation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -723,8 +729,10 @@ async fn pass_with_a_publish_behind_the_report(
     });
     let (reporter, _reporter_task) = crate::reporter::Reporter::spawn(
         ReportTo {
-            client: reqwest::Client::new(),
-            base_url: format!("http://{addr}"),
+            link: crate::controlplane_link::HttpControlPlaneLink::new(
+                reqwest::Client::new(),
+                &format!("http://{addr}"),
+            ),
             node_id: LOCAL.to_string(),
             token: None,
             incarnation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),

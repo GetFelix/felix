@@ -40,6 +40,13 @@ struct Cluster {
 }
 
 impl Cluster {
+    fn link(&self) -> felix_replication::controlplane_link::HttpControlPlaneLink {
+        felix_replication::controlplane_link::HttpControlPlaneLink::new(
+            self.client.clone(),
+            &self.base_url,
+        )
+    }
+
     async fn start() -> Self {
         let store = Arc::new(InMemoryStore::new(StoreConfig {
             changes_limit: 1000,
@@ -167,8 +174,7 @@ async fn boot_produces_one_live_record_and_a_restart_reuses_it() {
     let cluster = Cluster::start().await;
 
     let first = membership::register(
-        &cluster.client,
-        &cluster.base_url,
+        &cluster.link(),
         &config("broker-a", 7001),
         &felix_broker_service::cluster::credential::NodeCredential::new(cluster.token.clone()),
         None,
@@ -180,8 +186,7 @@ async fn boot_produces_one_live_record_and_a_restart_reuses_it() {
 
     // Same identity, new process.
     let second = membership::register(
-        &cluster.client,
-        &cluster.base_url,
+        &cluster.link(),
         &config("broker-a", 7001),
         &felix_broker_service::cluster::credential::NodeCredential::new(cluster.token.clone()),
         None,
@@ -209,8 +214,7 @@ async fn boot_produces_one_live_record_and_a_restart_reuses_it() {
 async fn graceful_shutdown_leaves_rather_than_expiring() {
     let cluster = Cluster::start().await;
     membership::register(
-        &cluster.client,
-        &cluster.base_url,
+        &cluster.link(),
         &config("broker-a", 7001),
         &felix_broker_service::cluster::credential::NodeCredential::new(cluster.token.clone()),
         None,
@@ -218,13 +222,7 @@ async fn graceful_shutdown_leaves_rather_than_expiring() {
     .await
     .expect("register");
 
-    membership::shutdown_membership(
-        &cluster.client,
-        &cluster.base_url,
-        "broker-a",
-        &cluster.token,
-    )
-    .await;
+    membership::shutdown_membership(&cluster.link(), "broker-a", &cluster.token).await;
 
     assert_eq!(cluster.lifecycle("broker-a").await, NodeLifecycle::Left);
     cluster.shutdown().await;
@@ -235,8 +233,7 @@ async fn graceful_shutdown_leaves_rather_than_expiring() {
 async fn an_abrupt_stop_is_detected_by_expiry() {
     let cluster = Cluster::start().await;
     let registered = membership::register(
-        &cluster.client,
-        &cluster.base_url,
+        &cluster.link(),
         &config("broker-a", 7001),
         &felix_broker_service::cluster::credential::NodeCredential::new(cluster.token.clone()),
         None,
@@ -274,8 +271,7 @@ async fn an_abrupt_stop_is_detected_by_expiry() {
 async fn a_duplicate_advertised_address_is_refused_terminally() {
     let cluster = Cluster::start().await;
     membership::register(
-        &cluster.client,
-        &cluster.base_url,
+        &cluster.link(),
         &config("broker-a", 7001),
         &felix_broker_service::cluster::credential::NodeCredential::new(cluster.token.clone()),
         None,
@@ -287,8 +283,7 @@ async fn a_duplicate_advertised_address_is_refused_terminally() {
     // node-scoped token would fail authorisation first and prove nothing.
     let fleet_token = cluster.fleet_token();
     let err = membership::register(
-        &cluster.client,
-        &cluster.base_url,
+        &cluster.link(),
         &config("broker-b", 7001),
         &felix_broker_service::cluster::credential::NodeCredential::new(fleet_token.clone()),
         None,
@@ -314,8 +309,7 @@ async fn heartbeats_keep_a_broker_live_past_its_expiry_window() {
     let incarnation = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
 
     let task = membership::spawn(
-        cluster.client.clone(),
-        cluster.base_url.clone(),
+        cluster.link(),
         config("broker-a", 7001),
         felix_broker_service::cluster::credential::NodeCredential::new(cluster.token.clone()),
         serving,
@@ -377,8 +371,7 @@ async fn a_brokers_credential_cannot_deregister_another_broker() {
     // broker-b exists, registered by an operator.
     let fleet_token = cluster.fleet_token();
     membership::register(
-        &cluster.client,
-        &cluster.base_url,
+        &cluster.link(),
         &config("broker-b", 7002),
         &felix_broker_service::cluster::credential::NodeCredential::new(fleet_token.clone()),
         None,
@@ -388,14 +381,9 @@ async fn a_brokers_credential_cannot_deregister_another_broker() {
     assert_eq!(cluster.lifecycle("broker-b").await, NodeLifecycle::Live);
 
     // broker-a holds only its own credential.
-    let err = membership::deregister(
-        &cluster.client,
-        &cluster.base_url,
-        "broker-b",
-        &cluster.token,
-    )
-    .await
-    .expect_err("broker-a must not deregister broker-b");
+    let err = membership::deregister(&cluster.link(), "broker-b", &cluster.token)
+        .await
+        .expect_err("broker-a must not deregister broker-b");
     assert!(err.to_string().contains("403"), "{err}");
 
     assert_eq!(
@@ -414,8 +402,7 @@ async fn an_unauthenticated_broker_cannot_register() {
     let cluster = Cluster::start().await;
 
     let err = membership::register(
-        &cluster.client,
-        &cluster.base_url,
+        &cluster.link(),
         &config("broker-a", 7001),
         &felix_broker_service::cluster::credential::NodeCredential::new(""),
         None,
@@ -450,15 +437,13 @@ async fn the_startup_lookup_reads_what_registration_gave() {
     )
     .expect("token");
     let credential = felix_broker_service::cluster::credential::NodeCredential::new(token);
-    let lookup = || {
-        membership::await_registered(&cluster.client, &cluster.base_url, "broker-a", &credential)
-    };
+    let link = cluster.link();
+    let lookup = || membership::await_registered(&link, "broker-a", &credential);
     assert_eq!(lookup().await.expect("lookup"), None);
     let storage = felix_storage::StorageId::from_bytes([7; 16]);
     for (expected, storage_id) in [(0, None), (1, Some(storage))] {
         let registration = membership::register(
-            &cluster.client,
-            &cluster.base_url,
+            &cluster.link(),
             &config("broker-a", 7001),
             &credential,
             storage_id,
