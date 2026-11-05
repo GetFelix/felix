@@ -104,17 +104,28 @@ fn seed_1_replication_driver_does_not_spin_on_a_pending_fence() {
     assert!(!stalled(&outcome), "{outcome}");
 }
 
-/// A get from a restarted broker misses a put that a quorum acknowledged.
-#[test]
-#[ignore = "#1943"]
-fn seed_1_cache_get_after_a_restart_sees_the_acknowledged_put() {
+/// A cache read or delete after a failover or restart misses a put that a
+/// quorum acknowledged.
+fn assert_cache_is_linearizable(seed: u64) {
     use felix_cluster::history::checker::Rule;
     log();
-    let outcome = run_seed(1, SimConfig::for_seed(1));
+    let outcome = run_seed(seed, SimConfig::for_seed(seed));
     let broken = outcome
         .report
         .violations
         .iter()
         .any(|v| v.rule == Rule::NotLinearizable);
     assert!(!broken, "{outcome}");
+}
+
+#[test]
+#[ignore = "#1943"]
+fn seed_1_cache_keeps_acknowledged_puts_across_a_restart() {
+    assert_cache_is_linearizable(1);
+}
+
+#[test]
+#[ignore = "#1943"]
+fn seed_5_cache_keeps_acknowledged_puts_across_a_failover() {
+    assert_cache_is_linearizable(5);
 }

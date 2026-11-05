@@ -35,7 +35,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::check::{CheckContext, Checker, ElectionSettles, Finding, Point};
 use crate::client::{Recorder, SimClient};
-use crate::cluster::{SimCluster, SimConfig, describe};
+use crate::cluster::{SimCluster, SimConfig};
 use crate::nemesis::{Nemesis, Plan};
 
 /// How long to wait after the clients stop for work the clients gave up on to
@@ -126,21 +126,18 @@ async fn run(seed: u64, config: SimConfig, checkers: Vec<Box<dyn Checker>>) -> S
             let mut history = recorder.history();
             drop_unread_lists(&mut history);
             let mut outcome = finished(seed, config.clone(), history, Vec::new(), begun.elapsed());
-            let mut finding = Finding::new(
+            let finding = Finding::new(
                     "stalled",
                     format!(
                         "the run stalled at {:?} of virtual time, within its {:?} of real time: \
                          some task keeps the runtime busy without waiting on a timer, so the \
-                         clock cannot move",
+                         clock cannot move. No census is taken, \
+                         since the busy task would hold it up too. `sample <pid>` on macOS or \
+                         `perf top` shows what spins",
                         cluster.elapsed(),
                         config.real_time_limit,
                     ),
                 );
-            for (key, serving) in cluster.unserved().await.into_iter().take(3) {
-                finding = finding
-                    .with(format!("{} has {} serving", describe(&key), serving.len()))
-                    .with(cluster.census(&key).await);
-            }
             outcome.findings = vec![finding];
             outcome
         }
