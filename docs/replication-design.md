@@ -3760,9 +3760,12 @@ append stream and the rest never shipped: their writes were never acknowledged
   the shards whose bit is set, the shards with a drain or route change in
   progress, and the shards owed a pass. A shard is owed one when its mark is
   below its tail, or no follower that could still catch up holds its whole
-  log, and some follower is in reach: not halted, and its last batch got an
-  answer from it. A refusal it can retry counts, such as a routing view behind
-  this generation, because the next pass is what brings that follower level.
+  log, and some follower is in reach: not halted, and its last batch went through,
+  or was refused only because its routing view is behind this generation. That
+  refusal counts because the next pass is what brings the follower level, even
+  when it arrives after its pass ended. A follower the batch did not reach, or
+  one refusing for a reason a pass cannot fix (a full disk, a bad credential),
+  is out of reach.
   Every other shard is skipped, including one whose only lagging followers are
   out of reach. A follower cannot catch up while it is down, so asking its
   shards on every append filled the slots with passes that could do nothing,
