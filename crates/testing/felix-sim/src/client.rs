@@ -29,8 +29,9 @@
 //! to its own committed mark, which by design stops short of what its
 //! successor has acknowledged ("Readers and group sessions without the
 //! lease" in `docs/replication-design.md`). Such a read is not the log's tail,
-//! so a read is recorded only once a round after it confirms the broker still
-//! leads the shard at the generation it read at, as a state read is.
+//! so a read is recorded only once a round after it (or the lease, where the
+//! fleet reads by lease) confirms the broker still leads the shard at the
+//! generation it read at, as a state read is.
 
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
@@ -555,7 +556,8 @@ async fn read_all(handles: &NodeHandles, shard: u32) -> Option<Vec<Element>> {
 }
 
 /// Whether this broker still leads `shard` at `generation`, confirmed by a
-/// round after a read took its value. Without it a replaced leader that has not
+/// round (or the lease, where the fleet reads by lease) after a read took its
+/// value. Without it a replaced leader that has not
 /// heard yet would answer with a mark its successor has moved past.
 async fn confirm_leader(handles: &NodeHandles, shard: u32, generation: u64) -> bool {
     let key = crate::cluster::stream_key(shard);

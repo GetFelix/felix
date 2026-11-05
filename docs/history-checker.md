@@ -137,8 +137,8 @@ not drop their tail and turn it on; with it on, a read that returned nothing
 means the list was empty, so reads start at the list's base. A leader that
 was replaced and has not heard yet still serves reads up to its own committed
 mark, which is short of what its successor acknowledged. So the simulator
-records a read only after a round confirms that the broker still leads the
-shard at the generation it read at. The loops are
+records a read only after a round, or the lease where the fleet reads by lease,
+confirms that the broker still leads the shard at the generation it read at. The loops are
 found with Tarjan's strongly connected components, then one short loop per
 component, so a large history costs about as much as reading it. `check_list_append(&History)`
 returns the cycles alone.

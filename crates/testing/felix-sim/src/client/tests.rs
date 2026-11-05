@@ -87,8 +87,8 @@ async fn an_append_with_no_broker_to_take_it_fails_definitely() {
 
 /// A leader cut off from its peers and the control plane, as a frozen one is,
 /// is replaced and, until it hears, still serves reads up to its own committed
-/// mark. That read misses what its
-/// successor acknowledged, so it must not be recorded as the log's tail.
+/// mark. That read misses what its successor acknowledged, so it must not be
+/// recorded as the log's tail.
 #[tokio::test(start_paused = true)]
 async fn a_read_on_a_replaced_leader_that_has_not_heard_is_not_recorded() {
     let cluster = SimCluster::start(5, config()).await.unwrap();
@@ -141,10 +141,11 @@ async fn a_read_on_a_replaced_leader_that_has_not_heard_is_not_recorded() {
         "the old leader already stopped serving reads, so this tests nothing"
     );
     client.hints.insert(shard, old);
-    if let Some(read) = client.read_shard(shard).await {
-        assert!(
-            read.iter().any(|element| element.offset == offset),
-            "a read missed offset {offset}, acknowledged before it began: {read:?}"
-        );
-    }
+    // The old leader is the only one the client asks, and it reads fine but
+    // cannot confirm, so nothing is recorded.
+    let read = client.read_shard(shard).await;
+    assert!(
+        read.is_none(),
+        "a read on the replaced leader was kept; offset {offset} was acknowledged before it began: {read:?}"
+    );
 }
