@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793918513194,
+  "lastUpdate": 1793920481401,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -58938,6 +58938,72 @@ window.BENCHMARK_DATA = {
             "range": "641.89",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1562.00\nmean: 1253.20\nstdev: 641.89\ncv: 51.22%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "08e677be834e515c38287332b1327272b1266c46",
+          "message": "feat(replication): a follower stands for a shard stuck on a live leader (#1914) (#1925)\n\nA follower stands for a shard stuck on a live leader; a refusal lapses when the follower stops answering.",
+          "timestamp": "2026-11-05T15:10:04-08:00",
+          "tree_id": "0580d44d7c5522e35a6db159ebea6a7c1a7e006c",
+          "url": "https://github.com/GetFelix/felix/commit/08e677be834e515c38287332b1327272b1266c46"
+        },
+        "date": 1793920472890,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 150,
+            "range": "1.34",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 150.00\nmean: 150.60\nstdev: 1.34\ncv: 0.89%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 204,
+            "range": "2.19",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 204.00\nmean: 205.60\nstdev: 2.19\ncv: 1.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 262,
+            "range": "8.01",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 262.00\nmean: 260.20\nstdev: 8.01\ncv: 3.08%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 197,
+            "range": "1.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 197.00\nmean: 197.20\nstdev: 1.10\ncv: 0.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 387,
+            "range": "2.95",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 387.00\nmean: 388.20\nstdev: 2.95\ncv: 0.76%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 532,
+            "range": "336.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 532.00\nmean: 669.60\nstdev: 336.10\ncv: 50.19%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
