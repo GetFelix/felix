@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793895894857,
+  "lastUpdate": 1793896336172,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -58212,6 +58212,72 @@ window.BENCHMARK_DATA = {
             "range": "638.83",
             "unit": "us",
             "extra": "trials: 5\nmedian: 689.00\nmean: 1055.80\nstdev: 638.83\ncv: 60.51%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e0258fd7729e9002404fa192cef3d76af2b1a9c8",
+          "message": "feat(broker,client): answer plain pipelined publishes as they complete (#1417, #1920) (#1926)\n\n* feat(client): a shard gets a publish stream of its own only while it stalls (#1417, #1920)\n\nHealthy shards ride the pooled publish streams. The writer times the\nanswer at the head of each stream; once it is overdue (8x the stream's\nusual head wait, at least 250 ms) the head's shard moves to a stream of\nits own, and so does any other shard that would queue behind it. A move\nwaits for the shard's publishes in flight to be answered, so per-shard\norder and idempotent sequences hold. A moved shard returns once it and\nthe pool are calm for 5 s, doubling up to 300 s if it keeps stalling.\nUnacked publishes pin their shard. No wire change.\n\nFELIX_PUB_SHARD_STREAMS is now the most shards moved at once per broker\n(default 64); the fixed per-shard streams are removed.\n\n* fix(client): shard streams leave a failed writer, keep a pinned shard out, judge own streams by their own wait, and give idle streams back (#1417)\n\n* fix(client): a stream's usual wait warms up from its answers, not its first one (#1417)\n\nSeeding it with the first answer let one slow cold-start answer raise the\noverdue bound eightfold, so a real stall went unnoticed (broker shard test\nunder coverage).\n\n* feat(broker,client): answer plain pipelined publishes as they complete (#1417, #1920)\n\nA pipelining stream answered every acked publish in request order, so one\nshard stuck on a quorum wait held back the answers of every shard sharing\nits stream. Only idempotent publishes need that order.\n\nA client now offers FEATURE_PUBLISH_ANSWER_ON_COMPLETION (extended word,\n0x40) with FEATURE_PUBLISH_PIPELINE. A broker that grants a window answers\nit back and from then on writes a plain acked publish's answer as soon as\nit is ready, keeping request order only among idempotent publishes. Every\nacked publish still holds its window slot until it is answered, and the\nstalled-stream check looks only at held-back answers. Peers that do not\noffer the bit exchange the same frames as before.\n\nThe Rust writer, when granted, waits for either an answer or a new request\ninstead of settling every outstanding answer before writing again. The read\nin progress owns the stream so it survives the select; the serial path adds\nno task or channel hop.\n\nDrops the adaptive dedicated shard streams this branch added in favour of\nthis, and keeps the failover_heal publish bound at 8 s.\n\n* chore: record that the TLA+ models are unaffected (#1417)\n\nSpec-Unaffected: answer order on a client publish stream is not modelled; the specs cover leases, replication, quorum and commit order, which this leaves alone.\n\n* fix(broker): close a stream whose plain answer was lost, and test idempotent order on it (#1417)\n\nOn a stream that answers on completion, a lost plain answer held nothing\nback, so the stall check never saw it, yet it kept its window slot for\ngood. The writer now times the oldest unanswered publish of any kind there.\n\nAdds a real-broker test that binary idempotent batches keep request order on\nsuch a stream, and says in the docs that completion-order answers need the\nbroker to grant the bit.\n\nSpec-Unaffected: answer order and stream closing on a client publish stream are not modelled.",
+          "timestamp": "2026-11-05T08:08:30-08:00",
+          "tree_id": "3e1c656223af7f5963b9287363b511c90cdce335",
+          "url": "https://github.com/GetFelix/felix/commit/e0258fd7729e9002404fa192cef3d76af2b1a9c8"
+        },
+        "date": 1793896328754,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 153,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 153.00\nmean: 153.60\nstdev: 0.89\ncv: 0.58%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 207,
+            "range": "1.82",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 207.00\nmean: 206.60\nstdev: 1.82\ncv: 0.88%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 248,
+            "range": "27.85",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 248.00\nmean: 262.00\nstdev: 27.85\ncv: 10.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 201,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 201.00\nmean: 200.80\nstdev: 0.84\ncv: 0.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 418,
+            "range": "42.33",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 418.00\nmean: 436.20\nstdev: 42.33\ncv: 9.70%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1275,
+            "range": "642.68",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1275.00\nmean: 1313.00\nstdev: 642.68\ncv: 48.95%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
