@@ -1,0 +1,1 @@
+Opening a log now syncs its directory once instead of up to three times (first segment, durable mark, then again after the mark), which cuts the directory fsyncs a bulk shard create makes. The guarantee is unchanged: every entry of a new log is durable before the open returns.

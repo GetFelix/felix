@@ -268,6 +268,7 @@ impl RollPlan {
             self.id,
             self.reserve_limit_bytes,
             self.index_spacing_bytes,
+            crate::segment::writer::DirEntry::Sync,
         )?;
         Ok(PreparedSegment {
             blank,
