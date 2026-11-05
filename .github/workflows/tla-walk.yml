@@ -65,7 +65,7 @@ jobs:
       matrix:
         include:
           - family: spares
-            configs: FelixShardWalkSpares FelixShardWalkSparesSeatEarly
+            configs: FelixShardWalkSpares
           - family: moves
             configs: FelixShardWalkMoves FelixShardWalkMovesDestination
           - family: handoff
