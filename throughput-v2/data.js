@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793915804291,
+  "lastUpdate": 1793916150228,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -46280,6 +46280,58 @@ window.BENCHMARK_DATA = {
             "range": "68573.74",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1709864.07\nmean: 1691387.84\nstdev: 68573.74\ncv: 4.05%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1fc4cb6eb39d92beadb6883b8c978b810e4811b7",
+          "message": "ci: the coverage run is the PR test run; skip heavy jobs on drafts (#1994)\n\nPR test runs happen once, in the coverage job; drafts skip the heavy jobs; the coverage gate compares only PRs into main.",
+          "timestamp": "2026-11-05T13:56:03-08:00",
+          "tree_id": "b4b085dd4cdfa5070c3be3bb446fa433d172f72a",
+          "url": "https://github.com/GetFelix/felix/commit/1fc4cb6eb39d92beadb6883b8c978b810e4811b7"
+        },
+        "date": 1793916149535,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 652484.37,
+            "range": "12349.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 652484.37\nmean: 648196.60\nstdev: 12349.26\ncv: 1.91%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 652484.37,
+            "range": "12349.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 652484.37\nmean: 648196.60\nstdev: 12349.26\ncv: 1.91%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 165925.63,
+            "range": "15023.99",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 165925.63\nmean: 158517.23\nstdev: 15023.99\ncv: 9.48%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1659256.31,
+            "range": "150239.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1659256.31\nmean: 1585172.31\nstdev: 150239.89\ncv: 9.48%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
