@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793892866489,
+  "lastUpdate": 1793895899417,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -45812,6 +45812,58 @@ window.BENCHMARK_DATA = {
             "range": "19237.03",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1124544.57\nmean: 1126086.30\nstdev: 19237.03\ncv: 1.71%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b8ce943e05a0a92c215a05e68069e1606fd47deb",
+          "message": "fix: elections settle while the control plane is paused (#1914) (#1928)\n\nElections settle while the control plane is paused: brokers keep electing and serving shards without the control plane's answers, and reconcile with it when it returns. Reviewed (opus, including the main-merge resolution in shards/routing.rs).",
+          "timestamp": "2026-11-05T07:59:10-08:00",
+          "tree_id": "8cbe4b1ba03411d0653a200de27e3353223e785e",
+          "url": "https://github.com/GetFelix/felix/commit/b8ce943e05a0a92c215a05e68069e1606fd47deb"
+        },
+        "date": 1793895898556,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 341956.37,
+            "range": "13795.64",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 341956.37\nmean: 348597.25\nstdev: 13795.64\ncv: 3.96%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 341956.37,
+            "range": "13795.64",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 341956.37\nmean: 348597.25\nstdev: 13795.64\ncv: 3.96%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81139.76,
+            "range": "704.13",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81139.76\nmean: 81182.66\nstdev: 704.13\ncv: 0.87%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 811397.61,
+            "range": "7041.24",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 811397.61\nmean: 811826.56\nstdev: 7041.24\ncv: 0.87%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
