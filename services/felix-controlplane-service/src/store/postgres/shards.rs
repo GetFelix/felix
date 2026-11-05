@@ -601,6 +601,13 @@ pub(super) async fn first_shard_assignments(
         .collect()
 }
 
+pub(super) async fn shard_assignment_head(store: &PostgresStore) -> StoreResult<u64> {
+    let head = sqlx::query_scalar::<_, i64>("SELECT next_seq FROM shard_assignment_change_seq")
+        .fetch_one(&store.pool)
+        .await?;
+    Ok(head as u64)
+}
+
 pub(super) async fn shard_assignment_changes(
     store: &PostgresStore,
     since: u64,
