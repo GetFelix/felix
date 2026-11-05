@@ -1,0 +1,52 @@
+name: Scratch A/B startup-stall
+
+on:
+  push:
+    branches: ["scratch/startup-stall-ab-*"]
+
+jobs:
+  ab:
+    runs-on: ${{ vars.FELIX_LARGE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [routing, election]
+    env:
+      CARGO_TERM_COLOR: never
+      FELIX_TEST_TIMEOUT_SCALE: "3"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: rustup update stable
+      - uses: taiki-e/install-action@32e16a23c68a001a1621efca19f131f965d4d122 # cargo-llvm-cov
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: A/B
+        shell: bash
+        run: |
+          set -o pipefail
+          if [ "${{ matrix.part }}" = election ]; then
+            source <(cargo llvm-cov show-env --export-prefix)
+            test=failures; filter=replica_election; n=6
+          else
+            test=routing; filter=; n=4
+          fi
+          cargo build --all-features -p felix-broker-service --bin felix-broker
+          cargo test --all-features -p felix-cluster --test $test --no-run
+          fails=0
+          for i in $(seq 1 $n); do
+            mkdir -p "$RUNNER_TEMP/logs/$i"
+            FELIX_TEST_CLUSTER_LOG_DIR="$RUNNER_TEMP/logs/$i" cargo test --all-features -p felix-cluster --test $test $filter \
+              > "$RUNNER_TEMP/logs/$i/out.txt" 2>&1 && echo "ITER $i ok" || { echo "ITER $i FAILED"; fails=$((fails+1)); }
+            grep -E "^test .*FAILED|test result|panicked at|timed out after" "$RUNNER_TEMP/logs/$i/out.txt" | head -20 || true
+          done
+          echo "FAILS $fails of $n"
+          [ "$fails" = 0 ]
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ab-logs-${{ matrix.part }}
+          path: ${{ runner.temp }}/logs/*/out.txt
+          retention-days: 3
