@@ -1202,3 +1202,57 @@ async fn heartbeats_continue_while_every_runtime_worker_is_blocked() {
         "only {during} heartbeats while the runtime's workers were blocked"
     );
 }
+
+/// **A broker whose runtime stops for good stops renewing its lease.** The
+/// heartbeat has a thread of its own, so it would otherwise keep a deadlocked
+/// broker's shards on it forever. Here the pulse is never ticked, as if the
+/// main runtime had stopped as soon as the heartbeat started.
+#[tokio::test]
+async fn a_stopped_runtime_stops_the_heartbeat() {
+    let calls: Shared = Arc::default();
+    let (base_url, stop, handle) = serve(Arc::clone(&calls)).await;
+    let client = build_test_client().expect("client");
+    let registration = register(
+        &client,
+        &base_url,
+        &config(),
+        &crate::cluster::credential::NodeCredential::new("a-node-token"),
+        None,
+    )
+    .await
+    .expect("register");
+
+    let shutdown = CancellationToken::new();
+    let pulse = Arc::new(RuntimePulse::new(Duration::from_millis(200)));
+    let beating = tokio::spawn(run_heartbeat_checked(
+        client,
+        base_url,
+        registration,
+        shutdown.clone(),
+        Arc::default(),
+        Arc::new(crate::cluster::lease::LeaseState::new(Duration::from_secs(
+            30,
+        ))),
+        Arc::new(felix_common::fleet::FleetGate::new(Vec::<String>::new())),
+        Arc::default(),
+        Some(pulse),
+    ));
+
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let before = calls.lock().expect("lock").heartbeats.len();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let after = calls.lock().expect("lock").heartbeats.len();
+    shutdown.cancel();
+    beating.await.expect("heartbeat task");
+    let _ = stop.send(());
+    let _ = handle.await;
+
+    assert!(
+        before > 0,
+        "the heartbeat never ran while the runtime was live"
+    );
+    assert_eq!(
+        after, before,
+        "heartbeats went out after the runtime stopped"
+    );
+}

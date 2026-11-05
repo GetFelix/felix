@@ -422,7 +422,9 @@ The sequence:
    runtime and HTTP client. A slow disk can block every worker of the broker's
    main runtime at once (a filesystem journal stall under a burst of fsyncs,
    for example), and the heartbeat is what renews the lease, so it must not
-   wait behind them.
+   wait behind them. It still checks that the main runtime is running tasks: one
+   that has run nothing for 10 s is hung, not stalled, and the broker stops
+   renewing so its shards fail over to a live copy.
 3. **Drain, then deregister** on SIGTERM, before connections are drained, so
    nothing new is placed here while in-flight work finishes.
 
