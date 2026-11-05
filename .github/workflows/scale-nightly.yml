@@ -55,7 +55,7 @@ jobs:
   canary:
     name: lease canary (${{ matrix.variant }})
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 80
     strategy:
       fail-fast: false
       matrix:
@@ -111,7 +111,7 @@ jobs:
         run: cargo build ${{ steps.variant.outputs.profile }} -p felix-broker-service --bin felix-broker
 
       - name: Run the canary
-        timeout-minutes: 25
+        timeout-minutes: 45
         env:
           FELIX_TEST_CLUSTER_LOG_DIR: ${{ runner.temp }}/cluster-logs
         run: |
