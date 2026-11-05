@@ -215,6 +215,9 @@ pub(crate) fn preallocate(file: &File, offset: u64, len: u64) -> io::Result<()> 
 /// itself the evidence that the flush is reaching the device.
 pub(crate) fn sync_data(file: &File) -> io::Result<()> {
     before_sync(file, SyncKind::Data)?;
+    if simulated() {
+        return Ok(());
+    }
     #[cfg(target_os = "macos")]
     {
         use std::os::unix::io::AsRawFd;
@@ -245,6 +248,9 @@ pub(crate) fn sync_data(file: &File) -> io::Result<()> {
 /// the page cache but not in the directory after reboot.
 pub(crate) fn sync_dir(path: &std::path::Path) -> io::Result<()> {
     before_sync_dir(path)?;
+    if simulated() {
+        return Ok(());
+    }
     #[cfg(unix)]
     {
         File::open(path)?.sync_all()
@@ -296,6 +302,9 @@ pub(crate) fn create_dir_all_durable(path: &std::path::Path) -> io::Result<()> {
 /// Linux only. macOS's `sync` only queues the writes, so nothing there can
 /// say the page cache reached the device; elsewhere there is no such call.
 pub(crate) fn sync_filesystems(root: &std::path::Path) -> io::Result<()> {
+    if simulated() {
+        return Ok(());
+    }
     #[cfg(target_os = "linux")]
     {
         use std::os::unix::io::AsRawFd;
@@ -362,7 +371,17 @@ pub(crate) fn devices_under(
 /// round trip does not matter.
 pub(crate) fn sync_all(file: &File) -> io::Result<()> {
     before_sync(file, SyncKind::All)?;
+    if simulated() {
+        return Ok(());
+    }
     file.sync_all()
+}
+
+/// Whether a simulator runs this process, which then skips the flush itself.
+/// A simulation runs every broker's storage on one thread and never cuts the
+/// power, so a flush there only costs real time.
+fn simulated() -> bool {
+    felix_common::blocking::on_runtime()
 }
 
 /// Which flush a fault hook is looking at.

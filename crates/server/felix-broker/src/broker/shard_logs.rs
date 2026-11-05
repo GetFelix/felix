@@ -321,6 +321,21 @@ impl Broker {
         {
             return Some(log);
         }
+        if felix_common::blocking::on_runtime() {
+            // A simulator keeps the open on its own runtime: `block_on` cannot
+            // run there, and a real thread would make the run unrepeatable.
+            return self
+                .shard_log_for(
+                    kind,
+                    tenant_id,
+                    namespace,
+                    name,
+                    shard,
+                    base_offset,
+                    incarnation,
+                )
+                .await;
+        }
         let broker = Arc::clone(self);
         let scope = (
             tenant_id.to_string(),

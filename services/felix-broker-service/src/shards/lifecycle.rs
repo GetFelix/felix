@@ -1404,7 +1404,7 @@ impl DurableShardStore {
     ) -> anyhow::Result<felix_broker::StreamLog> {
         let storage = std::sync::Arc::clone(&self.storage);
         let key = key.clone();
-        let opened = tokio::task::spawn_blocking(move || match incarnation {
+        let opened = felix_common::blocking::spawn(move || match incarnation {
             0 => storage.open_stream(&key.tenant_id, &key.namespace, &key.stream, key.shard),
             incarnation => storage.open_stream_for(
                 &key.tenant_id,
@@ -2003,7 +2003,7 @@ pub async fn record_term_start(
     // Writes and fsyncs the generation history, so not on a runtime worker.
     let recorded = {
         let log = log.clone();
-        tokio::task::spawn_blocking(move || log.record_generation(generation, tail))
+        felix_common::blocking::spawn(move || log.record_generation(generation, tail))
             .await
             .unwrap_or_else(|err| {
                 if err.is_panic() {

@@ -594,7 +594,7 @@ where
     F: FnOnce() -> Result<T> + Send + 'static,
     T: Send + 'static,
 {
-    tokio::task::spawn_blocking(work)
+    felix_common::blocking::spawn(work)
         .await
         .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
 }

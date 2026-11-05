@@ -35,6 +35,11 @@ pub fn install(elapsed: fn() -> Duration) {
     );
 }
 
+/// Whether a simulator drives this process.
+pub fn installed() -> bool {
+    CLOCK.get().is_some()
+}
+
 /// The simulator's elapsed time, if one drives this process.
 pub(super) fn elapsed() -> Option<Duration> {
     CLOCK.get().map(|elapsed| elapsed())

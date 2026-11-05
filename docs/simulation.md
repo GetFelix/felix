@@ -45,11 +45,35 @@ FELIX_SIM_SEED=<n> cargo test -p felix-sim --test seeds replay
 ```
 
 A replay runs the same cluster, the same faults at the same virtual times and
-the same client operations. It is close to exact but not guaranteed: some of
-the code under test still draws its own randomness (election backoff jitter,
-hash map order) from the process, so a timing-sensitive failure may need a few
-replays to show again. Seeds known to fail are kept as ignored tests named
-after the issue that tracks them.
+the same client operations. For the interleaving beneath them to repeat too,
+build with tokio's seeded `select!`:
+
+```bash
+RUSTFLAGS="--cfg tokio_unstable" FELIX_SIM_SEED=<n> FELIX_SIM_HISTORY=run1.txt \
+  cargo test -p felix-sim --release --test seeds replay
+```
+
+`FELIX_SIM_HISTORY` writes the run's history (every operation, fault and final
+read) to a file, so two runs can be diffed.
+
+Three things the brokers do would otherwise make two runs differ, and under
+the simulator each is held to the run's one thread and its seed:
+
+- **Blocking work.** Shard opens, reads, rollovers and the log's append and
+  flush threads run on real threads in a broker, and finish in real time.
+  `felix_common::blocking` runs that work as a task on the simulated runtime
+  instead, once the simulator has installed its clock. A broker outside the
+  simulator is unchanged. Real flushes are skipped too: the simulator never
+  cuts the power, so they would only cost real time.
+- **Retry jitter.** Election backoff draws its wait from `felix_common::jitter`,
+  which the simulator seeds.
+- **`select!`.** Tokio picks among ready branches at random unless the runtime
+  is given a seed, which tokio allows only under `--cfg tokio_unstable`. Without
+  that flag a replay still has the same faults and operations, but a
+  timing-sensitive failure may need a few replays to show again.
+
+Seeds known to fail are kept as ignored tests named after the issue that
+tracks them.
 
 The unit tests of the network, the control plane and the checkers run with the
 rest of the crate:

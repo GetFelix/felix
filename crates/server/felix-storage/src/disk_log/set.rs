@@ -361,7 +361,7 @@ impl DiskLog {
             return Ok(found);
         }
         let inner = Arc::clone(&self.inner);
-        tokio::task::spawn_blocking(move || {
+        felix_common::blocking::spawn(move || {
             // The ballot's writer lock: it serializes writes per shard, so
             // the file only ever moves forward in generation.
             let _persisted = inner.replica_persisted.lock();
@@ -487,7 +487,7 @@ impl DiskLog {
     pub async fn admit_member(&self, node: &str, settled: bool) -> Result<bool> {
         let inner = Arc::clone(&self.inner);
         let node = node.to_string();
-        tokio::task::spawn_blocking(move || {
+        felix_common::blocking::spawn(move || {
             let _persisted = inner.replica_persisted.lock();
             let Some(mut set) = inner.replica_set.read().clone() else {
                 return Ok(false);
