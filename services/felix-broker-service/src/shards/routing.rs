@@ -841,6 +841,7 @@ pub fn spawn_feed(
         let mut catalog = HashMap::new();
         // The assignments the last pass applied, to tell which are new.
         let mut applied = HashMap::new();
+        let mut published_priors = HashMap::new();
         loop {
             let woken = tokio::select! {
                 _ = shutdown.cancelled() => return,
@@ -887,12 +888,18 @@ pub fn spawn_feed(
                         .unwrap_or_else(|_| Err(anyhow::anyhow!("timed out"))),
                 )
             };
+            // Shards new to this pass are routed as they open, not when the
+            // whole pass is done: a bulk create opens hundreds one after
+            // another. Only new shards: every other route, and its priors,
+            // stay as last published until the pass has applied its changes.
+            let mut early = EarlyRoutes::new(&applied, &assignments, &published_priors, &priors);
             let ((), fetched) = tokio::join!(
-                crate::shards::lifecycle::reconcile_renewed(
+                crate::shards::lifecycle::reconcile_reporting(
                     &lifecycle,
                     store.as_ref(),
                     &assignments,
                     &renewals,
+                    |opened| early.publish(&ingress, &catalog, opened),
                 ),
                 refresh,
             );
@@ -918,10 +925,11 @@ pub fn spawn_feed(
             // owner of a shard it has not opened.
             let servable = lifecycle.lock().await.servable();
             ingress.publish(
-                routing_table_from(&assignments, &catalog).with_priors(priors),
+                routing_table_from(&assignments, &catalog).with_priors(priors.clone()),
                 &catalog,
                 servable,
             );
+            published_priors = priors;
             crate::shards::watch::metrics::set_catalog_nodes(catalog.len());
             if woken {
                 routes_changed.notify_one();
@@ -929,6 +937,81 @@ pub fn spawn_feed(
             applied = assignments;
         }
     })
+}
+
+/// The routes a reconcile pass publishes while it is still opening shards:
+/// the last published assignments and priors, plus the shards new to this
+/// pass with theirs.
+struct EarlyRoutes {
+    /// `None` when the pass names no new shard, so there is nothing to add.
+    assignments: Option<HashMap<ShardKey, crate::shards::watch::ShardAssignment>>,
+    priors: HashMap<felix_router::ShardKey, felix_router::PriorSet>,
+    last: Option<std::time::Instant>,
+}
+
+/// How often a pass republishes while it opens shards. Each publish rebuilds
+/// the whole table, so a pass opening hundreds does not do it per shard.
+const EARLY_PUBLISH_EVERY: std::time::Duration = std::time::Duration::from_millis(100);
+
+impl EarlyRoutes {
+    fn new(
+        applied: &HashMap<ShardKey, crate::shards::watch::ShardAssignment>,
+        assignments: &HashMap<ShardKey, crate::shards::watch::ShardAssignment>,
+        published: &HashMap<felix_router::ShardKey, felix_router::PriorSet>,
+        priors: &HashMap<felix_router::ShardKey, felix_router::PriorSet>,
+    ) -> Self {
+        let added: Vec<_> = assignments
+            .iter()
+            .filter(|(key, _)| !applied.contains_key(*key))
+            .collect();
+        if added.is_empty() {
+            return Self {
+                assignments: None,
+                priors: HashMap::new(),
+                last: None,
+            };
+        }
+        let mut routes = applied.clone();
+        let mut early_priors = published.clone();
+        for (key, assignment) in added {
+            routes.insert(key.clone(), assignment.clone());
+            let key = to_router_key(key);
+            if let Some(prior) = priors.get(&key) {
+                early_priors.insert(key, prior.clone());
+            }
+        }
+        Self {
+            assignments: Some(routes),
+            priors: early_priors,
+            last: None,
+        }
+    }
+
+    /// Publish what `lifecycle` serves now, at most every
+    /// [`EARLY_PUBLISH_EVERY`]. The pass's own publish at the end follows
+    /// regardless, so a skipped one is only late.
+    fn publish(
+        &mut self,
+        ingress: &IngressRouter,
+        catalog: &HashMap<String, felix_router::NodeRef>,
+        lifecycle: &crate::shards::lifecycle::ShardLifecycle,
+    ) {
+        let Some(assignments) = &self.assignments else {
+            return;
+        };
+        if self
+            .last
+            .is_some_and(|last| last.elapsed() < EARLY_PUBLISH_EVERY)
+        {
+            return;
+        }
+        self.last = Some(std::time::Instant::now());
+        ingress.publish(
+            routing_table_from(assignments, catalog).with_priors(self.priors.clone()),
+            catalog,
+            lifecycle.servable(),
+        );
+    }
 }
 
 #[cfg(test)]

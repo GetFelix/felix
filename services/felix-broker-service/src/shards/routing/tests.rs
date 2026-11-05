@@ -444,6 +444,66 @@ mod feed {
         let _ = feed.await;
     }
 
+    /// A store whose every open takes `delay`, as one that fsyncs does.
+    struct SlowStore {
+        delay: Duration,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::shards::lifecycle::ShardStore for SlowStore {
+        async fn open(
+            &self,
+            _key: &ShardKey,
+            _generation: u64,
+            _incarnation: u64,
+            _begins_here: bool,
+        ) -> anyhow::Result<()> {
+            tokio::time::sleep(self.delay).await;
+            Ok(())
+        }
+
+        async fn release(&self, _key: &ShardKey) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// **A new shard serves once it is open, not once its whole batch is.**
+    /// A bulk create hands the feed hundreds of new shards in one pass, and
+    /// they open one after another.
+    #[tokio::test]
+    async fn a_new_shard_is_routed_before_the_rest_of_its_batch_opens() {
+        let shards = 8;
+        let assignments: Vec<_> = (0..shards)
+            .map(|shard| assignment(shard, "broker-a", 1))
+            .collect();
+        let (mut state, _router) = state(&assignments);
+        state.store = Arc::new(SlowStore {
+            delay: Duration::from_millis(150),
+        });
+        let ingress = Arc::clone(&state.ingress);
+        let shutdown = CancellationToken::new();
+        let local = || {
+            (0..shards)
+                .filter(|shard| matches!(ingress.dispatch(&key(*shard)), Dispatch::Local { .. }))
+                .count()
+        };
+
+        let feed = spawn_feed(state, None, Duration::from_secs(60), shutdown.clone());
+        until("a shard to be served locally", || local() > 0).await;
+        let first = local();
+        until("every shard to be served locally", || {
+            local() == shards as usize
+        })
+        .await;
+
+        assert!(
+            first < shards as usize,
+            "no shard was routed until all {shards} had opened"
+        );
+        shutdown.cancel();
+        let _ = feed.await;
+    }
+
     /// A shard led elsewhere is only forwardable once the catalog supplies an
     /// address. Before that it is known and unreachable, which is the state the
     /// address book exists to leave.

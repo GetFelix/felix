@@ -2222,6 +2222,19 @@ pub(crate) async fn reconcile_renewed(
     assignments: &HashMap<ShardKey, ShardAssignment>,
     renewals: &HashMap<ShardKey, u64>,
 ) {
+    reconcile_reporting(lifecycle, store, assignments, renewals, |_| {}).await;
+}
+
+/// [`reconcile_renewed`], showing `opened` the lifecycle after each shard it
+/// opens. A pass can open hundreds of shards, one after another, and the
+/// caller can then route each as soon as it serves instead of after the last.
+pub(crate) async fn reconcile_reporting(
+    lifecycle: &tokio::sync::Mutex<ShardLifecycle>,
+    store: &dyn ShardStore,
+    assignments: &HashMap<ShardKey, ShardAssignment>,
+    renewals: &HashMap<ShardKey, u64>,
+    mut opened: impl FnMut(&ShardLifecycle) + Send,
+) {
     let ready = |key: &ShardKey| {
         let incarnation = assignments
             .get(key)
@@ -2258,7 +2271,11 @@ pub(crate) async fn reconcile_renewed(
             lifecycle.lock().await.await_registration(action);
             continue;
         }
+        let opens = matches!(action, Action::Open { .. });
         apply(lifecycle, store, action).await;
+        if opens {
+            opened(&*lifecycle.lock().await);
+        }
     }
 }
 

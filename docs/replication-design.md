@@ -4179,7 +4179,11 @@ that report lands. The destination sees itself named as `successor` from the
 stage onward and opens the shard's log and in-memory state while still
 copying, so taking over only records the new generation. The feed then
 publishes the routes and the set of shards it serves in one swap, so no
-publish sees one updated and the other not. On a local cluster with every
+publish sees one updated and the other not. A pass that opens many new
+shards, as a bulk create does, publishes along the way too, at most every
+100 ms: each new shard is routed once it is open instead of after the last
+one in the pass. Those interim publishes add only the new shards; every
+other route stays as last published until the pass ends. On a local cluster with every
 broker on the default 2 s interval the switch-over is tens of milliseconds;
 the destination records it as `felix_broker_shard_switchover_seconds`.
 
