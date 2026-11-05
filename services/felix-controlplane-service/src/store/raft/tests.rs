@@ -3499,7 +3499,7 @@ async fn an_adoption_beside_the_recorded_set_waits_for_every_member() {
     );
     assert!(recorded.pending_set.is_some(), "{recorded:?}");
 
-    // Every member at 29, the shard put back on {a, b, c} under a each try.
+    // Every member at 28, the shard put back on {a, b, c} under a each try.
     version.store(
         crate::store::raft::command::METADATA_VERSION,
         std::sync::atomic::Ordering::SeqCst,

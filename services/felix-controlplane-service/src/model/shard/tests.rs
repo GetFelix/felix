@@ -703,7 +703,7 @@ fn reissuing_over_another_elected_set_leaves_it_as_a_pending_change() {
     // Elected on the recorded set, it is named as is.
     let same = named_a
         .reissuing(
-            &elected("broker-b", &["broker-c", "broker-a"], 7, 7),
+            &elected("broker-b", &["broker-c", "broker-a"], 7, 6),
             &|_| true,
         )
         .expect("reissued");
@@ -717,7 +717,7 @@ fn reissuing_over_another_elected_set_leaves_it_as_a_pending_change() {
     // Outside the recorded set, or while a change is pending, it is left alone.
     assert_eq!(
         named_a.reissuing(
-            &elected("broker-d", &["broker-b", "broker-e"], 7, 7),
+            &elected("broker-d", &["broker-b", "broker-e"], 7, 6),
             &|_| true
         ),
         None
@@ -748,7 +748,7 @@ fn reissuing_names_the_recorded_set_when_an_elected_member_is_unknown() {
     let named_a = assignment();
     let next = named_a
         .reissuing(
-            &elected("broker-b", &["broker-c", "broker-d"], 7, 7),
+            &elected("broker-b", &["broker-c", "broker-d"], 7, 6),
             &|node| node != "broker-d",
         )
         .expect("reissued");
@@ -770,7 +770,7 @@ fn reissuing_names_the_recorded_set_when_an_elected_member_is_unknown() {
 fn an_elected_set_at_the_window_edge_is_reissued_one_past_it() {
     let named_a = assignment();
     let edge = named_a.generation + ELECTION_GENERATION_WINDOW;
-    let on_other = elected("broker-b", &["broker-c", "broker-d"], edge, 7);
+    let on_other = elected("broker-b", &["broker-c", "broker-d"], edge, 6);
     let next = named_a
         .adopting_elected_set(&on_other, &|_| true)
         .expect("reissued past the edge");
