@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793914941889,
+  "lastUpdate": 1793915804291,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -46228,6 +46228,58 @@ window.BENCHMARK_DATA = {
             "range": "22093.21",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 796296.12\nmean: 785312.71\nstdev: 22093.21\ncv: 2.81%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8f2b645514b7654fd286deeff7420538fc772c6e",
+          "message": "ci: cut PR-time runner use (perf and ipm on hot-path PRs only) (#1984)\n\nCI runs perf and instructions-per-message jobs only on hot-path PRs; superseded TLA walks are cancelled.",
+          "timestamp": "2026-11-05T13:53:19-08:00",
+          "tree_id": "bec60fbaff8b4d40e610eeb70c7db2067aa58b3e",
+          "url": "https://github.com/GetFelix/felix/commit/8f2b645514b7654fd286deeff7420538fc772c6e"
+        },
+        "date": 1793915803603,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 666520.91,
+            "range": "73636.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 666520.91\nmean: 700554.78\nstdev: 73636.46\ncv: 10.51%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 666520.91,
+            "range": "73636.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 666520.91\nmean: 700554.78\nstdev: 73636.46\ncv: 10.51%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 170986.41,
+            "range": "6857.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 170986.41\nmean: 169138.79\nstdev: 6857.38\ncv: 4.05%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1709864.07,
+            "range": "68573.74",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1709864.07\nmean: 1691387.84\nstdev: 68573.74\ncv: 4.05%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
