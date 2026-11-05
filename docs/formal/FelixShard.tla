@@ -2555,13 +2555,22 @@ Restart(b) ==
             /\ answered' = [answered EXCEPT ![b] = {}]
             /\ confirmed' = [confirmed EXCEPT ![b] = [m \in Brokers |-> 0]]
             /\ Promise(b, b, gen)
-       ELSE UNCHANGED << bgen, bexpiry, fencing, answered, confirmed, promised, ballot >>
+            \* Its fence carries the assignment's set at the assignment's
+            \* generation (`replica_set::view` in `fence_shard`, promotion.rs),
+            \* not the one its log last kept.
+            /\ IF SetCheck /\ setGen[b] <= gen
+               THEN /\ mine' = [mine EXCEPT ![b] = IF cpNext = {} THEN CpSet ELSE cpNext]
+                    /\ setGen' = [setGen EXCEPT ![b] = gen]
+                    /\ oldSet' = [oldSet EXCEPT ![b] = IF cpNext = {} THEN {} ELSE {CpSet}]
+               ELSE UNCHANGED << mine, setGen, oldSet >>
+       ELSE UNCHANGED << bgen, bexpiry, fencing, answered, confirmed, promised, ballot,
+                         mine, setGen, oldSet >>
     /\ stopped' = [stopped EXCEPT ![b] = FALSE]
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, hbOut, hbAt,
                     log, hwm, queued, pending, acked, writes, staleCommit,
-                    opened, setVars, ackGen >>
+                    opened, installed, nextVars, ackGen >>
     /\ UNCHANGED << draining, successor, moves, ver, cpView, staged, out, joining, leaving,
-                    joinedAt, mine >>
+                    joinedAt >>
     /\ UNCHANGED << sid, seen, seenInc, wipes, checked, registered, restarting, expect, inherited,
                     leftDirty, gaveUp, fenceIds >>
 
