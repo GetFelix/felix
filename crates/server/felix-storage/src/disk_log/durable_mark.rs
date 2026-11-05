@@ -165,9 +165,10 @@ impl MarkFile {
 
     /// Record that `mark` has been synced, unless the mark was moved back
     /// since `rewinds` was read. Called only after the sync returned. A mark
-    /// behind the one already recorded is ignored. A flush whose caller stopped waiting finishes on the flush
-    /// thread after its lock is gone, so a truncation can land before it
-    /// writes: its mark would then point past the cut.
+    /// behind the one already recorded is ignored. A flush whose caller
+    /// stopped waiting finishes on the flush thread after its lock is gone,
+    /// so a truncation can land before it writes: its mark would then point
+    /// past the cut.
     pub(super) fn record_since(&self, mark: DurableMark, rewinds: u64) -> std::io::Result<()> {
         let mut state = self.state.lock();
         if state.rewinds != rewinds || state.last >= Some(mark) {

@@ -40,8 +40,8 @@
 //!   the log's own flush thread so it cannot stall a reactor thread, and does
 //!   not queue behind other work on the shared blocking pool. The durable
 //!   mark write that follows it runs there too (inline after an io_uring
-//!   fsync): on a busy filesystem journal a write waits like a sync. Flushes are grouped, so one runs for many
-//!   appends.
+//!   fsync): on a busy filesystem journal a write waits like a sync. Flushes
+//!   are grouped, so one runs for many appends.
 //! * `read_range` may touch cold blocks, so it runs entirely on `spawn_blocking`.
 //!   It is a replay and catch-up path, not the publish hot path.
 

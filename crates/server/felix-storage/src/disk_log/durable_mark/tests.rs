@@ -224,6 +224,12 @@ async fn a_flush_writes_the_mark_off_the_callers_thread() {
 /// interior corruption after a crash.
 #[tokio::test]
 async fn an_abandoned_flush_does_not_mark_past_a_truncation() {
+    // A forced ring's flush skips the parked flush thread, and drops its mark
+    // write with the abandoned future, so there is nothing to test.
+    #[cfg(target_os = "linux")]
+    if crate::io::uring_fsync::enabled() {
+        return;
+    }
     let dir = tempdir().expect("dir");
     let log = DiskLog::open(dir.path(), "t/ns/s/0", config()).expect("open");
     log.append(&batch("kept", 10)).await.expect("append");
