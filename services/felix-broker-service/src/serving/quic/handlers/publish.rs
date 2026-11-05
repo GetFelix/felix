@@ -49,6 +49,7 @@ mod ack;
 mod admission;
 mod commit_ack;
 mod control;
+pub(crate) mod direct;
 mod headers;
 mod ingress;
 mod order;
