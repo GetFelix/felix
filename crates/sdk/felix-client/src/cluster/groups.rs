@@ -704,7 +704,7 @@ impl Client {
             // broker left it is dialled anyway, since a slow new leader is
             // the only way forward.
             if self.redirect_target_down(addr) {
-                if let Some(other) = self.another_broker(&mut asked, &error).await? {
+                if let Some(other) = self.another_broker(&mut asked).await? {
                     client = other;
                     continue;
                 }
@@ -732,7 +732,7 @@ impl Client {
                     }
                     tracing::debug!(error = %err, %addr, "redirect target unreachable; asking another broker");
                     self.mark_redirect_target_down(addr);
-                    client = match self.another_broker(&mut asked, &err).await? {
+                    client = match self.another_broker(&mut asked).await? {
                         Some(other) => other,
                         None => return Err(owner_unreachable(&err)),
                     };
@@ -762,23 +762,22 @@ impl Client {
 
     /// A connection to a broker not asked yet, skipping the ones marked down.
     /// Every broker answers a group call with the shard's owner, so any of
-    /// them can stand in for the unreachable one. Errors, with `cause` as
-    /// context, when none answers; `None` when none is left to ask.
-    async fn another_broker(
-        &self,
-        asked: &mut Vec<SocketAddr>,
-        cause: &anyhow::Error,
-    ) -> Result<Option<Arc<Connection>>> {
+    /// them can stand in for the unreachable one. `None` when none is
+    /// left to ask or none answers.
+    async fn another_broker(&self, asked: &mut Vec<SocketAddr>) -> Result<Option<Arc<Connection>>> {
         let mut candidates = self.endpoints().await;
         candidates.retain(|addr| !asked.contains(addr) && !self.redirect_target_down(*addr));
         if candidates.is_empty() {
             return Ok(None);
         }
-        let connected = self.nodes.connect_any(&candidates).await.map_err(|err| {
-            owner_unreachable(&anyhow::anyhow!(
-                "{cause:#}; no other broker answered: {err:#}"
-            ))
-        })?;
+        let connected = match self.nodes.connect_any(&candidates).await {
+            Ok(connected) => connected,
+            // A refused credential says nothing about the brokers.
+            Err(err) if err.downcast_ref::<crate::AuthError>().is_some() => return Err(err),
+            // Stand-ins that are down too leave the caller as it was with
+            // none: it dials the target itself or gives up.
+            Err(_) => return Ok(None),
+        };
         asked.push(connected.dialled());
         Ok(Some(connected))
     }

@@ -129,3 +129,40 @@ async fn an_unreachable_owner_is_a_coded_retryable_error() -> Result<()> {
     assert_eq!(coded.code, felix_wire::ErrorCode::NotLeader);
     Ok(())
 }
+
+/// **Dead stand-in brokers do not lock the marked-down target out.**
+#[tokio::test]
+#[serial_test::serial]
+async fn a_down_target_is_dialled_when_the_stand_ins_are_dead_too() -> Result<()> {
+    let dead = {
+        let socket = std::net::UdpSocket::bind("127.0.0.1:0")?;
+        socket.local_addr()?
+    };
+    let (server_config, cert) = build_server_config()?;
+    let leader = StubBroker::start_with(server_config.clone(), |request_id| Message::CacheOk {
+        request_id,
+    })?;
+    let leader_addr = leader.addr;
+    let entry = StubBroker::start_with(server_config, move |_| Message::NotLeader {
+        node_id: "leader".into(),
+        addr: Some(leader_addr.to_string()),
+        generation: 1,
+    })?;
+    let cluster = Client::connect_with_policy(
+        &[entry.addr, dead, leader_addr],
+        "localhost",
+        build_client_config_with_overrides(cert, 0)?,
+        policy(),
+    )
+    .await?;
+    cluster
+        .down_redirects
+        .lock()
+        .unwrap()
+        .insert(leader_addr, Instant::now());
+    cluster
+        .group_ack("t1", "default", "orders", 0, "workers", 1)
+        .await?;
+    assert_eq!(leader.group_requests(), 1);
+    Ok(())
+}
