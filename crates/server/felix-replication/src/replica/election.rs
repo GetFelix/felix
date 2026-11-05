@@ -663,7 +663,11 @@ impl ReplicaHandler {
     /// start record, which an open writes only once `generation_start` is
     /// finalized, and a yes before it lets a follower this broker just fenced
     /// take the next generation (#1914). Bounded by the standing, unlike a
-    /// route alone.
+    /// route alone, and by [`Elections::defer_for`] from its first fence: a
+    /// standing that never starts its generation must not hold off its
+    /// followers for good.
+    ///
+    /// [`Elections::defer_for`]: crate::election::Elections::with_defer_for
     fn fencing(&self, key: &felix_router::ShardKey, log: &felix_broker::StreamLog) -> bool {
         let Some(elections) = self.fleet.as_ref().and_then(|marks| marks.elections()) else {
             return false;
@@ -673,6 +677,7 @@ impl ReplicaHandler {
                 && route.generation >= log.accepted_generation()
                 && (elections.is_fencing(key, route.generation)
                     || elections.opened_at(key, route.generation))
+                && elections.fenced_within_defer(key, route.generation)
         })
     }
 

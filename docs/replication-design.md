@@ -1298,7 +1298,10 @@ elected leader waits for the lease until the control plane is back (issue
    says yes only if it has not heard its own leader within S, it does not
    lead the shard itself (a leader hears itself, so its yes would let one
    follower with a wrong detector depose it), it is not still fencing a
-   generation it won or has just opened it, the asker's
+   generation it won or has just opened it (for at most
+   `FELIX_ELECTION_DEFER_FOR_MS`, 60 s by default, from its first fence:
+   a standing that never writes its start record must not hold its
+   followers off for good), the asker's
    log is at least as far ahead as its own by (last generation, length), and
    the asker's set is no older than the one it knows. Nobody persists
    anything for a pre-vote. The follower stands only on a majority of yeses,
@@ -1457,7 +1460,20 @@ elected leader waits for the lease until the control plane is back (issue
     and only a refusal that names a newer generation counts, because a
     replica's generation never goes back. A
     follower that took another leader's fence above its route does not
-    stand against that leader unless it suspects it too.
+    stand against that leader while it does not suspect it, and that
+    leader answers its pre-vote as one fencing or leading the shard. It
+    stands once that leader answers otherwise (it restarted and dropped
+    its standing, say), or, if no start record from that leader ever
+    reached it, once `FELIX_ELECTION_DEFER_FOR_MS` has passed. One
+    follower's newer ballot or view does not end a leader's readers: only
+    a follower saying the control plane assigned a newer generation does,
+    since an election may leave a ballot behind with no leader. With a
+    majority still answering the leader serves; with none, its rounds
+    fail and it reports the generation refused. A leader whose open fails
+    for any other reason, an I/O error say, reports the generation refused
+    too, since the same assignment never retries the open, and so does a
+    fence that meets a replica set newer than its own: a set never goes
+    back.
 
 **Why it is safe.** Ballots give one leader per generation: each generation
 is fenced on one set, any two majorities of one set share a replica, and

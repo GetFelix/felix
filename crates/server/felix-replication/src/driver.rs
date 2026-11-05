@@ -299,8 +299,10 @@ pub trait WriteFence: Send + Sync {
     /// the two calls above, if they apply, came before this one.
     fn passed(&self, _key: &crate::ShardKey, _generation: u64) {}
 
-    /// A follower refused `key`'s ships at `generation` because it accepted a
-    /// newer leader. Called on every pass while the refusal stands.
+    /// `key` has a newer leader than `generation`: a follower refused its
+    /// ships because the control plane assigned a newer generation, or this
+    /// broker itself took a newer generation or set. Called on every pass
+    /// while that holds.
     fn deposed(&self, _key: &crate::ShardKey, _generation: u64) {}
 
     /// This broker does not lead `key` at `generation`, though the route says

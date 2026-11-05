@@ -77,6 +77,9 @@ pub struct FollowerCursor {
     /// that halted it. Only set beside a fenced halt, and only while the
     /// cursor names the copy that refused.
     pub(crate) superseded_by: Option<u64>,
+    /// The fenced halt's refusal said the control plane assigned a newer
+    /// generation. See [`crate::replica::assigned_newer`].
+    pub(crate) assigned_newer: bool,
 }
 
 /// A follower's answer that came from the copy its cursor describes.
@@ -106,6 +109,7 @@ impl FollowerCursor {
             learner: false,
             vouched: None,
             superseded_by: None,
+            assigned_newer: false,
         }
     }
 

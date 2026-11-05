@@ -812,3 +812,61 @@ async fn a_leader_still_fencing_refuses_a_pre_vote() {
         Some(felix_wire::internal::PreVoteRefusal::LeaderReachable)
     );
 }
+
+/// **A standing that never starts its generation stops refusing pre-votes**
+/// once the defer bound has passed since its first fence (#1914): stuck
+/// fencing or opened without a start record, it would otherwise keep its
+/// followers from electing anyone until the control plane is back.
+#[tokio::test(start_paused = true)]
+async fn a_standing_that_never_starts_stops_refusing_pre_votes() {
+    let (broker, _dir) = broker_with_storage().await;
+    stream_log(&broker)
+        .await
+        .accept_generation(6, Some(LOCAL))
+        .await
+        .expect("ballot");
+    let marks = Arc::new(crate::quorum::QuorumMarks::new());
+    let elections = Arc::new(crate::election::Elections::new(
+        LOCAL,
+        Arc::new(tokio::sync::Notify::new()),
+    ));
+    marks.set_elections(Arc::clone(&elections));
+    let router = router_led_by(LOCAL, &["broker-a", "broker-c"], 6);
+    let key = router.snapshot().iter().next().expect("key").0.clone();
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router)
+        .with_stickiness(Duration::ZERO)
+        .with_fleet(marks);
+    elections.record(
+        key.clone(),
+        crate::election::Elected {
+            leader: LOCAL.to_string(),
+            generation: 6,
+            set: felix_storage::disk_log::Membership {
+                generation: 6,
+                members: Vec::new(),
+            },
+            leaving: None,
+            incarnation: 0,
+        },
+    );
+    let fencing = elections.fencing(&key, 6);
+    tokio::time::advance(elections.defer_for() / 2).await;
+    drop(fencing);
+    // A fence retried keeps its first time.
+    let _fencing = elections.fencing(&key, 6);
+    assert_eq!(
+        pre_vote_answer(handler.pre_vote(pre_vote_at(7)).await),
+        Some(felix_wire::internal::PreVoteRefusal::LeaderReachable)
+    );
+    tokio::time::advance(elections.defer_for() / 2).await;
+    assert_eq!(
+        pre_vote_answer(handler.pre_vote(pre_vote_at(7)).await),
+        None
+    );
+
+    elections.opened(&key, 6);
+    assert_eq!(
+        pre_vote_answer(handler.pre_vote(pre_vote_at(7)).await),
+        None
+    );
+}

@@ -297,6 +297,16 @@ pub(crate) async fn fence_shard_as<R: PeerRequester>(
                                 why: why.to_string(),
                             });
                         }
+                        // A newer set here never goes back; the others need
+                        // a later generation to tell, and a rename there could
+                        // leave a set unfenced, so they stay pending.
+                        Err(why @ joint::NoSetBefore::Newer(_)) => {
+                            return Err(Outcome::Refused {
+                                promised_to: String::new(),
+                                why: why.to_string(),
+                                took: Vec::new(),
+                            });
+                        }
                         Err(why) => return Err(Outcome::pending(why.to_string(), Vec::new())),
                     }
                 }
@@ -686,10 +696,14 @@ async fn fence_log<R: PeerRequester>(
             }
             Ok(InternalMessage::ReplicateError(err)) if err.code == ErrorCode::StaleSet => {
                 // A replica counts a newer set, so a newer assignment exists.
-                return Err(Outcome::pending(
-                    format!("{node_id} counts a newer replica set: {}", err.detail),
-                    took(&answered),
-                ));
+                // A set never goes back, so this fence never opens: reported
+                // like a newer ballot, which a control plane already past this
+                // generation ignores.
+                return Err(Outcome::Refused {
+                    promised_to: String::new(),
+                    why: format!("{node_id} counts a newer replica set: {}", err.detail),
+                    took: took(&answered),
+                });
             }
             Err(PeerError::Unsupported { .. }) if lease_fallback => {
                 return Err(Outcome::Lease { lacking: node_id });
@@ -1198,10 +1212,12 @@ async fn keep_own_set(
     let mut set = crate::replica_set::kept(route, None);
     set.leaving = leaving.cloned();
     match crate::replica_set::accept(log, set, joint_fence).await {
-        Ok(felix_storage::disk_log::SetCheck::Stale { known }) => Err(Outcome::pending(
-            format!("this broker counts the set of generation {known}, newer than this one"),
-            Vec::new(),
-        )),
+        // As a replica's newer set: it never goes back, so report it.
+        Ok(felix_storage::disk_log::SetCheck::Stale { known }) => Err(Outcome::Refused {
+            promised_to: String::new(),
+            why: format!("this broker counts the set of generation {known}, newer than this one"),
+            took: Vec::new(),
+        }),
         Ok(_) => Ok(()),
         Err(err) => Err(Outcome::pending(
             format!("could not keep this leader's replica set: {err}"),

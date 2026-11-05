@@ -11,6 +11,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
+use std::time::Duration;
 
 use felix_common::membership::ElectedLeadership;
 use felix_router::ShardKey;
@@ -18,6 +19,7 @@ use felix_storage::disk_log::Membership;
 use felix_wire::internal::ReplicaSetView;
 use parking_lot::Mutex;
 use tokio::sync::Notify;
+use tokio::time::Instant;
 
 mod candidate;
 
@@ -38,6 +40,12 @@ pub struct Elections {
     /// this broker's standing fenced it. Outlives the entry, which the
     /// overlay drops when the control plane adopts the leadership.
     opened: Mutex<HashMap<ShardKey, (u64, u64)>>,
+    /// When this broker first fenced each standing, by generation. Outlives
+    /// the guard, so a fence retried pass after pass keeps its first time.
+    fenced_since: Mutex<HashMap<ShardKey, (u64, Instant)>>,
+    /// How long a copy defers to an elected leader that has not started its
+    /// generation. See [`Self::with_defer_for`].
+    defer_for: Duration,
     /// Woken on every change, for the routing feed to lay the new view over
     /// the control plane's.
     changed: Arc<Notify>,
@@ -130,8 +138,24 @@ impl Elections {
             recorded: Mutex::new(HashMap::new()),
             fencing: Mutex::new(HashMap::new()),
             opened: Mutex::new(HashMap::new()),
+            fenced_since: Mutex::new(HashMap::new()),
+            defer_for: crate::suspicion::DEFAULT_DEFER_FOR,
             changed,
         }
+    }
+
+    /// Bound how long an elected leader that never starts its generation
+    /// holds the shard: a fencing leader refuses pre-votes, and a follower
+    /// that took its fence does not stand, only this long. Without a bound a
+    /// leader stuck fencing, or one that dropped the shard, holds the shard
+    /// until the control plane names a new generation.
+    pub fn with_defer_for(mut self, defer_for: Duration) -> Self {
+        self.defer_for = defer_for;
+        self
+    }
+
+    pub(crate) fn defer_for(&self) -> Duration {
+        self.defer_for
     }
 
     /// Record `elected` for `key`, replacing one at an older generation. An
@@ -277,11 +301,25 @@ impl Elections {
     /// returned guard drops, so the candidate does not give it up meanwhile.
     pub(crate) fn fencing(&self, key: &ShardKey, generation: u64) -> Fencing<'_> {
         self.fencing.lock().insert(key.clone(), generation);
+        let mut since = self.fenced_since.lock();
+        if since.get(key).is_none_or(|(at, _)| *at != generation) {
+            since.insert(key.clone(), (generation, Instant::now()));
+        }
+        drop(since);
         Fencing {
             elections: self,
             key: key.clone(),
             generation,
         }
+    }
+
+    /// Whether this broker first fenced its standing for `key` at
+    /// `generation` within [`Self::defer_for`].
+    pub(crate) fn fenced_within_defer(&self, key: &ShardKey, generation: u64) -> bool {
+        self.fenced_since
+            .lock()
+            .get(key)
+            .is_some_and(|(at, since)| *at == generation && since.elapsed() < self.defer_for)
     }
 
     /// Whether the driver is fencing or catching up `key` at `generation`.

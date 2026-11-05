@@ -2087,10 +2087,7 @@ fn confirmed_refusal(
                 correlation_id,
                 ErrorCode::FencedEpoch,
                 0,
-                format!(
-                    "the control plane assigned generation {assigned}, the sender is at \
-                         {generation}"
-                ),
+                assigned_detail(*assigned, generation),
             ))
         }
         Confirmed::Assigned {
@@ -2266,6 +2263,24 @@ pub(crate) fn promised_to(detail: &str, generation: u64) -> Option<&str> {
 /// the newer `accepted`; [`superseded_by`] reads it back.
 pub(crate) fn superseded_detail(accepted: u64, generation: u64) -> String {
     format!("this broker accepted generation {accepted}, the sender is at {generation}")
+}
+
+/// What a replica answers a sender at `generation` when the control plane's
+/// confirmed assignment is at the newer `assigned`; [`assigned_newer`] reads
+/// it back.
+pub(crate) fn assigned_detail(assigned: u64, generation: u64) -> String {
+    format!("the control plane assigned generation {assigned}, the sender is at {generation}")
+}
+
+/// Whether a `FencedEpoch` refusal of a sender at `generation` says the
+/// control plane assigned a newer generation. Unlike a ballot or a view,
+/// which an election may leave behind with no leader, that names one.
+pub(crate) fn assigned_newer(detail: &str, generation: u64) -> bool {
+    detail
+        .strip_prefix("the control plane assigned generation ")
+        .and_then(|rest| rest.strip_suffix(&format!(", the sender is at {generation}")))
+        .and_then(|assigned| assigned.parse::<u64>().ok())
+        .is_some_and(|assigned| assigned > generation)
 }
 
 /// What a replica answers a sender at `generation` when its routing view is

@@ -1394,6 +1394,55 @@ async fn a_leader_behind_its_own_ballot_reports_the_refusal() {
     assert_eq!(report.refused, Some(RefusedGeneration::set_unknown(4)));
 }
 
+/// **A leader whose own log counts a newer set reports the generation
+/// refused**, naming no node (#1914). A set never goes back, so the fence
+/// stays shut at this generation however often it is retried.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_leader_counting_a_newer_set_reports_the_refusal() {
+    let (broker, _dir) = leader_with(3).await;
+    let log = broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    let member = |node: &str| felix_storage::disk_log::Member {
+        node: node.to_string(),
+        storage: None,
+        learner: false,
+        wiped: false,
+    };
+    log.accept_set(felix_storage::disk_log::ReplicaSet {
+        current: felix_storage::disk_log::Membership {
+            generation: 9,
+            members: vec![member(LOCAL), member("broker-b"), member("broker-c")],
+        },
+        leaving: None,
+        earlier: Vec::new(),
+    })
+    .await
+    .expect("set");
+    let (control_plane, received) = recording_control_plane().await;
+    let shutdown = CancellationToken::new();
+    let driver = spawn(
+        Arc::new(ElectingFenceTakers),
+        broker,
+        router(LOCAL, &["broker-b", "broker-c"], 4),
+        Arc::new(Unfenced),
+        Arc::new(FencingAtFour),
+        published(),
+        Some(control_plane.reporter(shutdown.clone())),
+        Duration::from_millis(50),
+        Arc::default(),
+        RebuildPolicy::default(),
+        MoveThrottle::unlimited(),
+        shutdown.clone(),
+    );
+    let report = first_report(&received, Duration::from_secs(5)).await;
+    shutdown.cancel();
+    driver.stop().await;
+    let report = report.expect("no report of the refused generation");
+    assert_eq!(report.refused, Some(RefusedGeneration::set_unknown(4)));
+}
+
 /// **A leader that promised its generation to another node reports the
 /// refusal naming that node.**
 #[tokio::test(flavor = "multi_thread")]
@@ -1547,4 +1596,70 @@ async fn a_fence_met_by_a_newer_routing_view_reports_the_refusal() {
     driver.stop().await;
     let report = report.expect("no report of the refused fence");
     assert_eq!(report.refused, Some(RefusedGeneration::set_unknown(4)));
+}
+
+/// A fence that records each generation the driver deposes.
+#[derive(Default)]
+struct Deposals(std::sync::Mutex<Vec<u64>>);
+
+impl WriteFence for Deposals {
+    fn quiesced(&self, _key: &crate::ShardKey) -> bool {
+        true
+    }
+
+    fn deposed(&self, _key: &crate::ShardKey, generation: u64) {
+        self.0.lock().expect("lock").push(generation);
+    }
+}
+
+/// Whether an open leader at generation 4 is deposed within two seconds when
+/// broker-b refuses it with `detail` and broker-c still takes its batches.
+async fn deposed_after_refusal(detail: fn(u64) -> String) -> bool {
+    let (broker, _dir) = leader_with(3).await;
+    let deposals = Arc::new(Deposals::default());
+    let shutdown = CancellationToken::new();
+    let driver = spawn(
+        Arc::new(RefusedAfterOpen {
+            detail,
+            c_answers: true,
+            accepting: AcceptingFollower::default(),
+        }),
+        broker,
+        router(LOCAL, &["broker-b", "broker-c"], 4),
+        Arc::clone(&deposals) as Arc<dyn WriteFence>,
+        Arc::new(crate::promotion::NoGate),
+        published(),
+        None,
+        Duration::from_millis(50),
+        Arc::default(),
+        RebuildPolicy::default(),
+        MoveThrottle::unlimited(),
+        shutdown.clone(),
+    );
+    let deposed = tokio::time::timeout(Duration::from_secs(2), async {
+        while deposals.0.lock().expect("lock").is_empty() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .is_ok();
+    shutdown.cancel();
+    driver.stop().await;
+    deposed
+}
+
+/// **One follower's newer ballot does not depose a leader a majority still
+/// answers** (#1914). The ballot may be a standing that never opened;
+/// deposing ended every reader of a shard that still served.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_follower_ballot_with_a_majority_left_deposes_nothing() {
+    assert!(!deposed_after_refusal(|g| crate::replica::superseded_detail(g + 1, g)).await);
+    assert!(!deposed_after_refusal(|g| crate::replica::view_detail(g + 1, g)).await);
+}
+
+/// **A follower that says the control plane assigned a newer generation
+/// deposes the leader**: that names a newer leader.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_newer_assignment_deposes_the_leader() {
+    assert!(deposed_after_refusal(|g| crate::replica::assigned_detail(g + 1, g)).await);
 }

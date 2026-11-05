@@ -116,6 +116,7 @@ pub(super) fn group_replicas(size: usize, capabilities: PeerCapabilities) -> Rep
                 storage: Some(storage_of(id)),
                 group_storage: None,
                 refuses: None,
+                refuses_with: ErrorCode::Unavailable,
                 recorded: true,
                 _dir: dir,
             },

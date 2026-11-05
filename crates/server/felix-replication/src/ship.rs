@@ -467,6 +467,11 @@ async fn ship_batch<R: PeerRequester>(
                 }
                 _ => None,
             };
+            cursor.assigned_newer = matches!(
+                &answer,
+                InternalMessage::ReplicateError(err) if err.code == ErrorCode::FencedEpoch
+                    && crate::replica::assigned_newer(&err.detail, shard.generation)
+            );
             tracing::error!(
                 node_id = %cursor.node_id,
                 stream = %shard.stream,

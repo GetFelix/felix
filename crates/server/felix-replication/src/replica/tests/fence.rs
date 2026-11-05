@@ -1583,6 +1583,17 @@ fn a_newer_routing_view_names_the_newer_generation() {
     assert_eq!(superseded_by(&view_detail(4, 4), 4), None, "not newer");
 }
 
+/// **Only a newer assignment reads as one.** A ballot or view names no leader.
+#[test]
+fn a_newer_assignment_is_read_from_its_refusal() {
+    use crate::replica::{assigned_detail, assigned_newer};
+    assert!(assigned_newer(&assigned_detail(6, 4), 4));
+    assert!(!assigned_newer(&assigned_detail(6, 4), 5), "another sender");
+    assert!(!assigned_newer(&assigned_detail(4, 4), 4), "not newer");
+    assert!(!assigned_newer(&superseded_detail(6, 4), 4));
+    assert!(!assigned_newer(&view_detail(6, 4), 4));
+}
+
 /// A control plane that names broker-a at generation 1 for every shard, but
 /// answers for any shard other than 0 only once `open` has permits.
 struct GatedConfirmed {
