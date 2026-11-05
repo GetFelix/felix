@@ -48,7 +48,8 @@ pub struct FollowerCursor {
     /// will start and says nothing about what the follower holds.
     pub stalled: bool,
     /// The follower's last answer to a batch was that its routing view is
-    /// behind, which the next pass resolves. Stalled, but up and answering,
+    /// behind, and the pass can send it the fence again, which the next pass
+    /// resolves. Stalled, but up and answering,
     /// unlike a follower the request never reached or one refusing for a
     /// reason a pass cannot fix.
     pub(crate) refused: bool,

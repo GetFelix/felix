@@ -367,13 +367,35 @@ async fn append_passes_only_its_shard(gone: &'static [&'static str]) {
 
 /// **A shard whose only live follower refused a batch still gets a pass on
 /// the next append, and its mark reaches the tail.** A refusal such as
-/// `StaleRoute` comes from a follower that is up; the next pass is what
-/// brings it level (an elected leader sends it the candidate fence again).
+/// `StaleRoute` comes from a follower that is up; in a fleet that keeps
+/// sets, the next pass sends it the fence again and brings it level.
 /// Counted as out of reach like a dead one, the shard waited for a tick in
 /// the refresh queue, behind every written shard, while its write waited on
 /// the mark.
 #[tokio::test(start_paused = true)]
 async fn a_shard_whose_follower_refused_gets_a_pass_on_the_next_append() {
+    use felix_common::fleet::{FleetGate, REPLICA_ELECTION};
+
+    let names = [REPLICA_ELECTION.name()];
+    let fleet = FleetGate::new(names);
+    fleet.restart(names);
+    refused_follower_on_next_append(QuorumMarks::with_fleet(Arc::new(fleet)), true).await;
+}
+
+/// **A refusal no pass can fix leaves the shard to the tick.** Without a
+/// candidacy or a fleet that keeps sets, a pass sends a follower whose
+/// routing view is behind nothing that brings it level: it catches up from
+/// the control plane. Passing the shard on every append would only take
+/// slots from shards with writes waiting.
+#[tokio::test(start_paused = true)]
+async fn a_refusal_no_pass_can_fix_does_not_make_its_shard_owed() {
+    refused_follower_on_next_append(QuorumMarks::new(), false).await;
+}
+
+/// Lead two shards with broker-b gone, have broker-c refuse a batch on shard
+/// 0 as `StaleRoute`, then append to shard 1: shard 0 gets a pass too only
+/// when `can_refence`.
+async fn refused_follower_on_next_append(marks: QuorumMarks, can_refence: bool) {
     let (broker, _dir) = leader_with_shards(2, 1).await;
     let router = Arc::new(ShardRouter::new(
         LOCAL,
@@ -381,7 +403,6 @@ async fn a_shard_whose_follower_refused_gets_a_pass_on_the_next_append() {
         felix_router::RegionRouter::new("us-west-2".to_string()),
     ));
     lead(&router, 2);
-    let marks = QuorumMarks::new();
     let status = ShardStatusBoard::new();
     let peers = Follower {
         gone: &["broker-b"],
@@ -428,6 +449,14 @@ async fn a_shard_whose_follower_refused_gets_a_pass_on_the_next_append() {
     peers.refusing.lock().expect("lock").clear();
     append(&broker, 1).await;
     shards.scan(WakeKind::Append);
+    if !can_refence {
+        assert_eq!(
+            shards.passes.len(),
+            1,
+            "a refusal no pass can fix got its shard a pass on another shard's append"
+        );
+        return;
+    }
     assert_eq!(
         shards.passes.len(),
         2,

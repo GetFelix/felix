@@ -1047,7 +1047,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         // Only while some follower is answering: with every one of them out
         // of reach, a pass on each append could not raise the mark, and the
         // tick retries them (#1944). One that refused a batch for its routing
-        // view is in reach: the next pass sends it the candidate fence.
+        // view is in reach when the next pass can send it the fence again.
         let reachable = cursors
             .followers
             .iter()

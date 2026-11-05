@@ -1143,6 +1143,11 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                             set_stamp,
                         )
                         .await;
+                    } else {
+                        // It catches up from the control plane; another
+                        // pass sends it nothing that helps, so the tick
+                        // retries it rather than every append (#1944).
+                        cursor.refused = false;
                     }
                 }
                 // A follower level with the tail was sent nothing, so nothing

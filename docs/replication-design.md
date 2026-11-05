@@ -3761,11 +3761,13 @@ append stream and the rest never shipped: their writes were never acknowledged
   progress, and the shards owed a pass. A shard is owed one when its mark is
   below its tail, or no follower that could still catch up holds its whole
   log, and some follower is in reach: not halted, and its last batch went through,
-  or was refused only because its routing view is behind this generation. That
-  refusal counts because the next pass is what brings the follower level, even
-  when it arrives after its pass ended. A follower the batch did not reach, or
-  one refusing for a reason a pass cannot fix (a full disk, a bad credential),
-  is out of reach.
+  or was refused only because its routing view is behind this generation and
+  the leader can send it the fence again (an elected leader, or a fleet that
+  has finalized `replica_election`). That refusal counts because the next pass
+  is what brings the follower level, even when it arrives after its pass ended.
+  A follower the batch did not reach, one whose routing view only the control
+  plane can fix, or one refusing for any other reason (a full disk, a bad
+  credential) is out of reach.
   Every other shard is skipped, including one whose only lagging followers are
   out of reach. A follower cannot catch up while it is down, so asking its
   shards on every append filled the slots with passes that could do nothing,
