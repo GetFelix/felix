@@ -35,6 +35,10 @@ const ELECTED_WITHIN: Duration = Duration::from_secs(20);
 /// What the driver logs once a majority took a leader's fence, with the
 /// generation it opened at.
 const OPENED: &str = "a majority took the fence; opening the shard for writes";
+/// What the driver logs once the gate let the shard open, on either the fence
+/// or the lease path. `OPENED` is logged before the gate answers, which can
+/// still refuse.
+const SERVING: &str = "the shard is open for writes";
 /// What a candidate logs once its ballot is on disk.
 const STOOD: &str = "standing for election";
 /// What a candidate logs while `FELIX_TEST_PRE_VOTE_GATE` holds its pre-vote.
@@ -651,7 +655,7 @@ async fn the_control_plane_returning_mid_election_leaves_one_leader() {
             // to whoever its route names, so it alone proves nothing about
             // the broker named here.
             let mut opened = BTreeMap::new();
-            read_logged(&cluster, OPENED, &mut opened);
+            read_logged(&cluster, SERVING, &mut opened);
             let ok = opened
                 .get(&now.generation)
                 .is_some_and(|brokers| brokers.contains(&now.leader))
