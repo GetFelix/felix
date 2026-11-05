@@ -4410,7 +4410,11 @@ leave the shard waiting. The old leader the assignment still names cannot
 serve the elected generation: its open is refused when it promised the
 generation away, and its fence is refused when a majority of the set did.
 Either way it says so in its report (`refused`, sent each tick in place of
-the usual measurements, with no tail). Placement names it again at the next
+the usual measurements, with no tail). A leader that is open keeps sending
+its usual reports too, and the control plane keeps only the last report for
+each shard. So once a leader has reported a refusal, it puts the refusal on
+every later report at that generation. Otherwise the next ordinary report
+would replace it before placement read it (issue #1969). Placement names it again at the next
 generation, on the same set, and nothing else about the shard changes
 (control-plane.md, [Adopting an elected
 leader](control-plane.md#adopting-an-elected-leader)). In the model that is
