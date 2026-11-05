@@ -580,9 +580,9 @@ pub(super) async fn sets<R: PeerRequester>(
         // it beside the control plane's. The evidence: its own ballot and
         // start record here (a ballot alone may be a withdrawn standing), and
         // the kept set naming exactly the route's set on the same copies with
-        // nothing pending and nothing else kept beside it. These do not prove the open was fenced; the
-        // unfenced opens that also leave them are covered in
-        // docs/replication-design.md, "Planned handoff".
+        // nothing pending and nothing else kept beside it. These do not prove
+        // the open was fenced; the unfenced opens that also leave them are
+        // covered in docs/replication-design.md, "Planned handoff".
         Err(NoSetBefore::Skipped(generation))
             if log.accepted_generation() == generation
                 && log.accepted_leader().as_deref() == Some(local_node_id)
