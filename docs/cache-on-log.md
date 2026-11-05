@@ -188,7 +188,9 @@ present is an answer rather than a failure.
 The value is the one the key held at the delete's place in the shard's log. A
 put to the same key that is still in flight when the delete arrives may come
 first in the log, and then the delete reports the put's value, not the one
-before it.
+before it. A delete that finds the key absent writes nothing, so a put still in
+flight when it arrives lands after it and the key ends up holding the put's
+value.
 
 It is negotiated: the broker advertises `FEATURE_CACHE_DELETE` in `AuthOk`, and
 a client that does not see the bit reports that the broker cannot delete instead

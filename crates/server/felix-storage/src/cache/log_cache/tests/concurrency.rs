@@ -467,7 +467,9 @@ async fn a_delete_racing_a_put_reports_the_value_at_its_offset() {
                     .find(|change| change.value.as_ref() == value)
                     .map(|change| change.offset)
             };
-            (offset(Some(&new)).expect("the put"), offset(None))
+            let old_offset = offset(Some(&old)).expect("the first put");
+            let delete = offset(None).filter(|&at| at > old_offset);
+            (offset(Some(&new)).expect("the put"), delete)
         };
         let expected = match delete_offset {
             Some(at) if at > put_offset => Some(new),

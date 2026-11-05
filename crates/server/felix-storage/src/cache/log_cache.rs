@@ -551,17 +551,20 @@ impl LogCache {
         let mut state = shard.state.lock().await;
         // Read now, in turn order: a put to this key staged before the delete
         // may not have applied when the delete staged, and the value from
-        // before it is not what the delete removed.
+        // before it is not what the delete removed. Applied before a read
+        // error is returned, since the record is already durable.
         let previous = match state.index.entries.get(key).copied() {
-            Some(entry) if !entry.is_expired(now_millis()) => {
-                shard.read_value(&state, entry).await?
+            Some(entry)
+                if matches!(when, DeleteWhen::Always) && !entry.is_expired(now_millis()) =>
+            {
+                shard.read_value(&state, entry).await
             }
-            _ => None,
+            _ => Ok(None),
         };
         staged.apply(&mut state);
         Ok(Deleted {
             written: true,
-            previous,
+            previous: previous?,
             current: None,
         })
     }
