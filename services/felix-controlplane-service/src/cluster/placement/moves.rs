@@ -12,7 +12,7 @@ use super::leadership::{Leadership, Owner, Shares};
 use super::rendezvous::{choose_replicas, promote, score};
 use super::restore::{newcomer, replacing, restore, restore_step, short};
 use super::zones::{Domain, domain, domain_of, keep_spread};
-use super::{Blocked, CaughtUp, Decision, MoveStep};
+use super::{Blocked, CaughtUp, Decision, MoveStep, StuckReason};
 use felix_common::membership::RefusedGeneration;
 
 use crate::model::{
@@ -68,6 +68,32 @@ pub const DEFAULT_RESTORE_AFTER_MILLIS: u64 = 5 * 60 * 1_000;
 /// every other short shard is waiting for.
 pub const DEFAULT_RESTORE_STALL_MILLIS: u64 = 2 * 60 * 1_000;
 
+/// How long a leader on a live broker may show no progress at its generation
+/// before it is named again one generation up: twice the default report TTL
+/// (`report_ttl_millis`, 35 s). A leader that has opened reports every
+/// replication tick, so this is many missed reports, not one slow one. Never
+/// shorter than twice the TTL in effect; see `plan_pass`.
+pub(super) const DEFAULT_STUCK_LEADER_MILLIS: u64 = 70_000;
+
+/// The window [`MAX_STUCK_RENAMES`] counts over.
+pub(super) const STUCK_RENAME_WINDOW_MILLIS: u64 = 60 * 60 * 1_000;
+
+/// The most times one shard is named again for being stuck within
+/// [`STUCK_RENAME_WINDOW_MILLIS`]. Each waits twice as long as the last, so
+/// a leader that keeps failing at every generation churns a handful of
+/// generations an hour, not one a minute.
+pub(super) const MAX_STUCK_RENAMES: u32 = 4;
+
+/// The most shards one pass names again for being stuck, so a burst of them
+/// does not land as a burst of fences on one broker.
+pub(super) const STUCK_RENAMES_PER_PASS: usize = 16;
+
+/// Past this many leaders overdue at once (or an eighth of those watched, if
+/// more), a pass renames one of them at most: that may be a fleet-wide
+/// stall, which the same leaders one generation up would share, or one
+/// restarted broker leading many shards, which renames heal.
+pub(super) const MAX_STUCK_PER_FLEET: usize = 64;
+
 /// How long after a cluster's first broker registered a new shard waits for
 /// enough brokers to hold all its copies before it is placed on fewer.
 /// Brokers started together register within a second or two of each other.
@@ -114,6 +140,12 @@ pub struct MovePolicy {
     /// moving, as this instance watched it, before the restore is given up and
     /// its slot goes to the next shard. `None` waits for `timeout_millis`.
     pub restore_stall_millis: Option<u64>,
+    /// How long a fenced shard's leader, on a live broker, may show no
+    /// progress at its generation, as this instance watched it, before it is
+    /// named again one generation up (`MoveStep::Stuck`). Progress is a report
+    /// at the generation that shows nothing pending, or a majority's position
+    /// moving. `None` never renames.
+    pub stuck_leader_millis: Option<u64>,
     /// How long after the cluster's first broker registered a new shard
     /// waits for as many live brokers as its replication factor before it
     /// is placed on fewer. Only a young cluster waits: one whose oldest
@@ -158,6 +190,7 @@ impl Default for MovePolicy {
             election_hold_millis: Some(DEFAULT_ELECTION_HOLD_MILLIS),
             restore_after_millis: Some(DEFAULT_RESTORE_AFTER_MILLIS),
             restore_stall_millis: Some(DEFAULT_RESTORE_STALL_MILLIS),
+            stuck_leader_millis: Some(DEFAULT_STUCK_LEADER_MILLIS),
             settle_millis: Some(DEFAULT_PLACEMENT_SETTLE_MILLIS),
             paused: false,
             replica_election: false,
@@ -183,6 +216,8 @@ pub(super) struct Moves {
     pub(super) recovering: bool,
     /// Whether some shard wanted a move for its stream's spread.
     pub(super) stream_wanted: bool,
+    /// Shards this pass named again for being stuck.
+    stuck_renames: usize,
 }
 
 impl Moves {
@@ -200,6 +235,7 @@ impl Moves {
             cluster_moves: true,
             stream_wanted: false,
             recovering: false,
+            stuck_renames: 0,
         };
         for assignment in existing {
             // A seat fence is `Draining` with `joining` and no successor:
@@ -355,6 +391,41 @@ impl Moves {
         })
     }
 
+    /// Why `key`'s leader is due to be named again at a new generation, if
+    /// it has gone `stuck_leader_millis` without progress at `generation`,
+    /// doubled for each time that was done in the last window, and this
+    /// pass has a rename left. Takes the pass's rename when it answers.
+    pub(super) fn stuck_due(
+        &mut self,
+        caught_up: &dyn CaughtUp,
+        key: &ShardKey,
+        generation: u64,
+    ) -> Option<StuckReason> {
+        let bound = self.policy.stuck_leader_millis?;
+        let stuck = caught_up.stuck_leader(key, generation)?;
+        let now = caught_up.as_of_millis()?;
+        let per_pass = if stuck.fleet_stalled {
+            1
+        } else {
+            STUCK_RENAMES_PER_PASS
+        };
+        if stuck.recent_renames >= MAX_STUCK_RENAMES || self.stuck_renames >= per_pass {
+            return None;
+        }
+        // A leader that never opened may still be in its broker's queue of
+        // fences after a restart, so it gets twice as long.
+        let base = match stuck.reason {
+            StuckReason::NeverOpened => bound.saturating_mul(2),
+            _ => bound,
+        };
+        let wait = base.saturating_mul(1u64 << stuck.recent_renames.min(20));
+        if now.saturating_sub(stuck.since_millis) <= wait {
+            return None;
+        }
+        self.stuck_renames += 1;
+        Some(stuck.reason)
+    }
+
     /// Whether a restore's copy into `joining` has gone the stall window
     /// without its position moving, as this instance watched it.
     pub(super) fn stalled(&self, caught_up: &dyn CaughtUp, key: &ShardKey, joining: &str) -> bool {
@@ -447,6 +518,38 @@ pub(super) fn move_step<'a>(
             } else {
                 MoveStep::SetUnknown
             },
+            ShardAssignment {
+                generation: 0,
+                fence_storage_ids: Default::default(),
+                member_storage_ids: Default::default(),
+                learners: Default::default(),
+                ..existing.clone()
+            },
+        );
+    }
+
+    // The leader's broker is live but the leader has shown no progress at
+    // this generation for the stuck bound: a dead end the broker has not
+    // reported, such as a fence that never settles or a halt that lasts until
+    // the assignment changes. Naming it one generation up is a new fenced
+    // term, as for a refusal: the leader fences a majority before it serves,
+    // so nothing acknowledged is lost and the old term cannot serve beside
+    // it. Only where a majority of the set is live and not halted, or the new
+    // term would stall the same way, and never during a move, a fence or a
+    // set change, which end through their own steps.
+    if fenced
+        && leader_live
+        && !is_draining(leader)
+        && existing.successor.is_none()
+        && existing.state != ShardState::Draining
+        && existing.joining.is_none()
+        && existing.pending_set.is_none()
+        && !existing.replicas.is_empty()
+        && majority_can_serve(key, existing, is_live, caught_up)
+        && let Some(reason) = moves.stuck_due(caught_up, key, existing.generation)
+    {
+        return Decision::Move(
+            MoveStep::Stuck { reason },
             ShardAssignment {
                 generation: 0,
                 fence_storage_ids: Default::default(),
@@ -1849,6 +1952,35 @@ fn crowded<'a>(
 /// holds may be the previous leader's, still fresh and still listing the
 /// replicas it had level -- and a fence made on that would stop a leader for
 /// a destination that may hold nothing of what it has written since.
+/// Whether a majority of `existing`'s voters (its leader and the followers
+/// that are not learners) is live and not reported halted.
+fn majority_can_serve(
+    key: &ShardKey,
+    existing: &ShardAssignment,
+    is_live: &dyn Fn(&str) -> bool,
+    caught_up: &dyn CaughtUp,
+) -> bool {
+    let voters: Vec<&str> = std::iter::once(existing.leader.as_str())
+        .chain(
+            existing
+                .replicas
+                .iter()
+                .map(String::as_str)
+                .filter(|node| !existing.learners.contains(*node)),
+        )
+        .collect();
+    let able = voters
+        .iter()
+        .filter(|node| {
+            is_live(node)
+                && caught_up
+                    .halted_member(key, node, existing.generation)
+                    .is_none()
+        })
+        .count();
+    able > voters.len() / 2
+}
+
 pub(super) struct AtGeneration<'a> {
     inner: &'a dyn CaughtUp,
     generation: u64,
@@ -1940,5 +2072,9 @@ impl CaughtUp for AtGeneration<'_> {
     // is no better a destination for this one.
     fn halted(&self, key: &ShardKey, node_id: &str) -> Option<&HaltedCopy> {
         self.inner.halted(key, node_id)
+    }
+
+    fn stuck_leader(&self, key: &ShardKey, generation: u64) -> Option<super::StuckLeader> {
+        self.inner.stuck_leader(key, generation)
     }
 }

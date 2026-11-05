@@ -24,6 +24,7 @@ mod replicas;
 mod restore;
 mod stalled;
 mod startup;
+mod stuck;
 mod suspicion;
 mod wakes;
 mod zones;
