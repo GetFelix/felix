@@ -388,8 +388,10 @@ impl CopyProgress {
         // all would add a fence to every one and change nothing. It may as
         // well be one restarted broker that leads many shards (#1966), which
         // renames heal. So the pass renames one at most. Every entry is kept,
-        // so that one is the first the planner can rename, not one it would
-        // skip for its backoff, its cap or a set that cannot serve.
+        // so that one is the first in shard order the planner can rename, not
+        // one it would skip for its backoff, its cap or a set that cannot
+        // serve. A shard renamed in vain waits out its doubled backoff, so
+        // the others get their turns.
         let overdue = stuck
             .values()
             .filter(|stuck| now.saturating_sub(stuck.since_millis) > bound)
