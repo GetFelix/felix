@@ -1573,6 +1573,16 @@ fn a_superseded_refusal_names_the_newer_ballot() {
     );
 }
 
+/// **A routing view above the sender's is read as a newer generation too.**
+/// A replica that took a candidate's fence answers from its view before its
+/// ballot is checked, and that refusal must not read as an unknown one.
+#[test]
+fn a_newer_routing_view_names_the_newer_generation() {
+    assert_eq!(superseded_by(&view_detail(6, 4), 4), Some(6));
+    assert_eq!(superseded_by(&view_detail(6, 4), 5), None, "another sender");
+    assert_eq!(superseded_by(&view_detail(4, 4), 4), None, "not newer");
+}
+
 /// A control plane that names broker-a at generation 1 for every shard, but
 /// answers for any shard other than 0 only once `open` has permits.
 struct GatedConfirmed {

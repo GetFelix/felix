@@ -756,3 +756,39 @@ async fn only_a_taken_candidate_fence_records_its_sender() {
         Some("broker-c".to_string())
     );
 }
+
+/// **A leader still fencing the generation it won refuses a pre-vote against
+/// itself** (#1914). It has no start record yet, but a yes then lets a
+/// follower it just fenced, whose third replica is gone, take the next
+/// generation before the leader serves. Once the fence ends, a route alone
+/// refuses nothing again.
+#[tokio::test]
+async fn a_leader_still_fencing_refuses_a_pre_vote() {
+    let (broker, _dir) = broker_with_storage().await;
+    stream_log(&broker)
+        .await
+        .accept_generation(6, Some(LOCAL))
+        .await
+        .expect("ballot");
+    let marks = Arc::new(crate::quorum::QuorumMarks::new());
+    let elections = Arc::new(crate::election::Elections::new(
+        LOCAL,
+        Arc::new(tokio::sync::Notify::new()),
+    ));
+    marks.set_elections(Arc::clone(&elections));
+    let router = router_led_by(LOCAL, &["broker-a", "broker-c"], 6);
+    let key = router.snapshot().iter().next().expect("key").0.clone();
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router)
+        .with_stickiness(Duration::ZERO)
+        .with_fleet(marks);
+    let fencing = elections.fencing(&key, 6);
+    assert_eq!(
+        pre_vote_answer(handler.pre_vote(pre_vote_at(7)).await),
+        Some(felix_wire::internal::PreVoteRefusal::LeaderReachable)
+    );
+    drop(fencing);
+    assert_eq!(
+        pre_vote_answer(handler.pre_vote(pre_vote_at(7)).await),
+        None
+    );
+}

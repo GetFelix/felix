@@ -622,7 +622,7 @@ impl ReplicaHandler {
         // The leader itself refuses: it hears its own leadership, and a yes
         // from it lets one follower whose detector misfired win a majority
         // against it (#1815, `NoStandAgainstHeardLeader`).
-        if self.heard_leader_within(&key) || self.leads(&key, &log) {
+        if self.heard_leader_within(&key) || self.leads(&key, &log) || self.fencing(&key) {
             return answer(Some(PreVoteRefusal::LeaderReachable));
         }
         let Ok(end) = log.tail_offset().await else {
@@ -656,6 +656,21 @@ impl ReplicaHandler {
                     .last()
                     .is_some_and(|epoch| epoch.generation == route.generation)
         })
+    }
+
+    /// Whether this broker won `key` by election and is still fencing it at
+    /// its route's generation. Not yet open, so [`Self::leads`] does not see
+    /// it, but a yes now lets a follower it just fenced take the next
+    /// generation before it serves (#1914). Bounded by the fence, unlike a
+    /// route alone.
+    fn fencing(&self, key: &felix_router::ShardKey) -> bool {
+        let Some(elections) = self.fleet.as_ref().and_then(|marks| marks.elections()) else {
+            return false;
+        };
+        self.router
+            .snapshot()
+            .get(key)
+            .is_some_and(|route| elections.is_fencing(key, route.generation))
     }
 
     fn heard_leader_within(&self, key: &felix_router::ShardKey) -> bool {

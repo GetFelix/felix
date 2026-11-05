@@ -73,6 +73,10 @@ pub struct FollowerCursor {
     /// mark only up to this, and only while the cursor still names that copy
     /// (see [`Self::vouched_at`]).
     pub(crate) vouched: Option<Vouched>,
+    /// The newer generation the follower's ballot holds, from the refusal
+    /// that halted it. Only set beside a fenced halt, and only while the
+    /// cursor names the copy that refused.
+    pub(crate) superseded_by: Option<u64>,
 }
 
 /// A follower's answer that came from the copy its cursor describes.
@@ -101,6 +105,7 @@ impl FollowerCursor {
             route_behind: false,
             learner: false,
             vouched: None,
+            superseded_by: None,
         }
     }
 
@@ -221,6 +226,34 @@ pub fn caught_up(tail: u64, followers: &[FollowerCursor]) -> Vec<String> {
         .filter(|follower| tail.saturating_sub(follower.confirmed) <= CATCH_UP_BOUND)
         .map(|follower| follower.node_id.clone())
         .collect()
+}
+
+/// The newest generation a follower refused this leader's with, when the
+/// followers left cannot make a majority with the leader.
+///
+/// Such a refusal never goes back, and it came after the fence, so no fence
+/// reports it. A follower counts as left unless it is halted, a learner, the
+/// staged `learner`, or stalled with no exchange `in_flight`.
+pub(crate) fn refused_without_majority(
+    followers: &[FollowerCursor],
+    learner: Option<&str>,
+    in_flight: impl Fn(&str) -> bool,
+) -> Option<u64> {
+    let set: Vec<&FollowerCursor> = followers
+        .iter()
+        .filter(|follower| learner != Some(follower.node_id.as_str()))
+        .collect();
+    let ballot = set
+        .iter()
+        .filter(|follower| follower.halted == Some(Halt::Fenced))
+        .filter_map(|follower| follower.superseded_by)
+        .max()?;
+    let left = set
+        .iter()
+        .filter(|follower| follower.halted.is_none() && !follower.learner)
+        .filter(|follower| !follower.stalled || in_flight(&follower.node_id))
+        .count();
+    (left + 1 < crate::quorum::majority_of(set.len())).then_some(ballot)
 }
 
 /// How far behind the slowest follower is, in records.

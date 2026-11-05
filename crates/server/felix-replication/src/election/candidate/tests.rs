@@ -790,3 +790,29 @@ async fn a_standing_promised_away_is_withdrawn() {
     step_down_promised_away(&ctx).await;
     assert!(ctx.elections.get(&key()).is_none());
 }
+
+/// **A follower that took another leader's fence above the route does not
+/// stand against it** while it does not suspect that leader (#1914). Its
+/// view may still name the dead leader; standing would take the fenced
+/// leader's last follower away with a ballot nothing ever opens. Once it
+/// suspects that leader too, it stands.
+#[tokio::test(start_paused = true)]
+async fn a_follower_of_a_newer_leader_it_does_not_suspect_does_not_stand() {
+    let (broker, _dir) = follower().await;
+    let log = shard_log(&broker, &key()).await.expect("log");
+    log.accept_generation(4, Some("broker-c"))
+        .await
+        .expect("ballot");
+    let ctx = ctx(&broker, voters(None));
+    let route = ctx.router.snapshot().get(&key()).expect("route").clone();
+    assert_eq!(stand(&ctx, &key(), &route).await, Round::Ineligible);
+    assert!(ctx.requester.asked.lock().expect("lock").is_empty());
+    assert_eq!(log.accepted_generation(), 4);
+
+    ctx.suspects.publish(BTreeSet::from([
+        "broker-a".to_string(),
+        "broker-c".to_string(),
+    ]));
+    let (_, elected) = stand_and_watch(&ctx).await;
+    assert_eq!(elected.generation, 5);
+}

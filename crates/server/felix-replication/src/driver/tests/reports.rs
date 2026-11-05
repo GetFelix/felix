@@ -1072,6 +1072,39 @@ async fn a_fence_promised_away_by_a_majority_reports_the_refusal() {
 /// its ballot and never opened does.
 struct SupersededFollowers;
 
+/// [`SupersededFollowers`], answering from a routing view at generation 7
+/// instead, as a replica that took a candidate's fence at 7 does.
+struct ViewAheadFollowers;
+
+impl PeerRequester for ViewAheadFollowers {
+    async fn request(
+        &self,
+        _node_id: &str,
+        _addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, PeerError> {
+        match message {
+            InternalMessage::Fence(fence) => Ok(InternalMessage::ReplicateError(
+                felix_wire::internal::ReplicateError {
+                    correlation_id: fence.correlation_id,
+                    code: felix_wire::internal::ErrorCode::FencedEpoch,
+                    expected_offset: 0,
+                    detail: crate::replica::view_detail(7, fence.shard.generation),
+                },
+            )),
+            other => panic!("unexpected {:?}", other.kind()),
+        }
+    }
+
+    async fn capabilities(
+        &self,
+        _node_id: &str,
+        _addr: SocketAddr,
+    ) -> std::result::Result<felix_wire::internal::PeerCapabilities, PeerError> {
+        Ok(crate::promotion::REQUIRED)
+    }
+}
+
 impl PeerRequester for SupersededFollowers {
     async fn request(
         &self,
@@ -1370,4 +1403,148 @@ async fn a_leader_that_promised_its_generation_away_reports_the_refusal() {
         .expect("no report of the generation promised away");
     assert_eq!(report.generation, 4);
     assert_eq!(report.refused, Some(refused(4)));
+}
+
+/// Broker-b refuses every batch with `detail`; broker-c takes them when
+/// `c_answers`, and is unreachable otherwise.
+struct RefusedAfterOpen {
+    detail: fn(u64) -> String,
+    c_answers: bool,
+    accepting: AcceptingFollower,
+}
+
+impl PeerRequester for RefusedAfterOpen {
+    async fn request(
+        &self,
+        node_id: &str,
+        addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, PeerError> {
+        match node_id {
+            "broker-b" => Ok(InternalMessage::ReplicateError(
+                felix_wire::internal::ReplicateError {
+                    correlation_id: 0,
+                    code: felix_wire::internal::ErrorCode::FencedEpoch,
+                    expected_offset: 0,
+                    detail: (self.detail)(4),
+                },
+            )),
+            _ if self.c_answers => self.accepting.request(node_id, addr, message).await,
+            _ => Err(PeerError::Unavailable {
+                node_id: node_id.to_string(),
+                detail: "down".to_string(),
+            }),
+        }
+    }
+}
+
+/// The refusal an open leader at generation 4 reports within two seconds, if
+/// any, when broker-b refuses it with `detail`.
+async fn refusal_after_open(
+    detail: fn(u64) -> String,
+    c_answers: bool,
+) -> Option<RefusedGeneration> {
+    let (broker, _dir) = leader_with(3).await;
+    let (control_plane, received) = recording_control_plane().await;
+    let shutdown = CancellationToken::new();
+    let driver = spawn(
+        Arc::new(RefusedAfterOpen {
+            detail,
+            c_answers,
+            accepting: AcceptingFollower::default(),
+        }),
+        broker,
+        router(LOCAL, &["broker-b", "broker-c"], 4),
+        Arc::new(Unfenced),
+        Arc::new(crate::promotion::NoGate),
+        published(),
+        Some(control_plane.reporter(shutdown.clone())),
+        Duration::from_millis(50),
+        Arc::default(),
+        RebuildPolicy::default(),
+        MoveThrottle::unlimited(),
+        shutdown.clone(),
+    );
+    let refused = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let refused = received
+                .lock()
+                .expect("lock")
+                .iter()
+                .find_map(|report| report.refused.clone());
+            if let Some(refused) = refused {
+                return refused;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .ok();
+    shutdown.cancel();
+    driver.stop().await;
+    refused
+}
+
+/// **An open leader that a follower refuses for a newer ballot, with no
+/// majority left without it, reports the generation refused** (#1914). The
+/// ballot came after the fence, so no fence reports it, and a live leader's
+/// followers never suspect it: without the report nothing renames the shard.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_ballot_taken_after_the_fence_reports_the_refusal() {
+    let refused = refusal_after_open(|g| crate::replica::superseded_detail(g + 1, g), false).await;
+    assert_eq!(refused, Some(RefusedGeneration::set_unknown(4)));
+}
+
+/// The same, when the follower answers from a routing view laid over by a
+/// candidate's fence rather than from its ballot.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_newer_routing_view_after_the_fence_reports_the_refusal() {
+    let refused = refusal_after_open(|g| crate::replica::view_detail(g + 1, g), false).await;
+    assert_eq!(refused, Some(RefusedGeneration::set_unknown(4)));
+}
+
+/// **Not while a majority is left**: broker-c still answers, so the leader
+/// acknowledges at its generation and a rename would only churn.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_newer_ballot_with_a_majority_left_reports_nothing() {
+    let refused = refusal_after_open(|g| crate::replica::superseded_detail(g + 1, g), true).await;
+    assert_eq!(refused, None);
+}
+
+/// **Nor on a refusal that names no newer generation.** Only a ballot or
+/// view the follower holds is evidence the generation cannot come back.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refusal_naming_no_newer_generation_reports_nothing() {
+    let refused = refusal_after_open(|_| "this broker is busy".to_string(), false).await;
+    assert_eq!(refused, None);
+}
+
+/// **A fence met by a replica whose routing view a candidate's fence moved
+/// past it reports the refusal too** (#1914). The replica answers from its
+/// view before its ballot, and that answer used to leave the fence pending.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fence_met_by_a_newer_routing_view_reports_the_refusal() {
+    let (broker, _dir) = leader_with(3).await;
+    let (control_plane, received) = recording_control_plane().await;
+    let shutdown = CancellationToken::new();
+    let driver = spawn(
+        Arc::new(ViewAheadFollowers),
+        broker,
+        router(LOCAL, &["broker-b", "broker-c"], 4),
+        Arc::new(Unfenced),
+        Arc::new(FencingAtFour),
+        published(),
+        Some(control_plane.reporter(shutdown.clone())),
+        Duration::from_millis(50),
+        Arc::default(),
+        RebuildPolicy::default(),
+        MoveThrottle::unlimited(),
+        shutdown.clone(),
+    );
+
+    let report = first_report(&received, Duration::from_secs(5)).await;
+    shutdown.cancel();
+    driver.stop().await;
+    let report = report.expect("no report of the refused fence");
+    assert_eq!(report.refused, Some(RefusedGeneration::set_unknown(4)));
 }

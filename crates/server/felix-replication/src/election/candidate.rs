@@ -244,6 +244,16 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
             "the shard does not acknowledge on its followers, or its log is not open here",
         );
     };
+    // This copy took another leader's fence above the route, and nothing
+    // says that leader is gone: standing over it would only take its
+    // follower away, leaving it a generation it can never serve at.
+    if log.accepted_generation() > route.generation
+        && log
+            .accepted_leader()
+            .is_some_and(|leader| *leader != *local && !ctx.suspects.current().contains(&*leader))
+    {
+        return ctx.ineligible(key, "this copy follows a newer leader it does not suspect");
+    }
     let Some(kept) = log.replica_set() else {
         return ctx.ineligible(key, "this copy keeps no replica set");
     };

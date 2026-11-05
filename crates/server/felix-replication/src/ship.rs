@@ -461,6 +461,12 @@ async fn ship_batch<R: PeerRequester>(
         }
         Progress::Halted(halt) => {
             cursor.halted = Some(halt);
+            cursor.superseded_by = match &answer {
+                InternalMessage::ReplicateError(err) if err.code == ErrorCode::FencedEpoch => {
+                    crate::replica::superseded_by(&err.detail, shard.generation)
+                }
+                _ => None,
+            };
             tracing::error!(
                 node_id = %cursor.node_id,
                 stream = %shard.stream,
