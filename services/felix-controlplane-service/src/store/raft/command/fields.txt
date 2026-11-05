@@ -409,6 +409,7 @@
 3 import_state.state.replica_reports[].offsets.*
 25 import_state.state.replica_reports[].refused
 25 import_state.state.replica_reports[].refused.generation
+28 import_state.state.replica_reports[].refused.ballot
 25 import_state.state.replica_reports[].refused.promised_to
 3 import_state.state.replica_reports[].reported_at_millis
 10 import_state.state.replica_reports[].stream_incarnation
@@ -648,6 +649,7 @@
 0 put_shard_assignment_fenced.expected_generation
 0 put_shard_assignment_fenced.fence
 17 put_shard_assignment_fenced.seq_generation
+28 put_shard_assignment_fenced.at_least
 0 put_shard_assignment_if
 0 put_shard_assignment_if.assignment
 16 put_shard_assignment_if.assignment.fence_storage_ids
@@ -714,6 +716,7 @@
 0 record_replica_report.report.offsets.*
 25 record_replica_report.report.refused
 25 record_replica_report.report.refused.generation
+28 record_replica_report.report.refused.ballot
 25 record_replica_report.report.refused.promised_to
 0 record_replica_report.report.reported_at_millis
 10 record_replica_report.report.stream_incarnation
@@ -1025,6 +1028,7 @@
 3 snapshot.state.replica_reports[].offsets.*
 25 snapshot.state.replica_reports[].refused
 25 snapshot.state.replica_reports[].refused.generation
+28 snapshot.state.replica_reports[].refused.ballot
 25 snapshot.state.replica_reports[].refused.promised_to
 3 snapshot.state.replica_reports[].reported_at_millis
 10 snapshot.state.replica_reports[].stream_incarnation

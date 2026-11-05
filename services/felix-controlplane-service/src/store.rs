@@ -330,6 +330,25 @@ pub trait ControlPlaneStore: Send + Sync {
         assignment: ShardAssignment,
         expected_generation: Option<u64>,
         fence: u64,
+    ) -> StoreResult<AssignmentWrite> {
+        self.put_shard_assignment_at_least(assignment, expected_generation, fence, 0)
+            .await
+    }
+    /// [`ControlPlaneStore::put_shard_assignment_if`], written at `at_least`
+    /// when that is above the next generation. 0 is the next generation.
+    ///
+    /// Placement names a leader past a newer ballot its own copy holds this
+    /// way (`MoveStep::SetUnknown`). [`StoreError::Conflict`] when `at_least`
+    /// is more than the election window past the
+    /// shard's generation, as for an adoption. Under Raft it needs metadata
+    /// level 28 on every member, and below it the write takes the next
+    /// generation instead.
+    async fn put_shard_assignment_at_least(
+        &self,
+        assignment: ShardAssignment,
+        expected_generation: Option<u64>,
+        fence: u64,
+        at_least: u64,
     ) -> StoreResult<AssignmentWrite>;
     /// Adopt a leader that elected itself, if the shard is still at
     /// `expected_generation`: [`ShardAssignment::adopting_elected_set`],

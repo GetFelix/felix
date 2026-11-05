@@ -169,6 +169,7 @@ pub(crate) async fn run_shard_contract(store: Arc<dyn ControlPlaneStore>) {
     replica_reports::start_holders_are_kept(store).await;
     replica_reports::a_refusal_is_kept(store).await;
     a_conditional_write_lands_only_at_the_expected_generation(store).await;
+    a_write_at_least_a_generation_lands_there_within_the_window(store).await;
     a_fence_planned_before_a_cut_over_is_refused_after_it(store).await;
     a_consistency_change_fences_placement(store).await;
     why_a_move_started_is_persisted(store).await;
@@ -931,6 +932,53 @@ async fn pausing_moves_is_persisted(store: &dyn ControlPlaneStore) {
 /// A conditional write lands only over the generation it names, or where
 /// there is no assignment when it names none; anything else writes nothing
 /// and publishes nothing.
+/// A placement write with a floor lands on it when it is above the next
+/// generation, and on the next one otherwise; a floor past the election
+/// window is refused, writing nothing (#1951).
+async fn a_write_at_least_a_generation_lands_there_within_the_window(
+    store: &dyn ControlPlaneStore,
+) {
+    clear(store).await;
+    let write = |expected: Option<u64>, at_least: u64| async move {
+        store
+            .put_shard_assignment_at_least(
+                assignment(0, "broker-x"),
+                expected,
+                token(store).await,
+                at_least,
+            )
+            .await
+    };
+    let Ok(AssignmentWrite::Written(first)) = write(None, 0).await else {
+        panic!("a first write lands");
+    };
+    let at = first.generation;
+
+    let Ok(AssignmentWrite::Written(above)) = write(Some(at), at + 3).await else {
+        panic!("a floor in the window lands");
+    };
+    assert_eq!(above.generation, at + 3);
+    let Ok(AssignmentWrite::Written(next)) = write(Some(at + 3), at + 2).await else {
+        panic!("a floor below the next generation lands on the next");
+    };
+    assert_eq!(next.generation, at + 4);
+    let past = write(
+        Some(at + 4),
+        at + 5 + crate::model::ELECTION_GENERATION_WINDOW,
+    )
+    .await;
+    assert!(matches!(past, Err(StoreError::Conflict(_))), "{past:?}");
+    assert_eq!(
+        store
+            .get_shard_assignment(&key(0))
+            .await
+            .expect("read")
+            .generation,
+        at + 4,
+        "a refused floor wrote nothing"
+    );
+}
+
 async fn a_conditional_write_lands_only_at_the_expected_generation(store: &dyn ControlPlaneStore) {
     clear(store).await;
 

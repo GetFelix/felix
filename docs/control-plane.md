@@ -1617,6 +1617,14 @@ from metadata level 25 and dropped below it; under Postgres it is migration
 that keeps what a member that predates the columns leaves behind from
 reading as a refusal.
 
+A refusal can carry the ballot the leader's own copy holds for another node
+above its generation. Placement then names the leader one past that ballot
+instead of one up, as long as it is within the election window, 16
+generations. Under Raft the ballot needs metadata level 28 and is dropped
+below it, so the leader is named one up on every member. Under Postgres it
+is migration 0043 (`refused_ballot`), with `refused_ballot_at` as its
+marker.
+
 **Postgres: finish the control-plane upgrade before finalizing
 `replica_election`.** The finalize check runs on the instance that receives
 it, and the store records no version for the other instances (only who holds

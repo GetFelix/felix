@@ -196,3 +196,47 @@ async fn a_set_unknown_refusal_names_the_leader_again_one_up() {
     assert_eq!(renamed.state, placed.state);
     assert_eq!(pass(&store).await, renamed, "answered once");
 }
+
+/// **A leader whose own copy holds another node's newer ballot is named one
+/// past that ballot** (#1951). Its fence at the ballot's own generation would
+/// find it promised away and wait there (#1872), so one up from its
+/// generation is not enough once the ballot is two or more above it.
+#[tokio::test]
+async fn a_refusal_above_another_ballot_names_the_leader_past_it() {
+    let (store, placed) = joint_fence_cluster(true).await;
+    let ballot = placed.generation + 2;
+
+    reports_refusal(
+        &store,
+        &placed,
+        RefusedGeneration::above(placed.generation, ballot),
+    )
+    .await;
+    let renamed = pass(&store).await;
+
+    assert_eq!(renamed.generation, ballot + 1, "{renamed:?}");
+    assert_eq!(renamed.leader, placed.leader);
+    assert_eq!(renamed.replicas, placed.replicas);
+    assert_eq!(pass(&store).await, renamed, "answered once");
+}
+
+/// A ballot past the election window is a corrupt report, as it would be
+/// for an adoption: the leader is named one up, as for no ballot.
+#[tokio::test]
+async fn a_ballot_past_the_window_names_the_leader_one_up() {
+    let (store, placed) = joint_fence_cluster(true).await;
+
+    reports_refusal(
+        &store,
+        &placed,
+        RefusedGeneration::above(
+            placed.generation,
+            placed.generation + crate::model::ELECTION_GENERATION_WINDOW,
+        ),
+    )
+    .await;
+    let renamed = pass(&store).await;
+
+    assert_eq!(renamed.generation, placed.generation + 1, "{renamed:?}");
+    assert_eq!(renamed.leader, placed.leader);
+}

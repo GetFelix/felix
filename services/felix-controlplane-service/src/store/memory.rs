@@ -629,14 +629,22 @@ impl ControlPlaneStore for InMemoryStore {
         shards::put_shard_assignment(self, assignment, true).await
     }
 
-    async fn put_shard_assignment_if(
+    async fn put_shard_assignment_at_least(
         &self,
         assignment: ShardAssignment,
         expected_generation: Option<u64>,
         fence: u64,
+        at_least: u64,
     ) -> StoreResult<crate::store::AssignmentWrite> {
-        shards::put_shard_assignment_if(self, assignment, expected_generation, Some(fence), true)
-            .await
+        shards::put_shard_assignment_if(
+            self,
+            assignment,
+            expected_generation,
+            Some(fence),
+            true,
+            at_least,
+        )
+        .await
     }
 
     async fn adopt_elected_leader(

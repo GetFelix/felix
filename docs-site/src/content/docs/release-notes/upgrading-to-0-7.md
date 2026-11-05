@@ -174,10 +174,15 @@ Later control-plane changes are on `main`:
 - An elected leader is adopted on the replica set it was elected on: level
   26, with no Postgres migration. Finalizing `replica_election` needs that
   level.
+- A leader that answered another candidate's fence, when that candidate
+  never opened, reports the candidate's ballot with its refusal, and
+  placement names it again one past that ballot (#1951): migration `0043`,
+  level 28. Below it the leader is named one generation up, as before, and
+  can stay stuck until something else moves the shard.
 
-In short, Postgres runs migrations `0037` to `0042` on start (`0039` to
-`0042` are on `main` only), and under Raft these features wait for metadata
-levels 20 to 26. Upgrade every control-plane member before the brokers.
+In short, Postgres runs migrations `0037` to `0043` on start (`0039` to
+`0043` are on `main` only), and under Raft these features wait for metadata
+levels 20 to 28. Upgrade every control-plane member before the brokers.
 
 ## Turning on failover without the control plane
 

@@ -4632,8 +4632,8 @@ Five rules keep an election from getting stuck:
   stopped counting toward a majority there, and every write waited out its
   quorum timeout while the followers confirmed it (issue #1933).
 - **A leader past its generation by a ballot in its own copy reports it.**
-  A leader whose own copy holds a newer ballot of its own cannot acknowledge a write
-  at the generation it serves. A promotion leaves that state for a moment,
+  A leader whose own copy holds a ballot above its generation that names
+  the leader itself cannot acknowledge a write at the generation it serves. A promotion leaves that state for a moment,
   because it takes the new ballot before the routes name the new
   generation. A withdrawn standing leaves it for good. So once it has lasted
   3 s, with no standing of this broker under way at that ballot, the leader
@@ -4643,9 +4643,15 @@ Five rules keep an election from getting stuck:
   means the leader answered that node's fence and stepped down (rule 5 of
   the protocol above). If that node opens, its route moves the shard on.
   If it withdraws, nobody stands again, because nobody suspects the live
-  leader. So the leader reports that ballot the same way, after 10 s rather
-  than 3 s, which gives the candidate time to open and be adopted
-  (issue #1951).
+  leader. So the leader reports its generation refused after 10 s rather
+  than 3 s, which gives the candidate time to open, and the report carries
+  that ballot. The control plane names the same leader one past the ballot,
+  not one up: at the ballot's own generation the leader's fence finds that
+  generation promised away and waits (issue #1872). If the candidate did
+  open but the control plane had not adopted it yet, for example because
+  the control plane was down for longer than those 10 s, the rename's fence
+  deposes it like any newer generation would. That costs a leader change
+  but loses no acknowledged write (issue #1951).
   That rule is for an open leader. A leader still fencing can never open
   if its own copy already holds a newer ballot, whoever it names: the open
   takes the generation's ballot on its own copy, which refuses it. So its

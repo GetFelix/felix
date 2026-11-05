@@ -1005,6 +1005,19 @@ pub(crate) fn next_generation(current: u64) -> Result<u64, String> {
         .ok_or_else(|| format!("generation {current} is the last the control plane can issue"))
 }
 
+/// The generation a write over `current` takes: the next one, or
+/// `at_least` when that is higher (0 for none). Refused past the election
+/// window, as an adoption is, so no write pushes later ones toward the top
+/// of the range.
+pub(crate) fn generation_at_least(current: u64, at_least: u64) -> Result<u64, String> {
+    let next = next_generation(current)?;
+    if at_least <= next {
+        return Ok(next);
+    }
+    check_elected_generation(current, at_least)?;
+    Ok(at_least)
+}
+
 /// Whether adopting an election at `elected` over `current` is allowed:
 /// within [`ELECTION_GENERATION_WINDOW`] and representable.
 pub(crate) fn check_elected_generation(current: u64, elected: u64) -> Result<(), String> {

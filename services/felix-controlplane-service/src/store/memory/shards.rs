@@ -14,7 +14,7 @@ pub(super) async fn put_shard_assignment(
     assignment: ShardAssignment,
     seq_generation: bool,
 ) -> StoreResult<ShardAssignment> {
-    match write_shard_assignment(store, assignment, None, None, seq_generation, None).await? {
+    match write_shard_assignment(store, assignment, None, None, seq_generation, None, 0).await? {
         AssignmentWrite::Written(stored) => Ok(stored),
         AssignmentWrite::Stale { .. } | AssignmentWrite::Fenced { .. } => {
             unreachable!("an unconditional write is never stale")
@@ -23,13 +23,15 @@ pub(super) async fn put_shard_assignment(
 }
 
 /// `fence`: `None` only for a Raft log entry written before placement
-/// writes were fenced, which must apply as it did then.
+/// writes were fenced, which must apply as it did then. `at_least`: see
+/// [`crate::store::ControlPlaneStore::put_shard_assignment_at_least`].
 pub(super) async fn put_shard_assignment_if(
     store: &InMemoryStore,
     assignment: ShardAssignment,
     expected_generation: Option<u64>,
     fence: Option<u64>,
     seq_generation: bool,
+    at_least: u64,
 ) -> StoreResult<AssignmentWrite> {
     write_shard_assignment(
         store,
@@ -38,6 +40,7 @@ pub(super) async fn put_shard_assignment_if(
         fence,
         seq_generation,
         None,
+        at_least,
     )
     .await
 }
@@ -83,6 +86,7 @@ pub(super) async fn adopt_elected_leader(
         None,
         false,
         Some(generation),
+        0,
     )
     .await
 }
@@ -90,7 +94,8 @@ pub(super) async fn adopt_elected_leader(
 /// `expected`: `None` writes unconditionally, `Some(generation)` only over
 /// that generation (`Some(None)`: only where there is no assignment).
 /// `elected`: an adoption's generation, written in place of the next one;
-/// only over an assignment below it.
+/// only over an assignment below it. `at_least`: written there when it is
+/// above the next one.
 async fn write_shard_assignment(
     store: &InMemoryStore,
     assignment: ShardAssignment,
@@ -98,6 +103,7 @@ async fn write_shard_assignment(
     fence: Option<u64>,
     seq_generation: bool,
     elected: Option<u64>,
+    at_least: u64,
 ) -> StoreResult<AssignmentWrite> {
     assignment.validate().map_err(invalid_shard)?;
 
@@ -180,7 +186,7 @@ async fn write_shard_assignment(
                     )));
                 }
                 Some(elected) => elected,
-                None => crate::model::next_generation(existing.generation)
+                None => crate::model::generation_at_least(existing.generation, at_least)
                     .map_err(StoreError::Conflict)?,
             };
             (ShardAssignmentChangeOp::Updated, generation)
@@ -445,7 +451,15 @@ impl InMemoryStore {
         expected_generation: Option<u64>,
         seq_generation: bool,
     ) -> StoreResult<AssignmentWrite> {
-        put_shard_assignment_if(self, assignment, expected_generation, None, seq_generation).await
+        put_shard_assignment_if(
+            self,
+            assignment,
+            expected_generation,
+            None,
+            seq_generation,
+            0,
+        )
+        .await
     }
 
     /// [`ControlPlaneStore::put_shard_assignment`] from a Raft entry, which
@@ -466,6 +480,7 @@ impl InMemoryStore {
         expected_generation: Option<u64>,
         fence: u64,
         seq_generation: bool,
+        at_least: u64,
     ) -> StoreResult<AssignmentWrite> {
         put_shard_assignment_if(
             self,
@@ -473,6 +488,7 @@ impl InMemoryStore {
             expected_generation,
             Some(fence),
             seq_generation,
+            at_least,
         )
         .await
     }

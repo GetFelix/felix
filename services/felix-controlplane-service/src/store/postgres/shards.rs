@@ -84,13 +84,15 @@ struct DbReplicaReport {
     refused_generation: Option<i64>,
     refused_to: Option<String>,
     refused_at: Option<i64>,
+    refused_ballot: Option<i64>,
+    refused_ballot_at: Option<i64>,
 }
 
 pub(super) async fn put_shard_assignment(
     store: &PostgresStore,
     assignment: ShardAssignment,
 ) -> StoreResult<ShardAssignment> {
-    match write_shard_assignment(store, assignment, None, None, None).await? {
+    match write_shard_assignment(store, assignment, None, None, None, 0).await? {
         AssignmentWrite::Written(stored) => Ok(stored),
         AssignmentWrite::Stale { .. } | AssignmentWrite::Fenced { .. } => {
             unreachable!("an unconditional write is never stale")
@@ -103,6 +105,7 @@ pub(super) async fn put_shard_assignment_if(
     assignment: ShardAssignment,
     expected_generation: Option<u64>,
     fence: u64,
+    at_least: u64,
 ) -> StoreResult<AssignmentWrite> {
     write_shard_assignment(
         store,
@@ -110,6 +113,7 @@ pub(super) async fn put_shard_assignment_if(
         Some(expected_generation),
         Some(fence),
         None,
+        at_least,
     )
     .await
 }
@@ -155,6 +159,7 @@ pub(super) async fn adopt_elected_leader(
         Some(Some(expected_generation)),
         None,
         Some(generation),
+        0,
     )
     .await
 }
@@ -163,13 +168,15 @@ pub(super) async fn adopt_elected_leader(
 /// that generation (`Some(None)`: only where there is no assignment).
 /// `fence`: the placement token the write must find. `elected`: an
 /// adoption's generation, written in place of the next one; only over an
-/// assignment below it.
+/// assignment below it. `at_least`: written there when it is above the next
+/// one.
 async fn write_shard_assignment(
     store: &PostgresStore,
     assignment: ShardAssignment,
     expected: Option<Option<u64>>,
     fence: Option<u64>,
     elected: Option<u64>,
+    at_least: u64,
 ) -> StoreResult<AssignmentWrite> {
     assignment.validate().map_err(invalid_shard)?;
     let mut tx = store.pool.begin().await?;
@@ -285,7 +292,7 @@ async fn write_shard_assignment(
                     )));
                 }
                 Some(elected) => elected,
-                None => crate::model::next_generation(existing.generation)
+                None => crate::model::generation_at_least(existing.generation, at_least)
                     .map_err(StoreError::Conflict)?,
             };
             (ShardAssignmentChangeOp::Updated, generation)
@@ -712,10 +719,11 @@ pub(super) async fn record_replica_report(
                     leader, node_incarnations, stamped_at, given_up, given_up_at,
                     inherited_storage, inherited_storage_at,
                     joint_start_acked, joint_start_acked_at, holds_start, holds_start_at,
-                    refused_generation, refused_to, refused_at)
+                    refused_generation, refused_to, refused_at,
+                    refused_ballot, refused_ballot_at)
                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $9,
                        $16, $9, $17, $18, $9, $19, $9, $20, $9, $21, $9, $22, $9,
-                       $23, $24, $9)
+                       $23, $24, $9, $25, $9)
                ON CONFLICT (tenant_id, namespace, kind, stream, shard) DO UPDATE
                SET generation = EXCLUDED.generation,
                    caught_up = EXCLUDED.caught_up,
@@ -743,7 +751,9 @@ pub(super) async fn record_replica_report(
                    holds_start_at = EXCLUDED.holds_start_at,
                    refused_generation = EXCLUDED.refused_generation,
                    refused_to = EXCLUDED.refused_to,
-                   refused_at = EXCLUDED.refused_at
+                   refused_at = EXCLUDED.refused_at,
+                   refused_ballot = EXCLUDED.refused_ballot,
+                   refused_ballot_at = EXCLUDED.refused_ballot_at
                WHERE EXCLUDED.generation > replica_reports.generation
                   OR (EXCLUDED.generation = replica_reports.generation
                       AND (EXCLUDED.leader_offset IS NULL
@@ -788,6 +798,7 @@ pub(super) async fn record_replica_report(
             .as_ref()
             .map(|refused| refused.promised_to.as_str()),
     )
+    .bind(report.refused.as_ref().map(|refused| refused.ballot as i64))
     .execute(&mut *tx)
     .await;
     match result {
@@ -812,7 +823,8 @@ pub(super) async fn list_replica_reports(store: &PostgresStore) -> StoreResult<V
                       leader, node_incarnations, stamped_at, given_up, given_up_at,
                       inherited_storage, inherited_storage_at,
                       joint_start_acked, joint_start_acked_at, holds_start, holds_start_at,
-                      refused_generation, refused_to, refused_at
+                      refused_generation, refused_to, refused_at,
+                      refused_ballot, refused_ballot_at
                FROM replica_reports
                ORDER BY tenant_id, namespace, kind, stream, shard"#,
     )
@@ -965,7 +977,13 @@ fn replica_report_from_db(row: DbReplicaReport) -> StoreResult<ReplicaReport> {
                 Some(felix_common::membership::RefusedGeneration {
                     generation: generation as u64,
                     promised_to,
-                    ballot: 0,
+                    // And for its ballot (0043).
+                    ballot: match row.refused_ballot {
+                        Some(ballot) if row.refused_ballot_at == Some(row.reported_at_millis) => {
+                            ballot as u64
+                        }
+                        _ => 0,
+                    },
                 })
             }
             _ => None,
