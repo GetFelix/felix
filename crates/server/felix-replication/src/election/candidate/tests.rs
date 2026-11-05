@@ -345,7 +345,8 @@ async fn a_set_the_control_plane_does_not_record_is_not_stood_on() {
 /// **No standing while a set change is pending**, on the kept set or on the
 /// control plane's: a candidate fences one set, so it would miss a majority
 /// of the other, and with it the counter updates and records acknowledged
-/// there (#1830).
+/// there (#1830). The model's `Elect` has the kept-set half as its `oldSet`
+/// guard (docs/formal/FelixShard.tla).
 #[tokio::test(start_paused = true)]
 async fn a_pending_set_change_is_not_stood_on() {
     let (broker, _dir) = follower().await;

@@ -2342,6 +2342,13 @@ Elect(f) ==
     \* `Adopt` bounds them too, or neither ends.
     /\ Adopt > 0 => promised[f] < Adopt
     /\ SetCheck => f \in mine[f] /\ setGen[f] > 0
+    \* Not while a change to its kept set is pending: a set it is leaving may
+    \* differ from it in learner flags only (`stand` in crates/server/
+    \* felix-replication/src/election/candidate.rs refuses "the kept replica
+    \* set has a change pending" and "keeps earlier sets"). Across a change
+    \* the control plane names the leader. The code's further check, that the
+    \* routes record the kept set, is left out: that only adds behaviours.
+    /\ SetCheck => oldSet[f] \subseteq {mine[f]}
     /\ StandsAboveKeptSet => setGen[f] <= promised[f] + 1
     /\ ~WipeWaits(f) /\ WipeFloor(f, f, promised[f] + 1) /\ ~NonVoter(f)
     \* Pre-vote: a majority of its set, itself included, no longer hears a leader.
@@ -2365,7 +2372,7 @@ Elect(f) ==
     \* Counter-fence answers from an earlier generation do not count at this one.
     /\ canswered' = [canswered EXCEPT ![f] = {}]
     /\ cconfirmed' = [cconfirmed EXCEPT ![f] = [m \in Brokers |-> 0]]
-    \* A replica standing while a set change is pending fences the old set too.
+    \* A replica standing beside a set with the same copies fences that set too.
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, hbOut, hbAt,
                     log, hwm, halted, acked, writes, staleCommit, opened, ackGen,
                     setGen, oldSet, installed, cpNext, cpNextGen, cutOver >>

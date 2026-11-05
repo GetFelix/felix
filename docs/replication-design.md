@@ -4708,7 +4708,8 @@ records the kept set with nothing pending. The cut-over that wrote it
 may not have finished, so the candidate does not rely on it: its own fence
 carries both sets and opens only on a majority of each, the old set counted
 with and without its learner, as any joint fence does. That is the model's
-`Elect` with `oldSet` kept: `FenceMembers` takes the old set in and
+`Elect`, which stands only when `oldSet` holds nothing but the kept set's
+brokers: `FenceMembers` takes the old set in and
 `OpenForWrites` needs its majority. Once open, the leader counts
 acknowledgements on the kept set alone, because the control plane records
 that set with nothing pending (`FinishChange`). Without `joint_fence`
