@@ -295,7 +295,8 @@ pub(super) fn place_empty_shard(
         config.reserve_limit_bytes(),
         config.index_spacing_bytes,
     )?;
-    // Flushed before anything can append to it: a base offset that did not
+    // The header is flushed before anything can append to it, and its name by
+    // `DiskLog::open_shared`'s directory sync: a base offset that did not
     // survive a crash would leave the shard reading back as one starting at
     // zero, which is a hole rather than a shorter log.
     writer.sync()?;

@@ -292,8 +292,8 @@ async fn a_failed_writer_sync_stops_later_flushes() {
     assert_eq!(log.durable_offset(), 0);
 }
 
-/// How often opening a log at `path` flushes `path` itself.
-fn dir_syncs_opening(path: &std::path::Path, base: Option<Offset>) -> usize {
+/// The names in `path` each time opening a log there flushed `path` itself.
+fn dir_syncs_opening(path: &std::path::Path, base: Option<Offset>) -> Vec<Vec<String>> {
     crate::io::DIR_SYNCS.with(|syncs| syncs.borrow_mut().clear());
     let log = match base {
         Some(base) => DiskLog::open_at(path, "t/ns/s/0", config(FsyncMode::OnCommit), base),
@@ -301,24 +301,42 @@ fn dir_syncs_opening(path: &std::path::Path, base: Option<Offset>) -> usize {
     }
     .expect("open");
     drop(log);
-    crate::io::DIR_SYNCS.with(|syncs| syncs.borrow().iter().filter(|dir| *dir == path).count())
+    crate::io::DIR_SYNCS.with(|syncs| {
+        syncs
+            .borrow()
+            .iter()
+            .filter(|(dir, _)| dir == path)
+            .map(|(_, names)| names.clone())
+            .collect()
+    })
 }
 
-/// **Opening a log flushes its directory once.** The first segment, its index
-/// and the durable mark all get their entries from that one flush, which comes
-/// after the last of them is created and before the open returns. A bulk
-/// create opens hundreds of logs, and every extra flush there waits on the
-/// filesystem's journal.
+/// **Opening a log flushes its directory once, after its files exist.** The
+/// first segment, its index and the durable mark all get their entries from
+/// that one flush. A bulk create opens hundreds of logs, and every extra flush
+/// there waits on the filesystem's journal.
 #[tokio::test]
 async fn opening_a_log_flushes_its_directory_once() {
     let dir = tempdir().expect("dir");
+    let covered = [
+        crate::segment::segment_file_name(0),
+        crate::segment::index_file_name(0),
+        crate::disk_log::durable_mark::mark_file_name().to_string(),
+    ];
     let fresh = dir.path().join("fresh");
-    assert_eq!(dir_syncs_opening(&fresh, None), 1, "a new log");
-    assert_eq!(dir_syncs_opening(&fresh, None), 1, "an existing log");
     let placed = dir.path().join("placed");
-    assert_eq!(
-        dir_syncs_opening(&placed, Some(40)),
-        1,
-        "a log placed at a base"
-    );
+    for (path, base, label) in [
+        (&fresh, None, "a new log"),
+        (&fresh, None, "an existing log"),
+        (&placed, Some(40), "a log placed at a base"),
+    ] {
+        let syncs = dir_syncs_opening(path, base);
+        assert_eq!(syncs.len(), 1, "{label}: {syncs:?}");
+        for name in &covered {
+            assert!(
+                syncs[0].contains(name),
+                "{label}: {name} missing from {syncs:?}"
+            );
+        }
+    }
 }

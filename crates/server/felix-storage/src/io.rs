@@ -401,15 +401,25 @@ fn before_sync(file: &File, kind: SyncKind) -> io::Result<()> {
 
 #[cfg(test)]
 thread_local! {
-    /// Every directory this thread flushed, for tests that count them.
-    pub(crate) static DIR_SYNCS: std::cell::RefCell<Vec<std::path::PathBuf>> =
+    /// Every directory this thread flushed, with the names in it at the
+    /// time, for tests that check what a flush covered.
+    pub(crate) static DIR_SYNCS: std::cell::RefCell<Vec<(std::path::PathBuf, Vec<String>)>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// [`before_sync`] for a directory flush.
 fn before_sync_dir(path: &std::path::Path) -> io::Result<()> {
     #[cfg(test)]
-    DIR_SYNCS.with(|syncs| syncs.borrow_mut().push(path.to_path_buf()));
+    DIR_SYNCS.with(|syncs| {
+        let mut names: Vec<String> = std::fs::read_dir(path)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        syncs.borrow_mut().push((path.to_path_buf(), names));
+    });
     injected_fault()?;
     #[cfg(all(
         target_os = "linux",

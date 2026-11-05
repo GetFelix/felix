@@ -629,8 +629,9 @@ existing root syncs its parent again, so a root that an earlier run created but
 never synced becomes durable then. Opening a log syncs the shard directory
 itself once, after its first segment, index and durable mark exist and before
 the open returns, so all three entries are durable before anything can append.
-A crash before that sync leaves a log that recovers as fresh, and nothing was
-acknowledged in it.
+If a new log's open crashes before that sync, nothing was acknowledged in it:
+the next open finds it fresh, or finds it already placed when it is placed at
+the same base again.
 
 > `a_fresh_root_keeps_its_acknowledged_record_through_a_power_loss`,
 > `a_created_directory_survives_a_power_loss` and
