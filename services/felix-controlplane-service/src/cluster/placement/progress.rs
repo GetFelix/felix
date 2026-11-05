@@ -10,7 +10,7 @@
 //! that is moving.
 use std::collections::{HashMap, HashSet};
 
-use super::moves::STUCK_RENAME_WINDOW_MILLIS;
+use super::moves::{MAX_STUCK_PER_FLEET, STUCK_RENAME_WINDOW_MILLIS};
 use super::{CaughtUp, StuckLeader, StuckReason};
 use crate::model::{MoveReason, ReplicaReport, ShardAssignment, ShardKey, ShardState};
 
@@ -48,6 +48,8 @@ struct Watch {
     leader: String,
     incarnation: u64,
     since_millis: u64,
+    /// The pass that last looked at it.
+    observed_at: u64,
     /// The last report at the generation, by its store time.
     reported_at: Option<u64>,
     /// The position a majority of the set held in that report.
@@ -318,11 +320,14 @@ impl CopyProgress {
                         .get(leader)
                         .is_none_or(|at| *at == incarnation)
             });
+            // A watch this instance stopped looking at (it lost the lease,
+            // or only runs woken passes) says nothing about the time between.
             let mut watch = match self.watched.remove(&assignment.key) {
                 Some(watch)
                     if watch.generation == assignment.generation
                         && watch.leader == leader
-                        && watch.incarnation == incarnation =>
+                        && watch.incarnation == incarnation
+                        && now.saturating_sub(watch.observed_at) <= bound / 2 =>
                 {
                     watch
                 }
@@ -331,6 +336,7 @@ impl CopyProgress {
                     leader: leader.to_string(),
                     incarnation,
                     since_millis: now,
+                    observed_at: now,
                     reported_at: None,
                     held: None,
                 },
@@ -359,6 +365,7 @@ impl CopyProgress {
             if reason != StuckReason::NotCommitting && !broker_reports {
                 watch.since_millis = now;
             }
+            watch.observed_at = now;
             if watch.since_millis < now {
                 stuck.insert(
                     (assignment.key.clone(), assignment.generation),
@@ -375,6 +382,21 @@ impl CopyProgress {
             watched.insert(assignment.key.clone(), watch);
         }
         self.watched = watched;
+        // Many leaders stuck at once is a fleet-wide fault, such as a
+        // network that carries pings but not shipping. Renaming them would
+        // add a fence to every one and change nothing.
+        let overdue = stuck
+            .values()
+            .filter(|stuck| now.saturating_sub(stuck.since_millis) > bound)
+            .count();
+        if overdue > MAX_STUCK_PER_FLEET.max(self.watched.len() / 8) {
+            tracing::warn!(
+                overdue,
+                watched = self.watched.len(),
+                "too many leaders show no progress at once to be stuck shards; renaming none",
+            );
+            return HashMap::new();
+        }
         stuck
     }
 
@@ -396,7 +418,7 @@ impl CopyProgress {
                     reason = reason.label(),
                     renamed_this_hour = at.len(),
                     "this shard's leader shows no progress at its generation on a live broker; \
-                     naming it again one generation up",
+                     planning to name it again one generation up",
                 );
             }
         }

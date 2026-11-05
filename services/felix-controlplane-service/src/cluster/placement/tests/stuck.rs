@@ -19,6 +19,7 @@ struct Stuck {
     since: Option<u64>,
     renames: u32,
     halted: Option<&'static str>,
+    reason: StuckReason,
 }
 
 impl CaughtUp for Stuck {
@@ -47,7 +48,7 @@ impl CaughtUp for Stuck {
         let since_millis = self.since.filter(|_| generation == 3)?;
         Some(StuckLeader {
             since_millis,
-            reason: StuckReason::NeverOpened,
+            reason: self.reason,
             recent_renames: self.renames,
         })
     }
@@ -58,6 +59,7 @@ fn stuck(since: u64, renames: u32) -> Stuck {
         since: Some(since),
         renames,
         halted: None,
+        reason: StuckReason::NotCommitting,
     }
 }
 
@@ -111,7 +113,7 @@ fn a_stuck_leader_is_named_again_on_the_same_set() {
     let Decision::Move(MoveStep::Stuck { reason }, renamed) = decision else {
         panic!("{decision:?}");
     };
-    assert_eq!(reason, StuckReason::NeverOpened);
+    assert_eq!(reason, StuckReason::NotCommitting);
     assert_eq!(renamed.leader, "broker-a");
     assert_eq!(renamed.replicas, shard(0).replicas);
     assert_eq!(renamed.generation, 0, "the store takes the next generation");
@@ -125,8 +127,7 @@ fn inside_the_bound_or_unwatched_nothing_moves() {
     assert_eq!(
         decide(&Stuck {
             since: None,
-            renames: 0,
-            halted: None
+            ..stuck(0, 0)
         }),
         Decision::Kept
     );
@@ -141,6 +142,18 @@ fn renames_back_off_and_stop_at_the_cap() {
     assert_eq!(decide(&stuck(NOW - 8 * BOUND, 3)), Decision::Kept);
     assert!(is_stuck(&decide(&stuck(NOW - 8 * BOUND - 1, 3))));
     assert_eq!(decide(&stuck(NOW - 1_000 * BOUND, 4)), Decision::Kept);
+}
+
+/// A leader that never opened may still be queued behind its broker's other
+/// fences, so it waits twice the bound.
+#[test]
+fn a_never_opened_leader_waits_twice_the_bound() {
+    let never = |since| Stuck {
+        reason: StuckReason::NeverOpened,
+        ..stuck(since, 0)
+    };
+    assert_eq!(decide(&never(NOW - 2 * BOUND)), Decision::Kept);
+    assert!(is_stuck(&decide(&never(NOW - 2 * BOUND - 1))));
 }
 
 /// Without a live, unhalted majority the new term would stall the same way:
@@ -313,11 +326,11 @@ fn a_leader_that_never_opens_is_stuck_only_while_its_broker_reports() {
     let nodes = live(&["broker-a", "broker-b", "broker-c"]);
     let existing = [shard(0), shard(1)];
     let mut progress = CopyProgress::default();
-    for now in [NOW, NOW + BOUND + 1] {
+    for now in [NOW, NOW + BOUND / 3, NOW + 2 * BOUND / 3, NOW + BOUND + 1] {
         let reports = vec![report(1, 3, now, 5, 5, 5)];
         let stuck = observe(&mut progress, &existing, &nodes, reports, now);
         assert!(!stuck.contains_key(&(shard(1).key, 3)));
-        if now > NOW {
+        if now > NOW + BOUND {
             let held = stuck.get(&(shard(0).key, 3)).expect("stuck");
             assert_eq!(held.reason, StuckReason::NeverOpened);
             assert_eq!(held.since_millis, NOW);
@@ -330,8 +343,8 @@ fn a_leader_that_never_opens_is_stuck_only_while_its_broker_reports() {
     }
 }
 
-/// The clock starts again at a new generation, a restarted leader, a
-/// suspected one, or a newer generation reported by an election.
+/// The clock starts again at a new generation, a restarted leader, or a newer
+/// generation reported by an election.
 #[test]
 fn the_clock_restarts_where_another_path_owns_the_shard() {
     let mut nodes = live(&["broker-a", "broker-b", "broker-c"]);
@@ -339,9 +352,20 @@ fn the_clock_restarts_where_another_path_owns_the_shard() {
     let other = |now| report(1, 3, now, 5, 5, 5);
     let later = NOW + BOUND + 1;
     let key = (shard(0).key, 3);
+    // Unchanged, the shard is stuck by `later`.
+    let mut progress = CopyProgress::default();
+    observe(&mut progress, &existing, &nodes, vec![other(NOW)], NOW);
+    for mid in [NOW + BOUND / 3, NOW + 2 * BOUND / 3] {
+        observe(&mut progress, &existing, &nodes, vec![other(mid)], mid);
+    }
+    let stuck = observe(&mut progress, &existing, &nodes, vec![other(later)], later);
+    assert!(stuck.contains_key(&key), "{stuck:?}");
 
     let mut progress = CopyProgress::default();
     observe(&mut progress, &existing, &nodes, vec![other(NOW)], NOW);
+    for mid in [NOW + BOUND / 3, NOW + 2 * BOUND / 3] {
+        observe(&mut progress, &existing, &nodes, vec![other(mid)], mid);
+    }
     let renamed = vec![
         ShardAssignment {
             generation: 4,
@@ -354,12 +378,18 @@ fn the_clock_restarts_where_another_path_owns_the_shard() {
 
     let mut progress = CopyProgress::default();
     observe(&mut progress, &existing, &nodes, vec![other(NOW)], NOW);
+    for mid in [NOW + BOUND / 3, NOW + 2 * BOUND / 3] {
+        observe(&mut progress, &existing, &nodes, vec![other(mid)], mid);
+    }
     nodes[0].status.incarnation += 1;
     let stuck = observe(&mut progress, &existing, &nodes, vec![other(later)], later);
     assert!(!stuck.contains_key(&key), "{stuck:?}");
 
     let mut progress = CopyProgress::default();
     observe(&mut progress, &existing, &nodes, vec![other(NOW)], NOW);
+    for mid in [NOW + BOUND / 3, NOW + 2 * BOUND / 3] {
+        observe(&mut progress, &existing, &nodes, vec![other(mid)], mid);
+    }
     let elected = ReplicaReport {
         leader: Some("broker-b".to_string()),
         ..report(0, 9, later, 5, 5, 5)
@@ -372,6 +402,95 @@ fn the_clock_restarts_where_another_path_owns_the_shard() {
         later,
     );
     assert!(!stuck.contains_key(&key), "{stuck:?}");
+}
+
+/// A watch this instance stopped looking at starts again: the time it was
+/// not looking is not time it saw the shard stuck.
+#[test]
+fn a_watch_left_unobserved_starts_again() {
+    let nodes = live(&["broker-a", "broker-b", "broker-c"]);
+    let existing = [shard(0)];
+    let mut progress = CopyProgress::default();
+    observe(
+        &mut progress,
+        &existing,
+        &nodes,
+        vec![report(0, 3, NOW, 9, 9, 9)],
+        NOW,
+    );
+    let back = NOW + 10 * BOUND;
+    // Caught mid-write: pending, and the majority where it was.
+    let stuck = observe(
+        &mut progress,
+        &existing,
+        &nodes,
+        vec![report(0, 3, back, 10, 9, 9)],
+        back,
+    );
+    assert!(stuck.is_empty(), "{stuck:?}");
+}
+
+/// A refusal, or a report from another leader or an older incarnation of
+/// this one, shows nothing of this leader's progress.
+#[test]
+fn only_this_leaders_own_reports_are_progress() {
+    let nodes = live(&["broker-a", "broker-b", "broker-c"]);
+    let existing = [shard(0), shard(1)];
+    let later = NOW + BOUND + 1;
+    let refused = ReplicaReport {
+        refused: Some(felix_common::membership::RefusedGeneration {
+            generation: 3,
+            promised_to: String::new(),
+        }),
+        ..report(0, 3, later, 5, 5, 5)
+    };
+    let other = ReplicaReport {
+        leader: Some("broker-b".to_string()),
+        ..report(0, 3, later, 5, 5, 5)
+    };
+    let restarted = ReplicaReport {
+        node_incarnations: [("broker-a".to_string(), 7)].into(),
+        ..report(0, 3, later, 5, 5, 5)
+    };
+    for evidence in [refused, other, restarted] {
+        let mut progress = CopyProgress::default();
+        observe(
+            &mut progress,
+            &existing,
+            &nodes,
+            vec![report(1, 3, NOW, 5, 5, 5)],
+            NOW,
+        );
+        for mid in [NOW + BOUND / 3, NOW + 2 * BOUND / 3] {
+            observe(
+                &mut progress,
+                &existing,
+                &nodes,
+                vec![report(1, 3, mid, 5, 5, 5)],
+                mid,
+            );
+        }
+        let reports = vec![report(1, 3, later, 5, 5, 5), evidence];
+        let stuck = observe(&mut progress, &existing, &nodes, reports, later);
+        let held = stuck.get(&(shard(0).key, 3)).expect("stuck");
+        assert_eq!(held.reason, StuckReason::NeverOpened);
+    }
+}
+
+/// Every leader stuck at once, as a network that carries pings but not
+/// shipping would leave them, is a fleet-wide fault: none is renamed.
+#[test]
+fn many_stuck_at_once_renames_none() {
+    let nodes = live(&["broker-a", "broker-b", "broker-c"]);
+    let existing: Vec<ShardAssignment> = (0..200).map(shard).collect();
+    let reports = |at| (0..200).map(|n| report(n, 3, at, 10, 4, 4)).collect();
+    let mut progress = CopyProgress::default();
+    let mut stuck = HashMap::new();
+    for pass in 0..20 {
+        let now = NOW + pass * 5 * SECOND;
+        stuck = observe(&mut progress, &existing, &nodes, reports(now), now);
+    }
+    assert!(stuck.is_empty(), "{} stuck", stuck.len());
 }
 
 /// A leader that fails at every generation it is given is renamed a handful
@@ -444,11 +563,11 @@ async fn a_never_opened_leader_is_renamed_through_the_store_and_serves() {
         .await
         .expect("audit");
     let liveness = NodeLivenessConfig {
-        heartbeat_interval_ms: 10,
-        expiry_timeout_ms: 20,
+        heartbeat_interval_ms: 40,
+        expiry_timeout_ms: 80,
         ..NodeLivenessConfig::default()
     };
-    // Floored at two report TTLs: 100 ms here.
+    // Floored at two report TTLs: 400 ms here.
     let policy = MovePolicy {
         stuck_leader_millis: Some(1),
         ..MovePolicy::default()
@@ -484,30 +603,53 @@ async fn a_never_opened_leader_is_renamed_through_the_store_and_serves() {
     record(&audit).await;
     let first = pass(&mut progress).await;
     assert_eq!(first.moved, 0, "starts watching: {first:?}");
-    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-    record(&audit).await;
-    assert_eq!(pass(&mut progress).await.moved, 1);
+    // A leader that never opened waits twice the bound, watched by passes
+    // closer together than half of it.
+    let started = std::time::Instant::now();
+    loop {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        record(&audit).await;
+        if pass(&mut progress).await.moved == 1 {
+            break;
+        }
+        assert!(started.elapsed().as_secs() < 30, "never renamed");
+    }
+    assert!(
+        started.elapsed().as_millis() >= 700,
+        "waited about twice the bound"
+    );
     let renamed = store.get_shard_assignment(&orders.key).await.expect("get");
     assert_eq!(renamed.leader, "broker-a");
     assert_eq!(renamed.replicas, orders.replicas);
     assert_eq!(renamed.generation, orders.generation + 1);
 
     // It opens at the new generation and goes idle: left alone.
-    for _ in 0..3 {
+    for _ in 0..60 {
         record(&renamed).await;
         record(&audit).await;
         assert_eq!(pass(&mut progress).await.moved, 0);
-        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
 
-    // Stuck again, but another write lands between the plan and its apply.
-    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-    record(&audit).await;
-    let planned =
-        super::super::reconciler::plan_pass(&store, &liveness, policy.clone(), &mut progress)
-            .await
-            .expect("plan");
-    assert_eq!(planned.plan().moves().count(), 1);
+    // It stops reporting. The second rename waits twice the first; another
+    // write lands between its plan and its apply.
+    let started = std::time::Instant::now();
+    let planned = loop {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        record(&audit).await;
+        let planned =
+            super::super::reconciler::plan_pass(&store, &liveness, policy.clone(), &mut progress)
+                .await
+                .expect("plan");
+        if planned.plan().moves().count() == 1 {
+            break planned;
+        }
+        assert!(started.elapsed().as_secs() < 30, "never planned");
+    };
+    assert!(
+        started.elapsed().as_millis() >= 700,
+        "waited about twice the bound"
+    );
     let elected = store
         .put_shard_assignment(ShardAssignment {
             leader: "broker-b".to_string(),

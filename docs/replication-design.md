@@ -1525,11 +1525,18 @@ the shard itself (`MoveStep::Stuck`, issue #1914):
   is live and not halted (the new term would stall the same way). A leader
   whose broker has reported on no shard within the bound is not judged by
   its silence: that is the broker's stall, or the control plane's, and the
-  same leader one generation up would stall with it. The clock starts again
-  at every new generation, leader incarnation or watching instance.
+  same leader one generation up would stall with it. Likewise when more
+  than 64 leaders (or an eighth of those watched) are overdue at once, as a
+  network that carries pings but not shipping would leave them. The clock
+  starts again at every new generation, leader incarnation, watching
+  instance, or gap of half the bound in this instance's watching. A leader
+  that never opened waits twice the bound, since after a restart it may
+  still be queued behind its broker's other fences.
 - *How often.* Each rename of a shard within an hour doubles the wait for
   the next, at most four an hour, and one pass renames at most sixteen
-  shards. Each is logged as a warning with its reason and counted in
+  shards. The count is kept by each control-plane instance, so with several
+  instances placing a shard can be renamed up to four times an hour per
+  instance. Each is logged as a warning with its reason and counted in
   `felix_shard_move_steps_total{step="stuck"}`.
 
 This is the one place the control plane acts on the absence of progress

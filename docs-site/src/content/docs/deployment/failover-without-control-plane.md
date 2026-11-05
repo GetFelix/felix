@@ -134,8 +134,10 @@ copy that stopped accepting the leader. When the control plane sees no
 progress from such a leader for `FELIX_SHARD_STUCK_LEADER_MS` (70 s), it
 names the same leader again one generation up. The leader fences its
 followers again before it serves, so no acknowledged write is lost. An idle
-shard counts as progressing, and a shard is renamed at most four times an
-hour.
+shard counts as progressing, a shard that never opened gets twice as long,
+and each control-plane instance renames one shard at most four times an
+hour. When many leaders look stuck at once the fault is not theirs, and none
+is renamed.
 
 ## What you see
 

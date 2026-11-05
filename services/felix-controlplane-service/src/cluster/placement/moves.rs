@@ -84,10 +84,14 @@ pub(super) const STUCK_RENAME_WINDOW_MILLIS: u64 = 60 * 60 * 1_000;
 /// generations an hour, not one a minute.
 pub(super) const MAX_STUCK_RENAMES: u32 = 4;
 
-/// The most shards one pass names again for being stuck. Each is a fence on
-/// its leader's broker; a pass that finds many more is more likely seeing a
-/// fleet-wide stall that renaming would only add work to.
+/// The most shards one pass names again for being stuck, so a burst of them
+/// does not land as a burst of fences on one broker.
 pub(super) const STUCK_RENAMES_PER_PASS: usize = 16;
+
+/// Past this many leaders overdue at once (or an eighth of those watched, if
+/// more), none is renamed: that is a fleet-wide stall, and the same leaders
+/// one generation up would stall with it.
+pub(super) const MAX_STUCK_PER_FLEET: usize = 64;
 
 /// How long after a cluster's first broker registered a new shard waits for
 /// enough brokers to hold all its copies before it is placed on fewer.
@@ -397,7 +401,13 @@ impl Moves {
         {
             return None;
         }
-        let wait = bound.saturating_mul(1u64 << stuck.recent_renames.min(20));
+        // A leader that never opened may still be in its broker's queue of
+        // fences after a restart, so it gets twice as long.
+        let base = match stuck.reason {
+            StuckReason::NeverOpened => bound.saturating_mul(2),
+            _ => bound,
+        };
+        let wait = base.saturating_mul(1u64 << stuck.recent_renames.min(20));
         if now.saturating_sub(stuck.since_millis) <= wait {
             return None;
         }
