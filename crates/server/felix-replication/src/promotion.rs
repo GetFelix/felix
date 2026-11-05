@@ -142,10 +142,7 @@ impl Outcome {
 /// whose capabilities are unknown or lacking is one that has not answered,
 /// and the shard waits for a majority that has. That is the rule once the
 /// followers decide acknowledgements, since an older leader then no longer
-/// stops writing when its lease lapses. With `lease_fallback`, a replica that
-/// answers without the fence opens the shard on the lease. So does one that
-/// cannot be reached, for a stream shard; a cache shard counts it as not
-/// having answered, as without `lease_fallback`.
+/// stops writing when its lease lapses.
 ///
 /// With `joint`, given once the fleet has finalized `joint_fence`, a leader
 /// whose set changed fences the set it leaves as well and needs a majority of
@@ -205,13 +202,6 @@ pub(crate) async fn fence_shard_as<R: PeerRequester>(
     // Every replica, not just a majority. A fenced majority keeps an older
     // leader out whoever the rest are, but what the fence is for later --
     // acknowledging on the followers alone -- counts every follower's promise.
-    //
-    // A replica that cannot be reached, as a crashed one, does not move a
-    // cache shard to the lease: the fence below goes on without it. On the
-    // lease a cache shard skips the catch-up and can serve without a put the
-    // old leader acknowledged (#1943). A stream shard keeps the lease here:
-    // its acknowledgement waited for the report its successor was chosen
-    // from, so the successor already holds it.
     for replica in replicas.iter().filter(|_| lease_fallback) {
         let offered = match requester.recorded_capabilities(&replica.node_id) {
             Some(offered) => Some(offered),
@@ -220,11 +210,7 @@ pub(crate) async fn fence_shard_as<R: PeerRequester>(
                 .await
                 .ok(),
         };
-        let lacking = match offered {
-            Some(offered) => !offered.contains(required),
-            None => key.kind == ShardKind::Stream,
-        };
-        if lacking {
+        if !offered.is_some_and(|offered| offered.contains(required)) {
             return Outcome::Lease {
                 lacking: replica.node_id.clone(),
             };

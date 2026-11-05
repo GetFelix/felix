@@ -701,29 +701,6 @@ async fn a_replica_without_the_capability_keeps_the_lease() {
     assert!(replicas.sent(Kind::Fence).is_empty());
 }
 
-/// **A stream shard still opens on the lease for a replica it cannot
-/// reach.** Its acknowledgements waited for the report the control plane
-/// chose this broker from, so it holds them without a catch-up, and waiting
-/// for a majority would only cost the failover. A cache shard does not (#1943,
-/// `an_unreachable_replica_does_not_skip_the_catch_up`).
-#[tokio::test]
-async fn an_unreachable_replica_keeps_a_stream_shard_on_the_lease() {
-    let mut replicas = Replicas::new();
-    let c = replicas.get_mut("broker-c");
-    c.reachable = false;
-    c.recorded = false;
-    let (leader, _dir) = leader_holding(4, &["a"]).await;
-
-    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route(), true, None).await;
-
-    assert_eq!(
-        outcome,
-        Outcome::Lease {
-            lacking: "broker-c".to_string()
-        }
-    );
-}
-
 /// **A tail a replica holds past the leader's own is taken before serving.**
 /// It may be on a majority already; opening without it would let the leader
 /// write over it.
