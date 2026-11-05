@@ -1434,6 +1434,12 @@ elected generation itself, not the next one:
   - one outside it leads at the elected generation on the elected set, and
     placement moves that set as it moves any other.
 
+  This holds when the elected broker is already the control plane's leader
+  too. A leader can open on a set the control plane has since changed, for
+  example on a stale route after refusing the assignment that changed it.
+  Keeping it as leader at the elected generation would leave the record on
+  the wrong set, so it is reissued like any other leader in the set.
+
   Otherwise only the generation is taken and the report is refused as
   `not_leader`: a leader elected on the old set while a change is pending is
   deposed by the new set's leader. The exception is the control plane's own
@@ -1445,7 +1451,10 @@ elected generation itself, not the next one:
   level 26 apply the older form, which takes only the generation of any
   other set. A group finalizes `replica_election` only with every member at
   26. The older form stays so a member that has not yet rolled to 26
-  applies the same entries the same way.
+  applies the same entries the same way. Members below level 27 likewise
+  take only the generation when the elected leader is the control plane's
+  own, elected on another set; the report handler then moves past it as
+  below.
 
   When only the generation was taken, the control plane's leader is now
   named at the generation the elected leader opened at, which ballots never
@@ -1473,7 +1482,8 @@ generation an election took, for example by promoting a follower when it
 returns before the elected leader's first report lands. Ballots let only one
 of the two open there. If the elected leader opened, it keeps leading and
 reporting, and the other never opens. A report at the assignment's own
-generation from a leader the control plane did not name then moves the shard
+generation from a leader the control plane did not name, or named on another
+set than the one it was elected on, then moves the shard
 to the next generation under that elected leader, with the same conditional,
 placement-fenced write placement uses. Only the elected leader is named: its
 log holds everything acknowledged up to the collision, on whichever set. The

@@ -173,11 +173,13 @@ Later control-plane changes are on `main`:
   sends. With the usual upgrade order (control plane first) every broker gets it.
 - An elected leader is adopted on the replica set it was elected on: level
   26, with no Postgres migration. Finalizing `replica_election` needs that
-  level.
+  level. Level 27 does the same when the elected leader is the one the
+  control plane already names; below it, the same report moves the shard
+  past the election at once, and the next report is only a fallback.
 
 In short, Postgres runs migrations `0037` to `0042` on start (`0039` to
 `0042` are on `main` only), and under Raft these features wait for metadata
-levels 20 to 26. Upgrade every control-plane member before the brokers.
+levels 20 to 27. Upgrade every control-plane member before the brokers.
 
 ## Turning on failover without the control plane
 
