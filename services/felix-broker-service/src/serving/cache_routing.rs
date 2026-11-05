@@ -176,205 +176,13 @@ pub(crate) async fn apply_cache_request(
         CacheRoute::Local {
             shard,
             generation,
-            mut fenced,
+            fenced,
         } => {
-            let cache_store = broker.cache();
-            let written = ShardKey {
-                tenant_id: tenant_id.to_string(),
-                namespace: namespace.to_string(),
-                stream: cache.to_string(),
-                shard,
-                kind: ShardKind::Cache,
-            };
-            let (marks, quorum_timeout) = quorum;
-            let write = |fenced: &mut Option<FenceGuard>| {
-                fence::enter_or_keep(fenced, ingress, Some(&written), generation)
-                    .map_err(ClientError::from)
-            };
-            Ok(match request {
-                CacheRequest::Put { value, ttl_ms } => {
-                    let ttl = (ttl_ms > 0).then(|| std::time::Duration::from_millis(ttl_ms));
-                    let fenced =
-                        fence::enter_or_keep(&mut fenced, ingress, Some(&written), generation)
-                            .map_err(ClientError::from)?;
-                    // A put the store refused is never acknowledged: the
-                    // quorum wait below would pass on the old tail and ack a
-                    // value no read can see.
-                    cache_store
-                        .put(tenant_id, namespace, cache, shard, key, value, ttl)
-                        .await
-                        .map_err(storage)?;
-                    drop(fenced);
-                    felix_replication::quorum::await_cache_quorum(
-                        broker,
-                        &written,
-                        marks,
-                        ingress,
-                        quorum_timeout,
-                        felix_replication::quorum::Access::Write,
-                    )
-                    .await?;
-                    CacheAnswer::default()
-                }
-                CacheRequest::Get => {
-                    // A read does not hold the fence, but it follows the lease,
-                    // or confirms by a round once it has its value.
-                    drop(fenced);
-                    if !felix_replication::quorum::read_skips_lease(
-                        broker, &written, marks, ingress,
-                    )
-                    .await
-                    {
-                        refuse_read_on_lapse(ingress)?;
-                    }
-                    let value = cache_store
-                        .get(tenant_id, namespace, cache, shard, key)
-                        .await
-                        .map_err(storage)?;
-                    felix_replication::quorum::await_cache_quorum(
-                        broker,
-                        &written,
-                        marks,
-                        ingress,
-                        quorum_timeout,
-                        felix_replication::quorum::Access::Read,
-                    )
-                    .await?;
-                    CacheAnswer {
-                        value,
-                        outcome: None,
-                        lease: None,
-                    }
-                }
-                CacheRequest::Delete => {
-                    let fenced =
-                        fence::enter_or_keep(&mut fenced, ingress, Some(&written), generation)
-                            .map_err(ClientError::from)?;
-                    let removed = cache_store
-                        .delete(tenant_id, namespace, cache, shard, key)
-                        .await
-                        .map_err(storage)?;
-                    drop(fenced);
-                    felix_replication::quorum::await_cache_quorum(
-                        broker,
-                        &written,
-                        marks,
-                        ingress,
-                        quorum_timeout,
-                        felix_replication::quorum::Access::Write,
-                    )
-                    .await?;
-                    CacheAnswer {
-                        value: removed,
-                        outcome: None,
-                        lease: None,
-                    }
-                }
-                CacheRequest::PutIf {
-                    value,
-                    ttl_ms,
-                    condition,
-                } => {
-                    let ttl = (ttl_ms > 0).then(|| std::time::Duration::from_millis(ttl_ms));
-                    // Taken before the write, so a token never outlives the
-                    // entry the store expires from its own later clock.
-                    let entry_expires_at = ttl.map(|ttl| std::time::SystemTime::now() + ttl);
-                    let fenced = write(&mut fenced)?;
-                    let written_if = cache_store
-                        .put_if(
-                            tenant_id, namespace, cache, shard, key, value, ttl, condition,
-                        )
-                        .await
-                        .map_err(storage)?;
-                    drop(fenced);
-                    // Waited on even when refused: the version a refusal
-                    // reports must be one a failover keeps.
-                    felix_replication::quorum::await_cache_quorum(
-                        broker,
-                        &written,
-                        marks,
-                        ingress,
-                        quorum_timeout,
-                        felix_replication::quorum::Access::Write,
-                    )
-                    .await?;
-                    let lease = lease.map(|mint| match written_if {
-                        felix_storage::ConditionalWrite {
-                            applied: true,
-                            version: Some(version),
-                        } => mint.mint(version, entry_expires_at),
-                        _ => ForwardLease::NotMinted,
-                    });
-                    CacheAnswer {
-                        value: None,
-                        outcome: Some(outcome(written_if)),
-                        lease,
-                    }
-                }
-                CacheRequest::DeleteIf { version } => {
-                    let fenced = write(&mut fenced)?;
-                    let deleted = cache_store
-                        .delete_if(tenant_id, namespace, cache, shard, key, version)
-                        .await
-                        .map_err(storage)?;
-                    drop(fenced);
-                    felix_replication::quorum::await_cache_quorum(
-                        broker,
-                        &written,
-                        marks,
-                        ingress,
-                        quorum_timeout,
-                        felix_replication::quorum::Access::Write,
-                    )
-                    .await?;
-                    CacheAnswer {
-                        value: None,
-                        outcome: Some(outcome(deleted)),
-                        lease: None,
-                    }
-                }
-                CacheRequest::GetVersioned => {
-                    drop(fenced);
-                    if !felix_replication::quorum::read_skips_lease(
-                        broker, &written, marks, ingress,
-                    )
-                    .await
-                    {
-                        refuse_read_on_lapse(ingress)?;
-                    }
-                    let found = cache_store
-                        .get_versioned(tenant_id, namespace, cache, shard, key)
-                        .await
-                        .map_err(storage)?;
-                    felix_replication::quorum::await_cache_quorum(
-                        broker,
-                        &written,
-                        marks,
-                        ingress,
-                        quorum_timeout,
-                        felix_replication::quorum::Access::Read,
-                    )
-                    .await?;
-                    let version = found.as_ref().map(|found| found.version);
-                    CacheAnswer {
-                        value: found.map(|found| found.value),
-                        outcome: Some(ForwardCacheOutcome {
-                            applied: true,
-                            version,
-                        }),
-                        lease: None,
-                    }
-                }
-                // Counter operations go through `apply_counter_op`, which owns the
-                // counter store; routing them here would answer from the wrong
-                // seam.
-                CacheRequest::CounterAdd { .. } | CacheRequest::CounterGet => {
-                    return Err(ClientError::internal(
-                        "not a cache operation: counters route separately",
-                    )
-                    .into());
-                }
-            })
+            apply_cache_local(
+                broker, quorum, ingress, tenant_id, namespace, cache, key, request, lease, shard,
+                generation, fenced,
+            )
+            .await
         }
         CacheRoute::Forward {
             key: forward_key,
@@ -426,6 +234,218 @@ pub(crate) async fn apply_cache_request(
         }
         CacheRoute::Refused(reason) => Err(refused(&reason)),
     }
+}
+
+/// Apply a cache operation to a shard this broker owns, at `generation`.
+///
+/// What [`apply_cache_request`] does once routing says the key is local: the
+/// fence, the store and the quorum wait, in that order. `fenced` is the
+/// operation's place in the fence if routing entered it.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn apply_cache_local(
+    broker: &felix_broker::Broker,
+    quorum: (
+        Option<&felix_replication::quorum::QuorumMarks>,
+        std::time::Duration,
+    ),
+    ingress: Option<&IngressRouter>,
+    tenant_id: &str,
+    namespace: &str,
+    cache: &str,
+    key: &str,
+    request: CacheRequest,
+    lease: Option<&LeaseMint>,
+    shard: u32,
+    generation: u64,
+    mut fenced: Option<FenceGuard>,
+) -> anyhow::Result<CacheAnswer> {
+    let cache_store = broker.cache();
+    let written = ShardKey {
+        tenant_id: tenant_id.to_string(),
+        namespace: namespace.to_string(),
+        stream: cache.to_string(),
+        shard,
+        kind: ShardKind::Cache,
+    };
+    let (marks, quorum_timeout) = quorum;
+    let write = |fenced: &mut Option<FenceGuard>| {
+        fence::enter_or_keep(fenced, ingress, Some(&written), generation).map_err(ClientError::from)
+    };
+    Ok(match request {
+        CacheRequest::Put { value, ttl_ms } => {
+            let ttl = (ttl_ms > 0).then(|| std::time::Duration::from_millis(ttl_ms));
+            let fenced = fence::enter_or_keep(&mut fenced, ingress, Some(&written), generation)
+                .map_err(ClientError::from)?;
+            // A put the store refused is never acknowledged: the
+            // quorum wait below would pass on the old tail and ack a
+            // value no read can see.
+            cache_store
+                .put(tenant_id, namespace, cache, shard, key, value, ttl)
+                .await
+                .map_err(storage)?;
+            drop(fenced);
+            felix_replication::quorum::await_cache_quorum(
+                broker,
+                &written,
+                marks,
+                ingress,
+                quorum_timeout,
+                felix_replication::quorum::Access::Write,
+            )
+            .await?;
+            CacheAnswer::default()
+        }
+        CacheRequest::Get => {
+            // A read does not hold the fence, but it follows the lease,
+            // or confirms by a round once it has its value.
+            drop(fenced);
+            if !felix_replication::quorum::read_skips_lease(broker, &written, marks, ingress).await
+            {
+                refuse_read_on_lapse(ingress)?;
+            }
+            let value = cache_store
+                .get(tenant_id, namespace, cache, shard, key)
+                .await
+                .map_err(storage)?;
+            felix_replication::quorum::await_cache_quorum(
+                broker,
+                &written,
+                marks,
+                ingress,
+                quorum_timeout,
+                felix_replication::quorum::Access::Read,
+            )
+            .await?;
+            CacheAnswer {
+                value,
+                outcome: None,
+                lease: None,
+            }
+        }
+        CacheRequest::Delete => {
+            let fenced = fence::enter_or_keep(&mut fenced, ingress, Some(&written), generation)
+                .map_err(ClientError::from)?;
+            let removed = cache_store
+                .delete(tenant_id, namespace, cache, shard, key)
+                .await
+                .map_err(storage)?;
+            drop(fenced);
+            felix_replication::quorum::await_cache_quorum(
+                broker,
+                &written,
+                marks,
+                ingress,
+                quorum_timeout,
+                felix_replication::quorum::Access::Write,
+            )
+            .await?;
+            CacheAnswer {
+                value: removed,
+                outcome: None,
+                lease: None,
+            }
+        }
+        CacheRequest::PutIf {
+            value,
+            ttl_ms,
+            condition,
+        } => {
+            let ttl = (ttl_ms > 0).then(|| std::time::Duration::from_millis(ttl_ms));
+            // Taken before the write, so a token never outlives the
+            // entry the store expires from its own later clock.
+            let entry_expires_at = ttl.map(|ttl| std::time::SystemTime::now() + ttl);
+            let fenced = write(&mut fenced)?;
+            let written_if = cache_store
+                .put_if(
+                    tenant_id, namespace, cache, shard, key, value, ttl, condition,
+                )
+                .await
+                .map_err(storage)?;
+            drop(fenced);
+            // Waited on even when refused: the version a refusal
+            // reports must be one a failover keeps.
+            felix_replication::quorum::await_cache_quorum(
+                broker,
+                &written,
+                marks,
+                ingress,
+                quorum_timeout,
+                felix_replication::quorum::Access::Write,
+            )
+            .await?;
+            let lease = lease.map(|mint| match written_if {
+                felix_storage::ConditionalWrite {
+                    applied: true,
+                    version: Some(version),
+                } => mint.mint(version, entry_expires_at),
+                _ => ForwardLease::NotMinted,
+            });
+            CacheAnswer {
+                value: None,
+                outcome: Some(outcome(written_if)),
+                lease,
+            }
+        }
+        CacheRequest::DeleteIf { version } => {
+            let fenced = write(&mut fenced)?;
+            let deleted = cache_store
+                .delete_if(tenant_id, namespace, cache, shard, key, version)
+                .await
+                .map_err(storage)?;
+            drop(fenced);
+            felix_replication::quorum::await_cache_quorum(
+                broker,
+                &written,
+                marks,
+                ingress,
+                quorum_timeout,
+                felix_replication::quorum::Access::Write,
+            )
+            .await?;
+            CacheAnswer {
+                value: None,
+                outcome: Some(outcome(deleted)),
+                lease: None,
+            }
+        }
+        CacheRequest::GetVersioned => {
+            drop(fenced);
+            if !felix_replication::quorum::read_skips_lease(broker, &written, marks, ingress).await
+            {
+                refuse_read_on_lapse(ingress)?;
+            }
+            let found = cache_store
+                .get_versioned(tenant_id, namespace, cache, shard, key)
+                .await
+                .map_err(storage)?;
+            felix_replication::quorum::await_cache_quorum(
+                broker,
+                &written,
+                marks,
+                ingress,
+                quorum_timeout,
+                felix_replication::quorum::Access::Read,
+            )
+            .await?;
+            let version = found.as_ref().map(|found| found.version);
+            CacheAnswer {
+                value: found.map(|found| found.value),
+                outcome: Some(ForwardCacheOutcome {
+                    applied: true,
+                    version,
+                }),
+                lease: None,
+            }
+        }
+        // Counter operations go through `apply_counter_op`, which owns the
+        // counter store; routing them here would answer from the wrong
+        // seam.
+        CacheRequest::CounterAdd { .. } | CacheRequest::CounterGet => {
+            return Err(
+                ClientError::internal("not a cache operation: counters route separately").into(),
+            );
+        }
+    })
 }
 
 /// Apply a counter operation wherever the key belongs.

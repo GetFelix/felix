@@ -1434,15 +1434,23 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "bytes",
+ "felix-broker",
+ "felix-broker-service",
+ "felix-cluster",
  "felix-common",
  "felix-controlplane-service",
  "felix-replication",
+ "felix-router",
+ "felix-storage",
  "felix-wire",
  "parking_lot 0.13.0",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tower",
+ "tracing",
 ]
 
 [[package]]

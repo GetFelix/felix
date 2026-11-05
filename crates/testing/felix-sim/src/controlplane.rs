@@ -25,8 +25,10 @@
 //! The sim does not spawn the control plane's background loops. The harness
 //! calls [`SimControlPlane::step`] at [`CpConfig::sweep_interval`] and
 //! [`CpConfig::reconcile_interval`] (or [`sweep`](SimControlPlane::sweep) and
-//! [`reconcile`](SimControlPlane::reconcile) on their own cadences). A paused
-//! or down control plane is not stepped.
+//! [`reconcile`](SimControlPlane::reconcile) on their own cadences), and runs
+//! a pass whenever [`SimControlPlane::pass_requested`] resolves. A paused or
+//! down control plane is not stepped. Placement writes wake the
+//! `assignment_changes` long-polls, as the real loop's do.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -47,7 +49,7 @@ use felix_controlplane_service::api::{AppState, build_router};
 use felix_controlplane_service::auth::felix_token::{CONTROLPLANE_AUDIENCE, mint_token_for};
 use felix_controlplane_service::cluster::membership::{SilenceWatch, SweepGrace, expire_observed};
 use felix_controlplane_service::cluster::placement::{
-    MovePolicy, ReconcileOutcome, reconcile_once,
+    MovePolicy, PlacementWakes, ReconcileOutcome, reconcile_once_waking,
 };
 use felix_controlplane_service::config::NodeLivenessConfig;
 use felix_controlplane_service::model::{
@@ -132,6 +134,9 @@ struct Inner {
     fault: watch::Sender<CpFault>,
     /// Times the control plane went down, so the sweep can start over.
     restarts: AtomicU64,
+    /// Shared with the router, so a placement write wakes the long-polls it
+    /// serves, and a node's registration or report asks for a pass.
+    wakes: Arc<PlacementWakes>,
     sweep: tokio::sync::Mutex<Sweep>,
     tenant_tokens: Mutex<BTreeMap<String, String>>,
 }
@@ -179,6 +184,7 @@ impl SimControlPlane {
         let dyn_store: Arc<
             dyn felix_controlplane_service::store::ControlPlaneAuthStore + Send + Sync,
         > = Arc::clone(&store) as _;
+        let wakes = Arc::new(PlacementWakes::default());
         let state = AppState {
             region: Region {
                 region_id: "local".to_string(),
@@ -197,7 +203,7 @@ impl SimControlPlane {
             node_liveness: config.liveness.clone(),
             readiness: Arc::new(Readiness::new(Arc::new(AlwaysReady))),
             in_flight: Default::default(),
-            placement_wakes: Default::default(),
+            placement_wakes: Arc::clone(&wakes),
             move_policy: config.moves.clone(),
             new_cluster: Default::default(),
         };
@@ -214,6 +220,7 @@ impl SimControlPlane {
                 operator_token,
                 fault: watch::channel(CpFault::Healthy).0,
                 restarts: AtomicU64::new(0),
+                wakes,
                 sweep: tokio::sync::Mutex::new(sweep),
                 tenant_tokens: Mutex::new(BTreeMap::new()),
             }),
@@ -349,13 +356,22 @@ impl SimControlPlane {
             return None;
         }
         Some(
-            reconcile_once(
+            reconcile_once_waking(
                 self.inner.store.as_ref(),
                 &self.inner.config.liveness,
                 self.inner.config.moves.clone(),
+                &self.inner.wakes,
             )
             .await,
         )
+    }
+
+    /// Resolves when the router asked for a placement pass, as a node
+    /// registering or reporting does. The real loop runs one at once, outside
+    /// its timer; the harness does the same by calling
+    /// [`reconcile`](Self::reconcile) when this resolves.
+    pub async fn pass_requested(&self) {
+        self.inner.wakes.pass_requested().await;
     }
 
     /// One sweep and one placement pass. `None` while paused or down.

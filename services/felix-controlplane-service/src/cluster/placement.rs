@@ -70,7 +70,8 @@ pub use reconciler::{
     RECONCILE_FAILURES_TOTAL, ReconcileOutcome, SHARD_ASSIGNMENT_WRITE_CONFLICTS_TOTAL,
     SHARD_MOVE_STEPS_TOTAL, SHARD_MOVES_TIMED_OUT_TOTAL, SHARD_MOVES_WAITING,
     SHARD_REPLICAS_HALTED, SHARD_REPLICAS_MISSING, SHARDS_PLACED_TOTAL, SHARDS_UNDER_REPLICATED,
-    SHARDS_UNPLACEABLE, SHARDS_ZONE_UNSPREAD, reconcile_once, spawn_reconciler,
+    SHARDS_UNPLACEABLE, SHARDS_ZONE_UNSPREAD, reconcile_once, reconcile_once_waking,
+    spawn_reconciler,
 };
 pub use replica_positions::ReplicaPositions;
 pub use restore::{Replication, replication};

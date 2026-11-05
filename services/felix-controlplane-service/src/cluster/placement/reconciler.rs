@@ -184,17 +184,20 @@ pub async fn reconcile_once(
     liveness: &crate::config::NodeLivenessConfig,
     policy: MovePolicy,
 ) -> ReconcileOutcome {
+    reconcile_once_waking(store, liveness, policy, &PlacementWakes::default()).await
+}
+
+/// [`reconcile_once`] that wakes `wakes`' assignment long-polls for each
+/// write, as the running loop does.
+pub async fn reconcile_once_waking(
+    store: &dyn crate::store::ControlPlaneStore,
+    liveness: &crate::config::NodeLivenessConfig,
+    policy: MovePolicy,
+    wakes: &PlacementWakes,
+) -> ReconcileOutcome {
     // One pass watches nothing move, so it gives no restore up as stalled.
     match plan_pass(store, liveness, policy, &mut CopyProgress::default()).await {
-        Some(pass) => {
-            apply_pass(
-                store,
-                &pass,
-                &mut MoveClock::default(),
-                &PlacementWakes::default(),
-            )
-            .await
-        }
+        Some(pass) => apply_pass(store, &pass, &mut MoveClock::default(), wakes).await,
         None => ReconcileOutcome::default(),
     }
 }
