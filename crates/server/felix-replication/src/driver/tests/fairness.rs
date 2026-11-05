@@ -573,3 +573,64 @@ async fn a_follower_failing_every_batch_does_not_make_its_shard_owed() {
         "a shard no pass can help got one on another shard's append"
     );
 }
+
+/// **But not once the mark is level.** Another follower carried the mark to
+/// the tail, so no write waits on the shard; a follower stuck behind on
+/// routing would otherwise get each of its shards a pass on every append.
+#[tokio::test(start_paused = true)]
+async fn a_straggler_refusal_on_a_level_shard_leaves_it_alone() {
+    let (broker, _dir) = leader_with_shards(2, 1).await;
+    let router = Arc::new(ShardRouter::new(
+        LOCAL,
+        "us-west-2",
+        felix_router::RegionRouter::new("us-west-2".to_string()),
+    ));
+    lead(&router, 2);
+    let marks = QuorumMarks::new();
+    let status = ShardStatusBoard::new();
+    let peers = Follower::default();
+    let rebuilds = Rebuilds::new(RebuildPolicy::default());
+    let throttle = MoveThrottle::unlimited();
+    let mut shards = Shards::new(Context {
+        requester: &peers,
+        broker: &broker,
+        router: &router,
+        fence: &Unfenced,
+        gate: &crate::promotion::NoGate,
+        marks: &marks,
+        status: &status,
+        reporter: None,
+        rebuilds: &rebuilds,
+        throttle: &throttle,
+        refresh: Duration::from_secs(300),
+    });
+    let settle =
+        |shards: &mut Shards<'_, Follower>| shards.passes.is_empty() && shards.exchanges.is_empty();
+    for _ in 0..2 {
+        shards.scan(WakeKind::Tick);
+        while !settle(&mut shards) {
+            step(&mut shards).await;
+        }
+    }
+
+    peers.cut_off.lock().expect("lock").push("broker-c");
+    append(&broker, 0).await;
+    shards.scan(WakeKind::Append);
+    while !settle(&mut shards) {
+        step(&mut shards).await;
+    }
+    assert_eq!(marks.offset(&watch_key(&shard_key(0)), 1), Some(2));
+    let mut answer = shards.answer_held(&shard_key(0), "broker-c", false);
+    answer.cursor.stalled = true;
+    answer.cursor.route_behind = true;
+    answer.cursor.refused = true;
+    shards.apply(answer);
+
+    append(&broker, 1).await;
+    shards.scan(WakeKind::Append);
+    assert_eq!(
+        shards.passes.len(),
+        1,
+        "a level shard got a pass for a follower stuck behind on routing"
+    );
+}
