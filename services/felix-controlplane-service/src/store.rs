@@ -346,7 +346,7 @@ pub trait ControlPlaneStore: Send + Sync {
     /// Under Raft it needs metadata level 21 on every member, and is
     /// refused below it. Below level 26 it applies
     /// [`ShardAssignment::adopting`], which takes only the generation of a
-    /// leader elected on another set, and below level 29 it still records
+    /// leader elected on another set, and below level 28 it still records
     /// an elected set older than the recorded one.
     async fn adopt_elected_leader(
         &self,
@@ -359,6 +359,10 @@ pub trait ControlPlaneStore: Send + Sync {
     /// acknowledged before the call. [`Self::get_shard_assignment`] on a
     /// Raft member answers from what that member has applied, which can lag.
     async fn confirmed_shard_assignment(&self, key: &ShardKey) -> StoreResult<ConfirmedAssignment>;
+    /// The shard-assignment feed's `next_seq`, read no earlier than every
+    /// write acknowledged before the call, so every change committed by then
+    /// has a lower seq. `None` from a Raft leader that predates the read.
+    async fn confirmed_shard_assignment_head(&self) -> StoreResult<Option<u64>>;
     /// Every assignment, ordered by stream then shard.
     async fn list_shard_assignments(&self) -> StoreResult<Vec<ShardAssignment>>;
     /// Assignments ordered by tenant, namespace, kind, name, then shard, one

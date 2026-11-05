@@ -493,6 +493,7 @@ fn commands() -> Vec<MetaCommand> {
                 set_generation: 1,
             },
             elected_set: true,
+            own_leader_set: true,
             predated_set: true,
         },
         MetaCommand::TakePlacementLease { holder: s("h") },

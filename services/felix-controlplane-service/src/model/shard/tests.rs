@@ -822,3 +822,65 @@ fn a_leader_elected_on_an_older_set_is_named_on_the_recorded_one() {
         .expect("adopted");
     assert_eq!(newer, older);
 }
+
+/// **This set's own leader elected on another set is named on that set, not
+/// recorded at its generation alone.** b stood at 2 and c answered. The
+/// control plane then named c at 2 on {b, c, d}, which c refused, and c, on a
+/// stale route, stood at 3 on {a, b, c} and opened. Taking only the generation
+/// would record c at 3 on {b, c, d}, and a failover could then promote from
+/// that set without the records a majority of {a, b, c} holds. c is named one
+/// past it, leaving {a, b, c} for {b, c, d} (#1929).
+#[test]
+fn its_own_leader_elected_on_another_set_is_reissued() {
+    let named_c = ShardAssignment {
+        leader: "broker-c".to_string(),
+        replicas: vec!["broker-b".to_string(), "broker-d".to_string()],
+        generation: 2,
+        ..assignment()
+    };
+    let next = named_c
+        .adopting_elected_set(
+            &elected("broker-c", &["broker-a", "broker-b"], 3, 1),
+            &|_| true,
+        )
+        .expect("adopted");
+    assert_eq!(
+        (next.leader.as_str(), next.generation),
+        ("broker-c", 4),
+        "{next:?}"
+    );
+    assert_eq!(
+        next.nodes().collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            &"broker-a".to_string(),
+            &"broker-b".to_string(),
+            &"broker-c".to_string()
+        ]),
+        "the set it opened on is the one being left"
+    );
+    let pending = next
+        .pending_set
+        .as_ref()
+        .expect("the recorded set is pending");
+    assert_eq!(pending.generation, 4);
+    assert_eq!(
+        pending.replicas.iter().collect::<BTreeSet<_>>(),
+        BTreeSet::from([&"broker-b".to_string(), &"broker-d".to_string()])
+    );
+    assert_eq!(next.validate(), Ok(()));
+
+    // Elected on the recorded set, it is adopted at the elected generation.
+    let same = named_c
+        .adopting_elected_set(
+            &elected("broker-c", &["broker-d", "broker-b"], 3, 2),
+            &|_| true,
+        )
+        .expect("adopted");
+    assert_eq!(
+        same,
+        ShardAssignment {
+            generation: 3,
+            ..named_c.clone()
+        }
+    );
+}

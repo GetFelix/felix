@@ -389,6 +389,7 @@ impl MetadataStateMachine {
                 expected_generation,
                 elected,
                 elected_set,
+                own_leader_set,
                 predated_set,
             } => store
                 .apply_adopt_elected_leader(
@@ -396,6 +397,7 @@ impl MetadataStateMachine {
                     expected_generation,
                     &elected,
                     elected_set,
+                    own_leader_set,
                     predated_set,
                 )
                 .await

@@ -223,6 +223,12 @@ fn shard_moves_from_env() -> crate::cluster::placement::MovePolicy {
             Some(millis) => Some(millis),
             None => defaults.restore_stall_millis,
         },
+        // Zero never renames a stuck leader.
+        stuck_leader_millis: match parse("FELIX_SHARD_STUCK_LEADER_MS") {
+            Some(0) => None,
+            Some(millis) => Some(millis),
+            None => defaults.stuck_leader_millis,
+        },
         // Zero places new shards on whatever is live.
         settle_millis: match parse("FELIX_PLACEMENT_SETTLE_MS") {
             Some(0) => None,
@@ -234,6 +240,7 @@ fn shard_moves_from_env() -> crate::cluster::placement::MovePolicy {
         replica_election: false,
         fenced_caches: false,
         joint_fence: false,
+        departed: defaults.departed,
         regions: defaults.regions,
     }
 }
