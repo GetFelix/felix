@@ -161,9 +161,15 @@ jobs:
       # points between runs of the same tree, hence 0.3. No baseline yet passes.
       - name: Gate on main's line coverage
         if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
           set -euo pipefail
-          if git fetch --quiet --depth=1 origin badges &&
+          # The baseline is main's; another base would be compared to the wrong numbers.
+          if [ "$BASE_REF" != main ]; then
+            echo "::notice::base is $BASE_REF, not main; skipping the coverage gate"
+            python3 scripts/ci/coverage_gate.py percent lcov.info
+          elif git fetch --quiet --depth=1 origin badges &&
             git show FETCH_HEAD:coverage-lines.txt > "$RUNNER_TEMP/baseline.txt"; then
             # The per-file summary is newer than the badge; absent, the gate
             # just skips the breakdown.
