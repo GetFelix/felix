@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793877149273,
+  "lastUpdate": 1793878893262,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -45448,6 +45448,58 @@ window.BENCHMARK_DATA = {
             "range": "4829.70",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 799901.20\nmean: 800155.68\nstdev: 4829.70\ncv: 0.60%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2356bc1b404cc6c753eaf5895b90e4b69a7c03ac",
+          "message": "fix(storage): a cache delete reports the value at its own offset (#1943) (#1956)\n\nAn unconditional cache delete reads the value it removed under the shard lock, right before it applies, so a delete racing a staged put to the same key reports the value at its own offset. Fixes #1943 (found by the simulator's cache linearizability check).",
+          "timestamp": "2026-11-05T03:32:07-08:00",
+          "tree_id": "b6810c0eaaab5d1602d531e28ebcfc3550090eab",
+          "url": "https://github.com/GetFelix/felix/commit/2356bc1b404cc6c753eaf5895b90e4b69a7c03ac"
+        },
+        "date": 1793878892650,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 349953.21,
+            "range": "5226.13",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 349953.21\nmean: 352287.66\nstdev: 5226.13\ncv: 1.48%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 349953.21,
+            "range": "5226.13",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 349953.21\nmean: 352287.66\nstdev: 5226.13\ncv: 1.48%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80182.39,
+            "range": "2633.10",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80182.39\nmean: 79471.58\nstdev: 2633.10\ncv: 3.31%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 801823.86,
+            "range": "26330.98",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 801823.86\nmean: 794715.85\nstdev: 26330.98\ncv: 3.31%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
