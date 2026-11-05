@@ -135,6 +135,11 @@ pub struct MovePolicy {
     /// held as a learner and re-admitted (#1737). Read from the store, as
     /// `replica_election` is.
     pub joint_fence: bool,
+    /// Brokers that deregistered while their last lease may still run.
+    /// Placement sees them as draining so what they lead stays put, but none
+    /// is promoted: a broker deregisters as it stops. Not configuration: each
+    /// pass reads it from the store.
+    pub departed: BTreeSet<String>,
     /// Where a stream with a home region may have copies: that region, and
     /// any region the allowlist bridges it to (`FELIX_REGION_BRIDGES`). A
     /// stream without one is placed anywhere.
@@ -158,6 +163,7 @@ impl Default for MovePolicy {
             replica_election: false,
             fenced_caches: false,
             joint_fence: false,
+            departed: BTreeSet::new(),
             regions: Arc::new(RegionRouter::new(String::new())),
         }
     }

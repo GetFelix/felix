@@ -148,3 +148,59 @@ async fn an_unreplicated_shard_cannot_be_abandoned_inside_the_lease() {
         "the log was abandoned while its owner may still serve it",
     );
 }
+
+/// `orders` led by broker-x, now marked down, with only broker-y reported
+/// caught up and broker-y in `lifecycle` with a fresh heartbeat.
+async fn leader_down_y_alone_caught_up(lifecycle: NodeLifecycle) -> InMemoryStore {
+    let store = led_by_x(NodeLivenessConfig::default().silence_before_down_ms() + 1).await;
+    let generation = store
+        .get_shard_assignment(&shard_zero())
+        .await
+        .expect("get")
+        .generation;
+    report(&store, generation, &["broker-y"], false).await;
+    let now = store.now_millis().await.expect("clock");
+    store
+        .record_node_heartbeat("broker-y", 0, now)
+        .await
+        .expect("beat");
+    store
+        .set_node_lifecycle("broker-x", NodeLifecycle::Down)
+        .await
+        .expect("x down");
+    store
+        .set_node_lifecycle("broker-y", lifecycle)
+        .await
+        .expect("y");
+    store
+}
+
+/// **A follower that deregistered is not promoted (#1977).** Inside its lease
+/// it is seen as draining, so what it leads stays put, but it has stopped:
+/// a shard handed to it has no leader at all. The shard waits instead.
+#[tokio::test]
+async fn a_follower_that_left_is_not_promoted() {
+    let liveness = NodeLivenessConfig::default();
+    let store = leader_down_y_alone_caught_up(NodeLifecycle::Left).await;
+
+    let outcome = reconcile_once(&store, &liveness, MovePolicy::default()).await;
+
+    assert_eq!(
+        outcome.placed, 0,
+        "the departed follower was promoted: {outcome:?}"
+    );
+    assert_eq!(leader(&store).await, "broker-x");
+}
+
+/// A draining follower that is still running is, when no live one holds the
+/// log (#1922).
+#[tokio::test]
+async fn a_draining_follower_is_still_promoted() {
+    let liveness = NodeLivenessConfig::default();
+    let store = leader_down_y_alone_caught_up(NodeLifecycle::Draining).await;
+
+    let outcome = reconcile_once(&store, &liveness, MovePolicy::default()).await;
+
+    assert_eq!(outcome.placed, 1, "{outcome:?}");
+    assert_eq!(leader(&store).await, "broker-y");
+}

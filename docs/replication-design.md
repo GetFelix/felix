@@ -3016,7 +3016,10 @@ every acknowledged record but not the old leader's unacknowledged tail, and
 with the floor it would not have been named until it had copied that tail.
 A follower on a draining broker that holds the log can still be promoted when
 no live follower does, so a drain under way does not turn this cost into an
-outage (`seating_a_replacement_keeps_what_the_old_set_acknowledged`).
+outage (`seating_a_replacement_keeps_what_the_old_set_acknowledged`). A broker
+that has deregistered is not one of these. Placement keeps its shards in place
+until its lease runs out, but the process has stopped, so it is never promoted
+(`a_follower_that_left_is_not_promoted`).
 `FelixShardReportFromAnswers.cfg` counts followers by their answers without
 the floor and loses the record, and `FelixShardReportFloor.cfg` passes
 (`a_new_leader_names_no_follower_before_it_answers`,
