@@ -682,15 +682,18 @@ one rule, applied wherever a copy is about to be served.
   did not answer, the leader serves the pair it holds, checked like any other
   (`without_the_group_fence_the_group_logs_stay_as_they_are`). That can
   redeliver work a majority had finished but cannot skip a record. Only a
-  refusal that would also stop the records' fence keeps the shard closed:
-  a newer leader's answer, or replicas that promised the generation to
-  another node. As on the records' fence, a newer ballot or replica set, or
-  a promise away that leaves no majority, is reported to the control plane
-  so it names the shard again one generation up
+  refusal that would also stop the records' fence keeps the shard closed.
+  A newer leader's answer keeps it pending. A newer ballot or replica set
+  is reported to the control plane, which names the shard again one
+  generation up (`a_newer_group_ballot_has_the_fence_refused`). A replica
+  that promised the generation to another node counts against the
+  majority: one promise does not hold the fence while the rest still make
+  a majority (`a_group_fence_one_replica_promised_away_opens`). Once they
+  cannot, the refusal is reported if the others were only silent
   (`a_group_fence_promised_away_is_refused`,
-  `a_newer_group_ballot_has_the_fence_refused`). One replica's promise away
-  does not hold the fence while the rest still make a majority
-  (`a_group_fence_one_replica_promised_away_opens`).
+  `a_promise_away_and_silence_refuse_the_group_fence`), and the shard stays
+  pending if another replica refused for some other reason
+  (`a_promise_away_and_a_decline_keep_the_group_fence_pending`).
 
 `FelixGroups.tla` models the two logs on every replica, independent flushes
 and crashes, the check, the fence and the fallback, and checks that no

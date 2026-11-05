@@ -403,6 +403,7 @@ pub(crate) async fn fence_shard_as<R: PeerRequester>(
                     &replicas,
                     reported_ids,
                     own_counts,
+                    joint_fence,
                 )
             )
         }
@@ -788,12 +789,16 @@ struct GroupRound {
 /// pass them, so serving it may redeliver but never skips a record; and the
 /// records' fence already refuses the old leader on both logs. So no group
 /// log can keep a shard closed, except a refusal the records' fence would
-/// also stop at ([`Refusal`]).
+/// also stop at ([`Refusal`]). A replica that promised the generation away
+/// is one of those once the majority is short: the shard is refused, or
+/// stays pending when another replica also declined or `joint` is set, as
+/// on the records' fence, rather than serve this broker's pair.
 ///
 /// Without `own_counts` this broker's copy is marked wiped, and its group
 /// logs may lack what a majority acknowledged, so they do not count toward
 /// the majority; short of one, the furthest answer still beats them, and
 /// with no answer at all the shard stays pending rather than serve them.
+#[allow(clippy::too_many_arguments)]
 async fn fence_groups<R: PeerRequester>(
     requester: &R,
     broker: &Arc<Broker>,
@@ -802,6 +807,7 @@ async fn fence_groups<R: PeerRequester>(
     replicas: &[&felix_router::NodeRef],
     reported_ids: Option<&BTreeMap<String, String>>,
     own_counts: bool,
+    joint: bool,
 ) -> Result<Option<GroupRound>, Outcome> {
     if broker.group_reader().is_none() {
         return Ok(None);
@@ -855,7 +861,12 @@ async fn fence_groups<R: PeerRequester>(
             // Both answers from the copy the report named, or neither counts.
             let copy = reported_copy(reported_ids, &node_id, dead_letters.3)
                 && reported_copy(reported_ids, &node_id, cursors.3);
-            (node_id, addr, dead_letters.2, cursors.2, copy)
+            // Either log took the fence, but from another copy.
+            let other_copy = [&dead_letters, &cursors].into_iter().any(|answer| {
+                matches!(answer.2, Ok(InternalMessage::FenceOk(_)))
+                    && !reported_copy(reported_ids, &node_id, answer.3)
+            });
+            (node_id, addr, dead_letters.2, cursors.2, copy, other_copy)
         });
     }
     let mut answered = Vec::new();
@@ -870,7 +881,7 @@ async fn fence_groups<R: PeerRequester>(
     let mut refusals: Vec<String> = Vec::new();
     let mut declined = 0;
     while answered.len() < needed {
-        let Some((node_id, addr, dead, cursor, copy)) = asks.next().await else {
+        let Some((node_id, addr, dead, cursor, copy, other_copy)) = asks.next().await else {
             break;
         };
         let refused = [&dead, &cursor]
@@ -915,6 +926,8 @@ async fn fence_groups<R: PeerRequester>(
         }
         match (dead, cursor) {
             (Ok(InternalMessage::FenceOk(_)), Ok(InternalMessage::FenceOk(_))) if !copy => {
+                // As an answer from another copy on the records' fence: a
+                // refusal below may not blame the shortfall on the promise.
                 declined += 1;
                 tracing::info!(
                     node_id = %node_id,
@@ -939,7 +952,7 @@ async fn fence_groups<R: PeerRequester>(
                                 | PeerError::ShuttingDown)
                     )
                 };
-                if !(silent(&dead) && silent(&cursor)) {
+                if other_copy || !(silent(&dead) && silent(&cursor)) {
                     declined += 1;
                 }
                 tracing::debug!(
@@ -955,10 +968,11 @@ async fn fence_groups<R: PeerRequester>(
     }
     // A promise away never comes back: with the rest only silent, the
     // refusal moves the shard up. A replica that answered otherwise, or from
-    // another copy, keeps it pending, as on the records' fence. Serving this
+    // another copy, keeps it pending, as on the records' fence, and so does
+    // a joint fence, where a rename could leave a set unfenced. Serving this
     // broker's own pair instead would leave a replica that refuses it.
     if answered.len() < needed && !promised_away.is_empty() {
-        if declined == 0 {
+        if declined == 0 && !joint {
             return Err(promised_away_refused(
                 &promised_away,
                 &refusals,
