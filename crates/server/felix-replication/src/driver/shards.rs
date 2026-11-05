@@ -1395,10 +1395,17 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             && tail.is_some_and(|tail| cursor.next_offset < tail);
         // A straggler's refusal for its routing view leaves the shard owed,
         // as a pass that took it would: the next pass is what resolves it.
+        // Only while the mark is short of the tail, or every level shard of
+        // a follower stuck behind would take a pass on each append.
+        let behind = self
+            .states
+            .get(&key)
+            .and_then(|state| state.last.as_ref())
+            .is_some_and(|last| last.behind);
         let refused_behind = current
             && cursor.halted.is_none()
             && cursor.refused
-            && tail.is_some_and(|tail| cursor.next_offset < tail);
+            && tail.is_some_and(|tail| cursor.next_offset < tail && (mark < tail || behind));
         if refused_behind && let Some(state) = self.states.get_mut(&key) {
             state.owed = true;
         }
