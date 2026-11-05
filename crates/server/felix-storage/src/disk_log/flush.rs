@@ -56,6 +56,8 @@ impl LogInner {
         // seen here rather than missed: `commit_roll` sets it before releasing
         // the lock this read just took.
         let retired = self.pending_seal.lock().clone();
+        // Read under the flush lock, which a truncation takes too.
+        let rewinds = self.mark.rewinds();
         let had_pending_seal = retired.is_some();
 
         let started = std::time::Instant::now();
@@ -102,7 +104,7 @@ impl LogInner {
         let outcome = match via_uring {
             Some(result) => result
                 .and_then(|()| injected_failure())
-                .map(|()| self.note_synced(segment_id, synced_bytes)),
+                .map(|()| self.note_synced_since(segment_id, synced_bytes, rewinds)),
             None => {
                 let marker = Arc::clone(&self);
                 self.flusher
@@ -115,7 +117,7 @@ impl LogInner {
                         injected_failure()?;
                         // On this thread too: the mark is a write, and a write
                         // waits on a busy filesystem journal like a sync does.
-                        marker.note_synced(segment_id, synced_bytes);
+                        marker.note_synced_since(segment_id, synced_bytes, rewinds);
                         Ok(())
                     })
                     .await

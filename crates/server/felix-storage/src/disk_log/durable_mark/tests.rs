@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use bytes::Bytes;
 use tempfile::tempdir;
@@ -207,5 +208,50 @@ async fn a_flush_writes_the_mark_off_the_callers_thread() {
     log.append(&batch("synced", 10)).await.expect("append");
     log.sync().await.expect("sync");
     assert!(load(dir.path()).expect("mark").synced_bytes > SEGMENT_HEADER_LEN);
+    // A power-loss test may force the ring for the whole process, and the
+    // ring's flush has no flush thread to write the mark on.
+    #[cfg(target_os = "linux")]
+    if crate::io::uring_fsync::enabled() {
+        return;
+    }
     assert_eq!(log.inner.mark.writer().as_deref(), Some("felix-flush"));
+}
+
+/// **A flush its caller stopped waiting for does not move the mark past a
+/// truncation that landed meanwhile.** The flush finishes on the flush
+/// thread after its lock is gone, so the truncation runs first; the mark the
+/// flush then wrote pointed past the cut, and a torn tail there would read as
+/// interior corruption after a crash.
+#[tokio::test]
+async fn an_abandoned_flush_does_not_mark_past_a_truncation() {
+    let dir = tempdir().expect("dir");
+    let log = DiskLog::open(dir.path(), "t/ns/s/0", config()).expect("open");
+    log.append(&batch("kept", 10)).await.expect("append");
+    log.sync().await.expect("sync");
+    log.append(&batch("cut", 10)).await.expect("append");
+
+    // Park the flush thread, then abandon a flush queued behind it.
+    let (release, parked) = std::sync::mpsc::channel::<()>();
+    let flusher = Arc::clone(&log.inner);
+    let park = tokio::spawn(async move {
+        flusher
+            .flusher
+            .run(move || {
+                let _ = parked.recv();
+                Ok(())
+            })
+            .await
+    });
+    tokio::task::yield_now().await;
+    let abandoned = tokio::time::timeout(std::time::Duration::from_millis(50), log.sync()).await;
+    assert!(abandoned.is_err(), "the flush was not held");
+
+    log.truncate(10).await.expect("truncate");
+    let cut = load(dir.path()).expect("mark");
+    release.send(()).expect("release");
+    park.await.expect("join").expect("park");
+    // Behind the abandoned flush, so it has run once this returns.
+    log.inner.flusher.run(|| Ok(())).await.expect("drain");
+
+    assert_eq!(load(dir.path()), Some(cut));
 }
