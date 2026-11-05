@@ -868,7 +868,8 @@ fn take_work(
     let learner = shard::staged_learner(previous.as_ref(), route);
     let mut entry = match previous {
         Some(entry) if entry.generation == route.generation => entry,
-        _ => ShardCursors::at(route.generation),
+        Some(entry) => entry.next(route.generation),
+        None => ShardCursors::at(route.generation),
     };
     entry.learner = learner;
     // A draining shard reports even with nobody to ship to: its move lost

@@ -472,7 +472,13 @@ went to an earlier leader, from the copy that promotion named or from one
 before it. Storage identities never repeat: a wipe or a machine crash
 rotates one, and a process crash keeps it only when nothing was lost. An
 answer under the inherited identity therefore comes from a copy that has
-kept everything it acknowledged. A leader sends no report while it still
+kept everything it acknowledged. A set change that keeps the leader, such as
+seating a replacement for a drained follower, is not a promotion: at the new
+generation the leader names a follower it has not reached yet by the identity
+it named it by at the generation before, the copy it answered from or its own
+inherited one. Otherwise a follower cut off from the leader across the change
+is named with an empty identity, and a failover whose majority needs it can
+never open (#1922). A leader sends no report while it still
 fences, so a copy whose fence answer it did not count is named in its
 reports only once it has opened and ships to that copy. Without an inherited identity, from a leader nobody promoted or one that
 predates the field, the member is named with an empty identity, which
@@ -2620,7 +2626,8 @@ once the restarted broker has registered. Each report also names the
 incarnation every follower gave on the connection its positions came over
 (`replica_incarnations`, `null` for one that had not registered yet, omitted
 when empty). For a follower it has not reached yet at its generation, a
-leader promoted by a failover reports the identity that failover named it by
+leader reports the identity it inherited for it, from the failover that
+promoted it or from its own previous generation
 (`inherited_storage_ids`, omitted when empty, kept as `inherited_storage`).
 Placement reads it only to name that follower in the next failover's fence
 (see "Fencing a promotion"), never to decide who is caught up.
@@ -2987,10 +2994,18 @@ acknowledges a record on A and B while C lags, A dies and B is promoted, B
 reports before C answers and names C, B dies, and C is promoted without the
 record. So wherever promotion trusts the report, the bound is never below
 where the leader's generation begins in its own log, or its whole log if no
-start was recorded. A cache's counter log gets the same floor. A stream shard
-that acknowledges by its followers skips it, and so does a cache shard under
-`fenced_caches`, for both its logs, because its promoted leader
-fences a majority and takes the furthest log before it serves.
+start was recorded. A cache's counter log gets the same floor.
+
+The floor holds when the followers decide the mark too (`majority_ack`, and
+`fenced_caches` for a cache). The promoted leader fences a majority and takes
+the furthest log, but that only helps when the majority it reaches holds the
+records. Once the replica set has changed since a record was acknowledged, a
+majority of the sets the next leader fences need not hold it. The model found
+such a run (issue 1922): a leader at a new generation named its followers
+caught up at offset 0 before they answered, one of them was promoted with an
+empty log, and its fence got answers only from brokers that never held the
+record. Named only once they hold what their leader inherited, those followers
+are not candidates until the leader has shipped the record to them.
 
 The cost is availability. Right after a failover no follower is named until
 one has copied everything the new leader inherited, including a tail the old
@@ -2999,10 +3014,16 @@ leaves the shard unplaced until a broker holding the log returns, where
 before a follower could have been promoted at once. In issue 878 broker-2 held
 every acknowledged record but not the old leader's unacknowledged tail, and
 with the floor it would not have been named until it had copied that tail.
+A follower on a draining broker that holds the log can still be promoted when
+no live follower does, so a drain under way does not turn this cost into an
+outage (`seating_a_replacement_keeps_what_the_old_set_acknowledged`).
 `FelixShardReportFromAnswers.cfg` counts followers by their answers without
 the floor and loses the record, and `FelixShardReportFloor.cfg` passes
 (`a_new_leader_names_no_follower_before_it_answers`,
-`a_new_cache_leader_names_no_follower_missing_inherited_counters`). The
+`a_new_cache_leader_names_no_follower_missing_inherited_counters`, and with the
+followers deciding the mark
+`a_leader_acknowledging_by_followers_names_none_before_they_answer` and
+`a_cache_leader_acknowledging_by_followers_names_none_missing_inherited_counters`). The
 cluster test `a_move_cut_short_by_kills_promotes_no_follower_short_of_the_log`
 replays issue 878 in lease mode: no follower is promoted until the destination
 returns. With `majority_ack` finalized the cut-over is fenced with no lease
@@ -3036,7 +3057,9 @@ rather than being acknowledged on a report nobody received.
 With `majority_ack` finalized a `Quorum` stream shard drops this ordering: the
 report may trail the acknowledgement, and whichever replica is promoted fences
 a majority and takes the furthest log before it serves, which carries every
-acknowledged record ([Acknowledging by the followers](#acknowledging-by-the-followers)).
+acknowledged record as long as the report never names a follower short of the
+log its leader inherited (see "A new leader names nobody short of the log it
+inherited" below, and [Acknowledging by the followers](#acknowledging-by-the-followers)).
 Promotion still reads the report, and a report older than its freshness window
 still leaves the shard unplaced, so a leader cut off from the control plane for
 longer than that can only be replaced once it reports again.
