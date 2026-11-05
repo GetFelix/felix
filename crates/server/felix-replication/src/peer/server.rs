@@ -269,9 +269,8 @@ impl PeerServer {
     /// stands for a shard only while it suspects the leader, and a restarted
     /// leader that answered pings before it could serve would hold its shards
     /// with nobody serving them.
-    pub fn with_serving(self, serving: CancellationToken) -> Self {
-        // Revert check, restored in the next commit.
-        let _ = serving;
+    pub fn with_serving(mut self, serving: CancellationToken) -> Self {
+        self.serving = Some(serving);
         self
     }
 
