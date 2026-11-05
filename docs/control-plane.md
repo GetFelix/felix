@@ -455,10 +455,12 @@ regrant margin, on the store's clock. Until then nothing it leads is promoted
 away, abandoned, or re-placed; a move it takes part in can still hand a shard
 over. Placement never names it leader again at a new generation, even
 when a move off it gives up after the fence or it refuses a generation: the
-shard waits for another caught-up copy or for the lease to run out. Only an
-operator's cancel hands it back. A node already silent for that long, such as
-one `down` before it was deregistered, is failed over straight away. An operator deregistering a live
-broker should expect its shards to move about 19 s later with the default
+shard waits for another caught-up copy or for the lease to run out. While a
+follower is being seated, only the lease running out ends the wait. It is
+never promoted itself, as a draining follower can be. Only an operator's cancel
+hands it back. A node already silent for that long, such as one `down` before
+it was deregistered, is failed over straight away. An operator deregistering a
+live broker should expect its shards to move about 19 s later with the default
 settings. In-memory streams are the exception, as for a drain: they have no log
 to move and are re-placed at once.
 
@@ -1695,7 +1697,8 @@ leader itself. A leader that has deregistered does not take the shard back
 unless an operator cancels the move: it is stopping, and a new generation
 would land on a broker about to stop serving it. The shard stays fenced until another caught-up replica can take
 it or the leader's lease runs out and it fails over (`admin plan` says the
-leader has deregistered). A leader that dies mid-move is a failover, where
+leader has deregistered). While a follower is being seated, only the lease ends
+the wait. A leader that dies mid-move is a failover, where
 the successor is a candidate like any other replica, except on a durable
 `Quorum` stream: there a broker from before every change of leader was
 fenced would open the shard as a cut-over, without the fence, so failover
