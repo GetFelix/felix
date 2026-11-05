@@ -14,8 +14,9 @@ name: Simulation sweep (nightly)
 
 on:
   schedule:
-    # Every night at 05:13 UTC, after the power-loss sweep.
-    - cron: "13 5 * * *"
+    # 09:13 UTC is 01:13 Pacific: the sweep (about 6.5 h at ten jobs at once)
+    # finishes by morning and stays off the runners daytime merges need.
+    - cron: "13 9 * * *"
   workflow_dispatch:
     inputs:
       first:
@@ -112,6 +113,8 @@ jobs:
     timeout-minutes: 180
     strategy:
       fail-fast: false
+      # At most ten shards at once, so the sweep never takes every runner.
+      max-parallel: 10
       matrix:
         shard: ${{ fromJSON(needs.build.outputs.shards) }}
     steps:

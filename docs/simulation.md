@@ -64,7 +64,8 @@ cargo test -p felix-cluster --lib history::
 Pull requests run seeds 1 to 4 with the workspace tests. A bug that needs a
 rare fault schedule may show on one seed in hundreds, so `dst-nightly.yml`
 runs seeds 1 to 2000 every night. It builds the test once, splits the seeds
-across 50 jobs, and each job runs its 40 seeds two at a time. Every seed runs
+across 50 jobs, ten at a time, and each job runs its 40 seeds two at a time.
+It starts at 01:13 Pacific and takes about six and a half hours. Every seed runs
 the same checkers as a pull request, the history checker included.
 
 A seed that fails runs twice more, so the summary can say whether it fails
