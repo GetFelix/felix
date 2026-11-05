@@ -97,7 +97,6 @@ fn stalled(outcome: &SimOutcome) -> bool {
 /// The replication driver retries a pending fence with a zero delay, forever,
 /// when the gate awaits a generation the route does not have yet.
 #[test]
-#[ignore = "#1941"]
 fn seed_1_replication_driver_does_not_spin_on_a_pending_fence() {
     log();
     let outcome = run_seed(1, SimConfig::for_seed(1));
@@ -107,7 +106,6 @@ fn seed_1_replication_driver_does_not_spin_on_a_pending_fence() {
 /// More seeds that stall like seed 1. They stall at the first faults, so the
 /// cluster checkers see little of them until it is fixed.
 #[test]
-#[ignore = "#1941"]
 fn seed_2_replication_driver_does_not_spin() {
     log();
     let outcome = run_seed(2, SimConfig::for_seed(2));
@@ -115,7 +113,6 @@ fn seed_2_replication_driver_does_not_spin() {
 }
 
 #[test]
-#[ignore = "#1941"]
 fn seed_3_replication_driver_does_not_spin() {
     log();
     let outcome = run_seed(3, SimConfig::for_seed(3));
@@ -123,7 +120,7 @@ fn seed_3_replication_driver_does_not_spin() {
 }
 
 #[test]
-#[ignore = "#1941"]
+#[ignore = "seed 4 still stalls after #1959; under triage"]
 fn seed_4_replication_driver_does_not_spin() {
     log();
     let outcome = run_seed(4, SimConfig::for_seed(4));
@@ -131,7 +128,6 @@ fn seed_4_replication_driver_does_not_spin() {
 }
 
 #[test]
-#[ignore = "#1941"]
 fn seed_6_replication_driver_does_not_spin() {
     log();
     let outcome = run_seed(6, SimConfig::for_seed(6));
@@ -146,7 +142,7 @@ fn found(outcome: &SimOutcome, checker: &str) -> bool {
 /// The control plane pauses and a shard leader crashes; once everything heals
 /// a restarted leader stays in `fencing` and its shard is never served.
 #[test]
-#[ignore = "#1948, and #1941 while seed 6 stalls"]
+#[ignore = "#1948"]
 fn seed_6_every_shard_is_served_after_a_paused_control_plane_and_a_leader_crash() {
     log();
     let outcome = run_seed(6, SimConfig::for_seed(6));
@@ -157,7 +153,7 @@ fn seed_6_every_shard_is_served_after_a_paused_control_plane_and_a_leader_crash(
 /// A leader's committed mark stays below its log tail after the faults heal,
 /// so the shard cannot be read to its tail.
 #[test]
-#[ignore = "#1949, and #1941 while seed 6 stalls"]
+#[ignore = "#1949"]
 fn seed_6_every_shard_can_be_read_after_the_faults_heal() {
     log();
     let outcome = run_seed(6, SimConfig::for_seed(6));
@@ -168,7 +164,7 @@ fn seed_6_every_shard_can_be_read_after_the_faults_heal() {
 /// A broker frozen while its cache shards moved serves them again at the old
 /// generation, next to the new leader, once it thaws.
 #[test]
-#[ignore = "#1955, and #1941 while seed 4 stalls"]
+#[ignore = "#1955, and seed 4 still stalls after #1959"]
 fn seed_4_a_thawed_broker_does_not_serve_shards_that_moved() {
     log();
     let outcome = run_seed(4, SimConfig::for_seed(4));
@@ -198,13 +194,11 @@ fn assert_cache_is_linearizable(seed: u64) {
 }
 
 #[test]
-#[ignore = "#1943, and #1941 while seed 1 stalls"]
 fn seed_1_cache_keeps_acknowledged_puts_across_a_restart() {
     assert_cache_is_linearizable(1);
 }
 
 #[test]
-#[ignore = "#1943"]
 fn seed_5_cache_keeps_acknowledged_puts_across_a_failover() {
     assert_cache_is_linearizable(5);
 }
