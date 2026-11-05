@@ -507,7 +507,7 @@ weights=(
   "FelixShardElectRouteLag 12"
   "FelixShardElectRouteLagReportOnly 18"
   "FelixShardElectRouteLagNoFix 2"
-  "FelixShardElectRouteLagFence 18"
+  "FelixShardElectRouteLagFence 20"
   "FelixShardElectRouteLagFenceNoFix 1"
   "FelixShardElectAdoptFailoverApart0Gen2 5"
   "FelixShardElectAdoptFailoverApart1Gen2 5"
