@@ -1006,7 +1006,8 @@ impl ShardReaders {
     ///
     /// A shard whose sessions need no lease ([`ShardFence::sessions_lease_free`])
     /// is left serving at the lapse. Its readers end instead when a follower
-    /// refuses it for a newer leader ([`ShardFence::depose`]), or when no
+    /// says the control plane assigned a newer generation, or this broker took
+    /// one itself ([`ShardFence::depose`]), or when no
     /// majority has confirmed it for a lease duration. The rounds that check
     /// run only while the lease is lapsed; while it holds, a new assignment
     /// reaches this broker the usual way.
@@ -1933,6 +1934,12 @@ async fn apply_open(
             // control plane past a ballot it never issued (#1914).
             if err.downcast_ref::<Superseded>().is_some() {
                 lifecycle.fence().refused(&key, generation, "");
+            } else if err.downcast_ref::<GaveUp>().is_none()
+                && err.downcast_ref::<PromisedAway>().is_none()
+            {
+                // The same assignment never retries the open, so unreported
+                // this is a dead end. Once, so a lasting fault does not churn.
+                lifecycle.fence().open_failed(&key, generation);
             }
             lifecycle.open_failed(&key, generation, format!("{err:#}"));
             drop(lifecycle);

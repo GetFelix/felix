@@ -547,11 +547,14 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         fence.passed(mark_key, route.generation);
     }
     // Read from the cursors the last pass left: a follower halted this way
-    // stays halted until the assignment changes.
+    // stays halted until the assignment changes. Only an assignment names a
+    // newer leader. A follower's ballot or view may be a standing that never
+    // opened, and with a majority still answering this leader serves; with
+    // none left its rounds fail and its refusal is reported.
     if entry
         .followers
         .iter()
-        .any(|cursor| cursor.halted == Some(crate::Halt::Fenced))
+        .any(|cursor| cursor.halted == Some(crate::Halt::Fenced) && cursor.assigned_newer)
     {
         fence.deposed(mark_key, route.generation);
     }
