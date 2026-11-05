@@ -131,17 +131,20 @@ Connections").
     `AckMode::None` data is lost. `Client::finish` finishes brokers
     together, so the total is about one timeout. Default: 60 s.
 - `publish_shard_streams` (env: `FELIX_PUB_SHARD_STREAMS`)
-  - Most shards a client moves onto a publish stream of their own at once,
-    per broker. Default: `64`. `0` keeps every publish on the pooled streams.
-  - Healthy shards share the pooled streams. A shard whose answer is overdue
-    at the head of its stream (eight times the stream's usual wait, at least
-    250 ms) moves onto a stream of its own once its publishes in flight are
-    answered, so it no longer holds up the shards it shared with. The other
-    shards of that stream move too rather than queue behind it. A moved shard
-    returns to the pool after 5 s without an overdue answer on its stream or
-    the pool, longer if it keeps stalling. See "A stream of its own for a
-    stalled shard" in [protocol.md](protocol.md#pipelined-publishes).
-  - Only with `hash_stream`. A plain `Connection` learns a stream's width
+  - Most publish streams a client opens per broker for one shard each,
+    beside the pool. Default: `4`. `0` turns them off. The first
+    four shards seen per broker (across all streams) get a stream each; later
+    shards use the pool, where a stalled shard takes slots from the pooled
+    stream's publish window. Its answers do not hold back the other shards'
+    answers: a broker that grants a window answers plain acked publishes as
+    they complete, and the writer keeps sending while one is outstanding.
+    To isolate every shard, raise it to the total number of shards published
+    to on a broker.
+  - Each publish goes on its shard's own stream, so a shard stalled on the
+    broker uses up only its own publish window, and one stream's shards spread over the
+    client's connections and listeners. Opened on the shard's first publish,
+    on the least-loaded connection, and kept. Shards past the cap use the
+    pool. Only with `hash_stream`. A plain `Connection` learns a stream's width
     from the broker on its first keyed publish to it; a `Client`
     already knows it. Against a broker with `FEATURE_PUBLISH_WIDTH` the
     width is declared ahead of keyed batches and checked by the broker, and

@@ -1164,22 +1164,26 @@ export FELIX_PUB_STREAMS_PER_CONN="4"  # More concurrency
 
 ### `FELIX_PUB_SHARD_STREAMS`
 
-**Description**: Most shards a client moves onto a publish stream of their
-own at once, per broker (client). Healthy shards share the pooled streams. A
-shard whose answer is overdue at the head of its stream gets a stream of its
-own, so it stops holding up the shards it shared with, and those shards move
-too rather than queue behind it. A moved shard returns to the pool once it and
-the pool have been calm for 5 s (longer if it keeps stalling). A shard past
-the cap stays on the pool. `0` keeps every publish on the pool. Before 0.7 this
-was the number of shards given a stream of their own up front, default 4.
+**Description**: Most publish streams a client opens per broker for one shard
+each, beside the pooled ones (client). Each publish goes on its shard's own
+stream, so a stalled shard uses up only its own publish window and one
+stream's shards spread over the client's connections. Shards past the cap share the pool.
+`0` turns them off, which puts every publish to a stream on one pooled
+stream.
 
 **Type**: Non-negative integer (count)
 
-**Default**: `64`.
+**Default**: `4`. The first four shards the client publishes to on a broker
+(first come, across all streams) get their own stream; later shards use the
+pool, where a stalled shard takes slots from the pooled stream's publish
+window. Its answers do not hold back the other shards' answers, since the
+broker answers plain acked publishes as they complete. To isolate
+every shard, set it to the total number of shards the client publishes to on a
+broker, at some throughput cost when keys spread over many shards.
 
 **Example**:
 ```bash
-export FELIX_PUB_SHARD_STREAMS="64"
+export FELIX_PUB_SHARD_STREAMS="16"
 export FELIX_PUB_SHARD_STREAMS="0"   # Every publish on the pool
 ```
 
@@ -1355,7 +1359,7 @@ export FELIX_BROKER_PUB_STREAM_RECV_WINDOW="4194304"
 
 ### `FELIX_BROKER_PUBLISH_WINDOW`
 
-**Description**: The most acknowledged publishes one stream may have unanswered when its client pipelines them (`FEATURE_PUBLISH_PIPELINE`). The broker grants this number in `AuthOk.publish_window`, answers a pipelining stream's publishes in the order it sent them, and stops reading that stream's publishes while this many are outstanding on it. Each stream has its own window, so one stuck behind a stalled shard does not stall the others on its connection. A connection's outstanding publishes therefore scale with its streams (up to QUIC's 1024) times this window; the payload bytes the broker holds for one connection stay under `FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES`. `0` turns pipelining off: no client is granted a window, and acks come back in completion order.
+**Description**: The most acknowledged publishes one stream may have unanswered when its client pipelines them (`FEATURE_PUBLISH_PIPELINE`). The broker grants this number in `AuthOk.publish_window`, answers a pipelining stream's publishes in the order it sent them (only its idempotent ones, for a client that offered `FEATURE_PUBLISH_ANSWER_ON_COMPLETION`, which the Rust client does), and stops reading that stream's publishes while this many are outstanding on it. Each stream has its own window, so one stuck behind a stalled shard does not stall the others on its connection. A connection's outstanding publishes therefore scale with its streams (up to QUIC's 1024) times this window; the payload bytes the broker holds for one connection stay under `FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES`. `0` turns pipelining off: no client is granted a window, and acks come back in completion order.
 
 **Type**: Non-negative integer
 

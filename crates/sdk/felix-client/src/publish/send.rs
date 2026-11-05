@@ -11,9 +11,8 @@ use anyhow::{Context, Result};
 use felix_wire::{AckMode, FrameHeader, Message};
 use tokio::sync::oneshot;
 
-use super::routing::Routed;
 use super::widths::Width;
-use super::writer::PublishRequest;
+use super::writer::{PublishRequest, PublishWorker};
 use super::{AckOutcome, Publisher};
 #[cfg(feature = "telemetry")]
 use crate::telemetry::frame_counters;
@@ -128,7 +127,6 @@ impl Publisher {
                 request_id: None,
                 _permit: permit,
                 response: response_tx,
-                ticket: worker.ticket.clone(),
             })
             .await
             .context("enqueue binary batch")?;
@@ -201,7 +199,6 @@ impl Publisher {
                 request_id: Some(request_id),
                 _permit: permit,
                 response: response_tx,
-                ticket: worker.ticket.clone(),
             })
             .await
             .context("enqueue acked binary batch")?;
@@ -271,7 +268,6 @@ impl Publisher {
                 request_id,
                 _permit: permit,
                 response: response_tx,
-                ticket: worker.ticket.clone(),
             })
             .await
             .context("enqueue publish")?;
@@ -359,7 +355,7 @@ impl Publisher {
     /// Queue a JSON publish on `worker` and wait for its answer.
     pub(super) async fn send_message(
         &self,
-        worker: &Routed<'_>,
+        worker: &PublishWorker,
         message: Message,
         ack: AckMode,
         request_id: Option<u64>,
@@ -387,7 +383,6 @@ impl Publisher {
                 request_id,
                 _permit: permit,
                 response: response_tx,
-                ticket: worker.ticket.clone(),
             })
             .await
             .context("enqueue publish batch")?;

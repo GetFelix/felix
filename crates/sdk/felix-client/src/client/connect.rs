@@ -26,7 +26,7 @@ use crate::config::{
 use crate::connection::{Credentials, NodeConnections, NodeLimits, OpenedStream};
 use crate::error::token_failure;
 use crate::publish::{
-    HeadWatch, LearnWidth, OpenWorker, PublishAdmission, PublishWorker, ShardStreams, StreamWidths,
+    LearnWidth, OpenWorker, PublishAdmission, PublishWorker, ShardStreams, StreamWidths,
     run_publisher_writer_with_limit,
 };
 
@@ -736,8 +736,11 @@ pub(super) fn spawn_publish_worker(
     let (tx, rx) = mpsc::channel(publish_queue_depth);
     let max_frame_bytes = runtime_config.max_frame_bytes;
     let window = lease.publish_window(&negotiated);
-    let head = Arc::new(HeadWatch::default());
-    let writer_head = Arc::clone(&head);
+    let answers_on_completion = window.is_some()
+        && felix_wire::supports_feature(
+            negotiated.server_features_hi,
+            felix_wire::FEATURE_PUBLISH_ANSWER_ON_COMPLETION,
+        );
     // Not colocated with the transport drivers (unlike the subscription read
     // pump): publisher writers block in `write_all` against a full send
     // window, and parking them on the I/O thread starves the drivers they
@@ -751,7 +754,7 @@ pub(super) fn spawn_publish_worker(
             publish_chunk_bytes,
             max_frame_bytes,
             window,
-            writer_head,
+            answers_on_completion,
         )
         .await
     });
@@ -770,7 +773,6 @@ pub(super) fn spawn_publish_worker(
             felix_wire::FEATURE_EXPLICIT_SHARD,
         ),
         takes_record_headers: negotiated.server_flags_ext & felix_wire::EXT_RECORD_HEADERS != 0,
-        head,
     }
 }
 

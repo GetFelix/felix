@@ -134,13 +134,12 @@ async fn a_batch_in_doubt_is_not_re_sent_under_another_key() -> Result<()> {
     Ok(())
 }
 
-/// **Under a `Client`, each shard's keyed batches go out on one stream.**
-/// Each shard's sequences need one writer, or a later batch could reach the
-/// leader before an earlier one. Healthy shards share the pool, so no stream
-/// is opened for them.
+/// **Under a `Client`, a keyed batch goes out on its own shard's
+/// stream.** Each shard's sequences have one writer; sent on shard 0's
+/// stream, a keyed batch would wait behind a stalled shard 0.
 #[tokio::test]
 #[serial_test::serial]
-async fn a_cluster_keyed_batch_keeps_its_shard_on_one_stream() -> Result<()> {
+async fn a_cluster_keyed_batch_goes_out_on_its_shards_stream() -> Result<()> {
     let (broker, cert) = StubBroker::start(ok)?;
     let cluster = Client::connect(
         &[broker.addr],
@@ -150,9 +149,11 @@ async fn a_cluster_keyed_batch_keeps_its_shard_on_one_stream() -> Result<()> {
     .await?;
     let cluster = Arc::new(cluster);
     let producer = cluster.idempotent_producer().await?;
+    let shard = |key: &Bytes| felix_wire::routing::shard_for(STREAM_SHARDS, Some(key.as_ref()));
     let (a, b) = keys_on_two_shards();
+    let (a, b) = if shard(&a) == 0 { (b, a) } else { (a, b) };
 
-    for key in [&a, &b, &a, &b, &a] {
+    for key in [&a, &b, &a] {
         producer
             .publish_keyed("t1", "default", "orders", key.clone(), b"x".to_vec())
             .await?;
@@ -175,9 +176,15 @@ async fn a_cluster_keyed_batch_keeps_its_shard_on_one_stream() -> Result<()> {
         streams[0]
     };
     let (on_a, on_b, unkeyed) = (stream_of(Some(&a)), stream_of(Some(&b)), stream_of(None));
-    assert!(
-        on_a == on_b && on_b == unkeyed,
-        "a healthy shard left the pool: {sent:?}"
+    assert_ne!(
+        on_a,
+        unkeyed,
+        "shard {}'s batch went on shard 0's stream",
+        shard(&a)
     );
+    assert_ne!(on_a, on_b, "two shards shared a stream");
+    if shard(&b) == 0 {
+        assert_eq!(on_b, unkeyed, "shard 0 went out on two streams");
+    }
     Ok(())
 }

@@ -32,8 +32,7 @@ const NODE_EXPIRY: Duration = Duration::from_secs(15);
 /// margin for a busy runner.
 const OUTAGE_BOUND: Duration = Duration::from_secs(90);
 /// How long one publish may take. Above the broker's own ack bound (the 5 s
-/// quorum wait plus 1.5 s), so a publish answered late behind a stalled
-/// stream-mate counts as served, and a stalled shard reports its own refusal
+/// quorum wait plus 1.5 s), so a stalled shard reports its own refusal
 /// instead of a timeout.
 const PUBLISH_BOUND: Duration = Duration::from_secs(8);
 /// How long after the restart every shard must be serving.

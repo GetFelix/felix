@@ -45,15 +45,12 @@ pub struct ClientConfig {
     pub publish_inflight_bytes: usize,
     /// How publishes are spread across the publish streams.
     pub publish_sharding: PublishSharding,
-    /// Most shards a client moves onto a publish stream of their own at
-    /// once, per broker. Shards share the pooled streams until one holds its
-    /// stream up (an answer overdue at the head of the stream); that shard
-    /// then gets its own stream, so it holds up only itself, the stream's
-    /// other shards move rather than queue behind it, and each rejoins the
-    /// pool once it has been calm for a while. `0` keeps every publish on the
-    /// pool. Only with [`PublishSharding::HashStream`]. A plain
-    /// [`crate::Connection`] learns a stream's width on its first keyed
-    /// publish to it; a [`crate::Client`] already knows it.
+    /// Most publish streams a [`crate::Client`] opens per broker for one
+    /// shard each, beside the pool. Each of its publishes goes on its shard's
+    /// own stream, so a shard stalled on the broker holds up only itself.
+    /// Shards past this share the pool. `0` puts every publish on the pool. A
+    /// plain [`crate::Connection`] does not use these: it does not know a stream's
+    /// width, so it keeps each stream on one pooled writer.
     pub publish_shard_streams: usize,
     /// The tenant every stream authenticates as. Required to connect.
     pub auth_tenant_id: Option<String>,

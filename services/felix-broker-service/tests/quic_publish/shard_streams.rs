@@ -1,9 +1,8 @@
-//! A stalled shard holding up only itself: once an answer at the head of a
-//! shared publish stream is overdue, the client moves the shards of that
-//! stream onto streams of their own, so the request order a pipelining stream
-//! is answered in stops putting one shard's answers behind another's. And
-//! what that must not cost: each shard's records still land in the order one
-//! client sent them.
+//! A stalled shard holding up only itself: the client gives each shard its
+//! own publish stream, and a broker that answers plain publishes as they
+//! complete does not put one shard's answers behind another's on a shared
+//! stream either. And what that must not cost: each shard's records still
+//! land in the order one client sent them.
 
 use super::*;
 use felix_broker_service::shards::routing::{IngressRouter, routing_table_from};
@@ -12,9 +11,6 @@ use felix_broker_service::shards::{ShardKey, ShardKind};
 use felix_router::{RegionRouter, ShardRouter};
 
 const NODE: &str = "broker-a";
-
-/// Longer than the least head wait the client counts as overdue (250 ms).
-const OVERDUE: Duration = Duration::from_millis(400);
 
 fn shard_key(shard: u32) -> ShardKey {
     ShardKey {
@@ -174,9 +170,8 @@ impl TwoShards {
 
 /// **A stalled shard holds up only itself.** A pipelining stream is answered
 /// in request order, so a shard whose publishes cannot commit would hold back
-/// every other shard sharing its stream. Once the stalled answer is overdue,
-/// the healthy shard moves to a stream of its own and keeps being answered,
-/// under a steady load of concurrent publishes.
+/// every other shard sharing its stream. Each shard gets a stream of its own,
+/// so the healthy shard of the same stream keeps being answered.
 #[tokio::test]
 #[serial]
 async fn a_stalled_shard_does_not_hold_up_another_shard_of_the_stream() -> Result<()> {
@@ -213,13 +208,11 @@ async fn a_stalled_shard_does_not_hold_up_another_shard_of_the_stream() -> Resul
 
     let held = fixture.stall_shard_one().await?;
     let stalled = tokio::spawn(publish(stalled_key));
-    // Past the least head wait the client counts as overdue.
-    tokio::time::sleep(OVERDUE).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
     assert!(!stalled.is_finished(), "shard 1 was not stalled");
 
     for _ in 0..5 {
-        let round = futures::future::try_join_all((0..8).map(|_| publish(healthy_key.clone())));
-        timeout(Duration::from_secs(2), round)
+        timeout(Duration::from_secs(2), publish(healthy_key.clone()))
             .await
             .context("shard 0 was held up behind the stalled shard 1")??;
     }
@@ -231,12 +224,13 @@ async fn a_stalled_shard_does_not_hold_up_another_shard_of_the_stream() -> Resul
     Ok(())
 }
 
-/// **A plain `Connection` moves a stalled stream's shards apart too.** It
-/// learns the stream's width on the first keyed publish, so it can tell the
-/// healthy shard from the stalled one and move it off the stream they share.
+/// **A plain `Connection` puts one stream's shards on separate streams too.** It
+/// learns the stream's width on the first keyed publish, so a hot stream's
+/// shards spread over its connections instead of sharing one stream. A
+/// stalled shard holding up the other is what sharing one would look like.
 #[tokio::test]
 #[serial]
-async fn a_plain_clients_healthy_shard_is_not_held_up_by_a_stalled_one() -> Result<()> {
+async fn a_plain_clients_keyed_publishes_go_on_their_shards_own_streams() -> Result<()> {
     let fixture = TwoShards::start().await?;
     let client = Connection::connect(fixture.addr, "localhost", fixture.client_config()?).await?;
     let publisher = Arc::new(client.publisher().await?);
@@ -261,7 +255,7 @@ async fn a_plain_clients_healthy_shard_is_not_held_up_by_a_stalled_one() -> Resu
 
     let held = fixture.stall_shard_one().await?;
     let stalled = tokio::spawn(publish(stalled_key));
-    tokio::time::sleep(OVERDUE).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
     assert!(!stalled.is_finished(), "shard 1 was not stalled");
 
     for _ in 0..5 {
@@ -281,8 +275,8 @@ async fn a_plain_clients_healthy_shard_is_not_held_up_by_a_stalled_one() -> Resu
 /// sent.** One task publishes a run of records across both shards without
 /// waiting for any answer, so nothing but the routing keeps them in order.
 /// Each shard's log must hold its records in exactly the order they were
-/// issued: a shard publishing without acks never moves, so every publish to
-/// it goes through one writer and one QUIC stream.
+/// issued: every publish to one shard goes through one writer and one
+/// QUIC stream, whichever connection that stream is on.
 #[tokio::test]
 #[serial]
 async fn spreading_a_stream_keeps_each_shards_records_in_publish_order() -> Result<()> {
@@ -340,5 +334,169 @@ async fn spreading_a_stream_keeps_each_shards_records_in_publish_order() -> Resu
             "shard {shard} holds its records out of publish order"
         );
     }
+    Ok(())
+}
+
+/// Authenticate a raw pipelining stream, offering answers on completion when
+/// `on_completion`, and return whether the broker answered that bit.
+async fn pipelining_stream(
+    fixture: &TwoShards,
+    on_completion: bool,
+) -> Result<(
+    felix_transport::QuicConnection,
+    quinn::SendStream,
+    quinn::RecvStream,
+    bool,
+)> {
+    let (connection, mut send, mut recv) =
+        super::pipeline::raw_stream(fixture.addr, fixture.cert.clone()).await?;
+    let (client_features, client_features_hi) = felix_wire::offer_features(
+        felix_wire::FEATURE_PUBLISH_PIPELINE,
+        match on_completion {
+            true => felix_wire::FEATURE_PUBLISH_ANSWER_ON_COMPLETION,
+            false => 0,
+        },
+    );
+    felix_broker_service::serving::quic::write_message(
+        &mut send,
+        Message::Auth {
+            tenant_id: fixture.auth.tenant_id.clone(),
+            token: fixture.auth.token.clone(),
+            client_flags: Some(felix_wire::KNOWN_FLAGS),
+            client_features: Some(client_features),
+            client_features_hi,
+            client_flags_ext: None,
+        },
+    )
+    .await?;
+    let mut scratch = felix_broker_service::serving::quic::FrameScratch::new();
+    let answer =
+        felix_broker_service::serving::quic::read_message_limited(&mut recv, 1 << 20, &mut scratch)
+            .await?;
+    let Some(Message::AuthOk {
+        server_features,
+        server_features_hi,
+        publish_window: Some(_),
+        ..
+    }) = answer
+    else {
+        anyhow::bail!("not granted a window: {answer:?}");
+    };
+    let granted = felix_wire::supports_feature(
+        felix_wire::peer_features_hi(server_features.unwrap_or(0), server_features_hi),
+        felix_wire::FEATURE_PUBLISH_ANSWER_ON_COMPLETION,
+    );
+    Ok((connection, send, recv, granted))
+}
+
+fn keyed_publish(key: &bytes::Bytes, request_id: u64) -> Message {
+    Message::Publish {
+        shard: None,
+        tenant_id: "t1".to_string(),
+        namespace: "default".to_string(),
+        stream: "orders".to_string(),
+        payload: format!("record-{request_id}").into_bytes(),
+        key: Some(key.clone()),
+        request_id: Some(request_id),
+        ack: Some(AckMode::PerMessage),
+    }
+}
+
+async fn next_answer(recv: &mut quinn::RecvStream, wait: Duration) -> Result<u64> {
+    let mut scratch = felix_broker_service::serving::quic::FrameScratch::new();
+    match timeout(
+        wait,
+        felix_broker_service::serving::quic::read_message_limited(recv, 1 << 20, &mut scratch),
+    )
+    .await
+    .context("no answer in time")??
+    {
+        Some(Message::PublishOk { request_id, .. }) => Ok(request_id),
+        other => anyhow::bail!("expected publish_ok, got {other:?}"),
+    }
+}
+
+/// **A plain publish is answered as it completes.** A client that offered
+/// `FEATURE_PUBLISH_ANSWER_ON_COMPLETION` sends a publish to a stalled shard
+/// and then one to a healthy shard on the same stream. The second is
+/// answered while the first still waits. A client that did not offer the
+/// bit is not told about it.
+#[tokio::test]
+#[serial]
+async fn a_plain_publish_is_answered_ahead_of_a_stalled_one_on_its_stream() -> Result<()> {
+    let fixture = TwoShards::start().await?;
+    let (_old, _, _, granted) = pipelining_stream(&fixture, false).await?;
+    assert!(!granted, "answered a bit the client did not offer");
+
+    let (_connection, mut send, mut recv, granted) = pipelining_stream(&fixture, true).await?;
+    assert!(
+        granted,
+        "the bit was offered with a window and not answered"
+    );
+    let (stalled_key, healthy_key) = (fixture.key_for(1, 0), fixture.key_for(0, 0));
+    let held = fixture.stall_shard_one().await?;
+    felix_broker_service::serving::quic::write_message(&mut send, keyed_publish(&stalled_key, 1))
+        .await?;
+    felix_broker_service::serving::quic::write_message(&mut send, keyed_publish(&healthy_key, 2))
+        .await?;
+    let first = next_answer(&mut recv, Duration::from_secs(2))
+        .await
+        .context("the healthy shard's answer was held behind the stalled one")?;
+    assert_eq!(first, 2);
+
+    fixture.broker.complete_publish(held).await?;
+    assert_eq!(next_answer(&mut recv, Duration::from_secs(5)).await?, 1);
+    Ok(())
+}
+
+/// **One client stream, a stalled shard, and the others keep going.** Every
+/// shard shares one publish stream here. The writer keeps sending while the
+/// stalled shard's answer is out, and the broker answers the others as they
+/// complete, so they are not held behind it.
+#[tokio::test]
+#[serial]
+async fn a_stalled_shard_does_not_hold_up_its_stream_mates_on_one_client_stream() -> Result<()> {
+    let fixture = TwoShards::start().await?;
+    let mut config = fixture.client_config()?;
+    config.publish_conn_pool = 1;
+    config.publish_streams_per_conn = 1;
+    config.publish_shard_streams = 0;
+    let client = Connection::connect(fixture.addr, "localhost", config).await?;
+    let publisher = Arc::new(client.publisher().await?);
+    let (stalled_key, healthy_key) = (fixture.key_for(1, 0), fixture.key_for(0, 0));
+    let publish = |key: bytes::Bytes| {
+        let publisher = Arc::clone(&publisher);
+        async move {
+            publisher
+                .publish_keyed(
+                    "t1",
+                    "default",
+                    "orders",
+                    key,
+                    b"record".to_vec(),
+                    AckMode::PerMessage,
+                )
+                .await
+        }
+    };
+    publish(stalled_key.clone()).await?;
+    publish(healthy_key.clone()).await?;
+
+    let held = fixture.stall_shard_one().await?;
+    let stalled = tokio::spawn(publish(stalled_key));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(!stalled.is_finished(), "shard 1 was not stalled");
+
+    for _ in 0..5 {
+        let round = futures::future::try_join_all((0..8).map(|_| publish(healthy_key.clone())));
+        timeout(Duration::from_secs(2), round)
+            .await
+            .context("shard 0 was held up behind the stalled shard 1")??;
+    }
+
+    fixture.broker.complete_publish(held).await?;
+    timeout(Duration::from_secs(5), stalled)
+        .await
+        .context("shard 1 did not recover")???;
     Ok(())
 }

@@ -196,9 +196,9 @@ shard switches between them; await acks where order across calls matters. After
 `publish_records_at_least_once` re-splits records under a new width, the report
 can list a shard twice.
 
-Each shard's batch takes the stream its shard is on: the pool while the shard
-is healthy, or a stream of its own once it stalls, so a slow shard does not keep
-holding up the others.
+Each shard's batch uses that shard's own publish stream while the client has
+room for one (`FELIX_PUB_SHARD_STREAMS`), so a slow shard does not hold up the
+others.
 
 ### Keys and headers
 
@@ -308,31 +308,41 @@ same writer, so each stream's publishes reach the broker in order.
 `RoundRobin` spreads load evenly across writers, but publishes to one stream
 can arrive out of order.
 
-The broker answers a stream's pipelined publishes in order, so shards that
-share a stream wait on the slowest. The client keeps healthy shards on its
-pooled streams, which is fastest when keys spread over many shards. It watches
-the publish at the head of each stream, the one every later answer waits
-behind. When that answer is overdue (eight times the stream's usual wait, and
-at least 250 ms), shards move onto streams of their own:
+A shard stalled on a quorum does not hold up the other shards on its publish
+stream. A broker that grants the client a publish window also agrees to answer
+plain acked publishes as they complete, and the client keeps writing to the
+stream while an answer is outstanding, so publishes to healthy shards are
+answered while the stalled one waits. Each shard keeps its own order, because
+the broker commits a shard's publishes in the order the stream carried them.
+Only an idempotent producer's batches are answered in the order they were
+sent; see [idempotent producers](#idempotent-producers).
 
-- The stalled shard moves once its publishes in flight are answered, so its
-  order holds. From then on it holds up only itself.
-- Any other shard that would queue behind the overdue answer moves instead,
-  after its own publishes in flight, so it stops waiting on the stalled one.
+Under `HashStream` the client also gives the first shards it sees a stream of
+their own. A stalled shard still holds its slots in the stream's publish
+window, so on a stream of its own it uses up only its own window. Each shard stream
+is placed on the least-loaded connection, so a busy multi-shard stream
+spreads over the client's connections and the broker's listeners instead of
+riding one. The stream opens on the shard's first publish, which pays one
+extra round trip to authenticate it, and stays open. A client keeps at most
+`publish_shard_streams` of them per broker (4 by default,
+`FELIX_PUB_SHARD_STREAMS`); shards past that share the pool.
 
-A moved shard returns to the pool once it and the pool have gone 5 s without an
-overdue answer. A shard that keeps stalling stays out longer each time, up to 5
-minutes. A client moves at most `publish_shard_streams` shards per broker at
-once (64 by default, `FELIX_PUB_SHARD_STREAMS`, `0` to keep every shard on the
-pool), each to the least-loaded connection. A shard that ever publishes with
-`AckMode::None` stays where it is, since nothing tells the client when such a
-publish has arrived.
+The cap is per broker and first come, first served across every stream the
+client publishes to: the first four shards (tenant, namespace, stream, shard)
+it publishes to each get a dedicated stream, and every later shard uses the
+shared pool permanently. A stalled shard on the pool takes slots from the
+pool stream's window while it waits; its answers no longer hold back the other
+pooled shards' answers.
 
-A move cannot reach publishes already sent. Publishes queued behind a stalled
-head still wait for its answer, which the broker gives within its ack bound
-(the quorum wait plus 1.5 s, 6.5 s by default). If you put your own timeout
-around a publish, make it longer than that, or a publish answered late behind
-a stalled shard is counted as failed.
+Four fully isolates streams of up to four shards. Isolation matters when a
+shard can stall on its own, as with quorum waits or a dead follower on a
+replicated stream. On a wide stream any cap protects only the first N shards
+seen, so a high cap buys arbitrary partial protection at a throughput cost: on
+an 8 vCPU broker with a 48-shard stream and 256 B acked publishes, 16 streams
+measured about 97 MB/s, 4 about 125 MB/s and 0 (everything on the pool) about
+162 MB/s. For wide replicated streams that need isolation, raise
+`FELIX_PUB_SHARD_STREAMS` to the total number of shards the client publishes
+to on a broker.
 
 Each broker connection asks for a stream's width on its first keyed publish
 to it (one more round trip) and picks a key's stream from that answer alone,
@@ -510,8 +520,9 @@ producer.publish_batches("acme", "prod", "orders", batches).await?;
 
 The window is whatever the broker granted the stream
 (`FELIX_BROKER_PUBLISH_WINDOW`, 256 by default), capped at 64 because the leader
-remembers 64 sequences per producer. The broker answers a pipelining stream in
-the order it sent the batches, so when one fails the producer knows it is the
+remembers 64 sequences per producer. The broker answers a stream's idempotent
+batches in the order it sent them, even when it answers other publishes as they
+complete, so when one fails the producer knows it is the
 earliest failure; it and every batch behind it are in doubt, and a
 `Client` producer re-sends them, in order, under the same sequences until
 they land. If the call still fails, make **the same call again**: the batches

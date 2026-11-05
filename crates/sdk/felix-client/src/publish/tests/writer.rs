@@ -8,7 +8,6 @@ use felix_wire::{AckMode, Message};
 use tokio::sync::{Semaphore, mpsc, oneshot};
 
 use super::test_publish_permit;
-use crate::publish::shard_streams::ShardTicket;
 use crate::publish::writer::{
     PublishRequest, PublishWorker, drain_publish_queue, finish_publisher_stream,
     run_publisher_writer,
@@ -94,7 +93,6 @@ async fn acked_publishes_pipeline_without_waiting_per_ack() -> Result<()> {
             request_id: Some(request_id),
             _permit: permit,
             response: response_tx,
-            ticket: None,
         })
         .await
         .context("queue publish")?;
@@ -186,7 +184,6 @@ async fn acks_answered_out_of_order_reach_their_own_requests() -> Result<()> {
             request_id: Some(request_id),
             _permit: super::test_publish_permit(),
             response: response_tx,
-            ticket: None,
         })
         .await
         .context("queue publish")?;
@@ -262,7 +259,6 @@ async fn finish_skips_finish_request_when_channel_closed() {
                 takes_width: false,
                 takes_shard: false,
                 takes_record_headers: false,
-                head: Default::default(),
             }]),
             PublishSharding::RoundRobin,
         )),
@@ -310,7 +306,6 @@ async fn run_publisher_writer_publish_batch_no_ack_ok() -> Result<()> {
         request_id: None,
         _permit: test_publish_permit(),
         response: response_tx,
-        ticket: None,
     })
     .await
     .context("send request")?;
@@ -370,7 +365,6 @@ async fn run_publisher_writer_binary_bytes_success() -> Result<()> {
         request_id: None,
         _permit: test_publish_permit(),
         response: response_tx,
-        ticket: None,
     })
     .await
     .context("send binary request")?;
@@ -425,7 +419,6 @@ async fn run_publisher_writer_non_publish_message_ok() -> Result<()> {
         request_id: None,
         _permit: test_publish_permit(),
         response: resp_tx,
-        ticket: None,
     })
     .await
     .context("send error message")?;
@@ -460,7 +453,6 @@ async fn drain_publish_queue_returns_errors() {
         request_id: None,
         _permit: test_publish_permit(),
         response: resp_tx1,
-        ticket: None,
     })
     .await
     .expect("send message");
@@ -473,7 +465,6 @@ async fn drain_publish_queue_returns_errors() {
         request_id: None,
         _permit: test_publish_permit(),
         response: resp_tx2,
-        ticket: None,
     })
     .await
     .expect("send binary");
@@ -490,23 +481,6 @@ async fn drain_publish_queue_returns_errors() {
     assert!(err1.to_string().contains("closed"));
     assert!(err2.to_string().contains("closed"));
     assert!(err3.to_string().contains("closed"));
-}
-
-/// A failed writer closes its queue, so routing sees it is gone while senders
-/// still hold it, and stops sending there.
-#[tokio::test]
-async fn a_failed_writer_closes_its_queue() {
-    let (tx, mut rx) = mpsc::channel::<PublishRequest>(4);
-    let drain = tokio::spawn(async move { drain_publish_queue(&mut rx, "closed").await });
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while !tx.is_closed() {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("the queue stayed open");
-    drop(tx);
-    drain.await.expect("drain");
 }
 
 /// A batch's `publish_width` goes ahead of it once, and again only when the
@@ -578,7 +552,6 @@ async fn a_width_is_declared_once_ahead_of_its_batches() -> Result<()> {
             request_id: None,
             _permit: test_publish_permit(),
             response: response_tx,
-            ticket: None,
         })
         .await
         .context("send binary request")?;
@@ -594,192 +567,5 @@ async fn a_width_is_declared_once_ahead_of_its_batches() -> Result<()> {
             "width 4", "batch", "batch", "batch", "width 2", "batch", "batch"
         ]
     );
-    Ok(())
-}
-
-/// A ticket for `shard` of one client's shard streams.
-async fn shard_ticket(streams: &crate::publish::ShardStreams, shard: u32) -> ShardTicket {
-    let pooled = super::fake_worker();
-    streams
-        .route("t", "ns", "s", shard, &pooled)
-        .await
-        .1
-        .expect("a ticket")
-}
-
-fn shard_streams() -> crate::publish::ShardStreams {
-    crate::publish::ShardStreams::new(4, Arc::new(|| Box::pin(async { Ok(super::fake_worker()) })))
-}
-
-/// Every kind of unacked publish pins its shard where it is: it gets no
-/// answer, so nothing could tell a move that it has reached the broker.
-#[tokio::test]
-async fn an_unacked_publish_pins_its_shard() -> Result<()> {
-    let (server_config, cert) = build_server_config()?;
-    let transport = TransportConfig::default();
-    let server = QuicServer::bind("127.0.0.1:0".parse()?, server_config, transport.clone())?;
-    let addr = server.local_addr()?;
-    let server_task = tokio::spawn(async move {
-        let connection = server.accept().await?;
-        let (mut send, mut recv) = connection.accept_bi().await?;
-        recv.read_to_end(1024 * 1024).await?;
-        send.finish()?;
-        let _ = send.stopped().await;
-        Ok::<(), anyhow::Error>(())
-    });
-    let client = QuicClient::bind("0.0.0.0:0".parse()?, quinn_client_config(cert)?, transport)?;
-    let connection = client.connect(addr, "localhost").await?;
-    let (client_send, client_recv) = connection.open_bi().await?;
-    let (tx, rx) = mpsc::channel(4);
-    let writer_task = tokio::spawn(run_publisher_writer(client_send, client_recv, rx, 1024));
-
-    let streams = shard_streams();
-    let batch = shard_ticket(&streams, 1).await;
-    let single = shard_ticket(&streams, 2).await;
-    let binary = shard_ticket(&streams, 3).await;
-    let (bytes, _) = felix_wire::binary::encode_publish_batch_bytes_with_stats(
-        "t",
-        "ns",
-        "s",
-        &[b"p".to_vec()],
-    )?;
-    let requests = [
-        PublishRequest::Message {
-            message: Message::PublishBatch {
-                shard: None,
-                tenant_id: "t".to_string(),
-                namespace: "ns".to_string(),
-                stream: "s".to_string(),
-                payloads: vec![b"a".to_vec()],
-                key: None,
-                request_id: None,
-                ack: Some(AckMode::None),
-            },
-            ack: AckMode::None,
-            request_id: None,
-            _permit: test_publish_permit(),
-            response: oneshot::channel().0,
-            ticket: Some(batch.clone()),
-        },
-        PublishRequest::Message {
-            message: Message::Publish {
-                tenant_id: "t".to_string(),
-                namespace: "ns".to_string(),
-                stream: "s".to_string(),
-                payload: b"a".to_vec(),
-                key: None,
-                shard: None,
-                request_id: None,
-                ack: Some(AckMode::None),
-            },
-            ack: AckMode::None,
-            request_id: None,
-            _permit: test_publish_permit(),
-            response: oneshot::channel().0,
-            ticket: Some(single.clone()),
-        },
-        PublishRequest::BinaryBytes {
-            bytes,
-            item_count: 1,
-            sample: false,
-            declaration: None,
-            ack: AckMode::None,
-            request_id: None,
-            _permit: test_publish_permit(),
-            response: oneshot::channel().0,
-            ticket: Some(binary.clone()),
-        },
-    ];
-    for request in requests {
-        tx.send(request).await.context("send request")?;
-    }
-    drop(tx);
-    writer_task.await.context("writer join")??;
-    server_task.await.context("server join")??;
-    assert!(batch.pinned(), "an unacked batch left its shard movable");
-    assert!(single.pinned(), "an unacked message left its shard movable");
-    assert!(
-        binary.pinned(),
-        "an unacked binary batch left its shard movable"
-    );
-    Ok(())
-}
-
-/// An answer that waited at the head of its stream well past the usual
-/// tells its shard so, and one that came at once does not.
-#[tokio::test]
-async fn a_late_head_answer_marks_its_shard() -> Result<()> {
-    let (server_config, cert) = build_server_config()?;
-    let transport = TransportConfig::default();
-    let server = QuicServer::bind("127.0.0.1:0".parse()?, server_config, transport.clone())?;
-    let addr = server.local_addr()?;
-    let server_task = tokio::spawn(async move {
-        let connection = server.accept().await?;
-        let (mut send, mut recv) = connection.accept_bi().await?;
-        let mut scratch = BytesMut::with_capacity(4096);
-        for late in [false, true] {
-            let frame = crate::frame_io::read_frame_into_with_limit(
-                &mut recv,
-                &mut scratch,
-                false,
-                1 << 20,
-            )
-            .await?
-            .context("publish stream closed")?;
-            let Message::PublishBatch { request_id, .. } = Message::decode(frame)? else {
-                anyhow::bail!("expected a batch");
-            };
-            if late {
-                tokio::time::sleep(crate::publish::shard_streams::STALL_FLOOR * 2).await;
-            }
-            let frame = Message::PublishOk {
-                request_id: request_id.context("request id")?,
-                offset: None,
-            }
-            .encode()?;
-            send.write_all(&frame.encode()).await?;
-        }
-        send.finish()?;
-        let _ = recv.read_to_end(1024).await;
-        let _ = send.stopped().await;
-        Ok::<(), anyhow::Error>(())
-    });
-    let client = QuicClient::bind("0.0.0.0:0".parse()?, quinn_client_config(cert)?, transport)?;
-    let connection = client.connect(addr, "localhost").await?;
-    let (client_send, client_recv) = connection.open_bi().await?;
-    let (tx, rx) = mpsc::channel(4);
-    let writer_task = tokio::spawn(run_publisher_writer(client_send, client_recv, rx, 1024));
-
-    let streams = shard_streams();
-    let prompt = shard_ticket(&streams, 1).await;
-    let late = shard_ticket(&streams, 2).await;
-    for (request_id, ticket) in [(1, &prompt), (2, &late)] {
-        let (response_tx, response_rx) = oneshot::channel();
-        tx.send(PublishRequest::Message {
-            message: Message::PublishBatch {
-                shard: None,
-                tenant_id: "t".to_string(),
-                namespace: "ns".to_string(),
-                stream: "s".to_string(),
-                payloads: vec![b"a".to_vec()],
-                key: None,
-                request_id: Some(request_id),
-                ack: Some(AckMode::PerBatch),
-            },
-            ack: AckMode::PerBatch,
-            request_id: Some(request_id),
-            _permit: test_publish_permit(),
-            response: response_tx,
-            ticket: Some(ticket.clone()),
-        })
-        .await
-        .context("send request")?;
-        response_rx.await.context("response dropped")??;
-    }
-    drop(tx);
-    writer_task.await.context("writer join")??;
-    server_task.await.context("server join")??;
-    assert!(!prompt.stalled(), "a prompt answer marked its shard");
-    assert!(late.stalled(), "a late answer did not mark its shard");
     Ok(())
 }

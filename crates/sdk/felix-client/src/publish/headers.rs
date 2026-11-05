@@ -146,7 +146,6 @@ impl Publisher {
                 request_id,
                 _permit: permit,
                 response: response_tx,
-                ticket: worker.ticket.clone(),
             })
             .await
             .context("enqueue batch with headers")?;

@@ -287,7 +287,7 @@ async fn the_writer_answers_a_pipelining_stream_in_request_order() -> Result<()>
     let order = Arc::new(AckOrder::new());
     order.enable();
     for id in 1..=4 {
-        order.register(id, None);
+        order.register(id, false, None);
     }
     let (out_ack_tx, out_ack_rx) = mpsc::channel(8);
     let (ack_throttle_tx, _ack_throttle_rx) = watch::channel(false);
@@ -325,8 +325,8 @@ async fn a_lost_answer_closes_a_pipelining_stream() -> Result<()> {
     let (send, _recv) = connection.open_bi().await?;
     let order = Arc::new(AckOrder::new());
     order.enable();
-    order.register(1, None);
-    order.register(2, None);
+    order.register(1, false, None);
+    order.register(2, false, None);
     let (out_ack_tx, out_ack_rx) = mpsc::channel(8);
     let (ack_throttle_tx, _ack_throttle_rx) = watch::channel(false);
     let (cancel_tx, cancel_rx) = watch::channel(false);

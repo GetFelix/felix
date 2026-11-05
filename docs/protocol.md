@@ -1404,6 +1404,9 @@ field of `detail` is optional. See [Error codes](#error-codes).
   negotiated [pipelining](#pipelined-publishes), in which case they come back
   in the order the stream carried the publishes. Then an in-memory stream's ack
   can wait behind an earlier durable publish's commit ack on the same stream.
+  A pipelining client that also negotiated
+  [answers on completion](#answers-on-completion) gets that order only among its
+  idempotent publishes.
 - CachePut returns `ok` when stored (TTL is optional).
 - CacheGet returns `cache_value` with `null` when missing/expired.
 - CacheDelete returns `cache_value` carrying whatever was removed, and `null`
@@ -1538,12 +1541,14 @@ with `FLAG_BINARY_PUBLISH_ACKED`, and every `publish_idempotent`):
   until every publish the stream carried before it has been answered. Nothing
   else changes: each publish gets the answer it would have got, only later.
   Other responses on the stream (`cache_value`, `subscribed`, and so on) are
-  not held back.
+  not held back. A client that also negotiated
+  [answers on completion](#answers-on-completion) keeps this order only among
+  its idempotent publishes.
 - **At most `publish_window` are unanswered per stream.** At that depth the
   broker stops reading that stream's publishes until one of its answers is
   written. Each stream has its own window, so a stream whose publishes wait
   on a stalled shard holds only its own slots, and the connection's other
-  streams keep publishing. The Rust `Client` moves a stalled shard onto a
+  streams keep publishing. The Rust `Client` puts each shard on a
   stream of its own (see below), which makes that true per shard. A broker says so by advertising
   `FEATURE_STREAM_PUBLISH_WINDOW` with the grant. A broker that predates that
   bit counts the window across the whole connection, and a client must share
@@ -1574,80 +1579,68 @@ client reads a window without the bit as no window.
 It is a feature bit rather than a frame flag because no payload changes shape:
 the same frames go both ways, and only their timing and order differ.
 
+#### Answers on completion
+
+Request order has a cost. A publish to a shard stuck on a quorum wait holds
+back the answers of every publish behind it on the stream, including publishes
+to healthy shards that committed long ago. During a failover that turns one
+stalled shard into timeouts for every shard sharing its stream.
+
+Only an idempotent producer needs the order (see below). So a client may also
+offer `FEATURE_PUBLISH_ANSWER_ON_COMPLETION` in the extended feature word, next
+to `FEATURE_PUBLISH_PIPELINE`. A broker that grants a window and sees the bit
+answers it back in `server_features_hi`, and from then on:
+
+- **A plain acked publish is answered as soon as it completes.** That is every
+  acked `publish`, `publish_batch` and binary batch without
+  `FLAG_BINARY_PUBLISH_IDEMPOTENT`. Its answer waits for no other.
+- **An idempotent publish keeps request order** among the stream's other
+  idempotent publishes: `publish_idempotent` and binary batches with
+  `FLAG_BINARY_PUBLISH_IDEMPOTENT`. It never waits for a plain one.
+- **The window is unchanged.** Every acked publish holds its slot until its
+  answer is written, so a stalled shard still counts against the stream's
+  `publish_window`.
+
+Per-shard order does not depend on answer order: the broker commits each
+shard's publishes in the order it read them. A client must match answers by
+`request_id`, as it does without pipelining. A broker that does not answer the
+bit keeps request order for every publish, and a client that did not offer it
+gets the frames it always got.
+
+The Rust client offers the bit. When it is granted, the stream's writer keeps
+writing new publishes while answers are outstanding and settles each answer as
+it arrives, so a stalled publish does not stop the stream.
+
 A broker that loses an answer it owes a pipelining stream would hold every
 answer behind it forever. Every publish is answered within its enqueue wait
-plus its ack wait, so a broker whose oldest held answer is overdue by twice
-that closes the stream instead; the client sees the stream fail and every
+plus its ack wait, so a broker whose oldest held-back answer is overdue by
+twice that closes the stream instead; the client sees the stream fail and every
 unanswered publish on it as failed.
 
-**A stream of its own for a stalled shard.** Request order and the window
-are both per stream, so shards that share a stream share a fate: a shard stuck
-on a quorum wait holds back answers the others have committed, then fills the
-window and stops the stream. A stream per shard would avoid that, but each
-stream costs throughput when keys spread over many shards. So the Rust `Client`
-keeps every shard on its pooled streams while it is healthy, and gives a shard
-a stream of its own only while that shard holds its stream up. Nothing on the
-wire changes: the broker cannot tell these streams from any other, so any
-broker, old or new, sees the same frames.
-
-```mermaid
-stateDiagram-v2
-    [*] --> Pooled
-    Pooled --> Draining: an answer is overdue at the head of its stream
-    Draining --> Own: its publishes on the pool are answered
-    Own --> Returning: it and the pool are calm for the calm period
-    Returning --> Pooled: its publishes on its own stream are answered
-```
-
-- **Evidence, not a guess.** The answer at the head of a stream is the one
-  every later answer waits behind. The client times each head. A head that
-  waits longer than eight times the stream's usual head wait, and at least
-  250 ms, is overdue, and the head's own shard is marked as stalled. A
-  publish of any other shard that finds its pooled stream's head overdue moves
-  that shard too, rather than queue behind it. Such a shard is not marked, and
-  goes back once the pool is calm. Each stream, pooled or own, keeps its own
-  usual wait, so a broker that is slow for every shard raises the usual wait
-  instead of moving them all. A full window is not evidence by
-  itself: a busy healthy stream fills it too.
-- **Order across a move.** Every publish holds a claim on its shard until its
-  answer is read. The publish that moves a shard first waits for the shard's
-  claims to drain, and the shard's other publishes wait for the move, so
-  nothing of the shard is still on the old stream when the first publish goes
-  out on the new one. The way back works the same. A shard that ever publishes
-  without an ack is never moved, since such a publish has no answer to wait
-  for. A shard whose own stream fails goes back to the pool at once: the
-  stream failed everything it held, so nothing is left on it to overtake.
-- **No churn.** A shard on its own stream rejoins the pool after 5 s without an
-  overdue answer, on its own stream or at the pool's head. One that stalls
-  again soon after returning stays out twice as long the next time, up to
-  5 minutes.
-- **What it cannot fix.** A move does not reach publishes already sent. The
-  stream-mates queued behind a stalled head before it was overdue still wait
-  for that head's answer,
-  which the broker gives within its ack bound (the quorum wait plus 1.5 s, so
-  6.5 s by default). After that the stalled shard is on its own stream and the
-  mates are not held up again. A caller that puts its own timeout around a
-  publish should make it longer than the broker's ack bound, or a mate answered
-  late is counted as failed. The Rust client's own limit is 30 s.
-
-An idempotent producer's batches move the same way: the batches in flight
-drain first, so a re-sent run never straddles two streams. A shard whose
-leader moves to another broker starts on that broker's pool, since each
-broker connection keeps its own. Its stream on the old broker is closed once
-nothing has been sent on it for 30 s, which frees its place under the cap. A client moves at most
-`publish_shard_streams` shards per broker onto streams of their own at once
-(64 by default); a stalled shard past that stays on the pool. Each such stream
-is opened on the least-loaded connection.
-
-Which shard a keyed publish belongs to is worked out from the width the client
-connection keeps for the stream, asked for (`StreamShards`) on its first keyed
-publish to it, never from a caller's own idea of the shard, so every path
-through one client (plain publishes, a `Client`, an idempotent producer) puts
+**One stream per shard.** Request order and the window are both per stream,
+so shards that share a stream share a fate: a shard stuck on a quorum wait
+holds back answers the others have committed (unless the broker answers on
+completion), then fills the window and stops the stream. The Rust `Client` therefore sends each publish on a stream
+that carries only its shard, opened on the shard's first publish on the same
+connection. It can, because it computes the shard of every publish to pick
+the owner: keyed, unkeyed (shard 0) and idempotent alike. Which shard stream
+a keyed publish rides is worked out from the width the client connection
+keeps for the stream, asked for (`StreamShards`) on its first keyed publish
+to it, never from a caller's own idea of the shard, so every path through
+one client (plain publishes, a `Client`, an idempotent producer) puts
 a key on one writer. The width is kept until a publish is refused with
-`not_found`, since only a deleted stream can come back with another width.
+`not_found`, since only a deleted stream can come back with another width;
+if it cannot be learned, every keyed publish to that stream goes on shard 0's
+stream. Each shard stream is placed on the least-loaded connection, so
+one hot stream's shards spread over the client's connections and the
+broker's listeners. A client keeps at most `publish_shard_streams` such
+streams per broker (16 by default); shards past that share the hashed pool,
+and a shard never changes stream while its writer lives, so its publishes
+stay in order. Nothing on the wire changes: the broker cannot tell these
+streams from any other.
 
 **Why the order matters to an idempotent producer.** With answers in request
-order, the first failure a producer reads is the earliest one, never a
+order (which idempotent publishes keep with answers on completion too), the first failure a producer reads is the earliest one, never a
 consequence of it: a batch refused with `sequence_gap` because the batch before
 it failed is answered after that failure, not before. So a producer can keep
 several batches unanswered and, when one fails, treat it and everything behind
@@ -2065,6 +2058,7 @@ Bits in the extended word (see [Extended feature word](#extended-feature-word)):
 | `0x8` | `FEATURE_EXPLICIT_SHARD` | The broker honours `shard` on `publish`, `publish_batch`, `publish_idempotent`, `publish_if`, `commit` and `state_get`. See [Named shards](#named-shards) |
 | `0x10` | `FEATURE_HEAD_TRIM` | From a broker: it answers `trim_before`, though it refuses every trim with `feature_not_enabled` until its fleet finalizes `head_trim`. From a client: it reads `trim_headers` on `subscribe_cursor_error`. See [TrimBefore](#trimbefore) |
 | `0x20` | `FEATURE_LEASE_TOKEN` | The broker mints a lease token on a `cache_put_if` with `lease_token: true`. Advertised only by a broker configured with a lease key (`FELIX_LEASE_TOKEN_KEY_FILE`). See [CachePutIf](#cacheputif) |
+| `0x40` | `FEATURE_PUBLISH_ANSWER_ON_COMPLETION` | Offered by a client with `FEATURE_PUBLISH_PIPELINE`, answered by a broker that grants it a window: plain acked publishes are answered as they complete, and only idempotent ones keep request order. See [answers on completion](#answers-on-completion) |
 
 Features are advertised in **both** directions. A client offers its own in the
 `auth` it already sends:
@@ -2153,8 +2147,9 @@ ignores.
 
 `FEATURE_INSPECT` is the first feature in the second word,
 `FEATURE_STREAM_DELETED` the second, `FEATURE_PUBLISH_WIDTH` the third,
-`FEATURE_EXPLICIT_SHARD` the fourth, `FEATURE_HEAD_TRIM` the fifth and
-`FEATURE_LEASE_TOKEN` the sixth. The Rust constants are
+`FEATURE_EXPLICIT_SHARD` the fourth, `FEATURE_HEAD_TRIM` the fifth,
+`FEATURE_LEASE_TOKEN` the sixth and `FEATURE_PUBLISH_ANSWER_ON_COMPLETION` the
+seventh. The Rust constants are
 `FEATURE_EXTENDED` and `KNOWN_FEATURES_HI` in `felix-wire`, with
 `offer_features`, `answer_features` and `peer_features_hi` applying the rules
 above.

@@ -28,14 +28,6 @@ features and rollback.
   second rename undoes the first: `Client` to `Connection`, then `ClusterClient`
   to `Client`. Code that connected to one address with the old `Client` should
   use the new `Client` with that address as its only seed.
-- **`FELIX_PUB_SHARD_STREAMS` has a new meaning** *(main)*. In 0.6 the Rust
-  client gave the first shards it published to their own publish streams up
-  front, 4 per broker by default. Now every shard starts on the pooled streams,
-  and a shard moves to a stream of its own only while an answer at the head of
-  its stream is overdue. The setting is now the most shards moved at once per
-  broker, default 64. `0` still keeps every shard on the pool. A value tuned
-  for the old meaning, such as 16, now caps moved shards rather than opening 16
-  streams. The fixed streams cannot be turned back on.
 - **Rust crates that embed Felix.** `StreamLog::base_offset` is now
   `physical_base`, beside `readable_base`. `Broker::allow_head_trims_when`
   replaces `set_replication_enabled`. `SubscribeCursorError` gains
@@ -68,6 +60,13 @@ carry `client_flags_ext` and `server_flags_ext` to agree on
 `EXT_RECORD_HEADERS`. A peer that does not offer it exchanges the same bytes as
 before. The Rust client offers it; the Python, TypeScript, C and C# clients do
 not yet. Header names starting with `felix.` are reserved.
+
+A pipelining client can also offer `FEATURE_PUBLISH_ANSWER_ON_COMPLETION`
+*(main)*. A broker that grants it a publish window then answers plain acked
+publishes as they complete and keeps request order only among idempotent
+ones, so a shard stalled during a failover no longer holds back the answers
+of every other shard on its stream. Older clients and brokers exchange the
+same frames as before. The Rust client offers it; nothing to configure.
 
 ## New settings
 
@@ -238,11 +237,6 @@ defaults, since zero means default.
 Cache and consumer-group calls on the Rust `Client` now follow
 `ReconnectPolicy`, as publishes already did. The limits bound the whole call,
 and a write is sent again only after a refusal that says nothing was applied.
-
-If you wrap a Rust publish in your own timeout, make it longer than the
-broker's ack bound (the quorum wait plus 1.5 s, 6.5 s by default) *(main)*.
-A publish queued behind a stalled shard on a shared stream is answered within
-that bound, and a shorter timeout counts it as failed.
 
 A `Connection` opens its pooled connections as its traffic needs them
 *(main)*. A
