@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793854246015,
+  "lastUpdate": 1793866416401,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -45344,6 +45344,58 @@ window.BENCHMARK_DATA = {
             "range": "69970.92",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1106764.02\nmean: 1098186.00\nstdev: 69970.92\ncv: 6.37%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "94a91f63e9b23ef17bbd4b80f44895d8e104d795",
+          "message": "fix(replication): a leader acknowledging by its followers names none short of the log it inherited (#1922) (#1924)\n\nA leader acknowledging by its followers keeps the report floor; a reseat keeps its followers names; placement promotes a caught-up draining follower when no live one holds the log. Fixes #1922.",
+          "timestamp": "2026-11-05T00:07:58-08:00",
+          "tree_id": "5f5c2fe8729aa888756d3ee97e554a88b8b85593",
+          "url": "https://github.com/GetFelix/felix/commit/94a91f63e9b23ef17bbd4b80f44895d8e104d795"
+        },
+        "date": 1793866415715,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 511998.35,
+            "range": "30449.22",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 511998.35\nmean: 509367.93\nstdev: 30449.22\ncv: 5.98%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 511998.35,
+            "range": "30449.22",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 511998.35\nmean: 509367.93\nstdev: 30449.22\ncv: 5.98%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 122326.35,
+            "range": "987.80",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 122326.35\nmean: 122525.62\nstdev: 987.80\ncv: 0.81%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1223263.48,
+            "range": "9877.97",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1223263.48\nmean: 1225256.18\nstdev: 9877.97\ncv: 0.81%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
