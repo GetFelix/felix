@@ -417,3 +417,69 @@ async fn compaction_under_concurrent_writers_loses_nothing() {
         assert_eq!(value.len(), payload.len());
     }
 }
+
+/// A delete racing a put to the same key reports the value its own place in
+/// the log removed. The put may be staged but not yet applied when the delete
+/// stages; reading the index then would report the value before the put, a
+/// value the log says was overwritten before the delete.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_delete_racing_a_put_reports_the_value_at_its_offset() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cache = Arc::new(
+        LogCache::open(
+            dir.path(),
+            LogConfig {
+                fsync_mode: crate::log::FsyncMode::OnCommit,
+                ..config()
+            },
+        )
+        .expect("open"),
+    );
+    let observer = Arc::new(RecordingObserver::default());
+    assert!(cache.set_change_observer(observer.clone()));
+
+    for round in 0..200 {
+        let old = Bytes::from(format!("old{round}"));
+        let new = Bytes::from(format!("new{round}"));
+        cache
+            .put_checked(T, NS, C, 0, "k", old.clone(), None)
+            .await
+            .expect("put");
+        let put = tokio::spawn({
+            let cache = Arc::clone(&cache);
+            let new = new.clone();
+            async move { cache.put_checked(T, NS, C, 0, "k", new, None).await }
+        });
+        let delete = tokio::spawn({
+            let cache = Arc::clone(&cache);
+            async move { cache.delete_checked(T, NS, C, 0, "k").await }
+        });
+        put.await.expect("put task").expect("put");
+        let removed = delete.await.expect("delete task").expect("delete");
+
+        let (put_offset, delete_offset) = {
+            let changes = observer.changes.lock();
+            let offset = |value: Option<&Bytes>| {
+                changes
+                    .iter()
+                    .rev()
+                    .find(|change| change.value.as_ref() == value)
+                    .map(|change| change.offset)
+            };
+            let old_offset = offset(Some(&old)).expect("the first put");
+            let delete = offset(None).filter(|&at| at > old_offset);
+            (offset(Some(&new)).expect("the put"), delete)
+        };
+        let expected = match delete_offset {
+            Some(at) if at > put_offset => Some(new),
+            Some(_) => Some(old),
+            // Not written: it found the key absent, which no order allows here.
+            None => panic!("round {round}: the delete wrote nothing"),
+        };
+        assert_eq!(
+            removed, expected,
+            "round {round}: the delete at {delete_offset:?} (put at {put_offset}) \
+             reported a value its place in the log did not remove",
+        );
+    }
+}

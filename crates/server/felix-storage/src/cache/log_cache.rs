@@ -365,9 +365,9 @@ impl LogCache {
 
     /// The delete behind [`StorageApi::delete`].
     ///
-    /// Same two-half shape as [`LogCache::put_checked`]. The previous value is
-    /// read at staging time; against concurrent writers to the same key, the
-    /// delete's place in the shard's history is its disk offset.
+    /// Same two-half shape as [`LogCache::put_checked`]. Against concurrent
+    /// writers to the same key, the delete's place in the shard's history is
+    /// its disk offset, and the value it returns is the one the key held there.
     pub async fn delete_checked(
         &self,
         tenant_id: &str,
@@ -500,11 +500,6 @@ impl LogCache {
                 if !holds {
                     return Ok(Err(live.then_some(entry.version)));
                 }
-                let previous = if live {
-                    shard.read_value(&state, entry).await?
-                } else {
-                    None
-                };
                 let payload = op.encode();
                 let bytes = payload.len() as u64;
                 let (pending, turn) = state
@@ -535,11 +530,11 @@ impl LogCache {
                     observer,
                     _in_flight: in_flight,
                 });
-                Ok(Ok((previous, staged)))
+                Ok(Ok(staged))
             }
         })
         .await?;
-        let (previous, mut staged) = match staged {
+        let mut staged = match staged {
             Ok(staged) => staged,
             Err(current) => {
                 return Ok(Deleted {
@@ -552,10 +547,22 @@ impl LogCache {
 
         staged.commit().await?;
         let mut state = shard.state.lock().await;
+        // Read now, in turn order: a put to this key staged before the delete
+        // may not have applied when the delete staged, and the value from
+        // before it is not what the delete removed. Applied before a read
+        // error is returned, since the record is already durable.
+        let previous = match state.index.entries.get(key).copied() {
+            Some(entry)
+                if matches!(when, DeleteWhen::Always) && !entry.is_expired(now_millis()) =>
+            {
+                shard.read_value(&state, entry).await
+            }
+            _ => Ok(None),
+        };
         staged.apply(&mut state);
         Ok(Deleted {
             written: true,
-            previous,
+            previous: previous?,
             current: None,
         })
     }
