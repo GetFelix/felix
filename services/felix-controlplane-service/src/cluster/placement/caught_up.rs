@@ -263,6 +263,9 @@ pub struct StuckLeader {
     /// How many times this instance has named the shard again for being
     /// stuck within the last hour.
     pub recent_renames: u32,
+    /// Too many leaders were overdue at once this pass: the pass renames
+    /// one of them at most.
+    pub fleet_stalled: bool,
 }
 
 /// What a stuck leader has not done at its generation.

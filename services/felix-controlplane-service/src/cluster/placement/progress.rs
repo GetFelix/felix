@@ -376,6 +376,7 @@ impl CopyProgress {
                             .stuck_renames
                             .get(&assignment.key)
                             .map_or(0, |at| at.len() as u32),
+                        fleet_stalled: false,
                     },
                 );
             }
@@ -386,9 +387,9 @@ impl CopyProgress {
         // network that carries pings but not shipping, where renaming them
         // all would add a fence to every one and change nothing. It may as
         // well be one restarted broker that leads many shards (#1966), which
-        // renames heal. Renaming none would leave either for good, so the
-        // longest overdue one is renamed each pass: churn stays at one fence a
-        // pass, and the per-shard backoff still applies.
+        // renames heal. So the pass renames one at most. Every entry is kept,
+        // so that one is the first the planner can rename, not one it would
+        // skip for its backoff, its cap or a set that cannot serve.
         let overdue = stuck
             .values()
             .filter(|stuck| now.saturating_sub(stuck.since_millis) > bound)
@@ -399,19 +400,9 @@ impl CopyProgress {
                 watched = self.watched.len(),
                 "too many leaders show no progress at once; renaming one a pass",
             );
-            let Some(oldest) = stuck
-                .iter()
-                .min_by_key(|((key, _), stuck)| {
-                    (
-                        stuck.since_millis,
-                        (&key.tenant_id, &key.namespace, &key.stream, key.shard),
-                    )
-                })
-                .map(|(at, _)| at.clone())
-            else {
-                return HashMap::new();
-            };
-            stuck.retain(|at, _| *at == oldest);
+            for stuck in stuck.values_mut() {
+                stuck.fleet_stalled = true;
+            }
         }
         stuck
     }

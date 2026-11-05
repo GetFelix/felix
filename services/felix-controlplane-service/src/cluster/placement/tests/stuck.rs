@@ -5,7 +5,7 @@
 use super::super::progress::CopyProgress;
 use super::*;
 use crate::config::NodeLivenessConfig;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::model::{ConsistencyLevel, HaltedCopy, ReplicaReport};
 
@@ -50,6 +50,7 @@ impl CaughtUp for Stuck {
             since_millis,
             reason: self.reason,
             recent_renames: self.renames,
+            fleet_stalled: false,
         })
     }
 }
@@ -477,24 +478,95 @@ fn only_this_leaders_own_reports_are_progress() {
     }
 }
 
+/// One pass of the reconciler's stuck path over `existing` at `now`, with
+/// the leader of every shard reporting a tail past its majority: the shards
+/// it renames, each bumped to its next generation.
+fn rename_pass(
+    progress: &mut CopyProgress,
+    streams: &[Stream],
+    nodes: &[Node],
+    existing: &mut [ShardAssignment],
+    now: u64,
+) -> Vec<u32> {
+    let reports = existing
+        .iter()
+        .map(|assignment| report(assignment.key.shard, assignment.generation, now, 10, 4, 4))
+        .collect();
+    let mut positions =
+        ReplicaPositions::new(reports, &liveness(), now).with_nodes(nodes, existing);
+    let stuck = progress.observe_stuck(existing, &positions, Some(BOUND));
+    positions.set_stuck(stuck);
+    let plan = plan_with(streams, &[], nodes, existing, &positions, policy());
+    progress.note_stuck_renames(&plan, Some(now));
+    let mut renamed = Vec::new();
+    for (key, step, _) in plan.moves() {
+        if matches!(step, MoveStep::Stuck { .. }) {
+            renamed.push(key.shard);
+        }
+    }
+    for assignment in existing.iter_mut() {
+        if renamed.contains(&assignment.key.shard) {
+            assignment.generation += 1;
+        }
+    }
+    renamed
+}
+
 /// Every leader stuck at once, as a network that carries pings but not
-/// shipping would leave them, may be a fleet-wide fault: one is renamed a
-/// pass, the longest overdue, not all of them. One restarted broker leading
-/// them all looks the same, and renaming none would leave it unserved for
-/// good (#1966).
+/// shipping would leave them, may be a fleet-wide fault: a pass renames one,
+/// not all of them. One restarted broker leading them all looks the same,
+/// and renaming none would leave it unserved for good (#1966), so each pass
+/// moves on to another.
 #[test]
 fn many_stuck_at_once_renames_one_a_pass() {
     let nodes = live(&["broker-a", "broker-b", "broker-c"]);
-    let existing: Vec<ShardAssignment> = (0..200).map(shard).collect();
-    let reports = |at| (0..200).map(|n| report(n, 3, at, 10, 4, 4)).collect();
+    let streams = quorum(200);
+    let mut existing: Vec<ShardAssignment> = (0..200).map(shard).collect();
     let mut progress = CopyProgress::default();
-    let mut stuck = HashMap::new();
-    for pass in 0..20 {
+    let mut renamed = Vec::new();
+    for pass in 0..30 {
         let now = NOW + pass * 5 * SECOND;
-        stuck = observe(&mut progress, &existing, &nodes, reports(now), now);
+        let this_pass = rename_pass(&mut progress, &streams, &nodes, &mut existing, now);
+        assert!(this_pass.len() <= 1, "pass {pass}: {this_pass:?}");
+        renamed.extend(this_pass);
     }
-    assert_eq!(stuck.len(), 1, "{stuck:?}");
-    assert!(stuck.contains_key(&(shard(0).key, 3)), "{stuck:?}");
+    assert!(renamed.len() >= 10, "{renamed:?}");
+    let distinct: HashSet<u32> = renamed.iter().copied().collect();
+    assert_eq!(distinct.len(), renamed.len(), "{renamed:?}");
+}
+
+/// Over the fleet cap the pass's one rename goes to a shard the planner can
+/// rename, not to the longest overdue one when that one cannot be: here its
+/// set has no live majority, so a new term would stall the same way.
+#[test]
+fn many_stuck_at_once_skip_the_one_that_cannot_be_renamed() {
+    let nodes = live(&["broker-a", "broker-b", "broker-c"]);
+    let streams = quorum(100);
+    let mut existing = vec![ShardAssignment {
+        replicas: vec!["broker-d".to_string(), "broker-e".to_string()],
+        ..shard(0)
+    }];
+    let mut progress = CopyProgress::default();
+    // Shard 0 is watched first, so it is the longest overdue.
+    for pass in 0..6 {
+        let now = NOW + pass * 5 * SECOND;
+        assert!(rename_pass(&mut progress, &streams, &nodes, &mut existing, now).is_empty());
+    }
+    existing.extend((1..100).map(shard));
+    let start = NOW + 30 * SECOND;
+    let mut renamed = Vec::new();
+    for pass in 0..20 {
+        let now = start + pass * 5 * SECOND;
+        renamed.extend(rename_pass(
+            &mut progress,
+            &streams,
+            &nodes,
+            &mut existing,
+            now,
+        ));
+    }
+    assert!(!renamed.contains(&0), "{renamed:?}");
+    assert!(renamed.len() >= 2, "{renamed:?}");
 }
 
 /// A leader that fails at every generation it is given is renamed a handful

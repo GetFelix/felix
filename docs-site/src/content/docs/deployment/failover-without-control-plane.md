@@ -137,7 +137,7 @@ followers again before it serves, so no acknowledged write is lost. An idle
 shard counts as progressing, a shard that never opened gets twice as long,
 and each control-plane instance renames one shard at most four times an
 hour. When many leaders look stuck at once the fault may not be theirs, so
-they are renamed one a pass, longest stuck first.
+they are renamed one a pass.
 
 ## What you see
 

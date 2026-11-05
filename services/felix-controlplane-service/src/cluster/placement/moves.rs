@@ -89,9 +89,9 @@ pub(super) const MAX_STUCK_RENAMES: u32 = 4;
 pub(super) const STUCK_RENAMES_PER_PASS: usize = 16;
 
 /// Past this many leaders overdue at once (or an eighth of those watched, if
-/// more), only the longest overdue is renamed each pass: that may be a
-/// fleet-wide stall, which the same leaders one generation up would share,
-/// or one restarted broker leading many shards, which renames heal.
+/// more), a pass renames one of them at most: that may be a fleet-wide
+/// stall, which the same leaders one generation up would share, or one
+/// restarted broker leading many shards, which renames heal.
 pub(super) const MAX_STUCK_PER_FLEET: usize = 64;
 
 /// How long after a cluster's first broker registered a new shard waits for
@@ -398,8 +398,12 @@ impl Moves {
         let bound = self.policy.stuck_leader_millis?;
         let stuck = caught_up.stuck_leader(key, generation)?;
         let now = caught_up.as_of_millis()?;
-        if stuck.recent_renames >= MAX_STUCK_RENAMES || self.stuck_renames >= STUCK_RENAMES_PER_PASS
-        {
+        let per_pass = if stuck.fleet_stalled {
+            1
+        } else {
+            STUCK_RENAMES_PER_PASS
+        };
+        if stuck.recent_renames >= MAX_STUCK_RENAMES || self.stuck_renames >= per_pass {
             return None;
         }
         // A leader that never opened may still be in its broker's queue of
