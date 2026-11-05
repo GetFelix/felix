@@ -59,6 +59,39 @@ cargo test -p felix-sim
 cargo test -p felix-cluster --lib history::
 ```
 
+### The nightly sweep
+
+Pull requests run seeds 1 to 4 with the workspace tests. A bug that needs a
+rare fault schedule may show on one seed in hundreds, so `dst-nightly.yml`
+runs seeds 1 to 2000 every night. It builds the test once, splits the seeds
+across 50 jobs, and each job runs its 40 seeds two at a time. Every seed runs
+the same checkers as a pull request, the history checker included.
+
+A seed that fails runs twice more, so the summary can say whether it fails
+every time or one time in three. The job summary lists each failing seed with
+that count and its replay command:
+
+```text
+seed 1234 failed 3 of 3: FELIX_SIM_SEED=1234 cargo test -p felix-sim --test seeds replay -- --nocapture
+```
+
+The job's `sim-sweep-<first seed>` artifact holds the log of every run of a
+failing seed. To replay one locally, run the command, with `RUST_LOG` set if
+you want broker logs. The seeds are the same every night, so a seed that
+starts failing after a merge points at that merge.
+
+To sweep other seeds, dispatch the workflow with `first`, `seeds` and
+`shards`, or run the script it uses on your own machine:
+
+```bash
+FELIX_SIM_JOBS=2 scripts/sim-sweep.sh 100 20 target/sim-sweep
+```
+
+That runs seeds 100 to 119 two at a time, deletes the logs of seeds that
+passed and writes the failures to `target/sim-sweep/failed.txt`. Keep
+`FELIX_SIM_JOBS` below the machine's core count: a seed that waits for a core
+looks stuck to the stall watchdog.
+
 ## What a run does
 
 1. **Start.** The control plane gets a tenant, a durable stream with 50 to 200

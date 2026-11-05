@@ -1,14 +1,15 @@
 ---
 title: "How Felix Is Tested"
-description: "The history checker, fault injection on a real cluster, and the TLA+ models behind the replication claims."
+description: "The history checker, fault injection on a real cluster, the simulator, and the TLA+ models behind the replication claims."
 ---
 
 The replication rows on [What Felix Is For](/getting-started/what-felix-is-for/)
-rest on three kinds of evidence. A history checker runs clients against a real
+rest on four kinds of evidence. A history checker runs clients against a real
 three-broker cluster while it injects faults, then checks what the clients saw.
 The cluster harness runs those brokers and injects the faults, and individual
-tests use it to pin one scenario at a time. TLA+ models cover the interleavings no injected fault
-reliably reaches. This page says what each one does and where the detail lives.
+tests use it to pin one scenario at a time. The simulator runs the same broker
+code on virtual time, so it can try thousands of fault schedules a night. TLA+
+models cover the interleavings no injected fault reliably reaches. This page says what each one does and where the detail lives.
 
 ## The history checker
 
@@ -216,6 +217,29 @@ size runs on every pull request. `scale-nightly.yml` runs it at 1500 streams on 
 release build and opens an issue labelled `scale-nightly` when it fails.
 [`docs/cluster-harness.md`](https://github.com/GetFelix/felix/blob/main/docs/cluster-harness.md#shard-starvation)
 says how to read a failure.
+
+## The simulator
+
+`crates/testing/felix-sim` runs three to five brokers and a control plane in
+one test process, on tokio's paused clock, with the network between them
+simulated. A seed decides everything the run does: the cluster's shape, when
+brokers crash, freeze or lose links, when the control plane is slow or down,
+and what the clients send. After two virtual minutes of faults and recovery,
+the history checker reads what the clients saw and other checkers look at what
+the brokers hold, such as two brokers serving one shard at once.
+
+Pull requests run seeds 1 to 4. A nightly job (`dst-nightly.yml`) runs seeds 1
+to 2000 across 50 jobs and lists each failing seed with the command that runs
+it again:
+
+```bash
+FELIX_SIM_SEED=1234 cargo test -p felix-sim --test seeds replay -- --nocapture
+```
+
+A replay runs the same faults at the same virtual times, but the brokers' own
+task order can differ, so a seed that failed may need a few runs to fail again.
+[`docs/simulation.md`](https://github.com/GetFelix/felix/blob/main/docs/simulation.md)
+covers the checkers, the sweep script and what is simulated.
 
 ## TLA+ models
 

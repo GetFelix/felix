@@ -1,0 +1,157 @@
+name: Simulation sweep (nightly)
+
+# Runs 2000 simulator seeds (crates/testing/felix-sim, docs/simulation.md) a
+# night. Pull requests run four seeds as part of the workspace tests; that
+# catches a regression that shows on most seeds, not one that needs a rare
+# fault schedule. A seed takes minutes of real time, so the sweep is split into
+# shards that each run a range of seeds, two at a time.
+#
+# A failing seed is listed in the job summary with how often it failed on
+# replay and the command that replays it, and its log is uploaded. The seeds
+# are the same every night (1 to 2000), so a red night replays as is.
+
+on:
+  schedule:
+    # Every night at 05:13 UTC, after the power-loss sweep.
+    - cron: "13 5 * * *"
+  workflow_dispatch:
+    inputs:
+      first:
+        description: "First seed"
+        required: false
+        default: "1"
+      seeds:
+        description: "How many seeds"
+        required: false
+        default: "2000"
+      shards:
+        description: "How many jobs to split them across"
+        required: false
+        default: "50"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dst-nightly-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Plan the shards
+        id: plan
+        # Inputs reach the script through the environment, never pasted into it.
+        env:
+          FIRST: ${{ inputs.first || '1' }}
+          SEEDS: ${{ inputs.seeds || '2000' }}
+          SHARDS: ${{ inputs.shards || '50' }}
+        run: |
+          for value in "$FIRST" "$SEEDS" "$SHARDS"; do
+            if ! [[ "$value" =~ ^[1-9][0-9]{0,6}$ ]]; then
+              echo "not a positive number: $value"; exit 1
+            fi
+          done
+          if [ "$SHARDS" -gt 256 ] || [ "$SHARDS" -gt "$SEEDS" ]; then
+            echo "shards must be at most 256 and at most the seed count"; exit 1
+          fi
+          # Seeds split as evenly as they go; the first shards take one more.
+          shards=$(jq -cn --argjson first "$FIRST" --argjson seeds "$SEEDS" --argjson n "$SHARDS" '
+            [range($n) as $i
+              | ($seeds / $n | floor) as $base
+              | ($seeds % $n) as $extra
+              | { index: $i,
+                  first: ($first + $i * $base + ([$i, $extra] | min)),
+                  count: ($base + (if $i < $extra then 1 else 0 end)) }]')
+          echo "shards=$shards" >> "$GITHUB_OUTPUT"
+          echo "Seeds \`$FIRST\` to \`$((FIRST + SEEDS - 1))\` across $SHARDS jobs" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.99.1"
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      # Built once and handed to every shard, so fifty jobs do not each
+      # compile the workspace.
+      - name: Build the seeds test
+        run: |
+          bin=$(cargo test -p felix-sim --test seeds --no-run --message-format=json |
+            jq -r 'select(.profile.test == true and .target.name == "seeds") | .executable' |
+            tail -1)
+          mkdir -p sim-bin
+          cp "$bin" sim-bin/seeds
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sim-seeds-bin
+          path: sim-bin/seeds
+          retention-days: 2
+
+  sweep:
+    needs: build
+    runs-on: ubuntu-latest
+    # About 40 seeds two at a time, at three to five minutes a seed, plus
+    # replays of the ones that fail.
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.build.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: sim-seeds-bin
+          path: sim-bin
+
+      - name: Run the seeds
+        env:
+          FELIX_SIM_BIN: ${{ github.workspace }}/sim-bin/seeds
+          FELIX_SIM_JOBS: "2"
+          FIRST: ${{ matrix.shard.first }}
+          COUNT: ${{ matrix.shard.count }}
+        run: |
+          chmod +x "$FELIX_SIM_BIN"
+          scripts/sim-sweep.sh "$FIRST" "$COUNT" "${{ runner.temp }}/sweep"
+
+      - name: Report the failing seeds
+        if: failure()
+        env:
+          FIRST: ${{ matrix.shard.first }}
+          COUNT: ${{ matrix.shard.count }}
+        run: |
+          {
+            echo "## Seeds $FIRST to $((FIRST + COUNT - 1)): failures"
+            echo
+            echo "Each line says how many of its runs failed and how to replay it."
+            echo "Logs are in the \`sim-sweep-$FIRST\` artifact."
+            echo
+            echo '```'
+            cat "${{ runner.temp }}/sweep/failed.txt" 2>/dev/null || echo "the sweep did not finish"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the failing seeds' logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: sim-sweep-${{ matrix.shard.first }}
+          path: ${{ runner.temp }}/sweep
+          retention-days: 30
