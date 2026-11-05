@@ -72,6 +72,12 @@ one comes back every heartbeat stamp is as old as the outage, and sweeping at
 once would mark the whole fleet down. A broker that stays silent through the
 grace window is expired as usual.
 
+A control plane that was paused (a stopped process, a frozen VM) has the same
+problem without restarting: the heartbeats sent during the pause are still
+queued when it resumes, and the first sweep would run before it reads them. So
+when the sweep finds more than two sweep intervals have passed since its last
+tick, it does not count that gap as silence from any broker.
+
 Expiry needs two clocks to agree. The last heartbeat stamp has to be older
 than the timeout on the store's wall clock, and the instance running the sweep
 has to have seen the stamp stay unchanged for as long on its own monotonic
@@ -453,7 +459,8 @@ placement treats a `left` node as `draining` until the same window a silent
 node gets has passed since its last heartbeat: the expiry timeout plus the
 regrant margin, on the store's clock. Until then nothing it leads is promoted
 away, abandoned, or re-placed; a move it takes part in can still hand a shard
-over. A node already silent for that long, such as one `down` before it was
+over. It is never promoted itself, as a draining follower can be. A node
+already silent for that long, such as one `down` before it was
 deregistered, is failed over straight away. An operator deregistering a live
 broker should expect its shards to move about 19 s later with the default
 settings. In-memory streams are the exception, as for a drain: they have no log
@@ -985,8 +992,9 @@ control plane which replicas hold its log and how far each has got. Promotion
 is gated on it: a lost leader is replaced only by a replica reported caught up,
 and among those by the one reported furthest ahead. A replica on a draining
 broker is picked only when no live one is caught up; the drain then moves the
-shard off it as usual. A report may also carry
-`drained: true`, the leader's word that it has stopped serving the shard at
+shard off it as usual. A broker that has deregistered is never picked, even
+while placement still counts it as draining: it has stopped. A report may also
+carry `drained: true`, the leader's word that it has stopped serving the shard at
 that generation and its log will not grow: the fence of a planned move. For a
 cache, `replica_counter_offsets` says how far each replica has got with the
 counter log, which placement counts as a restore's progress; brokers that
