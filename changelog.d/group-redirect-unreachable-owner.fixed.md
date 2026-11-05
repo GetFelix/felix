@@ -1,1 +1,1 @@
-- A cluster client's group calls no longer keep following a redirect to a broker that will not connect. The target is left alone for a few seconds and another broker is asked for the shard instead.
+- A cluster client's group calls, commits, conditional publishes and state reads no longer keep following a redirect to a broker that will not connect. The target is left alone for 5 seconds and another broker is asked for the shard instead. Plain publishes are unchanged.

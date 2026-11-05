@@ -716,6 +716,10 @@ impl Client {
                     client = connected;
                 }
                 Err(err) => {
+                    // A refused credential says nothing about the broker.
+                    if err.downcast_ref::<crate::AuthError>().is_some() {
+                        return Err(err.context(format!("connect to the shard owner at {addr}")));
+                    }
                     tracing::debug!(error = %err, %addr, "redirect target unreachable; asking another broker");
                     self.mark_redirect_target_down(addr);
                     client = self.another_broker(&mut asked, &err).await?;
@@ -756,8 +760,9 @@ impl Client {
         candidates.retain(|addr| !asked.contains(addr) && !self.redirect_target_down(*addr));
         if candidates.is_empty() {
             return Err(anyhow::anyhow!(
-                "the shard owner is unreachable and no other broker is left to ask: {cause:#}"
-            ));
+                "the shard owner is unreachable and no other broker is left to ask"
+            )
+            .context(format!("{cause:#}")));
         }
         let connected = self
             .nodes
