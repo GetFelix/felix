@@ -1481,3 +1481,109 @@ async fn a_leader_past_its_generation_by_another_ballot_reports_the_refusal() {
     assert_eq!(report.generation, 4);
     assert_eq!(report.refused, Some(RefusedGeneration::above(4, 5)));
 }
+
+/// Followers that take every batch, except `broker-b`, which answers
+/// `detail` as a `FencedEpoch` refusal: it holds a candidate's ballot.
+#[derive(Default)]
+struct FencingFollower {
+    detail: String,
+    rest: AcceptingFollower,
+}
+
+impl PeerRequester for FencingFollower {
+    async fn request(
+        &self,
+        node_id: &str,
+        addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, PeerError> {
+        if node_id == "broker-b" {
+            return Ok(InternalMessage::ReplicateError(
+                felix_wire::internal::ReplicateError {
+                    correlation_id: 0,
+                    code: felix_wire::internal::ErrorCode::FencedEpoch,
+                    expected_offset: 0,
+                    detail: self.detail.clone(),
+                },
+            ));
+        }
+        self.rest.request(node_id, addr, message).await
+    }
+}
+
+/// The first report from a driver leading `key()` at generation 4 that names
+/// a refusal, with `broker-b` refusing its batches with `detail`, or none
+/// within `within`.
+async fn follower_ballot_refusal(detail: String, within: Duration) -> Option<ShardReplicaStatus> {
+    let (broker, _dir) = leader_with(3).await;
+    let (control_plane, received) = recording_control_plane().await;
+    let shutdown = CancellationToken::new();
+    let driver = spawn(
+        Arc::new(FencingFollower {
+            detail,
+            ..Default::default()
+        }),
+        broker,
+        router(LOCAL, &["broker-b", "broker-c"], 4),
+        Arc::new(Unfenced),
+        Arc::new(crate::promotion::NoGate),
+        published(),
+        Some(control_plane.reporter(shutdown.clone())),
+        Duration::from_millis(50),
+        Arc::default(),
+        RebuildPolicy::default(),
+        MoveThrottle::unlimited(),
+        shutdown.clone(),
+    );
+    let refusal = tokio::time::timeout(within, async {
+        loop {
+            let found = received
+                .lock()
+                .expect("lock")
+                .iter()
+                .find(|report| report.refused.is_some())
+                .cloned();
+            if let Some(report) = found {
+                return report;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .ok();
+    shutdown.cancel();
+    driver.stop().await;
+    refusal
+}
+
+/// **An open leader a follower fenced for a candidate's ballot reports its
+/// generation refused, with that ballot** (#1949). The fenced halt deposes
+/// the leader for reads while the other follower still takes its writes; if
+/// the candidate withdrew, nothing else moves the route on. Not before
+/// [`BALLOT_ELSEWHERE_FOR`]: a candidate that opens moves it on first.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_leader_a_follower_fenced_for_a_newer_ballot_reports_the_refusal() {
+    let detail = || crate::replica::superseded_detail(7, 4);
+    let early = BALLOT_ELSEWHERE_FOR - Duration::from_millis(500);
+    assert_eq!(follower_ballot_refusal(detail(), early).await, None);
+    let report = follower_ballot_refusal(detail(), BALLOT_ELSEWHERE_FOR * 2)
+        .await
+        .expect("no report of the generation a follower's ballot left");
+    assert_eq!(report.generation, 4);
+    assert_eq!(report.refused, Some(RefusedGeneration::above(4, 7)));
+}
+
+/// **The same for a follower that promised the leader's own generation to
+/// another node**: the candidate stood at the generation the control plane
+/// then named this leader at.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_leader_a_follower_fenced_at_its_own_generation_reports_the_refusal() {
+    let report = follower_ballot_refusal(
+        crate::replica::promised_detail(4, "broker-b"),
+        BALLOT_ELSEWHERE_FOR * 2,
+    )
+    .await
+    .expect("no report of the generation a follower promised away");
+    assert_eq!(report.generation, 4);
+    assert_eq!(report.refused, Some(RefusedGeneration::above(4, 4)));
+}

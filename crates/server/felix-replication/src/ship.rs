@@ -461,6 +461,7 @@ async fn ship_batch<R: PeerRequester>(
         }
         Progress::Halted(halt) => {
             cursor.halted = Some(halt);
+            cursor.fenced_by = fenced_by(&answer, shard.generation);
             tracing::error!(
                 node_id = %cursor.node_id,
                 stream = %shard.stream,
@@ -522,6 +523,20 @@ pub fn read_answer(answer: &InternalMessage) -> Progress {
         // is harmless and the alternative -- treating it as divergence -- would
         // stop replication over a protocol confusion.
         _ => Progress::Retry,
+    }
+}
+
+/// The ballot a follower's `FencedEpoch` refusal names: the newer
+/// generation it accepted, or `generation` when it promised that to another
+/// node.
+fn fenced_by(answer: &InternalMessage, generation: u64) -> Option<u64> {
+    match answer {
+        InternalMessage::ReplicateError(err) if err.code == ErrorCode::FencedEpoch => {
+            crate::replica::superseded_by(&err.detail, generation).or_else(|| {
+                crate::replica::promised_to(&err.detail, generation).map(|_| generation)
+            })
+        }
+        _ => None,
     }
 }
 

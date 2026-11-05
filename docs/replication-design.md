@@ -4660,6 +4660,14 @@ Five rules keep an election from getting stuck:
   same 10 s before reporting, so a candidate that can still open is not
   deposed, and the report carries the ballot, so the leader is named past
   it in one step rather than one generation per report.
+  A follower can hold that ballot instead of the leader. It then refuses
+  the leader's batches, and the leader stops shipping to it and stops
+  serving reads at its generation, since a newer leader may exist. Its
+  writes still go through on the rest of the set. If the candidate
+  withdrew, nothing else moves the route on, so this leader also reports
+  its generation refused after 10 s, carrying the follower's ballot, and is
+  named one past it. Without the report, reads stayed refused for good
+  while writes were still acknowledged (issue #1949).
 
 Elections need `joint_fence` finalized first, which the control plane allows
 once every serving broker offers `ELECTION`, names start holders and keeps a
@@ -4679,6 +4687,8 @@ the kept set alone never reaches.
 > `a_leader_past_its_generation_by_another_ballot_reports_the_refusal`,
 > `a_leader_standing_at_its_ballot_reports_no_refusal`,
 > `a_fence_below_its_own_ballot_reports_the_refusal`,
+> `a_leader_a_follower_fenced_for_a_newer_ballot_reports_the_refusal`,
+> `a_leader_a_follower_fenced_at_its_own_generation_reports_the_refusal`,
 > `a_granted_pre_vote_puts_the_ballot_on_disk_then_records_the_standing`,
 > `a_refused_pre_vote_writes_nothing`,
 > `a_set_the_control_plane_does_not_record_is_not_stood_on`,

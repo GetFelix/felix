@@ -255,8 +255,9 @@ struct ShardState {
     /// by too many replicas to open, or could not learn the set it leaves.
     /// Reported each tick, as a refused open is.
     fence_refused: Option<RefusedGeneration>,
-    /// The last pass found this broker's own copy holding a ballot past the
-    /// generation it leads. Reported each tick, as a refused open is.
+    /// The last pass found this broker's own copy, or a follower that fenced
+    /// it, holding a ballot past the generation it leads. Reported each
+    /// tick, as a refused open is.
     ballot_refused: Option<RefusedGeneration>,
     /// The ballot past the led generation the passes have seen, whether it
     /// names this broker, and since when. Reported only once it outlasts
@@ -1021,6 +1022,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             drain_pending,
             behind,
             ballot_above,
+            follower_ballot,
             ..
         } = pass;
         // Busy from earlier passes too: a follower this pass launched nobody
@@ -1091,6 +1093,10 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         state.owed = owed;
         state.settled_at = settled.then_some(generation);
         let now = tokio::time::Instant::now();
+        // A follower's ballot is another node's standing too, so it waits as
+        // long as one this broker answered.
+        let from_follower = ballot_above.is_none() && follower_ballot.is_some();
+        let ballot_above = ballot_above.or(follower_ballot.map(|ballot| (ballot, false)));
         state.ballot_above_since = ballot_above.map(|ballot| match state.ballot_above_since {
             Some((seen, since)) if seen == ballot => (ballot, since),
             _ => (ballot, now),
@@ -1110,6 +1116,18 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             })
             .map(|(ballot, _)| ballot);
         if let Some((ballot, _)) = ballot_above
+            && state.ballot_refused.is_none()
+            && from_follower
+        {
+            tracing::warn!(
+                stream = %key.stream,
+                shard = key.shard,
+                generation,
+                ballot,
+                "a follower fenced this leader for a ballot that never opened, so reads here \
+                 are refused; reporting the generation refused",
+            );
+        } else if let Some((ballot, _)) = ballot_above
             && state.ballot_refused.is_none()
         {
             tracing::warn!(

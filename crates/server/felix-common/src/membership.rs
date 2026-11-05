@@ -240,7 +240,8 @@ impl RefusedGeneration {
     }
 
     /// [`Self::set_unknown`], lost to `ballot`, a newer generation in the
-    /// broker's own copy that names another node.
+    /// broker's own copy that names another node, or the ballot a follower
+    /// fenced this leader for.
     pub fn above(generation: u64, ballot: u64) -> Self {
         Self {
             ballot,
