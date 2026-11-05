@@ -111,6 +111,10 @@ where
     // it. Until then auth cannot tell an unknown tenant from one not yet
     // synced, so it lets both through to the JWKS fetch.
     let catalog_seeded = CancellationToken::new();
+    // Cancelled once every listener is bound. Readiness waits on it too: a
+    // bind that fails after `/ready` said yes looks like a crash, not a
+    // start-up to retry.
+    let listening = CancellationToken::new();
 
     let cluster = cluster::shard_state(&config);
     let ingress_router = cluster
@@ -469,6 +473,7 @@ where
         &draining,
         &seeded,
         seeded_rx,
+        &listening,
     );
 
     // Filled by the shard tasks, carried by the heartbeat.
@@ -535,6 +540,9 @@ where
         prefetch: peer_listener.prefetch,
         sync_shutdown: &sync_shutdown,
     });
+
+    // After the last bind: anything bound below here could fail after ready.
+    listening.cancel();
 
     // Only while the shard watch runs is there anything to hand off, and
     // anything to tell this broker when it is done.
