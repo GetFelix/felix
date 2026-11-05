@@ -1279,6 +1279,10 @@ jobs:
     steps:
       - env:
           RESULTS: ${{ toJSON(needs.*.result) }}
+          DRAFT: ${{ github.event.pull_request.draft }}
         run: |
           echo "$RESULTS"
+          # A draft skips the heavy jobs, so a pass here would sit on the SHA
+          # until the ready run replaces it. Fail instead; a draft cannot merge.
+          if [ "$DRAFT" = true ]; then echo "draft: mark the PR ready to run the jobs"; exit 1; fi
           if grep -qE '"(failure|cancelled)"' <<< "$RESULTS"; then exit 1; fi

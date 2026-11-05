@@ -131,15 +131,16 @@ when nothing did. Each workflow ends with a job that always runs, `CI ok` and
 checks `main` requires, so `gh pr merge --auto --squash` waits for them. A
 docs-only change gets both within a minute or two.
 
-A draft pull request skips the heavy jobs in both workflows; `CI ok` and
-`Coverage ok` still report, and marking the pull request ready starts the jobs.
+A draft pull request skips the heavy jobs in both workflows, and `CI ok` and
+`Coverage ok` fail with a "draft" message so a draft cannot look mergeable.
+Marking the pull request ready starts the jobs.
 
 `coverage` runs on pushes to main, where it publishes the badge, and on pull
 requests, where it fails if line coverage drops by more than 0.3 points. On a
 pull request it is also the workspace test run: `task coverage` runs every
 crate's tests, `felix-cluster` included, so `Coverage ok` fails on a failing
 test, and the job summary lists the failed tests by name. `ci.yml`'s `test` job
-then runs only what coverage skips (`task test:residual`: doctests, and the
+then runs only what coverage skips (coverage's timeout scale is 5, CI's 3) (`task test:residual`: doctests, and the
 tests that need the `telemetry` feature off), plus the stress test. Pushes to
 main still run the full `task test:workspace` there.
 
