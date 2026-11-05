@@ -125,6 +125,22 @@ async fn step_does_nothing_while_paused_or_down() {
     assert!(finished_now(cp.step()).await);
 }
 
+/// Placement's memory survives a pause and not a restart.
+#[tokio::test(start_paused = true)]
+async fn placement_memory_survives_a_pause_and_not_a_restart() {
+    let cp = control_plane().await;
+    let seen = || async { cp.inner.placement.lock().await.restarts };
+    cp.reconcile().await.unwrap();
+    cp.set_fault(CpFault::Paused);
+    cp.set_fault(CpFault::Healthy);
+    cp.reconcile().await.unwrap();
+    assert_eq!(seen().await, 0);
+    cp.set_fault(CpFault::Down);
+    cp.set_fault(CpFault::Healthy);
+    cp.reconcile().await.unwrap();
+    assert_eq!(seen().await, 1, "rebuilt after a restart");
+}
+
 #[tokio::test(start_paused = true)]
 async fn silent_node_is_expired_by_stepping_after_the_window() {
     let cp = control_plane().await;

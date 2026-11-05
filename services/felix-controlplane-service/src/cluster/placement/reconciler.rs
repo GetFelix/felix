@@ -202,6 +202,31 @@ pub async fn reconcile_once_waking(
     }
 }
 
+/// What placement remembers between passes: when it saw each move start,
+/// each fence and each suspicion. A process keeps it in memory, so a new
+/// process starts with none.
+#[derive(Default)]
+pub struct PlacementMemory {
+    clock: MoveClock,
+    progress: CopyProgress,
+}
+
+/// [`reconcile_once_waking`] that keeps what it saw in `memory`, so time
+/// based decisions (fence timeouts, ageing suspicions and pending sets,
+/// stalled restores) fire across passes as they do in the running loop.
+pub async fn reconcile_remembering(
+    store: &dyn crate::store::ControlPlaneStore,
+    liveness: &crate::config::NodeLivenessConfig,
+    policy: MovePolicy,
+    wakes: &PlacementWakes,
+    memory: &mut PlacementMemory,
+) -> ReconcileOutcome {
+    match plan_pass(store, liveness, policy, &mut memory.progress).await {
+        Some(pass) => apply_pass(store, &pass, &mut memory.clock, wakes).await,
+        None => ReconcileOutcome::default(),
+    }
+}
+
 /// Everything placement decides from, read once.
 pub struct PlacementRead {
     pub streams: Vec<Stream>,
@@ -739,8 +764,7 @@ pub fn spawn_reconciler(
         let mut ticker = tokio::time::interval(interval);
         // A pass that overruns must not then run back-to-back catching up.
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        let mut clock = MoveClock::default();
-        let mut progress = CopyProgress::default();
+        let mut memory = PlacementMemory::default();
         let mut held = false;
         let mut under_replicated = 0;
         loop {
@@ -773,10 +797,15 @@ pub fn spawn_reconciler(
             if !held && !woken {
                 continue;
             }
-            if let Some(pass) =
-                plan_pass(store.as_ref(), &liveness, policy.clone(), &mut progress).await
+            if let Some(pass) = plan_pass(
+                store.as_ref(),
+                &liveness,
+                policy.clone(),
+                &mut memory.progress,
+            )
+            .await
             {
-                apply_pass(store.as_ref(), &pass, &mut clock, &wakes).await;
+                apply_pass(store.as_ref(), &pass, &mut memory.clock, &wakes).await;
                 under_replicated = log_replication(under_replicated, &pass.plan);
             }
         }

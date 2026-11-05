@@ -18,9 +18,10 @@
 //!   on a hung process; the router never sees that call.
 //! - `Down`: the call fails at once, as a refused connection does. Calls
 //!   parked by `Paused` fail too, as a process that dies drops its sockets.
-//!   Going down also forgets the expiry sweep's memory, so a control plane
-//!   that comes back waits a full window before expiring anyone, as a
-//!   restarted one does.
+//!   Going down also forgets the expiry sweep's and placement's memory, so a
+//!   control plane that comes back waits a full window before expiring
+//!   anyone and times its fences and suspicions from scratch, as a restarted
+//!   one does. `Paused` keeps both.
 //!
 //! The sim does not spawn the control plane's background loops. The harness
 //! calls [`SimControlPlane::step`] at [`CpConfig::sweep_interval`] and
@@ -49,7 +50,7 @@ use felix_controlplane_service::api::{AppState, build_router};
 use felix_controlplane_service::auth::felix_token::{CONTROLPLANE_AUDIENCE, mint_token_for};
 use felix_controlplane_service::cluster::membership::{SilenceWatch, SweepGrace, expire_observed};
 use felix_controlplane_service::cluster::placement::{
-    MovePolicy, PlacementWakes, ReconcileOutcome, reconcile_once_waking,
+    MovePolicy, PlacementMemory, PlacementWakes, ReconcileOutcome, reconcile_remembering,
 };
 use felix_controlplane_service::config::NodeLivenessConfig;
 use felix_controlplane_service::model::{
@@ -118,6 +119,13 @@ pub struct StepOutcome {
     pub placement: ReconcileOutcome,
 }
 
+/// What placement remembers between passes, for the `restarts` count it was
+/// built for.
+struct Placement {
+    memory: PlacementMemory,
+    restarts: u64,
+}
+
 /// The expiry sweep's state, which a real process keeps in memory.
 struct Sweep {
     watch: SilenceWatch,
@@ -138,6 +146,7 @@ struct Inner {
     /// serves, and a node's registration or report asks for a pass.
     wakes: Arc<PlacementWakes>,
     sweep: tokio::sync::Mutex<Sweep>,
+    placement: tokio::sync::Mutex<Placement>,
     tenant_tokens: Mutex<BTreeMap<String, String>>,
 }
 
@@ -222,6 +231,10 @@ impl SimControlPlane {
                 restarts: AtomicU64::new(0),
                 wakes,
                 sweep: tokio::sync::Mutex::new(sweep),
+                placement: tokio::sync::Mutex::new(Placement {
+                    memory: PlacementMemory::default(),
+                    restarts: 0,
+                }),
                 tenant_tokens: Mutex::new(BTreeMap::new()),
             }),
         })
@@ -350,17 +363,29 @@ impl SimControlPlane {
         Some(expire_observed(inner.store.as_ref(), &inner.config.liveness, now, watch, at).await)
     }
 
-    /// One placement pass. `None` while paused or down.
+    /// One placement pass. `None` while paused or down. What the pass saw
+    /// (fences, suspicions, pending sets, restores) carries to the next, so
+    /// time-based decisions fire as in the real loop; going down forgets it.
     pub async fn reconcile(&self) -> Option<ReconcileOutcome> {
         if !self.steppable() {
             return None;
         }
+        let inner = &self.inner;
+        let mut placement = inner.placement.lock().await;
+        let restarts = inner.restarts.load(Ordering::SeqCst);
+        if placement.restarts != restarts {
+            *placement = Placement {
+                memory: PlacementMemory::default(),
+                restarts,
+            };
+        }
         Some(
-            reconcile_once_waking(
-                self.inner.store.as_ref(),
-                &self.inner.config.liveness,
-                self.inner.config.moves.clone(),
-                &self.inner.wakes,
+            reconcile_remembering(
+                inner.store.as_ref(),
+                &inner.config.liveness,
+                inner.config.moves.clone(),
+                &inner.wakes,
+                &mut placement.memory,
             )
             .await,
         )
