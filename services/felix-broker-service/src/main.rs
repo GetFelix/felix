@@ -15,9 +15,11 @@ fn main() -> Result<()> {
         .block_on(run())
 }
 
-/// Rename a runtime worker the first time it parks. Workers and blocking-pool
-/// threads share tokio's default name, and telling them apart is how a thread
-/// sampler shows whether disk waits land on the threads that run tasks.
+/// Rename a runtime worker the first time it parks (Linux only). Workers and
+/// blocking-pool threads share tokio's default name, and telling them apart is
+/// how a thread sampler shows whether disk waits land on the threads that run
+/// tasks. Only the kernel's thread name (`/proc/.../comm`) changes; the name
+/// std and tracing report stays tokio's.
 fn name_runtime_worker() {
     #[cfg(target_os = "linux")]
     {
