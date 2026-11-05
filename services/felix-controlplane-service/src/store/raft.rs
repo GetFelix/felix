@@ -108,11 +108,6 @@ const ELECTED_SET_LEVEL: u16 = 26;
 /// (#1929).
 const OWN_LEADER_SET_LEVEL: u16 = 27;
 
-/// The metadata level whose members name a leader on the recorded set when
-/// its fence covered that set beside the one it was elected on, instead of
-/// recording the elected set (#1970).
-const FENCED_RECORDED_SET_LEVEL: u16 = 28;
-
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
     MetaCommand, MetaError, MetaResponse, decode_result, encode_command,
@@ -918,20 +913,9 @@ impl ControlPlaneStore for RaftStore {
         // Refused below level 21, before it reaches the log: the generation
         // stays the one every member holds, and the election is not adopted.
         // Below 26 every member applies the older form, which takes only the
-        // generation of a leader elected on another set, below 27 it still
-        // does for the shard's own leader, and below 28 the set an elected
-        // leader fenced beside its own is ignored.
+        // generation of a leader elected on another set, and below 27 it
+        // still does for the shard's own leader.
         let level = self.group_level().await;
-        let fenced_recorded_set = level >= FENCED_RECORDED_SET_LEVEL;
-        // A member below the level does not know the field.
-        let elected = if fenced_recorded_set {
-            elected
-        } else {
-            crate::model::ElectedLeader {
-                leaving: Vec::new(),
-                ..elected
-            }
-        };
         match self
             .propose_at(
                 level,
@@ -941,7 +925,6 @@ impl ControlPlaneStore for RaftStore {
                     elected,
                     elected_set: level >= ELECTED_SET_LEVEL,
                     own_leader_set: level >= OWN_LEADER_SET_LEVEL,
-                    fenced_recorded_set,
                 },
             )
             .await?

@@ -390,7 +390,6 @@ impl MetadataStateMachine {
                 elected,
                 elected_set,
                 own_leader_set,
-                fenced_recorded_set,
             } => store
                 .apply_adopt_elected_leader(
                     &key,
@@ -398,7 +397,6 @@ impl MetadataStateMachine {
                     &elected,
                     elected_set,
                     own_leader_set,
-                    fenced_recorded_set,
                 )
                 .await
                 .map(assignment_written)

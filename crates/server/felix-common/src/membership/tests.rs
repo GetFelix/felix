@@ -197,7 +197,6 @@ fn an_elected_leadership_is_appended_and_absent_reads_as_none() {
             generation: 4,
             replicas: vec!["broker-a".into(), "broker-c".into()],
             set_generation: 2,
-            leaving: Vec::new(),
         }),
         ..status
     };

@@ -261,10 +261,6 @@ pub struct ElectedLeadership {
     /// The generation that set was written at: the pending set's while a
     /// set change is pending.
     pub set_generation: u64,
-    /// Every member of the set kept beside it, which its fence covered too.
-    /// Empty when it fenced one set, and from brokers that predate it.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub leaving: Vec<String>,
 }
 
 fn is_zero(value: &u64) -> bool {

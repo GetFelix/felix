@@ -267,10 +267,6 @@ pub struct ElectedLeader {
     pub replicas: Vec<String>,
     /// The generation that set was written at.
     pub set_generation: u64,
-    /// Every member of the set kept beside it, which its fence covered too.
-    /// Empty when it fenced one set, and from brokers that predate it.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub leaving: Vec<String>,
 }
 
 impl From<felix_common::membership::ElectedLeadership> for ElectedLeader {
@@ -280,7 +276,6 @@ impl From<felix_common::membership::ElectedLeadership> for ElectedLeader {
             generation: elected.generation,
             replicas: elected.replicas,
             set_generation: elected.set_generation,
-            leaving: elected.leaving,
         }
     }
 }
@@ -602,26 +597,10 @@ impl ShardAssignment {
     /// node `known` (the catalog) does not hold cannot be written, so then
     /// the elected leader is named on this set, as [`Self::adopting_elected_set`]
     /// falls back to the old form.
-    ///
-    /// Nor is it when the leader's fence covered this set beside its own
-    /// (`elected.leaving` names this set): the leader is named on this set
-    /// with nothing pending, and fences the elected set beside it.
     pub fn reissuing(
         &self,
         elected: &ElectedLeader,
         known: &dyn Fn(&str) -> bool,
-    ) -> Option<ShardAssignment> {
-        self.reissuing_from(elected, known, true)
-    }
-
-    /// [`Self::reissuing`], with `leaving` false ignoring the set the
-    /// leader kept beside its own, as Raft members below
-    /// `FENCED_RECORDED_SET_LEVEL` do.
-    fn reissuing_from(
-        &self,
-        elected: &ElectedLeader,
-        known: &dyn Fn(&str) -> bool,
-        leaving: bool,
     ) -> Option<ShardAssignment> {
         if self.pending_set.is_some()
             || self.joining.is_some()
@@ -639,7 +618,6 @@ impl ShardAssignment {
                 .cloned()
                 .collect(),
             set_generation: elected.set_generation,
-            leaving: Vec::new(),
         })?;
         if next.leader != elected.leader {
             return None;
@@ -652,16 +630,7 @@ impl ShardAssignment {
         }
         let same = elected_set.len() == next.replicas.len()
             && elected_set.iter().all(|node| next.replicas.contains(node));
-        // The leader fenced this set beside the elected one, so it holds
-        // what a majority of this set acknowledged and acknowledges on both.
-        // Writing the elected set would drop this one, where a candidate may
-        // already have opened and acknowledged. Only on that evidence: a set
-        // the leader never fenced (say, one written while it was on a stale
-        // route) may lack records a majority of the elected set holds.
-        let fenced_here = leaving
-            && !elected.leaving.is_empty()
-            && elected.leaving.iter().collect::<BTreeSet<_>>() == self.nodes().collect();
-        if same || fenced_here || !elected_set.iter().all(|node| known(node)) {
+        if same || !elected_set.iter().all(|node| known(node)) {
             return Some(next);
         }
         // The leader ships to the pending set only, and counts an
@@ -737,40 +706,24 @@ impl ShardAssignment {
     /// naming a node `known` (the catalog) does not hold, which no write can
     /// name. Applied under Raft only by members at the level that knows it
     /// (`OWN_LEADER_SET_LEVEL`).
-    ///
-    /// Nor is an elected set whose leader fenced the recorded one beside it,
-    /// as in [`Self::reissuing`]; under Raft only at
-    /// `FENCED_RECORDED_SET_LEVEL`.
     pub fn adopting_elected_set(
         &self,
         elected: &ElectedLeader,
         known: &dyn Fn(&str) -> bool,
     ) -> Option<ShardAssignment> {
-        self.adopting_on_elected_set(elected, known, true, true)
-    }
-
-    /// [`Self::adopting_elected_set`] as Raft members at `OWN_LEADER_SET_LEVEL`
-    /// apply it: the elected set is written as the set being left even when
-    /// its leader fenced the recorded one beside it. Kept so those members
-    /// apply the same entries the same way until the group reaches the next
-    /// level.
-    pub(crate) fn adopting_elected_set_ignoring_leaving(
-        &self,
-        elected: &ElectedLeader,
-        known: &dyn Fn(&str) -> bool,
-    ) -> Option<ShardAssignment> {
-        self.adopting_on_elected_set(elected, known, true, false)
+        self.adopting_on_elected_set(elected, known, true)
     }
 
     /// [`Self::adopting_elected_set`] as Raft members at `ELECTED_SET_LEVEL`
     /// apply it: this set's own leader elected on another set has only its
-    /// generation taken, and a set its leader fenced beside it is ignored.
+    /// generation taken. Kept so those members apply the same entries the
+    /// same way until the group reaches the next level.
     pub(crate) fn adopting_elected_set_keeping_own_leader(
         &self,
         elected: &ElectedLeader,
         known: &dyn Fn(&str) -> bool,
     ) -> Option<ShardAssignment> {
-        self.adopting_on_elected_set(elected, known, false, false)
+        self.adopting_on_elected_set(elected, known, false)
     }
 
     fn adopting_on_elected_set(
@@ -778,7 +731,6 @@ impl ShardAssignment {
         elected: &ElectedLeader,
         known: &dyn Fn(&str) -> bool,
         own_leader_set: bool,
-        leaving: bool,
     ) -> Option<ShardAssignment> {
         let adopted = self.adopting(elected)?;
         let elected_set: BTreeSet<&String> = std::iter::once(&elected.leader)
@@ -822,7 +774,7 @@ impl ShardAssignment {
                 generation: elected.generation,
                 ..self.clone()
             }
-            .reissuing_from(elected, known, leaving);
+            .reissuing(elected, known);
         }
         Some(adopted.on_elected_set(elected))
     }

@@ -14,7 +14,6 @@ pub(super) async fn run(store: &dyn ControlPlaneStore) {
     an_adoption_on_an_older_read_loses(store).await;
     an_election_not_above_the_generation_is_not_adopted(store).await;
     an_election_on_another_set_is_named_on_it(store).await;
-    an_election_beside_the_recorded_set_is_named_on_it(store).await;
     every_write_after_an_adoption_issues_above_it(store).await;
     an_election_on_the_old_set_is_recorded_not_adopted(store).await;
     an_election_on_the_pending_set_is_adopted_and_stays_pending(store).await;
@@ -89,7 +88,6 @@ fn elected(leader: &str, generation: u64, replicas: &[&str], set_generation: u64
         generation,
         replicas: replicas.iter().map(|node| node.to_string()).collect(),
         set_generation,
-        leaving: Vec::new(),
     }
 }
 
@@ -300,54 +298,6 @@ async fn an_election_on_another_set_is_named_on_it(store: &dyn ControlPlaneStore
         unknown,
         ShardAssignment {
             generation: at,
-            ..current
-        }
-    );
-}
-
-/// **A leader whose fence covered the recorded set is named on it.** y,
-/// elected on {x, y, w}, fenced {x, y, z} beside it, so it leads at the
-/// generation after its own on {x, y, z}, with nothing pending (#1970).
-async fn an_election_beside_the_recorded_set_is_named_on_it(store: &dyn ControlPlaneStore) {
-    clear(store).await;
-    let older = store
-        .put_shard_assignment(ShardAssignment {
-            replicas: vec!["broker-y".to_string(), "broker-w".to_string()],
-            ..assignment(0, "broker-x")
-        })
-        .await
-        .expect("assign");
-    let current = store
-        .put_shard_assignment(ShardAssignment {
-            replicas: vec!["broker-y".to_string(), "broker-z".to_string()],
-            ..assignment(0, "broker-x")
-        })
-        .await
-        .expect("reassign");
-    let at = current.generation + 1;
-    let named = written(
-        store
-            .adopt_elected_leader(
-                &key(0),
-                current.generation,
-                ElectedLeader {
-                    leaving: vec![
-                        "broker-x".to_string(),
-                        "broker-y".to_string(),
-                        "broker-z".to_string(),
-                    ],
-                    ..elected("broker-y", at, &["broker-x", "broker-w"], older.generation)
-                },
-            )
-            .await
-            .expect("adopt"),
-    );
-    assert_eq!(
-        named,
-        ShardAssignment {
-            leader: "broker-y".to_string(),
-            replicas: vec!["broker-x".to_string(), "broker-z".to_string()],
-            generation: at + 1,
             ..current
         }
     );

@@ -790,7 +790,6 @@ the field itself, on every member alike, or refuses the command:
 | replica report `refused`, and in the snapshot | 25 | the report is proposed without it, so a leader that cannot serve a generation promised to an elected node is not named again above it and the shard waits as before #1730 |
 | `adopt_elected_leader` `elected_set` | 26 | every member takes only the generation of a leader elected on a set other than the recorded one, and the report handler then moves the shard past it |
 | `adopt_elected_leader` `own_leader_set` | 27 | every member takes only the generation when the shard's own leader was elected on another set, and the report handler then moves the shard past it (#1929) |
-| `adopt_elected_leader` `fenced_recorded_set`, `elected.leaving` | 28 | `elected.leaving` is cleared before the adoption is proposed, and every member records a leader's elected set even when its fence covered the recorded set beside it, leaving the recorded set as a pending change from it (#1970) |
 
 **A member refuses what it would drop.** From level 3 on, a member that
 decodes an entry carrying a non-empty field it does not know answers

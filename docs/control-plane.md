@@ -1422,10 +1422,8 @@ theirs is lost, and the control plane adopts the result
 ([replication-design.md](replication-design.md#electing-without-the-control-plane),
 rule 10). The elected broker reports at the generation it opened at, with
 `elected` in its shard entry: `leader` (itself), `generation`, `replicas`
-(the followers of the set it fenced), `set_generation`, and `leaving` (every
-member of a set its fence covered beside its own, omitted when there was
-none). A report without `elected` is unchanged; only a broker leading by
-election sends it.
+(the followers of the set it fenced) and `set_generation`. A report without
+it is unchanged; only a broker leading by election sends it.
 
 When the report's generation is above the assignment's, the report handler
 adopts before it judges the report, once `replica_election` is finalized.
@@ -1453,19 +1451,6 @@ elected generation itself, not the next one:
   Keeping it as leader at the elected generation would leave the record on
   the wrong set, so it is reissued like any other leader in the set.
 
-  A leader whose fence covered the control plane's set is the exception:
-  its `leaving` names exactly that set. That happens when the elected set was
-  a change from the control plane's set that the control plane dropped
-  before it settled, for example on a failover. The leader then holds what a
-  majority of the control plane's set acknowledged, and acknowledges on both
-  sets. It is named at the next generation on the control plane's set with
-  nothing pending, and fences the elected set beside it. Recording the
-  elected set instead would drop the control plane's set, where another
-  candidate may already have opened and acknowledged records. The set
-  generation alone is not enough evidence: a set the control plane wrote
-  after the elected one may be one the leader never fenced, such as a set
-  written while it was on a stale route.
-
   Otherwise only the generation is taken and the report is refused as
   `not_leader`: a leader elected on the old set while a change is pending is
   deposed by the new set's leader. The exception is the control plane's own
@@ -1480,8 +1465,7 @@ elected generation itself, not the next one:
   applies the same entries the same way. Members below level 27 likewise
   take only the generation when the elected leader is the control plane's
   own, elected on another set; the report handler then moves past it as
-  below. Members below level 28 ignore `leaving` and record the elected
-  set.
+  below.
 
   When only the generation was taken, the control plane's leader is now
   named at the generation the elected leader opened at, which ballots never
@@ -1522,9 +1506,6 @@ longer in the set.
 The write depends on the set the leader was elected on:
 
 - **The control plane's set.** The new generation names that set.
-- **Another set, fenced beside the control plane's.** The report's
-  `leaving` names the control plane's set, so the leader's fence covered it.
-  The new generation names the control plane's set, as above.
 - **Another set.** The control plane changed the set at the claimed
   generation, and a majority of the elected set may hold records that no
   majority of the control plane's set does. The new generation records the

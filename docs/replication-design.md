@@ -1452,11 +1452,7 @@ elected leader waits for the lease until the control plane is back (issue
     control plane's set, that set is named. When the two sets differ, the
     elected set is written as the control plane's and its own as a pending
     change from it, so the change ends as a cut-over's does (see "Adopting
-    an elected leader" in `docs/control-plane.md`). A leader whose fence
-    covered the control plane's set beside the elected one, as its report's
-    `leaving` says, is the exception, in both cases: it is named on the
-    control plane's set with nothing pending, and fences the elected set
-    beside it. If the
+    an elected leader" in `docs/control-plane.md`). If the
     control plane still names the old leader at the elected generation, that
     leader cannot serve there: either it promised the generation to the
     elected one, so its open fails, or a majority of the set did, so its

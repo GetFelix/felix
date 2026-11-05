@@ -192,11 +192,9 @@ impl InMemoryStore {
 
     /// [`ControlPlaneStore::adopt_elected_leader`] in the form a Raft entry
     /// names: with `elected_set` false, as members below the level that
-    /// knows it apply it, with `own_leader_set` false, as members below
+    /// knows it apply it, and with `own_leader_set` false, as members below
     /// the level that names this set's own leader on the set it was elected
-    /// on apply it (only its generation is taken), and with
-    /// `fenced_recorded_set` false, as members that ignore the set an
-    /// elected leader fenced beside its own apply it.
+    /// on apply it (only its generation is taken).
     pub(crate) async fn apply_adopt_elected_leader(
         &self,
         key: &ShardKey,
@@ -204,7 +202,6 @@ impl InMemoryStore {
         elected: &crate::model::ElectedLeader,
         elected_set: bool,
         own_leader_set: bool,
-        fenced_recorded_set: bool,
     ) -> StoreResult<crate::store::AssignmentWrite> {
         shards::adopt_elected_leader(
             self,
@@ -213,7 +210,6 @@ impl InMemoryStore {
             elected,
             elected_set,
             own_leader_set,
-            fenced_recorded_set,
         )
         .await
     }
@@ -680,7 +676,6 @@ impl ControlPlaneStore for InMemoryStore {
             &elected,
             true,
             own_leader_set,
-            true,
         )
         .await
     }

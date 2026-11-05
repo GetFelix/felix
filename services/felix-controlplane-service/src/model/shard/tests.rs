@@ -498,7 +498,6 @@ fn elected(leader: &str, replicas: &[&str], generation: u64, set_generation: u64
         generation,
         replicas: replicas.iter().map(|node| node.to_string()).collect(),
         set_generation,
-        leaving: Vec::new(),
     }
 }
 
@@ -638,8 +637,7 @@ fn elected_and_issued_generations_are_bounded() {
 /// meanwhile promotes from the elected set, and the control plane's comes
 /// back only once the leader reports its start record on both. Elected on
 /// {b, d, e}, the leader shipping to {a, b, c} could never reach a majority
-/// of the set being left, so it is named on {b, d, e} alone. One whose fence
-/// covered the control plane's set is named on that set.
+/// of the set being left, so it is named on {b, d, e} alone.
 #[test]
 fn reissuing_over_another_elected_set_leaves_it_as_a_pending_change() {
     let named_a = assignment();
@@ -678,27 +676,6 @@ fn reissuing_over_another_elected_set_leaves_it_as_a_pending_change() {
     assert_eq!(apart.replicas, vec!["broker-d", "broker-e"]);
     assert_eq!(apart.pending_set, None);
     assert_eq!(apart.generation, 8);
-
-    // Its fence covered the recorded set, so it is named on that one.
-    let fenced = named_a
-        .reissuing(
-            &ElectedLeader {
-                leaving: vec![
-                    "broker-a".to_string(),
-                    "broker-b".to_string(),
-                    "broker-c".to_string(),
-                ],
-                ..elected("broker-b", &["broker-c", "broker-d"], 7, 6)
-            },
-            &|_| true,
-        )
-        .expect("reissued");
-    assert_eq!((fenced.leader.as_str(), fenced.generation), ("broker-b", 8));
-    assert_eq!(
-        fenced.nodes().collect::<BTreeSet<_>>(),
-        named_a.nodes().collect::<BTreeSet<_>>()
-    );
-    assert_eq!(fenced.pending_set, None);
 
     // Elected on the recorded set, it is named as is.
     let same = named_a
@@ -779,109 +756,6 @@ fn an_elected_set_at_the_window_edge_is_reissued_one_past_it() {
         ("broker-b", edge + 1)
     );
     assert!(next.pending_set.is_some(), "the recorded set is pending");
-}
-
-/// **A leader whose fence covered the recorded set is named on it.** The
-/// control plane recorded {a, b, c} at 3 after leaving {b, c, d}, written at
-/// 2, unsettled. c, elected at 4 on {b, c, d}, fenced {a, b, c} beside it
-/// and says so, so c is named at 5 on {a, b, c} with nothing pending.
-/// Recording {b, c, d} with {a, b, c} pending would drop the set a candidate
-/// on {a, b, c} may already have opened and acknowledged on (#1970).
-#[test]
-fn a_leader_that_fenced_the_recorded_set_is_named_on_it() {
-    let recorded = ShardAssignment {
-        generation: 3,
-        ..assignment()
-    };
-    let elected_c = ElectedLeader {
-        leaving: vec![
-            "broker-c".to_string(),
-            "broker-a".to_string(),
-            "broker-b".to_string(),
-        ],
-        ..elected("broker-c", &["broker-b", "broker-d"], 4, 2)
-    };
-    let next = recorded
-        .adopting_elected_set(&elected_c, &|_| true)
-        .expect("adopted");
-    assert_eq!(
-        (next.leader.as_str(), next.generation),
-        ("broker-c", 5),
-        "{next:?}"
-    );
-    assert_eq!(
-        next.nodes().collect::<BTreeSet<_>>(),
-        recorded.nodes().collect::<BTreeSet<_>>()
-    );
-    assert_eq!(next.pending_set, None);
-    assert_eq!(next.validate(), Ok(()));
-
-    // Below the level, the elected set is recorded and this one pending.
-    let ignored = recorded
-        .adopting_elected_set_ignoring_leaving(&elected_c, &|_| true)
-        .expect("adopted");
-    assert_eq!(ignored.generation, 5);
-    assert_eq!(ignored.replicas, vec!["broker-b", "broker-d"]);
-    assert!(ignored.pending_set.is_some(), "{ignored:?}");
-
-    // So it is without the evidence, or when the fence covered another set.
-    for leaving in [vec![], vec!["broker-b".to_string(), "broker-c".to_string()]] {
-        let unproven = recorded
-            .adopting_elected_set(
-                &ElectedLeader {
-                    leaving,
-                    ..elected_c.clone()
-                },
-                &|_| true,
-            )
-            .expect("adopted");
-        assert_eq!(unproven, ignored);
-    }
-}
-
-/// **A set written after the one a leader was elected on is not one it
-/// fenced.** The control plane named c at 2 on {b, c, d}; b, on a stale
-/// route, opened at 2 on {a, b, c} (set generation 1) with acknowledgements
-/// on {a, b}. The elected set is older than the record, but b never fenced
-/// {b, c, d}, so b is named at 3 leaving {a, b, c} for {b, c, d}, not on
-/// {b, c, d} alone, where a failover would promote without those records.
-#[test]
-fn a_leader_on_an_older_set_is_named_leaving_it() {
-    let named_c = ShardAssignment {
-        leader: "broker-c".to_string(),
-        replicas: vec!["broker-b".to_string(), "broker-d".to_string()],
-        generation: 2,
-        ..assignment()
-    };
-    let next = named_c
-        .reissuing(
-            &elected("broker-b", &["broker-a", "broker-c"], 2, 1),
-            &|_| true,
-        )
-        .expect("reissued");
-    assert_eq!(
-        (next.leader.as_str(), next.generation),
-        ("broker-b", 3),
-        "{next:?}"
-    );
-    assert_eq!(
-        next.nodes().collect::<BTreeSet<_>>(),
-        BTreeSet::from([
-            &"broker-a".to_string(),
-            &"broker-b".to_string(),
-            &"broker-c".to_string()
-        ]),
-        "the set it opened on is the one being left"
-    );
-    let pending = next
-        .pending_set
-        .as_ref()
-        .expect("the recorded set is pending");
-    assert_eq!(
-        pending.replicas.iter().collect::<BTreeSet<_>>(),
-        BTreeSet::from([&"broker-c".to_string(), &"broker-d".to_string()])
-    );
-    assert_eq!(next.validate(), Ok(()));
 }
 
 /// **This set's own leader elected on another set is named on that set, not
