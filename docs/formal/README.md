@@ -934,6 +934,55 @@ own enabling condition, since the liveness configurations have no set
 changes or joining copies to hold it back; what it adds is that adoption and
 the reissue are taken at all.
 
+`FelixShardCpLive.cfg` asks the same of the control plane's own leader
+while the control plane runs (#1917): the leader it names ends up serving
+and stays (`CpLeaderServes`). The run allows what the safety checks allow
+and the earlier liveness checks left out. A candidate may give its standing
+up and keep the ballot it persisted (`Withdraws`, the stand timeout). A
+stopped broker may come back with what it persisted (`Restarts`). Placement
+may name a leader below a ballot and renames it on the refusal (`Renames`).
+`FelixShardCpLiveMain.cfg` is main's code, and TLC finds a shard that never
+serves: a leader whose own ballot is above its assignment never reports the
+refusal (`keep_own_set` in `promotion.rs`, #1919). Each of the five fixes
+from the dead-end census of #1914 has a twin with that one fix off
+(`FelixShardCpLiveNo<Fix>.cfg`), which shows that fix is needed.
+
+`FelixShardCpDown.cfg` checks what happens when the control plane stops for
+good partway through (`CpStops`). Elections alone must then get a leader
+serving on a majority (`CpDownServes`). Three things decide it:
+
+- Suspicion. The broker stands only against a leader whose broker it
+  suspects (`BrokerSuspicion`, `suspicion.rs`). That never fires against a
+  live broker whose shard is stuck, and
+  `FelixShardCpDownBrokerSuspicion.cfg` finds such a shard with no leader
+  for good. Per-shard suspicion (`ShardSuspicion`) also stands when the
+  shard's leader is not serving.
+- The pre-vote. A broker still fencing refuses it. If that refusal had no
+  bound (`FelixShardCpDownPreVoteUnbounded.cfg`), a fence that can never
+  complete would block every election behind it.
+- A promise to a candidate. A replica does not stand above a candidate it
+  promised while that candidate still stands. Once the candidate withdraws,
+  stops, or comes back without its standing, the promise no longer holds
+  the replica back. Freeing it only when the candidate is down
+  (`FelixShardCpDownStandBehindDeadOnly.cfg`) leaves a shard with no leader:
+  the candidate restarts, drops its candidacy, and every replica that
+  answered it waits on it forever.
+
+The model bounds generations, so a run can stop electing only because the
+bound is used up. `CpDownServesInBound` accepts that ending only when some
+live broker would still stand but for the bound (`Exhausted`); a real dead
+end, where nobody would stand, still fails.
+
+One case is not an outage but is worth knowing. Placement names a broker at
+the generation another was just elected and opened at, then the control
+plane stops. The elected leader serves on a majority, and the named one
+keeps fencing at that generation for good, so the shard runs one copy short
+(`FullyBacked`, `FelixShardCpDownDegraded.cfg`). Neither per-shard suspicion
+nor the freed promise reaches it: the named broker never stands, with its
+own round in flight, and if it did, the others hear the leader and refuse
+its pre-vote. Closing it would take the leader fencing again above that
+copy.
+
 These check the design in `docs/replication-design.md`, "Electing without
 the control plane", which the broker now follows once `replica_election` is
 finalized.
