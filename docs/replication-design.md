@@ -585,12 +585,18 @@ When the fence applies:
   (`a_cache_log_that_fails_to_open_keeps_the_shard_closed`,
   `a_counter_log_that_fails_to_open_keeps_the_shard_closed`); before it, the
   shard opens on the lease.
-- Only when every replica in the new set offers both `FENCE` and
+- Only when every replica in the new set that answers offers both `FENCE` and
   `TAIL_FETCH`, and for a cache shard `CACHE_FENCE` too, as its latest
   handshake with this broker in either direction says, and this broker offers
   them too. Otherwise the shard opens at once
   on the lease, exactly as before (`a_mixed_fleet_fails_over_on_the_lease`),
-  and a peer that did not offer them is never sent either message.
+  and a peer that did not offer them is never sent either message. Only a
+  replica that answers counts here. One this broker cannot reach, as one that
+  crashed, is treated as silent: the fence goes on and needs a majority of the
+  whole set, as it does without the lease. Opening on the lease for it would skip the catch-up too, and the
+  promoted broker may be missing a write the old leader acknowledged on the
+  other replicas (#1943, `an_unreachable_replica_does_not_skip_the_catch_up`,
+  `an_unreachable_replica_does_not_keep_the_lease`).
 - A stream shard's consumer-group state as well, as one pair. See
   [Group state at promotion](#group-state-at-promotion) below.
   `felix_broker_promotions_opened_total{path}` says which path each new
