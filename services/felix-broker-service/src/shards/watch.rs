@@ -403,6 +403,7 @@ pub fn check_continuity(since: u64, first_seq: Option<u64>, next_seq: u64) -> Op
 /// `changed` is notified after every snapshot and every batch of changes that
 /// moved something, so the routing feed acts on it now rather than at its
 /// next tick.
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     client: reqwest::Client,
     base_url: String,
