@@ -148,6 +148,16 @@ impl ControlPlaneLink for NodeLink {
         let call = self.inner.replica_status(bearer, node_id, body);
         self.cut.through(REQUEST_TIMEOUT, call).await
     }
+
+    async fn confirmed_assignment(
+        &self,
+        bearer: Option<&str>,
+        query: &[(&str, &str)],
+        timeout: Duration,
+    ) -> Result<LinkResponse> {
+        let call = self.inner.confirmed_assignment(bearer, query, timeout);
+        self.cut.through(timeout, call).await
+    }
 }
 
 #[cfg(test)]

@@ -190,3 +190,40 @@ async fn three_brokers_get_replica_sets_and_the_election_features() {
         assert!(features.enabled.contains(feature.name()), "{feature}");
     }
 }
+
+/// A replica with no promise on disk checks a leader against the control
+/// plane's confirmed assignment. Without this read through the link, every
+/// such replica refused every leader it had not promised.
+#[tokio::test(start_paused = true)]
+async fn the_link_serves_the_confirmed_assignment_read() {
+    let cp = control_plane().await;
+    let link = cp.link();
+    for (i, node) in ["b1", "b2", "b3"].into_iter().enumerate() {
+        let body = registration(node, &format!("10.0.0.{}:7100", i + 1));
+        assert!(link.register("t", &body).await.unwrap().status.is_success());
+    }
+    cp.create_tenant("t1").await.unwrap();
+    cp.create_namespace("t1", "ns").await.unwrap();
+    cp.create_durable_stream("t1", "ns", "orders", 1, 3)
+        .await
+        .unwrap();
+    cp.step().await.unwrap();
+    let snapshot = cp.assignments().await.unwrap();
+    let assigned = &snapshot.items[0].assigned.assignment;
+
+    let query = [
+        ("tenant_id", "t1"),
+        ("namespace", "ns"),
+        ("stream", "orders"),
+        ("shard", "0"),
+        ("kind", "stream"),
+    ];
+    let response = link
+        .confirmed_assignment(None, &query, Duration::from_secs(2))
+        .await
+        .unwrap();
+    assert!(response.status.is_success(), "{}", response.text());
+    let body: serde_json::Value = response.json().unwrap();
+    assert_eq!(body["assignment"]["leader"], assigned.leader.as_str());
+    assert_eq!(body["assignment"]["generation"], assigned.generation);
+}

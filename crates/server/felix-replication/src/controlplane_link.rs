@@ -109,6 +109,14 @@ pub trait ControlPlaneLink: Send + Sync + 'static {
         node_id: &str,
         body: &(impl Serialize + Sync),
     ) -> impl Future<Output = Result<LinkResponse>> + Send;
+    /// `GET /v1/shard-assignments/confirmed` for the shard `query` names,
+    /// abandoned after `timeout`.
+    fn confirmed_assignment(
+        &self,
+        bearer: Option<&str>,
+        query: &[(&str, &str)],
+        timeout: Duration,
+    ) -> impl Future<Output = Result<LinkResponse>> + Send;
 }
 
 /// [`ControlPlaneLink`] over the control plane's REST API.
@@ -250,6 +258,20 @@ impl ControlPlaneLink for HttpControlPlaneLink {
             .client
             .post(self.url(&format!("/v1/nodes/{node_id}/replica-status")))
             .json(body);
+        finish(bearer_if(request, bearer)).await
+    }
+
+    async fn confirmed_assignment(
+        &self,
+        bearer: Option<&str>,
+        query: &[(&str, &str)],
+        timeout: Duration,
+    ) -> Result<LinkResponse> {
+        let request = self
+            .client
+            .get(self.url("/v1/shard-assignments/confirmed"))
+            .query(query)
+            .timeout(timeout);
         finish(bearer_if(request, bearer)).await
     }
 }

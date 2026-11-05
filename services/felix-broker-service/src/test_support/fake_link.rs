@@ -108,4 +108,13 @@ impl ControlPlaneLink for FakeLink {
     ) -> Result<LinkResponse> {
         self.answer("replica_status")
     }
+
+    async fn confirmed_assignment(
+        &self,
+        _: Option<&str>,
+        _: &[(&str, &str)],
+        _: Duration,
+    ) -> Result<LinkResponse> {
+        self.answer("confirmed_assignment")
+    }
 }

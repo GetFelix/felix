@@ -802,6 +802,25 @@ impl ControlPlaneLink for SimLink {
         )
         .await
     }
+
+    async fn confirmed_assignment(
+        &self,
+        _bearer: Option<&str>,
+        query: &[(&str, &str)],
+        timeout: Duration,
+    ) -> Result<LinkResponse> {
+        let query: Vec<String> = query
+            .iter()
+            .map(|(name, value)| format!("{name}={}", query_value(value)))
+            .collect();
+        self.call(
+            Method::GET,
+            &format!("/v1/shard-assignments/confirmed?{}", query.join("&")),
+            None,
+            Some(timeout),
+        )
+        .await
+    }
 }
 
 /// A cursor percent-encoded as reqwest's `.query()` would, so the router

@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use felix_replication::confirmed::{Confirmed, ConfirmedRoutes};
+use felix_replication::controlplane_link::{ControlPlaneLink, HttpControlPlaneLink};
 use serde::Deserialize;
 
 use crate::cluster::credential::NodeCredential;
@@ -17,10 +18,10 @@ const READ_TIMEOUT: Duration = Duration::from_secs(2);
 /// confirmed read.
 const NOT_SERVED_WARN_EVERY: Duration = Duration::from_secs(60);
 
-/// Asks the control plane over its REST API.
-pub(crate) struct ControlPlaneRoutes {
-    client: reqwest::Client,
-    base_url: String,
+/// Asks the control plane through its link: over its REST API, or the
+/// simulator's in-process control plane.
+pub(crate) struct ControlPlaneRoutes<L = HttpControlPlaneLink> {
+    link: L,
     bearer: Option<NodeCredential>,
     /// When the last not-served warning was logged.
     warned: parking_lot::Mutex<Option<tokio::time::Instant>>,
@@ -37,9 +38,14 @@ impl ControlPlaneRoutes {
         base_url: &str,
         bearer: Option<NodeCredential>,
     ) -> Self {
+        Self::over(HttpControlPlaneLink::new(client, base_url), bearer)
+    }
+}
+
+impl<L: ControlPlaneLink> ControlPlaneRoutes<L> {
+    pub(crate) fn over(link: L, bearer: Option<NodeCredential>) -> Self {
         Self {
-            client,
-            base_url: base_url.trim_end_matches('/').to_string(),
+            link,
             bearer,
             warned: parking_lot::Mutex::new(None),
         }
@@ -74,29 +80,27 @@ impl ControlPlaneRoutes {
 }
 
 #[async_trait::async_trait]
-impl ConfirmedRoutes for ControlPlaneRoutes {
+impl<L: ControlPlaneLink> ConfirmedRoutes for ControlPlaneRoutes<L> {
     async fn confirmed(&self, key: &ShardKey) -> Confirmed {
         let kind = match key.kind {
             ShardKind::Stream => "stream",
             ShardKind::Cache => "cache",
         };
         let shard = key.shard.to_string();
-        let mut request = self
-            .client
-            .get(format!("{}/v1/shard-assignments/confirmed", self.base_url))
-            .query(&[
-                ("tenant_id", key.tenant_id.as_str()),
-                ("namespace", key.namespace.as_str()),
-                ("stream", key.stream.as_str()),
-                ("shard", shard.as_str()),
-                ("kind", kind),
-            ])
-            .timeout(READ_TIMEOUT);
-        if let Some(bearer) = &self.bearer {
-            request = request.bearer_auth(bearer.bearer().as_str());
-        }
-        let confirmed = match request.send().await {
-            Ok(response) => answer(response.status(), response.json::<Response>().await.ok()),
+        let query = [
+            ("tenant_id", key.tenant_id.as_str()),
+            ("namespace", key.namespace.as_str()),
+            ("stream", key.stream.as_str()),
+            ("shard", shard.as_str()),
+            ("kind", kind),
+        ];
+        let bearer = self.bearer.as_ref().map(|bearer| bearer.bearer());
+        let confirmed = match self
+            .link
+            .confirmed_assignment(bearer.as_deref().map(String::as_str), &query, READ_TIMEOUT)
+            .await
+        {
+            Ok(response) => answer(response.status, response.json::<Response>().ok()),
             Err(err) => {
                 tracing::debug!(error = %err, "confirmed shard assignment read failed");
                 Confirmed::Unavailable

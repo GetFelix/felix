@@ -288,7 +288,12 @@ impl SimBroker {
             &auth,
             storage_id,
             unclean.clone(),
-            None,
+            link.clone().map(|link| {
+                Arc::new(crate::shards::ControlPlaneRoutes::over(
+                    link,
+                    credential.clone(),
+                )) as Arc<dyn replication::confirmed::ConfirmedRoutes>
+            }),
         );
         let (registered, registered_watch) = tokio::sync::watch::channel(None);
         Ok(OpenedBroker {

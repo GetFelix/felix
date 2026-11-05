@@ -633,6 +633,14 @@ async fn a_fake_link_carries_a_report() {
         ) -> anyhow::Result<crate::controlplane_link::LinkResponse> {
             unreachable!()
         }
+        async fn confirmed_assignment(
+            &self,
+            _: Option<&str>,
+            _: &[(&str, &str)],
+            _: std::time::Duration,
+        ) -> anyhow::Result<crate::controlplane_link::LinkResponse> {
+            unreachable!()
+        }
         async fn replica_status(
             &self,
             _: Option<&str>,
