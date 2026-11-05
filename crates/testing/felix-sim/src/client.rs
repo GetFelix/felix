@@ -557,18 +557,28 @@ async fn read_all(handles: &NodeHandles, shard: u32) -> Option<Vec<Element>> {
 
 /// Whether this broker still leads `shard` at `generation`, confirmed by a
 /// round (or the lease, where the fleet reads by lease) after a read took its
-/// value. Without it a replaced leader that has not
-/// heard yet would answer with a mark its successor has moved past.
+/// value. See the module docs for why.
 async fn confirm_leader(handles: &NodeHandles, shard: u32, generation: u64) -> bool {
     let key = crate::cluster::stream_key(shard);
-    felix_replication::quorum::confirm_state_read(
+    let confirmed = felix_replication::quorum::confirm_state_read(
         &key,
         Some(&handles.marks),
         Some(&*handles.ingress),
     )
-    .await
-    .is_ok()
-        && handles.ingress.generation(&key) == Some(generation)
+    .await;
+    let now = handles.ingress.generation(&key);
+    let led = confirmed.is_ok() && now == Some(generation);
+    if !led {
+        // A dropped read leaves no trace in the history, so say so here.
+        tracing::debug!(
+            shard,
+            generation,
+            ?now,
+            ?confirmed,
+            "read dropped: leadership not confirmed"
+        );
+    }
+    led
 }
 
 /// Every client record in this broker's copy of `shard`, committed or not, or

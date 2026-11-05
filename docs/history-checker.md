@@ -134,11 +134,15 @@ The rw edge needs reads that stop at the true end of the log. A live
 subscriber may drop its newest records, so the cluster runs leave
 `History::exact_tails` off and report no rw edges. The simulator's reads do
 not drop their tail and turn it on; with it on, a read that returned nothing
-means the list was empty, so reads start at the list's base. A leader that
-was replaced and has not heard yet still serves reads up to its own committed
-mark, which is short of what its successor acknowledged. So the simulator
-records a read only after a round, or the lease where the fleet reads by lease,
-confirms that the broker still leads the shard at the generation it read at. The loops are
+means the list was empty, so reads start at the list's base.
+
+A leader that was replaced and has not heard yet still serves reads up to its
+own committed mark, which is short of what its successor acknowledged. So the
+simulator records a read only once the broker confirms it still leads the
+shard at the generation it read at. The confirmation is a round, or the lease
+where the fleet reads by lease.
+
+The loops are
 found with Tarjan's strongly connected components, then one short loop per
 component, so a large history costs about as much as reading it. `check_list_append(&History)`
 returns the cycles alone.
