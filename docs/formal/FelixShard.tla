@@ -553,6 +553,8 @@ RenameUnfenced == FALSE
 \* (StandOnStaleRoute, #1933). `NamedHereWaits`: that round does not stand
 \* while its copy's ballot is past its route and names this broker
 \* (`named_here` in crates/server/felix-replication/src/election/candidate.rs).
+\* The code holds that for 30 s (`NAMED_HERE_FOR`); the model holds it for
+\* good, taking the routes to land within that.
 \* `OwnBallotReported`: an open leader whose own ballot is past its
 \* generation reports the generation refused, to be renamed one up
 \* (`ballot_above` in crates/server/felix-replication/src/driver/shard.rs).
@@ -2372,8 +2374,10 @@ GiveUpRound(b) ==
 \* control plane's generation, now below its own copy's ballot (#1933). The
 \* window is the promotion's fence before anyone has answered it. The stand
 \* and the withdrawal are one step that fences nobody, the run where every
-\* other member refused. It is also allowed after a rename, whose old route
-\* names this broker in the code, which only adds behaviours.
+\* other member refused. Not modelled: a member answering that fence, which
+\* leaves the leader fencing at its generation behind a promise above it. It
+\* is also allowed after a rename, whose old route names this broker in the
+\* code, which only adds behaviours; `Adopt` bounds the repeats.
 StandOnStaleRoute(f) ==
     /\ RouteLags /\ ~NamedHereWaits
     /\ Elections > 0

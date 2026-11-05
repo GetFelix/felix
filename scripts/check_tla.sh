@@ -504,6 +504,7 @@ weights=(
   "FelixShardElectLiveReissue 8"
   "FelixShardElectRouteLag 10"
   "FelixShardElectRouteLagReportOnly 10"
+  "FelixShardElectRouteLagNoFix 2"
   "FelixShardElectAdoptFailoverApart0Gen2 5"
   "FelixShardElectAdoptFailoverApart1Gen2 5"
   "FelixShardElectAdoptFailoverApart0StoodGen2 5"
