@@ -547,6 +547,18 @@ ReclaimBlind == FALSE
 \* `RenameUnfenced`: the renamed leader opens at once instead of fencing.
 Renames == FALSE
 RenameUnfenced == FALSE
+\* `RouteLags`: a promoted broker's routes land after the ballot its
+\* promotion took (the lifecycle persists the ballot first), so a candidate
+\* round there that read the route naming the old leader may still stand
+\* (StandOnStaleRoute, #1933). `NamedHereWaits`: that round does not stand
+\* while its copy's ballot is past its route and names this broker
+\* (`named_here` in crates/server/felix-replication/src/election/candidate.rs).
+\* `OwnBallotReported`: an open leader whose own ballot is past its
+\* generation reports the generation refused, to be renamed one up
+\* (`ballot_above` in crates/server/felix-replication/src/driver/shard.rs).
+RouteLags == FALSE
+NamedHereWaits == TRUE
+OwnBallotReported == TRUE
 FenceChecksIds == TRUE
 UnnamedCounts == FALSE
 NameByRegistration == FALSE
@@ -2281,6 +2293,16 @@ PreVoteYes(m, f) ==
 \* Whether `f` would stand while another's round was open, under `Backoff`.
 StandsBeside(f) == \E m \in Brokers \ ({f} \cup halted) : fencing[m] /\ Candidate(m)
 
+\* Pre-vote: a majority of its set, itself included, no longer hears a leader.
+\* Under `DetectorMisfires` the candidate's own suspicion may be wrong.
+\* The candidate need not be in that majority, so one that still hears may
+\* stand: more than the code allows, which only widens the safety checks.
+PreVoteWon(f) ==
+    PreVote => MajorityOf({ m \in Members(f) : (DetectorMisfires /\ m = f) \/
+                             IF PreVoteAsked THEN PreVoteYes(m, f)
+                             ELSE ~Hears(m) /\ (FailStops > 0 => m \notin halted) },
+                          Members(f))
+
 \* Under `Elections`, a replica stands with no control-plane step, at the
 \* generation after the one it promised: it persists its own promise, then
 \* fences the set it last knew, and opens as a promoted leader does. A
@@ -2301,14 +2323,7 @@ Elect(f) ==
     /\ SetCheck => f \in mine[f] /\ setGen[f] > 0
     /\ StandsAboveKeptSet => setGen[f] <= promised[f] + 1
     /\ ~WipeWaits(f) /\ WipeFloor(f, f, promised[f] + 1) /\ ~NonVoter(f)
-    \* Pre-vote: a majority of its set, itself included, no longer hears a leader.
-    \* Under `DetectorMisfires` the candidate's own suspicion may be wrong.
-    \* The candidate need not be in that majority, so one that still hears may
-    \* stand: more than the code allows, which only widens the safety checks.
-    /\ PreVote => MajorityOf({ m \in Members(f) : (DetectorMisfires /\ m = f) \/
-                                IF PreVoteAsked THEN PreVoteYes(m, f)
-                                ELSE ~Hears(m) /\ (FailStops > 0 => m \notin halted) },
-                             Members(f))
+    /\ PreVoteWon(f)
     /\ Backoff /\ StandsBeside(f) => splits < Splits
     /\ splits' = IF Backoff /\ StandsBeside(f) THEN splits + 1 ELSE splits
     /\ bgen' = [bgen EXCEPT ![f] = promised[f] + 1]
@@ -2348,6 +2363,29 @@ GiveUpRound(b) ==
                     log, hwm, halted, acked, writes, staleCommit, promised, answered,
                     confirmed, ballot, opened, setVars, ackGen >>
     /\ UNCHANGED handoffVars
+
+\* Under `RouteLags`, a candidate round on a broker the control plane just
+\* promoted, which read the route from before the promotion: that route names
+\* another leader, so the round stands at one past the ballot the promotion
+\* took, on its own copy, and withdraws when its fence gets nowhere, keeping
+\* the promise. The leader role starts once the route lands, still at the
+\* control plane's generation, now below its own copy's ballot (#1933). The
+\* window is the promotion's fence before anyone has answered it. The stand
+\* and the withdrawal are one step that fences nobody, the run where every
+\* other member refused. It is also allowed after a rename, whose old route
+\* names this broker in the code, which only adds behaviours.
+StandOnStaleRoute(f) ==
+    /\ RouteLags /\ ~NamedHereWaits
+    /\ Elections > 0
+    /\ f = leader /\ f \notin halted
+    /\ bgen[f] = gen /\ fencing[f] /\ answered[f] = {}
+    /\ promised[f] = gen /\ ballot[f] = {f}
+    /\ Adopt > 0 => gen < Adopt
+    /\ PreVoteWon(f)
+    /\ Promise(f, f, gen + 1)
+    /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
+                    hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
+    /\ UNCHANGED << handoffVars, fencing, answered, confirmed, opened, setVars, ackGen >>
 
 \* Under `FailStops`, a broker stops for good, leader or not.
 FailStop(b) ==
@@ -3214,26 +3252,43 @@ PromisedAway(m, b, g) == promised[m] = g /\ ballot[m] /= {} /\ ballot[m] /= {b}
 \* did not answer, so it renames there too. That over-approximates the
 \* rename, which only adds behaviours, so every property checked still holds
 \* of the code; it can overstate liveness for that case.
+RefusedAtGen(left, stillFencing) ==
+    /\ bgen[leader] < gen \/ stillFencing
+    /\ \/ PromisedAway(leader, leader, gen)
+       \/ ~LeaderMajority(leader, left \cap Members(leader))
+       \/ /\ stillFencing /\ left /= FenceMembers(leader)
+          /\ ~(JointFence /\ oldSet[leader] /= {})
+          /\ \A m \in left :
+                 promised[m] = gen /\ ballot[m] = {leader} => m \in answered[leader]
+       \/ /\ stillFencing /\ JointFence
+          /\ ~MajorityOfOld(left \cup {leader}, leader)
+
+\* The control plane's leader is open at its generation and its own copy
+\* holds its own ballot above it, with no standing under way there. It no
+\* longer counts its own copy (HeldAtGen), so with one follower down nothing
+\* it writes is acknowledged (#1933).
+BelowOwnBallot ==
+    /\ bgen[leader] = gen /\ ~fencing[leader]
+    /\ promised[leader] > gen /\ ballot[leader] = {leader}
+
+\* Under `OwnBallotReported`, it reports the generation refused once that
+\* lasts (`ballot_above` in crates/server/felix-replication/src/driver/shard.rs
+\* and driver/shards.rs).
+OwnBallotAbove == OwnBallotReported /\ BelowOwnBallot
+
 RenameDue ==
     LET left == { m \in FenceMembers(leader) : ~PromisedAway(m, leader, gen) }
         stillFencing == bgen[leader] = gen /\ fencing[leader]
     IN /\ Renames
-       /\ bgen[leader] < gen \/ stillFencing
-       /\ \/ PromisedAway(leader, leader, gen)
-          \/ ~LeaderMajority(leader, left \cap Members(leader))
-          \/ /\ stillFencing /\ left /= FenceMembers(leader)
-             /\ ~(JointFence /\ oldSet[leader] /= {})
-             /\ \A m \in left :
-                    promised[m] = gen /\ ballot[m] = {leader} => m \in answered[leader]
-          \/ /\ stillFencing /\ JointFence
-             /\ ~MajorityOfOld(left \cup {leader}, leader)
+       /\ \/ OwnBallotAbove
+          \/ RefusedAtGen(left, stillFencing)
 
 \* Under `Renames`, the control plane names its leader again at the next
 \* generation, the same set and any pending change kept, once that leader
 \* reports it cannot serve the control plane's generation: a recorded
 \* election moved the control plane past it, or it is still fencing there
 \* and too many of its set promised a candidate, or one did and the rest
-\* are silent (`election_refused`,
+\* are silent, or it is open there below its own ballot (`election_refused`,
 \* `move_step` in services/felix-controlplane-service/src/cluster/placement/moves.rs).
 \* Not while a move drains its leader, which ends through its own steps. The
 \* leader fences there as at any new term: its open failed, so the broker
@@ -3731,6 +3786,7 @@ Next ==
         \/ ObserveFence(b) /\ UNCHANGED quietVars
         \/ Elect(b) /\ UNCHANGED << clog, chwm, cacked, heard, idVars, named, wipeVars >>
         \/ GiveUpRound(b) /\ UNCHANGED quietVars
+        \/ StandOnStaleRoute(b) /\ UNCHANGED quietVars
         \/ FailStop(b) /\ UNCHANGED quietVars
         \/ FinishChange(b) /\ UNCHANGED quietVars
         \/ \E f \in Brokers :
@@ -3820,6 +3876,15 @@ ReportFairness ==
 
 ReissueSpec == Spec /\ Fairness /\ ReportFairness
 
+\* Under `Renames`, the control plane's rename, taken once it stays possible.
+RenameFairness ==
+    WF_vars(CpRename(Now, cpView)
+            /\ UNCHANGED << counterVars, expect, inherited, seen, seenInc, fenceIds,
+                            heard, decideIdVars, named >>)
+
+\* Elections with the control plane up, renaming its leader on a refusal.
+RenameSpec == Spec /\ Fairness /\ ReportFairness /\ RenameFairness
+
 \* A generation whose leader can never open does not stay the control
 \* plane's while the leader elected there leads. Once that leader is deposed
 \* a later election moves the generation on, which the model bounds, so it
@@ -3827,6 +3892,9 @@ ReissueSpec == Spec /\ Fairness /\ ReportFairness
 CollisionSuperseded ==
     \A g \in 1..(Adopt + Suspicions + 1) :
         (gen = g /\ Collided) ~> (gen /= g \/ ~Collided)
+
+\* The control plane's leader does not stay open below its own ballot.
+OwnBallotCaughtUp == BelowOwnBallot ~> ~BelowOwnBallot
 
 \* Nobody stands against an open leader that a majority of its set hears:
 \* pre-vote keeps a working leader in place. With the control plane down, a

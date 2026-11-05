@@ -199,6 +199,7 @@ newcomer as a top-up instead of undoing it; that case is a unit test only.
 | `QuorumReportNamesASuccessor` | Under `Quorum`, a report from a leader still serving names a follower that may take over, whenever a majority is still replicating. A liveness property in invariant form, checked in `FelixShard.cfg`. |
 | `ElectionSettles` | With the control plane down, elections end with a live leader that stays open and that no live broker has promised past. A temporal property (`<>[]LeaderSettled`), checked under `LiveSpec` in `FelixShardElectLive.cfg`. |
 | `NoStandAgainstHeardLeader` | Nobody starts fencing against an open leader that a majority of its set still hears. An action property, checked with the liveness configurations. |
+| `OwnBallotCaughtUp` | The control plane's leader does not stay open at its generation while its own copy holds its own ballot above it. While it does, it never counts its own copy, so with one follower down nothing it writes is acknowledged (#1933). A temporal property, checked under `RenameSpec` in the `FelixShardElectRouteLag*.cfg` configurations. |
 | `CollisionSuperseded` | With the control plane up, it does not stay at a generation whose leader can never open, because another broker was elected there and opened, while that broker still leads. A temporal property, checked under `ReissueSpec` in `FelixShardElectLiveReissue.cfg`. |
 
 ## The configurations, and what each must do
@@ -250,6 +251,9 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardElectLiveNoBackoff.cfg` | the same without backoff | violate `ElectionSettles`: candidates split, stand again at once and split again until every generation the model allows is used, and nobody leads |
 | `FelixShardElectLiveReissue.cfg` | `FelixShardElectLive.cfg` with the control plane up: promotion on the followers' word up to generation 1 (`Suspicions = 1`), adoption up to generation 3, two generations of elections, no broker stopping, and the control plane moving past a generation claimed twice (`Reissues`, CpReissue), with adoption and the reissue taken once they stay possible (`ReissueSpec`) | pass `CollisionSuperseded` (503K distinct states, 4 min locally) |
 | `FelixShardElectLiveNoReissue.cfg` | the same without the reissue | violate `CollisionSuperseded`: placement names one broker at the generation another is elected at and opens, and the control plane keeps naming the one that cannot open |
+| `FelixShardElectRouteLag.cfg` | three brokers with the control plane up, no writes, no symmetry, promotion on the followers' word up to generation 1, adoption up to generation 3, one generation of elections, one broker allowed to stop for good, renames on a refusal (`Renames`), and a promoted broker whose routes lag the ballot its promotion took (`RouteLags`), with both of #1936's rules, under fairness that includes the rename (`RenameSpec`) | pass `OwnBallotCaughtUp` |
+| `FelixShardElectRouteLagNoFix.cfg` | the same without either rule (`NamedHereWaits`, `OwnBallotReported` off) | violate `OwnBallotCaughtUp` in eight states (16K distinct states, 3 s locally): the control plane names c at 2, the old leader stops, c's round on the route naming it stands at 3 and withdraws, and c opens at 2 below its own ballot, for good (#1933) |
+| `FelixShardElectRouteLagReportOnly.cfg` | the same with the round still standing but the leader reporting its generation refused (`OwnBallotReported`) | pass `OwnBallotCaughtUp`: the control plane names it again one generation up |
 | `FelixShardElectNoBallotAcks.cfg` | `FelixShardElect.cfg` without ballots, two generations of elections and two writes, the set check on so the first leader can follow a candidate | violate `AckedHeldByLeader`, checked per generation |
 | `FelixShardElectAdoptPromote.cfg` | `FelixShardElect.cfg` with one write, the set check, adoption up to generation 2 and promotion on suspicion up to generation 2 | pass, the same invariants (186K distinct states without the write; not yet measured with it) |
 | `FelixShardElectReissue.cfg` | `FelixShardElectAdoptPromote.cfg` with promotion on suspicion up to generation 1 and the control plane moving past a generation it named one leader at while another was elected and opened there: the next generation, under the elected leader, on the control plane's set (`Reissues`, CpReissue) | pass, the same invariants (130,796 distinct states, 6 s locally) |
@@ -933,6 +937,26 @@ generation on, and the model bounds elections. It is close to the reissue's
 own enabling condition, since the liveness configurations have no set
 changes or joining copies to hold it back; what it adds is that adoption and
 the reissue are taken at all.
+
+A promotion takes its ballot before its routes land: the broker's
+lifecycle persists the new generation's ballot, and the routes that name it
+leader follow a reconcile later. A candidate round that read the old route
+in that gap still sees the old leader, and before #1936 it could stand at
+the generation above its own broker's new leadership, then withdraw. The
+leader then opens at the control plane's generation below its own ballot and
+never counts its own copy there (#1933). `RouteLags` lets that round stand
+(StandOnStaleRoute), as one step that promises itself the next generation
+and fences nobody. #1936 adds two rules. The round does not stand while its
+copy's ballot is past its route and names its own broker (`NamedHereWaits`,
+`named_here` in election/candidate.rs, held for 30 s on the assumption that
+routes land within that), and a leader left below its own ballot reports its
+generation refused, so the control plane names it again one up
+(`OwnBallotReported`, OwnBallotAbove in RenameDue; `ballot_above` in
+driver/shard.rs). `FelixShardElectRouteLagNoFix.cfg` finds #1933 without
+them; `FelixShardElectRouteLag.cfg` passes with both, and
+`FelixShardElectRouteLagReportOnly.cfg` shows the report alone is enough.
+The model allows the stale round after a rename too, where the code's old
+route names the broker itself and nothing stands; that only adds behaviours.
 
 These check the design in `docs/replication-design.md`, "Electing without
 the control plane", which the broker now follows once `replica_election` is
