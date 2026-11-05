@@ -562,10 +562,12 @@ impl CaughtUp for ReplicaPositions {
         // (`left_unconfirmed`), so its identity stays.
         ids.retain(|node, _| old_set.contains(&node.as_str()) || new_set.contains(&node.as_str()));
         // A member the report names no identity for had not been reached by
-        // its leader, so it acknowledged nothing to that leader. It is named by
-        // the identity the leader's own promotion held it to, which covers
-        // every acknowledgement it gave before, since identities never repeat
-        // (#1574). Without one it is named with none, which no answer matches.
+        // its leader at this generation, so it acknowledged nothing there. It
+        // is named by the identity the leader inherited for it, from its own
+        // promotion or its previous generation, which covers every
+        // acknowledgement it gave before, since identities never repeat
+        // (#1574, #1922). Without one it is named with none, which no answer
+        // matches.
         // One registered without an identity predates identities and is left
         // unnamed, as is a replica outside the old set, which gave the old
         // leader nothing to count.

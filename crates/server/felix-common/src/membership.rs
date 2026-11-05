@@ -165,7 +165,9 @@ pub struct ShardReplicaStatus {
     pub given_up: bool,
     /// For a follower the leader has not reached yet at this generation, and
     /// so names no identity for in `replica_storage_ids`, the identity the
-    /// assignment that promoted the leader named for it, keyed by node id.
+    /// assignment that promoted the leader named for it, or after a set
+    /// change that kept the leader, the one it named the follower by at its
+    /// previous generation, keyed by node id.
     /// Placement names the follower by it in the next failover instead of by
     /// none. Omitted when empty, and by brokers that predate it.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
