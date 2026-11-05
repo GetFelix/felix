@@ -3858,20 +3858,55 @@ append stream and the rest never shipped: their writes were never acknowledged
   same way.
   Two shards that hash to the same bit both get a pass, which costs a pass and
   nothing else.
+- **An append wake reads only those shards.** The driver keeps an index of the
+  shards whose route names it leader, by bit, rebuilt whenever the routing
+  table changes. An append wake looks up the set bits, the shards owed a pass,
+  the moving ones, and the ones not yet led at the last full read (withheld or
+  refused, which may be led now), and nothing else. Every pass runs on the
+  driver's one task, so a walk of the whole table on each of the dozens of
+  wakes a second took about half of that task under a bulk create, and passes
+  waited behind it (#1987). Forgetting shards no longer led and repeating the
+  refused and given-up reports waits for the next full read: the tick, a route
+  change, or the first wake after the table changed.
 - **The tick and a route change pass every shard.** That refreshes each
   shard's report and retries what nothing else wakes, such as a group seek, a
   redrive, or a dead letter an operator discarded.
-- **A shard that cannot start waits in a queue, oldest first.** There are two:
-  urgent (an append, a write waiting on the mark, a follower answer that moved
-  a cursor) and refresh (the tick, or a follower to try again). Urgent shards
-  start first, but at most four in a row while a refresh waits, so a steady
-  stream of appends cannot hold any shard's report back for good. A shard
-  being moved counts as urgent: its clients are held until the drained report.
+- **A shard that cannot start waits in a queue, oldest first.** There are
+  three: appended (an append since the shard was last asked), urgent (a write
+  waiting on the mark, a shard new here or just opened, a follower answer that
+  moved a cursor) and refresh (the tick, or a follower to try again). Each
+  queue starts before the next, but at most four in a row while a later one
+  waits, so a steady stream of appends cannot hold any shard back for good.
+  A shard being moved counts as urgent: its clients are held until the drained
+  report. Appended goes first because its pass is short and a client waits on
+  it now. A bulk create puts hundreds of new shards in the urgent queue at
+  once, each first pass slow while the followers open their copies, and a
+  lease renewal behind them waited over three seconds (#1987,
+  `an_append_is_not_queued_behind_new_shards`). A shard asked again moves to an
+  earlier queue, never a later one, and joins it at the back.
+- **Every queue's front starts within a fixed number of starts.** Counted in
+  slots handed out, while every queue has shards waiting:
+  - the refresh queue's front waits for at most four other starts;
+  - the urgent queue's front waits for at most six: four appended and two
+    refreshes;
+  - the appended queue's front waits for at most two: one urgent and one
+    refresh.
+
+  A shard new here queues its first pass as urgent, even with a write
+  waiting: it is slow while the followers open their copies, and a bulk of
+  them in the appended queue would put an append behind them again. A promoted
+  shard is past that once its fence opens, so a write that came in during the
+  fence queues its first pass as appended. Either way a new leader's first
+  pass after a failover, once at the front of its queue, starts within those
+  six starts
+  (`a_new_leaders_first_pass_starts_within_the_bound`). A start needs a pass to
+  end, so the wait in time is at most six times the longest pass.
 - **A finished pass goes to the back.** When a pass ends and its shard wants
   another, the shard joins the queue behind the shards already waiting, and
   the freed slot goes to the one at the front. A shard with one append waits
-  for the urgent shards that asked before it, and for at most one refresh in
-  every five starts (`a_shard_with_one_append_is_not_starved_by_busier_ones`).
+  for the appended shards that asked before it, and for at most two starts
+  from later queues between any two of theirs
+  (`a_shard_with_one_append_is_not_starved_by_busier_ones`).
 - **A pass waiting only on a slow follower yields.** Once its mark and report
   are out, a pass that is waiting on stragglers hands them to the driver when a
   scan finds shards queued, so the slot is free for them.
@@ -3883,7 +3918,7 @@ flowchart LR
   S -->|marked, mark owed, or moving| W{slot free?}
   S -->|anything else, append wake| X[skipped]
   W -->|yes| P[pass]
-  W -->|no| Q[urgent or refresh queue]
+  W -->|no| Q[appended, urgent or refresh queue]
   P -->|ends, wants another| Q
   P -->|ends| F[slot goes to the front of the queue]
   Q --> F
