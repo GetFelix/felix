@@ -62,6 +62,10 @@ pub(crate) const LIVENESS: NodeLivenessConfig = NodeLivenessConfig {
 /// How long [`Runtime::stop`] waits for the runtime's threads to exit.
 const RUNTIME_STOP: Duration = Duration::from_secs(5);
 
+/// The control plane runtime's worker threads. [`ControlPlane::pause`] holds
+/// every one of them.
+const WORKERS: usize = 2;
+
 /// A running control plane, and the keys to mint credentials against it.
 pub struct ControlPlane {
     pub base_url: String,
@@ -75,6 +79,14 @@ pub struct ControlPlane {
     shutdown: CancellationToken,
     task: tokio::task::JoinHandle<()>,
     runtime: Runtime,
+    pause: Arc<Pause>,
+}
+
+/// Whether the runtime is paused, and how many workers are held.
+#[derive(Default)]
+struct Pause {
+    state: std::sync::Mutex<(bool, usize)>,
+    changed: std::sync::Condvar,
 }
 
 impl ControlPlane {
@@ -233,7 +245,57 @@ impl ControlPlane {
             shutdown,
             task,
             runtime,
+            pause: Arc::default(),
         })
+    }
+
+    /// Stop the control plane in place, the way `SIGSTOP` would: its port
+    /// still takes connections and requests, and nothing answers them. No
+    /// sweep, placement or heartbeat runs until [`Self::resume`], and then all
+    /// of it runs against a clock that moved on.
+    ///
+    /// Every worker thread of its runtime is held, so no task can run. A crash
+    /// fails a request at once; this makes it wait out its own timeout.
+    pub fn pause(&self) -> Result<()> {
+        {
+            let mut state = self.pause.state.lock().expect("pause lock");
+            anyhow::ensure!(!state.0, "the control plane is already paused");
+            state.0 = true;
+        }
+        for _ in 0..WORKERS {
+            let pause = Arc::clone(&self.pause);
+            // Blocking on purpose: a worker that blocks runs nothing else, and
+            // with all of them blocked nothing in the runtime runs.
+            self.runtime.handle().spawn(async move {
+                let mut state = pause.state.lock().expect("pause lock");
+                state.1 += 1;
+                pause.changed.notify_all();
+                while state.0 {
+                    state = pause.changed.wait(state).expect("pause lock");
+                }
+                state.1 -= 1;
+            });
+        }
+        let state = self.pause.state.lock().expect("pause lock");
+        let (state, waited) = self
+            .pause
+            .changed
+            .wait_timeout_while(state, Duration::from_secs(5), |state| state.1 < WORKERS)
+            .expect("pause lock");
+        anyhow::ensure!(
+            !waited.timed_out(),
+            "only {} of {WORKERS} control plane workers stopped",
+            state.1
+        );
+        Ok(())
+    }
+
+    /// Let a [`Self::pause`]d control plane run again. Does nothing if it is
+    /// not paused.
+    pub fn resume(&self) {
+        let mut state = self.pause.state.lock().expect("pause lock");
+        state.0 = false;
+        self.pause.changed.notify_all();
     }
 
     /// Create `tenant_id` and bind this control plane's signing keys to it.
@@ -433,6 +495,8 @@ impl ControlPlane {
 
     /// Stop serving and cut every connection brokers hold to it.
     pub async fn shutdown(self) {
+        // A held worker never sees the runtime stop.
+        self.resume();
         self.shutdown.cancel();
         // Aborted, not drained. A graceful shutdown keeps serving the keep-alive
         // connections brokers already hold, so their heartbeats would go on
@@ -456,7 +520,7 @@ struct Runtime(Option<tokio::runtime::Runtime>);
 impl Runtime {
     fn new() -> Result<Self> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
+            .worker_threads(WORKERS)
             .thread_name("felix-cluster-controlplane")
             .enable_all()
             .build()
