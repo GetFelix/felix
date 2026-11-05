@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793920484753,
+  "lastUpdate": 1793921547726,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -46488,6 +46488,58 @@ window.BENCHMARK_DATA = {
             "range": "41248.01",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 807562.18\nmean: 792278.15\nstdev: 41248.01\ncv: 5.21%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ff16e65ffc2ac7fb3a0b85929e8a0d4c2429c116",
+          "message": "refactor(replication): the broker's control-plane calls go through a ControlPlaneLink trait (#419) (#1934)\n\nThe broker's control-plane calls go through a ControlPlaneLink trait.",
+          "timestamp": "2026-11-05T15:27:46-08:00",
+          "tree_id": "a44516e10a2c39079f688bbb749b60b88ee963ea",
+          "url": "https://github.com/GetFelix/felix/commit/ff16e65ffc2ac7fb3a0b85929e8a0d4c2429c116"
+        },
+        "date": 1793921547069,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 360738.77,
+            "range": "7280.83",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 360738.77\nmean: 358940.49\nstdev: 7280.83\ncv: 2.03%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 360738.77,
+            "range": "7280.83",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 360738.77\nmean: 358940.49\nstdev: 7280.83\ncv: 2.03%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81204.48,
+            "range": "648.07",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81204.48\nmean: 81285.86\nstdev: 648.07\ncv: 0.80%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 812044.82,
+            "range": "6480.74",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 812044.82\nmean: 812858.57\nstdev: 6480.74\ncv: 0.80%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
