@@ -71,7 +71,7 @@ jobs:
           - family: handoff
             configs: FelixShardWalkHandoff FelixShardWalkHandoffNoWait
           - family: election
-            configs: FelixShardWalkElect FelixShardWalkElectStaleSet
+            configs: FelixShardWalkElect
           - family: swap
             configs: FelixShardWalkElectSwap FelixShardWalkElectSwapNoJoint
           - family: rename

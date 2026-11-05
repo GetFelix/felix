@@ -81,6 +81,7 @@ tlc() {
   local module="FelixShard"
   case "$cfg" in
     FelixPlacementPacing*) module="FelixPlacementPacing" ;;
+    FelixShardWalkElectStaleSetReplay) module="FelixShardWalkElectStaleSetReplay" ;;
     FelixShardFigure8*) module="FelixShardFigure8" ;;
     FelixShardReads*) module="FelixShardReads" ;;
     FelixShardSessions*) module="FelixShardSessions" ;;
@@ -114,6 +115,7 @@ tlc() {
 
 # Each configuration and what it must do. `pass`, or `violates <Invariant>`.
 expectations=(
+  "FelixShardWalkElectStaleSetReplay violates AckedHeldByLeader"
   "FelixShardLease pass"
   "FelixShardLogOrder pass"
   "FelixShardThinMargin violates AtMostOneServing"
@@ -357,7 +359,9 @@ expectations=(
 
 # The long random walks, for `--simulate`: one pass configuration per family
 # of set changes, and its negative twin, which must reach its violation
-# within the budget to show the walks get that far at all. The inherited-name
+# within the budget to show the walks get that far at all. The election
+# family's twin is a fixed trace instead (FelixShardWalkElectStaleSetReplay,
+# checked with the others above): the walks found it only by chance. The inherited-name
 # configurations with promotions on suspicion are here too: they outgrow a
 # runner's disk exhaustively, so sampling them is what is left, as are the
 # crashed leader's refusal beside a seat (with and without the fence ids'
@@ -372,7 +376,6 @@ walks=(
   "FelixShardWalkHandoff pass"
   "FelixShardWalkHandoffNoWait violates AtMostOneServing"
   "FelixShardWalkElect pass"
-  "FelixShardWalkElectStaleSet violates AckedHeldByLeader"
   "FelixShardWalkElectSwap pass"
   "FelixShardWalkElectSwapNoJoint violates AckedHeldByLeader"
   "FelixShardWalkElectRename pass"
