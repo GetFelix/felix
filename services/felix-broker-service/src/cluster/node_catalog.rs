@@ -20,7 +20,7 @@ use serde::Deserialize;
 /// The same listing answers "where does this broker forward to" and "where may
 /// a client connect", and they are different addresses on different listeners.
 /// Fetching once and splitting here keeps them from drifting apart.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq)]
 pub struct NodeCatalog {
     pub nodes: HashMap<String, NodeRef>,
     /// Sorted by node id, so the answer a client gets does not reshuffle

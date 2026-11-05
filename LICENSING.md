@@ -22,6 +22,7 @@ about reciprocity, not about who is allowed to make money.
 | `services/felix-broker-service/`, `services/felix-controlplane-service/` | AGPL-3.0-only | The runnable server binaries. |
 | `crates/testing/felix-conformance/` | AGPL-3.0-only | The client conformance kit: the scenario catalogue, the verifier, and a suite that runs against the reference broker. It links `felix-broker-service`, `felix-broker`, `felix-storage` and `felix-authz`, so a build of it is AGPL whatever its manifest says. Running it against your client's results puts no obligation on your client. Not published. |
 | `crates/testing/felix-cluster/` | AGPL-3.0-only | Local multi-node cluster harness for integration and failure tests. It embeds the control plane and drives the broker, so it is internal tooling rather than something a third-party implementer runs. Not published. |
+| `crates/testing/felix-sim/` | AGPL-3.0-only | Deterministic simulation of a cluster on virtual time, for tests. It runs the broker's replication code, so it is internal tooling. Not published. |
 | `crates/testing/felix-loadgen/` | AGPL-3.0-only | Load generator for the real-network performance suite. It drives a remote cluster through `felix-client`. Publishable, because `felixctl bench` links its scenarios. |
 | `crates/tools/felixctl/` | AGPL-3.0-only | The `felixctl` command-line tool. AGPL because `felixctl bench` links `felix-loadgen`. Publishable. |
 

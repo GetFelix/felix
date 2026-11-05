@@ -91,6 +91,21 @@ impl Appended {
         let slot = usize::from(slot);
         self.0[slot / 64] & (1 << (slot % 64)) != 0
     }
+
+    /// Every slot that took an append, in slot order.
+    pub fn slots(&self) -> impl Iterator<Item = u16> + '_ {
+        self.0.iter().enumerate().flat_map(|(word, &bits)| {
+            let mut bits = bits;
+            std::iter::from_fn(move || {
+                if bits == 0 {
+                    return None;
+                }
+                let bit = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                Some((word * 64 + bit) as u16)
+            })
+        })
+    }
 }
 
 #[cfg(test)]

@@ -10,13 +10,12 @@
 //! never offered `ELECTION` behaves as it did. Under `joint_fence` a learner
 //! still refuses such a fence.
 
-use std::time::Instant;
-
 use felix_storage::disk_log::{Membership, ReplicaSet, SetCheck};
 use felix_wire::internal::{
     ErrorCode, Fence, FenceElection, InternalMessage, PreVote, PreVoteAnswer, PreVoteRefusal,
     ReplicaSetView,
 };
+use tokio::time::Instant;
 
 use super::{ReplicaHandler, refused};
 use crate::peer::metrics;

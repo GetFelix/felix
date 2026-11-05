@@ -194,8 +194,10 @@ pub struct ShardReplicaStatus {
     pub elected: Option<ElectedLeadership>,
     /// Set by a leader the control plane names whose open was refused because
     /// it had already promised the generation to another node, or whose
-    /// joint fence cannot learn the set it leaves there. The shard is
-    /// not served and nothing else in the report is measured. Placement
+    /// joint fence cannot learn the set it leaves there, or that is open
+    /// and can no longer acknowledge at its generation. The first report of
+    /// it measures nothing; an open leader repeats it on its later reports
+    /// at that generation, which are measured as usual. Placement
     /// answers by naming the leader again at a generation above the refused
     /// one. Omitted otherwise, and by brokers that predate it.
     #[serde(default, skip_serializing_if = "Option::is_none")]

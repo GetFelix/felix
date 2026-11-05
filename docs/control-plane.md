@@ -72,6 +72,12 @@ one comes back every heartbeat stamp is as old as the outage, and sweeping at
 once would mark the whole fleet down. A broker that stays silent through the
 grace window is expired as usual.
 
+A control plane that was paused (a stopped process, a frozen VM) has the same
+problem without restarting: the heartbeats sent during the pause are still
+queued when it resumes, and the first sweep would run before it reads them. So
+when the sweep finds more than two sweep intervals have passed since its last
+tick, it does not count that gap as silence from any broker.
+
 Expiry needs two clocks to agree. The last heartbeat stamp has to be older
 than the timeout on the store's wall clock, and the instance running the sweep
 has to have seen the stamp stay unchanged for as long on its own monotonic
@@ -1593,11 +1599,14 @@ election: a refusal at the assignment's generation is enough. That also
 covers an election it never heard of, for example one that took a majority
 while placement was failing the shard over. Naming the same leader one
 generation up is a new fenced term either way. Placement ignores a refusal of
-an older generation and one that is no longer fresh. It also skips the step while the
-shard is in a move that ends through its own steps: one with a successor
-named, or one whose leader is draining. A follower replacement does not stop
-it: the new generation keeps the joining copy, and the replacement goes on
-under the same leader.
+an older generation and one that is no longer fresh. It skips the step while
+the move's leader is draining, since that fence ends through its own steps.
+A move still copying to its destination is dropped instead: the leader that
+refused cannot ship to it, so the move would only wait for its timeout. The
+next generation drops a destination that was staged on top of the set, as an
+abandoned move does, and a later pass can start the move again. A follower replacement does not stop
+the step: the new generation keeps the joining copy, and the replacement goes
+on under the same leader.
 
 **When a newer ballot holds the generation**, the leader reports the same
 refusal with an empty `promised_to`. An election that persists its ballot
@@ -1620,14 +1629,21 @@ and the fence needs the set at the generation before. A leader restarted at
 a generation it opened before `joint_fence` was finalized keeps that
 generation's set and its own ballot in its log, but not the set before, and
 its watch, started from a snapshot, did not see the step. That earlier open
-already fenced the set before. Placement answers the empty refusal
-the same way (`set_unknown`): the same leader and set at the next
-generation. The set that generation leaves is the one the broker kept and is
+already fenced the set before. A leader whose log keeps a set older than the
+one before reports the empty refusal too, once its own ballot and start record
+at the generation show it opened there, nothing is pending on the route, and
+its kept set names exactly the route's set on the same copies. That is a
+leader elected at a generation placement then adopted, restarted: it keeps
+the set it stood on, which is the set before.
+
+Placement answers the empty refusal the same way (`set_unknown`): the same
+leader and set at the next generation. The set that generation leaves is the one the broker kept and is
 named on now, so its fence can open there. Nothing in the control plane's
 state is new for this: the empty name is stored like any other.
 
 A broker reports it only from that evidence: this generation's set and a
-ballot naming itself, or generation 0, where a log never keeps a set and
+ballot naming itself, a ballot naming itself and a start record at this
+generation, or generation 0, where a log never keeps a set and
 nothing comes before it. A set kept from another node's fence or election
 request proves nothing was fenced from here, so that fence waits. So does
 one whose log keeps no set for the shard above generation 0. It may be a
