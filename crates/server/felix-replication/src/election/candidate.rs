@@ -320,6 +320,8 @@ async fn run<R: PeerRequester + Send + Sync + 'static>(
     let mut in_flight: HashMap<ShardKey, bool> = HashMap::new();
     let mut backoff: HashMap<ShardKey, Backoff> = HashMap::new();
     let mut scanned: Option<Instant> = None;
+    // The generation each shard was last fenced again from, so it is once.
+    let mut restood: HashMap<ShardKey, u64> = HashMap::new();
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => return,
@@ -361,6 +363,24 @@ async fn run<R: PeerRequester + Send + Sync + 'static>(
         {
             ctx.scan_stuck(&names).await;
             scanned = Some(Instant::now());
+        }
+        if !ctx.shard_after.is_zero() {
+            restood.retain(|key, _| ctx.elections.get(key).is_some());
+            for (key, generation) in ctx.elections.collided_and_refused(ctx.shard_after) {
+                if in_flight.len() >= STANDING_AT_ONCE
+                    || in_flight.contains_key(&key)
+                    || restood.get(&key) == Some(&generation)
+                {
+                    continue;
+                }
+                restood.insert(key.clone(), generation);
+                in_flight.insert(key.clone(), true);
+                let ctx = Arc::clone(&ctx);
+                rounds.spawn(async move {
+                    let round = restand(&ctx, &key, generation).await;
+                    (key, round)
+                });
+            }
         }
         let stuck = ctx.stuck.lock().expect("stuck lock").clone();
         if names.is_empty() && stuck.is_empty() {
@@ -471,88 +491,15 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
             .any(|epoch| epoch.generation == accepted);
         ctx.defers(key, accepted, started)
     });
-    let Some(kept) = log.replica_set() else {
-        return ctx.ineligible(key, "this copy keeps no replica set");
+    let Standing {
+        kept,
+        leaving,
+        generation,
+    } = match standing_on(ctx, key, route, &log) {
+        Ok(standing) => standing,
+        Err(round) => return round,
     };
-    // A change pending on the kept set is left to the control plane: an
-    // elected route names one set, so the followers' would not know which
-    // set to leave. Costs availability only. A set being left with the same
-    // copies is the one a move's cut-over leaves, its successor flagged a
-    // learner; that is stood on, and fenced jointly.
-    if kept
-        .leaving
-        .as_ref()
-        .is_some_and(|leaving| !same_copies(&kept.current, leaving))
-    {
-        return ctx.ineligible(key, "the kept replica set has a change pending");
-    }
-    // Earlier sets are kept only while a fence leaving them never opened, so a
-    // majority of one may hold an acknowledged write no later set does. The
-    // candidate's fence leaves one set, so it is left to the control plane.
-    if !kept.earlier.is_empty() {
-        return ctx.ineligible(key, "the kept replica set keeps earlier sets");
-    }
-    // A start record at the kept set's generation is written only by the
-    // leader that kept the set being left, once its joint fence took a
-    // majority of it. Fencing that set again would need its dead members too.
-    // A later start proves less: a leader the control plane named may have
-    // fenced the kept set alone.
-    let leaving = kept.leaving.clone().filter(|_| {
-        !log.generations()
-            .iter()
-            .any(|epoch| epoch.generation == kept.current.generation)
-    });
-    // Its fence would stay pending, after the ballot took a generation.
-    if leaving.is_some() && !ctx.marks.fleet_supports(felix_common::fleet::JOINT_FENCE) {
-        return ctx.ineligible(
-            key,
-            "a set is kept beside this one and joint fences are off",
-        );
-    }
-    if kept.current.generation == 0 {
-        return ctx.ineligible(key, "this copy keeps no replica set");
-    }
-    // Only a voter of the set it keeps stands (`Elect`: f \in mine[f],
-    // ~NonVoter(f)).
-    let votes = kept
-        .current
-        .members
-        .iter()
-        .any(|member| member.node == local && !member.learner);
-    if !votes || log.member_is_wiped(local) {
-        return ctx.ineligible(key, "this copy does not vote in its kept set");
-    }
-    // A candidate fences the set it keeps and the one kept beside it. If the
-    // control plane records another set, a majority of that one could hold
-    // what this fence never reaches, so it does not stand at all (#1806).
-    // That also means the elected leader counts the kept set alone: the
-    // control plane holds it with nothing pending.
-    let recorded = ctx
-        .elections
-        .recorded(key)
-        .unwrap_or_else(|| Recorded::of_route(route));
-    if !recorded.is(&kept.current) {
-        return ctx.ineligible(
-            key,
-            "the control plane records another set, or a change pending",
-        );
-    }
-
-    // Above the route's generation too: the control plane may have named
-    // one this replica was never fenced at, and standing there would collide
-    // with that leader's.
-    let generation = log.accepted_generation().max(route.generation) + 1;
-    // The control plane adopts an election only this far past its own
-    // generation, so a standing beyond it could never be handed over and its
-    // route would never drop.
-    if generation
-        > recorded
-            .generation
-            .saturating_add(ELECTION_GENERATION_WINDOW)
-    {
-        return ctx.ineligible(key, "past the generations the control plane adopts");
-    }
-    let first = pre_vote(ctx, key, &log, &kept.current, generation).await;
+    let first = pre_vote(ctx, key, &log, &kept, generation).await;
     if let Some(leader) = &follows_newer {
         let stood_down = first.as_ref().is_ok_and(|first| first.stood_down(leader));
         if !stood_down {
@@ -584,7 +531,7 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
         // anyway splits the vote at one generation and both candidates lose
         // it. Asking again sees the ballot whatever the fence's latency. Only
         // a refusal counts: a voter silent this time proves nothing.
-        let again = pre_vote(ctx, key, &log, &kept.current, generation).await;
+        let again = pre_vote(ctx, key, &log, &kept, generation).await;
         if let Some(changed) = again
             .as_ref()
             .ok()
@@ -628,11 +575,183 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
         Elected {
             leader: local.to_string(),
             generation,
-            set: kept.current,
+            set: kept,
             leaving,
             incarnation: crate::incarnation::of(&ctx.broker, key),
         },
     );
+    open_or_withdraw(ctx, key, &log, generation).await
+}
+
+/// Fence `key` one generation up as the leader this broker already is by
+/// election at `generation`, where the control plane's route names another
+/// leader at that same generation and a copy of the set follows neither.
+/// With the control plane silent nothing else renames the shard, and that
+/// copy refuses this leader for good. No pre-vote: its voters hear this
+/// broker, and nobody is deposed. The ballot and fence rules are a
+/// standing's.
+async fn restand<R>(ctx: &Ctx<R>, key: &ShardKey, generation: u64) -> Round {
+    let local = ctx.router.local_node_id();
+    let Some(log) = eligible_log(ctx, key).await else {
+        return ctx.ineligible(key, "the shard's log is not open here");
+    };
+    let Some(route) = ctx.router.snapshot().get(key).cloned() else {
+        return Round::Ineligible;
+    };
+    let leads = route.leader.node_id == local
+        && route.generation == generation
+        && log.accepted_generation() == generation
+        && opened(&log, generation)
+        && ctx.elections.stands_at(key, generation);
+    if !leads {
+        return Round::Ineligible;
+    }
+    let Standing {
+        kept,
+        leaving,
+        generation: next,
+    } = match standing_on(ctx, key, &route, &log) {
+        Ok(standing) => standing,
+        Err(round) => return round,
+    };
+    if !matches!(
+        log.accept_generation(next, Some(local)).await,
+        Ok(GenerationCheck::Raised)
+    ) {
+        return Round::Failed;
+    }
+    tracing::info!(
+        stream = %key.stream,
+        shard = key.shard,
+        generation = next,
+        "fencing again one generation up: the control plane named another leader at this \
+         election's generation, and a copy follows neither",
+    );
+    ctx.elections.record(
+        key.clone(),
+        Elected {
+            leader: local.to_string(),
+            generation: next,
+            set: kept,
+            leaving,
+            incarnation: crate::incarnation::of(&ctx.broker, key),
+        },
+    );
+    open_or_withdraw(ctx, key, &log, next).await
+}
+
+/// What a standing for `key` fences: the set its copy keeps, the set kept
+/// beside it, and the generation above both the copy's ballot and `route`.
+struct Standing {
+    kept: Membership,
+    leaving: Option<Membership>,
+    generation: u64,
+}
+
+/// The standing this copy may fence for `key`, or why it may not stand.
+fn standing_on<R>(
+    ctx: &Ctx<R>,
+    key: &ShardKey,
+    route: &Route,
+    log: &StreamLog,
+) -> Result<Standing, Round> {
+    let local = ctx.router.local_node_id();
+    let Some(kept) = log.replica_set() else {
+        return Err(ctx.ineligible(key, "this copy keeps no replica set"));
+    };
+    // A change pending on the kept set is left to the control plane: an
+    // elected route names one set, so the followers' would not know which
+    // set to leave. Costs availability only. A set being left with the same
+    // copies is the one a move's cut-over leaves, its successor flagged a
+    // learner; that is stood on, and fenced jointly.
+    if kept
+        .leaving
+        .as_ref()
+        .is_some_and(|leaving| !same_copies(&kept.current, leaving))
+    {
+        return Err(ctx.ineligible(key, "the kept replica set has a change pending"));
+    }
+    // Earlier sets are kept only while a fence leaving them never opened, so a
+    // majority of one may hold an acknowledged write no later set does. The
+    // candidate's fence leaves one set, so it is left to the control plane.
+    if !kept.earlier.is_empty() {
+        return Err(ctx.ineligible(key, "the kept replica set keeps earlier sets"));
+    }
+    // A start record at the kept set's generation is written only by the
+    // leader that kept the set being left, once its joint fence took a
+    // majority of it. Fencing that set again would need its dead members too.
+    // A later start proves less: a leader the control plane named may have
+    // fenced the kept set alone.
+    let leaving = kept.leaving.clone().filter(|_| {
+        !log.generations()
+            .iter()
+            .any(|epoch| epoch.generation == kept.current.generation)
+    });
+    // Its fence would stay pending, after the ballot took a generation.
+    if leaving.is_some() && !ctx.marks.fleet_supports(felix_common::fleet::JOINT_FENCE) {
+        return Err(ctx.ineligible(
+            key,
+            "a set is kept beside this one and joint fences are off",
+        ));
+    }
+    if kept.current.generation == 0 {
+        return Err(ctx.ineligible(key, "this copy keeps no replica set"));
+    }
+    // Only a voter of the set it keeps stands (`Elect`: f \in mine[f],
+    // ~NonVoter(f)).
+    let votes = kept
+        .current
+        .members
+        .iter()
+        .any(|member| member.node == local && !member.learner);
+    if !votes || log.member_is_wiped(local) {
+        return Err(ctx.ineligible(key, "this copy does not vote in its kept set"));
+    }
+    // A candidate fences the set it keeps and the one kept beside it. If the
+    // control plane records another set, a majority of that one could hold
+    // what this fence never reaches, so it does not stand at all (#1806).
+    // That also means the elected leader counts the kept set alone: the
+    // control plane holds it with nothing pending.
+    let recorded = ctx
+        .elections
+        .recorded(key)
+        .unwrap_or_else(|| Recorded::of_route(route));
+    if !recorded.is(&kept.current) {
+        return Err(ctx.ineligible(
+            key,
+            "the control plane records another set, or a change pending",
+        ));
+    }
+
+    // Above the route's generation too: the control plane may have named
+    // one this replica was never fenced at, and standing there would collide
+    // with that leader's.
+    let generation = log.accepted_generation().max(route.generation) + 1;
+    // The control plane adopts an election only this far past its own
+    // generation, so a standing beyond it could never be handed over and its
+    // route would never drop.
+    if generation
+        > recorded
+            .generation
+            .saturating_add(ELECTION_GENERATION_WINDOW)
+    {
+        return Err(ctx.ineligible(key, "past the generations the control plane adopts"));
+    }
+    Ok(Standing {
+        kept: kept.current,
+        leaving,
+        generation,
+    })
+}
+/// Wait for this broker's standing for `key` at `generation` to open, and
+/// withdraw it if it does not in time.
+async fn open_or_withdraw<R>(
+    ctx: &Ctx<R>,
+    key: &ShardKey,
+    log: &StreamLog,
+    generation: u64,
+) -> Round {
+    let local = ctx.router.local_node_id();
     // The open bound runs from when the route naming this standing is
     // published: the driver fences only published routes, and a routing feed
     // waiting on an unanswering control plane can hold it back for seconds.
@@ -641,7 +760,7 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
     let recorded_at = Instant::now();
     let mut published_at: Option<Instant> = None;
     loop {
-        if opened(&log, generation) {
+        if opened(log, generation) {
             return Round::Opened;
         }
         let ours = ctx

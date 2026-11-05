@@ -96,6 +96,11 @@ fn router(generation: u64) -> Arc<ShardRouter> {
 
 /// broker-a leading at `generation`, as `local` sees it.
 fn router_of(local: &str, generation: u64) -> Arc<ShardRouter> {
+    router_led(local, "broker-a", generation)
+}
+
+/// `leader` leading at `generation`, as `local` sees it.
+fn router_led(local: &str, leader: &str, generation: u64) -> Arc<ShardRouter> {
     let router = Arc::new(ShardRouter::new(
         local,
         "us-west-2",
@@ -108,8 +113,12 @@ fn router_of(local: &str, generation: u64) -> Arc<ShardRouter> {
     let table = RoutingTable::build(
         [(
             key(),
-            "broker-a".to_string(),
-            vec![LOCAL.to_string(), "broker-c".to_string()],
+            leader.to_string(),
+            ["broker-a", LOCAL, "broker-c"]
+                .into_iter()
+                .filter(|node| *node != leader)
+                .map(str::to_string)
+                .collect(),
             generation,
         )],
         &nodes,
@@ -1135,4 +1144,213 @@ async fn a_standing_gets_its_open_bound_from_the_routes_publication() {
         waited < OPEN_WITHIN * 2,
         "kept {waited:?} after publication"
     );
+}
+
+fn shard_at(generation: u64) -> felix_wire::internal::ShardRef {
+    felix_wire::internal::ShardRef {
+        tenant_id: TENANT.to_string(),
+        namespace: NAMESPACE.to_string(),
+        stream: STREAM.to_string(),
+        shard: 0,
+        generation,
+        incarnation: None,
+    }
+}
+
+fn fence_at(generation: u64, candidate: bool) -> felix_wire::internal::Fence {
+    felix_wire::internal::Fence {
+        correlation_id: 1,
+        shard: shard_at(generation),
+        log: ReplicaLog::Stream,
+        election: Some(felix_wire::internal::FenceElection {
+            candidate,
+            set: crate::promotion::joint::view(&set(4)),
+            leaving: None,
+            earlier: Vec::new(),
+        }),
+    }
+}
+
+/// **An elected leader the control plane collided with fences again one
+/// generation up** (#1914, the model's `FelixShardCpDownDegraded` trace).
+/// `LOCAL` was elected at 4 and opened, with broker-c's vote. The control
+/// plane then named broker-a at 4 and stopped. broker-a's copy promised 4 to
+/// itself and its route names it leader, so it refuses `LOCAL`'s batches for
+/// good, and per-shard suspicion never fires: broker-a leads its route and
+/// broker-c holds `LOCAL`'s start. Once the collision has stood for the
+/// shard bound with that copy still refusing, `LOCAL` takes a ballot at 5
+/// with no pre-vote and records the standing. broker-c, which hears it,
+/// and broker-a both take its fence there. Not before the bound.
+#[tokio::test(start_paused = true)]
+async fn a_leader_the_control_plane_collided_with_fences_again_one_generation_up() {
+    let (a, _a_dir) = follower().await;
+    ballot(&a, 4, "broker-a").await;
+    let (b, _b_dir) = follower().await;
+    let (c, _c_dir) = follower().await;
+    for broker in [&b, &c] {
+        ballot(broker, 4, LOCAL).await;
+        let log = shard_log(broker, &key()).await.expect("log");
+        log.accept_set(ReplicaSet {
+            current: set(4),
+            leaving: None,
+            earlier: Vec::new(),
+        })
+        .await
+        .expect("set");
+    }
+    start(&b, 4).await;
+    // Each broker's own view: the control plane's route names broker-a at 4.
+    let a_replica = crate::replica::ReplicaHandler::new(Arc::clone(&a), router_of("broker-a", 4));
+    let c_replica = crate::replica::ReplicaHandler::new(Arc::clone(&c), router_of("broker-c", 4));
+    let mut ctx = ctx_with(
+        &b,
+        Cluster {
+            handlers: HashMap::new(),
+        },
+    );
+    ctx.router = router_led(LOCAL, LOCAL, 4);
+    ctx.suspects.publish(BTreeSet::new());
+    let ctx = Arc::new(ctx);
+    let incarnation = crate::incarnation::of(&b, &key());
+    ctx.elections.record(
+        key(),
+        Elected {
+            leader: LOCAL.to_string(),
+            generation: 4,
+            set: set(4),
+            leaving: None,
+            incarnation,
+        },
+    );
+    ctx.elections.opened(&key(), 4);
+    let named = crate::election::Named {
+        generation: 4,
+        incarnation,
+        leader: "broker-a".to_string(),
+    };
+    assert_eq!(ctx.elections.overlay(|_| Some(named.clone())).len(), 1);
+
+    // What `LOCAL`'s driver hears from broker-a for each batch.
+    let answer = a_replica
+        .apply(
+            Some(LOCAL),
+            felix_wire::internal::ReplicateRecords {
+                times: None,
+                correlation_id: 1,
+                shard: shard_at(4),
+                first_offset: 0,
+                checksum: felix_wire::internal::batch_checksum(
+                    &[bytes::Bytes::from_static(b"x")],
+                    &[],
+                    &[],
+                    &[],
+                ),
+                payloads: vec![bytes::Bytes::from_static(b"x")],
+                marks: Vec::new(),
+                commit_offset: None,
+                generations: None,
+                publishers: Vec::new(),
+                headers: None,
+                set_generation: Some(4),
+            },
+            felix_broker::LogKind::Stream,
+        )
+        .await;
+    let InternalMessage::ReplicateError(refused) = answer else {
+        panic!("broker-a stored a batch from the leader it collided with: {answer:?}");
+    };
+    assert!(crate::replica::refuses_leader(
+        refused.code,
+        &refused.detail,
+        4
+    ));
+
+    let shutdown = CancellationToken::new();
+    let task = tokio::spawn(run(Arc::clone(&ctx), shutdown.clone()));
+    let log = shard_log(&b, &key()).await.expect("log");
+    let mut waited = Duration::ZERO;
+    while waited + SHARD_SCAN < ctx.shard_after {
+        ctx.elections.note_refused_copy(&key(), 4);
+        tokio::time::sleep(SHARD_SCAN).await;
+        waited += SHARD_SCAN;
+        assert_eq!(
+            log.accepted_generation(),
+            4,
+            "fenced again before the bound"
+        );
+    }
+    let stood = async {
+        while log.accepted_generation() < 5 {
+            ctx.elections.note_refused_copy(&key(), 4);
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    };
+    tokio::time::timeout(SHARD_SCAN * 4, stood)
+        .await
+        .expect("never fenced again");
+    assert_eq!(log.accepted_leader().as_deref(), Some(LOCAL));
+    let elected = ctx.elections.get(&key()).expect("standing");
+    assert_eq!((elected.leader.as_str(), elected.generation), (LOCAL, 5));
+
+    // The driver's fence at 5. broker-c hears `LOCAL` and still takes it.
+    let ok = |answer: InternalMessage| {
+        assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
+    };
+    ok(c_replica.fence(Some(LOCAL), fence_at(4, false)).await);
+    ok(c_replica.fence(Some(LOCAL), fence_at(5, true)).await);
+    ok(a_replica.fence(Some(LOCAL), fence_at(5, true)).await);
+    let a_log = shard_log(&a, &key()).await.expect("log");
+    assert_eq!(a_log.accepted_generation(), 5);
+    assert_eq!(a_log.accepted_leader().as_deref(), Some(LOCAL));
+
+    shutdown.cancel();
+    task.await.expect("run");
+}
+
+/// **No collision, no second fence**: an elected leader a copy refuses,
+/// with the control plane naming nobody else at its generation, is left to
+/// the rules that already cover it.
+#[tokio::test(start_paused = true)]
+async fn a_refusing_copy_alone_does_not_fence_again() {
+    let (b, _b_dir) = follower().await;
+    ballot(&b, 4, LOCAL).await;
+    start(&b, 4).await;
+    let mut ctx = ctx_with(
+        &b,
+        Cluster {
+            handlers: HashMap::new(),
+        },
+    );
+    ctx.router = router_led(LOCAL, LOCAL, 4);
+    ctx.suspects.publish(BTreeSet::new());
+    let ctx = Arc::new(ctx);
+    let incarnation = crate::incarnation::of(&b, &key());
+    ctx.elections.record(
+        key(),
+        Elected {
+            leader: LOCAL.to_string(),
+            generation: 4,
+            set: set(4),
+            leaving: None,
+            incarnation,
+        },
+    );
+    ctx.elections.opened(&key(), 4);
+    // The control plane's route is older: an ordinary elected leadership.
+    let named = crate::election::Named {
+        generation: 3,
+        incarnation,
+        leader: "broker-a".to_string(),
+    };
+    ctx.elections.overlay(|_| Some(named.clone()));
+    let shutdown = CancellationToken::new();
+    let task = tokio::spawn(run(Arc::clone(&ctx), shutdown.clone()));
+    for _ in 0..(ctx.shard_after.as_secs() / SHARD_SCAN.as_secs()) * 2 {
+        ctx.elections.note_refused_copy(&key(), 4);
+        tokio::time::sleep(SHARD_SCAN).await;
+    }
+    let log = shard_log(&b, &key()).await.expect("log");
+    assert_eq!(log.accepted_generation(), 4);
+    shutdown.cancel();
+    task.await.expect("run");
 }

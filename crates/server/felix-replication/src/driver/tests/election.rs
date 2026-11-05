@@ -506,6 +506,8 @@ async fn a_leader_opened_at_a_bump_on_the_same_members_keeps_the_new_set() {
 /// fence, and records the batches' stamps and the fences.
 struct BehindFollower {
     behind: &'static str,
+    /// What `behind` answers a batch with, `StaleRoute` when `None`.
+    refusal: Option<(felix_wire::internal::ErrorCode, &'static str)>,
     stamps: Mutex<Vec<(String, Option<u64>)>>,
     fences: Mutex<Vec<(String, felix_wire::internal::Fence)>>,
 }
@@ -542,9 +544,16 @@ impl PeerRequester for BehindFollower {
             return Ok(InternalMessage::ReplicateError(
                 felix_wire::internal::ReplicateError {
                     correlation_id: 0,
-                    code: felix_wire::internal::ErrorCode::StaleRoute,
+                    code: self
+                        .refusal
+                        .map_or(felix_wire::internal::ErrorCode::StaleRoute, |(code, _)| {
+                            code
+                        }),
                     expected_offset: 0,
-                    detail: "behind".to_string(),
+                    detail: self
+                        .refusal
+                        .map_or("behind", |(_, detail)| detail)
+                        .to_string(),
                 },
             ));
         }
@@ -629,6 +638,7 @@ async fn an_elected_leader_fences_a_follower_whose_route_is_behind_again() {
             .expect("own ballot");
         let followers = BehindFollower {
             behind: "broker-b",
+            refusal: None,
             stamps: Mutex::new(Vec::new()),
             fences: Mutex::new(Vec::new()),
         };
@@ -668,6 +678,7 @@ async fn without_replica_election_a_route_behind_follower_gets_no_fence() {
         .expect("own ballot");
     let followers = BehindFollower {
         behind: "broker-b",
+        refusal: None,
         stamps: Mutex::new(Vec::new()),
         fences: Mutex::new(Vec::new()),
     };
@@ -859,4 +870,53 @@ async fn the_running_driver_keeps_a_standing_until_its_shard_opens() {
         "an adoption must not make the open read as a plain bump"
     );
     driver.stop().await;
+}
+
+/// **An elected leader notes a copy that refuses to follow it** while the
+/// rest of the set answers: the evidence the candidate fences again on when
+/// the control plane collided with the election. A leader the control
+/// plane named notes nothing.
+#[tokio::test]
+async fn an_elected_leader_notes_a_copy_that_refuses_to_follow_it() {
+    for (leader, noted) in [(LOCAL, Some(4)), ("broker-z", None)] {
+        let (broker, _dir) = quorum_leader(3, 4).await;
+        stream_log(&broker)
+            .await
+            .accept_generation(4, Some(LOCAL))
+            .await
+            .expect("own ballot");
+        let followers = BehindFollower {
+            behind: "broker-b",
+            refusal: Some((
+                felix_wire::internal::ErrorCode::Unauthorized,
+                crate::replica::NOT_A_REPLICA,
+            )),
+            stamps: Mutex::new(Vec::new()),
+            fences: Mutex::new(Vec::new()),
+        };
+        let marks = elected_marks(leader);
+        let router = router(LOCAL, &["broker-b", "broker-c"], 4);
+        let (mut cursors, mut aux, mut busy, mut moves) = Default::default();
+        // The second pass reads the cursors the first left.
+        for _ in 0..2 {
+            replicate_once_with(
+                &followers,
+                &broker,
+                &router,
+                &Unfenced,
+                &NoGate,
+                &marks,
+                None,
+                &mut cursors,
+                &mut aux,
+                &mut busy,
+                &mut moves,
+                &Rebuilds::disabled(),
+                &MoveThrottle::unlimited(),
+            )
+            .await;
+        }
+        let elections = marks.elections().expect("elections");
+        assert_eq!(elections.refused_copy_at(&key()), noted, "led by {leader}");
+    }
 }

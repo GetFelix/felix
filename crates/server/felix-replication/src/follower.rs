@@ -80,6 +80,9 @@ pub struct FollowerCursor {
     /// The fenced halt's refusal said the control plane assigned a newer
     /// generation. See [`crate::replica::assigned_newer`].
     pub(crate) assigned_newer: bool,
+    /// The follower's last answer said its copy does not follow this leader
+    /// at this generation. See [`crate::replica::refuses_leader`].
+    pub(crate) refuses_leader: bool,
 }
 
 /// A follower's answer that came from the copy its cursor describes.
@@ -110,6 +113,7 @@ impl FollowerCursor {
             vouched: None,
             superseded_by: None,
             assigned_newer: false,
+            refuses_leader: false,
         }
     }
 

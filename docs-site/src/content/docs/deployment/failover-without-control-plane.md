@@ -250,6 +250,12 @@ renames the stuck leader before that bound runs out, so keep the value above
 the control plane's stuck-leader bound (70 s). Set it to `0` to turn per-shard
 suspicion off.
 
+The same bound covers a leader that won an election just as the control plane
+named someone else at the same generation and then went down. The other
+broker's route names itself, so its copy refuses the elected leader. Once that
+has lasted the bound, the elected leader fences its replica set again one
+generation up, and the refused copy follows it.
+
 ## How it is checked
 
 The election is modelled in TLA+ ([`docs/formal/`](https://github.com/GetFelix/felix/blob/main/docs/formal/README.md)), and each rule above has a

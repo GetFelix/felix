@@ -33,6 +33,7 @@ impl ReplicaHandler {
         log: &felix_broker::StreamLog,
         election: &FenceElection,
         generation: u64,
+        sender: Option<&str>,
     ) -> Option<InternalMessage> {
         // A set is stamped with a route generation no newer than the fence's
         // own. One ahead is a sender running ahead of itself; taking it would
@@ -78,7 +79,13 @@ impl ReplicaHandler {
         // A candidate replaces a leader only when the leader has gone quiet.
         // Refusing while it still ships keeps a replica that merely lost
         // touch with it from deposing a working leader.
-        if election.candidate && self.heard_leader_within(key) {
+        // The leader this copy hears, fencing itself one generation up, is
+        // not a candidate against it: nobody is deposed.
+        let from_heard = sender.is_some_and(|sender| {
+            log.accepted_leader()
+                .is_some_and(|leader| *leader == *sender)
+        });
+        if election.candidate && !from_heard && self.heard_leader_within(key) {
             metrics::record_replicated(metrics::OUTCOME_REFUSED);
             return Some(refused(
                 correlation_id,

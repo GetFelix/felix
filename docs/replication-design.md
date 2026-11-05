@@ -1319,6 +1319,22 @@ elected leader waits for the lease until the control plane is back (issue
    of pre-votes, and a leader that is open and serving refuses, as do
    voters that heard it within S.
 
+   The leader side has one case of its own. The control plane can name
+   another broker leader at the very generation an election just opened at,
+   then stop. That broker's route names it leader, so it refuses the elected
+   leader's batches, and its copy may hold its own ballot there. The elected
+   leader keeps serving one copy short, and no follower suspects anything:
+   the other broker leads its own route. So when the elected leader has seen
+   that collision for `FELIX_SHARD_SUSPECT_AFTER_MS`, and a copy of its set
+   refused to follow it within that time while the rest answered, it takes a
+   ballot one generation up and fences its kept set again, once per
+   generation. There is no pre-vote: its voters hear it, and nobody is
+   deposed. A copy that hears this leader takes its fence even though it is
+   marked as a candidate's. The ballot, kept-set and open rules are a
+   standing's. The refused copy takes the newer fence and follows. With the
+   control plane up, the refused broker's report renames the shard first,
+   which ends the collision and the clock.
+
    The clock restarts whenever the route's generation or leader, or the
    copy's ballot, changes. With the control plane up, it renames a stuck
    leader first (a refused report at once, or its stuck-leader backstop after

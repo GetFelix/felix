@@ -431,6 +431,11 @@ async fn ship_batch<R: PeerRequester>(
         &answer,
         InternalMessage::ReplicateError(err) if err.code == ErrorCode::StaleRoute
     );
+    cursor.refuses_leader = matches!(
+        &answer,
+        InternalMessage::ReplicateError(err)
+            if crate::replica::refuses_leader(err.code, &err.detail, shard.generation)
+    );
     match progress {
         Progress::Stored { durable_offset } => {
             // From the same answer as `confirmed`, so the two always agree.
