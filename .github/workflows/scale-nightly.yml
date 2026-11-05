@@ -118,6 +118,35 @@ jobs:
           RUST_LOG: ${{ matrix.variant == 'failover' && 'info,felix_replication=debug,felix_broker_service=debug' || 'info' }}
         run: |
           set -o pipefail
+          mkdir -p "$RUNNER_TEMP/cluster-logs"
+          cargo test ${{ steps.variant.outputs.profile }} -p felix-cluster --test scale --no-run
+          ( set +e; while true; do
+              t=$(date +%H:%M:%S.%N | cut -c1-12)
+              echo "$t cpu $(head -1 /proc/pressure/cpu) | io $(head -2 /proc/pressure/io | tr '\n' ' ') | mem $(head -2 /proc/pressure/memory | tr '\n' ' ')"
+              echo "$t meminfo $(grep -E '^(MemAvailable|Dirty|Writeback|SwapFree|Cached):' /proc/meminfo | tr -s ' ' | tr '\n' ' ')"
+              echo "$t stat $(grep -E '^(procs_running|procs_blocked|ctxt)' /proc/stat | tr '\n' ' ') load $(cat /proc/loadavg)"
+              echo "$t disk $(awk '$3 ~ /^(sda|sdb|nvme0n1|vda|sdc)$/ {print $3, "r="$4, "w="$8, "ioms="$13, "inflight="$12}' /proc/diskstats | tr '\n' ' ')"
+              echo "$t rss $(ps -C felix-broker -o rss=,pcpu=,stat= | tr -s ' ' | tr '\n' ';')"
+              for pid in $(pgrep -x felix-broker); do
+                d=$(for k in /proc/$pid/task/*; do st=$(awk '{print $3}' $k/stat 2>/dev/null); if [ "$st" = D ]; then echo "$(cat $k/comm 2>/dev/null)@$(cat $k/wchan 2>/dev/null)"; fi; done | sort | uniq -c | tr -s ' ' | tr '\n' ';')
+                if [ -n "$d" ]; then echo "$t D pid=$pid $d"; fi
+              done
+              for pid in $(pgrep -f 'scale-[0-9a-f]+'); do
+                d=$(for k in /proc/$pid/task/*; do st=$(awk '{print $3}' $k/stat 2>/dev/null); if [ "$st" = D ]; then echo "$(cat $k/comm 2>/dev/null)@$(cat $k/wchan 2>/dev/null)"; fi; done | sort | uniq -c | tr -s ' ' | tr '\n' ';')
+                if [ -n "$d" ]; then echo "$t D test pid=$pid $d"; fi
+              done
+              sleep 0.1
+            done ) > "$RUNNER_TEMP/cluster-logs/sampler.txt" 2>&1 &
+          sampler=$!
+          nproc; free -m; df -h "$RUNNER_TEMP" /tmp; cat /sys/block/*/queue/scheduler 2>/dev/null; mount | grep -E ' / | /tmp | /mnt ' || true
+          for i in 1 2 3 4 5; do
+            echo "=== iteration $i $(date +%H:%M:%S)"
+            FELIX_TEST_CLUSTER_LOG_DIR="$RUNNER_TEMP/cluster-logs/iter-$i" cargo test ${{ steps.variant.outputs.profile }} -p felix-cluster --test scale \
+              -- --nocapture --include-ignored --test-threads 1 --exact "${{ steps.variant.outputs.test }}" 2>&1 | tee -a "$RUNNER_TEMP/scale-output.txt" | grep -E "lease canary|panicked|test result" || true
+          done
+          kill $sampler || true
+          grep -q "test result: FAILED" "$RUNNER_TEMP/scale-output.txt" && exit 1
+          exit 0
           cargo test ${{ steps.variant.outputs.profile }} -p felix-cluster --test scale \
             -- --nocapture --include-ignored --test-threads 1 ${{ steps.variant.outputs.test != 'failover_heal::' && '--exact' || '' }} "${{ steps.variant.outputs.test }}" 2>&1 | tee "$RUNNER_TEMP/scale-output.txt"
           # A renamed test would otherwise match nothing and pass.
@@ -136,13 +165,13 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Compress broker logs
-        if: failure() || matrix.variant == 'failover'
+        if: always()
         run: |
           find "$RUNNER_TEMP/cluster-logs" -type f -name '*.log*' ! -name '*.gz' -exec gzip -f {} + || true
           du -sh "$RUNNER_TEMP/cluster-logs" || true
 
       - name: Upload broker logs
-        if: failure() || matrix.variant == 'failover'
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: scale-logs-${{ matrix.variant }}-${{ github.run_attempt }}
