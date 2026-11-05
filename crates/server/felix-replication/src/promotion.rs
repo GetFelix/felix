@@ -286,8 +286,8 @@ pub(crate) async fn fence_shard_as<R: PeerRequester>(
             }
             // This copy already promised a newer generation, as a standing
             // here that was given up leaves it, so `keep_own_set` can never
-            // take this one's ballot. Refused rather than pending, so the
-            // control plane names this broker again above it (#1940). This
+            // take this one's ballot. Refused before any replica is asked, so
+            // the control plane names this broker again above it (#1940). This
             // generation promised to another node is not this check's case:
             // `keep_own_set` refuses it, naming that node.
             let accepted = log.accepted_generation();
