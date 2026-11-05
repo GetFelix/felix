@@ -89,7 +89,7 @@ impl WakeKind {
 
 /// Where a shard waits for a slot. See [`Shards::fill`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Queue {
+pub(super) enum Queue {
     /// An append since the shard was last asked: a write is waiting on this
     /// pass now, and the pass is short.
     Appended,
@@ -660,6 +660,24 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
     #[cfg(test)]
     pub(super) fn queue_entries(&self) -> usize {
         self.appended.len() + self.urgent.len() + self.refresh.len()
+    }
+
+    /// Queue `key` as the scan would, for tests that place entries exactly.
+    #[cfg(test)]
+    pub(super) fn queue_for_test(&mut self, key: &ShardKey, queue: Queue) {
+        self.enqueue(key, queue);
+    }
+
+    /// Take `key` out of its queue as a start does, leaving its old entries.
+    #[cfg(test)]
+    pub(super) fn leave_queue_for_test(&mut self, key: &ShardKey) {
+        self.dequeue(key);
+    }
+
+    /// Whether a pass is under way for `key`.
+    #[cfg(test)]
+    pub(super) fn runs(&self, key: &ShardKey) -> bool {
+        self.states.get(key).is_some_and(|s| s.running.is_some())
     }
 
     /// Whether a shard waits in the refresh queue.

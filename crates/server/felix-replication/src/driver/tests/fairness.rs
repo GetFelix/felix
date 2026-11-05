@@ -1141,3 +1141,62 @@ async fn a_new_leaders_first_pass_starts_within_the_bound() {
         folds += 1;
     }
 }
+
+/// **A stale queue entry never revives ahead of shards queued since.** A
+/// shard that left the refresh queue and queued there again waits at the
+/// back, behind the shard that queued while it ran, and is not dropped.
+#[tokio::test(start_paused = true)]
+async fn a_requeued_shard_waits_behind_the_shards_queued_since() {
+    let (broker, _dir) = leader_with_shards(HOT + 2, 0).await;
+    let router = Arc::new(ShardRouter::new(
+        LOCAL,
+        "us-west-2",
+        felix_router::RegionRouter::new("us-west-2".to_string()),
+    ));
+    lead(&router, HOT + 2);
+    let marks = QuorumMarks::new();
+    let status = ShardStatusBoard::new();
+    let peers = Follower::default();
+    let rebuilds = Rebuilds::new(RebuildPolicy::default());
+    let throttle = MoveThrottle::unlimited();
+    let mut shards = Shards::new(Context {
+        requester: &peers,
+        broker: &broker,
+        router: &router,
+        fence: &Unfenced,
+        gate: &crate::promotion::NoGate,
+        marks: &marks,
+        status: &status,
+        reporter: None,
+        rebuilds: &rebuilds,
+        throttle: &throttle,
+        refresh: Duration::from_secs(300),
+    });
+    settle(&mut shards).await;
+    // Hold every slot with shards other than the two under test.
+    let (first, second) = (shard_key(HOT), shard_key(HOT + 1));
+    for shard in 0..HOT {
+        append(&broker, shard).await;
+    }
+    shards.scan(WakeKind::Append);
+    assert_eq!(shards.passes.len(), SHARD_CONCURRENCY, "the slots are full");
+
+    // `first` queues for a refresh, is moved up and started (its refresh
+    // entry stays behind), then queues for a refresh again after `second`.
+    shards.queue_for_test(&first, Queue::Refresh);
+    shards.queue_for_test(&first, Queue::Appended);
+    shards.leave_queue_for_test(&first);
+    shards.queue_for_test(&second, Queue::Refresh);
+    shards.queue_for_test(&first, Queue::Refresh);
+
+    while !shards.runs(&first) && !shards.runs(&second) {
+        assert!(!shards.passes.is_empty(), "neither shard got a pass");
+        step(&mut shards).await;
+    }
+    assert!(shards.runs(&second), "the shard queued first starts first");
+    assert!(!shards.runs(&first), "the old entry jumped the queue");
+    while !shards.runs(&first) {
+        assert!(!shards.passes.is_empty(), "the requeued shard was dropped");
+        step(&mut shards).await;
+    }
+}
