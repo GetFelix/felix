@@ -750,6 +750,12 @@ ReissuePending == TRUE
 \* refusal (RefuseStaleSet), which the code never keeps, can be newer. Off
 \* elsewhere, which only adds behaviours.
 StandsAboveKeptSet == FALSE
+\* `StandsOnPendingSet`: a replica standing while a change to its kept set is
+\* pending, which the code refuses (`stand` in election/candidate.rs). On only
+\* in the witnesses that show what the refusal protects: the control plane
+\* then has a leader to name again that never took its generation
+\* (FelixShardElectRenameDue.cfg, FelixShardElectRenameFencingDue.cfg).
+StandsOnPendingSet == FALSE
 \* `RefusalLearnsSet`: a candidate whose fence is refused for a stale set
 \* keeps the newer set the refusal names. The code only stops standing
 \* (promotion.rs keeps no set from a refusal); learning it adds behaviours.
@@ -2350,7 +2356,7 @@ Elect(f) ==
     \* the set those checks read (`accept_generation_on_set`), so the guard
     \* and the promise are one step, as here. Its further check, that the
     \* routes record the kept set, is left out: that only adds behaviours.
-    /\ SetCheck => oldSet[f] \subseteq {mine[f]}
+    /\ SetCheck => StandsOnPendingSet \/ oldSet[f] \subseteq {mine[f]}
     /\ StandsAboveKeptSet => setGen[f] <= promised[f] + 1
     /\ ~WipeWaits(f) /\ WipeFloor(f, f, promised[f] + 1) /\ ~NonVoter(f)
     \* Pre-vote: a majority of its set, itself included, no longer hears a leader.
