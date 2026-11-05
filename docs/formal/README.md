@@ -205,6 +205,8 @@ newcomer as a top-up instead of undoing it; that case is a unit test only.
 | `QuorumReportNamesASuccessor` | Under `Quorum`, a report from a leader still serving names a follower that may take over, whenever a majority is still replicating. A liveness property in invariant form, checked in `FelixShard.cfg`. |
 | `ElectionSettles` | With the control plane down, elections end with a live leader that stays open and that no live broker has promised past. A temporal property (`<>[]LeaderSettled`), checked under `LiveSpec` in `FelixShardElectLive.cfg`. |
 | `NoStandAgainstHeardLeader` | Nobody starts fencing against an open leader that a majority of its set still hears. An action property, checked with the liveness configurations. |
+| `OwnBallotCaughtUp` | The control plane's leader does not stay open at its generation while its own copy holds its own ballot above it. While it does, it never counts its own copy, so with one follower down nothing it writes is acknowledged (#1933). A temporal property, checked under `RenameSpec` in the `FelixShardElectRouteLag*.cfg` configurations. |
+| `OwnBallotFenceCaughtUp` | Nor does it stay fencing at its generation while its own copy holds its own ballot above it. The code's open takes the generation's ballot on its own copy, which refuses it, so it never opens there (#1940). Checked under `RenameSpec` in the `FelixShardElectRouteLagFence*.cfg` configurations. |
 | `CollisionSuperseded` | With the control plane up, it does not stay at a generation whose leader can never open, because another broker was elected there and opened, while that broker still leads. A temporal property, checked under `ReissueSpec` in `FelixShardElectLiveReissue.cfg`. |
 | `CpLeaderServes` | With the control plane up and every stopped broker back, the leader it names ends up open at its generation, serving with a mark over its whole log and a majority of its set taking its batches, and stays (`<>[](LeaderServes /\ ServesWith(leader))`). Checked under `CpLiveSpec` in `FelixShardCpLive.cfg` and its twins. |
 | `CpDownServesInBound` | With the control plane stopped for good, some live leader ends up open and serving on a majority that holds its generation for it, and stays (`CpDownServes`), or elections stop only at the model's bound with a broker that would still stand (`Exhausted`). Checked under `CpDownSpec` in `FelixShardCpDown*.cfg`. |
@@ -275,6 +277,11 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardCpDownPreVoteUnbounded.cfg` | the same with the pre-vote refused for as long as the asked broker fences | not registered: no violation in 49.6M distinct states and five hours in CI, with the queue still growing |
 | `FelixShardCpDownStandBehindDeadOnly.cfg` | the same with a promise freed only once its candidate is down | not registered: no violation in 88.6M distinct states and five hours in CI. Before `SelfSuspicion` it violated `CpDownServesInBound` (the candidate restarts without its standing, and the replica that answered it never stands); with it, that broker stands for its own shard, and no counterexample has turned up |
 | `FelixShardCpDownDegraded.cfg` | `FelixShardCpDown.cfg` held to `CpDownFullyBacked` | violate it: placement names one broker at the generation another was elected and opened at, then stops; the named one fences there for good (357K distinct states locally at three generations) |
+| `FelixShardElectRouteLag.cfg` | three brokers with the control plane up, no writes, no symmetry, promotion on the followers' word up to generation 1, adoption up to generation 3, one generation of elections, one broker allowed to stop for good, renames on a refusal (`Renames`), and a promoted broker whose routes lag the ballot its promotion took (`RouteLags`), with both of #1936's rules, under fairness that includes the rename (`RenameSpec`) | pass `OwnBallotCaughtUp` (2.27M distinct states, 12 min in CI); with `NamedHereWaits` the stale round never stands, so this shows nothing else reaches the state |
+| `FelixShardElectRouteLagNoFix.cfg` | the same without either rule (`NamedHereWaits`, `OwnBallotReported` off) | violate `OwnBallotCaughtUp` (about a minute with one worker; the trace varies with timing): the old leader stops, the control plane names another broker at 2, that broker's round on the old route stands at 3 and withdraws, and it opens at 2 below its own ballot, for good (#1933) |
+| `FelixShardElectRouteLagReportOnly.cfg` | the same with the round still standing but the leader reporting its generation refused (`OwnBallotReported`) | pass `OwnBallotCaughtUp` (3.22M distinct states, 18 min in CI): the control plane names it again one generation up |
+| `FelixShardElectRouteLagFenceNoFix.cfg` | `FelixShardElectRouteLagReportOnly.cfg` with a member allowed to answer the stale round's fence (`StaleFenceAnswered`) and the open checking the leader's own ballot (`OpenChecksOwnBallot`), with no report from a fencing leader | violate `OwnBallotFenceCaughtUp` (seconds): the old leader stops, the control plane names another broker at 2, its round on the old route stands at 3 while it fences, a follower answers its fence at 2, and the open never happens (#1940). The trace needs no answer to the stale round; with `OpenChecksOwnBallot` off and `StaleFenceAnswered` on the model also violates, through a member that answered it (the code reports that member's refusal, #1914) |
+| `FelixShardElectRouteLagFence.cfg` | the same with a fencing leader below its own copy's promise reporting its generation refused (`OwnBallotFenceRefused`) | pass `OwnBallotCaughtUp` and `OwnBallotFenceCaughtUp` (2.36M distinct states, 19 min in CI): the control plane names it again one generation up |
 | `FelixShardElectNoBallotAcks.cfg` | `FelixShardElect.cfg` without ballots, two generations of elections and two writes, the set check on so the first leader can follow a candidate | violate `AckedHeldByLeader`, checked per generation |
 | `FelixShardElectAdoptPromote.cfg` | `FelixShardElect.cfg` with one write, the set check, adoption up to generation 2 and promotion on suspicion up to generation 2 | pass, the same invariants (186K distinct states without the write; not yet measured with it) |
 | `FelixShardElectReissue.cfg` | `FelixShardElectAdoptPromote.cfg` with promotion on suspicion up to generation 1 and the control plane moving past a generation it named one leader at while another was elected and opened there: the next generation, under the elected leader, on the control plane's set (`Reissues`, CpReissue) | pass, the same invariants (130,796 distinct states, 6 s locally) |
@@ -1045,6 +1052,41 @@ own round in flight, and if it did, the others hear the leader and refuse
 its pre-vote. The control plane's last placement also still names the
 stuck broker, so only clients that follow the elected leader reach it.
 Closing it would take the leader fencing again above that copy.
+
+A promotion takes its ballot before its routes land: the broker's
+lifecycle persists the new generation's ballot, and the routes that name it
+leader follow a reconcile later. A candidate round that read the old route
+in that gap still sees the old leader, and before #1936 it could stand at
+the generation above its own broker's new leadership, then withdraw. The
+leader then opens at the control plane's generation below its own ballot and
+never counts its own copy there (#1933). `RouteLags` lets that round stand
+(StandOnStaleRoute), as one step that promises itself the next generation
+and fences nobody. #1936 adds two rules. The round does not stand while its
+copy's ballot is past its route and names its own broker (`NamedHereWaits`,
+`named_here` in election/candidate.rs, held for 30 s on the assumption that
+routes land within that), and a leader left below its own ballot reports its
+generation refused, so the control plane names it again one up
+(`OwnBallotReported`, OwnBallotAbove in RenameDue; `ballot_above` in
+driver/shard.rs, reported from driver/shards.rs once it lasts 3 s). `FelixShardElectRouteLagNoFix.cfg` finds #1933 without
+them; `FelixShardElectRouteLag.cfg` passes with both, and
+`FelixShardElectRouteLagReportOnly.cfg` shows the report alone is enough.
+The stale round fences nobody unless `StaleFenceAnswered` lets one member
+answer it, its reply arriving after the round gave up (#1940). That member
+then refuses the leader's own fence. By default the model's open ignores the
+leader's own promise; the code's open takes the generation's ballot on its
+own copy first (`keep_own_set` in promotion.rs), which a newer promise
+refuses, and `OpenChecksOwnBallot` models that. With either, the leader can
+stay fencing below its own ballot, and neither of #1936's rules reports it:
+`FelixShardElectRouteLagFenceNoFix.cfg` finds that. With the open check alone
+no member has to answer: the leader stands on the stale route while
+fencing, a follower answers its fence, and the open never happens. The fix
+(`OwnBallotFenceRefused`, OwnBallotFenceAbove in RenameDue; the own-copy
+check at the start of `fence_shard_as`) has a fencing leader whose own copy
+promised a newer generation report its generation refused at once, and
+`FelixShardElectRouteLagFence.cfg` passes with it. In the code a member's
+newer promise is reported too (#1914), which the model leaves out. The model allows the stale
+round after a rename too, where the code's old
+route names the broker itself and nothing stands; that only adds behaviours.
 
 These check the design in `docs/replication-design.md`, "Electing without
 the control plane", which the broker now follows once `replica_election` is

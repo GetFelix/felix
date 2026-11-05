@@ -42,6 +42,7 @@
 pub mod peer;
 
 pub mod confirmed;
+pub mod controlplane_link;
 pub mod driver;
 pub mod election;
 mod follower;

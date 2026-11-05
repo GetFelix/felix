@@ -19,7 +19,7 @@ mod election;
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use felix_broker::Broker;
 use felix_broker::replication::{self, Divergence};
@@ -29,6 +29,7 @@ use felix_wire::internal::{
     ErrorCode, Fence, FenceOk, GenerationStart, InternalMessage, ReplicaLog, ReplicateBootstrap,
     ReplicateError, ReplicateFetch, ReplicateOk, ReplicateRebuild, ReplicateRecords,
 };
+use tokio::time::Instant;
 
 /// The most one fetch answer carries, whatever the leader asked for.
 const MAX_FETCH_BYTES: usize = 4 * 1024 * 1024;
@@ -1315,7 +1316,7 @@ impl ReplicaHandler {
         // any other node it is refused below, by the ballot.
         if let Some(election) = &request.election
             && let Some(refusal) =
-                self.check_fence_set(correlation_id, &key, &log, election, generation)
+                self.check_fence_set(correlation_id, &key, &log, election, generation, sender)
         {
             return refusal;
         }
@@ -2010,7 +2011,7 @@ impl ReplicaHandler {
                     correlation_id,
                     ErrorCode::Unauthorized,
                     0,
-                    "this broker is not a replica of that shard".to_string(),
+                    NOT_A_REPLICA.to_string(),
                 ))
             }
         }
@@ -2260,6 +2261,22 @@ pub(crate) fn promised_to(detail: &str, generation: u64) -> Option<&str> {
             "this broker accepted generation {generation} from "
         ))
         .filter(|leader| !leader.is_empty())
+}
+
+/// What a replica answers a batch for a shard whose route at that
+/// generation does not name it a follower; [`refuses_leader`] reads it back.
+pub(crate) const NOT_A_REPLICA: &str = "this broker is not a replica of that shard";
+
+/// Whether a follower's refusal of a leader at `generation` says its copy
+/// does not follow that leader there: its route names it outside the set,
+/// as the leader the control plane named, or its ballot holds the
+/// generation for another node.
+pub(crate) fn refuses_leader(code: ErrorCode, detail: &str, generation: u64) -> bool {
+    match code {
+        ErrorCode::Unauthorized => detail == NOT_A_REPLICA,
+        ErrorCode::FencedEpoch => promised_to(detail, generation).is_some(),
+        _ => false,
+    }
 }
 
 /// What a replica answers a sender at `generation` once its ballot holds

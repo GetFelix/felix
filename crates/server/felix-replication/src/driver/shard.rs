@@ -562,6 +562,33 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     {
         fence.deposed(mark_key, route.generation);
     }
+    // Led by election while a copy of the set refuses to follow here, with
+    // the rest still a majority: the candidate fences one generation up
+    // once the control plane has collided with the election for long enough.
+    if elected.is_some()
+        && let Some(elections) = marks.elections()
+        && entry.followers.iter().any(|cursor| cursor.refuses_leader)
+    {
+        let answering = entry
+            .followers
+            .iter()
+            .filter(|cursor| {
+                cursor.halted.is_none()
+                    && !cursor.stalled
+                    && !cursor.learner
+                    && !cursor.refuses_leader
+            })
+            .count();
+        // Learners neither answer for the set nor count in its majority.
+        let voters = entry
+            .followers
+            .iter()
+            .filter(|cursor| !cursor.learner)
+            .count();
+        if answering + 1 >= crate::quorum::majority_of(voters) {
+            elections.note_refused_copy(key, route.generation);
+        }
+    }
     // The leader keeps its own set before shipping at it, so a fence or
     // batch from an older set is refused here too once this broker follows.
     let electing = requester.offers_election();

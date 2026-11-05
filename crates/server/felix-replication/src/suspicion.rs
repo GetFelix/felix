@@ -31,6 +31,13 @@ pub const DEFAULT_SUSPECT_AFTER: Duration = Duration::from_secs(5);
 /// and giving up on one costs a generation.
 pub const DEFAULT_DEFER_FOR: Duration = Duration::from_secs(60);
 const MIN_DEFER_FOR: Duration = Duration::from_secs(1);
+/// How long a copy may go without hearing its leader, with that leader's
+/// generation not started here, before it may stand for the shard though the
+/// leader's broker answers pings. Above the control plane's stuck-leader
+/// backstop (70 s by default), so with the control plane up its rename comes
+/// first and restarts the clock.
+pub const DEFAULT_SHARD_SUSPECT_AFTER: Duration = Duration::from_secs(120);
+const MIN_SHARD_SUSPECT_AFTER: Duration = Duration::from_secs(1);
 
 /// The shortest gap between pings, whatever `suspect_after` is.
 const MIN_PROBE_EVERY: Duration = Duration::from_millis(50);
@@ -43,6 +50,10 @@ pub struct SuspicionConfig {
     /// How long a copy defers to an elected leader that has not started its
     /// generation. See `Elections::with_defer_for`.
     pub defer_for: Duration,
+    /// How long a shard's leader may make no progress here before this copy
+    /// may stand for that shard alone. Zero turns per-shard suspicion off.
+    /// See "Suspecting a shard" in `docs/replication-design.md`.
+    pub shard_suspect_after: Duration,
 }
 
 impl Default for SuspicionConfig {
@@ -50,13 +61,14 @@ impl Default for SuspicionConfig {
         Self {
             suspect_after: DEFAULT_SUSPECT_AFTER,
             defer_for: DEFAULT_DEFER_FOR,
+            shard_suspect_after: DEFAULT_SHARD_SUSPECT_AFTER,
         }
     }
 }
 
 impl SuspicionConfig {
-    /// `FELIX_LEADER_SUSPECT_AFTER_MS` and `FELIX_ELECTION_DEFER_FOR_MS`, or
-    /// the defaults.
+    /// `FELIX_LEADER_SUSPECT_AFTER_MS`, `FELIX_ELECTION_DEFER_FOR_MS` and
+    /// `FELIX_SHARD_SUSPECT_AFTER_MS`, or the defaults.
     pub fn from_env() -> Self {
         let millis = |name: &str, default: Duration| {
             std::env::var(name)
@@ -69,12 +81,31 @@ impl SuspicionConfig {
             // Zero would drop the deferral altogether and let a follower
             // stand over every standing still fencing.
             defer_for: millis("FELIX_ELECTION_DEFER_FOR_MS", DEFAULT_DEFER_FOR).max(MIN_DEFER_FOR),
+            shard_suspect_after: shard_bound(millis(
+                "FELIX_SHARD_SUSPECT_AFTER_MS",
+                DEFAULT_SHARD_SUSPECT_AFTER,
+            )),
         }
+    }
+
+    /// Whether a copy may stand for a shard whose leader's broker answers.
+    pub(crate) fn suspects_shards(&self) -> bool {
+        !self.shard_suspect_after.is_zero()
     }
 
     /// Four pings per window, so one lost ping is not a suspicion.
     pub(crate) fn probe_every(&self) -> Duration {
         (self.suspect_after / 4).max(MIN_PROBE_EVERY)
+    }
+}
+
+/// Zero stays off; anything else is at least a second, so a typo in
+/// milliseconds does not make every quiet moment a suspicion.
+fn shard_bound(bound: Duration) -> Duration {
+    if bound.is_zero() {
+        bound
+    } else {
+        bound.max(MIN_SHARD_SUSPECT_AFTER)
     }
 }
 
