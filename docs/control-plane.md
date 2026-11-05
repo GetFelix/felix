@@ -979,8 +979,8 @@ is gated on it: a lost leader is replaced only by a replica reported caught up,
 and among those by the one reported furthest ahead. A replica on a draining
 broker is picked only when no live one is caught up; the drain then moves the
 shard off it as usual. A broker that has deregistered is never picked, even
-while placement still counts it as draining: it has stopped. A report may also carry
-`drained: true`, the leader's word that it has stopped serving the shard at
+while placement still counts it as draining: it has stopped. A report may also
+carry `drained: true`, the leader's word that it has stopped serving the shard at
 that generation and its log will not grow: the fence of a planned move. For a
 cache, `replica_counter_offsets` says how far each replica has got with the
 counter log, which placement counts as a restore's progress; brokers that

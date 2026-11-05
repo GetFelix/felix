@@ -189,11 +189,12 @@ async fn a_follower_that_left_is_not_promoted() {
         outcome.placed, 0,
         "the departed follower was promoted: {outcome:?}"
     );
+    assert_eq!(outcome.unplaceable, 1, "the shard should wait: {outcome:?}");
     assert_eq!(leader(&store).await, "broker-x");
 }
 
-/// A draining follower that is still running is, when no live one holds the
-/// log (#1922).
+/// A draining follower that is still running is still promoted when no live
+/// one holds the log (#1922).
 #[tokio::test]
 async fn a_draining_follower_is_still_promoted() {
     let liveness = NodeLivenessConfig::default();
