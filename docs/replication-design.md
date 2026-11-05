@@ -1341,10 +1341,15 @@ elected leader waits for the lease until the control plane is back (issue
    ballot one generation up and fences its kept set again, once per
    generation. There is no pre-vote: its voters hear it, and nobody is
    deposed. A copy that hears this leader takes its fence even though it is
-   marked as a candidate's. The ballot, kept-set and open rules are a
+   marked as a candidate's. The rule is general: a copy never refuses a
+   candidate's fence for still hearing a leader when that candidate holds
+   the copy's newest ballot, since following it deposes nobody. The ballot and kept-set rules are a
    standing's. The refused copy takes the newer fence and follows. With the
    control plane up, the refused broker's report renames the shard first,
-   which ends the collision and the clock.
+   which ends the collision and the clock. A re-fence that does not open is given up only after
+   `FELIX_ELECTION_DEFER_FOR_MS`, not the 3 s a standing gets: its ballot
+   is past the generation the leader was serving, so giving it up leaves
+   the shard leaderless until a follower's shard bound passes and it stands.
 
    A leader can also be stuck on its own ballot. The control plane named it
    at one generation, it was then elected one higher and opened, and it

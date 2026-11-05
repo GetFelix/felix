@@ -1397,6 +1397,19 @@ async fn a_leader_the_control_plane_collided_with_fences_again_one_generation_up
     assert_eq!(a_log.accepted_generation(), 5);
     assert_eq!(a_log.accepted_leader().as_deref(), Some(LOCAL));
 
+    // Not open yet, and no fence running: a standing would be given up
+    // after `OPEN_WITHIN`, but this one already left the generation it
+    // served, so it waits out the defer bound.
+    publish_led_here(&ctx.router, 5);
+    tokio::time::sleep(OPEN_WITHIN * 3).await;
+    let elected = ctx
+        .elections
+        .get(&key())
+        .expect("withdrawn at the standing's bound");
+    assert_eq!(elected.generation, 5);
+    tokio::time::sleep(ctx.elections.defer_for()).await;
+    assert!(ctx.elections.get(&key()).is_none(), "never withdrawn");
+
     shutdown.cancel();
     task.await.expect("run");
 }

@@ -79,8 +79,9 @@ impl ReplicaHandler {
         // A candidate replaces a leader only when the leader has gone quiet.
         // Refusing while it still ships keeps a replica that merely lost
         // touch with it from deposing a working leader.
-        // The leader this copy hears, fencing itself one generation up, is
-        // not a candidate against it: nobody is deposed.
+        // Except from the broker holding this copy's newest ballot: the
+        // leader it hears, fencing itself one generation up, or a candidate
+        // it already voted for. Neither deposes anyone this copy follows.
         let from_heard = sender.is_some_and(|sender| {
             log.accepted_leader()
                 .is_some_and(|leader| *leader == *sender)

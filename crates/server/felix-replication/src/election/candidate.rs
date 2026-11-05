@@ -598,7 +598,7 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
             incarnation: crate::incarnation::of(&ctx.broker, key),
         },
     );
-    open_or_withdraw(ctx, key, &log, generation).await
+    open_or_withdraw(ctx, key, &log, generation, OPEN_WITHIN).await
 }
 
 /// Fence `key` one generation up as the leader this broker already is by
@@ -655,7 +655,11 @@ async fn restand<R>(ctx: &Ctx<R>, key: &ShardKey, generation: u64) -> Round {
             incarnation: crate::incarnation::of(&ctx.broker, key),
         },
     );
-    open_or_withdraw(ctx, key, &log, next).await
+    // Given up, it costs more than a standing: this broker's own ballot is
+    // now past the generation it was serving, so the shard has no leader
+    // until another bound passes. A fence that stalls for a moment, a copy
+    // briefly unreachable, is waited out for the defer bound instead.
+    open_or_withdraw(ctx, key, &log, next, ctx.elections.defer_for()).await
 }
 
 /// What a standing for `key` fences: the set its copy keeps, the set kept
@@ -762,12 +766,14 @@ fn standing_on<R>(
     })
 }
 /// Wait for this broker's standing for `key` at `generation` to open, and
-/// withdraw it if it does not in time.
+/// withdraw it if it does not within `open_within` of its route's
+/// publication.
 async fn open_or_withdraw<R>(
     ctx: &Ctx<R>,
     key: &ShardKey,
     log: &StreamLog,
     generation: u64,
+    open_within: Duration,
 ) -> Round {
     let local = ctx.router.local_node_id();
     // The open bound runs from when the route naming this standing is
@@ -800,7 +806,7 @@ async fn open_or_withdraw<R>(
             published_at = Some(now);
         }
         let due = match published_at {
-            Some(at) => now >= at + OPEN_WITHIN,
+            Some(at) => now >= at + open_within,
             None => now >= recorded_at + ctx.elections.defer_for(),
         };
         if due && !ctx.elections.is_fencing(key, generation) {

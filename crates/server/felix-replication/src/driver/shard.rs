@@ -527,7 +527,13 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                     && !cursor.refuses_leader
             })
             .count();
-        if answering + 1 >= crate::quorum::majority_of(entry.followers.len()) {
+        // Learners neither answer for the set nor count in its majority.
+        let voters = entry
+            .followers
+            .iter()
+            .filter(|cursor| !cursor.learner)
+            .count();
+        if answering + 1 >= crate::quorum::majority_of(voters) {
             elections.note_refused_copy(key, route.generation);
         }
     }
