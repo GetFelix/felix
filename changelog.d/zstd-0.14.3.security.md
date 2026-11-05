@@ -1,0 +1,1 @@
+- zstd is 0.14.3, which fixes RUSTSEC-2026-0391 (data from an abandoned stream carried into the next on a reused context).
