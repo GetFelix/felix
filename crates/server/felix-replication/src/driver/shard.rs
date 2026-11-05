@@ -324,8 +324,8 @@ pub(super) struct ShardPass<'a> {
     /// this broker.
     pub(super) ballot_above: Option<(u64, bool)>,
     /// The newest ballot a follower named when it fenced this leader, at or
-    /// past the pass's generation. The fenced halt deposes this leader for
-    /// reads while a majority still takes its writes.
+    /// past the pass's generation. That follower refuses every batch until
+    /// the route moves past the ballot, so the set runs a copy short.
     pub(super) follower_ballot: Option<u64>,
 }
 
@@ -682,9 +682,9 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 .is_none_or(|elections| elections.candidacy(key, accepted).is_none()))
         .then_some((accepted, own))
     };
-    // A follower that fenced this leader for a candidate's ballot deposed it
-    // above. If the candidate withdrew, nothing moves the route on, so the
-    // generation is reported refused like a ballot in its own copy (#1949).
+    // A follower fenced for a candidate's ballot refuses this leader for the
+    // rest of the generation. If the candidate withdrew, nothing moves the
+    // route on, so it is reported refused like a ballot in its own copy (#1949).
     let follower_ballot = entry
         .followers
         .iter()

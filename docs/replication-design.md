@@ -4734,13 +4734,14 @@ Five rules keep an election from getting stuck:
   deposed, and the report carries the ballot, so the leader is named past
   it in one step rather than one generation per report.
   A follower can hold that ballot instead of the leader. It then refuses
-  the leader's batches, and the leader stops shipping to it and stops
-  serving reads at its generation, since a newer leader may exist. Its
-  writes still go through on the rest of the set. If the candidate
-  withdrew, nothing else moves the route on, so this leader also reports
-  its generation refused after 10 s, carrying the follower's ballot, and is
-  named one past it. Without the report, reads stayed refused for good
-  while writes were still acknowledged (issue #1949).
+  every batch from the leader for the rest of the generation, so the shard
+  runs one copy short and the next member failure costs the majority. If the
+  candidate withdrew, nothing renames the shard, so that copy never
+  rejoins. The leader therefore also reports its generation refused after
+  10 s, carrying the follower's ballot. Placement names the same leader past
+  that ballot and the follower takes batches again (issue #1949). A
+  refusal at once, when the followers' newer ballots leave no majority,
+  carries the ballot the same way.
 
 Elections need `joint_fence` finalized first, which the control plane allows
 once every serving broker offers `ELECTION`, names start holders and keeps a

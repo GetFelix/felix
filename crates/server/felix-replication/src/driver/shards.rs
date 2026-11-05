@@ -1113,22 +1113,24 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                      reporting the generation refused",
                 );
             }
-            RefusedGeneration::set_unknown(generation)
+            // Past the ballot, since a rename to the ballot's own generation
+            // finds it promised away and waits.
+            if ballot > generation {
+                RefusedGeneration::above(generation, ballot)
+            } else {
+                RefusedGeneration::set_unknown(generation)
+            }
         });
         let now = tokio::time::Instant::now();
-        // A follower's ballot is another node's standing too, so it waits as
-        // long as one this broker answered.
-        // Another node's ballot in either place: the higher one, so a single
+        // A follower's ballot is another node's, so it waits as long as one
+        // this broker answered; the higher of two such ballots wins, so one
         // rename gets past both.
-        let from_follower = match (ballot_above, follower_ballot) {
-            (None, Some(_)) => true,
-            (Some((own_ballot, false)), Some(theirs)) => theirs > own_ballot,
-            _ => false,
-        };
-        let ballot_above = match (ballot_above, follower_ballot) {
-            (Some((ballot, false)), Some(theirs)) => Some((ballot.max(theirs), false)),
-            (None, Some(theirs)) => Some((theirs, false)),
-            (ballot_above, _) => ballot_above,
+        let (ballot_above, from_follower) = match (ballot_above, follower_ballot) {
+            (None, Some(theirs)) => (Some((theirs, false)), true),
+            (Some((own_ballot, _)), Some(theirs)) if theirs > own_ballot => {
+                (Some((theirs, false)), true)
+            }
+            (ballot_above, _) => (ballot_above, false),
         };
         state.ballot_above_since = ballot_above.map(|ballot| match state.ballot_above_since {
             Some((seen, since)) if seen == ballot => (ballot, since),
@@ -1157,8 +1159,8 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                 shard = key.shard,
                 generation,
                 ballot,
-                "a follower fenced this leader for a ballot that never opened, so reads here \
-                 are refused; reporting the generation refused",
+                "a follower fenced this leader for a ballot that never opened, so it refuses \
+                 every batch; reporting the generation refused",
             );
         } else if let Some((ballot, _)) = ballot_above
             && state.ballot_refused.is_none()
