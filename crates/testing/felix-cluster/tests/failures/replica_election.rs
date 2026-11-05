@@ -645,13 +645,25 @@ async fn the_control_plane_returning_mid_election_leaves_one_leader() {
         Duration::from_secs(60),
         "the leader the control plane names to serve",
         || async {
-            let now = cluster.owner(STREAM).await.ok()?;
-            let ok = cluster
-                .publish_via(&now, STREAM, b"probe".to_vec())
-                .await
-                .is_ok()
-                && cluster.owner(STREAM).await.is_ok_and(|again| again == now);
-            ok.then_some(now)
+            let key = format!("{}/{}/{STREAM}/0", cluster.tenant_id, cluster.namespace);
+            let now = cluster.shard_assignments().await.ok()?.remove(&key)?;
+            // A publish through a broker that has not opened is redirected
+            // to whoever its route names, so it alone proves nothing about
+            // the broker named here.
+            let mut opened = BTreeMap::new();
+            read_logged(&cluster, OPENED, &mut opened);
+            let ok = opened
+                .get(&now.generation)
+                .is_some_and(|brokers| brokers.contains(&now.leader))
+                && cluster
+                    .publish_via(&now.leader, STREAM, b"probe".to_vec())
+                    .await
+                    .is_ok()
+                && cluster
+                    .shard_assignments()
+                    .await
+                    .is_ok_and(|mut again| again.remove(&key) == Some(now.clone()));
+            ok.then_some(now.leader)
         },
     )
     .await;
