@@ -57,21 +57,25 @@ pub(crate) fn unheld(acked: &[Acked], held: &[Element]) -> Vec<Acked> {
         .collect()
 }
 
-/// One serving broker's view of a shard: who, at what generation, and its
-/// whole log.
+/// One serving broker's view of a shard: who, at what generation, its quorum
+/// mark at that generation and its whole log.
 pub(crate) struct Served {
     pub(crate) name: String,
     pub(crate) generation: Option<u64>,
+    /// One past the last offset a majority holds at `generation`, read
+    /// before `held`.
+    pub(crate) committed: Option<u64>,
     pub(crate) held: Vec<Element>,
 }
 
 /// The acknowledged appends each of `served` is missing.
 ///
 /// A broker at the newest generation must hold every one. One at an older
-/// generation is a deposed leader that may not know yet, and the newer
-/// leader has acknowledged records it never got, so it is held only to the
-/// offsets inside its own log: a hole or a different record there is a lost
-/// acknowledgement, a shorter log is not.
+/// generation is a deposed leader that may not know yet. Past its quorum
+/// mark its log may hold records no majority took, at offsets where its
+/// successor has since acknowledged others, so it is held only to the
+/// offsets below that mark: a majority had those at its generation, so every
+/// later leader has the same records there.
 pub(crate) fn missing_by_server<'a>(
     acked: &[Acked],
     served: &'a [Served],
@@ -83,10 +87,10 @@ pub(crate) fn missing_by_server<'a>(
             let required: Vec<Acked> = if one.generation >= newest {
                 acked.to_vec()
             } else {
-                let tail = one.held.last().map_or(0, |e| e.offset + 1);
+                let committed = one.committed.unwrap_or(0);
                 acked
                     .iter()
-                    .filter(|a| a.offset.is_some_and(|offset| offset < tail))
+                    .filter(|a| a.offset.is_some_and(|offset| offset < committed))
                     .copied()
                     .collect()
             };
@@ -94,6 +98,26 @@ pub(crate) fn missing_by_server<'a>(
             (!lost.is_empty()).then_some((one, lost))
         })
         .collect()
+}
+
+/// The generation [`missing_by_server`] treats as newest at `point`, or
+/// `None` to look again later. While the faults run a deposed leader may be
+/// the only one serving. After the heal the newest leader should be serving
+/// too, so the check waits for it, and at the end, settled, whoever serves
+/// the shard is its leader and must hold everything.
+pub(crate) fn newest_held(
+    point: Point,
+    served: &[Served],
+    newest: Option<u64>,
+) -> Option<Option<u64>> {
+    if served.iter().any(|one| one.generation >= newest) {
+        return Some(newest);
+    }
+    match point {
+        Point::Quiet => Some(newest),
+        Point::Healed => None,
+        Point::End => Some(None),
+    }
 }
 
 /// While the faults run, once the faults have healed, and at the end of the
@@ -104,8 +128,8 @@ pub(crate) fn missing_by_server<'a>(
 /// holds what was acknowledged at its generation or before. A broker at the
 /// newest generation known to any broker must hold everything acknowledged;
 /// a deposed one still serving is held to its own log (see
-/// [`missing_by_server`]). A shard nobody serves is skipped here:
-/// `ElectionSettles` reports it. The records are read from each broker's log
+/// [`missing_by_server`]; after the heal, see [`newest_held`]). A shard
+/// nobody serves is skipped here: `ElectionSettles` reports it. The records are read from each broker's log
 /// directly, whether a quorum has committed them or not.
 #[derive(Debug)]
 pub struct AckedHeldByLeader {
@@ -130,6 +154,7 @@ impl AckedHeldByLeader {
     async fn look(
         &mut self,
         cluster: &SimCluster,
+        point: Point,
         shard: u32,
         acked: &[Acked],
     ) -> Option<Vec<Finding>> {
@@ -160,12 +185,20 @@ impl AckedHeldByLeader {
         }
         let mut served = Vec::new();
         for one in serving {
+            // The mark first, so the log read after it covers what it counts.
+            let committed = cluster
+                .snapshot(one.node, &key)
+                .await
+                .filter(|now| now.generation == one.stand.generation)
+                .and_then(|now| now.quorum_mark);
             served.push(Served {
                 name: one.name.clone(),
                 generation: one.stand.generation,
+                committed,
                 held: read_log(&cluster.handles(one.node)?, shard).await?,
             });
         }
+        let newest = newest_held(point, &served, newest)?;
         let mut findings = Vec::new();
         for (one, lost) in missing_by_server(acked, &served, newest) {
             let id = format!("{}@{}", describe(&key), one.name);
@@ -214,7 +247,7 @@ impl Checker for AckedHeldByLeader {
         loop {
             let mut pending = HashMap::new();
             for (shard, acked) in waiting {
-                match self.look(cluster, shard, &acked).await {
+                match self.look(cluster, ctx.point, shard, &acked).await {
                     Some(found) => findings.extend(found),
                     None => {
                         pending.insert(shard, acked);

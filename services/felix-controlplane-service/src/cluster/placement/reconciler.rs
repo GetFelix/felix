@@ -209,11 +209,15 @@ pub async fn reconcile_once_waking(
 pub struct PlacementMemory {
     clock: MoveClock,
     progress: CopyProgress,
+    /// Shards short of their replication factor at the last pass, so the
+    /// change is logged once.
+    under_replicated: usize,
 }
 
-/// [`reconcile_once_waking`] that keeps what it saw in `memory`, so time
-/// based decisions (fence timeouts, ageing suspicions and pending sets,
-/// stalled restores) fire across passes as they do in the running loop.
+/// One pass of the running loop ([`spawn_reconciler`]): [`reconcile_once_waking`]
+/// that keeps what it saw in `memory`, so time based decisions (fence
+/// timeouts, ageing suspicions and pending sets, stalled restores) fire
+/// across passes.
 pub async fn reconcile_remembering(
     store: &dyn crate::store::ControlPlaneStore,
     liveness: &crate::config::NodeLivenessConfig,
@@ -221,10 +225,12 @@ pub async fn reconcile_remembering(
     wakes: &PlacementWakes,
     memory: &mut PlacementMemory,
 ) -> ReconcileOutcome {
-    match plan_pass(store, liveness, policy, &mut memory.progress).await {
-        Some(pass) => apply_pass(store, &pass, &mut memory.clock, wakes).await,
-        None => ReconcileOutcome::default(),
-    }
+    let Some(pass) = plan_pass(store, liveness, policy, &mut memory.progress).await else {
+        return ReconcileOutcome::default();
+    };
+    let outcome = apply_pass(store, &pass, &mut memory.clock, wakes).await;
+    memory.under_replicated = log_replication(memory.under_replicated, &pass.plan);
+    outcome
 }
 
 /// Everything placement decides from, read once.
@@ -766,7 +772,6 @@ pub fn spawn_reconciler(
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut memory = PlacementMemory::default();
         let mut held = false;
-        let mut under_replicated = 0;
         loop {
             let woken = tokio::select! {
                 _ = shutdown.cancelled() => break,
@@ -797,17 +802,14 @@ pub fn spawn_reconciler(
             if !held && !woken {
                 continue;
             }
-            if let Some(pass) = plan_pass(
+            reconcile_remembering(
                 store.as_ref(),
                 &liveness,
                 policy.clone(),
-                &mut memory.progress,
+                &wakes,
+                &mut memory,
             )
-            .await
-            {
-                apply_pass(store.as_ref(), &pass, &mut memory.clock, &wakes).await;
-                under_replicated = log_replication(under_replicated, &pass.plan);
-            }
+            .await;
         }
         if held {
             // Hand over now rather than when the lease runs out.
