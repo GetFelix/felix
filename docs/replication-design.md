@@ -1472,7 +1472,9 @@ elected leader waits for the lease until the control plane is back (issue
     another candidate's fence, once the leader has opened. That follower
     then refuses every batch. If the leader has no majority left without
     it, no write can be acknowledged at that generation again, so the
-    leader reports the generation refused the same way. A follower whose
+    leader reports the generation refused at once. That report carries the
+    newest ballot its followers named, so the control plane names it past
+    that ballot in one step (issue #1949). A follower whose
     last batch did not get through does not count toward that majority,
     and only a refusal that names a newer generation counts, because a
     replica's generation never goes back. A
@@ -4735,7 +4737,7 @@ Five rules keep an election from getting stuck:
   it in one step rather than one generation per report.
   A follower can hold that ballot instead of the leader. It then refuses
   every batch from the leader for the rest of the generation, so the shard
-  runs one copy short and the next member failure costs the majority. If the
+  runs one copy short and has one less failure to spare. If the
   candidate withdrew, nothing renames the shard, so that copy never
   rejoins. The leader therefore also reports its generation refused after
   10 s, carrying the follower's ballot. Placement names the same leader past

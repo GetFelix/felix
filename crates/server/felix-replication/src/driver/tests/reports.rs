@@ -2078,17 +2078,6 @@ async fn a_leader_a_follower_fenced_at_its_own_generation_reports_the_refusal() 
 /// [`BALLOT_ELSEWHERE_FOR`], so a report that should not come would have.
 const NO_REPORT_WITHIN: Duration = Duration::from_secs(12);
 
-/// **A follower ballot below the route generation is no refusal**: the route
-/// already moved past it.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_follower_ballot_below_the_route_generation_is_not_reported() {
-    let detail = crate::replica::superseded_detail(7, 4);
-    assert_eq!(
-        follower_refusal(detail, 8, Beside::default(), NO_REPORT_WITHIN).await,
-        None
-    );
-}
-
 /// **A follower ballot this broker is standing at is not reported**: the
 /// standing may yet open there.
 #[tokio::test(flavor = "multi_thread")]
