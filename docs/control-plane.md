@@ -106,6 +106,14 @@ plus the cadence expected of it:
 `fleet_features` is the set of enabled features described in
 [Fleet features](#fleet-features).
 
+A broker that was marked down and registered again sends
+`"want_assignment_seq": true` until its routes catch up. The answer then
+carries `assignment_seq`, the shard-assignment feed's `next_seq` read after
+the heartbeat was accepted (on the Raft leader, after confirming it still
+leads). The broker serves again only on routes built from the feed at or past
+it, so its renewal cannot bring back shards that moved while it was away. A
+Raft leader that predates the field leaves it out.
+
 A broker that cannot reach the leader of a shard it follows also sends
 `"suspects": ["broker-2"]`, the leaders that have not answered its pings for
 `FELIX_LEADER_SUSPECT_AFTER_MS`. The control plane keeps the list as soft
@@ -418,6 +426,13 @@ The sequence:
    If the answer is `down`, the broker registers again, takes a new
    incarnation, and carries on heartbeating under it. `left` is not undone:
    that is a deregistration someone asked for.
+   Registration and heartbeats run on a thread of their own, with their own
+   runtime and HTTP client. A slow disk can block every worker of the broker's
+   main runtime at once (a filesystem journal stall under a burst of fsyncs,
+   for example), and the heartbeat is what renews the lease, so it must not
+   wait behind them. It still checks that the main runtime is running tasks: one
+   that has run nothing for 10 s is hung, not stalled, and the broker stops
+   renewing so its shards fail over to a live copy.
 3. **Drain, then deregister** on SIGTERM, before connections are drained, so
    nothing new is placed here while in-flight work finishes.
 
@@ -438,7 +453,8 @@ placement treats a `left` node as `draining` until the same window a silent
 node gets has passed since its last heartbeat: the expiry timeout plus the
 regrant margin, on the store's clock. Until then nothing it leads is promoted
 away, abandoned, or re-placed; a move it takes part in can still hand a shard
-over. A node already silent for that long, such as one `down` before it was
+over. It is never promoted itself, as a draining follower can be. A node
+already silent for that long, such as one `down` before it was
 deregistered, is failed over straight away. An operator deregistering a live
 broker should expect its shards to move about 19 s later with the default
 settings. In-memory streams are the exception, as for a drain: they have no log
@@ -968,8 +984,11 @@ is in progress; it is always one of `replicas`, and absent otherwise. See
 `POST /v1/nodes/{node_id}/replica-status` is how a shard's leader tells the
 control plane which replicas hold its log and how far each has got. Promotion
 is gated on it: a lost leader is replaced only by a replica reported caught up,
-and among those by the one reported furthest ahead. A report may also carry
-`drained: true`, the leader's word that it has stopped serving the shard at
+and among those by the one reported furthest ahead. A replica on a draining
+broker is picked only when no live one is caught up; the drain then moves the
+shard off it as usual. A broker that has deregistered is never picked, even
+while placement still counts it as draining: it has stopped. A report may also
+carry `drained: true`, the leader's word that it has stopped serving the shard at
 that generation and its log will not grow: the fence of a planned move. For a
 cache, `replica_counter_offsets` says how far each replica has got with the
 counter log, which placement counts as a restore's progress; brokers that
@@ -1074,12 +1093,14 @@ missing while the marker no longer matches the row's `incarnation` or
 dropped by the proposer below them. See
 [replication-design.md](replication-design.md#who-may-be-promoted).
 
-A leader promoted by a failover also reports, for each follower it has not
-reached yet, the identity that failover named it by
+A leader also reports, for each follower it has not reached yet at its
+generation, the identity it inherited for it: the one the failover that
+promoted it named, or after a set change that kept it as leader, the one it
+named the follower by at its previous generation
 (`inherited_storage_ids`, stored as `inherited_storage`; a malformed one is
 dropped). The next failover names such a follower by it in the assignment's
 `fence_storage_ids` instead of by an empty identity, so its fence answer can
-count (#1574). It never makes a follower caught up. Under Postgres its marker
+count (#1574, #1922). It never makes a follower caught up. Under Postgres its marker
 is `inherited_storage_at` (migration 0037); under Raft it needs metadata
 level 20 and is dropped below it, which names the follower by none, as
 before. See
@@ -1321,6 +1342,7 @@ does not run placement (a Raft follower) waits for the leader's next tick.
 | `shard_election_hold_ms` | `FELIX_SHARD_ELECTION_HOLD_MS` | 10000 (10 s); `0` promotes on the followers' word without waiting under `replica_election` |
 | `shard_restore_after_ms` | `FELIX_SHARD_RESTORE_AFTER_MS` | 300000 (5 min); `0` never replaces a lost follower |
 | `shard_restore_stall_ms` | `FELIX_SHARD_RESTORE_STALL_MS` | 120000 (2 min); `0` waits for the move timeout |
+| `shard_stuck_leader_ms` | `FELIX_SHARD_STUCK_LEADER_MS` | 70000 (70 s), never under two report TTLs; `0` never renames a stuck leader |
 | `placement_settle_ms` | `FELIX_PLACEMENT_SETTLE_MS` | 10000 (10 s); `0` places new shards on whatever is live |
 
 #### Moving a shard
@@ -1423,6 +1445,12 @@ elected generation itself, not the next one:
   - one outside it leads at the elected generation on the elected set, and
     placement moves that set as it moves any other.
 
+  This holds when the elected broker is already the control plane's leader
+  too. A leader can open on a set the control plane has since changed, for
+  example on a stale route after refusing the assignment that changed it.
+  Keeping it as leader at the elected generation would leave the record on
+  the wrong set, so it is reissued like any other leader in the set.
+
   Otherwise only the generation is taken and the report is refused as
   `not_leader`: a leader elected on the old set while a change is pending is
   deposed by the new set's leader. The exception is the control plane's own
@@ -1434,7 +1462,10 @@ elected generation itself, not the next one:
   level 26 apply the older form, which takes only the generation of any
   other set. A group finalizes `replica_election` only with every member at
   26. The older form stays so a member that has not yet rolled to 26
-  applies the same entries the same way.
+  applies the same entries the same way. Members below level 27 likewise
+  take only the generation when the elected leader is the control plane's
+  own, elected on another set; the report handler then moves past it as
+  below.
 
   When only the generation was taken, the control plane's leader is now
   named at the generation the elected leader opened at, which ballots never
@@ -1462,7 +1493,8 @@ generation an election took, for example by promoting a follower when it
 returns before the elected leader's first report lands. Ballots let only one
 of the two open there. If the elected leader opened, it keeps leading and
 reporting, and the other never opens. A report at the assignment's own
-generation from a leader the control plane did not name then moves the shard
+generation from a leader the control plane did not name, or named on another
+set than the one it was elected on, then moves the shard
 to the next generation under that elected leader, with the same conditional,
 placement-fenced write placement uses. Only the elected leader is named: its
 log holds everything acknowledged up to the collision, on whichever set. The
