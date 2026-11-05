@@ -1104,7 +1104,7 @@ impl RuntimePulse {
 /// the directory as older and rotates its id, which is safe.
 async fn record_registration(root: &std::path::Path, incarnation: u64) {
     let root = root.to_path_buf();
-    let written = tokio::task::spawn_blocking(move || {
+    let written = felix_common::blocking::spawn(move || {
         felix_storage::run_state::record_registration(&root, incarnation)
     })
     .await;
@@ -1157,7 +1157,7 @@ pub(crate) async fn join_refusal(
         }
         let root = root.to_path_buf();
         let found =
-            tokio::task::spawn_blocking(move || marker(&root).map_err(|err| err.to_string()))
+            felix_common::blocking::spawn(move || marker(&root).map_err(|err| err.to_string()))
                 .await
                 .unwrap_or_else(|err| Err(err.to_string()));
         let name = feature.name();

@@ -30,7 +30,7 @@ where
     F: FnOnce() -> Result<T> + Send + 'static,
     T: Send + 'static,
 {
-    match tokio::task::spawn_blocking(work).await {
+    match felix_common::blocking::spawn(work).await {
         Ok(answer) => answer,
         Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
         Err(_) => Err(StorageError::Closed("the runtime is shutting down".into())),

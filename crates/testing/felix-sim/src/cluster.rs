@@ -161,6 +161,8 @@ impl SimCluster {
     /// runtime the run will use.
     pub async fn start(seed: u64, config: SimConfig) -> Result<Arc<Self>> {
         crate::clock::install();
+        // Election backoff draws its jitter on this thread.
+        felix_common::jitter::sim::seed(seed);
         let cp = SimControlPlane::new(config.controlplane.clone()).await?;
         let net = SimNet::new(PeerTransportConfig::default(), seed);
         let nodes = (0..config.brokers)

@@ -9,7 +9,6 @@
 //! candidate's fence.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::hash::{BuildHasher, Hasher};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -1351,10 +1350,7 @@ impl Backoff {
             .min(BACKOFF_TOP);
         self.failures += 1;
         let span = top.saturating_sub(BACKOFF_FLOOR).as_millis() as u64;
-        let jitter = std::collections::hash_map::RandomState::new()
-            .build_hasher()
-            .finish()
-            % (span + 1);
+        let jitter = felix_common::jitter::up_to(span);
         self.until = Instant::now() + BACKOFF_FLOOR + Duration::from_millis(jitter);
     }
 
