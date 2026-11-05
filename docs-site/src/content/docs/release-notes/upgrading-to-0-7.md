@@ -63,7 +63,8 @@ not yet. Header names starting with `felix.` are reserved.
 
 ## New settings
 
-None of these is required. Each default keeps the 0.6.2 behavior.
+None of these is required. Each default keeps the 0.6.2 behavior, except
+`FELIX_SHARD_STUCK_LEADER_MS`, which is on by default.
 
 | Setting | What it does |
 |---|---|
@@ -73,6 +74,7 @@ None of these is required. Each default keeps the 0.6.2 behavior.
 | `FELIX_LEASE_TOKEN_KEY_FILE`, `FELIX_LEASE_TOKEN_MAX_TTL_SECONDS` *(main)* | Key file and longest lifetime for lease tokens. Without the key file a broker neither mints nor accepts them. Every broker needs the same file. |
 | `FELIX_INTERNAL_ELECTION` | Broker. `true` makes the broker offer replica elections. Every broker needs it before `joint_fence` and `replica_election` can be finalized, and keeps needing it after. See [Turning on failover without the control plane](#turning-on-failover-without-the-control-plane). |
 | `FELIX_SHARD_ELECTION_HOLD_MS`, `FELIX_SHARD_PENDING_SET_TIMEOUT_MS` | Control-plane timers for `replica_election`. Nothing uses them until that feature is finalized. |
+| `FELIX_SHARD_STUCK_LEADER_MS` | Control plane, 70 s by default. A `Quorum` shard whose leader is on a live broker but shows no progress at its generation for this long is named again one generation up, on the same set. In 0.6.2 such a shard stayed stuck until something else changed its assignment. `0` turns it off. See "The control plane's backstop" in `docs/replication-design.md`. |
 
 In a cluster, headers are refused until the fleet finalizes `record_headers`,
 whatever `FELIX_RECORD_HEADERS` says.
