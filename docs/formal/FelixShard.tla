@@ -1414,7 +1414,9 @@ AcceptAnyHeartbeat(b) ==
 \* The code's rule since: such a broker was marked down, and a renewal after
 \* that counts only once its routes reach the assignment feed's head as of
 \* the accept. Those routes name the new leader or generation, so the broker
-\* stops believing it leads instead of renewing.
+\* stops believing it leads instead of renewing. That the routes show the
+\* move is assumed here, not modelled: it is what the head check gives, and
+\* the unit tests check the head (a lagging member's answer falls short).
 \* FelixShardLeaseRoutesHeartbeat.cfg.
 AcceptHeartbeatOnRoutes(b) ==
     \/ AcceptLeaderHeartbeat(b)

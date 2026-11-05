@@ -2306,8 +2306,8 @@ async fn revocation_cutoffs_are_read_on_the_leader() {
 
 /// A confirmed shard assignment, and the feed's head, are read on the
 /// leader, so a member that has not applied the latest assignment still
-/// answers with it, and a shard with none answers unassigned. The lagging member is a second store over the
-/// same group whose own state is empty.
+/// answers with it, and a shard with none answers unassigned. The lagging
+/// member is a second store over the same group whose own state is empty.
 #[tokio::test]
 async fn confirmed_shard_assignments_are_read_on_the_leader() {
     use crate::model::{ShardKind, ShardState};

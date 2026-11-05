@@ -187,9 +187,9 @@ async fn routes_short_of_the_renewals_feed_head_confirm_nothing() {
     assert!(!lease.awaits_routes());
 }
 
-/// Renewals after the first keep its anchor and never raise the head it
-/// must reach: on one feed a later head is only higher, so raising it could
-/// outrun the watch, and a lower one means the feed was reset.
+/// Renewals after the first never raise the head it must reach: on one feed
+/// a later head is only higher, so raising it could outrun the watch. A lower
+/// one means the feed was reset, and only routes fetched after it count.
 #[tokio::test(start_paused = true)]
 async fn later_renewals_only_lower_the_head_to_reach() {
     let lease = LeaseState::on_tokio_clock(LEASE);
@@ -199,7 +199,12 @@ async fn later_renewals_only_lower_the_head_to_reach() {
     lease.renew_at(lease.now(), None);
     lease.renew_at(lease.now(), Some(11));
     lease.renew_at(lease.now(), Some(20));
+    let fetched_before_reset = tokio::time::Instant::now();
+    tokio::time::advance(Duration::from_millis(10)).await;
     lease.renew_at(lease.now(), Some(7));
+    lease.routes_current(fetched_before_reset, Some(11));
+    assert!(!lease.is_valid_now(), "the old feed's routes confirmed it");
+    tokio::time::advance(Duration::from_millis(10)).await;
     let fetched_after = tokio::time::Instant::now();
     lease.routes_current(fetched_after, Some(6));
     assert!(!lease.is_valid_now());

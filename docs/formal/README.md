@@ -34,8 +34,9 @@ One shard, three brokers, one control plane, discrete time.
   The control plane renews only a broker it names leader at the generation
   the broker believes it leads. The code's lease is per broker, so it holds
   a broker marked down until its routes show what changed while it was away;
-  `FelixShardLeaseAnyHeartbeat.cfg` and `FelixShardLeaseRoutesHeartbeat.cfg`
-  check the code's rule in place of this one.
+  `FelixShardLeaseAnyHeartbeat.cfg` checks the code's old rule in place of
+  this one. `FelixShardLeaseRoutesHeartbeat.cfg` checks the new one, assuming
+  what its head check gives: the routes it waits for show the move.
 - **Writes.** Admission checks the broker is serving. The write then waits,
   and claims its place in the log; with `FenceAtClaim` the claim checks the
   handoff fence again. `AckOnAdmit` acknowledges a `Leader` write when it is

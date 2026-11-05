@@ -115,14 +115,18 @@ impl RoutesWanted {
                 .is_none_or(|seq| checkpoint.is_some_and(|checkpoint| checkpoint >= seq))
     }
 
-    /// The lowest head a renewal reported: they only grow on one feed, and
-    /// one that went backwards was reset, so the lower one is the feed the
-    /// watch now reads.
+    /// Take a later renewal's head. Heads only grow on one feed, so a lower
+    /// one means the feed was reset: it replaces the held one, and the anchor
+    /// moves to now so an answer from the old feed does not meet it.
     fn add_seq(&mut self, seq: Option<u64>) {
-        self.seq = match (self.seq, seq) {
-            (Some(held), Some(seq)) => Some(held.min(seq)),
-            (held, seq) => held.or(seq),
-        };
+        match (self.seq, seq) {
+            (Some(held), Some(seq)) if seq < held => {
+                self.seq = Some(seq);
+                self.after = tokio::time::Instant::now();
+            }
+            (None, Some(seq)) => self.seq = Some(seq),
+            _ => {}
+        }
     }
 }
 
