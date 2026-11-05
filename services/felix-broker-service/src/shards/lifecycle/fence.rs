@@ -75,6 +75,8 @@ pub struct ShardFence {
     /// Given-up shards whose last probe found no follower ahead of this
     /// broker's copy, and the generation they were given up at.
     reclaimable: RwLock<HashMap<ShardKey, u64>>,
+    /// Shards whose failed open was reported refused since they last opened.
+    failed_reported: parking_lot::Mutex<std::collections::HashSet<ShardKey>>,
 }
 
 impl ShardFence {
@@ -104,6 +106,17 @@ impl ShardFence {
             .insert(key.clone(), (generation, promised_to.to_string()));
     }
 
+    /// `key`'s open at `generation` failed for a reason no retry at that
+    /// generation clears. Reported refused, naming no node, so the control
+    /// plane names it again one up, but once per shard until it opens: a fault
+    /// that outlasts a fresh open would otherwise bump the generation on every
+    /// placement pass.
+    pub(crate) fn open_failed(&self, key: &ShardKey, generation: u64) {
+        if self.failed_reported.lock().insert(key.clone()) {
+            self.refused(key, generation, "");
+        }
+    }
+
     /// `key` was assigned here at `generation` after this broker had taken a
     /// newer one itself: refused, naming no node, unless a refusal at or above
     /// it is already held.
@@ -117,6 +130,7 @@ impl ShardFence {
     /// `key` opened at `generation`, so a refusal at or below it no longer
     /// holds the shard back and is not reported again.
     pub(crate) fn opened_at(&self, key: &ShardKey, generation: u64) {
+        self.failed_reported.lock().remove(key);
         let mut refused = self.refused.write();
         if refused.get(key).is_some_and(|(at, _)| *at <= generation) {
             refused.remove(key);

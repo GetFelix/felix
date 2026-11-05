@@ -376,10 +376,15 @@ pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
                 .as_ref()
                 .filter(|pool| replication::peer::PeerRequester::offers_election(pool.as_ref()))
                 .map(|_| {
-                    let elections = Arc::new(replication::election::Elections::new(
-                        router.local_node_id(),
-                        Arc::clone(&assignments_changed),
-                    ));
+                    let elections = Arc::new(
+                        replication::election::Elections::new(
+                            router.local_node_id(),
+                            Arc::clone(&assignments_changed),
+                        )
+                        .with_defer_for(
+                            replication::suspicion::SuspicionConfig::from_env().defer_for,
+                        ),
+                    );
                     quorum_marks.set_elections(Arc::clone(&elections));
                     elections
                 });

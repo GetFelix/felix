@@ -116,6 +116,7 @@ pub(super) fn group_replicas(size: usize, capabilities: PeerCapabilities) -> Rep
                 storage: Some(storage_of(id)),
                 group_storage: None,
                 refuses: None,
+                refuses_with: ErrorCode::Unavailable,
                 recorded: true,
                 _dir: dir,
             },
@@ -759,4 +760,140 @@ async fn a_wiped_leader_with_no_group_answer_stays_pending() {
             caught_up_from: None
         }
     );
+}
+
+/// Hold `node_id`'s group cursor log at `generation` for `to`, as a
+/// candidate's fence there leaves it.
+async fn group_ballot(replicas: &Replicas, node_id: &str, generation: u64, to: &str) {
+    replicas
+        .get(node_id)
+        .broker
+        .shard_log(LogKind::GroupCursors, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log")
+        .accept_generation(generation, Some(to))
+        .await
+        .expect("ballot");
+}
+
+/// **A group-log fence both replicas promised to another node is refused,
+/// naming it**, as the records' fence is. Left pending, nothing reports it,
+/// and the control plane never names the shard past the generation (#1914).
+#[tokio::test]
+async fn a_group_fence_promised_away_is_refused() {
+    let mut replicas = group_replicas(3, WITH_GROUPS);
+    replicas.ballots = true;
+    for id in ["broker-b", "broker-c"] {
+        group_ballot(&replicas, id, PROMOTED, "broker-d").await;
+    }
+    let (leader, _dir) = group_leader().await;
+
+    let outcome = promote(&replicas, &leader).await;
+
+    let Outcome::Refused {
+        promised_to, why, ..
+    } = outcome
+    else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!(promised_to, "broker-d");
+    assert!(why.contains("promised generation 5"), "{why}");
+}
+
+/// **One replica's promise away does not hold the group fence** when the
+/// other still makes the majority, as on the records' fence.
+#[tokio::test]
+async fn a_group_fence_one_replica_promised_away_opens() {
+    let mut replicas = group_replicas(3, WITH_GROUPS);
+    replicas.ballots = true;
+    group_ballot(&replicas, "broker-b", PROMOTED, "broker-d").await;
+    let (leader, _dir) = group_leader().await;
+
+    let outcome = promote(&replicas, &leader).await;
+
+    assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
+}
+
+/// **A newer ballot on a replica's group log has the fence refused**,
+/// naming no node, as a newer ballot on its records does.
+#[tokio::test]
+async fn a_newer_group_ballot_has_the_fence_refused() {
+    let mut replicas = group_replicas(3, WITH_GROUPS);
+    replicas.ballots = true;
+    group_ballot(&replicas, "broker-b", PROMOTED + 1, "broker-d").await;
+    replicas.get_mut("broker-c").unreachable_logs = vec![ReplicaLog::GroupCursors];
+    let (leader, _dir) = group_leader().await;
+
+    let outcome = promote(&replicas, &leader).await;
+
+    let Outcome::Refused {
+        promised_to, why, ..
+    } = outcome
+    else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!(promised_to, "");
+    assert!(why.contains("accepted a newer generation"), "{why}");
+}
+
+/// **A promise away with the other replica silent refuses the group fence**:
+/// the promise never comes back, so waiting on the silent one could be for
+/// good.
+#[tokio::test]
+async fn a_promise_away_and_silence_refuse_the_group_fence() {
+    let mut replicas = group_replicas(3, WITH_GROUPS);
+    replicas.ballots = true;
+    group_ballot(&replicas, "broker-b", PROMOTED, "broker-d").await;
+    replicas.get_mut("broker-c").unreachable_logs = vec![ReplicaLog::GroupCursors];
+    let (leader, _dir) = group_leader().await;
+
+    let outcome = promote(&replicas, &leader).await;
+
+    let Outcome::Refused { promised_to, .. } = outcome else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!(promised_to, "broker-d");
+}
+
+/// **A promise away with the other replica declining keeps the group fence
+/// pending**, as on the records' fence: the decline may clear on a retry.
+/// Serving the leader's own pair would leave a replica refusing it.
+#[tokio::test]
+async fn a_promise_away_and_a_decline_keep_the_group_fence_pending() {
+    let mut replicas = group_replicas(3, WITH_GROUPS);
+    replicas.ballots = true;
+    group_ballot(&replicas, "broker-b", PROMOTED, "broker-d").await;
+    // c answers the dead letters from another copy than the report named,
+    // and its cursor fence never arrives.
+    replicas.get_mut("broker-c").group_storage = Some(StorageId::from_bytes([0xee; 16]));
+    replicas.get_mut("broker-c").unreachable_logs = vec![ReplicaLog::GroupCursors];
+    let (leader, _dir) = group_leader().await;
+    let mut route = route_of_size(3);
+    route.fence_storage_ids = Some(Arc::new(
+        ["broker-b", "broker-c"]
+            .into_iter()
+            .map(|id| (id.to_string(), storage_of(id).to_hex()))
+            .collect(),
+    ));
+
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route, true, None).await;
+
+    assert!(matches!(outcome, Outcome::Pending { .. }), "{outcome:?}");
+}
+
+/// **A wiped leader's group fence is refused on one promise away**: its own
+/// pair does not count, so the other replica alone is no majority.
+#[tokio::test]
+async fn a_wiped_leaders_group_fence_is_refused_on_one_promise_away() {
+    let mut replicas = group_replicas(3, WITH_GROUPS);
+    replicas.ballots = true;
+    group_ballot(&replicas, "broker-b", PROMOTED, "broker-d").await;
+    let (wiped, _dir) = wiped_group_leader().await;
+
+    let outcome = promote(&replicas, &wiped).await;
+
+    let Outcome::Refused { promised_to, .. } = outcome else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!(promised_to, "broker-d");
 }
