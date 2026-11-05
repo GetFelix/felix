@@ -1,0 +1,25 @@
+[package]
+name = "felix-sim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Deterministic simulation of a Felix cluster on virtual time"
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+# A test harness, not a library anyone consumes from a registry.
+publish = false
+
+[dependencies]
+felix-replication = { path = "../../server/felix-replication" }
+felix-wire = { path = "../../protocol/felix-wire" }
+parking_lot = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

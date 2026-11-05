@@ -16,7 +16,7 @@ use crate::cluster::credential::NodeCredential;
 use crate::config::BrokerConfig;
 use crate::serving::auth::BrokerAuth;
 use crate::shards::{lifecycle as shard_lifecycle, routing as shard_routing, watch as shard_watch};
-use felix_replication::peer::{self, PeerPool, tls::PeerTls};
+use felix_replication::peer::{self, PeerPool, PeerRequester, tls::PeerTls};
 use felix_replication::{self as replication, halted::HaltedReplicas, quorum::QuorumMarks};
 
 /// The router, ingress router, shard lifecycle and ownership of a cluster member.
@@ -244,15 +244,17 @@ pub(super) struct ShardTasks {
     pub(super) replication: Option<replication::driver::Replication>,
 }
 
-/// What the shard tasks read and publish to.
-pub(super) struct ShardTaskDeps<'a> {
+/// What the shard tasks read and publish to. Generic over the peer transport
+/// so a simulator can run these tasks over an in-memory network; a broker
+/// passes its [`PeerPool`].
+pub(super) struct ShardTaskDeps<'a, R> {
     pub(super) config: &'a BrokerConfig,
     pub(super) cluster: &'a Option<ShardState>,
     pub(super) durable_storage: &'a Option<DurableStorage>,
     pub(super) membership_client: &'a reqwest::Client,
     pub(super) credential: &'a Option<NodeCredential>,
     pub(super) client_endpoints: &'a Arc<ClientEndpoints>,
-    pub(super) peers: &'a Option<Arc<PeerPool>>,
+    pub(super) peers: &'a Option<Arc<R>>,
     pub(super) broker: &'a Arc<Broker>,
     pub(super) quorum_marks: &'a Arc<QuorumMarks>,
     pub(super) halted_replicas: &'a Arc<HaltedReplicas>,
@@ -275,7 +277,9 @@ pub(super) struct ShardTaskDeps<'a> {
 /// Shard ownership: follow the control plane's assignments, and keep local
 /// state and the routing table in step with them. Also starts shipping to
 /// followers for the shards this broker leads.
-pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
+pub(super) fn spawn_shard_tasks<R: PeerRequester + Send + Sync + 'static>(
+    deps: ShardTaskDeps<'_, R>,
+) -> Option<ShardTasks> {
     let ShardTaskDeps {
         config,
         cluster,
@@ -319,7 +323,7 @@ pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
                         guard.fence_promotions();
                         // A broker that checks sets fences the next
                         // generation too, once `joint_fence` is finalized.
-                        if replication::peer::PeerRequester::offers_election(pool.as_ref()) {
+                        if pool.offers_election() {
                             guard.fence_next_generations(Arc::clone(fleet));
                         }
                         Arc::new(shard_lifecycle::promotion::LifecycleGate::new(
@@ -374,7 +378,7 @@ pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
             // sets: the routing feed lays them over the control plane's.
             let elections = peers
                 .as_ref()
-                .filter(|pool| replication::peer::PeerRequester::offers_election(pool.as_ref()))
+                .filter(|pool| pool.offers_election())
                 .map(|_| {
                     let elections = Arc::new(replication::election::Elections::new(
                         router.local_node_id(),
