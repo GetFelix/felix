@@ -3879,11 +3879,13 @@ append stream and the rest never shipped: their writes were never acknowledged
   - the appended queue's front waits for at most two: one urgent and one
     refresh.
 
-  A shard's first pass here always queues as urgent, even with a write
+  A shard new here queues its first pass as urgent, even with a write
   waiting: it is slow while the followers open their copies, and a bulk of
-  them in the appended queue would put an append behind them again. So a new
-  leader's first pass after a failover, once at the front of the urgent queue,
-  starts within those six starts
+  them in the appended queue would put an append behind them again. A promoted
+  shard is past that once its fence opens, so a write that came in during the
+  fence queues its first pass as appended. Either way a new leader's first
+  pass after a failover, once at the front of its queue, starts within those
+  six starts
   (`a_new_leaders_first_pass_starts_within_the_bound`). A start needs a pass to
   end, so the wait in time is at most six times the longest pass.
 - **A finished pass goes to the back.** When a pass ends and its shard wants
