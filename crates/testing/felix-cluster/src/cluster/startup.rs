@@ -94,6 +94,7 @@ impl Cluster {
         // from "already exited"; the rest only observes the cluster.
         let ready = async {
             cluster.await_brokers_ready().await?;
+            cluster.await_registered().await?;
             cluster.await_cluster_ready(&config).await?;
             if config.joint_fence {
                 cluster
@@ -190,26 +191,40 @@ impl Cluster {
         Ok(())
     }
 
-    /// Wait until the cluster as a whole can serve: every broker registered and
-    /// placeable, every shard led, and a publish accepted.
-    async fn await_cluster_ready(&self, config: &ClusterConfig) -> Result<()> {
+    /// Wait for every broker to be registered and placeable.
+    ///
+    /// A broker that exits here ends the wait with its status and log rather
+    /// than a timeout: it reported ready, so the exit is a real failure, and
+    /// waiting out the budget only hides why.
+    async fn await_registered(&mut self) -> Result<()> {
         let expected: Vec<String> = self.nodes.iter().map(|n| n.node_id.clone()).collect();
-        wait::until(
-            READY_TIMEOUT,
-            "every broker registered and placeable",
-            || {
-                let this = self;
-                let expected = expected.clone();
-                async move {
-                    match this.placeable_nodes().await {
-                        Ok(live) => expected.iter().all(|id| live.contains(id)),
-                        Err(_) => false,
-                    }
+        let budget = wait::budget(READY_TIMEOUT);
+        let deadline = Instant::now() + budget;
+        loop {
+            for node in &mut self.nodes {
+                if let Some(status) = node.exited() {
+                    let node_id = &node.node_id;
+                    let reason = node.failure_reason();
+                    bail!("{node_id} exited after reporting ready ({status}){reason}");
                 }
-            },
-        )
-        .await?;
+            }
+            if let Ok(live) = self.placeable_nodes().await
+                && expected.iter().all(|id| live.contains(id))
+            {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                bail!(
+                    "timed out after {budget:?} waiting for every broker registered and placeable"
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
 
+    /// Wait until the cluster as a whole can serve: every shard led, and a
+    /// publish accepted.
+    async fn await_cluster_ready(&self, config: &ClusterConfig) -> Result<()> {
         // Placement is stepped rather than waited on, then the result is
         // verified: a leader for every shard of every stream.
         let total_shards: usize = config

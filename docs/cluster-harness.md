@@ -140,8 +140,10 @@ threads; dropping it instead stops the runtime without blocking.
 
 Nothing here sleeps for a fixed duration and hopes. Start-up returns only once:
 
-1. every broker answers `/ready`,
-2. the control plane considers every broker placeable,
+1. every broker answers `/ready` (a broker that exits first, for instance on a
+   port something else took, is started again with new ports),
+2. the control plane considers every broker placeable (a broker that exits
+   now fails start-up at once with its log, since it had reported ready),
 3. every shard has a leader (placement is *stepped*, not waited for, so it does
    not depend on a reconcile timer),
 4. **a publish succeeds**,
