@@ -85,8 +85,15 @@ impl Checker for OneLeaderPerGeneration {
 /// At most one broker would take a write for a shard at any instant.
 ///
 /// Sampled at [`Point::Quiet`] and the points after, so it sees two brokers
-/// serving for as long as a second, which is how long the faults give a
-/// deposed leader to notice.
+/// serving for as long as a second.
+///
+/// It applies to shards whose writes are protected by the lease. The model
+/// asserts it for those only. A shard acknowledged by a majority of followers
+/// at the leader's generation (`AckByFollowers`) lets a deposed leader keep
+/// serving until its lease ends, because it cannot collect a majority once its
+/// successor has fenced one; there the model asserts `AckedHeldByLeader`
+/// instead, and so does this crate. The streams and caches of a run that has
+/// finalized election are in that design.
 #[derive(Debug)]
 pub struct AtMostOneServing {
     digest: Digest,
@@ -104,7 +111,7 @@ impl Sampled for AtMostOneServing {
     fn observe(&mut self, shard: &str, seen: &[Seen]) -> Vec<Violation> {
         let serving: Vec<String> = seen
             .iter()
-            .filter(|one| one.stand.serving)
+            .filter(|one| one.stand.serving && !one.stand.acks_by_followers)
             .map(|one| match one.stand.generation {
                 Some(generation) => format!("{} at generation {generation}", one.name),
                 None => one.name.clone(),

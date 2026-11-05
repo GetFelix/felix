@@ -24,7 +24,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use felix_broker::{Broker, DurableStorage, LogKind};
-use felix_common::fleet::FleetGate;
+use felix_common::fleet::{FENCED_CACHES, FleetGate, GENERATION_START, MAJORITY_ACK};
 use felix_replication::controlplane_link::ControlPlaneLink;
 use felix_replication::peer::PeerRequester;
 use felix_replication::peer::server::PeerRequestHandler;
@@ -202,6 +202,12 @@ pub struct ShardStand {
     /// `active`), if it has one. The fence and the routing table are checked
     /// against it.
     pub opened_generation: Option<u64>,
+    /// Writes to the shard are acknowledged on a majority of followers at the
+    /// leader's generation, which the fleet has finalized, rather than on the
+    /// leader's lease. A deposed leader of such a shard may keep `serving` for
+    /// the rest of its lease: it cannot get a majority to acknowledge once its
+    /// successor has fenced one.
+    pub acks_by_followers: bool,
 }
 
 /// What a broker believes about one shard, for checkers.
@@ -215,6 +221,8 @@ pub struct ShardSnapshot {
     pub routed_leader: Option<(String, u64)>,
     /// See [`ShardStand::opened_generation`].
     pub opened_generation: Option<u64>,
+    /// See [`ShardStand::acks_by_followers`].
+    pub acks_by_followers: bool,
     /// One past the last record in this broker's copy of the log, if it has one.
     pub log_tail: Option<u64>,
     /// How far a majority of the replica set has the log, when this broker
@@ -550,11 +558,18 @@ impl SimBroker {
             .phase_of(key)
             .filter(|record| record.phase == Phase::Active)
             .map(|record| record.generation);
+        let fleet = self.fleet.view();
+        let streams = fleet.supports(GENERATION_START) && fleet.supports(MAJORITY_ACK);
+        let acks_by_followers = match key.kind {
+            ShardKind::Stream => streams,
+            ShardKind::Cache => streams && fleet.supports(FENCED_CACHES),
+        };
         ShardStand {
             serving,
             generation,
             routed_leader,
             opened_generation,
+            acks_by_followers,
         }
     }
 
@@ -565,6 +580,7 @@ impl SimBroker {
             generation,
             routed_leader,
             opened_generation,
+            acks_by_followers,
         } = self.shard_stand(key);
         let kind = match key.kind {
             ShardKind::Stream => LogKind::Stream,
@@ -590,6 +606,7 @@ impl SimBroker {
             generation,
             routed_leader,
             opened_generation,
+            acks_by_followers,
             log_tail,
             quorum_mark,
             phase,

@@ -12,6 +12,7 @@ fn serving(node: usize, generation: u64) -> Seen {
             generation: Some(generation),
             routed_leader: Some((format!("b{}", node + 1), generation)),
             opened_generation: Some(generation),
+            acks_by_followers: false,
         },
     }
 }
@@ -33,6 +34,7 @@ fn idle(node: usize) -> Seen {
             generation: None,
             routed_leader: None,
             opened_generation: None,
+            acks_by_followers: false,
         },
     }
 }
@@ -87,6 +89,19 @@ fn two_serving_brokers_violate_at_most_one_serving() {
             .contains("b1 at generation 4 and b3 at generation 5"),
         "{found:?}"
     );
+}
+
+#[test]
+fn a_deposed_leader_of_a_shard_acknowledged_by_followers_may_keep_serving() {
+    let mut check = AtMostOneServing::default();
+    let mut old = serving(0, 4);
+    old.stand.acks_by_followers = true;
+    let mut new = serving(1, 5);
+    new.stand.acks_by_followers = true;
+    assert!(check.observe("stream/1", &[old, new]).is_empty());
+    // A lease-based shard has no such allowance.
+    let both = [serving(0, 4), serving(1, 5)];
+    assert_eq!(check.observe("cache/1", &both).len(), 1);
 }
 
 #[test]

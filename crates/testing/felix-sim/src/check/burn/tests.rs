@@ -16,6 +16,7 @@ fn routed(node: usize, generation: u64, leads: bool) -> Seen {
             generation: leads.then_some(generation),
             routed_leader: Some(("b1".to_string(), generation)),
             opened_generation: leads.then_some(generation),
+            acks_by_followers: true,
         },
     }
 }
