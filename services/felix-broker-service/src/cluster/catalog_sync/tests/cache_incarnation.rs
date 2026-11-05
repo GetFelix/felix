@@ -211,8 +211,7 @@ async fn sync(broker: &Arc<Broker>, router: Router) -> Result<()> {
     let mut state = SyncState::new();
     let synced = sync_into(
         broker,
-        &reqwest::Client::new(),
-        &format!("http://{addr}"),
+        &HttpSource::new(reqwest::Client::new().clone(), format!("http://{addr}")),
         None,
         &mut state,
     )
