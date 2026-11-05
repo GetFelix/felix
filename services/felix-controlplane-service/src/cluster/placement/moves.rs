@@ -418,6 +418,13 @@ pub(super) fn move_step<'a>(
     // Kept off as a destination, as of any report still believed.
     let is_halted = |node: &str| caught_up.halted(key, node).is_some();
 
+    // A leader that deregistered is stopping, so it is never named at a new
+    // generation it may not live to serve: not to answer a refusal, and not
+    // to take back a fenced shard. The shard cuts over to a copy that holds
+    // the log, or waits for the leader's lease to run out and then fails
+    // over (#1982).
+    let departed = moves.policy.departed.contains(leader);
+
     // The leader cannot serve this generation: it, or a majority of its set,
     // promised it to another node. That is usually an election recorded
     // without being adopted, but any fresh refusal at this generation is
@@ -431,6 +438,9 @@ pub(super) fn move_step<'a>(
         && existing.state != ShardState::Draining
         && let Some(refused) = caught_up.leader_refusal(key, existing.generation, leader)
     {
+        if departed {
+            return Decision::Waiting(Blocked::LeaderDeparted);
+        }
         return Decision::Move(
             if refused.is_promise() {
                 MoveStep::ElectionRefused
@@ -493,11 +503,6 @@ pub(super) fn move_step<'a>(
     }
 
     if existing.state == ShardState::Draining {
-        // A leader that deregistered is stopping, so a fenced shard never goes
-        // back to it at a new generation it may not live to serve. It cuts
-        // over to a copy that holds the log, or waits for the leader's lease
-        // to run out and then fails over (#1982).
-        let departed = moves.policy.departed.contains(leader);
         if existing.successor.is_none()
             && let Some(joining) = existing.joining.as_deref()
         {

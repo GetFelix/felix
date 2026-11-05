@@ -169,9 +169,10 @@ pub enum Blocked {
     /// writes are still in flight there, or its group state or counters are
     /// not yet on every replica that could take over.
     LeaderStopping,
-    /// The assignment is `Draining`, its leader has deregistered, and no
-    /// other copy can take it yet. It is not handed back to that leader: the
-    /// shard fails over once the leader's lease has run out.
+    /// The leader has deregistered, and the next step would name it again at
+    /// a new generation (a fenced move giving up, or a refused generation).
+    /// The shard waits for another copy to take it, or fails over once the
+    /// leader's lease has run out.
     LeaderDeparted,
     /// A move is wanted, and `MovePolicy::max_concurrent` is reached.
     MoveLimit,
@@ -214,7 +215,7 @@ impl std::fmt::Display for Blocked {
             ),
             Self::LeaderDeparted => write!(
                 f,
-                "the leader has deregistered; waiting for its lease to run out to fail over"
+                "the leader has deregistered; waiting for a caught-up copy to take over, or for its lease to run out"
             ),
             Self::MoveLimit => write!(f, "waiting for a move slot"),
             Self::NodeMoveLimit { node } => write!(f, "waiting for a move slot on {node}"),

@@ -1,6 +1,8 @@
-//! A fenced shard whose leader has deregistered is never handed back to it
-//! (#1982). The move cuts over to a copy that holds the log, or the shard
-//! waits for the leader's lease to run out and fails over.
+//! A leader that has deregistered is never named again at a new generation
+//! (#1982). A fenced shard cuts over to a copy that holds the log, or waits
+//! for the leader's lease to run out and fails over.
+use felix_common::membership::RefusedGeneration;
+
 use super::reconciler::{cluster, report, shard_zero};
 use super::*;
 use crate::model::{ConsistencyLevel, MoveReason};
@@ -10,11 +12,15 @@ const NOW: u64 = 10_000_000_000;
 const MINUTE: u64 = 60_000;
 
 /// Reports as of `NOW` at generation 3, with the fence first seen at
-/// `fenced_at`.
+/// `fenced_at`. `level` reports every copy at the leader's offset, and
+/// `refused` has the leader refuse generation 3 as promised to broker-d.
+#[derive(Default)]
 struct Fenced {
     caught_up: &'static [&'static str],
     drained: bool,
     fenced_at: Option<u64>,
+    level: bool,
+    refused: bool,
 }
 
 impl CaughtUp for Fenced {
@@ -37,12 +43,51 @@ impl CaughtUp for Fenced {
     fn fenced_at_millis(&self, _key: &ShardKey, generation: u64) -> Option<u64> {
         self.fenced_at.filter(|_| generation == 3)
     }
+
+    fn leader_offset(&self, _key: &ShardKey) -> Option<u64> {
+        self.level.then_some(10)
+    }
+
+    fn reported_offset(&self, _key: &ShardKey, _node_id: &str) -> Option<u64> {
+        self.level.then_some(10)
+    }
+
+    fn leader_refusal(
+        &self,
+        _key: &ShardKey,
+        generation: u64,
+        _leader: &str,
+    ) -> Option<RefusedGeneration> {
+        (self.refused && generation == 3).then(|| RefusedGeneration {
+            generation: 3,
+            promised_to: "broker-d".to_string(),
+        })
+    }
 }
 
-/// A Quorum shard fenced to move from broker-a to broker-b. broker-a is
-/// draining, and `departed` when it has deregistered inside its lease;
-/// broker-b is live unless `successor_down`.
+/// A Quorum shard fenced to move from broker-a to broker-b.
+fn fenced_move() -> ShardAssignment {
+    ShardAssignment {
+        state: ShardState::Draining,
+        successor: Some("broker-b".to_string()),
+        move_started_at_millis: Some(NOW - 10 * MINUTE),
+        move_reason: Some(MoveReason::Drain),
+        ..assigned("orders", "broker-a", &["broker-b", "broker-c"])
+    }
+}
+
 fn decide(reports: &Fenced, departed: bool, successor_down: bool) -> Decision {
+    decide_on(fenced_move(), reports, departed, successor_down)
+}
+
+/// `existing` as planned with broker-a draining, and `departed` when it has
+/// deregistered inside its lease; broker-b is live unless `successor_down`.
+fn decide_on(
+    existing: ShardAssignment,
+    reports: &Fenced,
+    departed: bool,
+    successor_down: bool,
+) -> Decision {
     let streams = [Stream {
         consistency: ConsistencyLevel::Quorum,
         ..replicated_stream("orders", 1, 3)
@@ -59,14 +104,8 @@ fn decide(reports: &Fenced, departed: bool, successor_down: bool) -> Decision {
             None,
         ),
         node("broker-c", NodeLifecycle::Live, None),
+        node("broker-d", NodeLifecycle::Live, None),
     ];
-    let fenced = ShardAssignment {
-        state: ShardState::Draining,
-        successor: Some("broker-b".to_string()),
-        move_started_at_millis: Some(NOW - 10 * MINUTE),
-        move_reason: Some(MoveReason::Drain),
-        ..assigned("orders", "broker-a", &["broker-b", "broker-c"])
-    };
     let policy = MovePolicy {
         departed: if departed {
             BTreeSet::from(["broker-a".to_string()])
@@ -75,7 +114,7 @@ fn decide(reports: &Fenced, departed: bool, successor_down: bool) -> Decision {
         },
         ..MovePolicy::default()
     };
-    plan_with(&streams, &[], &nodes, &[fenced], reports, policy)
+    plan_with(&streams, &[], &nodes, &[existing], reports, policy)
         .shards
         .remove(0)
         .decision
@@ -93,6 +132,7 @@ fn a_departed_leader_does_not_retake_a_timed_out_fence() {
         caught_up: &[],
         drained: false,
         fenced_at: Some(NOW - DEFAULT_FENCE_TIMEOUT_MILLIS - 1),
+        ..Fenced::default()
     };
     assert!(retaken_by_a(&decide(&reports, false, false)));
     assert_eq!(
@@ -109,6 +149,7 @@ fn a_departed_leader_does_not_retake_when_the_destination_dies() {
         caught_up: &[],
         drained: false,
         fenced_at: None,
+        ..Fenced::default()
     };
     assert!(retaken_by_a(&decide(&reports, false, true)));
     assert_eq!(
@@ -125,6 +166,7 @@ fn a_departed_leader_is_not_the_cut_over_of_last_resort() {
         caught_up: &[],
         drained: true,
         fenced_at: None,
+        ..Fenced::default()
     };
     assert!(retaken_by_a(&decide(&reports, false, false)));
     assert_eq!(
@@ -142,6 +184,7 @@ fn a_departed_leader_still_hands_over_to_its_destination() {
             caught_up: &["broker-b"],
             drained: true,
             fenced_at: None,
+            ..Fenced::default()
         },
         true,
         false,
@@ -152,6 +195,81 @@ fn a_departed_leader_still_hands_over_to_its_destination() {
             Decision::Move(MoveStep::CutOver { from, to }, _) if from == "broker-a" && to == "broker-b"
         ),
         "{decision:?}"
+    );
+}
+
+/// A fenced set above its factor is trimmed by handing the shard back to its
+/// leader, so a departed leader's waits instead.
+#[test]
+fn a_departed_leader_is_not_handed_its_shard_back_by_a_trim() {
+    let over = ShardAssignment {
+        state: ShardState::Draining,
+        ..assigned("orders", "broker-a", &["broker-b", "broker-c", "broker-d"])
+    };
+    let reports = Fenced {
+        drained: true,
+        level: true,
+        ..Fenced::default()
+    };
+    let draining = decide_on(over.clone(), &reports, false, false);
+    assert!(
+        matches!(&draining, Decision::Move(MoveStep::Trim { .. }, a) if a.leader == "broker-a"),
+        "{draining:?}"
+    );
+    assert_eq!(
+        decide_on(over, &reports, true, false),
+        Decision::Waiting(Blocked::LeaderDeparted),
+    );
+}
+
+/// A follower being copied in behind a fence ends with the leader serving
+/// again, so a departed leader's shard waits instead.
+#[test]
+fn a_departed_leader_does_not_serve_again_after_a_seat() {
+    let seating = ShardAssignment {
+        state: ShardState::Draining,
+        joining: Some("broker-d".to_string()),
+        move_started_at_millis: Some(NOW - MINUTE),
+        move_reason: Some(MoveReason::Replace),
+        ..assigned("orders", "broker-a", &["broker-b", "broker-c", "broker-d"])
+    };
+    let reports = Fenced {
+        drained: true,
+        level: true,
+        ..Fenced::default()
+    };
+    assert!(retaken_by_a(&decide_on(
+        seating.clone(),
+        &reports,
+        false,
+        false
+    )));
+    assert_eq!(
+        decide_on(seating, &reports, true, false),
+        Decision::Waiting(Blocked::LeaderDeparted),
+    );
+}
+
+/// A refused generation names the leader again one generation up, unless it
+/// has deregistered.
+#[test]
+fn a_departed_leader_is_not_named_again_after_a_refusal() {
+    let serving = ShardAssignment {
+        state: ShardState::Active,
+        ..assigned("orders", "broker-a", &["broker-b", "broker-c"])
+    };
+    let reports = Fenced {
+        refused: true,
+        ..Fenced::default()
+    };
+    let draining = decide_on(serving.clone(), &reports, false, false);
+    assert!(
+        matches!(&draining, Decision::Move(MoveStep::ElectionRefused, a) if a.leader == "broker-a"),
+        "{draining:?}"
+    );
+    assert_eq!(
+        decide_on(serving, &reports, true, false),
+        Decision::Waiting(Blocked::LeaderDeparted),
     );
 }
 
