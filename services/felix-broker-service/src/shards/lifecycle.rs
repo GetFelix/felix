@@ -2222,18 +2222,36 @@ pub(crate) async fn reconcile_renewed(
     assignments: &HashMap<ShardKey, ShardAssignment>,
     renewals: &HashMap<ShardKey, u64>,
 ) {
-    reconcile_reporting(lifecycle, store, assignments, renewals, |_| {}).await;
+    reconcile_reporting(lifecycle, store, assignments, renewals, &mut NoProgress).await;
 }
 
-/// [`reconcile_renewed`], showing `opened` the lifecycle after each shard it
-/// opens. A pass can open hundreds of shards, one after another, and the
-/// caller can then route each as soon as it serves instead of after the last.
+/// What a caller of [`reconcile_reporting`] does while its pass opens shards.
+pub(crate) trait PassProgress: Send {
+    /// Whether [`PassProgress::opened`] wants to hear about the next open.
+    fn due(&self) -> bool;
+    /// A shard just opened, and `servable` is what this broker serves now.
+    fn opened(&mut self, servable: HashMap<ShardKey, u64>);
+}
+
+struct NoProgress;
+
+impl PassProgress for NoProgress {
+    fn due(&self) -> bool {
+        false
+    }
+
+    fn opened(&mut self, _servable: HashMap<ShardKey, u64>) {}
+}
+
+/// [`reconcile_renewed`], telling `progress` after each shard it opens. A
+/// pass can open hundreds of shards, one after another, and the caller can
+/// then route each as soon as it serves instead of after the last.
 pub(crate) async fn reconcile_reporting(
     lifecycle: &tokio::sync::Mutex<ShardLifecycle>,
     store: &dyn ShardStore,
     assignments: &HashMap<ShardKey, ShardAssignment>,
     renewals: &HashMap<ShardKey, u64>,
-    mut opened: impl FnMut(&ShardLifecycle) + Send,
+    progress: &mut dyn PassProgress,
 ) {
     let ready = |key: &ShardKey| {
         let incarnation = assignments
@@ -2273,8 +2291,9 @@ pub(crate) async fn reconcile_reporting(
         }
         let opens = matches!(action, Action::Open { .. });
         apply(lifecycle, store, action).await;
-        if opens {
-            opened(&*lifecycle.lock().await);
+        if opens && progress.due() {
+            let servable = lifecycle.lock().await.servable();
+            progress.opened(servable);
         }
     }
 }

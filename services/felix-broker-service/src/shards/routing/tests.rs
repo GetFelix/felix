@@ -504,6 +504,46 @@ mod feed {
         let _ = feed.await;
     }
 
+    /// **Only the new shards change mid-pass.** A shard reassigned away in
+    /// the same pass keeps the route and the serving state last published
+    /// until the pass ends, so a write to it is held as it was, not refused.
+    #[tokio::test]
+    async fn a_shard_moving_away_mid_pass_keeps_its_published_view() {
+        let (mut state, _router) = state(&[assignment(0, "broker-a", 1)]);
+        state.store = Arc::new(SlowStore {
+            delay: Duration::from_millis(150),
+        });
+        let ingress = Arc::clone(&state.ingress);
+        let ownership = Arc::clone(&state.ownership);
+        let changed = Arc::clone(&state.assignments_changed);
+        let shutdown = CancellationToken::new();
+        let feed = spawn_feed(state, None, Duration::from_secs(60), shutdown.clone());
+        until("shard 0 to be served locally", || {
+            matches!(ingress.dispatch(&key(0)), Dispatch::Local { generation: 1 })
+        })
+        .await;
+
+        let mut next = vec![assignment(0, "broker-b", 2)];
+        next.extend((1..5).map(|shard| assignment(shard, "broker-a", 1)));
+        ownership.write().await.reset(next);
+        changed.notify_one();
+        until("a new shard to be served locally", || {
+            (1..5).any(|shard| matches!(ingress.dispatch(&key(shard)), Dispatch::Local { .. }))
+        })
+        .await;
+        let mid_pass = ingress.dispatch(&key(0));
+        let all_open =
+            (1..5).all(|shard| matches!(ingress.dispatch(&key(shard)), Dispatch::Local { .. }));
+
+        assert!(!all_open, "the pass published nothing before it ended");
+        assert!(
+            matches!(mid_pass, Dispatch::Local { generation: 1 }),
+            "shard 0 changed mid-pass: {mid_pass:?}"
+        );
+        shutdown.cancel();
+        let _ = feed.await;
+    }
+
     /// A shard led elsewhere is only forwardable once the catalog supplies an
     /// address. Before that it is known and unreachable, which is the state the
     /// address book exists to leave.
