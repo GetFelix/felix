@@ -3762,9 +3762,10 @@ append stream and the rest never shipped: their writes were never acknowledged
   below its tail, or no follower that could still catch up holds its whole
   log, and some follower is in reach: not halted, and its last batch went through,
   or was refused only because its routing view is behind this generation and
-  the leader can send it the fence again (an elected leader, or a fleet that
-  has finalized `replica_election`). That refusal counts because the next pass
-  is what brings the follower level, even when it arrives after its pass ended.
+  then took the fence the leader sent it again (an elected leader, or a fleet
+  that has finalized `replica_election` and a log that keeps its set). That
+  refusal counts because the next pass is what brings the follower level, even
+  when it arrives after its pass ended.
   A follower the batch did not reach, one whose routing view only the control
   plane can fix, or one refusing for any other reason (a full disk, a bad
   credential) is out of reach.
