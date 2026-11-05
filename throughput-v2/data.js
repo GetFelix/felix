@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793879521827,
+  "lastUpdate": 1793879858192,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -45552,6 +45552,58 @@ window.BENCHMARK_DATA = {
             "range": "6642.78",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 815436.50\nmean: 814931.53\nstdev: 6642.78\ncv: 0.82%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "071348c2ea75d6b1380fec3892dc6d2e622ff0f3",
+          "message": "fix(broker): route new shards as they open, not after the whole pass (#1945) (#1953)\n\nNew shards are routed as each one opens instead of after the whole routing pass. Fixes #1945.",
+          "timestamp": "2026-11-05T03:43:16-08:00",
+          "tree_id": "29aeb5e49e2af2c8b822ab4abefb1f5854aad38a",
+          "url": "https://github.com/GetFelix/felix/commit/071348c2ea75d6b1380fec3892dc6d2e622ff0f3"
+        },
+        "date": 1793879857492,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 692622.44,
+            "range": "56681.27",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 692622.44\nmean: 678027.21\nstdev: 56681.27\ncv: 8.36%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 692622.44,
+            "range": "56681.27",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 692622.44\nmean: 678027.21\nstdev: 56681.27\ncv: 8.36%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 159768.53,
+            "range": "12391.93",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 159768.53\nmean: 155963.51\nstdev: 12391.93\ncv: 7.95%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1597685.3,
+            "range": "123919.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1597685.30\nmean: 1559635.09\nstdev: 123919.31\ncv: 7.95%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
