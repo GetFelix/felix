@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793887120480,
+  "lastUpdate": 1793887775360,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -45656,6 +45656,58 @@ window.BENCHMARK_DATA = {
             "range": "65989.60",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1730831.92\nmean: 1705567.90\nstdev: 65989.60\ncv: 3.87%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f0620506a84a0b4e9636fdd2ff87ddb0cf660dc1",
+          "message": "fix(broker): a broker marked down serves again only on routes newer than its renewal (#1955) (#1957)\n\nA broker marked down serves again only on routes newer than the mark, so a stale route cannot reopen a shard another broker took over. Fixes #1955.",
+          "timestamp": "2026-11-05T05:57:09-08:00",
+          "tree_id": "90890a6df4d0d1344beab53676ef63ae02bc806c",
+          "url": "https://github.com/GetFelix/felix/commit/f0620506a84a0b4e9636fdd2ff87ddb0cf660dc1"
+        },
+        "date": 1793887774722,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 401472.37,
+            "range": "7337.45",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 401472.37\nmean: 403425.99\nstdev: 7337.45\ncv: 1.82%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 401472.37,
+            "range": "7337.45",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 401472.37\nmean: 403425.99\nstdev: 7337.45\ncv: 1.82%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 90454.81,
+            "range": "765.08",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 90454.81\nmean: 90212.86\nstdev: 765.08\ncv: 0.85%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 904548.13,
+            "range": "7650.80",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 904548.13\nmean: 902128.55\nstdev: 7650.80\ncv: 0.85%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
