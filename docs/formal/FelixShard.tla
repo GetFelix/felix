@@ -773,9 +773,9 @@ WithdrawsStuck == FALSE
 \* `Superseded` in services/felix-broker-service/src/shards/lifecycle.rs).
 \* Off, it stays silent. A member answering with a newer ballot ends the
 \* code's fence refused at once (`superseded_by` in promotion.rs); the model
-\* drops such a member from the fence's count only under `OverlayRefused`. `OwnBallotRefused`: the fence's
-\* step on the leader's own log reports the same refusal (`keep_own_set` in
-\* promotion.rs); off, it stays pending. `AboveReported`: the control
+\* drops such a member from the fence's count only under `OverlayRefused`.
+\* `OwnBallotRefused`: the fence's step on the leader's own log reports the
+\* same refusal (`keep_own_set` in promotion.rs); off, it stays pending. `AboveReported`: the control
 \* plane's leader that is not open at its generation and whose own log holds
 \* a newer one it does not stand at (it answered a candidate's fence, or
 \* stood and withdrew, after opening there) reports the generation refused.
@@ -2534,7 +2534,7 @@ Depose(b) ==
 \* a new incarnation. The control plane's leader opens its assignment, which
 \* it takes unless it promised the generation away; then it reports the
 \* refusal (`RenameDue`). Being deposed is held in memory (`Gate` in
-\* shards/lifecycle/fence.rs), so the reopened leader starts undeposed.
+\* shards/lifecycle/fence.rs), so a restarted broker starts undeposed.
 Restart(b) ==
     /\ Restarts
     /\ b \in halted
@@ -2547,8 +2547,8 @@ Restart(b) ==
             /\ answered' = [answered EXCEPT ![b] = {}]
             /\ confirmed' = [confirmed EXCEPT ![b] = [m \in Brokers |-> 0]]
             /\ Promise(b, b, gen)
-            /\ stopped' = [stopped EXCEPT ![b] = FALSE]
-       ELSE UNCHANGED << bgen, bexpiry, fencing, answered, confirmed, promised, ballot, stopped >>
+       ELSE UNCHANGED << bgen, bexpiry, fencing, answered, confirmed, promised, ballot >>
+    /\ stopped' = [stopped EXCEPT ![b] = FALSE]
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, hbOut, hbAt,
                     log, hwm, queued, pending, acked, writes, staleCommit,
                     opened, setVars, ackGen >>
@@ -3436,7 +3436,8 @@ Refused(left, stillFencing) ==
     \* report.
     \* Its own copy promised the generation to another. Under
     \* `RenamePastBallot` a fenced open waits there instead (`keep_own_set` in
-    \* promotion.rs, #1872) and reports nothing; a rename never lands there.
+    \* promotion.rs, #1872) and reports nothing. A rename never lands there;
+    \* a refused promotion can, and waits as the code does.
     \/ ~RenamePastBallot /\ PromisedAway(leader, leader, gen)
     \/ /\ SupersededRefused /\ promised[leader] > gen
        /\ bgen[leader] < gen
@@ -3450,7 +3451,8 @@ Refused(left, stillFencing) ==
     \/ /\ stillFencing /\ JointFence
        /\ ~MajorityOfOld(left \cup {leader}, leader)
 
-RenameDue ==
+\* A refusal other than `AboveReported`'s. These carry no ballot.
+OtherRefusal ==
     LET left == { m \in FenceMembers(leader) :
                     /\ ~PromisedAway(m, leader, gen)
                     \* The leader's own log answers through `keep_own_set`, not
@@ -3458,23 +3460,30 @@ RenameDue ==
                     /\ ~(OverlayRefused /\ m /= leader /\ promised[m] > gen) }
         stillFencing == bgen[leader] = gen /\ fencing[leader]
         open == bgen[leader] = gen /\ ~fencing[leader]
-    IN /\ Renames
-       \* A stopped broker reports nothing.
-       /\ leader \notin halted
-       /\ \/ /\ HaltReported /\ open
-             /\ \E m \in Members(leader) \ {leader} : promised[m] > gen
-          \/ CatchAllRename /\ ~LeaderServes /\ CannotServe
-          \/ AboveReported /\ promised[leader] > gen /\ bgen[leader] < gen
-          \/ /\ bgen[leader] < gen \/ stillFencing
-             /\ Refused(left, stillFencing)
+    IN \/ /\ HaltReported /\ open
+          /\ \E m \in Members(leader) \ {leader} : promised[m] > gen
+       \/ CatchAllRename /\ ~LeaderServes /\ CannotServe
+       \/ /\ bgen[leader] < gen \/ stillFencing
+          /\ Refused(left, stillFencing)
 
-\* The generation a rename names. Under `RenamePastBallot` a refusal for a
-\* ballot the leader's copy holds for another node carries that ballot, and
+AboveRefusal == AboveReported /\ promised[leader] > gen /\ bgen[leader] < gen
+
+RenameDue ==
+    /\ Renames
+    \* A stopped broker reports nothing.
+    /\ leader \notin halted
+    /\ OtherRefusal \/ AboveRefusal
+
+\* The generation a rename names. Under `RenamePastBallot` the
+\* `AboveReported` refusal, when the ballot is another node's, carries it, and
 \* placement names the generation above it (`RefusedGeneration::above` in
-\* driver/shards.rs, #1951); otherwise the next one. The code takes the floor
-\* only inside the adoption window; the model always does.
+\* driver/shards.rs, #1951; placement's side is proposed there). A refused
+\* open or fence is reported first and carries none (`Shards::refusal`), so
+\* it renames to the next generation. The code takes the floor only inside
+\* the adoption window; the model always does.
 RenameGen ==
-    IF RenamePastBallot /\ promised[leader] > gen /\ ballot[leader] \notin {{}, {leader}}
+    IF /\ RenamePastBallot /\ AboveRefusal /\ ~OtherRefusal
+       /\ ballot[leader] \notin {{}, {leader}}
     THEN promised[leader] + 1
     ELSE gen + 1
 
