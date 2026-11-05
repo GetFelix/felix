@@ -520,18 +520,19 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         // it before then would wake the driver in a loop.
         let idle = || {
             self.states
-                .values()
-                .filter(|state| state.running.is_none() && state.queued.is_none())
+                .iter()
+                .filter(|(_, state)| state.running.is_none() && state.queued.is_none())
         };
-        if idle().any(|state| state.last.as_ref().is_some_and(|last| last.drain_pending)) {
+        if idle().any(|(_, state)| state.last.as_ref().is_some_and(|last| last.drain_pending)) {
             Some(DRAIN_RETRY)
-        } else if idle().any(|state| state.fence_pending) {
+        } else if idle().any(|(_, state)| state.fence_pending) {
             // The soonest a fence is due. A shard with none set has its
             // fence still to start, so it goes at the usual spacing.
             let now = tokio::time::Instant::now();
+            let table = self.cx.router.snapshot();
             idle()
-                .filter(|state| state.fence_pending)
-                .map(|state| {
+                .filter(|(key, state)| state.fence_pending && self.fences_at_route(key, &table))
+                .map(|(_, state)| {
                     state
                         .fence_after
                         .map_or(FENCE_RETRY, |after| after.saturating_duration_since(now))
@@ -542,14 +543,27 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         }
     }
 
+    /// Whether [`Self::want`] would fence `key` now: this broker leads its
+    /// route and the gate awaits the route's generation. A pending fence
+    /// that fails this has nothing to retry until the route or the gate
+    /// moves, and counting it would make [`Self::retry_in`] answer zero
+    /// forever once its backoff has passed.
+    fn fences_at_route(&self, key: &ShardKey, table: &felix_router::RoutingTable) -> bool {
+        table.get(key).is_some_and(|route| {
+            self.leads(key, route)
+                && self.cx.gate.awaiting(&watch_key(key)) == Some(route.generation)
+        })
+    }
+
     /// Another pass for every shard [`Self::retry_in`] was waiting on.
     pub(super) fn retry(&mut self) {
+        let table = self.cx.router.snapshot();
         let waiting: Vec<ShardKey> = self
             .states
             .iter()
-            .filter(|(_, state)| {
+            .filter(|(key, state)| {
                 state.running.is_none()
-                    && (state.fence_pending
+                    && ((state.fence_pending && self.fences_at_route(key, &table))
                         || state.last.as_ref().is_some_and(|last| last.drain_pending))
             })
             .map(|(key, _)| key.clone())
