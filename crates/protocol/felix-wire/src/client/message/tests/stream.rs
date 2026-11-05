@@ -1,4 +1,4 @@
-use crate::{AckMode, Message};
+use crate::{AckMode, Message, StartPosition};
 
 #[test]
 fn message_event_variants() {
@@ -124,6 +124,7 @@ fn subscribe_queue_capacity_is_absent_unless_asked_for() {
         start: None,
         shard: None,
         queue_capacity: None,
+        end: None,
     };
     let legacy = r#"{"type":"subscribe","tenant_id":"t","namespace":"ns","stream":"s"}"#;
     assert_eq!(serde_json::to_string(&plain).expect("serialize"), legacy);
@@ -140,6 +141,7 @@ fn subscribe_queue_capacity_is_absent_unless_asked_for() {
         start: None,
         shard: None,
         queue_capacity: Some(4096),
+        end: None,
     };
     let json = serde_json::to_string(&sized).expect("serialize");
     assert!(json.ends_with(r#","queue_capacity":4096}"#), "{json}");
@@ -315,4 +317,47 @@ fn publish_width_round_trips_and_omits_modulo() {
     };
     let frame = jump.encode().expect("encode");
     assert_eq!(Message::decode(frame).expect("decode"), jump);
+}
+
+/// A subscribe without `end` is the frame every peer sent before the field
+/// existed. One with it round-trips, and the frame that ends such a
+/// subscription names the subscription and the bound.
+#[test]
+fn subscribe_end_is_absent_unless_asked_for() {
+    let mut subscribe = Message::Subscribe {
+        tenant_id: "t".to_string(),
+        namespace: "ns".to_string(),
+        stream: "s".to_string(),
+        subscription_id: None,
+        start: Some(StartPosition::Offset(2)),
+        shard: None,
+        queue_capacity: None,
+        end: None,
+    };
+    let json = serde_json::to_string(&subscribe).expect("serialize");
+    assert!(!json.contains("end"), "{json}");
+    let legacy = r#"{"type":"subscribe","tenant_id":"t","namespace":"ns","stream":"s","start":{"offset":2}}"#;
+    assert_eq!(
+        serde_json::from_str::<Message>(legacy).expect("decode"),
+        subscribe
+    );
+
+    if let Message::Subscribe { end, .. } = &mut subscribe {
+        *end = Some(9);
+    }
+    let json = serde_json::to_string(&subscribe).expect("serialize");
+    assert!(json.ends_with(r#","end":9}"#), "{json}");
+    let frame = subscribe.encode().expect("encode");
+    assert_eq!(Message::decode(frame).expect("decode"), subscribe);
+
+    let ended = Message::SubscriptionEnded {
+        subscription_id: 7,
+        end: 9,
+    };
+    assert_eq!(
+        serde_json::to_string(&ended).expect("serialize"),
+        r#"{"type":"subscription_ended","subscription_id":7,"end":9}"#
+    );
+    let frame = ended.encode().expect("encode");
+    assert_eq!(Message::decode(frame).expect("decode"), ended);
 }

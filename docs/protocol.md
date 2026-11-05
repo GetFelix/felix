@@ -304,6 +304,21 @@ queue makes every publisher on the shard wait, so it stays an operator setting
 for the stream. A reader that cannot tolerate gaps relies on
 `subscription_lagged` and a resume from the log instead.
 
+`end` (optional, `u64`) bounds the subscription: it delivers `[start, end)` of a
+durable stream shard and then ends with [`subscription_ended`](#subscriptionended-server---client).
+It needs negotiated event offsets and a durable stream, and is refused with
+`invalid_request` otherwise. An `end` at or below the log tail is read from
+history alone and never joins fanout; one above it replays up to the tail, then
+follows live delivery and cuts the batch that crosses `end`. A bounded
+subscription also ends at its first queue drop with `subscription_lagged`,
+whether or not the client offered `FEATURE_SUBSCRIPTION_LAGGED`, because a hole
+below `end` would break what it asked for. A client sends `end` only to a broker
+that advertised `FEATURE_SUBSCRIBE_END`: an older broker ignores the field and
+would run on into live delivery. `end` should be one past the offset of a record
+(for example a `live_offset` or a page's `next_offset`); an `end` that falls on
+offsets holding no event, such as a trailing generation-start record, is not
+reached until a later record is published.
+
 ### Subscribed (server -> client)
 ```
 { "type": "subscribed", "subscription_id": <number>,
@@ -406,6 +421,17 @@ The code and retry class are left out for a client that did not offer
 `FEATURE_ERROR_CODES`. No feature bit gates the frame itself: a client that
 does not expect it on an event stream reads it as an unexpected frame, which
 still ends the subscription with an error rather than as a clean close.
+
+### SubscriptionEnded (server -> client)
+```
+{ "type": "subscription_ended", "subscription_id": <u64>, "end": <u64> }
+```
+
+The last frame on the event stream of a subscription that reached the `end` it
+asked for. The broker finishes the stream after it. Every record below `end` was
+delivered, or holds no event (a skip the event batches already report). It is
+sent only in answer to a `subscribe` that carried `end`, so no other client
+sees it. A stream that closes without it did not reach `end`.
 
 ### SubscriptionLagged (server -> client)
 ```
@@ -1395,8 +1421,9 @@ field of `detail` is optional. See [Error codes](#error-codes).
   can be replayed from any retained offset. History read from disk joins live
   delivery with no gap and no duplicate; see
   [durable storage](durable-storage.md#resuming-a-subscription).
-- A subscription has no end: replay runs on into live delivery. To read a
-  bounded range and stop, use [`stream_read`](#streamread).
+- A subscription has no end unless `subscribe` carries `end`: otherwise replay
+  runs on into live delivery. To read a bounded range and stop, give it an
+  `end`, or page it with [`stream_read`](#streamread).
 - Publish returns `ok` when accepted by the broker unless `ack` is `none`.
 - PublishBatch returns `ok` once for the batch unless `ack` is `none`.
 - A stream may carry several acked publishes before any is answered. Answers
@@ -2021,6 +2048,7 @@ Bits in the extended word (see [Extended feature word](#extended-feature-word)):
 | `0x8` | `FEATURE_EXPLICIT_SHARD` | The broker honours `shard` on `publish`, `publish_batch`, `publish_idempotent`, `publish_if`, `commit` and `state_get`. See [Named shards](#named-shards) |
 | `0x10` | `FEATURE_HEAD_TRIM` | From a broker: it answers `trim_before`, though it refuses every trim with `feature_not_enabled` until its fleet finalizes `head_trim`. From a client: it reads `trim_headers` on `subscribe_cursor_error`. See [TrimBefore](#trimbefore) |
 | `0x20` | `FEATURE_LEASE_TOKEN` | The broker mints a lease token on a `cache_put_if` with `lease_token: true`. Advertised only by a broker configured with a lease key (`FELIX_LEASE_TOKEN_KEY_FILE`). See [CachePutIf](#cacheputif) |
+| `0x40` | `FEATURE_SUBSCRIBE_END` | The broker honours `end` on `subscribe` and finishes such a subscription with `subscription_ended`. See [Subscribe](#subscribe) |
 
 Features are advertised in **both** directions. A client offers its own in the
 `auth` it already sends:
@@ -2109,8 +2137,8 @@ ignores.
 
 `FEATURE_INSPECT` is the first feature in the second word,
 `FEATURE_STREAM_DELETED` the second, `FEATURE_PUBLISH_WIDTH` the third,
-`FEATURE_EXPLICIT_SHARD` the fourth, `FEATURE_HEAD_TRIM` the fifth and
-`FEATURE_LEASE_TOKEN` the sixth. The Rust constants are
+`FEATURE_EXPLICIT_SHARD` the fourth, `FEATURE_HEAD_TRIM` the fifth,
+`FEATURE_LEASE_TOKEN` the sixth and `FEATURE_SUBSCRIBE_END` the seventh. The Rust constants are
 `FEATURE_EXTENDED` and `KNOWN_FEATURES_HI` in `felix-wire`, with
 `offer_features`, `answer_features` and `peer_features_hi` applying the rules
 above.

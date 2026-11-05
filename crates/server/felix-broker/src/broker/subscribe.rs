@@ -193,58 +193,11 @@ impl Broker {
         let stream_state = handle.state;
         let durable = stream_state.durable.clone();
 
-        let tail = match &durable {
-            Some(log) => log.tail_offset().await?,
-            None => stream_state.tail_seq(),
-        };
-        // Only a log has offsets to bound; an in-memory stream's ring is its
-        // whole story.
-        let bound = match &durable {
-            Some(_) => stream_state.read_bound(),
-            None => ReadBound::Unbounded,
-        };
-        if bound == ReadBound::Refused {
-            return Err(not_readable(stream, shard, NotReadable::Refused));
-        }
-        // Resolve the requested position to an offset before touching the ring.
-        // `Latest` is the tail read above rather than a second read, so it
-        // joins exactly where the reported live edge is.
-        let requested = match start {
-            StartPosition::Latest => committed_tail(bound, tail, stream, shard)?,
-            StartPosition::Earliest => match &durable {
-                // The oldest offset a reader is served, which retention and
-                // head trims raise. Never 0 for a trimmed stream.
-                Some(log) => log.readable_base(),
-                None => stream_state.oldest_seq(),
-            },
-            StartPosition::Offset(offset) => offset,
-        };
-
-        // Resuming past the tail would register for live delivery and then hand
-        // over records *below* the requested offset -- the opposite of what was
-        // asked for. Rejected rather than silently reinterpreted; a client that
-        // wants to wait for an offset that does not exist yet should ask for
-        // `Latest` and track its own position.
-        if requested > tail {
-            return Err(BrokerError::CursorInFuture { requested, tail });
-        }
-
-        // `latest` is reported before the generation-start records the log
-        // ends with. They are never delivered, so a client reading history up
-        // to the raw tail would wait for one, and the first event's
-        // `skipped_before` would reach below the reported start. Registration
-        // still uses `requested`: nothing in between is ever delivered.
-        let joined = match (&durable, start) {
-            (Some(log), StartPosition::Latest) => log.event_end(0, requested).await?,
-            _ => requested,
-        };
-        // Where a reader of the history has everything that was in the stream.
-        // Reported past a trailing generation-start record, a reader that
-        // caught up would wait at it for an event that never comes.
-        let live = match &durable {
-            Some(log) => log.event_end(joined, tail).await?,
-            None => tail,
-        };
+        let Position {
+            requested,
+            joined,
+            live,
+        } = resolve_position(&stream_state, stream, shard, start).await?;
 
         let (backlog, backlog_start, subscriber_id, receiver) =
             stream_state.register_clamped(requested, queue_capacity);
@@ -298,6 +251,41 @@ impl Broker {
                 skip_below: Some(requested),
             },
         })
+    }
+
+    /// A bounded read of `[start, end)` that needs no subscriber: when `end`
+    /// is at or below where a reader of the history has everything, returns
+    /// where the range begins so the caller pages it with
+    /// [`Broker::read_committed`]. `None` when `end` lies past that, and the
+    /// range needs [`Broker::subscribe_from`] to reach live delivery.
+    ///
+    /// A range below the tail cannot grow, so reading it needs no
+    /// registration to pin the live edge.
+    pub async fn history_to(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        start: StartPosition,
+        end: u64,
+    ) -> Result<Option<JoinOffsets>> {
+        let handle = self
+            .resolve_stream_handle(tenant_id, namespace, stream, shard)
+            .await?;
+        let Some(log) = handle.state.durable.clone() else {
+            return Err(BrokerError::StreamNotDurable {
+                tenant_id: tenant_id.to_string(),
+                namespace: namespace.to_string(),
+                stream: stream.to_string(),
+            });
+        };
+        let position = resolve_position(&handle.state, stream, shard, start).await?;
+        refuse_below_floor(&log, position.requested)?;
+        Ok((end <= position.live).then_some(JoinOffsets {
+            start_offset: position.joined,
+            live_offset: position.live,
+        }))
     }
 
     /// Read persisted records for a durable stream, starting at `from_offset`.
@@ -461,6 +449,87 @@ impl Broker {
             .await?;
         Ok(handle.state.subscriber_count())
     }
+}
+
+/// Where a start position lands in a shard, resolved against its tail.
+struct Position {
+    /// The first offset to deliver.
+    requested: u64,
+    /// The start reported to the subscriber, past generation-start records the
+    /// log ends with when it asked for `latest`.
+    joined: u64,
+    /// Where a reader of the history has everything that was in the stream.
+    live: u64,
+}
+
+/// Resolve `start` for a subscription to the shard behind `stream_state`.
+///
+/// Fails with [`BrokerError::CursorInFuture`] for an offset past the tail and
+/// refuses a shard that is not readable here.
+async fn resolve_position(
+    stream_state: &Arc<crate::stream::StreamState>,
+    stream: &str,
+    shard: u32,
+    start: StartPosition,
+) -> Result<Position> {
+    let durable = stream_state.durable.clone();
+    let tail = match &durable {
+        Some(log) => log.tail_offset().await?,
+        None => stream_state.tail_seq(),
+    };
+    // Only a log has offsets to bound; an in-memory stream's ring is its
+    // whole story.
+    let bound = match &durable {
+        Some(_) => stream_state.read_bound(),
+        None => ReadBound::Unbounded,
+    };
+    if bound == ReadBound::Refused {
+        return Err(not_readable(stream, shard, NotReadable::Refused));
+    }
+    // Resolve the requested position to an offset before touching the ring.
+    // `Latest` is the tail read above rather than a second read, so it
+    // joins exactly where the reported live edge is.
+    let requested = match start {
+        StartPosition::Latest => committed_tail(bound, tail, stream, shard)?,
+        StartPosition::Earliest => match &durable {
+            // The oldest offset a reader is served, which retention and
+            // head trims raise. Never 0 for a trimmed stream.
+            Some(log) => log.readable_base(),
+            None => stream_state.oldest_seq(),
+        },
+        StartPosition::Offset(offset) => offset,
+    };
+
+    // Resuming past the tail would register for live delivery and then hand
+    // over records *below* the requested offset -- the opposite of what was
+    // asked for. Rejected rather than silently reinterpreted; a client that
+    // wants to wait for an offset that does not exist yet should ask for
+    // `Latest` and track its own position.
+    if requested > tail {
+        return Err(BrokerError::CursorInFuture { requested, tail });
+    }
+
+    // `latest` is reported before the generation-start records the log
+    // ends with. They are never delivered, so a client reading history up
+    // to the raw tail would wait for one, and the first event's
+    // `skipped_before` would reach below the reported start. Registration
+    // still uses `requested`: nothing in between is ever delivered.
+    let joined = match (&durable, start) {
+        (Some(log), StartPosition::Latest) => log.event_end(0, requested).await?,
+        _ => requested,
+    };
+    // Where a reader of the history has everything that was in the stream.
+    // Reported past a trailing generation-start record, a reader that
+    // caught up would wait at it for an event that never comes.
+    let live = match &durable {
+        Some(log) => log.event_end(joined, tail).await?,
+        None => tail,
+    };
+    Ok(Position {
+        requested,
+        joined,
+        live,
+    })
 }
 
 /// The durable `tail` as a reader may see it.

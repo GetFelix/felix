@@ -165,6 +165,36 @@ retention kept, or past the tail, fails with `SubscribeCursorError`.
 `Client::read` does the same against whichever broker leads the shard,
 and `client.supports_read()` says whether the broker answers it.
 
+### Subscribing to a range
+
+To export a large range, subscribe with an end offset instead. The records
+arrive on the binary event path, and the subscription finishes on its own once
+it reaches `end` (the offset after the last record you want):
+
+```rust
+let mut range = client
+    .subscribe_range("acme", "prod", "matches", 0, StartPosition::Offset(start), end)
+    .await?;
+while let Some(event) = range.next_event().await? {
+    if let Some(offset) = event.offset {
+        apply(offset, &event.payload);
+    }
+}
+if !range.reached_end() {
+    // The stream closed without reaching `end`. Start a new range after the
+    // last offset applied.
+}
+```
+
+A range below the committed tail is read from disk and never joins fanout.
+Falling behind ends the range with a `SubscriptionLagged` error, which says
+where to resume, and a shard that moves mid-range surfaces as an error from
+`next_event` too, so resume after the last offset applied. `subscribe_range` fails without sending anything when the broker does not
+advertise `FEATURE_SUBSCRIBE_END`, rather than letting an older broker run on
+into live delivery. `Client::subscribe_range` finds the broker that leads the
+shard but does not follow a move, since a followed subscription would resume
+without its bound.
+
 ### Offsets are how you notice a drop
 
 Subscriber queues shed under the default policy rather than blocking the

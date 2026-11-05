@@ -85,6 +85,26 @@ impl DeliveryEnvelope {
         )
     }
 
+    /// The first `count` records, keeping their offsets, publisher, time and
+    /// headers, and the skip before the first.
+    pub(crate) fn take_records(&self, count: usize) -> Self {
+        let record_headers = self
+            .inner
+            .record_headers
+            .as_deref()
+            .map(|headers| &headers[..count])
+            .filter(|headers| headers.iter().any(Option::is_some))
+            .map(Arc::from);
+        Self::published(
+            &self.inner.payloads[..count],
+            self.inner.base_offset,
+            self.inner.skipped_before,
+            self.inner.publisher.clone(),
+            self.inner.timestamp_micros,
+            record_headers,
+        )
+    }
+
     /// The batch's records, in publish order.
     pub fn payloads(&self) -> &[Bytes] {
         &self.inner.payloads

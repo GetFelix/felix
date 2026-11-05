@@ -487,8 +487,10 @@ close to the right record rather than exactly it. See
 
 #### Reading a range without subscribing
 
-A subscription has no end: replay runs on into live delivery. To read a slice
-of a durable stream and stop, send `stream_read`:
+A subscription has no end unless `subscribe` carries an `end` offset (see
+[Subscribe](https://github.com/GetFelix/felix/blob/main/docs/protocol.md#subscribe)):
+otherwise replay runs on into live delivery. To read a slice of a durable
+stream and stop without subscribing, send `stream_read`:
 
 ```json
 { "type": "stream_read", "tenant_id": "acme", "namespace": "prod",

@@ -202,6 +202,7 @@ impl Session {
                 start,
                 shard: None,
                 queue_capacity: None,
+                end: None,
             },
         )
         .await?;
