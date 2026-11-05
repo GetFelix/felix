@@ -439,6 +439,12 @@ leader of three would need only itself and open with neither follower fenced
 (#1845). The same list sizes the acknowledgement count, the read round, and
 the set the fence carries.
 
+The catalog read runs in the background, and routes never wait for it. A
+broker publishes its routes as soon as it has reconciled its shards, with
+the newest catalog it has. A control plane that takes the request and never
+answers would otherwise hold every route behind a 5 s timeout, longer than
+a candidate waits to open (3 s), and no election would settle.
+
 **An answer counts only from the copy the failover's report named.** A
 follower that crashed under `FsyncMode::Periodic` or `None` comes back under a
 new storage identity without the tail it had not synced, and it may already
@@ -1309,7 +1315,11 @@ elected leader waits for the lease until the control plane is back (issue
 
 1. *Detecting.* A follower uses the detector it already runs: a leader that
    has not answered a ping for `FELIX_LEADER_SUSPECT_AFTER_MS` (S, 5 s by
-   default) is gone as far as that follower is concerned.
+   default) is gone as far as that follower is concerned. A durable broker
+   answers pings only once it serves clients. One that restarted and is
+   waiting for the control plane to seed it refuses them, and a refusal counts as no
+   answer, so its followers elect around it instead of waiting for the
+   control plane to come back.
 
    A follower also suspects one shard, though its leader's broker answers
    pings, when the shard is stuck there: the follower took a generation at
@@ -3139,7 +3149,10 @@ every acknowledged record but not the old leader's unacknowledged tail, and
 with the floor it would not have been named until it had copied that tail.
 A follower on a draining broker that holds the log can still be promoted when
 no live follower does, so a drain under way does not turn this cost into an
-outage (`seating_a_replacement_keeps_what_the_old_set_acknowledged`).
+outage (`seating_a_replacement_keeps_what_the_old_set_acknowledged`). A broker
+that has deregistered is not one of these. Placement keeps its shards in place
+until its lease runs out, but the process has stopped, so it is never promoted
+(`a_follower_that_left_is_not_promoted`).
 `FelixShardReportFromAnswers.cfg` counts followers by their answers without
 the floor and loses the record, and `FelixShardReportFloor.cfg` passes
 (`a_new_leader_names_no_follower_before_it_answers`,

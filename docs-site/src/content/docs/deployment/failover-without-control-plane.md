@@ -173,9 +173,10 @@ Metrics:
 
 **A broker that restarts while the control plane is down cannot vote.** It
 waits for the control plane before it opens its data, so it neither votes nor
-stands. A shard with three copies elects only while two of them have kept
-running since the outage began. Letting a restarted broker rejoin is issue
-#1196.
+stands. It does not answer pings either, so if it led a shard, its followers
+treat it as down and elect one of themselves. A shard with three copies elects
+only while two of them have kept running since the outage began. Letting a
+restarted broker rejoin is issue #1196.
 
 **16 generations per outage.** The control plane adopts an election only up to
 16 generations past the last one it wrote for the shard. Each election uses a
