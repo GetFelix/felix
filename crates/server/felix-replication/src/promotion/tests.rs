@@ -701,17 +701,14 @@ async fn a_replica_without_the_capability_keeps_the_lease() {
     assert!(replicas.sent(Kind::Fence).is_empty());
 }
 
-/// **A replica that cannot be reached is not one that lacks the fence.** Its
-/// capabilities are unknown, as after this broker restarted, but the fence
-/// goes on with the majority that can answer and takes broker-b's longer
-/// tail. On the lease the shard would open without it (#1943).
+/// **A stream shard still opens on the lease for a replica it cannot
+/// reach.** Its acknowledgements waited for the report the control plane
+/// chose this broker from, so it holds them without a catch-up, and waiting
+/// for a majority would only cost the failover. A cache shard does not (#1943,
+/// `an_unreachable_replica_does_not_skip_the_catch_up`).
 #[tokio::test]
-async fn an_unreachable_replica_does_not_keep_the_lease() {
+async fn an_unreachable_replica_keeps_a_stream_shard_on_the_lease() {
     let mut replicas = Replicas::new();
-    replicas
-        .get("broker-b")
-        .holds("broker-b", 4, 0, &["a", "b"])
-        .await;
     let c = replicas.get_mut("broker-c");
     c.reachable = false;
     c.recorded = false;
@@ -721,27 +718,10 @@ async fn an_unreachable_replica_does_not_keep_the_lease() {
 
     assert_eq!(
         outcome,
-        Outcome::Fenced {
-            caught_up_from: Some("broker-b".to_string())
+        Outcome::Lease {
+            lacking: "broker-c".to_string()
         }
     );
-}
-
-/// With the lease in force and no majority reachable, the shard waits rather
-/// than open on the lease: nothing says it holds what was acknowledged.
-#[tokio::test]
-async fn with_the_lease_fallback_no_reachable_majority_waits() {
-    let mut replicas = Replicas::new();
-    for id in ["broker-b", "broker-c"] {
-        let replica = replicas.get_mut(id);
-        replica.reachable = false;
-        replica.recorded = false;
-    }
-    let (leader, _dir) = leader_holding(4, &["a"]).await;
-
-    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route(), true, None).await;
-
-    assert!(matches!(outcome, Outcome::Pending { .. }), "{outcome:?}");
 }
 
 /// **A tail a replica holds past the leader's own is taken before serving.**

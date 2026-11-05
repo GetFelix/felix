@@ -133,6 +133,33 @@ async fn an_unreachable_replica_does_not_skip_the_catch_up() {
     assert_eq!(read(&leader, "k").await.as_deref(), Some("v2"));
 }
 
+/// With the lease in force and no replica reachable, a cache shard waits
+/// rather than open on the lease: nothing says it holds what was
+/// acknowledged.
+#[tokio::test]
+async fn a_cache_shard_with_no_reachable_majority_waits() {
+    let mut replicas = cache_replicas();
+    for id in ["broker-b", "broker-c"] {
+        let replica = replicas.get_mut(id);
+        replica.reachable = false;
+        replica.recorded = false;
+    }
+    let (leader, _dir) = cache_leader().await;
+
+    let outcome = fence_shard(
+        &replicas,
+        &leader,
+        LEADER,
+        &key_of(ShardKind::Cache),
+        &route_of(ShardKind::Cache),
+        true,
+        None,
+    )
+    .await;
+
+    assert!(matches!(outcome, Outcome::Pending { .. }), "{outcome:?}");
+}
+
 /// **A cache log the leader takes over its own leaves no trace of the
 /// superseded puts in its index.** The leader read `k` from a put that broker-b's newer
 /// log replaced with another key's; served from the old index, `k` would
