@@ -151,8 +151,8 @@ impl MarkFile {
         })
     }
 
-    /// Record that `mark` has been synced. Called only after the sync returned.
-    /// A mark behind the one already recorded is ignored.
+    /// [`MarkFile::record_since`] as of now.
+    #[cfg(test)]
     pub(super) fn record(&self, mark: DurableMark) -> std::io::Result<()> {
         self.record_since(mark, self.rewinds())
     }
@@ -163,8 +163,9 @@ impl MarkFile {
         self.state.lock().rewinds
     }
 
-    /// [`MarkFile::record`], unless the mark was moved back since `rewinds`
-    /// was read. A flush whose caller stopped waiting finishes on the flush
+    /// Record that `mark` has been synced, unless the mark was moved back
+    /// since `rewinds` was read. Called only after the sync returned. A mark
+    /// behind the one already recorded is ignored. A flush whose caller stopped waiting finishes on the flush
     /// thread after its lock is gone, so a truncation can land before it
     /// writes: its mark would then point past the cut.
     pub(super) fn record_since(&self, mark: DurableMark, rewinds: u64) -> std::io::Result<()> {
@@ -181,7 +182,7 @@ impl MarkFile {
         Ok(())
     }
 
-    /// The thread that wrote the last mark [`MarkFile::record`] recorded.
+    /// The thread that wrote the last mark [`MarkFile::record_since`] recorded.
     #[cfg(test)]
     pub(super) fn writer(&self) -> Option<String> {
         self.state.lock().writer.clone()
