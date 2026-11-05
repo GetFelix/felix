@@ -1324,6 +1324,76 @@ elected leader waits for the lease until the control plane is back (issue
    waiting for the control plane to seed it refuses them, and a refusal counts as no
    answer, so its followers elect around it instead of waiting for the
    control plane to come back.
+
+   A follower also suspects one shard, though its leader's broker answers
+   pings, when the shard is stuck there: the follower took a generation at
+   or above its route's, that generation has not started on its copy (no
+   start record), and for `FELIX_SHARD_SUSPECT_AFTER_MS` (120 s by default,
+   0 turns it off) it has neither stored a batch nor taken a fence from the
+   route's leader. A leader the control plane named that fences forever,
+   refused by copies that promised a newer generation to a candidate that
+   then withdrew, is the case this covers: with every broker alive, the
+   broker detector never fires, and with the control plane down nobody
+   else renames the shard.
+
+   It does not fire in steady state. An idle shard ships nothing, but its
+   generation started on every copy that took it, so silence alone is not
+   a suspicion. The exception is deliberate: a copy left holding a newer
+   ballot by a withdrawn candidate refuses its leader's batches for good,
+   and after the bound it stands. On an idle shard the other follower may
+   grant, which costs the working leader one generation and brings the
+   copy back. Each standing it gives up restarts its clock, so the worst
+   case is the bound plus about a minute per generation spent. A busy shard is heard on every batch. A copy behind its
+   route, which the leader has not fenced yet (a restarted broker waiting
+   its turn), is not stuck either; the copies the leader did fence decide.
+   Suspecting a shard only lets the follower try: it still needs a majority
+   of pre-votes, and a leader that is open and serving refuses, as do
+   voters that heard it within S.
+
+   The leader side has one case of its own. The control plane can name
+   another broker leader at the very generation an election just opened at,
+   then stop. That broker's route names it leader, so it refuses the elected
+   leader's batches, and its copy may hold its own ballot there. The elected
+   leader keeps serving one copy short, and no follower suspects anything:
+   the other broker leads its own route. So when the elected leader has seen
+   that collision for `FELIX_SHARD_SUSPECT_AFTER_MS`, and a copy of its set
+   refused to follow it within that time while the rest answered, it takes a
+   ballot one generation up and fences its kept set again, once per
+   generation. There is no pre-vote: its voters hear it, and nobody is
+   deposed. A copy that hears this leader takes its fence even though it is
+   marked as a candidate's. The rule is general: a copy never refuses a
+   candidate's fence for still hearing a leader when that candidate holds
+   the copy's newest ballot, since following it deposes nobody. The ballot and kept-set rules are a
+   standing's. The refused copy takes the newer fence and follows. With the
+   control plane up, the refused broker's report renames the shard first,
+   which ends the collision and the clock. A re-fence that does not open is given up only after
+   `FELIX_ELECTION_DEFER_FOR_MS`, not the 3 s a standing gets: its ballot
+   is past the generation the leader was serving, so giving it up leaves
+   the shard leaderless until a follower's shard bound passes and it stands.
+
+   A leader can also be stuck on its own ballot. The control plane named it
+   at one generation, it was then elected one higher and opened, and it
+   restarted with the control plane down. A restart forgets the election, so
+   its route names it at the old generation, and its open there is refused
+   for its own newer ballot. Its followers took its fence and start record,
+   so none of them is stuck, and its broker answers pings. So a broker whose
+   route names it leader, whose copy holds its own ballot above the route's
+   generation, and which has no election recorded at that ballot, counts
+   the shard stuck too, unless no standing in this process wrote that ballot
+   and it was first seen less than 30 s ago: then the control plane may have
+   named it there and the routes not caught up yet, as for any standing.
+   After the same bound it stands like any follower:
+   pre-vote, ballot one generation up, the kept set's fence. Its followers
+   grant once they have not heard a leader within S.
+
+   The clock restarts whenever the route's generation or leader, or the
+   copy's ballot, changes. With the control plane up, it renames a stuck
+   leader first (a refused report at once, or its stuck-leader backstop after
+   70 s by default), and the follower
+   never gets to stand: the two do not both spend a generation. Keep the
+   shard bound above the backstop's. A round that fails on the shard's
+   suspicion alone waits at least 5 s before the next, since a voter that
+   still hears the leader refuses every round.
 2. *Pre-vote.* Before it persists anything, a follower that suspects the
    leader asks its set whether it would get the next generation. A replica
    says yes only if it has not heard its own leader within S, it does not
@@ -4832,9 +4902,15 @@ leader stamps its batches with the kept set's generation, below its own,
 which a replica keeping that set takes (`SetCurrent`). Both records are
 dropped once the control plane names that generation or a newer one, and
 when the stream is deleted or recreated. A standing that has not opened
-within 3 s is withdrawn, unless its fence or catch-up is still running, as is
+within 3 s of its route being published is withdrawn, unless its fence or
+catch-up is still running, as is
 one whose generation the broker has since promised to someone else; a failed
-round backs off for 200 to 800 ms, the top doubling to 3 s.
+round backs off for 200 to 800 ms, the top doubling to 3 s. The 3 s counts
+from publication because the driver fences only published routes, and a
+routing feed waiting on a control plane that accepts connections but never
+answers can hold the route back for seconds; counted from the ballot, every
+standing was withdrawn before its fence began. A route still unpublished
+after `FELIX_ELECTION_DEFER_FOR_MS` is given up anyway.
 
 Five rules keep an election from getting stuck:
 
