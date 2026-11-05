@@ -15,7 +15,6 @@ jobs:
         mode: [plain, cov]
     env:
       CARGO_TERM_COLOR: never
-      FELIX_TEST_CLUSTER_LOG_DIR: ${{ runner.temp }}/cluster-logs
       TEST: replica_election::the_control_plane_returning_mid_election_leaves_one_leader
     steps:
       - uses: actions/checkout@v7
@@ -37,6 +36,7 @@ jobs:
         shell: bash
         run: |
           set -uo pipefail
+          export FELIX_TEST_CLUSTER_LOG_DIR="$RUNNER_TEMP/cluster-logs"
           if [ "${{ matrix.mode }}" = cov ]; then
             source <(cargo llvm-cov show-env --export-prefix)
             export FELIX_TEST_TIMEOUT_SCALE=5
