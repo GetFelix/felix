@@ -3712,17 +3712,20 @@ append stream and the rest never shipped: their writes were never acknowledged
   picked up by the same scan, so a busy shard does not touch the shared wake-up
   on every append. Each word of the set sits on its own cache line, so
   publishers to different shards rarely contend. A scan woken by an append passes
-  the shards whose bit is set, the shards whose mark is below their tail while a
-  follower is answering, and the shards with a drain or route change in progress.
-  Every other shard is skipped, even one with a follower behind, halted or not
-  answering, and waits for the next tick. A shard whose pass ended with more to
-  ship queues itself, and a busy follower's answer that moves its cursor asks
-  for its shard's pass. A follower cannot catch up while it is down, so asking
-  its shards on every append filled the slots with passes that could do
-  nothing, while writes on other shards waited them out (#1944). The cost is a
-  wait of at most one tick for a rebuild of a halted follower, or for a
-  follower that has come back, on a shard nobody is writing to. A consumer-group acknowledgement that moves
-  the cursor, and a record being dead-lettered, mark their shard the same way.
+  the shards whose bit is set, the shards with a drain or route change in
+  progress, and the shards owed a pass. A shard is owed one when its mark is
+  below its tail, or no follower that could still catch up holds its whole
+  log, and some follower is in reach: not halted, and its last batch got an
+  answer from it. A refusal it can retry counts, such as a routing view behind
+  this generation, because the next pass is what brings that follower level.
+  Every other shard is skipped, including one whose only lagging followers are
+  out of reach. A follower cannot catch up while it is down, so asking its
+  shards on every append filled the slots with passes that could do nothing,
+  while writes on other shards waited them out (#1944). A shard whose pass
+  ended with more to ship queues itself, and a busy follower's answer that
+  moves its cursor asks for its shard's pass. A consumer-group acknowledgement
+  that moves the cursor, and a record being dead-lettered, mark their shard the
+  same way.
   Two shards that hash to the same bit both get a pass, which costs a pass and
   nothing else.
 - **The tick and a route change pass every shard.** That refreshes each
@@ -3757,8 +3760,13 @@ flowchart LR
 ```
 
 None of this changes what a pass does or what an acknowledgement rests on: it
-only decides which shard's pass runs next. A shard skipped on an append wake
-gets its pass at the next tick.
+only decides which shard's pass runs next. A skipped shard waits for the next
+tick, which puts it in the refresh queue unless it is owed a pass. While
+urgent shards wait, that queue gets one start in five, so on a broker leading
+many busy shards a skipped shard can wait several seconds. That is why a shard owed a pass must
+never be skipped: a write waiting on its mark would time out first. What a
+skipped shard waits for is a rebuild of a halted follower, or a follower that
+has come back on a shard nobody is writing to.
 
 **A `Quorum` cache's counters ride the same exchanges.** A counter add is
 acknowledged at the counter log's own mark, under the same majority rule, and

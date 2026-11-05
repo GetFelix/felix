@@ -1039,13 +1039,14 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             .cx
             .marks
             .offset_at(&watch_key(&key), incarnation, generation);
-        // Only while some follower is answering: with every one of them down
-        // or refusing, a pass on each append could not raise the mark, and the
-        // tick retries them (#1944).
+        // Only while some follower is answering: with every one of them out
+        // of reach, a pass on each append could not raise the mark, and the
+        // tick retries them (#1944). One that refused a batch is in reach: a
+        // follower behind on routing needs the candidate fence a pass sends.
         let reachable = cursors
             .followers
             .iter()
-            .any(|cursor| cursor.halted.is_none() && !cursor.stalled);
+            .any(|cursor| cursor.halted.is_none() && (!cursor.stalled || cursor.refused));
         let owed =
             reachable && (behind || tail.is_some_and(|tail| mark.is_some_and(|mark| mark < tail)));
         self.cx

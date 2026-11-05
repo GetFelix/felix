@@ -28,6 +28,8 @@ struct Follower {
     stored: Mutex<Vec<(u32, u64)>>,
     /// Followers that are gone: every request to them fails.
     gone: &'static [&'static str],
+    /// Followers that are up but refuse every batch as `StaleRoute`.
+    refusing: Mutex<Vec<&'static str>>,
 }
 
 impl Follower {
@@ -57,6 +59,16 @@ impl PeerRequester for Follower {
             panic!("the driver sent something other than a replication batch");
         };
         tokio::time::sleep(STORE).await;
+        if self.refusing.lock().expect("lock").contains(&node_id) {
+            return Ok(InternalMessage::ReplicateError(
+                felix_wire::internal::ReplicateError {
+                    correlation_id: 0,
+                    code: felix_wire::internal::ErrorCode::StaleRoute,
+                    expected_offset: 0,
+                    detail: "behind".to_string(),
+                },
+            ));
+        }
         let durable_offset = batch.first_offset + batch.payloads.len() as u64;
         self.stored
             .lock()
@@ -340,4 +352,81 @@ async fn append_passes_only_its_shard(gone: &'static [&'static str]) {
             "the appended record was not shipped to the follower still up"
         );
     }
+}
+
+/// **A shard whose only live follower refused a batch still gets a pass on
+/// the next append, and its mark reaches the tail.** A refusal such as
+/// `StaleRoute` comes from a follower that is up; the next pass is what
+/// brings it level (an elected leader sends it the candidate fence again).
+/// Counted as out of reach like a dead one, the shard waited for a tick in
+/// the refresh queue, behind every written shard, while its write waited on
+/// the mark.
+#[tokio::test(start_paused = true)]
+async fn a_shard_whose_follower_refused_gets_a_pass_on_the_next_append() {
+    let (broker, _dir) = leader_with_shards(2, 1).await;
+    let router = Arc::new(ShardRouter::new(
+        LOCAL,
+        "us-west-2",
+        felix_router::RegionRouter::new("us-west-2".to_string()),
+    ));
+    lead(&router, 2);
+    let marks = QuorumMarks::new();
+    let status = ShardStatusBoard::new();
+    let peers = Follower {
+        gone: &["broker-b"],
+        ..Follower::default()
+    };
+    let rebuilds = Rebuilds::new(RebuildPolicy::default());
+    let throttle = MoveThrottle::unlimited();
+    let mut shards = Shards::new(Context {
+        requester: &peers,
+        broker: &broker,
+        router: &router,
+        fence: &Unfenced,
+        gate: &crate::promotion::NoGate,
+        marks: &marks,
+        status: &status,
+        reporter: None,
+        rebuilds: &rebuilds,
+        throttle: &throttle,
+        refresh: Duration::from_secs(300),
+    });
+    let settle =
+        |shards: &mut Shards<'_, Follower>| shards.passes.is_empty() && shards.exchanges.is_empty();
+    for _ in 0..2 {
+        shards.scan(WakeKind::Tick);
+        while !settle(&mut shards) {
+            step(&mut shards).await;
+        }
+    }
+    let watched = watch_key(&shard_key(0));
+    let before = marks.offset(&watched, 1);
+
+    peers.refusing.lock().expect("lock").push("broker-c");
+    append(&broker, 0).await;
+    shards.scan(WakeKind::Append);
+    while !settle(&mut shards) {
+        step(&mut shards).await;
+    }
+    assert_eq!(
+        marks.offset(&watched, 1),
+        before,
+        "a refused batch moved the mark"
+    );
+
+    peers.refusing.lock().expect("lock").clear();
+    append(&broker, 1).await;
+    shards.scan(WakeKind::Append);
+    assert_eq!(
+        shards.passes.len(),
+        2,
+        "the shard with a write waiting on its mark got no pass"
+    );
+    while !settle(&mut shards) {
+        step(&mut shards).await;
+    }
+    assert!(
+        marks.offset(&watched, 1) > before,
+        "the mark did not reach the tail once the follower answered"
+    );
 }
