@@ -10,7 +10,8 @@ mod inspect;
 
 pub use fields::{
     AckMode, BrokerEndpoint, CacheCondition, CursorErrorReason, GroupRecord, LeaseToken,
-    PublishRefusalReason, ShardKind, ShardOwner, StartPosition, StateChange, StreamRecord,
+    PublishRefusalReason, ShardKind, ShardOwner, StartPosition, StateChange, StateCondition,
+    StreamRecord,
 };
 pub use inspect::{
     InspectedAssignment, InspectedFence, InspectedLease, InspectedReplica, InspectedSubscription,

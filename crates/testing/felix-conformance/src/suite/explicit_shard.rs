@@ -58,6 +58,7 @@ pub(crate) async fn run_explicit_shard(
             changes: vec![StateChange::Put {
                 key: "district-7".to_string(),
                 value: Bytes::from_static(b"tick"),
+                if_version: None,
             }],
             request_id: 1,
             expected_offset: None,

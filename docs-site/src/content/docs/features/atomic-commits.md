@@ -73,9 +73,24 @@ if let ConditionalWrite::Refused { tail } = answer {
 ```
 
 This is a compare-and-set on the whole shard, not on a key: any write to the
-shard, including a plain publish, refuses it. A per-key version check is not
-built yet ([#1051](https://github.com/GetFelix/felix/issues/1051)). The same
-check on a plain publish is [`publish_if`](/features/pubsub/#conditional-publishes).
+shard, including a plain publish, refuses it. The same check on a plain
+publish is [`publish_if`](/features/pubsub/#conditional-publishes).
+
+## A commit that requires a key's version
+
+To guard one key instead of the whole shard, put a precondition on the change:
+`CommitOp::put_if` or `CommitOp::delete_if` with `StateCondition::Version(n)`
+(the `version` a `state_get` returned) or `StateCondition::Absent` (the key
+holds no value). The commit is written only if every named key still holds
+that version. Writers of different keys do not refuse each other, and of two
+writers requiring the same version exactly one lands, the other being refused
+with `PublishRefused` and the reason `VersionMismatch`, which names the key
+and the version it holds. A refused commit writes nothing and takes no offset.
+
+The broker must advertise `FEATURE_COMMIT_IF_VERSION`. The precondition is
+checked by the shard's leader when the commit is accepted, together with the
+commit's place in the shard's order, and the Rust client guide has
+[an example](/clients/rust/groups-and-commits/).
 
 ## What atomic covers, and what it does not
 

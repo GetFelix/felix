@@ -2,6 +2,7 @@ mod auth_failure;
 mod batch;
 mod cache_routing;
 mod cancelled_producer;
+mod commit_if_version;
 mod conditional_outcome;
 mod connections;
 mod decisions;

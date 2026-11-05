@@ -35,6 +35,9 @@ pub(crate) struct StreamState {
     pub(crate) subscribers: Mutex<SubscriberRegistry>,
     // In-memory log for cursor-based replay.
     pub(crate) log_state: Mutex<LogState>,
+    // A commit holds it across its claim: shared without version checks,
+    // exclusive with them. Fair, so a checked commit is not starved.
+    pub(crate) commit_gate: tokio::sync::RwLock<()>,
     // Per-subscriber bounded queue depth.
     pub(crate) subscriber_queue_capacity: usize,
     // Queue admission policy when subscriber queue is full.
@@ -162,6 +165,7 @@ impl StreamState {
                 generation_start_run: None,
                 state_view: None,
             }),
+            commit_gate: tokio::sync::RwLock::new(()),
             subscriber_queue_capacity,
             subscriber_queue_policy,
             subscriber_queue_bytes,
@@ -211,12 +215,15 @@ impl StreamState {
     ///
     /// The ring goes too so it cannot end up with a hole where the dropped
     /// batches were: the next batch released here pins its own offsets, and
-    /// a reader below it is served from disk.
+    /// a reader below it is served from disk. The state view goes too: a
+    /// dropped commit may yet be committed, and the next rebuild reads it
+    /// from the log once the mark covers it.
     pub(crate) fn discard_held(&self) -> usize {
         let mut state = self.log_state.lock();
         let dropped = self.held.discard();
         if dropped > 0 {
             state.log.clear();
+            state.state_view = None;
         }
         dropped
     }
@@ -564,6 +571,23 @@ impl StreamState {
             Some(view) => Ok((view.get(key).cloned(), view.version())),
             None => Err(state.next_seq),
         }
+    }
+
+    /// Where the ring ends: the state view reflects every commit below it.
+    pub(crate) fn ring_end(&self) -> u64 {
+        self.log_state.lock().next_seq
+    }
+
+    /// Install a view rebuilt from the log below `end`, which is past the
+    /// ring's end: records there reached the disk but not the ring, as when
+    /// a hold was discarded. Refused if the ring has since passed `end`.
+    pub(crate) fn install_state_view_through(&self, view: StateView, end: u64) -> bool {
+        let mut state = self.log_state.lock();
+        if state.next_seq > end {
+            return false;
+        }
+        state.state_view = Some(view);
+        true
     }
 
     /// Install a view rebuilt from the log below `end`, if nothing reached

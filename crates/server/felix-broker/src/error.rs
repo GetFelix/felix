@@ -138,6 +138,11 @@ pub enum BrokerError {
     /// consumed.
     #[error("expected the shard's next offset to be {expected}, but it is {tail}")]
     OffsetMismatch { expected: u64, tail: u64 },
+    /// A commit required `key` to hold a version it does not. Nothing was
+    /// written. `version` is the version the key holds, counting a commit
+    /// claimed ahead of this one that is still being made durable.
+    #[error("key {key:?} does not hold the required version")]
+    VersionMismatch { key: String, version: Option<u64> },
     /// A conditional publish with no records. The check is made by writing,
     /// so an empty batch would check nothing.
     #[error("a conditional publish needs at least one record")]

@@ -619,3 +619,61 @@ async fn a_batch_shipped_again_does_not_end_readers() {
     publish(&broker, "quorum", b"second").await;
     assert_eq!(&next(&mut live).await[..], b"second");
 }
+
+fn held_at(first_offset: u64) -> super::HeldBatch {
+    super::HeldBatch {
+        payloads: vec![Bytes::from_static(b"e")],
+        publisher: None,
+        record_headers: None,
+        timestamp_micros: None,
+        first_offset,
+        commit: None,
+        trim: None,
+        trim_applied: None,
+    }
+}
+
+/// **A discarded hold ends a `settled` wait.** A shard that stops leading
+/// drops what it holds, and a checked commit waiting on it must not hang.
+#[tokio::test]
+async fn a_discard_ends_a_settled_wait() {
+    let hold = super::CommitHold::default();
+    hold.push(held_at(4));
+    let waiting = hold.settled(5);
+    tokio::pin!(waiting);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), waiting.as_mut())
+            .await
+            .is_err()
+    );
+    hold.discard();
+    tokio::time::timeout(Duration::from_secs(5), waiting)
+        .await
+        .expect("a discard ends the wait");
+}
+
+/// **A batch taken for release still counts until it is appended.** Taken
+/// from the queue but not yet in the ring, it is in neither place a check
+/// reads; `settled` waits for the pass to finish.
+#[tokio::test]
+async fn settled_waits_for_a_release_pass_and_not_for_later_batches() {
+    let hold = super::CommitHold::default();
+    hold.push(held_at(4));
+    hold.push(held_at(9));
+    let super::Pass::Ready(ready) = hold.take_ready(ReadBound::Committed(5)) else {
+        panic!("the first batch is covered");
+    };
+    assert_eq!(ready.len(), 1);
+    let waiting = hold.settled(5);
+    tokio::pin!(waiting);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), waiting.as_mut())
+            .await
+            .is_err()
+    );
+    hold.finished_pass();
+    // Offset 9 is still held, but past the end asked for.
+    tokio::time::timeout(Duration::from_secs(5), waiting)
+        .await
+        .expect("finished with what is below the end");
+}

@@ -10,6 +10,7 @@
 //! `docs/atomic-commit.md`.
 
 use bytes::Bytes;
+pub use felix_wire::StateCondition;
 
 /// One part of a commit.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,14 +21,21 @@ pub enum CommitOp {
     /// stream read through a group, so this is the same record as a publish;
     /// it is spelled separately so a caller can say what it means.
     Enqueue { queue: String, payload: Bytes },
-    /// Set `key` in the stream's state.
+    /// Set `key` in the stream's state, only if `if_version` holds when there
+    /// is one.
     Put {
         stream: String,
         key: String,
         value: Bytes,
+        if_version: Option<StateCondition>,
     },
-    /// Remove `key` from the stream's state.
-    Delete { stream: String, key: String },
+    /// Remove `key` from the stream's state, only if `if_version` holds when
+    /// there is one.
+    Delete {
+        stream: String,
+        key: String,
+        if_version: Option<StateCondition>,
+    },
 }
 
 impl CommitOp {
@@ -50,6 +58,24 @@ impl CommitOp {
             stream: stream.into(),
             key: key.into(),
             value: value.into(),
+            if_version: None,
+        }
+    }
+
+    /// [`Self::put`], and the whole commit is refused unless `key` holds
+    /// `if_version` first. Needs a broker that advertises
+    /// [`felix_wire::FEATURE_COMMIT_IF_VERSION`].
+    pub fn put_if(
+        stream: impl Into<String>,
+        key: impl Into<String>,
+        value: impl Into<Bytes>,
+        if_version: StateCondition,
+    ) -> Self {
+        Self::Put {
+            stream: stream.into(),
+            key: key.into(),
+            value: value.into(),
+            if_version: Some(if_version),
         }
     }
 
@@ -57,6 +83,22 @@ impl CommitOp {
         Self::Delete {
             stream: stream.into(),
             key: key.into(),
+            if_version: None,
+        }
+    }
+
+    /// [`Self::delete`], and the whole commit is refused unless `key` holds
+    /// `if_version` first. Needs a broker that advertises
+    /// [`felix_wire::FEATURE_COMMIT_IF_VERSION`].
+    pub fn delete_if(
+        stream: impl Into<String>,
+        key: impl Into<String>,
+        if_version: StateCondition,
+    ) -> Self {
+        Self::Delete {
+            stream: stream.into(),
+            key: key.into(),
+            if_version: Some(if_version),
         }
     }
 
@@ -90,6 +132,10 @@ pub enum CommitError {
     /// The broker does not serve commits.
     #[error("this broker does not support atomic commits")]
     Unsupported,
+    /// The commit names an `if_version` and the broker does not check one:
+    /// it would make the change unconditionally.
+    #[error("this broker does not support version preconditions on commits")]
+    IfVersionUnsupported,
 }
 
 /// A commit the broker has made durable (on a `Quorum` stream, on a
@@ -149,10 +195,21 @@ pub(crate) fn prepare(ops: Vec<CommitOp>) -> Result<Prepared, CommitError> {
             CommitOp::Publish { payload, .. } | CommitOp::Enqueue { payload, .. } => {
                 event = payload;
             }
-            CommitOp::Put { key, value, .. } => {
-                changes.push(felix_wire::StateChange::Put { key, value });
+            CommitOp::Put {
+                key,
+                value,
+                if_version,
+                ..
+            } => {
+                changes.push(felix_wire::StateChange::Put {
+                    key,
+                    value,
+                    if_version,
+                });
             }
-            CommitOp::Delete { key, .. } => changes.push(felix_wire::StateChange::Delete { key }),
+            CommitOp::Delete {
+                key, if_version, ..
+            } => changes.push(felix_wire::StateChange::Delete { key, if_version }),
         }
     }
     Ok(Prepared {

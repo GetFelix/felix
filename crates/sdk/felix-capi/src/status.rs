@@ -8,8 +8,8 @@
 //! caller does next: retry, give up, or resend only if idempotent.
 
 use felix_client::{
-    AckLost, AuthError, BrokerError, CommitError, NotLeaderError, RetryClass, SubscribeCursorError,
-    SubscriptionLost, TrimError,
+    AckLost, AuthError, BrokerError, CommitError, NotLeaderError, PublishRefusalReason,
+    PublishRefused, RetryClass, SubscribeCursorError, SubscriptionLost, TrimError,
 };
 
 /// The result of every fallible call. `FELIX_STATUS_OK` is zero; every other
@@ -57,6 +57,9 @@ pub const FELIX_STATUS_OUTCOME_UNKNOWN: FelixStatus = 27;
 /// was not sent; retrying the same call will not help. Other missing broker
 /// features are still reported as `FELIX_STATUS_ERROR`.
 pub const FELIX_STATUS_UNSUPPORTED: FelixStatus = 28;
+/// A commit required a key to hold a version it does not hold. Nothing was
+/// written; read the key again and decide whether to retry.
+pub const FELIX_STATUS_VERSION_MISMATCH: FelixStatus = 29;
 
 /// The status for an error from the Rust client.
 ///
@@ -68,13 +71,21 @@ pub(crate) fn classify(err: &anyhow::Error) -> FelixStatus {
     }
     if let Some(refusal) = err.chain().find_map(|e| e.downcast_ref::<CommitError>()) {
         return match refusal {
-            CommitError::Unsupported => FELIX_STATUS_UNSUPPORTED,
+            CommitError::Unsupported | CommitError::IfVersionUnsupported => {
+                FELIX_STATUS_UNSUPPORTED
+            }
             // The call checks these before it starts; one that gets here is
             // still the caller's argument.
             CommitError::NotOnOwningShard { .. } | CommitError::EventCount(_) => {
                 FELIX_STATUS_INVALID_ARGUMENT
             }
         };
+    }
+    if err.chain().any(|e| {
+        e.downcast_ref::<PublishRefused>()
+            .is_some_and(|r| matches!(r.reason, PublishRefusalReason::VersionMismatch { .. }))
+    }) {
+        return FELIX_STATUS_VERSION_MISMATCH;
     }
     if err.chain().any(|e| e.is::<TrimError>()) {
         return FELIX_STATUS_UNSUPPORTED;

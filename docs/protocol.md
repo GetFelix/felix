@@ -192,10 +192,11 @@ whether its batch landed. See [Conditional writes](semantics.md#conditional-writ
 ```
 Where `reason` is one of `{"sequence_gap": {"expected": <u64>}}`,
 `"unknown_producer"`, `"sequence_expired"`, `"sequence_reused"`,
-`{"offset_mismatch": {"tail": <u64>}}`, or
+`{"offset_mismatch": {"tail": <u64>}}`,
+`{"version_mismatch": {"key": "<string>", "version": <u64, optional>}}`, or
 `{"not_leader": {"node_id": "<string>", "addr": "<host:port, optional>"}}`.
 Sent in answer to a `publish_idempotent`, a `publish_if`, a `commit` that
-carried `expected_offset`, or a `trim_before`. `"sequence_reused"` goes only to
+carried `expected_offset` or an `if_version`, or a `trim_before`. `"sequence_reused"` goes only to
 a client that offered `FEATURE_SEQUENCE_REUSED`, and `offset_mismatch` only in
 answer to a conditional write or a trim. `tail` is the shard's next offset as
 the broker checked it.
@@ -922,8 +923,10 @@ empty value.
 ```
 { "type": "commit", "tenant_id": "<string>", "namespace": "<string>",
   "stream": "<string>", "entity_key": "<base64>", "event": "<base64>",
-  "changes": [ { "op": "put", "key": "<string>", "value": "<base64>" },
-               { "op": "delete", "key": "<string>" } ],
+  "changes": [ { "op": "put", "key": "<string>", "value": "<base64>",
+                 "if_version": <condition, optional> },
+               { "op": "delete", "key": "<string>",
+                 "if_version": <condition, optional> } ],
   "request_id": <u64>, "expected_offset": <u64, optional>,
   "shard": <u32, optional> }
 ```
@@ -944,6 +947,17 @@ nor its state is written. The check is on the whole shard, not on the keys the
 commit writes. Sent only to a broker that advertised
 `FEATURE_PUBLISH_CONDITIONAL`: an older one ignores the field and would commit
 unconditionally. Absent, the frame is the one every client sent before.
+
+A change's `if_version` makes the whole commit depend on that key. A
+`<condition>` is `"absent"` (the key holds no value) or `{"version": <u64>}` (the
+key was last written by the commit at that offset, the `version` a `state_value`
+reports). Checked in change order against the state the commit would extend,
+which counts commits accepted ahead of it that are not durable yet. The first
+that does not hold refuses the commit with `publish_refused` and
+`{"version_mismatch": {"key": "<string>", "version": <u64, absent when the key holds none>}}`,
+having written nothing. Sent only to a broker that advertised
+`FEATURE_COMMIT_IF_VERSION`: an older one ignores the field and would commit
+unconditionally. Absent, the change is the one every client sent before.
 
 ### CommitOk (server -> client)
 ```
@@ -2021,6 +2035,7 @@ Bits in the extended word (see [Extended feature word](#extended-feature-word)):
 | `0x8` | `FEATURE_EXPLICIT_SHARD` | The broker honours `shard` on `publish`, `publish_batch`, `publish_idempotent`, `publish_if`, `commit` and `state_get`. See [Named shards](#named-shards) |
 | `0x10` | `FEATURE_HEAD_TRIM` | From a broker: it answers `trim_before`, though it refuses every trim with `feature_not_enabled` until its fleet finalizes `head_trim`. From a client: it reads `trim_headers` on `subscribe_cursor_error`. See [TrimBefore](#trimbefore) |
 | `0x20` | `FEATURE_LEASE_TOKEN` | The broker mints a lease token on a `cache_put_if` with `lease_token: true`. Advertised only by a broker configured with a lease key (`FELIX_LEASE_TOKEN_KEY_FILE`). See [CachePutIf](#cacheputif) |
+| `0x80` | `FEATURE_COMMIT_IF_VERSION` | The broker honours `if_version` on a `commit` change, refusing the commit with `publish_refused` and `version_mismatch` when a key does not hold that version. See [Commit](#commit) |
 
 Features are advertised in **both** directions. A client offers its own in the
 `auth` it already sends:
@@ -2110,7 +2125,7 @@ ignores.
 `FEATURE_INSPECT` is the first feature in the second word,
 `FEATURE_STREAM_DELETED` the second, `FEATURE_PUBLISH_WIDTH` the third,
 `FEATURE_EXPLICIT_SHARD` the fourth, `FEATURE_HEAD_TRIM` the fifth and
-`FEATURE_LEASE_TOKEN` the sixth. The Rust constants are
+`FEATURE_LEASE_TOKEN` the sixth and `FEATURE_COMMIT_IF_VERSION` the eighth. The Rust constants are
 `FEATURE_EXTENDED` and `KNOWN_FEATURES_HI` in `felix-wire`, with
 `offer_features`, `answer_features` and `peer_features_hi` applying the rules
 above.

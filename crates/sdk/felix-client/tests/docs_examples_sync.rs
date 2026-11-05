@@ -485,6 +485,14 @@ const RUST_MD_EXAMPLES: &[Example] = &[
         "Atomic commits",
         3,
         Body {
+            params: "client: &Client, claimant: Bytes",
+            context: "",
+        },
+    ),
+    example(
+        "Atomic commits",
+        4,
+        Body {
             params: "client: &Client, district: u32, tick: Bytes, state: Bytes, next: u64",
             context: "",
         },

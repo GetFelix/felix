@@ -294,3 +294,56 @@ async fn a_stale_release_cannot_undo_a_reset() {
         "stale release moved the sequence"
     );
 }
+
+/// **`settled` waits for every range below its end, however each resolves.**
+/// One applies and one is abandoned; neither may leave the waiter hanging.
+#[tokio::test]
+async fn settled_waits_for_ranges_below_its_end_and_no_further() {
+    let sequencer = Arc::new(CommitSequencer::new(0));
+    let first = sequencer.reserve_owned(0, 1);
+    let second = sequencer.reserve_owned(1, 2);
+    let later = sequencer.reserve_owned(2, 3);
+    let generation = sequencer.generation();
+    let waiter = {
+        let sequencer = Arc::clone(&sequencer);
+        tokio::spawn(async move { sequencer.settled(2, generation).await })
+    };
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(!waiter.is_finished());
+
+    // Abandoned out of order: still behind `first`.
+    drop(second);
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(!waiter.is_finished());
+
+    first.wait().await.expect("turn");
+    drop(first);
+    tokio::time::timeout(Duration::from_secs(5), waiter)
+        .await
+        .expect("settled once both ranges below the end resolved")
+        .expect("join");
+    drop(later);
+}
+
+/// A reset ends the wait: nothing claimed before it can apply any more.
+#[tokio::test]
+async fn a_reset_ends_a_settled_wait() {
+    let sequencer = Arc::new(CommitSequencer::new(0));
+    let _stuck = sequencer.reserve_owned(0, 1);
+    let generation = sequencer.generation();
+    let waiter = {
+        let sequencer = Arc::clone(&sequencer);
+        tokio::spawn(async move { sequencer.settled(1, generation).await })
+    };
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(!waiter.is_finished());
+    sequencer.reset(0);
+    tokio::time::timeout(Duration::from_secs(5), waiter)
+        .await
+        .expect("a reset releases it")
+        .expect("join");
+    // Asked with the old generation after the reset, it does not wait.
+    tokio::time::timeout(Duration::from_secs(5), sequencer.settled(10, generation))
+        .await
+        .expect("an old generation does not wait");
+}

@@ -106,6 +106,7 @@ A conditional or idempotent write that the broker will not append is answered wi
 | `sequence_expired` | none | The sequence is older than the window the broker keeps, so whether it was appended cannot be told. | Treat the outcome as unknown and reconcile. |
 | `sequence_reused` | none | The broker already holds a batch under this sequence with different payloads. Only sent to a client that offered `FEATURE_SEQUENCE_REUSED`. | The producer reused a number it had spent. Fix the producer. |
 | `offset_mismatch` | `tail` | A `publish_if`, conditional `commit` or head trim expected a different next offset. Nothing was written and no offset consumed. | Read the shard, then try again from `tail` if you still own it. |
+| `version_mismatch` | `key`, `version` | A `commit` change carried an `if_version` the key does not hold. Nothing was written and no offset consumed. `version` is absent when the key holds no value, and can name a commit accepted just ahead of this one. | Read the key with `state_get`, then try again with the version it holds. |
 | `not_leader` | `node_id`, `addr` | This broker does not lead the shard, and only the leader holds the sequences. | Send the batch to the broker named. |
 
 ## Cursor error reasons

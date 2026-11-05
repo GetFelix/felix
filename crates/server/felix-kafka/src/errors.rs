@@ -49,6 +49,7 @@ pub(crate) fn from_broker(err: &BrokerError) -> ResponseError {
         | BrokerError::MalformedCommit(_)
         | BrokerError::CommitNeedsDurableStream
         | BrokerError::OffsetMismatch { .. }
+        | BrokerError::VersionMismatch { .. }
         | BrokerError::ExpectedOffsetNeedsDurableStream
         | BrokerError::EmptyConditionalPublish
         | BrokerError::TrimPastTail { .. }

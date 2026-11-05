@@ -65,6 +65,7 @@ pub(crate) async fn run_commit(
             changes: vec![StateChange::Put {
                 key: "order-1".to_string(),
                 value: Bytes::from_static(b"placed"),
+                if_version: None,
             }],
             request_id: 1,
             expected_offset: None,

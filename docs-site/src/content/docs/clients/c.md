@@ -1182,6 +1182,7 @@ valid while the callback runs.
 | `FELIX_STATUS_OVERLOADED` | 26 | the broker is shedding load; nothing applied | yes, after a pause |
 | `FELIX_STATUS_OUTCOME_UNKNOWN` | 27 | the write may or may not have been applied | only if idempotent |
 | `FELIX_STATUS_UNSUPPORTED` | 28 | the broker does not advertise atomic commits; nothing sent | no |
+| `FELIX_STATUS_VERSION_MISMATCH` | 29 | a commit required a key to hold a version it does not hold; nothing written | after reading the key again |
 
 These are the same classes as the
 [other clients' errors](/clients/python/#errors-you-can-act-on).

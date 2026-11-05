@@ -577,6 +577,7 @@ async fn release(handle: StreamHandle) {
                 let _ = completion.deliver().await;
             }
         }
+        state.held.finished_pass();
     }
 }
 

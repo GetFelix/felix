@@ -151,6 +151,12 @@ impl StubBroker {
         self.seen.head_trim.store(true, Ordering::SeqCst);
     }
 
+    /// Advertise `FEATURE_COMMIT_IF_VERSION` to streams authenticated from
+    /// now on.
+    pub(super) fn honour_commit_if_version(&self) {
+        self.seen.commit_if_version.store(true, Ordering::SeqCst);
+    }
+
     /// Answer `EXT_RECORD_HEADERS` to streams authenticated from now on.
     pub(super) fn honour_record_headers(&self) {
         self.seen.record_headers.store(true, Ordering::SeqCst);
@@ -347,6 +353,7 @@ struct Seen {
     explicit_shard: Arc<AtomicBool>,
     /// Advertise `FEATURE_HEAD_TRIM`.
     head_trim: Arc<AtomicBool>,
+    commit_if_version: Arc<AtomicBool>,
     /// Answer `EXT_RECORD_HEADERS` to a client that offered it.
     record_headers: Arc<AtomicBool>,
     /// The record headers blocks of each acked batch, in arrival order.
@@ -381,6 +388,7 @@ impl Default for Seen {
             batches: Arc::default(),
             explicit_shard: Arc::default(),
             head_trim: Arc::default(),
+            commit_if_version: Arc::default(),
             record_headers: Arc::default(),
             blocks: Arc::default(),
             offers: Arc::default(),
@@ -499,6 +507,10 @@ async fn serve_stream(
                     felix_wire::FEATURE_HEAD_TRIM
                 } else {
                     0
+                } | if seen.commit_if_version.load(Ordering::SeqCst) {
+                    felix_wire::FEATURE_COMMIT_IF_VERSION
+                } else {
+                    0
                 };
                 let extended = if features_hi != 0 {
                     felix_wire::FEATURE_EXTENDED
@@ -569,7 +581,9 @@ async fn serve_stream(
                     .unwrap()
                     .push(("commit", shard, vec![event.to_vec()]));
                 let answer = match script(request_id) {
-                    refusal @ (Message::NotLeader { .. } | Message::Error { .. }) => refusal,
+                    refusal @ (Message::NotLeader { .. }
+                    | Message::Error { .. }
+                    | Message::PublishRefused { .. }) => refusal,
                     _ => Message::CommitOk {
                         request_id,
                         offset: 7,

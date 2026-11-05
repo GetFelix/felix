@@ -13,6 +13,14 @@ use crate::commit::{CommitError, CommitOp, CommitReceipt, StateValue, prepare};
 impl Connection {
     /// Commit `ops` on the shard `entity_key` routes to, as one record.
     ///
+    /// A [`CommitOp::put_if`] or [`CommitOp::delete_if`] makes the whole
+    /// commit conditional on its key's version. When a key does not hold it,
+    /// nothing is written and the call fails with a [`crate::PublishRefused`]
+    /// whose reason is [`felix_wire::PublishRefusalReason::VersionMismatch`],
+    /// naming the key and the version it holds. Fails without sending
+    /// anything with [`CommitError::IfVersionUnsupported`] when the broker
+    /// did not advertise [`felix_wire::FEATURE_COMMIT_IF_VERSION`].
+    ///
     /// Every reader sees all of it or none of it: the event at the commit's
     /// offset, and the state it writes at the same version. `ops` must carry
     /// exactly one event and name one stream; anything else is refused with a
@@ -32,7 +40,7 @@ impl Connection {
             .await?
         {
             Message::CommitOk { offset, .. } => Ok(CommitReceipt { offset }),
-            other => Err(unexpected("commit", &other)),
+            other => Err(commit_refusal(other)),
         }
     }
 
@@ -97,7 +105,7 @@ impl Connection {
             .await?
         {
             Message::CommitOk { offset, .. } => Ok(CommitReceipt { offset }),
-            other => Err(unexpected("commit", &other)),
+            other => Err(commit_refusal(other)),
         }
     }
 
@@ -141,6 +149,23 @@ impl Connection {
     ) -> Result<Message> {
         let prepared = prepare(ops)?;
         self.require_commits()?;
+        if prepared.changes.iter().any(|change| {
+            matches!(
+                change,
+                felix_wire::StateChange::Put {
+                    if_version: Some(_),
+                    ..
+                } | felix_wire::StateChange::Delete {
+                    if_version: Some(_),
+                    ..
+                }
+            )
+        }) && !felix_wire::supports_feature(
+            self.server_features_hi,
+            felix_wire::FEATURE_COMMIT_IF_VERSION,
+        ) {
+            return Err(CommitError::IfVersionUnsupported.into());
+        }
         if shard.is_some() {
             self.require_explicit_shard()?;
         }
@@ -421,6 +446,17 @@ fn conditional_answer(request: &str, answer: Message) -> Result<ConditionalWrite
             detail,
         )),
         other => Err(unexpected(request, &other)),
+    }
+}
+
+/// The error for an answer to a `commit` that is not `commit_ok`: a refusal
+/// is typed, anything else belongs to no write this client sent.
+fn commit_refusal(answer: Message) -> anyhow::Error {
+    match answer {
+        Message::PublishRefused {
+            reason, message, ..
+        } => crate::PublishRefused { reason, message }.into(),
+        other => unexpected("commit", &other),
     }
 }
 

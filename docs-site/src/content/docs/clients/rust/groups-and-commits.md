@@ -250,6 +250,39 @@ broker that did not advertise it. `Client` follows the leader; neither
 is forwarded between brokers. Do not resend one whose answer was lost: read
 the shard at the expected offset instead.
 
+A commit can also require a key to hold a version, so two writers updating
+different keys of one shard do not refuse each other. `CommitOp::put_if` and
+`CommitOp::delete_if` take a `StateCondition`: `Absent` for a key that holds no
+value, or `Version(n)`, the `version` that `state_get` reported. If any key
+holds another version, nothing is written and the call fails with a
+`PublishRefused` whose reason is `VersionMismatch`, naming the key and the
+version it holds:
+
+```rust
+use felix_client::{CommitOp, PublishRefused, StateCondition};
+use felix_wire::PublishRefusalReason;
+
+// Take the lock if nobody holds it. Of two writers, exactly one commits.
+let ops = vec![
+    CommitOp::publish("locks", "taken"),
+    CommitOp::put_if("locks", "owner", claimant, StateCondition::Absent),
+];
+match client.commit("acme", "games", b"lock-7", ops).await {
+    Ok(receipt) => println!("locked at {}", receipt.offset),
+    Err(err) => match err.downcast_ref::<PublishRefused>().map(|r| &r.reason) {
+        Some(PublishRefusalReason::VersionMismatch { key, version }) => {
+            println!("{key} is held at version {version:?}")
+        }
+        _ => return Err(err),
+    },
+}
+```
+
+The broker must advertise `FEATURE_COMMIT_IF_VERSION`; against one that does
+not, the call fails with `CommitError::IfVersionUnsupported` before anything is
+sent. The version can name a commit that was accepted just ahead of this one
+and is still becoming durable, so read the key again before retrying.
+
 `commit_on_shard`, `commit_if_on_shard`, `publish_if_on_shard` and
 `state_get_on_shard` take a shard instead of hashing the entity key, for a
 writer that keeps one shard per partition:

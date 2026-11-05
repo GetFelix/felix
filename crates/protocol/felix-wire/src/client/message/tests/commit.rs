@@ -1,6 +1,6 @@
 use bytes::Bytes;
 
-use crate::{Message, StateChange};
+use crate::{Message, PublishRefusalReason, StateChange, StateCondition};
 
 #[test]
 fn commit_messages_round_trip() {
@@ -16,9 +16,11 @@ fn commit_messages_round_trip() {
                 StateChange::Put {
                     key: "order-1".to_string(),
                     value: Bytes::from_static(b"placed"),
+                    if_version: Some(StateCondition::Version(42)),
                 },
                 StateChange::Delete {
                     key: "cart-1".to_string(),
+                    if_version: Some(StateCondition::Absent),
                 },
             ],
             request_id: 7,
@@ -61,9 +63,51 @@ fn commit_messages_round_trip() {
 fn a_state_change_names_its_operation() {
     let json = serde_json::to_string(&StateChange::Delete {
         key: "k".to_string(),
+        if_version: None,
     })
     .expect("json");
     assert_eq!(json, r#"{"op":"delete","key":"k"}"#);
+}
+
+/// **A change without a precondition is the bytes a client sent before the
+/// field existed**, and those bytes decode as one with none. An older peer
+/// never sees the field unless a caller set it.
+#[test]
+fn an_unconditional_change_has_no_version_field() {
+    let put = StateChange::Put {
+        key: "k".to_string(),
+        value: Bytes::from_static(b"v"),
+        if_version: None,
+    };
+    let json = serde_json::to_string(&put).expect("json");
+    assert_eq!(json, r#"{"op":"put","key":"k","value":"dg=="}"#);
+    assert_eq!(
+        serde_json::from_str::<StateChange>(&json).expect("old"),
+        put
+    );
+}
+
+#[test]
+fn a_version_precondition_is_spelled_absent_or_by_number() {
+    let json = serde_json::to_string(&[StateCondition::Absent, StateCondition::Version(42)])
+        .expect("json");
+    assert_eq!(json, r#"["absent",{"version":42}]"#);
+}
+
+#[test]
+fn a_version_mismatch_refusal_round_trips() {
+    for version in [Some(43), None] {
+        let message = Message::PublishRefused {
+            request_id: 7,
+            reason: PublishRefusalReason::VersionMismatch {
+                key: "order-1".to_string(),
+                version,
+            },
+            message: "mismatch".to_string(),
+        };
+        let decoded = Message::decode(message.encode().expect("encode")).expect("decode");
+        assert_eq!(decoded, message);
+    }
 }
 
 /// A conditional publish, an expected offset on a commit, and the refusal

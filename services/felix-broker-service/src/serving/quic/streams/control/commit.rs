@@ -217,6 +217,17 @@ fn not_written(err: NotWritten, request_id: u64, context: &str) -> Message {
             reason: felix_wire::PublishRefusalReason::OffsetMismatch { tail },
             message: format!("the shard's next offset is {tail}"),
         },
+        NotWritten::VersionMismatch { key, version } => {
+            let message = match version {
+                Some(version) => format!("key {key:?} holds version {version}"),
+                None => format!("key {key:?} holds no value"),
+            };
+            Message::PublishRefused {
+                request_id,
+                reason: felix_wire::PublishRefusalReason::VersionMismatch { key, version },
+                message,
+            }
+        }
         NotWritten::Refused(err) => err.prefixed(context).into_message(),
     }
 }

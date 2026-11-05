@@ -85,7 +85,7 @@ pub use cluster::{
     ShardOffsets, ShardPublish, ShardedCacheWatch, ShardedCacheWatchItem, ShardedGroup,
     ShardedGroupRecord, ShardedSubscription,
 };
-pub use commit::{CommitError, CommitOp, CommitReceipt, StateValue};
+pub use commit::{CommitError, CommitOp, CommitReceipt, StateCondition, StateValue};
 pub use config::{ClientConfig, ClientSubQueuePolicy};
 pub use error::{
     AckLost, AuthError, AuthErrorKind, BrokerError, NotLeaderError, PublishRefused,

@@ -103,6 +103,23 @@ fn a_record_round_trips() {
     );
 }
 
+/// **A record whose only operation is a delete of a short key decodes.** The
+/// operation is under nine bytes, and a size bound written for a put refused
+/// the record, so the shard's state could not be rebuilt from its log.
+#[test]
+fn a_short_delete_round_trips() {
+    let record = CommitRecord {
+        event: Bytes::new(),
+        ops: vec![StateOp::Delete {
+            key: "k".to_string(),
+        }],
+    };
+    assert_eq!(
+        CommitRecord::decode(&record.encode()).expect("decode"),
+        record
+    );
+}
+
 #[test]
 fn a_damaged_record_is_refused_rather_than_misread() {
     let encoded = CommitRecord {
@@ -327,4 +344,127 @@ async fn an_ephemeral_stream_refuses_a_commit() {
         refused,
         Err(BrokerError::CommitNeedsDurableStream)
     ));
+}
+
+/// **A checked commit waits for every commit claimed ahead of it.** On a
+/// `Quorum` stream a commit past the mark is durable but held from the state,
+/// so a check that read the state straight away would pass against a version
+/// already replaced. The check waits for the hold, then sees the write.
+#[tokio::test]
+async fn a_checked_commit_waits_for_a_held_commit_ahead_of_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (broker, bound) = broker(dir.path(), ConsistencyLevel::Quorum).await;
+    let broker = Arc::new(broker);
+    let handle = broker
+        .resolve_stream_handle("t1", "ns", "orders", 0)
+        .await
+        .expect("handle");
+    assert_eq!(commit(&broker, b"seed", vec![put("k", b"0")]).await, 0);
+    assert_eq!(get(&broker, "k").await.version, Some(0));
+
+    *bound.0.lock() = ReadBound::Committed(1);
+    // Held: answered, but not in the state yet.
+    assert_eq!(commit(&broker, b"w", vec![put("k", b"1")]).await, 1);
+    assert_eq!(get(&broker, "k").await.version, Some(0));
+
+    let checked = {
+        let (broker, handle) = (Arc::clone(&broker), handle.clone());
+        tokio::spawn(async move {
+            broker
+                .commit_to_handle_checked(
+                    &handle,
+                    Bytes::from_static(b"c"),
+                    vec![put("k", b"2")],
+                    None,
+                    &[super::VersionCheck {
+                        key: "k".to_owned(),
+                        required: Some(0),
+                    }],
+                    None,
+                )
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!checked.is_finished(), "checked against a held commit");
+
+    *bound.0.lock() = ReadBound::Committed(2);
+    handle.release_committed();
+    let checked = tokio::time::timeout(Duration::from_secs(5), checked)
+        .await
+        .expect("released with the hold")
+        .expect("task");
+    assert!(
+        matches!(
+            checked,
+            Err(BrokerError::VersionMismatch {
+                version: Some(1),
+                ..
+            })
+        ),
+        "{checked:?}"
+    );
+}
+
+/// **Discarding the hold drops the state view too.** A held commit the next
+/// leader goes on to commit is on disk here; a view kept from before it would
+/// let a check pass against the version that commit replaced.
+#[tokio::test]
+async fn a_discarded_hold_does_not_leave_a_stale_view() {
+    discard_then_check(false).await;
+}
+
+/// The same after this broker leads the shard again, when the ring has moved
+/// past the dropped commit.
+#[tokio::test]
+async fn a_discarded_hold_does_not_leave_a_stale_view_after_promotion() {
+    discard_then_check(true).await;
+}
+
+async fn discard_then_check(promote: bool) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (broker, bound) = broker(dir.path(), ConsistencyLevel::Quorum).await;
+    let handle = broker
+        .resolve_stream_handle("t1", "ns", "orders", 0)
+        .await
+        .expect("handle");
+    assert_eq!(commit(&broker, b"seed", vec![put("k", b"0")]).await, 0);
+    assert_eq!(get(&broker, "k").await.version, Some(0));
+    *bound.0.lock() = ReadBound::Committed(1);
+    assert_eq!(commit(&broker, b"w", vec![put("k", b"1")]).await, 1);
+    assert_eq!(broker.discard_uncommitted("t1", "ns", "orders", 0).await, 1);
+
+    if promote {
+        // Leading again: the generation start moves the ring past the
+        // dropped commit.
+        broker
+            .append_generation_start("t1", "ns", "orders", 0, 2)
+            .await
+            .expect("generation start");
+    }
+    // It was committed after all.
+    *bound.0.lock() = ReadBound::Committed(if promote { 3 } else { 2 });
+    let checked = broker
+        .commit_to_handle_checked(
+            &handle,
+            Bytes::from_static(b"c"),
+            vec![put("k", b"2")],
+            None,
+            &[super::VersionCheck {
+                key: "k".to_owned(),
+                required: Some(0),
+            }],
+            None,
+        )
+        .await;
+    assert!(
+        matches!(
+            checked,
+            Err(BrokerError::VersionMismatch {
+                version: Some(1),
+                ..
+            })
+        ),
+        "{checked:?}"
+    );
 }

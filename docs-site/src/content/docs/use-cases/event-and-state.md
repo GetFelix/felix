@@ -216,9 +216,9 @@ the expected offset.
 is no snapshot, so set retention on an entity stream to cover every live key.
 There is no read of state at an older version.
 
-**`commit_if` compares against the whole shard.** A per-key version check is not
-built, so any write to the shard, including a plain publish, refuses it. Retry
-from a fresh read.
+**`commit_if` compares against the whole shard.** Any write to the shard,
+including a plain publish, refuses it. To guard one key, use `put_if` or
+`delete_if` with the key's version instead, and retry from a fresh read.
 
 **Setup.** Ephemeral streams refuse commits, and in a cluster an operator must
 finalize the `atomic_commit` fleet feature first. Atomic commits are marked

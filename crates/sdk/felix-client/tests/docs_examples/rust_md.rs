@@ -765,8 +765,35 @@ mod atomic_commits_2 {
     }
 }
 
-/// rust/groups-and-commits.md line 257: "Atomic commits", block 3.
+/// rust/groups-and-commits.md line 261: "Atomic commits", block 3.
 mod atomic_commits_3 {
+    #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
+    use super::prelude::*;
+
+    async fn example(client: &Client, claimant: Bytes) -> Result<()> {
+        use felix_client::{CommitOp, PublishRefused, StateCondition};
+        use felix_wire::PublishRefusalReason;
+
+        // Take the lock if nobody holds it. Of two writers, exactly one commits.
+        let ops = vec![
+            CommitOp::publish("locks", "taken"),
+            CommitOp::put_if("locks", "owner", claimant, StateCondition::Absent),
+        ];
+        match client.commit("acme", "games", b"lock-7", ops).await {
+            Ok(receipt) => println!("locked at {}", receipt.offset),
+            Err(err) => match err.downcast_ref::<PublishRefused>().map(|r| &r.reason) {
+                Some(PublishRefusalReason::VersionMismatch { key, version }) => {
+                    println!("{key} is held at version {version:?}")
+                }
+                _ => return Err(err),
+            },
+        }
+        Ok(())
+    }
+}
+
+/// rust/groups-and-commits.md line 290: "Atomic commits", block 4.
+mod atomic_commits_4 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
@@ -785,7 +812,7 @@ mod atomic_commits_3 {
     }
 }
 
-/// rust/groups-and-commits.md line 286: "Trimming a shard's head", block 1.
+/// rust/groups-and-commits.md line 319: "Trimming a shard's head", block 1.
 mod trimming_a_shard_s_head_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;

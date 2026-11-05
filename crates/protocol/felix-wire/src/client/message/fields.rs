@@ -108,6 +108,20 @@ pub enum PublishRefusalReason {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         addr: Option<String>,
     },
+    /// A `commit` change carried an `if_version` the key does not hold.
+    /// Nothing was written. Only sent to a client that sent an `if_version`,
+    /// which it did only to a broker that advertised
+    /// `FEATURE_COMMIT_IF_VERSION`.
+    VersionMismatch {
+        /// The first key, in change order, whose version differed.
+        key: String,
+        /// The version the key holds, or absent when it holds none. It can
+        /// name a commit that was claimed ahead of this one and is still
+        /// being made durable; read the key again before trying a new
+        /// version.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<u64>,
+    },
 }
 
 /// Where a subscription should begin.
@@ -197,7 +211,27 @@ fn is_zero(value: &u64) -> bool {
     *value == 0
 }
 
+/// What a `commit` change requires of its key's current version.
+///
+/// JSON is `"absent"` or `{"version": n}`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StateCondition {
+    /// The key holds no value: never written, or deleted.
+    Absent,
+    /// The key was last written by the commit at exactly this offset, the
+    /// `version` a `state_value` reports.
+    Version(u64),
+}
+
 /// One change to a stream shard's keyed state, as a `commit` carries it.
+///
+/// `if_version` makes the whole commit conditional on that key: it is checked
+/// against the state before the commit, and a mismatch refuses the commit
+/// with `publish_refused` and `version_mismatch`, having written nothing.
+/// Absent means any version, the change every client sent before. Sent only
+/// to a broker that advertised `FEATURE_COMMIT_IF_VERSION`: an older broker
+/// ignores the field and would make the change unconditionally.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum StateChange {
@@ -205,9 +239,13 @@ pub enum StateChange {
         key: String,
         #[serde(with = "crate::client::message::base64_serde::base64_bytes_bytes")]
         value: Bytes,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        if_version: Option<StateCondition>,
     },
     Delete {
         key: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        if_version: Option<StateCondition>,
     },
 }
 
