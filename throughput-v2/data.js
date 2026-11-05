@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793848514933,
+  "lastUpdate": 1793854246015,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -45292,6 +45292,58 @@ window.BENCHMARK_DATA = {
             "range": "7638.00",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 808709.82\nmean: 810529.80\nstdev: 7638.00\ncv: 0.94%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "086f1eea0b52924e6905ae90d3022db32ada2638",
+          "message": "fix(client): ask another broker when a group redirect target is unreachable (#1927)\n\n* fix(client): ask another broker when a group redirect target is unreachable\n\n* fix(client): keep the error chain and skip mark-down on auth errors\n\n* fix(client): a down redirect target is dialled when no other broker is left, and the give-up error is coded\n\n* fix(client): dead stand-in brokers do not lock out a down redirect target; auth errors pass through",
+          "timestamp": "2026-11-05T04:43:34Z",
+          "tree_id": "eadd98490dd4ff2a1db3763090bfd21b3bddeb41",
+          "url": "https://github.com/GetFelix/felix/commit/086f1eea0b52924e6905ae90d3022db32ada2638"
+        },
+        "date": 1793854245208,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 451774,
+            "range": "43996.55",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 451774.00\nmean: 461535.93\nstdev: 43996.55\ncv: 9.53%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 451774,
+            "range": "43996.55",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 451774.00\nmean: 461535.93\nstdev: 43996.55\ncv: 9.53%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 110676.4,
+            "range": "6997.09",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 110676.40\nmean: 109818.60\nstdev: 6997.09\ncv: 6.37%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1106764.02,
+            "range": "69970.92",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1106764.02\nmean: 1098186.00\nstdev: 69970.92\ncv: 6.37%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
