@@ -233,10 +233,6 @@ struct ShardState {
     queued: Option<(Queue, tokio::time::Instant)>,
     /// The bit an append to this shard sets in [`AppendedShards`].
     slot: Option<u16>,
-    /// The generation at which the last pass left every follower holding the
-    /// whole log with nothing under way. A scan woken by an append skips the
-    /// shard while that holds and nothing was appended to it.
-    settled_at: Option<u64>,
     /// The last pass left the mark below the tail, or no follower holding
     /// all of it: a write may be waiting on the next pass.
     owed: bool,
@@ -554,10 +550,14 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
     /// Whether a scan woken by `wake` asks `key` for a pass: `Some((urgent,
     /// cuts))` if so. See [`Self::want`].
     ///
-    /// Woken by an append, a scan skips a shard whose last pass settled at
-    /// the route's generation and that nothing was appended to since: its
-    /// pass would ship nothing. The tick passes it anyway, which is what
-    /// refreshes its report and retries a log that rides it.
+    /// Woken by an append, a scan asks only the shards appended to, the ones
+    /// owed a mark, and the ones moving. The rest would ship nothing new: a
+    /// shard left with work to do enqueued itself when its pass ended, a busy
+    /// follower's answer asks for its own pass, and the tick passes every
+    /// shard, which is what refreshes its report and retries a follower that
+    /// is gone. Asked on every append anywhere, a shard with a dead follower
+    /// would never settle and would take a slot from the shards with writes
+    /// waiting on them (#1944).
     fn asks(
         &mut self,
         key: &ShardKey,
@@ -565,7 +565,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         wake: WakeKind,
         appended: &Appended,
     ) -> Option<(bool, bool)> {
-        let busy = self.busy.get(key).is_some_and(|nodes| !nodes.is_empty());
+        let append = matches!(wake, WakeKind::Append);
         let Some(state) = self.states.get_mut(key) else {
             return Some((true, false));
         };
@@ -578,8 +578,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         if dirty || state.owed || moving {
             return Some((true, dirty));
         }
-        let settled = state.settled_at == Some(route.generation) && !busy;
-        (!matches!(wake, WakeKind::Append) || !settled).then_some((false, false))
+        (!append).then_some((false, false))
     }
 
     /// Start a pass for `key`, or ask for one once the pass under way ends,
@@ -698,7 +697,6 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             &mut self.counters,
         ) else {
             state.last = Some(LastPass::idle(self.scan));
-            state.settled_at = Some(route.generation);
             state.owed = false;
             self.report_alone(key, route.generation);
             self.cx.status.put(
@@ -1043,14 +1041,6 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             .marks
             .offset_at(&watch_key(&key), incarnation, generation);
         let owed = behind || tail.is_some_and(|tail| mark.is_some_and(|mark| mark < tail));
-        let settled = !owed
-            && !copying
-            && !again
-            && !drain_pending
-            && exchanges.is_empty()
-            && straggling.is_empty()
-            && self.busy.get(&key).is_none_or(HashMap::is_empty)
-            && tail.is_some_and(|tail| level(&cursors, &aux, tail));
         self.cx
             .status
             .pass_ended(&watch_key(&key), scan, mark, outstanding);
@@ -1074,7 +1064,6 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             state.held.append(&mut next.answered.lock());
         }
         state.owed = owed;
-        state.settled_at = settled.then_some(generation);
         state.last = Some(LastPass {
             scan,
             halted,
@@ -1140,7 +1129,6 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             state.held.append(&mut next.answered.lock());
         }
         state.fence_pending = !opened;
-        state.settled_at = None;
         let failures = match state.fence_failures {
             _ if opened => 0,
             (at, failures) if at == generation => failures.saturating_add(1),
@@ -1369,22 +1357,6 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         let behind = lasts().any(|last| last.behind);
         (halted, worst_lag, finished, behind)
     }
-}
-
-/// Whether every follower answered for the whole log up to `tail`, and every
-/// log riding it has nothing in the way: nothing halted, rebuilding or
-/// unanswered. Anything else is work for the next pass.
-fn level(cursors: &ShardCursors, aux: &AuxCursors, tail: u64) -> bool {
-    let quiet =
-        |cursor: &FollowerCursor| cursor.halted.is_none() && !cursor.rebuilding && !cursor.stalled;
-    cursors
-        .followers
-        .iter()
-        .all(|cursor| quiet(cursor) && cursor.next_offset >= tail && cursor.confirmed >= tail)
-        && [&aux.group, &aux.dead_letters, &aux.counters]
-            .iter()
-            .flat_map(|entry| entry.followers.iter())
-            .all(quiet)
 }
 
 /// Put an ended exchange's cursor in place of its stale copy, if the cursors

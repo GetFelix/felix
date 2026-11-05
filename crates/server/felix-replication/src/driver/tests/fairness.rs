@@ -26,6 +26,8 @@ const COLD: u32 = HOT;
 #[derive(Default)]
 struct Follower {
     stored: Mutex<Vec<(u32, u64)>>,
+    /// A follower that is gone: every request to it fails.
+    gone: Option<&'static str>,
 }
 
 impl Follower {
@@ -41,10 +43,16 @@ impl Follower {
 impl PeerRequester for Follower {
     async fn request(
         &self,
-        _node_id: &str,
+        node_id: &str,
         _addr: SocketAddr,
         message: InternalMessage,
     ) -> std::result::Result<InternalMessage, PeerError> {
+        if self.gone == Some(node_id) {
+            return Err(PeerError::Unavailable {
+                node_id: node_id.to_string(),
+                detail: "gone".to_string(),
+            });
+        }
         let InternalMessage::ReplicateRecords(batch) = message else {
             panic!("the driver sent something other than a replication batch");
         };
@@ -255,5 +263,67 @@ async fn an_append_passes_only_the_shard_it_was_for() {
         shards.passes.len(),
         SHARDS as usize,
         "the tick skipped a shard"
+    );
+}
+
+/// **A follower that is gone does not get every shard a pass on each
+/// append.** Its shards never settle, since it never holds their tail, but a
+/// pass cannot change that. Asked on every append anywhere, each of them took
+/// a slot from the shards with writes waiting, and under a steady load those
+/// writes timed out while one follower was down (#1944).
+#[tokio::test(start_paused = true)]
+async fn an_append_passes_only_its_shard_while_a_follower_is_gone() {
+    const SHARDS: u32 = 4;
+    let (broker, _dir) = leader_with_shards(SHARDS, 1).await;
+    let router = Arc::new(ShardRouter::new(
+        LOCAL,
+        "us-west-2",
+        felix_router::RegionRouter::new("us-west-2".to_string()),
+    ));
+    lead(&router, SHARDS);
+    let marks = QuorumMarks::new();
+    let status = ShardStatusBoard::new();
+    let peers = Follower {
+        gone: Some("broker-c"),
+        ..Follower::default()
+    };
+    let rebuilds = Rebuilds::new(RebuildPolicy::default());
+    let throttle = MoveThrottle::unlimited();
+    let mut shards = Shards::new(Context {
+        requester: &peers,
+        broker: &broker,
+        router: &router,
+        fence: &Unfenced,
+        gate: &crate::promotion::NoGate,
+        marks: &marks,
+        status: &status,
+        reporter: None,
+        rebuilds: &rebuilds,
+        throttle: &throttle,
+        refresh: Duration::from_secs(300),
+    });
+    let settle =
+        |shards: &mut Shards<'_, Follower>| shards.passes.is_empty() && shards.exchanges.is_empty();
+
+    for _ in 0..2 {
+        shards.scan(WakeKind::Tick);
+        while !settle(&mut shards) {
+            step(&mut shards).await;
+        }
+    }
+
+    append(&broker, 2).await;
+    shards.scan(WakeKind::Append);
+    assert_eq!(
+        shards.passes.len(),
+        1,
+        "shards nothing was appended to got a pass"
+    );
+    while !settle(&mut shards) {
+        step(&mut shards).await;
+    }
+    assert!(
+        peers.stored.lock().expect("lock").contains(&(2, 2)),
+        "the appended record was not shipped to the follower still up"
     );
 }
