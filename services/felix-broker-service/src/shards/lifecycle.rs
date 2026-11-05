@@ -1359,6 +1359,36 @@ impl DurableShardStore {
 }
 
 impl DurableShardStore {
+    /// A stream shard's log, at `incarnation` when it is not 0, opened on the
+    /// blocking pool. Opening a new log takes several fsyncs, and a bulk create
+    /// opens hundreds at once: on the runtime's workers a slow disk would stall
+    /// everything else they run.
+    async fn open_stream_log(
+        &self,
+        key: &ShardKey,
+        incarnation: u64,
+    ) -> anyhow::Result<felix_broker::StreamLog> {
+        let storage = std::sync::Arc::clone(&self.storage);
+        let key = key.clone();
+        let opened = tokio::task::spawn_blocking(move || match incarnation {
+            0 => storage.open_stream(&key.tenant_id, &key.namespace, &key.stream, key.shard),
+            incarnation => storage.open_stream_for(
+                &key.tenant_id,
+                &key.namespace,
+                &key.stream,
+                key.shard,
+                None,
+                incarnation,
+            ),
+        })
+        .await;
+        match opened {
+            Ok(log) => log.map_err(|err| anyhow::anyhow!("open shard log: {err}")),
+            Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
+            Err(err) => Err(anyhow::anyhow!("open shard log: {err}")),
+        }
+    }
+
     /// The shard's own log, stream or cache, at `incarnation` when it is not
     /// 0. `None` for a cache this store cannot reach.
     async fn own_log(
@@ -1367,38 +1397,18 @@ impl DurableShardStore {
         incarnation: u64,
     ) -> anyhow::Result<Option<felix_broker::StreamLog>> {
         match key.kind {
-            ShardKind::Stream => match incarnation {
-                0 => {
-                    self.storage
-                        .open_stream(&key.tenant_id, &key.namespace, &key.stream, key.shard)
-                }
-                incarnation => self.storage.open_stream_for(
-                    &key.tenant_id,
-                    &key.namespace,
-                    &key.stream,
-                    key.shard,
-                    None,
-                    incarnation,
-                ),
-            }
-            .map(Some)
-            .map_err(|err| anyhow::anyhow!("open shard log: {err}")),
+            ShardKind::Stream => self.open_stream_log(key, incarnation).await.map(Some),
             ShardKind::Cache => {
                 let Some(starts) = &self.generation_starts else {
                     return Ok(None);
                 };
-                Ok(starts
-                    .broker
-                    .shard_log_for(
-                        felix_broker::LogKind::Cache,
-                        &key.tenant_id,
-                        &key.namespace,
-                        &key.stream,
-                        key.shard,
-                        None,
-                        (incarnation != 0).then_some(incarnation),
-                    )
-                    .await)
+                Ok(open_broker_log(
+                    &starts.broker,
+                    felix_broker::LogKind::Cache,
+                    key,
+                    incarnation,
+                )
+                .await)
             }
         }
     }
@@ -1434,19 +1444,7 @@ impl DurableShardStore {
             return Ok(());
         }
         for kind in GROUP_LOGS {
-            let Some(log) = starts
-                .broker
-                .shard_log_for(
-                    kind,
-                    &key.tenant_id,
-                    &key.namespace,
-                    &key.stream,
-                    key.shard,
-                    None,
-                    (incarnation != 0).then_some(incarnation),
-                )
-                .await
-            else {
+            let Some(log) = open_broker_log(&starts.broker, kind, key, incarnation).await else {
                 anyhow::bail!("open the shard's {kind:?} log");
             };
             if begins_here {
@@ -1477,18 +1475,7 @@ impl DurableShardStore {
             felix_broker::LogKind::Counters,
         ] {
             // No counter store configured means no counter log to mark.
-            let Some(log) = broker
-                .shard_log_for(
-                    kind,
-                    &key.tenant_id,
-                    &key.namespace,
-                    &key.stream,
-                    key.shard,
-                    None,
-                    (incarnation != 0).then_some(incarnation),
-                )
-                .await
-            else {
+            let Some(log) = open_broker_log(broker, kind, key, incarnation).await else {
                 if kind == felix_broker::LogKind::Cache {
                     anyhow::bail!("open cache shard log");
                 }
@@ -1624,20 +1611,7 @@ impl ShardStore for DurableShardStore {
         }
         // Recovery happens here: validating the tail and rebuilding indexes is
         // exactly the cost the `Opening` phase is holding writes back for.
-        let log = match incarnation {
-            0 => self
-                .storage
-                .open_stream(&key.tenant_id, &key.namespace, &key.stream, key.shard),
-            incarnation => self.storage.open_stream_for(
-                &key.tenant_id,
-                &key.namespace,
-                &key.stream,
-                key.shard,
-                None,
-                incarnation,
-            ),
-        }
-        .map_err(|err| anyhow::anyhow!("open shard log: {err}"))?;
+        let log = self.open_stream_log(key, incarnation).await?;
 
         // Where this leadership begins. Followers record what they accept, and
         // until now a leader recorded nothing — so a broker's history had a
@@ -1672,10 +1646,7 @@ impl ShardStore for DurableShardStore {
         if key.kind == ShardKind::Cache {
             return Ok(());
         }
-        let log = self
-            .storage
-            .open_stream(&key.tenant_id, &key.namespace, &key.stream, key.shard)
-            .map_err(|err| anyhow::anyhow!("open shard log to flush it: {err}"))?;
+        let log = self.open_stream_log(key, 0).await?;
         log.sync()
             .await
             .map_err(|err| anyhow::anyhow!("flush shard log: {err}"))
@@ -1995,7 +1966,19 @@ pub async fn record_term_start(
         .tail_offset()
         .await
         .map_err(|err| anyhow::anyhow!("read shard tail: {err}"))?;
-    if let Err(err) = log.record_generation(generation, tail) {
+    // Writes and fsyncs the generation history, so not on a runtime worker.
+    let recorded = {
+        let log = log.clone();
+        tokio::task::spawn_blocking(move || log.record_generation(generation, tail))
+            .await
+            .unwrap_or_else(|err| {
+                if err.is_panic() {
+                    std::panic::resume_unwind(err.into_panic())
+                }
+                Err(felix_broker::BrokerError::Storage(err.to_string()))
+            })
+    };
+    if let Err(err) = recorded {
         if required {
             anyhow::bail!("record where generation {generation} begins: {err}");
         }
@@ -2010,6 +1993,28 @@ pub async fn record_term_start(
         );
     }
     Ok(())
+}
+
+/// One of the broker's logs for `key`, opened on the blocking pool for the
+/// same reason as [`DurableShardStore::open_stream_log`]. `None` when the
+/// broker has no such store or refuses the incarnation.
+async fn open_broker_log(
+    broker: &std::sync::Arc<felix_broker::Broker>,
+    kind: felix_broker::LogKind,
+    key: &ShardKey,
+    incarnation: u64,
+) -> Option<felix_broker::StreamLog> {
+    broker
+        .shard_log_off_runtime(
+            kind,
+            &key.tenant_id,
+            &key.namespace,
+            &key.stream,
+            key.shard,
+            None,
+            (incarnation != 0).then_some(incarnation),
+        )
+        .await
 }
 
 /// Accept `generation` on a log this broker is about to lead, failing if the
@@ -2229,6 +2234,38 @@ pub(crate) async fn reconcile_renewed(
     assignments: &HashMap<ShardKey, ShardAssignment>,
     renewals: &HashMap<ShardKey, u64>,
 ) {
+    reconcile_reporting(lifecycle, store, assignments, renewals, &mut NoProgress).await;
+}
+
+/// What a caller of [`reconcile_reporting`] does while its pass opens shards.
+pub(crate) trait PassProgress: Send {
+    /// Whether [`PassProgress::opened`] wants to hear about the next open.
+    fn due(&self) -> bool;
+    /// A shard just opened, and `servable` is what this broker serves now.
+    /// Called with the lifecycle lock held.
+    fn opened(&mut self, servable: HashMap<ShardKey, u64>);
+}
+
+struct NoProgress;
+
+impl PassProgress for NoProgress {
+    fn due(&self) -> bool {
+        false
+    }
+
+    fn opened(&mut self, _servable: HashMap<ShardKey, u64>) {}
+}
+
+/// [`reconcile_renewed`], telling `progress` after each shard it opens. A
+/// pass can open hundreds of shards, one after another, and the caller can
+/// then route each as soon as it serves instead of after the last.
+pub(crate) async fn reconcile_reporting(
+    lifecycle: &tokio::sync::Mutex<ShardLifecycle>,
+    store: &dyn ShardStore,
+    assignments: &HashMap<ShardKey, ShardAssignment>,
+    renewals: &HashMap<ShardKey, u64>,
+    progress: &mut dyn PassProgress,
+) {
     let ready = |key: &ShardKey| {
         let incarnation = assignments
             .get(key)
@@ -2265,7 +2302,14 @@ pub(crate) async fn reconcile_renewed(
             lifecycle.lock().await.await_registration(action);
             continue;
         }
+        let opens = matches!(action, Action::Open { .. });
         apply(lifecycle, store, action).await;
+        if opens && progress.due() {
+            // Held through the publish: a fence publishes under this lock too,
+            // and the two would otherwise overwrite each other.
+            let owned = lifecycle.lock().await;
+            progress.opened(owned.servable());
+        }
     }
 }
 

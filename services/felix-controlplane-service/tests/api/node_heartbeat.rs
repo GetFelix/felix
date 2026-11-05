@@ -142,6 +142,40 @@ async fn a_heartbeat_returns_the_lifecycle_and_the_expected_cadence() {
     assert_eq!(body["expiry_timeout_ms"], LIVENESS.expiry_timeout_ms);
 }
 
+/// The assignment feed's head comes back only when asked for: a broker
+/// marked down asks, and serves again only on routes that reach it.
+#[tokio::test]
+async fn a_heartbeat_returns_the_assignment_feeds_head_when_asked() {
+    let store = store();
+    store
+        .register_node(node("broker-a"))
+        .await
+        .expect("register");
+    let token = fleet_token(&store).await;
+    let head = store
+        .shard_assignment_changes(0)
+        .await
+        .expect("feed")
+        .next_seq;
+
+    let beat = |body: serde_json::Value| {
+        let (store, token) = (Arc::clone(&store), token.clone());
+        async move {
+            let response = app_with(store)
+                .await
+                .oneshot(authed(&token, "POST", "/v1/nodes/broker-a/heartbeat", body))
+                .await
+                .expect("request");
+            assert_eq!(response.status(), StatusCode::OK);
+            read_json(response).await
+        }
+    };
+    let asked = beat(serde_json::json!({ "incarnation": 0, "want_assignment_seq": true })).await;
+    assert_eq!(asked["assignment_seq"], head);
+    let unasked = beat(serde_json::json!({ "incarnation": 0 })).await;
+    assert!(unasked.get("assignment_seq").is_none());
+}
+
 /// The recorded time is the control plane's own. A broker that could supply it
 /// could postpone its own expiry indefinitely.
 #[tokio::test]

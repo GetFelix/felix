@@ -8,15 +8,21 @@
 //! there.
 
 use std::future::Future;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
-use felix_wire::StartPosition;
+use felix_wire::{ErrorCode, RetryClass, StartPosition};
 
 use super::{Client, MAX_REDIRECTS, ShardKey, expired};
+use crate::BrokerError;
+
 use crate::client::{Connection, GroupInfo, GroupPosition};
+
+/// How long a redirect target that would not connect is left alone.
+const REDIRECT_TARGET_DOWN_FOR: Duration = Duration::from_secs(5);
 
 impl Client {
     /// [`Connection::group_poll`], on whichever broker leads the shard.
@@ -652,6 +658,7 @@ impl Client {
         };
         let mut visited: Vec<String> = Vec::new();
         let mut went_back = false;
+        let mut asked: Vec<SocketAddr> = vec![client.dialled()];
 
         for _ in 0..=MAX_REDIRECTS {
             let error = match op(Arc::clone(&client)).await {
@@ -676,17 +683,12 @@ impl Client {
                 went_back = true;
                 visited.clear();
                 client = self.client().await;
+                asked = vec![client.dialled()];
                 continue;
             }
             let Some(redirect) = error.downcast_ref::<crate::NotLeaderError>().cloned() else {
                 return Err(error);
             };
-            if visited.iter().any(|seen| seen == &redirect.node_id) {
-                return Err(error.context(format!(
-                    "redirected back to {}, which has already been asked",
-                    redirect.node_id
-                )));
-            }
             let Some(addr) = redirect.addr.clone() else {
                 return Err(error.context(
                     "the owner's client address is not published, so there is nowhere to follow to",
@@ -696,17 +698,99 @@ impl Client {
                 .resolve(&addr)
                 .await
                 .with_context(|| format!("the owner's address {addr:?} is not usable"))?;
+            // A target that would not connect a moment ago is not dialled
+            // again: a broker that still names it gets the question answered
+            // by another one instead of the same redirect. With no other
+            // broker left it is dialled anyway, since a slow new leader is
+            // the only way forward.
+            if self.redirect_target_down(addr) {
+                if let Some(other) = self.another_broker(&mut asked).await? {
+                    client = other;
+                    continue;
+                }
+                self.down_redirects
+                    .lock()
+                    .expect("down redirects")
+                    .remove(&addr);
+            }
+            if visited.iter().any(|seen| seen == &redirect.node_id) {
+                return Err(error.context(format!(
+                    "redirected back to {}, which has already been asked",
+                    redirect.node_id
+                )));
+            }
             visited.push(redirect.node_id.clone());
-            client = self
-                .connect_to(addr)
-                .await
-                .with_context(|| format!("connect to the shard owner at {addr}"))?;
+            match self.connect_to(addr).await {
+                Ok(connected) => {
+                    asked.push(addr);
+                    client = connected;
+                }
+                Err(err) => {
+                    // A refused credential says nothing about the broker.
+                    if err.downcast_ref::<crate::AuthError>().is_some() {
+                        return Err(err.context(format!("connect to the shard owner at {addr}")));
+                    }
+                    tracing::debug!(error = %err, %addr, "redirect target unreachable; asking another broker");
+                    self.mark_redirect_target_down(addr);
+                    client = match self.another_broker(&mut asked).await? {
+                        Some(other) => other,
+                        None => return Err(owner_unreachable(&err)),
+                    };
+                }
+            }
         }
 
         Err(anyhow::anyhow!(
             "still being redirected after {MAX_REDIRECTS} hops; the cluster has not settled on an owner"
         ))
     }
+}
+
+impl Client {
+    fn redirect_target_down(&self, addr: SocketAddr) -> bool {
+        let mut down = self.down_redirects.lock().expect("down redirects");
+        down.retain(|_, at| at.elapsed() < REDIRECT_TARGET_DOWN_FOR);
+        down.contains_key(&addr)
+    }
+
+    fn mark_redirect_target_down(&self, addr: SocketAddr) {
+        self.down_redirects
+            .lock()
+            .expect("down redirects")
+            .insert(addr, Instant::now());
+    }
+
+    /// A connection to a broker not asked yet, skipping the ones marked down.
+    /// Every broker answers a group call with the shard's owner, so any of
+    /// them can stand in for the unreachable one. `None` when none is
+    /// left to ask or none answers.
+    async fn another_broker(&self, asked: &mut Vec<SocketAddr>) -> Result<Option<Arc<Connection>>> {
+        let mut candidates = self.endpoints().await;
+        candidates.retain(|addr| !asked.contains(addr) && !self.redirect_target_down(*addr));
+        if candidates.is_empty() {
+            return Ok(None);
+        }
+        let connected = match self.nodes.connect_any(&candidates).await {
+            Ok(connected) => connected,
+            // A refused credential says nothing about the brokers.
+            Err(err) if err.downcast_ref::<crate::AuthError>().is_some() => return Err(err),
+            // Stand-ins that are down too leave the caller as it was with
+            // none: it dials the target itself or gives up.
+            Err(_) => return Ok(None),
+        };
+        asked.push(connected.dialled());
+        Ok(Some(connected))
+    }
+}
+
+/// Nothing was applied and the owner is not reachable yet. Coded so the
+/// retry loops treat it as a redirect that has not settled, not a dead end.
+fn owner_unreachable(cause: &anyhow::Error) -> anyhow::Error {
+    anyhow::Error::new(BrokerError::new(
+        ErrorCode::NotLeader,
+        RetryClass::Redirect,
+        format!("the shard owner is unreachable and no other broker is left to ask: {cause:#}"),
+    ))
 }
 
 fn shard_key(tenant_id: &str, namespace: &str, stream: &str, shard: u32) -> ShardKey {

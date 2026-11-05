@@ -275,7 +275,7 @@ impl ReplicaHandler {
         }
         let Some(log) = self
             .broker
-            .shard_log_for(
+            .shard_log_off_runtime(
                 log_kind,
                 &key.tenant_id,
                 &key.namespace,
@@ -502,7 +502,7 @@ impl ReplicaHandler {
         // is the authority either way.
         let Some(log) = self
             .broker
-            .shard_log_for(
+            .shard_log_off_runtime(
                 log_kind,
                 &key.tenant_id,
                 &key.namespace,
@@ -683,7 +683,7 @@ impl ReplicaHandler {
         // and silently keeping nothing.
         let Some(log) = self
             .broker
-            .shard_log_for(
+            .shard_log_off_runtime(
                 log_kind,
                 &key.tenant_id,
                 &key.namespace,
@@ -964,6 +964,7 @@ impl ReplicaHandler {
                         batch.shard.generation,
                         batch.generations.as_deref(),
                     )
+                    .await
                 {
                     tracing::warn!(
                         stream = %key.stream,
@@ -1180,7 +1181,7 @@ impl ReplicaHandler {
         }
         let Some(log) = self
             .broker
-            .shard_log_for(
+            .shard_log_off_runtime(
                 log_kind,
                 &key.tenant_id,
                 &key.namespace,
@@ -1254,12 +1255,14 @@ impl ReplicaHandler {
         if log_kind == felix_broker::LogKind::Cache {
             let counters = self
                 .broker
-                .shard_log(
+                .shard_log_off_runtime(
                     felix_broker::LogKind::Counters,
                     &key.tenant_id,
                     &key.namespace,
                     &key.stream,
                     key.shard,
+                    None,
+                    None,
                 )
                 .await
                 .map_or(0, |log| log.accepted_generation());
@@ -1387,7 +1390,7 @@ impl ReplicaHandler {
         }
         let Some(log) = self
             .broker
-            .shard_log_for(
+            .shard_log_off_runtime(
                 log_kind,
                 &key.tenant_id,
                 &key.namespace,
@@ -1544,7 +1547,7 @@ impl ReplicaHandler {
         };
         let log = self
             .broker
-            .shard_log_for(
+            .shard_log_off_runtime(
                 own,
                 &key.tenant_id,
                 &key.namespace,
@@ -1596,7 +1599,7 @@ impl ReplicaHandler {
             Some(own) => {
                 opened = self
                     .broker
-                    .shard_log_for(
+                    .shard_log_off_runtime(
                         own,
                         &key.tenant_id,
                         &key.namespace,
@@ -1782,7 +1785,7 @@ impl ReplicaHandler {
             Some(own) => {
                 opened = self
                     .broker
-                    .shard_log_for(
+                    .shard_log_off_runtime(
                         own,
                         &key.tenant_id,
                         &key.namespace,
@@ -2350,7 +2353,7 @@ fn unverified_from(
 /// what they keep. A batch from a sender that predates labels says only who
 /// sent it, so its generation is taken to start where the batch appended: an
 /// overclaim when the sender inherited the records, which is why labels exist.
-pub(crate) fn label_appended(
+pub(crate) async fn label_appended(
     log: &felix_broker::StreamLog,
     from: u64,
     durable: u64,
@@ -2367,9 +2370,12 @@ pub(crate) fn label_appended(
                     start_offset: start.start_offset,
                 })
                 .collect();
-            log.label_generations(from, &epochs)
+            log.label_generations_off_runtime(from, epochs).await
         }
-        None => log.record_generation(sender_generation, from).map(|_| ()),
+        None => log
+            .record_generation_off_runtime(sender_generation, from)
+            .await
+            .map(|_| ()),
     }
 }
 

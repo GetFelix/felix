@@ -695,7 +695,7 @@ async fn without_replica_election_a_route_behind_follower_gets_no_fence() {
 }
 
 /// Takes every fence, and says it offers `ELECTION`.
-struct FenceTaker;
+pub(super) struct FenceTaker;
 
 impl PeerRequester for FenceTaker {
     async fn request(

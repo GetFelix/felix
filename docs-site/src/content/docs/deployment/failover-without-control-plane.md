@@ -129,13 +129,26 @@ naming a leader at the same generation, ballots let only one of them open
 there. If the elected one opened, the control plane moves the shard to it on
 its next report.
 
+Most elections start because followers cannot reach a leader's broker. A shard
+can also get stuck on a broker that is up: a fence that never finishes, or a
+copy that stopped accepting the leader. When the control plane sees no
+progress from such a leader for `FELIX_SHARD_STUCK_LEADER_MS` (70 s), it
+names the same leader again one generation up. The leader fences its
+followers again before it serves, so no acknowledged write is lost. An idle
+shard counts as progressing, a shard that never opened gets twice as long,
+and each control-plane instance renames one shard at most four times an
+hour. When many leaders look stuck at once the fault may not be theirs, so
+they are renamed one a pass. With the control plane down, a follower stands for
+such a shard instead, after a longer bound (see
+[Turning it on](#turning-it-on)).
+
 ## What you see
 
 On the brokers, at `info`:
 
 | Log message | Meaning |
 |---|---|
-| `standing for election: the leader is unreachable and a majority agreed` | This broker won its pre-vote and wrote its ballot. The line has `stream`, `shard`, `generation` and the old `leader`. |
+| `standing for election: the leader is unreachable or stuck and a majority agreed` | This broker won its pre-vote and wrote its ballot. The line has `stream`, `shard`, `generation`, the old `leader`, and `broker_suspected` (`false` when it stood on one stuck shard). |
 | `a majority took the fence; opening the shard for writes` | The shard opened at `generation`. Same line as for any failover. |
 | `the standing did not open in time; withdrawing it` | The shard had not opened 3 s after the route naming this broker was published (or `FELIX_ELECTION_DEFER_FOR_MS` after the ballot, if it never was), and no fence or catch-up was still running. The broker tries again. |
 | `not standing for election` | The broker suspects the leader but will not stand. `why` says which rule held it back, for example `the pre-vote found no majority` with the answers it got. Logged once per reason. |
@@ -143,6 +156,10 @@ On the brokers, at `info`:
 On the control plane, `an elected leader reported; the control plane took its
 generation`, with `adopted=true` when the elected broker became the shard's
 leader.
+A stuck leader named again logs a warning, `this shard's leader shows no
+progress at its generation on a live broker; naming it again one generation
+up`, with `reason` (`never_opened`, `stopped_reporting` or `not_committing`),
+and counts in `felix_shard_move_steps_total{step="stuck"}`.
 
 Metrics:
 
@@ -247,7 +264,7 @@ since its generation started on every copy. The one exception: a copy left
 holding a ballot from a candidate that gave up refuses its leader's batches,
 and standing is how it gets back in, at the cost of one generation. With the control plane up, it
 renames the stuck leader before that bound runs out, so keep the value above
-the control plane's stuck-leader bound (70 s). Set it to `0` to turn per-shard
+the control plane's stuck-leader bound, `FELIX_SHARD_STUCK_LEADER_MS` (70 s). Set it to `0` to turn per-shard
 suspicion off.
 
 The same bound covers a leader that won an election just as the control plane

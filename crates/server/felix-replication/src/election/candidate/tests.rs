@@ -224,6 +224,8 @@ fn ctx_with<R>(broker: &Arc<Broker>, requester: R) -> Ctx<R> {
         shard_after: crate::suspicion::DEFAULT_SHARD_SUSPECT_AFTER,
         quiet: Default::default(),
         stuck: Default::default(),
+        stood: Default::default(),
+        named_here: Default::default(),
         pre_vote_gate: None,
     }
 }
@@ -678,6 +680,8 @@ async fn a_slow_dial_carries_over_to_the_next_round() {
         shard_after: crate::suspicion::DEFAULT_SHARD_SUSPECT_AFTER,
         quiet: Default::default(),
         stuck: Default::default(),
+        stood: Default::default(),
+        named_here: Default::default(),
         pre_vote_gate: None,
     };
     let log = shard_log(&ctx.broker, &key()).await.expect("log");
@@ -1117,6 +1121,32 @@ async fn a_leader_is_stuck_only_on_its_own_unelected_ballot() {
     );
 }
 
+/// **A ballot the control plane named this broker at holds off self-suspicion
+/// for [`NAMED_HERE_FOR`]**, however short the shard bound: the routes may
+/// not have caught up yet. A ballot a standing here wrote does not.
+#[tokio::test(start_paused = true)]
+async fn a_leader_named_at_its_ballot_waits_for_the_routes_before_it_is_stuck() {
+    let (broker, _dir) = copy_promised_to(LOCAL).await;
+    let mut ctx = ctx(&broker, voters(None));
+    ctx.router = router_led(LOCAL, LOCAL, 2);
+    ctx.shard_after = Duration::from_secs(1);
+    let route = ctx.router.snapshot().get(&key()).expect("route").clone();
+    let log = shard_log(&broker, &key()).await.expect("log");
+    let stuck = || ctx.shard_stuck(&key(), &route, &log, Instant::now());
+    assert!(!stuck());
+    tokio::time::advance(ctx.shard_after * 2).await;
+    assert!(!stuck(), "named here, the routes may yet catch up");
+    tokio::time::advance(NAMED_HERE_FOR).await;
+    assert!(stuck());
+
+    ctx.quiet.lock().expect("quiet lock").clear();
+    ctx.named_here.lock().expect("named_here lock").clear();
+    ctx.stood.lock().expect("stood lock").insert(key(), 3);
+    assert!(!stuck());
+    tokio::time::advance(ctx.shard_after).await;
+    assert!(stuck(), "a ballot a standing here wrote");
+}
+
 /// **An idle shard is not suspected** however long its leader is silent:
 /// its generation started here. Nothing is shipped on an idle shard, so
 /// silence alone would depose every idle leader.
@@ -1460,4 +1490,57 @@ async fn a_refusing_copy_alone_does_not_fence_again() {
     assert_eq!(log.accepted_generation(), 4);
     shutdown.cancel();
     task.await.expect("run");
+}
+
+/// **A broker the control plane named leader does not stand against the
+/// leader its routes still name** (#1933). The lifecycle takes the ballot
+/// before the routes catch up; standing then would raise this copy's ballot
+/// past the generation it serves, and it would never count a mark there.
+#[tokio::test(start_paused = true)]
+async fn a_broker_named_leader_does_not_stand_before_its_routes_catch_up() {
+    let (broker, _dir) = follower().await;
+    let ctx = ctx(&broker, voters(None));
+    let log = shard_log(&broker, &key()).await.expect("log");
+    log.accept_generation(4, Some(LOCAL)).await.expect("ballot");
+    let route = ctx.router.snapshot().get(&key()).expect("route").clone();
+
+    assert_eq!(stand(&ctx, &key(), &route).await, Round::Ineligible);
+    assert!(ctx.requester.asked.lock().expect("lock").is_empty());
+    assert_eq!(log.accepted_generation(), 4);
+    assert!(ctx.elections.get(&key()).is_none());
+
+    // A ballot this process does not remember writing holds it off only so
+    // long, as one a standing left before a restart.
+    tokio::time::sleep(NAMED_HERE_FOR).await;
+    let elected = stand_and_watch(&ctx).await;
+    assert_eq!(elected.generation, 5);
+}
+
+/// **A standing withdrawn here stands again a generation up**: its own
+/// ballot does not hold it off as one the control plane named.
+#[tokio::test(start_paused = true)]
+async fn a_withdrawn_standing_stands_again() {
+    let (broker, _dir) = follower().await;
+    let ctx = ctx(&broker, voters(None));
+    let elected = stand_and_watch(&ctx).await;
+    assert_eq!(elected.generation, 4);
+    ctx.elections.withdraw(&key(), 4);
+
+    let elected = stand_and_watch(&ctx).await;
+    assert_eq!(elected.generation, 5);
+}
+
+/// **A round whose routes moved on while it asked writes no ballot** (#1933):
+/// the leader it suspected is no longer the one named.
+#[tokio::test(start_paused = true)]
+async fn a_round_on_routes_that_moved_on_writes_no_ballot() {
+    let (broker, _dir) = follower().await;
+    let mut ctx = ctx(&broker, voters(None));
+    let stale = ctx.router.snapshot().get(&key()).expect("route").clone();
+    ctx.router = router(4);
+    let log = shard_log(&broker, &key()).await.expect("log");
+
+    assert_eq!(stand(&ctx, &key(), &stale).await, Round::Failed);
+    assert_eq!(log.accepted_generation(), 3);
+    assert!(ctx.elections.get(&key()).is_none());
 }
