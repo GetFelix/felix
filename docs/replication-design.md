@@ -472,7 +472,13 @@ went to an earlier leader, from the copy that promotion named or from one
 before it. Storage identities never repeat: a wipe or a machine crash
 rotates one, and a process crash keeps it only when nothing was lost. An
 answer under the inherited identity therefore comes from a copy that has
-kept everything it acknowledged. A leader sends no report while it still
+kept everything it acknowledged. A set change that keeps the leader, such as
+seating a replacement for a drained follower, is not a promotion: at the new
+generation the leader names a follower it has not reached yet by the identity
+it named it by at the generation before, the copy it answered from or its own
+inherited one. Otherwise a follower cut off from the leader across the change
+is named with an empty identity, and a failover whose majority needs it can
+never open (#1922). A leader sends no report while it still
 fences, so a copy whose fence answer it did not count is named in its
 reports only once it has opened and ships to that copy. Without an inherited identity, from a leader nobody promoted or one that
 predates the field, the member is named with an empty identity, which
@@ -682,7 +688,18 @@ one rule, applied wherever a copy is about to be served.
   did not answer, the leader serves the pair it holds, checked like any other
   (`without_the_group_fence_the_group_logs_stay_as_they_are`). That can
   redeliver work a majority had finished but cannot skip a record. Only a
-  newer leader's answer keeps the shard closed.
+  refusal that would also stop the records' fence keeps the shard closed.
+  A newer leader's answer keeps it pending. A newer ballot or replica set
+  is reported to the control plane, which names the shard again one
+  generation up (`a_newer_group_ballot_has_the_fence_refused`). A replica
+  that promised the generation to another node counts against the
+  majority: one promise does not hold the fence while the rest still make
+  a majority (`a_group_fence_one_replica_promised_away_opens`). Once they
+  cannot, the refusal is reported if the others were only silent
+  (`a_group_fence_promised_away_is_refused`,
+  `a_promise_away_and_silence_refuse_the_group_fence`), and the shard stays
+  pending if another replica refused for some other reason
+  (`a_promise_away_and_a_decline_keep_the_group_fence_pending`).
 
 `FelixGroups.tla` models the two logs on every replica, independent flushes
 and crashes, the check, the fence and the fallback, and checks that no
@@ -1297,7 +1314,11 @@ elected leader waits for the lease until the control plane is back (issue
    leader asks its set whether it would get the next generation. A replica
    says yes only if it has not heard its own leader within S, it does not
    lead the shard itself (a leader hears itself, so its yes would let one
-   follower with a wrong detector depose it), the asker's
+   follower with a wrong detector depose it), it is not still fencing a
+   generation it won or has just opened it (for at most
+   `FELIX_ELECTION_DEFER_FOR_MS`, 60 s by default, from its standing:
+   a standing that never writes its start record must not hold its
+   followers off for good), the asker's
    log is at least as far ahead as its own by (last generation, length), and
    the asker's set is no older than the one it knows. Nobody persists
    anything for a pre-vote. The follower stands only on a majority of yeses,
@@ -1442,10 +1463,36 @@ elected leader waits for the lease until the control plane is back (issue
     report, never on silence (`CpRename` in the model). A ballot left by
     an election that never opened works the same way: the control plane
     never saw that generation, so it may name a leader below it. That
-    leader's open, or its fence on a majority holding the ballot, is
-    refused for the newer generation, and it reports the refusal naming no
-    node. The control plane names it one generation up each time until it
-    is past the ballot (issue #1914).
+    leader's open is refused for the newer generation, or its fence is,
+    whether the ballot is on a majority of its replicas or only in its own
+    log (a standing it withdrew before fencing anyone leaves exactly that).
+    It reports the refusal naming no node. The control plane names it one
+    generation up each time until it is past the ballot (issue #1914).
+    A ballot can also land after the fence: a follower stands, or takes
+    another candidate's fence, once the leader has opened. That follower
+    then refuses every batch. If the leader has no majority left without
+    it, no write can be acknowledged at that generation again, so the
+    leader reports the generation refused the same way. A follower whose
+    last batch did not get through does not count toward that majority,
+    and only a refusal that names a newer generation counts, because a
+    replica's generation never goes back. A
+    follower that took another leader's fence above its route does not
+    stand against that leader while it does not suspect it, and that
+    leader answers its pre-vote as one fencing or leading the shard. It
+    stands once that leader answers otherwise (it restarted and dropped
+    its standing, say), or, if no start record from that leader ever
+    reached it, once `FELIX_ELECTION_DEFER_FOR_MS` has passed. One
+    follower's newer ballot or view does not end a leader's readers: only
+    a follower saying the control plane assigned a newer generation does,
+    since an election may leave a ballot behind with no leader. With a
+    majority still answering the leader serves; with none, it reports the
+    generation refused at once, and its rounds fail, so its readers end
+    once no majority has confirmed it for a lease duration. A leader whose open fails
+    for any other reason, an I/O error say, reports the generation refused
+    too, once until the shard next opens, since the same assignment never
+    retries the open, and so does a
+    fence that meets a replica set newer than its own: a set never goes
+    back.
 
 **Why it is safe.** Ballots give one leader per generation: each generation
 is fenced on one set, any two majorities of one set share a replica, and
@@ -1949,13 +1996,17 @@ plane, so its watches get the same promise. The model covers the stream case.
 For readers the lease only provides liveness: it moves them off a leader that
 has lost the shard. Without it the broker learns another way:
 
-- A replica that accepted a newer generation refuses the leader's ships with
-  `FencedEpoch`, and the follower's cursor halts (`Halt::Fenced`). The driver
-  reports it (`WriteFence::deposed`), and the first report at a generation
-  ends the shard's readers the way a move does: each gets the offset to resume
+- A replica whose confirmed read of the control plane shows a newer
+  assignment refuses the leader's ships with `FencedEpoch`, saying so, and the
+  follower's cursor halts (`Halt::Fenced`). The driver reports it
+  (`WriteFence::deposed`), and the first report at a generation ends the
+  shard's readers the way a move does: each gets the offset to resume
   from and no named owner, and the client finds the shard again. From then on
   the broker refuses new readers of the shard at that generation, lease or no
   lease.
+- So does the leader's own log taking a newer generation or set.
+  A follower's newer ballot or view alone does not: an election may leave one
+  behind with no leader, and a leader a majority still answers serves on.
 - The new assignment reaching the broker does the same, as it always has.
 - A leader that hears from no majority for a lease duration ends its readers
   too. A shard with nothing to ship exchanges nothing with its followers, so
@@ -2575,7 +2626,8 @@ once the restarted broker has registered. Each report also names the
 incarnation every follower gave on the connection its positions came over
 (`replica_incarnations`, `null` for one that had not registered yet, omitted
 when empty). For a follower it has not reached yet at its generation, a
-leader promoted by a failover reports the identity that failover named it by
+leader reports the identity it inherited for it, from the failover that
+promoted it or from its own previous generation
 (`inherited_storage_ids`, omitted when empty, kept as `inherited_storage`).
 Placement reads it only to name that follower in the next failover's fence
 (see "Fencing a promotion"), never to decide who is caught up.
@@ -2942,10 +2994,18 @@ acknowledges a record on A and B while C lags, A dies and B is promoted, B
 reports before C answers and names C, B dies, and C is promoted without the
 record. So wherever promotion trusts the report, the bound is never below
 where the leader's generation begins in its own log, or its whole log if no
-start was recorded. A cache's counter log gets the same floor. A stream shard
-that acknowledges by its followers skips it, and so does a cache shard under
-`fenced_caches`, for both its logs, because its promoted leader
-fences a majority and takes the furthest log before it serves.
+start was recorded. A cache's counter log gets the same floor.
+
+The floor holds when the followers decide the mark too (`majority_ack`, and
+`fenced_caches` for a cache). The promoted leader fences a majority and takes
+the furthest log, but that only helps when the majority it reaches holds the
+records. Once the replica set has changed since a record was acknowledged, a
+majority of the sets the next leader fences need not hold it. The model found
+such a run (issue 1922): a leader at a new generation named its followers
+caught up at offset 0 before they answered, one of them was promoted with an
+empty log, and its fence got answers only from brokers that never held the
+record. Named only once they hold what their leader inherited, those followers
+are not candidates until the leader has shipped the record to them.
 
 The cost is availability. Right after a failover no follower is named until
 one has copied everything the new leader inherited, including a tail the old
@@ -2954,10 +3014,16 @@ leaves the shard unplaced until a broker holding the log returns, where
 before a follower could have been promoted at once. In issue 878 broker-2 held
 every acknowledged record but not the old leader's unacknowledged tail, and
 with the floor it would not have been named until it had copied that tail.
+A follower on a draining broker that holds the log can still be promoted when
+no live follower does, so a drain under way does not turn this cost into an
+outage (`seating_a_replacement_keeps_what_the_old_set_acknowledged`).
 `FelixShardReportFromAnswers.cfg` counts followers by their answers without
 the floor and loses the record, and `FelixShardReportFloor.cfg` passes
 (`a_new_leader_names_no_follower_before_it_answers`,
-`a_new_cache_leader_names_no_follower_missing_inherited_counters`). The
+`a_new_cache_leader_names_no_follower_missing_inherited_counters`, and with the
+followers deciding the mark
+`a_leader_acknowledging_by_followers_names_none_before_they_answer` and
+`a_cache_leader_acknowledging_by_followers_names_none_missing_inherited_counters`). The
 cluster test `a_move_cut_short_by_kills_promotes_no_follower_short_of_the_log`
 replays issue 878 in lease mode: no follower is promoted until the destination
 returns. With `majority_ack` finalized the cut-over is fenced with no lease
@@ -2991,7 +3057,9 @@ rather than being acknowledged on a report nobody received.
 With `majority_ack` finalized a `Quorum` stream shard drops this ordering: the
 report may trail the acknowledgement, and whichever replica is promoted fences
 a majority and takes the furthest log before it serves, which carries every
-acknowledged record ([Acknowledging by the followers](#acknowledging-by-the-followers)).
+acknowledged record as long as the report never names a follower short of the
+log its leader inherited (see "A new leader names nobody short of the log it
+inherited" below, and [Acknowledging by the followers](#acknowledging-by-the-followers)).
 Promotion still reads the report, and a report older than its freshness window
 still leaves the shard unplaced, so a leader cut off from the control plane for
 longer than that can only be replaced once it reports again.
@@ -4294,8 +4362,8 @@ production broker sends or reads a set yet. With it on:
 - A candidate's fence is refused while the replica heard its leader within
   `FELIX_LEADER_SUSPECT_AFTER_MS`.
 - A leader whose followers all offered `ELECTION` stops counting once its log
-  accepted a newer generation or keeps a newer set (rule 5), and a follower
-  answering `StaleSet` deposes it like `FencedEpoch`. A promoted leader keeps
+  accepted a newer generation or keeps a newer set (rule 5). A follower
+  answering `StaleSet` halts its cursor like `FencedEpoch`. A promoted leader keeps
   its own set and fences with it.
 
 The control plane's finalize gates are in place too: `joint_fence` is refused

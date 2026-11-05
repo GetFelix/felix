@@ -74,6 +74,10 @@ pub struct ShardCursors {
     /// a follower this leader has not reached yet by it. `None` before that
     /// pass. See [`inherited_names`].
     pub(super) inherited: Option<BTreeMap<String, String>>,
+    /// What this leader named each follower by at its previous generation,
+    /// for `inherited` when the new one is not a promotion. See
+    /// [`ShardCursors::next`].
+    pub(super) carried: BTreeMap<String, String>,
     /// Followers whose cursors may describe a copy that is no longer there.
     /// See [`Unconfirmed`].
     pub(super) unconfirmed: Unconfirmed,
@@ -103,6 +107,7 @@ impl ShardCursors {
             learner: None,
             own_start: None,
             inherited: None,
+            carried: BTreeMap::new(),
             unconfirmed: Unconfirmed::default(),
         }
     }
@@ -122,6 +127,43 @@ impl ShardCursors {
                 ..Self::at(generation)
             };
         }
+    }
+
+    /// Empty, at a later `generation` of the same leader, keeping what it
+    /// names its followers by: the identity a follower last answered from,
+    /// else the one it inherited. `keep_for` drops them if the log turns out
+    /// to be another incarnation's.
+    ///
+    /// A follower this leader does not reach at the new generation
+    /// acknowledged nothing there, and everything it acknowledged before came
+    /// from the copy it was named by. Named by none after a set change, its
+    /// fence answer would never count, and a failover that needs it could
+    /// not open (#1922).
+    pub(super) fn next(&self, generation: u64) -> Self {
+        Self {
+            incarnation: self.incarnation,
+            carried: if generation > self.generation {
+                self.names()
+            } else {
+                BTreeMap::new()
+            },
+            ..Self::at(generation)
+        }
+    }
+
+    /// What a report at this generation names each follower by.
+    fn names(&self) -> BTreeMap<String, String> {
+        let inherited = self.inherited.as_ref();
+        self.followers
+            .iter()
+            .filter_map(|follower| {
+                let id = match follower.storage_id {
+                    Some(id) => id.to_hex(),
+                    None => inherited?.get(&follower.node_id)?.clone(),
+                };
+                Some((follower.node_id.clone(), id))
+            })
+            .collect()
     }
 }
 
@@ -365,9 +407,15 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     let shard = crate::incarnation::shard_ref(broker, key, route.generation);
     let incarnation = shard.incarnation.unwrap_or(0);
     entry.keep_for(route.generation, incarnation);
+    // A promotion's assignment names the copies itself. Any other route at a
+    // new generation, a promotion that named no identities included, keeps
+    // what this leader named them by before.
     let inherited_ids = entry
         .inherited
-        .get_or_insert_with(|| inherited_names(route))
+        .get_or_insert_with(|| match route.fence_storage_ids {
+            Some(_) => inherited_names(route),
+            None => std::mem::take(&mut entry.carried),
+        })
         .clone();
     let Some(log) = broker
         .shard_log_for(
@@ -503,11 +551,14 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         fence.passed(mark_key, route.generation);
     }
     // Read from the cursors the last pass left: a follower halted this way
-    // stays halted until the assignment changes.
+    // stays halted until the assignment changes. Only an assignment names a
+    // newer leader. A follower's ballot or view may be a standing that never
+    // opened, and with a majority still answering this leader serves; with
+    // none left its rounds fail and its refusal is reported.
     if entry
         .followers
         .iter()
-        .any(|cursor| cursor.halted == Some(crate::Halt::Fenced))
+        .any(|cursor| cursor.halted == Some(crate::Halt::Fenced) && cursor.assigned_newer)
     {
         fence.deposed(mark_key, route.generation);
     }
@@ -667,12 +718,14 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 .offset_at(&watch_key(key), incarnation, route.generation)
                 .unwrap_or(0),
         );
-        // Nor below the log this leader inherited, while promotion trusts the
-        // report: an earlier leader may have acknowledged any of it. Without
-        // the floor, a new leader whose followers have not answered yet names
-        // all of them. Acknowledging by the followers, the promoted leader
-        // fences a majority and takes the furthest log instead.
-        if by_followers || stepped_down() {
+        // Nor below the log this leader inherited: an earlier leader may have
+        // acknowledged any of it. Without the floor, a new leader whose
+        // followers have not answered yet names all of them. Acknowledging by
+        // the followers does not lift it: once the set has changed since the
+        // records were acknowledged, a majority of the sets the next leader
+        // fences can lack them, and a follower named without them may fence
+        // only brokers that lack them too (#1922).
+        if stepped_down() {
             promised
         } else {
             promised.max(inherited.min(tail))
@@ -1498,7 +1551,8 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         //
         // A shard acknowledging by its followers skips all of this: whoever
         // leads next fences a majority and takes the furthest log before it
-        // serves, so what promotion read no longer decides what survives.
+        // serves. That holds only while the report names nobody short of the
+        // log its leader inherited (see `acknowledged`).
         //
         // A report that did not land leaves the mark where it was, because
         // the argument above rests on the control plane knowing who holds
@@ -2017,16 +2071,6 @@ async fn counter_level(
             .offset(&watch_key(key), route.generation)
             .unwrap_or(0),
     );
-    // Named only once it holds the updates this leader inherited, as for the
-    // shard's own log, while promotion trusts the report; with no recorded
-    // start, all of them. Acknowledging by the followers, the promoted leader
-    // fences a majority and takes the furthest counter log instead.
-    let inherited = start.map_or(tail, |start| start.min(tail));
-    let floor = if by_followers || stepped_down {
-        acknowledged
-    } else {
-        acknowledged.max(inherited)
-    };
     // The joint start counts from this stint's start record, as `own_start`
     // does for the shard's own log: an earlier stint at this generation may
     // have acknowledged updates on the old set alone.
@@ -2034,6 +2078,15 @@ async fn counter_level(
         log.stint_start(route.generation)
             .map_or(first, |stint| stint.max(first))
     });
+    // Named only once it holds the updates this leader inherited, from this
+    // stint's start as for the shard's own log and for the same reason, by
+    // followers or not; with no recorded start, all of them.
+    let inherited = stint.map_or(tail, |start| start.min(tail));
+    let floor = if stepped_down {
+        acknowledged
+    } else {
+        acknowledged.max(inherited)
+    };
     Some(CounterLevel {
         acknowledged,
         level: caught_up(floor, followers),

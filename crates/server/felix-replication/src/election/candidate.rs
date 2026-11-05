@@ -81,6 +81,9 @@ struct Ctx<R> {
     /// Why each shard last could not stand, so the reason is logged once
     /// when it changes rather than every round.
     held_back: std::sync::Mutex<HashMap<ShardKey, (&'static str, String)>>,
+    /// When each shard was first held back for following a newer leader,
+    /// by the generation it follows. See [`Ctx::defers`].
+    deferring: std::sync::Mutex<HashMap<ShardKey, (u64, Instant)>>,
     /// The generation each shard last stood at here.
     stood: std::sync::Mutex<HashMap<ShardKey, u64>>,
     /// When a ballot naming this broker that no standing here wrote was
@@ -95,6 +98,27 @@ impl<R> Ctx<R> {
     fn ineligible(&self, key: &ShardKey, why: &'static str) -> Round {
         self.held_back(key, why, "");
         Round::Ineligible
+    }
+
+    /// Whether this copy still defers to the newer leader whose fence it took
+    /// at `generation`, unless that leader's pre-vote answer says it stood
+    /// down. Without a bound once that leader's start record is here: it
+    /// opened and reached this copy. Otherwise only for the elections' defer
+    /// bound, so a leader that never opens does not hold the shard forever.
+    fn defers(&self, key: &ShardKey, generation: u64, started: bool) -> bool {
+        if started {
+            return true;
+        }
+        let now = Instant::now();
+        let mut deferring = self.deferring.lock().expect("deferring lock");
+        let since = match deferring.get(key) {
+            Some((at, since)) if *at == generation => *since,
+            _ => {
+                deferring.insert(key.clone(), (generation, now));
+                now
+            }
+        };
+        now.saturating_duration_since(since) < self.elections.defer_for()
     }
 
     /// Whether this copy's ballot at `accepted` names this broker without a
@@ -161,6 +185,7 @@ pub fn spawn<R: PeerRequester + Send + Sync + 'static>(
         elections,
         suspects,
         held_back: Default::default(),
+        deferring: Default::default(),
         stood: Default::default(),
         named_here: Default::default(),
         pre_vote_gate: pre_vote_gate(),
@@ -276,6 +301,28 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
             "the shard does not acknowledge on its followers, or its log is not open here",
         );
     };
+    // This copy took another leader's fence above the route, and nothing
+    // says that leader is gone: standing over it would only take its
+    // follower away, leaving it a generation it can never serve at. It
+    // stands anyway once that leader answers the pre-vote as one that is
+    // neither fencing nor leading, or, if its start record never came,
+    // once the elections' defer bound has passed.
+    let accepted = log.accepted_generation();
+    let follows_newer = log
+        .accepted_leader()
+        .filter(|leader| {
+            accepted > route.generation
+                && **leader != *local
+                && !ctx.suspects.current().contains(&**leader)
+        })
+        .map(|leader| leader.to_string());
+    let follows_newer = follows_newer.filter(|_| {
+        let started = log
+            .generations()
+            .iter()
+            .any(|epoch| epoch.generation == accepted);
+        ctx.defers(key, accepted, started)
+    });
     let Some(kept) = log.replica_set() else {
         return ctx.ineligible(key, "this copy keeps no replica set");
     };
@@ -370,7 +417,21 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
     {
         return ctx.ineligible(key, "past the generations the control plane adopts");
     }
-    let first = match pre_vote(ctx, key, &log, &kept.current, generation).await {
+    let first = pre_vote(ctx, key, &log, &kept.current, generation).await;
+    if let Some(leader) = &follows_newer {
+        let stood_down = first.as_ref().is_ok_and(|first| first.stood_down(leader));
+        if !stood_down {
+            return ctx.ineligible(key, "this copy follows a newer leader it does not suspect");
+        }
+        tracing::info!(
+            stream = %key.stream,
+            shard = key.shard,
+            generation = accepted,
+            leader = %leader,
+            "the newer leader this copy follows is not leading it; standing over it",
+        );
+    }
+    let first = match first {
         Ok(first) if first.majority() => first,
         Ok(lost) => {
             ctx.held_back(key, "the pre-vote found no majority", &lost.answers());
@@ -545,6 +606,17 @@ impl PreVoted {
 
     fn refused(&self, node: &str) -> bool {
         self.refused.iter().any(|(refuser, _)| refuser == node)
+    }
+
+    /// Whether `node` answered as one neither fencing nor leading the shard:
+    /// a yes, or a refusal it only reaches past that check. Silence is not
+    /// an answer.
+    fn stood_down(&self, node: &str) -> bool {
+        self.granted.contains(node)
+            || self
+                .refused
+                .iter()
+                .any(|(refuser, why)| refuser == node && *why == PreVoteRefusal::LogBehind)
     }
 
     /// What the voters answered, for the log.
