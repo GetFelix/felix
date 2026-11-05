@@ -1041,8 +1041,8 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             .offset_at(&watch_key(&key), incarnation, generation);
         // Only while some follower is answering: with every one of them out
         // of reach, a pass on each append could not raise the mark, and the
-        // tick retries them (#1944). One that refused a batch is in reach: a
-        // follower behind on routing needs the candidate fence a pass sends.
+        // tick retries them (#1944). One that refused a batch for its routing
+        // view is in reach: the next pass sends it the candidate fence.
         let reachable = cursors
             .followers
             .iter()
@@ -1335,6 +1335,15 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             && cursor.halted.is_none()
             && !cursor.stalled
             && tail.is_some_and(|tail| cursor.next_offset < tail);
+        // A straggler's refusal for its routing view leaves the shard owed,
+        // as a pass that took it would: the next pass is what resolves it.
+        let refused_behind = current
+            && cursor.halted.is_none()
+            && cursor.refused
+            && tail.is_some_and(|tail| cursor.next_offset < tail);
+        if refused_behind && let Some(state) = self.states.get_mut(&key) {
+            state.owed = true;
+        }
         let at = (generation, incarnation);
         let mut moved = put_back(self.streams.get_mut(&key), at, cursor) || counts_for_more || owed;
         for (entries, cursor) in [

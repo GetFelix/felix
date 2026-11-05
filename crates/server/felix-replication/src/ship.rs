@@ -429,11 +429,13 @@ async fn ship_batch<R: PeerRequester>(
 
     let progress = read_answer(&answer);
     cursor.stalled = progress == Progress::Retry;
-    cursor.refused = cursor.stalled;
     cursor.route_behind = matches!(
         &answer,
         InternalMessage::ReplicateError(err) if err.code == ErrorCode::StaleRoute
     );
+    // Not a refusal such as a full disk or a credential: passes on every
+    // append could not move those, and would take slots from other shards.
+    cursor.refused = cursor.route_behind;
     match progress {
         Progress::Stored { durable_offset } => {
             // From the same answer as `confirmed`, so the two always agree.
