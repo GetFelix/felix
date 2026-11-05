@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793879858192,
+  "lastUpdate": 1793887120480,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -45604,6 +45604,58 @@ window.BENCHMARK_DATA = {
             "range": "123919.31",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1597685.30\nmean: 1559635.09\nstdev: 123919.31\ncv: 7.95%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "fe99c32276c80ceb6fa60744f513f2d2010769cd",
+          "message": "fix(test): catalog sync replay test waits for the stream's registration (#1976)\n\nThe catalog-sync replay test waits for the stream's registered metadata instead of the storage incarnation, which is settled before the stream is registered. Fixes main, red since #1946 moved shard opens onto the blocking pool.",
+          "timestamp": "2026-11-05T05:48:28-08:00",
+          "tree_id": "bae76f5f1b4f734f162a944df925c9bace899375",
+          "url": "https://github.com/GetFelix/felix/commit/fe99c32276c80ceb6fa60744f513f2d2010769cd"
+        },
+        "date": 1793887119689,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 728132.97,
+            "range": "36775.48",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 728132.97\nmean: 714740.06\nstdev: 36775.48\ncv: 5.15%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 728132.97,
+            "range": "36775.48",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 728132.97\nmean: 714740.06\nstdev: 36775.48\ncv: 5.15%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 173083.19,
+            "range": "6598.96",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 173083.19\nmean: 170556.79\nstdev: 6598.96\ncv: 3.87%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1730831.92,
+            "range": "65989.60",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1730831.92\nmean: 1705567.90\nstdev: 65989.60\ncv: 3.87%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
