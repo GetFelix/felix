@@ -440,16 +440,14 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 .offset_at(&watch_key(key), incarnation, route.generation)
                 .unwrap_or(0),
         );
-        // Nor below the log this leader inherited, while promotion trusts the
-        // report: an earlier leader may have acknowledged any of it. Without
-        // the floor, a new leader whose followers have not answered yet names
-        // all of them. Acknowledging by the followers, the promoted leader
-        // fences a majority and takes the furthest log instead.
-        if by_followers {
-            promised
-        } else {
-            promised.max(inherited.min(tail))
-        }
+        // Nor below the log this leader inherited: an earlier leader may have
+        // acknowledged any of it. Without the floor, a new leader whose
+        // followers have not answered yet names all of them. Acknowledging by
+        // the followers does not lift it: once the set has changed since the
+        // records were acknowledged, a majority of the sets the next leader
+        // fences can lack them, and a follower named without them may fence
+        // only brokers that lack them too (#1922).
+        promised.max(inherited.min(tail))
     };
     // The logs that ride the shard ride each follower's exchange too, so a
     // follower that does not answer holds up none of them: it is handed off
@@ -1041,7 +1039,8 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         //
         // A shard acknowledging by its followers skips all of this: whoever
         // leads next fences a majority and takes the furthest log before it
-        // serves, so what promotion read no longer decides what survives.
+        // serves. That holds only while the report names nobody short of the
+        // log its leader inherited (see `acknowledged`).
         //
         // A report that did not land leaves the mark where it was, because
         // the argument above rests on the control plane knowing who holds
@@ -1521,15 +1520,10 @@ async fn counter_level(
             .unwrap_or(0),
     );
     // Named only once it holds the updates this leader inherited, as for the
-    // shard's own log, while promotion trusts the report; with no recorded
-    // start, all of them. Acknowledging by the followers, the promoted leader
-    // fences a majority and takes the furthest counter log instead.
+    // shard's own log and for the same reason, by followers or not; with no
+    // recorded start, all of them.
     let inherited = start.map_or(tail, |start| start.min(tail));
-    let floor = if by_followers {
-        acknowledged
-    } else {
-        acknowledged.max(inherited)
-    };
+    let floor = acknowledged.max(inherited);
     Some(CounterLevel {
         acknowledged,
         level: caught_up(floor, followers),

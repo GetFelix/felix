@@ -837,6 +837,74 @@ async fn a_new_leader_names_no_follower_before_it_answers() {
     );
 }
 
+/// **A leader acknowledging by its followers names none of them before they
+/// hold what it inherited (#1922).** The earlier leader may have acknowledged
+/// the records on a majority this leader's set no longer contains, as when a
+/// failover swapped a member out. Named at offset 0, an empty follower could
+/// be promoted next and open on a fence answered only by brokers that never
+/// held them, losing an acknowledged write.
+#[tokio::test]
+async fn a_leader_acknowledging_by_followers_names_none_before_they_answer() {
+    let (broker, _dir) = inheriting_leader(3).await;
+    let marks = by_followers();
+    assert!(marks.serving().streams_by_followers);
+    let requester = UnreachableFollowers {
+        handshake: Duration::from_millis(20),
+    };
+
+    let pass = replicate_once(
+        &requester,
+        &broker,
+        &router(LOCAL, &["broker-b", "broker-c"], 4),
+        &marks,
+        None,
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+    )
+    .await;
+
+    let report = pass.reports.last().expect("a report");
+    assert!(
+        report.caught_up.is_empty(),
+        "followers holding none of the inherited log were offered for promotion: {:?}",
+        report.caught_up,
+    );
+}
+
+/// The same leader names a follower once it answers holding the inherited
+/// log, so placement has a candidate again.
+#[tokio::test]
+async fn a_leader_acknowledging_by_followers_names_one_holding_what_it_inherited() {
+    let (broker, _dir) = inheriting_leader(3).await;
+
+    let pass = replicate_once(
+        &AcceptingFollower::default(),
+        &broker,
+        &router(LOCAL, &["broker-b"], 4),
+        &by_followers(),
+        None,
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+    )
+    .await;
+
+    let report = pass.reports.last().expect("a report");
+    assert_eq!(report.caught_up, vec!["broker-b".to_string()]);
+}
+
+/// Marks a fleet that has finalized acknowledging by the followers decides.
+fn by_followers() -> QuorumMarks {
+    use felix_common::fleet::{FleetGate, GENERATION_START, MAJORITY_ACK};
+    let names = [GENERATION_START.name(), MAJORITY_ACK.name()];
+    let fleet = FleetGate::new(names);
+    fleet.observe(names);
+    QuorumMarks::with_fleet(Arc::new(fleet))
+}
+
 /// The same leader names a follower once it answers holding the inherited
 /// log.
 #[tokio::test]

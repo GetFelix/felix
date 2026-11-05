@@ -2235,10 +2235,18 @@ acknowledges a record on A and B while C lags, A dies and B is promoted, B
 reports before C answers and names C, B dies, and C is promoted without the
 record. So wherever promotion trusts the report, the bound is never below
 where the leader's generation begins in its own log, or its whole log if no
-start was recorded. A cache's counter log gets the same floor. A stream shard
-that acknowledges by its followers skips it, and so does a cache shard under
-`fenced_caches`, for both its logs, because its promoted leader
-fences a majority and takes the furthest log before it serves.
+start was recorded. A cache's counter log gets the same floor.
+
+The floor holds when the followers decide the mark too (`majority_ack`, and
+`fenced_caches` for a cache). The promoted leader fences a majority and takes
+the furthest log, but that only helps when the majority it reaches holds the
+records. Once the replica set has changed since a record was acknowledged, a
+majority of the sets the next leader fences need not hold it. The model found
+such a run (issue 1922): a leader at a new generation named its followers
+caught up at offset 0 before they answered, one of them was promoted with an
+empty log, and its fence got answers only from brokers that never held the
+record. Named only once they hold what their leader inherited, those followers
+are not candidates until the leader has shipped the record to them.
 
 The cost is availability. Right after a failover no follower is named until
 one has copied everything the new leader inherited, including a tail the old
@@ -2250,7 +2258,10 @@ with the floor it would not have been named until it had copied that tail.
 `FelixShardReportFromAnswers.cfg` counts followers by their answers without
 the floor and loses the record, and `FelixShardReportFloor.cfg` passes
 (`a_new_leader_names_no_follower_before_it_answers`,
-`a_new_cache_leader_names_no_follower_missing_inherited_counters`). The
+`a_new_cache_leader_names_no_follower_missing_inherited_counters`, and with the
+followers deciding the mark
+`a_leader_acknowledging_by_followers_names_none_before_they_answer` and
+`a_cache_leader_acknowledging_by_followers_names_none_missing_inherited_counters`). The
 cluster test `a_move_cut_short_by_kills_promotes_no_follower_short_of_the_log`
 replays issue 878 in lease mode: no follower is promoted until the destination
 returns. With `majority_ack` finalized the cut-over is fenced with no lease
@@ -2284,7 +2295,9 @@ rather than being acknowledged on a report nobody received.
 With `majority_ack` finalized a `Quorum` stream shard drops this ordering: the
 report may trail the acknowledgement, and whichever replica is promoted fences
 a majority and takes the furthest log before it serves, which carries every
-acknowledged record ([Acknowledging by the followers](#acknowledging-by-the-followers)).
+acknowledged record as long as the report never names a follower short of the
+log its leader inherited (see "A new leader names nobody short of the log it
+inherited" above, and [Acknowledging by the followers](#acknowledging-by-the-followers)).
 Promotion still reads the report, and a report older than its freshness window
 still leaves the shard unplaced, so a leader cut off from the control plane for
 longer than that can only be replaced once it reports again.
@@ -2333,7 +2346,7 @@ the leader and the leaving follower alone. If the newcomer is seated before it
 holds that record, and the leader then dies, the newcomer and the lagging
 follower are a majority of the new set and the next leader opens without it.
 Placement used to seat once the newcomer was within the move lag bound, or once
-a report named it caught up, and a leader acknowledging by its followers names
+a report named it caught up, and a leader acknowledging by its followers named
 every follower caught up at a new generation until something is counted there.
 So on a durable `Quorum`
 stream the seat now waits, on a report at the joining generation, until the
