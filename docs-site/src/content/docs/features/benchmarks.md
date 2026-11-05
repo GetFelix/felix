@@ -316,7 +316,12 @@ match TLS configuration on both sides before drawing conclusions.
 Three CI workflows keep this data current without anyone having to remember
 to re-run the harness by hand:
 
-- `.github/workflows/perf-pr.yml` runs on every PR. It builds both the PR's
+- `.github/workflows/perf-pr.yml` runs on PRs that touch hot-path code: `crates/server`,
+  `crates/protocol`, `crates/sdk/felix-client`, the `felix-cluster` and
+  `felix-loadgen` crates, `services/felix-broker-service`, `scripts/perf/`,
+  `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `.cargo/config.toml` and
+  the workflow file. The instructions-per-message gate uses the same filter.
+  `felix-cluster`'s dependency on the control plane is deliberately not in it. It builds both the PR's
   merge-base and the PR head, then benchmarks them on the same runner
   instance (a small fast subset, not the full matrix below, plus one
   64 KiB-payload cell that reaches the subscriber byte bound), then posts a

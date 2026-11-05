@@ -147,6 +147,14 @@ filler that restates what was just said.
   time, so PRs don't conflict on the changelog.
 - `task lint` and `task test` should pass locally before you open a PR. CI
   runs both plus `cargo-deny`.
+- The `Instructions per message` and `Performance Regression Check` workflows
+  run on a PR only when it touches hot-path code (`crates/server`,
+  `crates/protocol`, `crates/sdk/felix-client`, the cluster and loadgen test
+  crates, `services/felix-broker-service`, `scripts/perf`, `Cargo.toml`,
+  `Cargo.lock`, `rust-toolchain.toml`, `.cargo/config.toml`) or its own workflow file, to spare shared
+  runners. Neither feeds `CI ok`. A new push cancels a PR's older run of ci, coverage,
+  nightly, perf-pr, ipm-gate and tla-walk (tla-walk cancels only PR runs, not
+  nightly or dispatch); runs on main are never cancelled.
 - The `Instructions per message` workflow counts the CPU instructions the
   broker retires per acknowledged message (in-memory stream, 256 B, acked,
   48 keys over 48 shards, batch 1 and 64) and fails when a cell is more than
