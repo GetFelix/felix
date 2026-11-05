@@ -105,8 +105,15 @@ pub(super) fn spawn_catalog_sync(
     }
 }
 
-/// Flip to ready once the catalog has been applied and every durable stream
-/// it named has been recovered.
+/// Flip to ready once the catalog has been applied, every durable stream it
+/// named has been recovered, and `listening` is cancelled: every listener
+/// bound.
+///
+/// The catalog can seed before startup binds its last listener, and a bind
+/// can still fail on a taken port. A broker that reported ready and then
+/// exited looks to whatever started it like one that crashed while serving,
+/// not like a start-up to retry. Registration waits on the same flip, so the
+/// control plane never learns a peer address nothing listens on.
 ///
 /// This has to be armed *before* the shutdown await, not after it: a task
 /// spawned below that point would only start listening for the seed signal
@@ -125,11 +132,13 @@ pub(super) fn spawn_readiness_flip(
     draining: &CancellationToken,
     seeded: &CancellationToken,
     seeded_rx: oneshot::Receiver<()>,
+    listening: &CancellationToken,
 ) {
     if gate_readiness_on_sync {
         let readiness = readiness.clone();
         let draining = draining.clone();
         let seeded = seeded.clone();
+        let listening = listening.clone();
         tokio::spawn(async move {
             // `Readiness` is a single flag, so it cannot distinguish "never
             // ready yet" from "already drained" — both read false. The drain
@@ -140,7 +149,11 @@ pub(super) fn spawn_readiness_flip(
                 _ = draining.cancelled() => {
                     tracing::warn!("shutdown began before the initial sync; staying unready");
                 }
-                result = seeded_rx => {
+                result = async {
+                    let result = seeded_rx.await;
+                    listening.cancelled().await;
+                    result
+                } => {
                     if result.is_ok() {
                         // Release the accept loop first, so a connection that
                         // arrives the instant readiness flips is answered

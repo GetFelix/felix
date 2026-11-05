@@ -231,6 +231,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                     session.publish_window.as_ref(),
                     &mut cancel_rx_read,
                     request_id,
+                    frame.header.flags & felix_wire::FLAG_BINARY_PUBLISH_IDEMPOTENT != 0,
                 )
                 .await
             {
@@ -297,12 +298,13 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
             t_histogram!("felix_broker_decode_ns").record(decode_ns as f64);
         }
         if session.ack_order.is_enabled()
-            && let Some(request_id) = pipelined_request(&message)
+            && let Some((request_id, idempotent)) = pipelined_request(&message)
             && !admit_pipelined(
                 &session.ack_order,
                 session.publish_window.as_ref(),
                 &mut cancel_rx_read,
                 request_id,
+                idempotent,
             )
             .await
         {
@@ -1276,8 +1278,9 @@ struct Session {
     stream_cache_key: String,
 }
 
-/// The request a publish is answered under, if it is answered at all.
-fn pipelined_request(message: &Message) -> Option<u64> {
+/// The request a publish is answered under, if it is answered at all, and
+/// whether it is idempotent.
+fn pipelined_request(message: &Message) -> Option<(u64, bool)> {
     match message {
         Message::Publish {
             request_id: Some(request_id),
@@ -1288,8 +1291,8 @@ fn pipelined_request(message: &Message) -> Option<u64> {
             request_id: Some(request_id),
             ack,
             ..
-        } if *ack != Some(felix_wire::AckMode::None) => Some(*request_id),
-        Message::PublishIdempotent { request_id, .. } => Some(*request_id),
+        } if *ack != Some(felix_wire::AckMode::None) => Some((*request_id, false)),
+        Message::PublishIdempotent { request_id, .. } => Some((*request_id, true)),
         _ => None,
     }
 }
@@ -1306,6 +1309,7 @@ async fn admit_pipelined(
     window: Option<&Arc<Semaphore>>,
     cancel_rx: &mut watch::Receiver<bool>,
     request_id: u64,
+    idempotent: bool,
 ) -> bool {
     let permit = match window {
         None => None,
@@ -1323,7 +1327,7 @@ async fn admit_pipelined(
             }
         },
     };
-    order.register(request_id, permit);
+    order.register(request_id, idempotent, permit);
     true
 }
 
