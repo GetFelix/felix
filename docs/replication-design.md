@@ -4465,9 +4465,10 @@ Once it is finalized on a broker that offers `ELECTION`:
     before was fenced from here. The fence stays pending.
   - The log keeps an older set than the one before, and all of this holds:
     the broker's own ballot and a start record at this generation, no change
-    pending on the route, and a kept set with nothing beside it that names
-    exactly the route's set, on the same copies (a member either side names
-    no copy for does not match). That is a leader elected here whose election
+    pending on the route, and a kept set that names exactly the route's set
+    on the same copies. A member with no copy named on either side does not
+    match. The log may also keep the set this one left, but only on the same
+    copies (as a plain generation bump leaves it), and no earlier sets. That is a leader elected here whose election
     the control plane adopted, restarted: it keeps the set it stood on, from
     an older generation, and its watch has no prior after a restart. A
     candidate stands only on the set the control plane records, and adoption

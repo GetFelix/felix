@@ -580,7 +580,7 @@ pub(super) async fn sets<R: PeerRequester>(
         // it beside the control plane's. The evidence: its own ballot and
         // start record here (a ballot alone may be a withdrawn standing), and
         // the kept set naming exactly the route's set on the same copies with
-        // nothing pending. These do not prove the open was fenced; the
+        // nothing pending and nothing else kept beside it. These do not prove the open was fenced; the
         // unfenced opens that also leave them are covered in
         // docs/replication-design.md, "Planned handoff".
         Err(NoSetBefore::Skipped(generation))
@@ -592,7 +592,12 @@ pub(super) async fn sets<R: PeerRequester>(
                     .any(|epoch| epoch.generation == generation)
                 && route.pending.is_none()
                 && stored.as_ref().is_some_and(|stored| {
-                    stored.leaving.is_none()
+                    // A set left on the same copies is the one a plain bump
+                    // leaves, which the candidate stands on too.
+                    stored
+                        .leaving
+                        .as_ref()
+                        .is_none_or(|leaving| same_set(leaving, &stored.current))
                         && stored.earlier.is_empty()
                         && names_the_route_set(&stored.current, route)
                 }) =>

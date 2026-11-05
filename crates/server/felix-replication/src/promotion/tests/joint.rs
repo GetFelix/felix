@@ -1243,57 +1243,53 @@ async fn an_adopted_leader_restarted_on_an_older_kept_set_renames_only_on_eviden
         member_storage_ids: None,
         ..route.clone()
     };
-    for (case, ballot, opened, route, kept_copies, renames) in [
-        ("evidence", Some(LEADER), true, &route, named(&all), true),
+    let (own, x) = (Some(LEADER), Some("broker-x"));
+    let (same, other) = (named(&all), older_x);
+    // (case, ballot, start record, route, kept set's copies, copies of the
+    // set kept as leaving, renames)
+    for (case, ballot, opened, route, kept_copies, left_copies, renames) in [
+        ("evidence", own, true, &route, &same, None, true),
         (
-            "no start record",
-            Some(LEADER),
-            false,
-            &route,
-            named(&all),
-            false,
-        ),
-        (
-            "another's ballot",
-            Some("broker-x"),
+            "leaving the same copies",
+            own,
             true,
             &route,
-            named(&all),
-            false,
+            &same,
+            Some(&same),
+            true,
         ),
-        ("no ballot", None, true, &route, named(&all), false),
         (
-            "another copy kept",
-            Some(LEADER),
+            "leaving other copies",
+            own,
             true,
             &route,
-            older_x.clone(),
+            &same,
+            Some(&other),
             false,
         ),
+        ("no start record", own, false, &route, &same, None, false),
+        ("another's ballot", x, true, &route, &same, None, false),
+        ("no ballot", None, true, &route, &same, None, false),
+        ("another copy kept", own, true, &route, &other, None, false),
         (
             "route names no copies",
-            Some(LEADER),
+            own,
             true,
             &unnamed,
-            named(&all),
-            false,
-        ),
-        (
-            "kept names no copies",
-            Some(LEADER),
-            true,
-            &route,
+            &same,
             None,
             false,
         ),
         (
-            "a change pending",
-            Some(LEADER),
+            "kept names no copies",
+            own,
             true,
-            &pending,
-            named(&all),
+            &route,
+            &None,
+            None,
             false,
         ),
+        ("a change pending", own, true, &pending, &same, None, false),
     ] {
         let replicas = replicas_with(&["broker-x", "broker-z"]);
         let (leader, _dir) = leader_holding(PROMOTED - 4, &["a"]).await;
@@ -1303,11 +1299,20 @@ async fn an_adopted_leader_restarted_on_an_older_kept_set_renames_only_on_eviden
             .expect("log");
         let stood = Route {
             generation: PROMOTED - 4,
-            member_storage_ids: kept_copies,
+            member_storage_ids: kept_copies.clone(),
             pending: None,
             ..swapped()
         };
-        log.accept_set(crate::replica_set::kept(&stood, None))
+        let mut kept = crate::replica_set::kept(&stood, None);
+        kept.leaving = left_copies.map(|copies| {
+            let left = Route {
+                generation: PROMOTED - 5,
+                member_storage_ids: copies.clone(),
+                ..stood.clone()
+            };
+            crate::replica_set::kept(&left, None).current
+        });
+        log.accept_set(kept)
             .await
             .expect("the set the election stood on");
         if let Some(ballot) = ballot {
