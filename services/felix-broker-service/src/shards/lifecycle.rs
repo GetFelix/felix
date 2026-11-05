@@ -1012,8 +1012,9 @@ impl ShardReaders {
     /// ([`ShardFence::unheard`]). The rounds that check run only while the
     /// lease is lapsed; while it holds, a new assignment reaches this broker
     /// the usual way. Silence alone names no newer leader, and the shard's
-    /// `Quorum` writes go on wherever a majority answers, so a confirmed round
-    /// or a valid lease admits readers again.
+    /// `Quorum` writes go on wherever a majority answers, so rounds go on for
+    /// a shard ended for silence, lease or no lease, and the first one
+    /// confirmed admits its readers again.
     ///
     /// [`ShardFence::sessions_lease_free`]: fence::ShardFence::sessions_lease_free
     /// [`ShardFence::depose`]: fence::ShardFence::depose
@@ -1063,13 +1064,15 @@ impl ShardReaders {
                     }
                 }
                 _ = tokio::time::sleep(probe), if !unleased.is_empty() || !unheard.is_empty() => {
-                    unheard.retain(|key, generation| fence.is_open_at(key, *generation));
+                    unheard.retain(|key, generation| {
+                        fence.is_open_at(key, *generation)
+                            && !fence.names_newer_leader(key, *generation)
+                    });
+                    // A renewed lease alone does not clear silence: the
+                    // routes it serves on may predate a promotion made while
+                    // it was cut off. Only a round says no one replaced it.
                     if lease.is_valid_now() {
-                        for (key, generation) in unheard.drain() {
-                            fence.heard(&key, generation);
-                        }
                         unleased.clear();
-                        continue;
                     }
                     self.probe(&fence, &marks, &mut unleased, &mut unheard, lease.usable())
                         .await;

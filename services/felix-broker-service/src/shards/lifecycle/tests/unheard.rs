@@ -12,10 +12,11 @@ use crate::test_support::leader::{self, Leader};
 
 use super::*;
 
-/// Confirms every round while `answering` is set.
+/// Confirms every round while `answering` is set, and counts them.
 #[derive(Default)]
 struct Majority {
     answering: AtomicBool,
+    rounds: std::sync::atomic::AtomicUsize,
 }
 
 #[async_trait::async_trait]
@@ -25,6 +26,7 @@ impl felix_replication::quorum::LeadershipCheck for Majority {
         _key: &ShardKey,
         _generation: u64,
     ) -> Result<(), felix_replication::quorum::QuorumError> {
+        self.rounds.fetch_add(1, SeqCst);
         if self.answering.load(SeqCst) {
             Ok(())
         } else {
@@ -142,16 +144,25 @@ async fn readers_ended_for_silence_come_back_when_a_majority_answers() {
     );
 }
 
-/// **The same once the lease is renewed**, with no round confirmed: while it
-/// holds no rounds run, and a new assignment reaches the broker the usual way.
+/// **A renewed lease alone does not bring them back.** Its routes may predate
+/// a promotion made while this broker was cut off, and with the lease held
+/// nothing else would tell it. A round does, lease or no lease, and a newer
+/// leader's followers refuse it.
 #[tokio::test(start_paused = true)]
-async fn readers_ended_for_silence_come_back_with_the_lease() {
+async fn a_renewed_lease_alone_does_not_bring_the_readers_back() {
     let unleased = Unleased::start().await;
     unleased.go_quiet().await;
 
     unleased.lease.renew();
+    tokio::time::sleep(unleased.lease.usable() * 2).await;
+    assert!(!unleased.reads_admitted(), "no round confirmed");
+
+    unleased.majority.answering.store(true, SeqCst);
     tokio::time::sleep(unleased.lease.usable() / 2).await;
-    assert!(unleased.reads_admitted(), "the lease is valid again");
+    assert!(
+        unleased.reads_admitted(),
+        "a round confirmed under the lease"
+    );
 
     // A later lapse starts the silence clock again rather than finding the
     // old one.
@@ -163,8 +174,8 @@ async fn readers_ended_for_silence_come_back_with_the_lease() {
     );
 }
 
-/// A follower naming a newer leader still deposes for good: a round
-/// confirmed afterwards does not bring the readers back.
+/// A follower naming a newer leader still deposes for good: no round is run
+/// for the shard after that, and readers stay away.
 #[tokio::test(start_paused = true)]
 async fn a_deposal_for_a_newer_leader_is_not_cleared_by_a_round() {
     let unleased = Unleased::start().await;
@@ -173,9 +184,17 @@ async fn a_deposal_for_a_newer_leader_is_not_cleared_by_a_round() {
         .ingress
         .fence()
         .depose(&quorum(), leader::GENERATION);
+    // One tick to drop the shard from the rounds.
+    tokio::time::sleep(unleased.lease.usable() / 2).await;
+    let rounds = unleased.majority.rounds.load(SeqCst);
 
     unleased.majority.answering.store(true, SeqCst);
     unleased.lease.renew();
-    tokio::time::sleep(unleased.lease.usable() / 2).await;
+    tokio::time::sleep(unleased.lease.usable() * 2).await;
     assert!(!unleased.reads_admitted());
+    assert_eq!(
+        unleased.majority.rounds.load(SeqCst),
+        rounds,
+        "no rounds for a shard with a newer leader"
+    );
 }

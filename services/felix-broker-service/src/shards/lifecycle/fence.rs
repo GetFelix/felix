@@ -333,9 +333,9 @@ impl ShardFence {
         self.deposal.notify_one();
     }
 
-    /// A majority answered `key` at `generation` again, or the lease is
-    /// valid again: clears [`Self::unheard`] at that generation. A deposal
-    /// for a newer leader stays.
+    /// A majority answered `key` at `generation` again: clears
+    /// [`Self::unheard`] at that generation. A deposal for a newer leader
+    /// stays.
     pub(crate) fn heard(&self, key: &ShardKey, generation: u64) {
         if let Some(gate) = self.gates.read().get(key) {
             let _ = gate
@@ -351,6 +351,15 @@ impl ShardFence {
         self.gates.read().get(key).is_some_and(|gate| {
             gate.deposed_at.load(SeqCst) == generation || gate.unheard_at.load(SeqCst) == generation
         })
+    }
+
+    /// Whether this broker learned `key` has a newer leader than
+    /// `generation` ([`Self::depose`]).
+    pub(crate) fn names_newer_leader(&self, key: &ShardKey, generation: u64) -> bool {
+        self.gates
+            .read()
+            .get(key)
+            .is_some_and(|gate| gate.deposed_at.load(SeqCst) == generation)
     }
 
     /// Whether `key`'s fence is open at `generation`.
