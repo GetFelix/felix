@@ -149,3 +149,36 @@ async fn a_refusal_is_an_answer_and_an_unreachable_server_is_not() {
     let nowhere = HttpControlPlaneLink::new(reqwest::Client::new(), "http://127.0.0.1:1");
     assert!(nowhere.node("t", "n1").await.is_err());
 }
+
+#[tokio::test]
+async fn a_body_that_is_cut_short_does_not_hide_the_status() {
+    use tokio::io::AsyncWriteExt;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            tokio::spawn(async move {
+                let mut buf = [0u8; 2048];
+                let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut buf).await;
+                // Promises 100 bytes, sends 2, then hangs up.
+                let _ = socket
+                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\nhi")
+                    .await;
+            });
+        }
+    });
+    let link = HttpControlPlaneLink::new(reqwest::Client::new(), &format!("http://{addr}"));
+    let body = serde_json::json!({});
+
+    let answer = link
+        .heartbeat("t", "n1", &body, Duration::from_secs(5))
+        .await
+        .expect("a status-only call still has its answer");
+    assert_eq!(answer.status, StatusCode::OK);
+    assert!(answer.json::<serde_json::Value>().is_err());
+}
