@@ -92,6 +92,10 @@ fn fence_backoff(failures: u32) -> Duration {
 /// shard's followers behind. Not at once: a follower that is unreachable would
 /// be redialled in a tight loop for the rest of the drain.
 const CATCH_UP_RETRY: Duration = Duration::from_millis(50);
+/// How long a leader's own ballot must stay past the generation it leads
+/// before it reports that generation refused. A promotion takes the new
+/// ballot before the routes name it, so a shorter gap is a route catching up.
+const BALLOT_ABOVE_FOR: Duration = Duration::from_secs(3);
 
 /// The running driver, as a stopping broker needs it.
 pub struct Replication {
