@@ -130,16 +130,25 @@ impl AckOrder {
     }
 
     /// When the oldest unanswered ordered publish was read, if a later answer
-    /// is held behind it.
+    /// is held behind it. Answering on completion, when the oldest unanswered
+    /// publish of any kind was read, held answers or not.
     ///
     /// Every registered publish is answered within the ack timeout, so a head
     /// that outlives it lost its answer somewhere; the writer closes the
-    /// stream rather than hold everything behind it forever.
+    /// stream rather than hold everything behind it forever. A lost plain
+    /// answer holds nothing back, but it keeps its window slot, and enough of
+    /// them would stop the stream's reads.
     pub(crate) fn blocked_since(&self) -> Option<Instant> {
         let slots = self.lock();
-        let mut ordered = slots.iter().filter(|slot| slot.ordered);
-        let head = ordered.next()?;
-        ordered
+        if self.on_completion.load(Ordering::Acquire) {
+            // Answered slots never stay at the front, so it is the oldest
+            // unanswered one.
+            return slots.front().map(|slot| slot.registered);
+        }
+        let head = slots.front()?;
+        slots
+            .iter()
+            .skip(1)
             .any(|slot| slot.answer.is_some())
             .then_some(head.registered)
     }

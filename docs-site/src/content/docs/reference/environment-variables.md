@@ -1176,8 +1176,10 @@ stream.
 **Default**: `4`. The first four shards the client publishes to on a broker
 (first come, across all streams) get their own stream; later shards use the
 pool, where a stalled shard takes slots from the pooled stream's publish
-window. Its answers do not hold back the other shards' answers, since the
-broker answers plain acked publishes as they complete. To isolate
+window. When the broker also grants `FEATURE_PUBLISH_ANSWER_ON_COMPLETION`, it
+answers plain acked publishes as they complete, so the stalled shard's answers
+do not hold back the others'. An older broker that grants a window keeps
+request order, and there they do. To isolate
 every shard, set it to the total number of shards the client publishes to on a
 broker, at some throughput cost when keys spread over many shards.
 

@@ -500,3 +500,93 @@ async fn a_stalled_shard_does_not_hold_up_its_stream_mates_on_one_client_stream(
         .context("shard 1 did not recover")???;
     Ok(())
 }
+
+/// Read one publish answer, binary or JSON: its request id and whether it
+/// was a success. `scratch` may hold the start of the next frame, so a
+/// stream's reads share one.
+async fn next_any_answer(
+    recv: &mut quinn::RecvStream,
+    scratch: &mut felix_broker_service::serving::quic::FrameScratch,
+) -> Result<(u64, bool)> {
+    let frame =
+        felix_broker_service::serving::quic::read_frame_limited_into(recv, 1 << 20, scratch)
+            .await?
+            .context("the broker closed the stream")?;
+    if frame.header.flags & felix_wire::FLAG_BINARY_PUBLISH_ACK != 0 {
+        let ack = felix_wire::binary::decode_publish_ack(&frame)?;
+        return Ok((ack.request_id, ack.error.is_none()));
+    }
+    match Message::decode(frame)? {
+        Message::PublishOk { request_id, .. } => Ok((request_id, true)),
+        Message::PublishError { request_id, .. } | Message::PublishRefused { request_id, .. } => {
+            Ok((request_id, false))
+        }
+        other => anyhow::bail!("expected a publish answer, got {other:?}"),
+    }
+}
+
+/// **Idempotent batches keep request order on a stream that answers on
+/// completion.** A producer must see batch n fail before a `sequence_gap` for
+/// batch n+1, so a binary idempotent batch to a healthy shard waits for the
+/// one sent before it to a stalled shard.
+#[tokio::test]
+#[serial]
+async fn idempotent_batches_keep_request_order_on_a_stream_that_answers_on_completion() -> Result<()>
+{
+    let fixture = TwoShards::start().await?;
+    let (_connection, mut send, mut recv, granted) = pipelining_stream(&fixture, true).await?;
+    assert!(granted);
+    let mut scratch = felix_broker_service::serving::quic::FrameScratch::new();
+    let mut producers = Vec::new();
+    for request_id in [100, 101] {
+        felix_broker_service::serving::quic::write_message(
+            &mut send,
+            Message::ProducerInit { request_id },
+        )
+        .await?;
+        match felix_broker_service::serving::quic::read_message_limited(
+            &mut recv,
+            1 << 20,
+            &mut scratch,
+        )
+        .await?
+        {
+            Some(Message::ProducerInitOk { producer_id, .. }) => producers.push(producer_id),
+            other => anyhow::bail!("expected producer_init_ok, got {other:?}"),
+        }
+    }
+    let batch = |request_id: u64, key: &bytes::Bytes| {
+        felix_wire::binary::encode_idempotent_publish_batch_bytes(
+            request_id,
+            felix_wire::binary::ProducerSequence {
+                producer_id: producers[(request_id - 1) as usize],
+                sequence: 0,
+            },
+            Some(key),
+            "t1",
+            "default",
+            "orders",
+            &[format!("record-{request_id}").into_bytes()],
+        )
+    };
+    let (stalled_key, healthy_key) = (fixture.key_for(1, 0), fixture.key_for(0, 0));
+    let held = fixture.stall_shard_one().await?;
+    send.write_all(&batch(1, &stalled_key)?).await?;
+    send.write_all(&batch(2, &healthy_key)?).await?;
+    // Batch 2 commits at once, but its answer waits for batch 1's.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    fixture.broker.complete_publish(held).await?;
+    let first = timeout(
+        Duration::from_secs(5),
+        next_any_answer(&mut recv, &mut scratch),
+    )
+    .await??;
+    let second = timeout(
+        Duration::from_secs(5),
+        next_any_answer(&mut recv, &mut scratch),
+    )
+    .await??;
+    assert_eq!((first.0, second.0), (1, 2));
+    assert!(first.1 && second.1, "{first:?} {second:?}");
+    Ok(())
+}

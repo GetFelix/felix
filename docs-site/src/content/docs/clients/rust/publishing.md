@@ -309,10 +309,12 @@ same writer, so each stream's publishes reach the broker in order.
 can arrive out of order.
 
 A shard stalled on a quorum does not hold up the other shards on its publish
-stream. A broker that grants the client a publish window also agrees to answer
-plain acked publishes as they complete, and the client keeps writing to the
-stream while an answer is outstanding, so publishes to healthy shards are
-answered while the stalled one waits. Each shard keeps its own order, because
+stream, against a broker that answers plain acked publishes as they complete
+(`FEATURE_PUBLISH_ANSWER_ON_COMPLETION`, which current brokers grant with a
+publish window). The client keeps writing to the stream while an answer is
+outstanding, so publishes to healthy shards are answered while the stalled one
+waits. An older broker that grants a window answers every publish in request
+order, so there a stalled shard holds back the answers behind it. Each shard keeps its own order, because
 the broker commits a shard's publishes in the order the stream carried them.
 Only an idempotent producer's batches are answered in the order they were
 sent; see [idempotent producers](#idempotent-producers).
@@ -331,8 +333,9 @@ The cap is per broker and first come, first served across every stream the
 client publishes to: the first four shards (tenant, namespace, stream, shard)
 it publishes to each get a dedicated stream, and every later shard uses the
 shared pool permanently. A stalled shard on the pool takes slots from the
-pool stream's window while it waits; its answers no longer hold back the other
-pooled shards' answers.
+pool stream's window while it waits. Against a broker that answers on
+completion, it does not hold back the other pooled shards' answers; against an
+older one, it does.
 
 Four fully isolates streams of up to four shards. Isolation matters when a
 shard can stall on its own, as with quorum waits or a dead follower on a

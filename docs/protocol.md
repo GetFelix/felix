@@ -1614,7 +1614,10 @@ it arrives, so a stalled publish does not stop the stream.
 A broker that loses an answer it owes a pipelining stream would hold every
 answer behind it forever. Every publish is answered within its enqueue wait
 plus its ack wait, so a broker whose oldest held-back answer is overdue by
-twice that closes the stream instead; the client sees the stream fail and every
+twice that closes the stream instead. On a stream that answers on completion
+it watches the oldest unanswered publish of any kind, since a lost answer
+there holds nothing back but keeps its window slot for good. Either way the
+client sees the stream fail and every
 unanswered publish on it as failed.
 
 **One stream per shard.** Request order and the window are both per stream,

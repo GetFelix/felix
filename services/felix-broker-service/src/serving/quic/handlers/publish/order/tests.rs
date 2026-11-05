@@ -129,9 +129,10 @@ fn on_completion_a_plain_answer_does_not_wait_for_an_earlier_one() {
     order.release(binary_ok(3), &mut ready);
     order.release(ok(2), &mut ready);
     assert_eq!(ids(&ready), vec![3, 2]);
-    assert!(order.blocked_since().is_none(), "nothing is held behind 1");
+    assert!(order.blocked_since().is_some(), "1 is still unanswered");
     order.release(binary_ok(1), &mut ready);
     assert_eq!(ids(&ready), vec![3, 2, 1]);
+    assert!(order.blocked_since().is_none());
 }
 
 #[test]
@@ -166,7 +167,21 @@ fn on_completion_an_idempotent_answer_does_not_wait_for_a_plain_one() {
     let mut ready = Vec::new();
     order.release(ok(2), &mut ready);
     assert_eq!(ids(&ready), vec![2]);
-    assert!(order.blocked_since().is_none(), "nothing is held");
+    // Nothing is held, but the plain 1 still has a slot and is still timed.
+    assert!(order.blocked_since().is_some());
+}
+
+/// A lost plain answer holds nothing back but keeps its window slot, so it
+/// is timed like a held one.
+#[test]
+fn on_completion_an_unanswered_plain_publish_is_timed_alone() {
+    let order = on_completion();
+    assert!(order.blocked_since().is_none());
+    order.register(1, false, None);
+    assert!(order.blocked_since().is_some());
+    let mut ready = Vec::new();
+    order.release(ok(1), &mut ready);
+    assert!(order.blocked_since().is_none());
 }
 
 #[test]
