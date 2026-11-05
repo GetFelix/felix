@@ -148,7 +148,8 @@ pub struct IngressRouter {
     changed: tokio::sync::Notify,
     hold: MoveHold,
     /// Runs inside [`IngressRouter::publish`] just before the view is stored,
-    /// so a test can land a change between the read and the store.
+    /// so a test can land a change between the read and the store. Held while
+    /// the hook runs, so a hook must not call `publish` itself.
     #[cfg(test)]
     before_publish: std::sync::Mutex<Option<PublishHook>>,
 }
