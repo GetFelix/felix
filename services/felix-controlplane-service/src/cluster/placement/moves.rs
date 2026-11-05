@@ -135,6 +135,11 @@ pub struct MovePolicy {
     /// held as a learner and re-admitted (#1737). Read from the store, as
     /// `replica_election` is.
     pub joint_fence: bool,
+    /// Brokers that deregistered while their last lease may still run.
+    /// Placement sees them as draining so what they lead stays put, but none
+    /// is handed leadership: a broker deregisters as it stops. Not
+    /// configuration: each pass reads it from the store.
+    pub departed: BTreeSet<String>,
     /// Where a stream with a home region may have copies: that region, and
     /// any region the allowlist bridges it to (`FELIX_REGION_BRIDGES`). A
     /// stream without one is placed anywhere.
@@ -158,6 +163,7 @@ impl Default for MovePolicy {
             replica_election: false,
             fenced_caches: false,
             joint_fence: false,
+            departed: BTreeSet::new(),
             regions: Arc::new(RegionRouter::new(String::new())),
         }
     }
@@ -487,9 +493,17 @@ pub(super) fn move_step<'a>(
     }
 
     if existing.state == ShardState::Draining {
+        // A leader that deregistered is stopping, so a fenced shard never goes
+        // back to it at a new generation it may not live to serve. It cuts
+        // over to a copy that holds the log, or waits for the leader's lease
+        // to run out and then fails over (#1982).
+        let departed = moves.policy.departed.contains(leader);
         if existing.successor.is_none()
             && let Some(joining) = existing.joining.as_deref()
         {
+            if departed {
+                return Decision::Waiting(Blocked::LeaderDeparted);
+            }
             let restoring = existing.move_reason == Some(MoveReason::Restore);
             let from = if restoring {
                 replacing(existing, replication_factor, is_lost)
@@ -512,6 +526,9 @@ pub(super) fn move_step<'a>(
         // shard twice; going on waits for at most the lag bound's worth of
         // copy. Only a leader that never says drained is given the shard back.
         if !caught_up.is_drained(key, existing.generation) {
+            if departed {
+                return Decision::Waiting(Blocked::LeaderDeparted);
+            }
             // The fence may land while the destination is still copying, and
             // the leader will not report drained until it is level. One that
             // died first never will be, and its leader is likely busy taking
@@ -570,7 +587,9 @@ pub(super) fn move_step<'a>(
             }
             return Decision::Waiting(Blocked::LeaderStopping);
         }
-        if existing.successor.is_none()
+        // A trim hands the shard back to its leader.
+        if !departed
+            && existing.successor.is_none()
             && existing.nodes().count() > replication_factor.max(1) as usize
         {
             return trim(
@@ -587,10 +606,14 @@ pub(super) fn move_step<'a>(
             .successor
             .as_deref()
             .filter(|successor| is_live(successor) && caught_up.is_caught_up(key, successor))
-            .or_else(|| promote(key, existing, eligible, caught_up))
-            // Nothing else holds the log; the leader takes it back at a new
-            // generation and the move is chosen again.
-            .unwrap_or(leader);
+            .or_else(|| promote(key, existing, eligible, caught_up));
+        // Nothing else holds the log; the leader takes it back at a new
+        // generation and the move is chosen again.
+        let target = match target {
+            Some(target) => target,
+            None if departed => return Decision::Waiting(Blocked::LeaderDeparted),
+            None => leader,
+        };
         let replicas = replicas_after_cut_over(
             key,
             existing,

@@ -445,7 +445,9 @@ placement treats a `left` node as `draining` until the same window a silent
 node gets has passed since its last heartbeat: the expiry timeout plus the
 regrant margin, on the store's clock. Until then nothing it leads is promoted
 away, abandoned, or re-placed; a move it takes part in can still hand a shard
-over. A node already silent for that long, such as one `down` before it was
+over. A shard it has already been fenced on is never handed back to it, even
+when the move gives up: it waits for another copy or for the lease to run
+out. A node already silent for that long, such as one `down` before it was
 deregistered, is failed over straight away. An operator deregistering a live
 broker should expect its shards to move about 19 s later with the default
 settings. In-memory streams are the exception, as for a drain: they have no log
@@ -1668,7 +1670,11 @@ A move stops safely at every step. A destination that stops being live is
 dropped from the move (`abandon`). After the fence, the old leader takes the
 shard back at once at a new generation, unless it has already reported
 drained; then the cut-over goes to another caught-up replica or the old
-leader itself. A leader that dies mid-move is a failover, where
+leader itself. A leader that has deregistered never takes the shard back:
+it is stopping, and a new generation would land on a broker about to stop
+serving it. The shard stays fenced until another caught-up replica can take
+it or the leader's lease runs out and it fails over (`admin plan` says the
+leader has deregistered). A leader that dies mid-move is a failover, where
 the successor is a candidate like any other replica, except on a durable
 `Quorum` stream: there a broker from before every change of leader was
 fenced would open the shard as a cut-over, without the fence, so failover
