@@ -2230,6 +2230,7 @@ pub(crate) trait PassProgress: Send {
     /// Whether [`PassProgress::opened`] wants to hear about the next open.
     fn due(&self) -> bool;
     /// A shard just opened, and `servable` is what this broker serves now.
+    /// Called with the lifecycle lock held.
     fn opened(&mut self, servable: HashMap<ShardKey, u64>);
 }
 
@@ -2292,8 +2293,10 @@ pub(crate) async fn reconcile_reporting(
         let opens = matches!(action, Action::Open { .. });
         apply(lifecycle, store, action).await;
         if opens && progress.due() {
-            let servable = lifecycle.lock().await.servable();
-            progress.opened(servable);
+            // Held through the publish: a fence publishes under this lock too,
+            // and the two would otherwise overwrite each other.
+            let owned = lifecycle.lock().await;
+            progress.opened(owned.servable());
         }
     }
 }

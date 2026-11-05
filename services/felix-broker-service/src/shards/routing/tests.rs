@@ -641,8 +641,8 @@ mod feed {
         until("a new shard to be served locally", || local() > 0).await;
         // What a fence finishing on another shard publishes.
         ingress.publish_servable(lifecycle.lock().await.servable());
-        // Long enough for at least one interim publish.
-        tokio::time::sleep(Duration::from_millis(250)).await;
+        let before = local();
+        until("an interim publish after the fence's", || local() > before).await;
         let mid_pass = ingress.dispatch(&key(0));
         let opened = local();
 
