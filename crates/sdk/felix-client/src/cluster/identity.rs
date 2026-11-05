@@ -60,6 +60,7 @@ impl Client {
             owners,
             reconnecting: tokio::sync::Mutex::new(()),
             group_routes: RwLock::new(HashMap::new()),
+            down_redirects: std::sync::Mutex::new(HashMap::new()),
             cache_routes: RwLock::new(HashMap::new()),
             nodes,
         })
