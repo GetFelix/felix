@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793903896490,
+  "lastUpdate": 1793907447724,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -45968,6 +45968,58 @@ window.BENCHMARK_DATA = {
             "range": "2588.04",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 805415.72\nmean: 804679.20\nstdev: 2588.04\ncv: 0.32%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4d3ff7b344dc184bac2efcd9efabcdf9e1c329c9",
+          "message": "fix(broker): a shard ended for silence serves readers again once a round confirms it (#1964) (#1973)\n\nA shard ended for silence serves readers again once a round confirms it.",
+          "timestamp": "2026-11-05T11:19:23-08:00",
+          "tree_id": "ef0ba90d25ea3961080d28ac4c87da13780ff50d",
+          "url": "https://github.com/GetFelix/felix/commit/4d3ff7b344dc184bac2efcd9efabcdf9e1c329c9"
+        },
+        "date": 1793907447029,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 484560.77,
+            "range": "21524.02",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 484560.77\nmean: 494142.77\nstdev: 21524.02\ncv: 4.36%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 484560.77,
+            "range": "21524.02",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 484560.77\nmean: 494142.77\nstdev: 21524.02\ncv: 4.36%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 120303.94,
+            "range": "1339.75",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 120303.94\nmean: 120210.49\nstdev: 1339.75\ncv: 1.11%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1203039.42,
+            "range": "13397.45",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1203039.42\nmean: 1202104.95\nstdev: 13397.45\ncv: 1.11%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
