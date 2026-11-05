@@ -18,7 +18,7 @@ list-append: each list is a single-shard stream, and an append adds a unique
 value to it. Felix hands a reader the offset of every record, so the checker
 never has to infer an order the way Elle does. It reads positions directly,
 and most rules reduce to lookups against the final read. Cache keys are
-checked as registers (`history/register.rs`).
+checked as registers (`history/register.rs`, `history/linearizable.rs`).
 
 ## The model
 
@@ -79,8 +79,8 @@ before B was invoked" means the same thing to every client.
 | 9 | Delivery order | A live subscriber is delivered an offset at or below one it already had, in the same session or after a resume, or below where it started |
 | 10 | No lost deliveries | A live subscriber is delivered a record the final log does not hold at that offset: another value is there, no record is, or the log ends before it |
 | 11 | No missing deliveries | A record in the final log sits at an offset a subscriber was told holds no event (`skipped_before`), or past the last offset the subscriber was delivered once it had time to catch up |
-
 | 12-19 | No dependency cycles | Appends and reads form a loop of "must come before" edges, so no single order explains them (see "Cycles") |
+| 20 | Cache keys are linearizable | No order of a key's operations both respects real time and is what a single register would produce (see below) |
 
 Rule 8 leans on the order of the three looks. Every commit event the first
 read saw was committed before the state was read, so the state must be at
@@ -136,6 +136,33 @@ strongly connected components, then one short loop per component, so a large
 history costs about as much as reading it. `check_list_append(&History)`
 returns the cycles alone.
 
+**Rule 20, linearizability.** A cache key is *linearizable* when every
+operation on it can be said to have happened at one instant between its start
+and its end, and the key behaved like a single variable at those instants: a
+get returns the latest value put at or before its instant, a delete empties
+the key, a conditional put applies only when the key holds what it expected.
+Rule 7 only reports what it can prove cheaply. Rule 20 searches for such an
+order (the Wing-Gong-Lowe search, as in Porcupine), one key at a time, so it
+also catches an anomaly that needs several operations to show, such as two
+conditional puts on an absent key that both applied. A put whose outcome is
+unknown may have happened at any time after it started, or never, and
+nothing has to follow it. Rule 20 runs on a key only after rules 5 and 7 found
+nothing on it, so a simple stale read keeps its old name. Expiry (TTL) is not
+modelled: a key a TTL removes would look like a lost write.
+
+The search is bounded. A key with many overlapping operations can take
+exponential time, so past its step budget (`Budget`, 20 million tries by
+default) the key is reported under `undecided:` at the top of the report. That
+is not a pass or a failure: nothing was proven either way. Shorten the run or
+raise the budget to decide it.
+
+A rule 20 violation prints a witness: the longest order the search managed to
+build, one operation per line in the order they take effect, then the value
+the key holds after that order, then the operations that could not come next
+and what each needed (for example, a get that returned 1 when the key held 2).
+Read it top to bottom: the last operation of the order plus the stuck ones are
+the conflict.
+
 Two more findings concern the harness rather than the broker.
 `incomplete-final-read` means the final read has a hole. When that happens,
 rule 1 cannot be trusted for that list. `malformed-history` means the recorder
@@ -183,6 +210,10 @@ violation.
 > `a_get_older_than_an_earlier_get_is_stale`,
 > `a_miss_after_an_acknowledged_put_is_stale`,
 > `a_value_nobody_put_is_a_phantom`: one hand-built violation per case.
+> In `linearizable`: `random_linearizable_histories_are_valid` (puts, gets,
+> deletes and conditional puts against a correct register, 500 seeds),
+> one hand-built violation per anomaly class, and
+> `a_tangled_history_returns_unknown_quickly`.
 > `a_reader_that_sees_both_halves_is_valid`,
 > `the_event_without_the_state_is_a_partial_commit`,
 > `the_state_without_the_event_is_a_partial_commit`: rule 8, both ways round.

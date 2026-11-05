@@ -49,8 +49,9 @@ fn concurrent_puts_may_be_read_in_either_order() {
     let ops = [
         put(0, 10, 1, true),
         put(5, 15, 2, true),
-        get(20, 25, Some(1)),
-        get(20, 25, Some(2)),
+        // Both reads begin while the puts are in flight, so either order works.
+        get(6, 25, Some(1)),
+        get(6, 25, Some(2)),
         // An unknown put may land at any time after it began.
         put(30, 40, 3, false),
         get(100, 110, Some(3)),
