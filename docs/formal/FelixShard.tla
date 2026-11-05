@@ -1063,7 +1063,7 @@ QuietView ==
        [b \in Brokers |-> IF bgen[b] > 0 THEN answered[b] ELSE {}],
        [b \in Brokers |-> IF bgen[b] > 0 THEN confirmed[b] ELSE [m \in Brokers |-> 0]],
        out, mine, joining, leaving, joinedAt,
-       counterVars, ballot, opened, setVars, ackGen, idVars, named, wipeVars >>
+       counterVars, ballot, opened, setVars, ackGen, idVars, named, wipeVars, cpGone >>
 
 \* Placement's state, which only the control plane's decisions change, but
 \* `mine`, which a follower also learns under `SetCheck`.
@@ -2367,7 +2367,9 @@ FenceStuck(b) ==
 \* `c` still stands at `g`: up, fencing there, on its own election.
 Standing(c, g) == c \notin halted /\ fencing[c] /\ bgen[c] = g /\ Candidate(c)
 
-\* Under `StandBehindBallot`, `f` may stand above what it promised `c`.
+\* Under `StandBehindBallot`, `f` may stand above what it promised `c`. It
+\* reads `c`'s state directly; code can only learn it late, by a timeout,
+\* which `StandBehindBounded` stands for.
 FreedFrom(f, c) ==
     \/ c = f \/ c \in halted \/ promised[f] <= gen
     \/ ~StandBehindDeadOnly /\ ~Standing(c, promised[f])
