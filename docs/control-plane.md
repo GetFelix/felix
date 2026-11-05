@@ -1434,6 +1434,16 @@ elected generation itself, not the next one:
   - one outside it leads at the elected generation on the elected set, and
     placement moves that set as it moves any other.
 
+  An elected set older than the control plane's is the exception. If its
+  `set_generation` is below the assignment's generation, the control plane
+  wrote its own set after the elected one, for example when a failover
+  dropped a pending change to it. That change never settled, so the elected
+  leader still fences and acknowledges on the control plane's set beside its
+  own. The leader is then named at the next generation on the control
+  plane's set with nothing pending. Recording the elected set instead would
+  drop the control plane's set, where another candidate may already have
+  opened and acknowledged records.
+
   Otherwise only the generation is taken and the report is refused as
   `not_leader`: a leader elected on the old set while a change is pending is
   deposed by the new set's leader. The exception is the control plane's own
@@ -1445,7 +1455,8 @@ elected generation itself, not the next one:
   level 26 apply the older form, which takes only the generation of any
   other set. A group finalizes `replica_election` only with every member at
   26. The older form stays so a member that has not yet rolled to 26
-  applies the same entries the same way.
+  applies the same entries the same way. Members below level 29 likewise
+  still record an elected set older than the control plane's.
 
   When only the generation was taken, the control plane's leader is now
   named at the generation the elected leader opened at, which ballots never
@@ -1485,6 +1496,10 @@ longer in the set.
 The write depends on the set the leader was elected on:
 
 - **The control plane's set.** The new generation names that set.
+- **An older set.** The elected set's `set_generation` is below the
+  assignment's generation, so it is a change the control plane abandoned
+  before it settled, and the leader still fences the control plane's set
+  beside it. The new generation names the control plane's set, as above.
 - **Another set.** The control plane changed the set at the claimed
   generation, and a majority of the elected set may hold records that no
   majority of the control plane's set does. The new generation records the

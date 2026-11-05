@@ -2876,7 +2876,10 @@ ReissueAt(b, g, E, S, pends) ==
 \* - if it is in the recorded set but was elected on another, that set is
 \*   written as the set being left and the recorded one as pending from it,
 \*   at the next generation (ReissueAt), because a majority of the elected
-\*   set may hold records no majority of the recorded one does;
+\*   set may hold records no majority of the recorded one does; unless the
+\*   elected set is older than the record, a change the control plane
+\*   abandoned unsettled, in which case `b` is named on the recorded set
+\*   and fences the elected one beside it;
 \* - if it is outside the recorded set, its set becomes the recorded set at
 \*   its generation.
 \* Otherwise (the control plane's leader on another set, a change pending or
@@ -2920,8 +2923,11 @@ CpAdopt(v, b, views) ==
        ELSE IF recordedOnly
        THEN /\ gen' = g
             /\ UNCHANGED << leader, cpExpiry, report, draining, nextVars, out, takeVars >>
+       \* An elected set older than the record's is not written
+       \* (`reissuing_from` in services/felix-controlplane-service/src/model/
+       \* shard.rs): the control plane wrote `S` after it, and `b` fences both.
        ELSE IF b \in S
-       THEN ReissueAt(b, g, E, S, TRUE)
+       THEN ReissueAt(b, g, E, S, setGen[b] >= gen)
        ELSE /\ gen' = g
             /\ leader' = b
             /\ cpExpiry' = now + L
@@ -2960,7 +2966,7 @@ CpReissue(v, b, views) ==
     /\ Cas(v)
     /\ ver' = ver + 1
     /\ cpView' = views
-    /\ ReissueAt(b, gen, mine[b], CpSet, ReissuePending /\ SetCheck)
+    /\ ReissueAt(b, gen, mine[b], CpSet, ReissuePending /\ SetCheck /\ setGen[b] >= gen)
     /\ UNCHANGED << now, clock, inflight, hbOut, hbAt, log, hwm, halted,
                     acked, writes, staleCommit >>
     /\ UNCHANGED << successor, moves, staged, joining, leaving, joinedAt >>

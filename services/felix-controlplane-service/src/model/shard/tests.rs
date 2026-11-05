@@ -637,13 +637,14 @@ fn elected_and_issued_generations_are_bounded() {
 /// meanwhile promotes from the elected set, and the control plane's comes
 /// back only once the leader reports its start record on both. Elected on
 /// {b, d, e}, the leader shipping to {a, b, c} could never reach a majority
-/// of the set being left, so it is named on {b, d, e} alone.
+/// of the set being left, so it is named on {b, d, e} alone. On a set older
+/// than the control plane's it is named on the control plane's.
 #[test]
 fn reissuing_over_another_elected_set_leaves_it_as_a_pending_change() {
     let named_a = assignment();
     let next = named_a
         .reissuing(
-            &elected("broker-b", &["broker-c", "broker-d"], 7, 6),
+            &elected("broker-b", &["broker-c", "broker-d"], 7, 7),
             &|_| true,
         )
         .expect("reissued");
@@ -668,7 +669,7 @@ fn reissuing_over_another_elected_set_leaves_it_as_a_pending_change() {
 
     let apart = named_a
         .reissuing(
-            &elected("broker-b", &["broker-d", "broker-e"], 7, 6),
+            &elected("broker-b", &["broker-d", "broker-e"], 7, 7),
             &|_| true,
         )
         .expect("reissued");
@@ -677,10 +678,27 @@ fn reissuing_over_another_elected_set_leaves_it_as_a_pending_change() {
     assert_eq!(apart.pending_set, None);
     assert_eq!(apart.generation, 8);
 
+    // On a set older than the recorded one, it is named on the recorded one.
+    let predated = named_a
+        .reissuing(
+            &elected("broker-b", &["broker-c", "broker-d"], 7, 6),
+            &|_| true,
+        )
+        .expect("reissued");
+    assert_eq!(
+        (predated.leader.as_str(), predated.generation),
+        ("broker-b", 8)
+    );
+    assert_eq!(
+        predated.nodes().collect::<BTreeSet<_>>(),
+        named_a.nodes().collect::<BTreeSet<_>>()
+    );
+    assert_eq!(predated.pending_set, None);
+
     // Elected on the recorded set, it is named as is.
     let same = named_a
         .reissuing(
-            &elected("broker-b", &["broker-c", "broker-a"], 7, 6),
+            &elected("broker-b", &["broker-c", "broker-a"], 7, 7),
             &|_| true,
         )
         .expect("reissued");
@@ -694,7 +712,7 @@ fn reissuing_over_another_elected_set_leaves_it_as_a_pending_change() {
     // Outside the recorded set, or while a change is pending, it is left alone.
     assert_eq!(
         named_a.reissuing(
-            &elected("broker-d", &["broker-b", "broker-e"], 7, 6),
+            &elected("broker-d", &["broker-b", "broker-e"], 7, 7),
             &|_| true
         ),
         None
@@ -708,7 +726,7 @@ fn reissuing_over_another_elected_set_leaves_it_as_a_pending_change() {
     };
     assert_eq!(
         pending_change.reissuing(
-            &elected("broker-b", &["broker-d", "broker-e"], 7, 6),
+            &elected("broker-b", &["broker-d", "broker-e"], 7, 7),
             &|_| true
         ),
         None
@@ -747,7 +765,7 @@ fn reissuing_names_the_recorded_set_when_an_elected_member_is_unknown() {
 fn an_elected_set_at_the_window_edge_is_reissued_one_past_it() {
     let named_a = assignment();
     let edge = named_a.generation + ELECTION_GENERATION_WINDOW;
-    let on_other = elected("broker-b", &["broker-c", "broker-d"], edge, 6);
+    let on_other = elected("broker-b", &["broker-c", "broker-d"], edge, 7);
     let next = named_a
         .adopting_elected_set(&on_other, &|_| true)
         .expect("reissued past the edge");
@@ -756,4 +774,51 @@ fn an_elected_set_at_the_window_edge_is_reissued_one_past_it() {
         ("broker-b", edge + 1)
     );
     assert!(next.pending_set.is_some(), "the recorded set is pending");
+}
+
+/// **A leader elected on a set older than the recorded one is named on the
+/// recorded set.** The control plane recorded {a, b, c} at 3 after leaving
+/// {b, c, d}, written at 2, unsettled. c, elected at 4 on {b, c, d}, still
+/// fences {a, b, c} beside it, so c is named at 5 on {a, b, c} with nothing
+/// pending. Recording {b, c, d} with {a, b, c} pending would drop the set a
+/// candidate on {a, b, c} may already have opened and acknowledged on
+/// (#1970).
+#[test]
+fn a_leader_elected_on_an_older_set_is_named_on_the_recorded_one() {
+    let recorded = ShardAssignment {
+        generation: 3,
+        ..assignment()
+    };
+    let elected_c = elected("broker-c", &["broker-b", "broker-d"], 4, 2);
+    let next = recorded
+        .adopting_elected_set(&elected_c, &|_| true)
+        .expect("adopted");
+    assert_eq!(
+        (next.leader.as_str(), next.generation),
+        ("broker-c", 5),
+        "{next:?}"
+    );
+    assert_eq!(
+        next.nodes().collect::<BTreeSet<_>>(),
+        recorded.nodes().collect::<BTreeSet<_>>()
+    );
+    assert_eq!(next.pending_set, None);
+    assert_eq!(next.validate(), Ok(()));
+
+    // Below the level, the elected set is recorded and this one pending.
+    let older = recorded
+        .adopting_elected_set_keeping_predated_set(&elected_c, &|_| true)
+        .expect("adopted");
+    assert_eq!(older.generation, 5);
+    assert_eq!(older.replicas, vec!["broker-b", "broker-d"]);
+    assert!(older.pending_set.is_some(), "{older:?}");
+
+    // An elected set no older than the record is still recorded.
+    let newer = recorded
+        .adopting_elected_set(
+            &elected("broker-c", &["broker-b", "broker-d"], 4, 3),
+            &|_| true,
+        )
+        .expect("adopted");
+    assert_eq!(newer, older);
 }

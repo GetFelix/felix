@@ -590,10 +590,27 @@ impl ShardAssignment {
     /// node `known` (the catalog) does not hold cannot be written, so then
     /// the elected leader is named on this set, as [`Self::adopting_elected_set`]
     /// falls back to the old form.
+    ///
+    /// An elected set older than this one (its set generation below this
+    /// generation) is not written either: the leader is named on this set
+    /// with nothing pending.
     pub fn reissuing(
         &self,
         elected: &ElectedLeader,
         known: &dyn Fn(&str) -> bool,
+    ) -> Option<ShardAssignment> {
+        self.reissuing_from(elected, known, Some(self.generation))
+    }
+
+    /// [`Self::reissuing`], judging the elected set's age against
+    /// `recorded_generation`, the generation the record was read at. `None`
+    /// writes an older elected set too, as Raft members below
+    /// `PREDATED_SET_LEVEL` do.
+    fn reissuing_from(
+        &self,
+        elected: &ElectedLeader,
+        known: &dyn Fn(&str) -> bool,
+        recorded_generation: Option<u64>,
     ) -> Option<ShardAssignment> {
         if self.pending_set.is_some()
             || self.joining.is_some()
@@ -623,7 +640,14 @@ impl ShardAssignment {
         }
         let same = elected_set.len() == next.replicas.len()
             && elected_set.iter().all(|node| next.replicas.contains(node));
-        if same || !elected_set.iter().all(|node| known(node)) {
+        // The control plane wrote this set after the elected one, so the
+        // elected set was a change it abandoned unsettled, and its leader
+        // still fences and acknowledges on this set beside it. Writing the
+        // elected set would drop this one, where a candidate may already
+        // have opened and acknowledged.
+        let predated =
+            recorded_generation.is_some_and(|recorded| elected.set_generation < recorded);
+        if same || predated || !elected_set.iter().all(|node| known(node)) {
             return Some(next);
         }
         // The leader ships to the pending set only, and counts an
@@ -699,10 +723,34 @@ impl ShardAssignment {
     /// naming a node `known` (the catalog) does not hold, which no write can
     /// name. Applied under Raft only by members at the level that knows it
     /// (`ELECTED_SET_LEVEL`).
+    ///
+    /// An elected set older than the recorded one is not written either, as
+    /// in [`Self::reissuing`]; under Raft only at `PREDATED_SET_LEVEL`.
     pub fn adopting_elected_set(
         &self,
         elected: &ElectedLeader,
         known: &dyn Fn(&str) -> bool,
+    ) -> Option<ShardAssignment> {
+        self.adopting_on_elected_set(elected, known, true)
+    }
+
+    /// [`Self::adopting_elected_set`] as Raft members below
+    /// `PREDATED_SET_LEVEL` apply it: an elected set older than the recorded
+    /// one is still written as the set being left. Kept so those members
+    /// apply the same entries the same way until the group reaches the level.
+    pub(crate) fn adopting_elected_set_keeping_predated_set(
+        &self,
+        elected: &ElectedLeader,
+        known: &dyn Fn(&str) -> bool,
+    ) -> Option<ShardAssignment> {
+        self.adopting_on_elected_set(elected, known, false)
+    }
+
+    fn adopting_on_elected_set(
+        &self,
+        elected: &ElectedLeader,
+        known: &dyn Fn(&str) -> bool,
+        predated_set: bool,
     ) -> Option<ShardAssignment> {
         let adopted = self.adopting(elected)?;
         let elected_set: BTreeSet<&String> = std::iter::once(&elected.leader)
@@ -738,7 +786,7 @@ impl ShardAssignment {
                 generation: elected.generation,
                 ..self.clone()
             }
-            .reissuing(elected, known);
+            .reissuing_from(elected, known, predated_set.then_some(self.generation));
         }
         Some(adopted.on_elected_set(elected))
     }

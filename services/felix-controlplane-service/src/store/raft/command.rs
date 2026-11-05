@@ -56,7 +56,7 @@ pub const COMMAND_VERSION: u16 = 1;
 /// it the next level and raises this, so nothing proposes it until every
 /// member runs that release. New fields get their level in `fields.txt`.
 /// Never lower it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 26;
+pub const METADATA_VERSION: u16 = 29;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -256,6 +256,10 @@ pub enum MetaCommand {
         /// generation alone being taken.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         elected_set: bool,
+        /// Level 29: an elected set older than the recorded one is not
+        /// recorded; the leader is named on the recorded set (#1970).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        predated_set: bool,
     },
     /// The placement lease goes to `holder`, advancing the token if it
     /// changes hands. Proposed only by a confirmed leader, so no expiry.

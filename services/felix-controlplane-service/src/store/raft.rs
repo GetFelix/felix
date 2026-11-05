@@ -103,6 +103,11 @@ const REFUSED_LEVEL: u16 = 25;
 /// (#1009).
 const ELECTED_SET_LEVEL: u16 = 26;
 
+/// The metadata level whose members name a leader elected on a set older
+/// than the recorded one on the recorded set, instead of recording the
+/// elected set (#1970).
+const PREDATED_SET_LEVEL: u16 = 29;
+
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
     MetaCommand, MetaError, MetaResponse, decode_result, encode_command,
@@ -908,7 +913,8 @@ impl ControlPlaneStore for RaftStore {
         // Refused below level 21, before it reaches the log: the generation
         // stays the one every member holds, and the election is not adopted.
         // Below 26 every member applies the older form, which takes only the
-        // generation of a leader elected on another set.
+        // generation of a leader elected on another set, and below 29 an
+        // elected set older than the recorded one is still recorded.
         let level = self.group_level().await;
         match self
             .propose_at(
@@ -918,6 +924,7 @@ impl ControlPlaneStore for RaftStore {
                     expected_generation,
                     elected,
                     elected_set: level >= ELECTED_SET_LEVEL,
+                    predated_set: level >= PREDATED_SET_LEVEL,
                 },
             )
             .await?

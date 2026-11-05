@@ -46,13 +46,15 @@ pub(super) async fn put_shard_assignment_if(
 /// as a Raft apply must be: the decision is made from the assignment this
 /// store holds, and the write is conditional on it. `elected_set` applies
 /// [`ShardAssignment::adopting_elected_set`] instead of
-/// [`ShardAssignment::adopting`].
+/// [`ShardAssignment::adopting`], and with `predated_set` false it still
+/// records an elected set older than the recorded one.
 pub(super) async fn adopt_elected_leader(
     store: &InMemoryStore,
     key: &ShardKey,
     expected_generation: u64,
     elected: &ElectedLeader,
     elected_set: bool,
+    predated_set: bool,
 ) -> StoreResult<AssignmentWrite> {
     let current = get_shard_assignment(store, key).await?;
     if current.generation != expected_generation {
@@ -62,7 +64,12 @@ pub(super) async fn adopt_elected_leader(
     }
     let adopted = if elected_set {
         let nodes = store.nodes.read().await;
-        current.adopting_elected_set(elected, &|node| nodes.records.contains_key(node))
+        let known = |node: &str| nodes.records.contains_key(node);
+        if predated_set {
+            current.adopting_elected_set(elected, &known)
+        } else {
+            current.adopting_elected_set_keeping_predated_set(elected, &known)
+        }
     } else {
         current.adopting(elected)
     };

@@ -191,16 +191,25 @@ impl InMemoryStore {
     }
 
     /// [`ControlPlaneStore::adopt_elected_leader`] in the form a Raft entry
-    /// names: with `elected_set` false, as members below the level that
-    /// knows it apply it.
+    /// names: with `elected_set` or `predated_set` false, as members below
+    /// the level that knows it apply it.
     pub(crate) async fn apply_adopt_elected_leader(
         &self,
         key: &ShardKey,
         expected_generation: u64,
         elected: &crate::model::ElectedLeader,
         elected_set: bool,
+        predated_set: bool,
     ) -> StoreResult<crate::store::AssignmentWrite> {
-        shards::adopt_elected_leader(self, key, expected_generation, elected, elected_set).await
+        shards::adopt_elected_leader(
+            self,
+            key,
+            expected_generation,
+            elected,
+            elected_set,
+            predated_set,
+        )
+        .await
     }
 
     /// [`ControlPlaneStore::create_stream`], with incarnations decided by `decide`.
@@ -645,7 +654,7 @@ impl ControlPlaneStore for InMemoryStore {
         expected_generation: u64,
         elected: crate::model::ElectedLeader,
     ) -> StoreResult<crate::store::AssignmentWrite> {
-        shards::adopt_elected_leader(self, key, expected_generation, &elected, true).await
+        shards::adopt_elected_leader(self, key, expected_generation, &elected, true, true).await
     }
 
     async fn get_shard_assignment(&self, key: &ShardKey) -> StoreResult<ShardAssignment> {

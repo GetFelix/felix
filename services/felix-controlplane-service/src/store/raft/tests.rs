@@ -1558,7 +1558,7 @@ async fn an_adoption_on_another_set_waits_for_every_member() {
                 leader: "broker-y".to_string(),
                 generation: current + 1,
                 replicas: vec!["broker-x".to_string()],
-                set_generation: assigned.generation,
+                set_generation: current,
             },
         )
     };
@@ -3277,4 +3277,113 @@ async fn adoption_waits_for_every_member() {
         store.get_shard_assignment(&key).await.expect("get"),
         adopted
     );
+}
+
+/// **Below level 29 an elected set older than the recorded one is still
+/// recorded.** A member at 28 applies that form, so every member does while
+/// one is in the group. Once every member is at 29 the elected leader is
+/// named on the recorded set with nothing pending (#1970).
+#[tokio::test]
+async fn an_adoption_on_an_older_set_waits_for_every_member() {
+    use crate::model::{ElectedLeader, ShardAssignment, ShardKey, ShardKind, ShardState};
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), 28).await;
+    store
+        .create_stream(routed_stream("orders", Default::default()))
+        .await
+        .expect("stream");
+    for (node_id, port) in [
+        ("broker-a", 7130),
+        ("broker-b", 7131),
+        ("broker-c", 7132),
+        ("broker-d", 7133),
+    ] {
+        store
+            .register_node(crate::store::contract::nodes::node(node_id, port))
+            .await
+            .expect("register");
+    }
+    let key = ShardKey {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "orders".to_string(),
+        shard: 0,
+        kind: ShardKind::Stream,
+    };
+    let on = |leader: &str, replicas: [&str; 2]| ShardAssignment {
+        key: key.clone(),
+        leader: leader.to_string(),
+        replicas: replicas.iter().map(|node| node.to_string()).collect(),
+        generation: 0,
+        state: ShardState::Assigning,
+        successor: None,
+        joining: None,
+        move_started_at_millis: None,
+        move_reason: None,
+        incarnation: 0,
+        fence_storage_ids: Default::default(),
+        member_storage_ids: Default::default(),
+        learners: Default::default(),
+        pending_set: None,
+    };
+    // {b, c, d} first, then {a, b, c} written over it.
+    let older = store
+        .put_shard_assignment(on("broker-c", ["broker-b", "broker-d"]))
+        .await
+        .expect("assign");
+    store
+        .put_shard_assignment(on("broker-a", ["broker-b", "broker-c"]))
+        .await
+        .expect("reassign");
+    // c elected on {b, c, d}, one past whatever the shard is at.
+    let adopt = |current: u64| {
+        store.adopt_elected_leader(
+            &key,
+            current,
+            ElectedLeader {
+                leader: "broker-c".to_string(),
+                generation: current + 1,
+                replicas: vec!["broker-b".to_string(), "broker-d".to_string()],
+                set_generation: older.generation,
+            },
+        )
+    };
+    let current = store.get_shard_assignment(&key).await.expect("get");
+    let recorded = match adopt(current.generation).await {
+        Ok(crate::store::AssignmentWrite::Written(written)) => written,
+        other => panic!("not recorded: {other:?}"),
+    };
+    assert_eq!(recorded.leader, "broker-c");
+    assert_eq!(
+        recorded.replicas,
+        vec!["broker-b", "broker-d"],
+        "a member at 28 would have recorded the elected set"
+    );
+    assert!(recorded.pending_set.is_some(), "{recorded:?}");
+
+    // Every member at 29, the shard put back on {a, b, c} under a each try.
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let named = loop {
+        let current = store
+            .put_shard_assignment(on("broker-a", ["broker-b", "broker-c"]))
+            .await
+            .expect("reassign");
+        match adopt(current.generation).await {
+            Ok(crate::store::AssignmentWrite::Written(written))
+                if written.leader == "broker-c" && written.pending_set.is_none() =>
+            {
+                break written;
+            }
+            other => assert!(
+                std::time::Instant::now() < deadline,
+                "still the older form after every member reported the level: {other:?}"
+            ),
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert_eq!(named.replicas, vec!["broker-a", "broker-b"]);
 }
