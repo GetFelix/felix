@@ -385,8 +385,10 @@ async fn an_answer_from_behind_the_checkpoint_rolls_nothing_back() {
     let ownership = Arc::new(RwLock::new(ShardOwnership::default()));
     let shutdown = CancellationToken::new();
     let watch = tokio::spawn(run(
-        reqwest::Client::new(),
-        format!("http://{addr}"),
+        felix_replication::controlplane_link::HttpControlPlaneLink::new(
+            reqwest::Client::new(),
+            &format!("http://{addr}"),
+        ),
         None,
         Arc::clone(&ownership),
         Arc::new(Notify::new()),
@@ -526,6 +528,49 @@ fn an_unmarked_snapshot_item_is_not_first() {
     assert_eq!(prior_leader(&owned), None);
 }
 
+/// The watch needs nothing from the control plane but the link: a link that
+/// answers a snapshot seeds ownership with no socket involved.
+#[tokio::test]
+async fn a_fake_link_drives_the_watch() {
+    use crate::test_support::fake_link::FakeLink;
+
+    let link = FakeLink::default()
+        .reply(
+            "assignment_snapshot",
+            serde_json::json!({
+                "items": [{
+                    "tenant_id": "t1", "namespace": "ns", "stream": "orders",
+                    "shard": 0, "leader": "b1", "generation": 2, "state": "active"
+                }],
+                "next_seq": 10
+            }),
+        )
+        .reply(
+            "assignment_changes",
+            serde_json::json!({ "items": [], "next_seq": 10 }),
+        );
+    let ownership = Arc::new(RwLock::new(ShardOwnership::default()));
+    let shutdown = CancellationToken::new();
+    let watch = tokio::spawn(run(
+        link.clone(),
+        None,
+        Arc::clone(&ownership),
+        Arc::new(Notify::new()),
+        Duration::from_millis(10),
+        None,
+        shutdown.clone(),
+    ));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    shutdown.cancel();
+    watch.await.expect("watch");
+
+    assert_eq!(
+        ownership.read().await.get(&key(0)).map(|a| a.generation),
+        Some(2),
+    );
+    assert_eq!(link.calls()[0], "assignment_snapshot");
+}
+
 /// A renewal after a surrender waits for routes that reach the feed head it
 /// was accepted at (#1955). The watch is mid long-poll, which the control
 /// plane holds as one lost in a partition would be; it asks again at once
@@ -594,8 +639,10 @@ async fn a_renewal_after_a_surrender_waits_for_the_feed_head_it_was_accepted_at(
     let ownership = Arc::new(RwLock::new(ShardOwnership::default()));
     let shutdown = CancellationToken::new();
     let watch = tokio::spawn(run(
-        reqwest::Client::new(),
-        format!("http://{addr}"),
+        felix_replication::controlplane_link::HttpControlPlaneLink::new(
+            reqwest::Client::new(),
+            &format!("http://{addr}"),
+        ),
         None,
         Arc::clone(&ownership),
         Arc::new(Notify::new()),

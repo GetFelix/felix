@@ -35,6 +35,7 @@ reqwest = { workspace = true }
 rustls = { workspace = true }
 rustls-webpki = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
@@ -43,7 +44,6 @@ tracing = { workspace = true }
 [dev-dependencies]
 axum = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
-serde_json = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true }

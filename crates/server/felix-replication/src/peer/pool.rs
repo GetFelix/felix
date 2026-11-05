@@ -283,13 +283,7 @@ impl PeerPool {
                 kind: message.kind(),
             });
         }
-        // A forward's answer comes after the owner's quorum wait, so it gets
-        // longer than that wait; anything shorter turns a slow commit into an
-        // indeterminate one.
-        let timeout = match class {
-            LaneClass::Forward => self.config.forward_timeout.max(self.config.request_timeout),
-            _ => self.config.request_timeout,
-        };
+        let timeout = request_timeout(&self.config, &message);
         connection
             .request(message, timeout, &self.shutdown)
             .await
@@ -528,6 +522,12 @@ pub trait PeerRequester: Sync {
         false
     }
 
+    /// Whether this broker offers the promotion fence to its peers. A
+    /// requester that cannot tell does not.
+    fn offers_fence(&self) -> bool {
+        false
+    }
+
     /// The storage identity and incarnation `node_id` gave in its
     /// handshake, reaching it if need be. A peer that gave neither cannot be
     /// told apart from a wiped copy of itself.
@@ -587,6 +587,10 @@ impl<T: PeerRequester + Send> PeerRequester for std::sync::Arc<T> {
         T::offers_election(self)
     }
 
+    fn offers_fence(&self) -> bool {
+        T::offers_fence(self)
+    }
+
     fn identity(
         &self,
         node_id: &str,
@@ -636,6 +640,10 @@ impl PeerRequester for PeerPool {
             .contains(PeerCapabilities::ELECTION)
     }
 
+    fn offers_fence(&self) -> bool {
+        PeerPool::offers_fence(self)
+    }
+
     async fn identity(
         &self,
         node_id: &str,
@@ -654,8 +662,19 @@ impl PeerRequester for PeerPool {
     }
 }
 
+/// How long the pool waits for `message`'s answer under `config`.
+pub fn request_timeout(config: &PeerTransportConfig, message: &InternalMessage) -> Duration {
+    // A forward's answer comes after the owner's quorum wait, so it gets
+    // longer than that wait; anything shorter turns a slow commit into an
+    // indeterminate one.
+    match LaneClass::of(message) {
+        LaneClass::Forward => config.forward_timeout.max(config.request_timeout),
+        _ => config.request_timeout,
+    }
+}
+
 /// The capability a peer must have said it has before `message` goes to it.
-pub(crate) fn required_capability(message: &InternalMessage) -> Option<PeerCapabilities> {
+pub fn required_capability(message: &InternalMessage) -> Option<PeerCapabilities> {
     match (message_capability(message), message.required_capability()) {
         (Some(base), Some(wire)) => Some(base.union(wire)),
         (base, wire) => base.or(wire),

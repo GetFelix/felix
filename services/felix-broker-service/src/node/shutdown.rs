@@ -248,8 +248,10 @@ impl Running {
             budget
                 .drain("membership_deregister", async {
                     membership::shutdown_membership(
-                        &membership_client,
-                        base_url,
+                        &felix_replication::controlplane_link::HttpControlPlaneLink::new(
+                            membership_client,
+                            base_url,
+                        ),
                         &membership_config.node_id,
                         // The current token, not the startup one: a broker that has
                         // been up for hours would otherwise deregister with an

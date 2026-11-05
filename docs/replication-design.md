@@ -439,6 +439,12 @@ leader of three would need only itself and open with neither follower fenced
 (#1845). The same list sizes the acknowledgement count, the read round, and
 the set the fence carries.
 
+The catalog read runs in the background, and routes never wait for it. A
+broker publishes its routes as soon as it has reconciled its shards, with
+the newest catalog it has. A control plane that takes the request and never
+answers would otherwise hold every route behind a 5 s timeout, longer than
+a candidate waits to open (3 s), and no election would settle.
+
 **An answer counts only from the copy the failover's report named.** A
 follower that crashed under `FsyncMode::Periodic` or `None` comes back under a
 new storage identity without the tail it had not synced, and it may already
@@ -600,7 +606,11 @@ When the fence applies:
 The cost is availability. A promoted leader that cannot reach a majority of
 its replicas does not serve, where on the lease alone it would have opened;
 it retries after 200 ms (`FENCE_RETRY`), doubling the wait with each failed
-attempt up to 2 s (`FENCE_RETRY_MAX`). Every other change of leader pays a round trip to a
+attempt up to 2 s (`FENCE_RETRY_MAX`). It retries only while it still leads
+the route at the generation it is fencing. Once the route names another
+leader, or the broker stands for a generation no route names yet, there is
+nothing to retry until the route changes. The routing feed wakes replication
+when it does, or the next tick picks it up (#1941). Every other change of leader pays a round trip to a
 majority before it serves; a write that reaches the broker meanwhile waits
 for it, within the move hold's window (`FELIX_SHARD_MOVE_HOLD_MS`), instead of
 being refused. So does one that arrives while the shard's log is still
@@ -1309,7 +1319,81 @@ elected leader waits for the lease until the control plane is back (issue
 
 1. *Detecting.* A follower uses the detector it already runs: a leader that
    has not answered a ping for `FELIX_LEADER_SUSPECT_AFTER_MS` (S, 5 s by
-   default) is gone as far as that follower is concerned.
+   default) is gone as far as that follower is concerned. A durable broker
+   answers pings only once it serves clients. One that restarted and is
+   waiting for the control plane to seed it refuses them, and a refusal counts as no
+   answer, so its followers elect around it instead of waiting for the
+   control plane to come back.
+
+   A follower also suspects one shard, though its leader's broker answers
+   pings, when the shard is stuck there: the follower took a generation at
+   or above its route's, that generation has not started on its copy (no
+   start record), and for `FELIX_SHARD_SUSPECT_AFTER_MS` (120 s by default,
+   0 turns it off) it has neither stored a batch nor taken a fence from the
+   route's leader. A leader the control plane named that fences forever,
+   refused by copies that promised a newer generation to a candidate that
+   then withdrew, is the case this covers: with every broker alive, the
+   broker detector never fires, and with the control plane down nobody
+   else renames the shard.
+
+   It does not fire in steady state. An idle shard ships nothing, but its
+   generation started on every copy that took it, so silence alone is not
+   a suspicion. The exception is deliberate: a copy left holding a newer
+   ballot by a withdrawn candidate refuses its leader's batches for good,
+   and after the bound it stands. On an idle shard the other follower may
+   grant, which costs the working leader one generation and brings the
+   copy back. Each standing it gives up restarts its clock, so the worst
+   case is the bound plus about a minute per generation spent. A busy shard is heard on every batch. A copy behind its
+   route, which the leader has not fenced yet (a restarted broker waiting
+   its turn), is not stuck either; the copies the leader did fence decide.
+   Suspecting a shard only lets the follower try: it still needs a majority
+   of pre-votes, and a leader that is open and serving refuses, as do
+   voters that heard it within S.
+
+   The leader side has one case of its own. The control plane can name
+   another broker leader at the very generation an election just opened at,
+   then stop. That broker's route names it leader, so it refuses the elected
+   leader's batches, and its copy may hold its own ballot there. The elected
+   leader keeps serving one copy short, and no follower suspects anything:
+   the other broker leads its own route. So when the elected leader has seen
+   that collision for `FELIX_SHARD_SUSPECT_AFTER_MS`, and a copy of its set
+   refused to follow it within that time while the rest answered, it takes a
+   ballot one generation up and fences its kept set again, once per
+   generation. There is no pre-vote: its voters hear it, and nobody is
+   deposed. A copy that hears this leader takes its fence even though it is
+   marked as a candidate's. The rule is general: a copy never refuses a
+   candidate's fence for still hearing a leader when that candidate holds
+   the copy's newest ballot, since following it deposes nobody. The ballot and kept-set rules are a
+   standing's. The refused copy takes the newer fence and follows. With the
+   control plane up, the refused broker's report renames the shard first,
+   which ends the collision and the clock. A re-fence that does not open is given up only after
+   `FELIX_ELECTION_DEFER_FOR_MS`, not the 3 s a standing gets: its ballot
+   is past the generation the leader was serving, so giving it up leaves
+   the shard leaderless until a follower's shard bound passes and it stands.
+
+   A leader can also be stuck on its own ballot. The control plane named it
+   at one generation, it was then elected one higher and opened, and it
+   restarted with the control plane down. A restart forgets the election, so
+   its route names it at the old generation, and its open there is refused
+   for its own newer ballot. Its followers took its fence and start record,
+   so none of them is stuck, and its broker answers pings. So a broker whose
+   route names it leader, whose copy holds its own ballot above the route's
+   generation, and which has no election recorded at that ballot, counts
+   the shard stuck too, unless no standing in this process wrote that ballot
+   and it was first seen less than 30 s ago: then the control plane may have
+   named it there and the routes not caught up yet, as for any standing.
+   After the same bound it stands like any follower:
+   pre-vote, ballot one generation up, the kept set's fence. Its followers
+   grant once they have not heard a leader within S.
+
+   The clock restarts whenever the route's generation or leader, or the
+   copy's ballot, changes. With the control plane up, it renames a stuck
+   leader first (a refused report at once, or its stuck-leader backstop after
+   70 s by default), and the follower
+   never gets to stand: the two do not both spend a generation. Keep the
+   shard bound above the backstop's. A round that fails on the shard's
+   suspicion alone waits at least 5 s before the next, since a voter that
+   still hears the leader refuses every round.
 2. *Pre-vote.* Before it persists anything, a follower that suspects the
    leader asks its set whether it would get the next generation. A replica
    says yes only if it has not heard its own leader within S, it does not
@@ -2068,6 +2152,15 @@ has lost the shard. Without it the broker learns another way:
   deposal. That is the only clock left, and it decides only when a quiet feed
   gives up, never what it delivers. While the lease holds no rounds run: a new
   assignment reaches the broker the usual way.
+
+  Unlike the endings above, silence names no newer leader, so this one is not
+  for good. The broker keeps running rounds for the shard, with or without
+  the lease, and the first one a majority confirms at that generation lets
+  readers in again (`ShardFence::heard`). A renewed lease alone does not:
+  the broker's routes may still predate a promotion made while it was cut
+  off, and a newer leader's followers refuse the round. Without that, a leader whose
+  followers came back would acknowledge `Quorum` writes, which need only
+  their answers, while refusing every reader of the records it wrote.
 
 Each of these endings runs once, over the readers registered at that moment.
 A subscribe or watch is admitted (`redirect_for`) before it registers, so one
@@ -3813,27 +3906,77 @@ append stream and the rest never shipped: their writes were never acknowledged
   picked up by the same scan, so a busy shard does not touch the shared wake-up
   on every append. Each word of the set sits on its own cache line, so
   publishers to different shards rarely contend. A scan woken by an append passes
-  the shards whose bit is set, plus any shard whose last pass left work: a mark
-  below the tail, a follower behind, halted, rebuilding or not answering, an
-  exchange still out, or a drain or route change in progress. A shard whose
-  last pass settled is skipped. A consumer-group acknowledgement that moves
-  the cursor, and a record being dead-lettered, mark their shard the same way.
+  the shards whose bit is set, the shards with a drain or route change in
+  progress, and the shards owed a pass. A shard is owed one when its mark is
+  below its tail, or no follower that could still catch up holds its whole
+  log, and some follower is in reach: not halted, and its last batch went through,
+  or was refused only because its routing view is behind this generation and
+  then took the fence the leader sent it again (an elected leader, or a fleet
+  that has finalized `replica_election` and a log that keeps its set). That
+  refusal counts because the next pass is what brings the follower level, even
+  when it arrives after its pass ended.
+  A follower the batch did not reach, one whose routing view only the control
+  plane can fix, or one refusing for any other reason (a full disk, a bad
+  credential) is out of reach.
+  Every other shard is skipped, including one whose only lagging followers are
+  out of reach. A follower cannot catch up while it is down, so asking its
+  shards on every append filled the slots with passes that could do nothing,
+  while writes on other shards waited them out (#1944). A shard whose pass
+  ended with more to ship queues itself, and a busy follower's answer that
+  moves its cursor asks for its shard's pass. A consumer-group acknowledgement
+  that moves the cursor, and a record being dead-lettered, mark their shard the
+  same way.
   Two shards that hash to the same bit both get a pass, which costs a pass and
   nothing else.
+- **An append wake reads only those shards.** The driver keeps an index of the
+  shards whose route names it leader, by bit, rebuilt whenever the routing
+  table changes. An append wake looks up the set bits, the shards owed a pass,
+  the moving ones, and the ones not yet led at the last full read (withheld or
+  refused, which may be led now), and nothing else. Every pass runs on the
+  driver's one task, so a walk of the whole table on each of the dozens of
+  wakes a second took about half of that task under a bulk create, and passes
+  waited behind it (#1987). Forgetting shards no longer led and repeating the
+  refused and given-up reports waits for the next full read: the tick, a route
+  change, or the first wake after the table changed.
 - **The tick and a route change pass every shard.** That refreshes each
   shard's report and retries what nothing else wakes, such as a group seek, a
   redrive, or a dead letter an operator discarded.
-- **A shard that cannot start waits in a queue, oldest first.** There are two:
-  urgent (an append, a write waiting on the mark, a follower answer that moved
-  a cursor) and refresh (the tick, or a follower to try again). Urgent shards
-  start first, but at most four in a row while a refresh waits, so a steady
-  stream of appends cannot hold any shard's report back for good. A shard
-  being moved counts as urgent: its clients are held until the drained report.
+- **A shard that cannot start waits in a queue, oldest first.** There are
+  three: appended (an append since the shard was last asked), urgent (a write
+  waiting on the mark, a shard new here or just opened, a follower answer that
+  moved a cursor) and refresh (the tick, or a follower to try again). Each
+  queue starts before the next, but at most four in a row while a later one
+  waits, so a steady stream of appends cannot hold any shard back for good.
+  A shard being moved counts as urgent: its clients are held until the drained
+  report. Appended goes first because its pass is short and a client waits on
+  it now. A bulk create puts hundreds of new shards in the urgent queue at
+  once, each first pass slow while the followers open their copies, and a
+  lease renewal behind them waited over three seconds (#1987,
+  `an_append_is_not_queued_behind_new_shards`). A shard asked again moves to an
+  earlier queue, never a later one, and joins it at the back.
+- **Every queue's front starts within a fixed number of starts.** Counted in
+  slots handed out, while every queue has shards waiting:
+  - the refresh queue's front waits for at most four other starts;
+  - the urgent queue's front waits for at most six: four appended and two
+    refreshes;
+  - the appended queue's front waits for at most two: one urgent and one
+    refresh.
+
+  A shard new here queues its first pass as urgent, even with a write
+  waiting: it is slow while the followers open their copies, and a bulk of
+  them in the appended queue would put an append behind them again. A promoted
+  shard is past that once its fence opens, so a write that came in during the
+  fence queues its first pass as appended. Either way a new leader's first
+  pass after a failover, once at the front of its queue, starts within those
+  six starts
+  (`a_new_leaders_first_pass_starts_within_the_bound`). A start needs a pass to
+  end, so the wait in time is at most six times the longest pass.
 - **A finished pass goes to the back.** When a pass ends and its shard wants
   another, the shard joins the queue behind the shards already waiting, and
   the freed slot goes to the one at the front. A shard with one append waits
-  for the urgent shards that asked before it, and for at most one refresh in
-  every five starts (`a_shard_with_one_append_is_not_starved_by_busier_ones`).
+  for the appended shards that asked before it, and for at most two starts
+  from later queues between any two of theirs
+  (`a_shard_with_one_append_is_not_starved_by_busier_ones`).
 - **A pass waiting only on a slow follower yields.** Once its mark and report
   are out, a pass that is waiting on stragglers hands them to the driver when a
   scan finds shards queued, so the slot is free for them.
@@ -3842,18 +3985,23 @@ append stream and the rest never shipped: their writes were never acknowledged
 flowchart LR
   A[append marks its shard] --> S[scan]
   T[tick or route change] --> S
-  S -->|marked, or last pass left work| W{slot free?}
-  S -->|settled, append wake| X[skipped]
+  S -->|marked, mark owed, or moving| W{slot free?}
+  S -->|anything else, append wake| X[skipped]
   W -->|yes| P[pass]
-  W -->|no| Q[urgent or refresh queue]
+  W -->|no| Q[appended, urgent or refresh queue]
   P -->|ends, wants another| Q
   P -->|ends| F[slot goes to the front of the queue]
   Q --> F
 ```
 
 None of this changes what a pass does or what an acknowledgement rests on: it
-only decides which shard's pass runs next. Skipping a settled shard skips a pass
-that would have shipped nothing.
+only decides which shard's pass runs next. A skipped shard waits for the next
+tick, which puts it in the refresh queue unless it is owed a pass. While
+urgent shards wait, that queue gets one start in five, so on a broker leading
+many busy shards a skipped shard can wait several seconds. That is why a shard owed a pass must
+never be skipped: a write waiting on its mark would time out first. What a
+skipped shard waits for is a rebuild of a halted follower, or a follower that
+has come back on a shard nobody is writing to.
 
 **A `Quorum` cache's counters ride the same exchanges.** A counter add is
 acknowledged at the counter log's own mark, under the same majority rule, and
@@ -4285,8 +4433,10 @@ shards, as a bulk create does, publishes along the way too, at most every
 100 ms: each new shard is routed once it is open instead of after the last
 one in the pass. Those interim publishes add only the new shards and any
 shard that started serving meanwhile; every other route stays as last
-published until the pass ends. On a local cluster with every
-broker on the default 2 s interval the switch-over is tens of milliseconds;
+published until the pass ends. Every publish of the serving set, the feed's
+and a finished fence's, reads it and swaps it in under the lifecycle lock, so
+a fence that finishes during a pass is never overwritten by an older set. On
+a local cluster with every broker on the default 2 s interval the switch-over is tens of milliseconds;
 the destination records it as `felix_broker_shard_switchover_seconds`.
 
 A destination that dies before it leads is passed over: another caught-up
@@ -4465,9 +4615,13 @@ An election the control plane records and does not adopt (rule 10) does not
 leave the shard waiting. The old leader the assignment still names cannot
 serve the elected generation: its open is refused when it promised the
 generation away, and its fence is refused when a majority of the set did.
-Either way it says so in its report (`refused`, sent each tick in place of
-the usual measurements, with no tail). Placement names it again at the next
-generation, on the same set, and nothing else about the shard changes
+Either way it says so in its report (`refused`, sent each tick; the first
+such report carries no tail or measurements). A leader that is open keeps
+sending its usual reports too, and the control plane keeps only the last
+report for each shard. So once a leader has reported a refusal, it puts the
+refusal on every later report at that generation. Otherwise the next ordinary
+report would replace it before placement read it (issue #1969). Placement
+names it again at the next generation, on the same set, and nothing else about the shard changes
 (control-plane.md, [Adopting an elected
 leader](control-plane.md#adopting-an-elected-leader)). In the model that is
 `CpRename`, checked by `FelixShardElectRename.cfg`.
@@ -4519,9 +4673,32 @@ Once it is finalized on a broker that offers `ELECTION`:
   - The log keeps this generation's set under another node's ballot, kept
     from that node's fence or election request: nothing proves the set
     before was fenced from here. The fence stays pending.
-  - The log keeps an older set than the one before: the leader skipped a
-    generation it never opened, and a rename would leave that generation's
-    set unfenced. The fence stays pending.
+  - The log keeps an older set than the one before, and all of this holds:
+    the broker's own ballot and a start record at this generation, no change
+    pending on the route, and a kept set that names exactly the route's set
+    on the same copies. A member that either side names no copy for does
+    not match. The log may also keep the set this one left, but only on the
+    same copies (as a plain generation bump leaves it), and no earlier sets.
+    That is a leader elected here whose election the control plane adopted,
+    restarted: it keeps the set it stood on, from
+    an older generation, and its watch has no prior after a restart. A
+    candidate stands only on the set the control plane records, and adoption
+    keeps that set, so it is the set before. It asks for a rename as above,
+    and the rename's fence leaves both the control plane's set and the kept
+    one. The ballot alone is not enough, because a standing that withdrew
+    leaves one too.
+
+    The evidence does not prove that this generation's open was fenced. The
+    opens that leave the same evidence unfenced are still safe to rename: an
+    open on the lease happens only while followers do not decide
+    acknowledgements, so no set's majority holds an acknowledged record the
+    leader lacks; an open that continued this broker's own term (only before
+    `joint_fence` is finalized) had no other leader in between; and a
+    draining route is never fenced. A broker without the evidence keeps the
+    fence pending.
+  - Otherwise, the log keeps an older set than the one before: the leader
+    skipped a generation it never opened, and a rename would leave that
+    generation's set unfenced. The fence stays pending.
   - The log keeps no set, above generation 0: this may be a failover's new leader whose watch
     started from a snapshot, while the old leader, cut off, still
     acknowledges on a majority of the old set. The fence stays pending.
@@ -4738,9 +4915,15 @@ leader stamps its batches with the kept set's generation, below its own,
 which a replica keeping that set takes (`SetCurrent`). Both records are
 dropped once the control plane names that generation or a newer one, and
 when the stream is deleted or recreated. A standing that has not opened
-within 3 s is withdrawn, unless its fence or catch-up is still running, as is
+within 3 s of its route being published is withdrawn, unless its fence or
+catch-up is still running, as is
 one whose generation the broker has since promised to someone else; a failed
-round backs off for 200 to 800 ms, the top doubling to 3 s.
+round backs off for 200 to 800 ms, the top doubling to 3 s. The 3 s counts
+from publication because the driver fences only published routes, and a
+routing feed waiting on a control plane that accepts connections but never
+answers can hold the route back for seconds; counted from the ballot, every
+standing was withdrawn before its fence began. A route still unpublished
+after `FELIX_ELECTION_DEFER_FOR_MS` is given up anyway.
 
 Five rules keep an election from getting stuck:
 
