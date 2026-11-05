@@ -4229,7 +4229,9 @@ shards, as a bulk create does, publishes along the way too, at most every
 100 ms: each new shard is routed once it is open instead of after the last
 one in the pass. Those interim publishes add only the new shards and any
 shard that started serving meanwhile; every other route stays as last
-published until the pass ends. On a local cluster with every
+published until the pass ends. Every publish of the serving set, the feed's
+and a finished fence's, reads it and swaps it in under the lifecycle lock, so
+a fence that finishes during a pass is never overwritten by an older set. On a local cluster with every
 broker on the default 2 s interval the switch-over is tens of milliseconds;
 the destination records it as `felix_broker_shard_switchover_seconds`.
 
