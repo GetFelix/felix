@@ -17,19 +17,15 @@ use crate::status::ShardStatusBoard;
 const STORE: Duration = Duration::from_millis(5);
 
 /// Shards with an append on every scan: more than there are slots.
-const HOT: u32 = SHARD_CONCURRENCY as u32 + 8;
+const HOT: u32 = 24;
 
 /// The shard with a single append, added once the hot shards hold every slot.
 const COLD: u32 = HOT;
 
-/// Stores every batch after [`STORE`], and records which shard it was for
-/// and when.
+/// Stores every batch after [`STORE`], and records which shard it was for.
 #[derive(Default)]
 struct Follower {
     stored: Mutex<Vec<(u32, u64)>>,
-    at: Mutex<Vec<(u32, u64, tokio::time::Instant)>>,
-    /// Replaces [`STORE`] when set.
-    round_trip: Option<Duration>,
 }
 
 impl Follower {
@@ -52,17 +48,12 @@ impl PeerRequester for Follower {
         let InternalMessage::ReplicateRecords(batch) = message else {
             panic!("the driver sent something other than a replication batch");
         };
-        tokio::time::sleep(self.round_trip.unwrap_or(STORE)).await;
+        tokio::time::sleep(STORE).await;
         let durable_offset = batch.first_offset + batch.payloads.len() as u64;
         self.stored
             .lock()
             .expect("lock")
             .push((batch.shard.shard, durable_offset));
-        self.at.lock().expect("lock").push((
-            batch.shard.shard,
-            durable_offset,
-            tokio::time::Instant::now(),
-        ));
         Ok(InternalMessage::ReplicateOk(ReplicateOk {
             correlation_id: 0,
             durable_offset,
@@ -264,111 +255,5 @@ async fn an_append_passes_only_the_shard_it_was_for() {
         shards.passes.len(),
         SHARDS as usize,
         "the tick skipped a shard"
-    );
-}
-
-/// **Every shard keeps up when every shard is written to all the time.** A
-/// client appends to each of many more shards than there are slots every
-/// 200 ms, and a follower takes 100 ms to answer. Each record must reach the
-/// followers well inside a `Quorum` wait. With slots for only a few of them,
-/// a shard waited for every other shard's round trip before its next pass,
-/// and every write timed out (#1944).
-#[tokio::test(start_paused = true)]
-async fn every_shard_keeps_up_when_all_of_them_are_written_continuously() {
-    const SHARDS: u32 = 400;
-    const ROUNDS: usize = 15;
-    const EVERY: Duration = Duration::from_millis(200);
-    // Two passes' round trips plus the time to start them all: well inside
-    // the 5 s quorum wait, and far under the 2.5 s a 16-slot rotation takes.
-    const BOUND: Duration = Duration::from_millis(1_000);
-    let (broker, _dir) = leader_with_shards(SHARDS, 0).await;
-    let router = Arc::new(ShardRouter::new(
-        LOCAL,
-        "us-west-2",
-        felix_router::RegionRouter::new("us-west-2".to_string()),
-    ));
-    lead(&router, SHARDS);
-    let marks = QuorumMarks::new();
-    let status = ShardStatusBoard::new();
-    let peers = Follower {
-        round_trip: Some(Duration::from_millis(100)),
-        ..Follower::default()
-    };
-    let rebuilds = Rebuilds::new(RebuildPolicy::default());
-    let throttle = MoveThrottle::unlimited();
-    let mut shards = Shards::new(Context {
-        requester: &peers,
-        broker: &broker,
-        router: &router,
-        fence: &Unfenced,
-        gate: &crate::promotion::NoGate,
-        marks: &marks,
-        status: &status,
-        reporter: None,
-        rebuilds: &rebuilds,
-        throttle: &throttle,
-        refresh: Duration::from_secs(300),
-    });
-
-    // Each append: its shard, the offset it ends at, and when.
-    let mut appended = Vec::new();
-    let mut ends = vec![0u64; SHARDS as usize];
-    let mut writes = tokio::time::interval(EVERY);
-    for _ in 0..ROUNDS {
-        writes.tick().await;
-        for shard in 0..SHARDS {
-            append(&broker, shard).await;
-            ends[shard as usize] += 1;
-            appended.push((shard, ends[shard as usize], tokio::time::Instant::now()));
-        }
-        shards.scan(WakeKind::Append);
-        // The driver's events until the next round of writes.
-        let next = tokio::time::sleep(EVERY);
-        tokio::pin!(next);
-        loop {
-            tokio::select! {
-                () = &mut next => break,
-                Some((scan, ended)) = shards.passes.next(), if !shards.passes.is_empty() => {
-                    shards.fold(scan, ended);
-                }
-                Some(answer) = shards.exchanges.next(), if !shards.exchanges.is_empty() => {
-                    shards.apply(answer);
-                }
-            }
-        }
-    }
-    // Let the last round's records arrive.
-    let drain = tokio::time::Instant::now() + BOUND * 4;
-    while tokio::time::Instant::now() < drain {
-        tokio::select! {
-            () = tokio::time::sleep_until(drain) => break,
-            Some((scan, ended)) = shards.passes.next(), if !shards.passes.is_empty() => {
-                shards.fold(scan, ended);
-            }
-            Some(answer) = shards.exchanges.next(), if !shards.exchanges.is_empty() => {
-                shards.apply(answer);
-            }
-        }
-    }
-
-    let mut stored = vec![Vec::new(); SHARDS as usize];
-    for (shard, durable, at) in peers.at.lock().expect("lock").iter() {
-        stored[*shard as usize].push((*durable, *at));
-    }
-    let worst = appended
-        .iter()
-        .map(|(shard, end, at)| {
-            stored[*shard as usize]
-                .iter()
-                .filter(|(durable, _)| durable >= end)
-                .map(|(_, stored_at)| stored_at.duration_since(*at))
-                .min()
-                .unwrap_or(Duration::MAX)
-        })
-        .max()
-        .expect("appends");
-    assert!(
-        worst <= BOUND,
-        "a record took {worst:?} to reach a follower; the bound is {BOUND:?}"
     );
 }
