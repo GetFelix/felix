@@ -4,6 +4,7 @@ use tokio::time::Instant;
 
 use super::*;
 use crate::cluster::SimConfig;
+use crate::nemesis::Plan;
 
 fn config() -> SimConfig {
     SimConfig {
@@ -21,6 +22,7 @@ fn context(cluster: &Arc<SimCluster>) -> CheckContext {
         point: Point::Healed,
         healed_at: cluster.elapsed(),
         history: History::default(),
+        plan: Plan::default(),
     }
 }
 

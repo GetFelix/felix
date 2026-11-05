@@ -26,7 +26,7 @@
 //! network and heartbeat half of a pause is real; the zombie that wakes up
 //! believing it still leads is not reproduced.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
@@ -80,6 +80,23 @@ pub enum Fault {
     },
 }
 
+impl Fault {
+    /// Whether this fault can cost a shard its leader, given the brokers that
+    /// have led the shard. A slow control plane cannot; a paused or downed one
+    /// can, since leases lapse without it.
+    pub fn can_unseat(&self, leaders: &BTreeSet<usize>) -> bool {
+        match self {
+            Fault::Crash { node, .. }
+            | Fault::Freeze { node, .. }
+            | Fault::Isolate { node, .. } => leaders.contains(node),
+            Fault::Split { minority, .. } => minority.iter().any(|node| leaders.contains(node)),
+            Fault::OneWay { from, to, .. } => leaders.contains(from) || leaders.contains(to),
+            Fault::ControlPlane { fault, .. } => !matches!(fault, CpFault::Slow(_)),
+            Fault::PausedThenCrash { .. } => true,
+        }
+    }
+}
+
 impl fmt::Display for Fault {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -129,7 +146,7 @@ pub struct Step {
 }
 
 /// The whole schedule of one run.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Plan {
     pub steps: Vec<Step>,
 }

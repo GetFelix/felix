@@ -39,7 +39,7 @@ use anyhow::{Context, Result, bail};
 use felix_broker::Broker;
 use felix_broker_service::cluster::lease::LeaseState;
 use felix_broker_service::shards::routing::IngressRouter;
-use felix_broker_service::sim::{ShardKey, ShardKind, ShardSnapshot};
+use felix_broker_service::sim::{ShardKey, ShardKind, ShardSnapshot, ShardStand};
 use felix_cluster::history::rng::Rng;
 use felix_replication::peer::PeerTransportConfig;
 use felix_replication::quorum::QuorumMarks;
@@ -369,6 +369,23 @@ impl SimCluster {
     /// What broker `index` believes about `key`. `None` if it is not running.
     pub async fn snapshot(&self, index: usize, key: &ShardKey) -> Option<ShardSnapshot> {
         self.nodes[index].snapshot(key).await
+    }
+
+    /// What every running broker believes about `key`, all read at the same
+    /// instant: nothing here awaits, so on the run's single-threaded runtime no
+    /// broker moves between two of the reads.
+    pub fn stands(&self, key: &ShardKey) -> Vec<(usize, ShardStand)> {
+        (0..self.nodes.len())
+            .filter_map(|index| Some((index, self.nodes[index].stand(key)?)))
+            .collect()
+    }
+
+    /// Whether no fault transition is in progress. A broker that is still
+    /// starting has no view of its shards yet and its peers are moving them,
+    /// so a sample taken then says little. Link, control plane and crash
+    /// changes are single steps that the next sample sees whole.
+    pub fn is_quiet(&self) -> bool {
+        !self.nodes.iter().any(|node| node.is_starting())
     }
 
     /// How many running brokers would take a write for `key` right now.

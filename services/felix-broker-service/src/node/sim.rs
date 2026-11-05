@@ -185,9 +185,10 @@ pub struct SimBroker {
     tasks: Vec<JoinHandle<()>>,
 }
 
-/// What a broker believes about one shard, for checkers.
-#[derive(Debug, Clone)]
-pub struct ShardSnapshot {
+/// What a broker believes about one shard, read without waiting on anything,
+/// so a sample across brokers is one instant on a single-threaded runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShardStand {
     /// The broker would take a write for the shard right now: it routes the
     /// shard to itself, its fence is open at that generation and its lease is
     /// valid.
@@ -197,6 +198,23 @@ pub struct ShardSnapshot {
     pub generation: Option<u64>,
     /// The leader and generation in the routing table, whoever it is.
     pub routed_leader: Option<(String, u64)>,
+    /// The generation the shard's lifecycle has open for writes (phase
+    /// `active`), if it has one. The fence and the routing table are checked
+    /// against it.
+    pub opened_generation: Option<u64>,
+}
+
+/// What a broker believes about one shard, for checkers.
+#[derive(Debug, Clone)]
+pub struct ShardSnapshot {
+    /// See [`ShardStand::serving`].
+    pub serving: bool,
+    /// See [`ShardStand::generation`].
+    pub generation: Option<u64>,
+    /// See [`ShardStand::routed_leader`].
+    pub routed_leader: Option<(String, u64)>,
+    /// See [`ShardStand::opened_generation`].
+    pub opened_generation: Option<u64>,
     /// One past the last record in this broker's copy of the log, if it has one.
     pub log_tail: Option<u64>,
     /// How far a majority of the replica set has the log, when this broker
@@ -510,8 +528,9 @@ impl SimBroker {
         self.membership.as_ref()
     }
 
-    /// What this broker believes about `key` right now.
-    pub async fn shard_snapshot(&self, key: &ShardKey) -> ShardSnapshot {
+    /// What this broker believes about `key` right now, without awaiting.
+    pub fn shard_stand(&self, key: &ShardKey) -> ShardStand {
+        use crate::shards::lifecycle::Phase;
         use crate::shards::routing::Dispatch;
         let generation = match self.ingress.dispatch(key) {
             Dispatch::Local { generation } => Some(generation),
@@ -524,6 +543,29 @@ impl SimBroker {
             .ingress
             .route(key)
             .map(|route| (route.leader.node_id, route.generation));
+        // The fence mirrors the lifecycle's phase, so this needs no lock.
+        let opened_generation = self
+            .ingress
+            .fence()
+            .phase_of(key)
+            .filter(|record| record.phase == Phase::Active)
+            .map(|record| record.generation);
+        ShardStand {
+            serving,
+            generation,
+            routed_leader,
+            opened_generation,
+        }
+    }
+
+    /// What this broker believes about `key` right now.
+    pub async fn shard_snapshot(&self, key: &ShardKey) -> ShardSnapshot {
+        let ShardStand {
+            serving,
+            generation,
+            routed_leader,
+            opened_generation,
+        } = self.shard_stand(key);
         let kind = match key.kind {
             ShardKind::Stream => LogKind::Stream,
             ShardKind::Cache => LogKind::Cache,
@@ -547,6 +589,7 @@ impl SimBroker {
             serving,
             generation,
             routed_leader,
+            opened_generation,
             log_tail,
             quorum_mark,
             phase,

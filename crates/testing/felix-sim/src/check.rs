@@ -3,14 +3,23 @@
 //! The history checker reads what clients saw. A [`Checker`] reads the
 //! cluster: it can ask any broker or the control plane what it believes and
 //! say whether that is allowed. A run holds a list of them and calls each at
-//! two points:
+//! three kinds of point:
 //!
+//! - [`Point::Quiet`]: about once a virtual second while the run goes, whenever
+//!   no broker is starting ([`SimCluster::is_quiet`]). It happens during the
+//!   faults too, which is the only way to see a state that lasts seconds, such
+//!   as two brokers leading one shard. A checker that has nothing to look at
+//!   then returns at once. A call is skipped if the checker is still busy with
+//!   an earlier one.
 //! - [`Point::Healed`]: the moment the nemesis has healed everything, on a
 //!   task of its own while the clients keep running. A checker may wait
 //!   (virtual time) for the cluster to reach a state, as [`ElectionSettles`]
-//!   does.
+//!   does. The history holds what the clients had recorded by then.
 //! - [`Point::End`]: after the clients stopped, in-flight work drained and the
 //!   final reads were taken, with the whole [`History`] to look at.
+//!
+//! The checkers a run has by default are the ones named after the invariants
+//! of `docs/formal/FelixShard.tla`; see [`default_checkers`].
 //!
 //! # Adding a checker
 //!
@@ -40,22 +49,36 @@
 //! }
 //! ```
 //!
-//! A finding fails the run. Do not weaken a checker to make a seed pass: file
+//! A finding fails the run, unless it is a [`Severity::Warning`]. Do not weaken a checker to make a seed pass: file
 //! the seed as an issue and pin it with `#[ignore = "#<issue>"]`.
 //!
 //! [`run_seed_with`]: crate::run::run_seed_with
 
+use std::collections::HashSet;
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
+use felix_broker_service::sim::{ShardKey, ShardStand};
 use felix_cluster::history::model::History;
 
 use crate::cluster::{SimCluster, describe};
+use crate::nemesis::Plan;
+
+mod acked;
+mod burn;
+mod leadership;
+
+pub use self::acked::AckedHeldByLeader;
+pub use self::burn::GenerationBurn;
+pub use self::leadership::{AdoptedMatchesOpened, AtMostOneServing, OneLeaderPerGeneration};
 
 /// When a checker is called.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Point {
+    /// Between faults and during them, about once a virtual second, when no
+    /// broker is starting. The history is empty and `healed_at` is zero.
+    Quiet,
     /// Right after every fault is healed.
     Healed,
     /// After the clients stopped and the final reads were taken.
@@ -68,15 +91,28 @@ pub struct CheckContext {
     pub point: Point,
     /// When the faults healed, on the cluster's clock ([`SimCluster::elapsed`]).
     pub healed_at: Duration,
-    /// The history so far; complete at [`Point::End`], empty at
-    /// [`Point::Healed`].
+    /// What the clients recorded: complete at [`Point::End`], what had been
+    /// recorded by the heal at [`Point::Healed`], empty at [`Point::Quiet`].
     pub history: History,
+    /// The faults the nemesis was given, empty for a run without faults. Some
+    /// may have been skipped (a crash that would take down a majority).
+    pub plan: Plan,
+}
+
+/// Whether a finding fails the run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    /// The cluster did something it must not. Fails the run.
+    Failure,
+    /// Worth reading, but not wrong by itself.
+    Warning,
 }
 
 /// One thing a checker found wrong.
 #[derive(Debug, Clone)]
 pub struct Finding {
     pub checker: &'static str,
+    pub severity: Severity,
     pub summary: String,
     /// What to read to see why: a census, a timeline.
     pub detail: String,
@@ -86,8 +122,17 @@ impl Finding {
     pub fn new(checker: &'static str, summary: impl Into<String>) -> Self {
         Self {
             checker,
+            severity: Severity::Failure,
             summary: summary.into(),
             detail: String::new(),
+        }
+    }
+
+    /// A finding that does not fail the run.
+    pub fn warning(checker: &'static str, summary: impl Into<String>) -> Self {
+        Self {
+            severity: Severity::Warning,
+            ..Self::new(checker, summary)
         }
     }
 
@@ -101,7 +146,11 @@ impl Finding {
 
 impl fmt::Display for Finding {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "[{}] {}", self.checker, self.summary)?;
+        let warning = match self.severity {
+            Severity::Failure => "",
+            Severity::Warning => "warning ",
+        };
+        writeln!(f, "[{warning}{}] {}", self.checker, self.summary)?;
         write!(f, "{}", self.detail)
     }
 }
@@ -114,6 +163,81 @@ pub trait Checker: Send {
     /// Look at the cluster at `ctx.point` and return what is wrong, nothing if
     /// all is well.
     async fn check(&mut self, ctx: &CheckContext) -> Vec<Finding>;
+}
+
+/// The checkers a run has when it is given no others.
+pub fn default_checkers() -> Vec<Box<dyn Checker>> {
+    vec![
+        Box::new(ElectionSettles::default()),
+        Box::new(OneLeaderPerGeneration::default()),
+        Box::new(AtMostOneServing::default()),
+        Box::new(AckedHeldByLeader::default()),
+        Box::new(AdoptedMatchesOpened::default()),
+        Box::new(GenerationBurn::default()),
+    ]
+}
+
+/// What one running broker believed about a shard at one instant.
+#[derive(Debug, Clone)]
+pub struct Seen {
+    pub node: usize,
+    /// The broker's id, `b1` and so on.
+    pub name: String,
+    pub stand: ShardStand,
+}
+
+/// What every running broker believes about `key`, all read at one instant.
+pub fn seen_by_all(cluster: &SimCluster, key: &ShardKey) -> Vec<Seen> {
+    cluster
+        .stands(key)
+        .into_iter()
+        .map(|(node, stand)| Seen {
+            node,
+            name: cluster.node_id(node).to_string(),
+            stand,
+        })
+        .collect()
+}
+
+/// Keeps a checker that sees the same fault every second from printing it every
+/// second, and one systematic fault from printing a census for every shard.
+#[derive(Debug)]
+pub(crate) struct Digest {
+    show: usize,
+    seen: HashSet<String>,
+    shown: usize,
+    hidden: usize,
+}
+
+impl Digest {
+    pub(crate) fn new(show: usize) -> Self {
+        Self {
+            show,
+            seen: HashSet::new(),
+            shown: 0,
+            hidden: 0,
+        }
+    }
+
+    /// Whether `id` should be reported now: it is new, and fewer than `show`
+    /// others have been.
+    pub(crate) fn admit(&mut self, id: &str) -> bool {
+        if !self.seen.insert(id.to_string()) {
+            return false;
+        }
+        if self.shown >= self.show {
+            self.hidden += 1;
+            return false;
+        }
+        self.shown += 1;
+        true
+    }
+
+    /// A finding for what `admit` held back, once the run is over.
+    pub(crate) fn rest(&mut self, checker: &'static str) -> Option<Finding> {
+        let hidden = std::mem::take(&mut self.hidden);
+        (hidden > 0).then(|| Finding::new(checker, format!("{hidden} more, not shown")))
+    }
 }
 
 /// After the faults heal, every shard is served by exactly one broker within

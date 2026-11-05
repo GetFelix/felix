@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use felix_broker_service::sim::{
-    CatalogFetcher, ShardKey, ShardSnapshot, SimBroker, SimBrokerConfig,
+    CatalogFetcher, ShardKey, ShardSnapshot, ShardStand, SimBroker, SimBrokerConfig,
 };
 use felix_replication::peer::identity::{Incarnation, PeerIdentity};
 use parking_lot::Mutex;
@@ -236,6 +236,11 @@ impl Node {
                 Ok::<Bytes, anyhow::Error>(response.body)
             })
         })
+    }
+
+    /// What the running broker believes about `key`, read at one instant.
+    pub(crate) fn stand(&self, key: &ShardKey) -> Option<ShardStand> {
+        Some(self.broker()?.shard_stand(key))
     }
 
     pub(crate) async fn snapshot(&self, key: &ShardKey) -> Option<ShardSnapshot> {

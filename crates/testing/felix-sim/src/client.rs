@@ -535,16 +535,39 @@ fn spawn_on<T: Send + 'static>(
     })
 }
 
-/// Read `shard` on this broker from its first record to its tail.
+/// Read `shard` on this broker from its first record to its tail, the way a
+/// subscriber does: stopping at the committed mark.
 async fn read_all(handles: &NodeHandles, shard: u32) -> Option<Vec<Element>> {
+    read_pages(handles, shard, true).await
+}
+
+/// Every client record in this broker's copy of `shard`, committed or not, or
+/// `None` if the broker does not serve it, the read took over [`READ_WITHIN`]
+/// or the broker crashed meanwhile.
+pub(crate) async fn read_log(handles: &NodeHandles, shard: u32) -> Option<Vec<Element>> {
+    let task = spawn_on(&handles.crashed, {
+        let handles = handles.clone();
+        async move { read_pages(&handles, shard, false).await }
+    });
+    tokio::time::timeout(READ_WITHIN, task).await.ok()?.ok()??
+}
+
+async fn read_pages(handles: &NodeHandles, shard: u32, committed: bool) -> Option<Vec<Element>> {
     let mut elements = Vec::new();
     let mut next = 0;
     loop {
-        let page = handles
-            .broker
-            .read_committed(TENANT, NAMESPACE, STREAM, shard, next, PAGE_BYTES)
-            .await
-            .ok()?;
+        let page = if committed {
+            handles
+                .broker
+                .read_committed(TENANT, NAMESPACE, STREAM, shard, next, PAGE_BYTES)
+                .await
+        } else {
+            handles
+                .broker
+                .read_durable(TENANT, NAMESPACE, STREAM, shard, next, PAGE_BYTES)
+                .await
+        }
+        .ok()?;
         if page.is_empty() {
             return Some(elements);
         }

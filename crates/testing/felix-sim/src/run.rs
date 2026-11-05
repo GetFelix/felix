@@ -5,7 +5,8 @@
 //!
 //! ```text
 //!   0 s            startup: catalog, brokers, election features, every shard served
-//!   0 ......... 90 s   faults (SimConfig::fault_window) and clients
+//!   0 ......... 90 s   faults (SimConfig::fault_window) and clients;
+//!                      Quiet checkers sample once a second throughout
 //!  90 s              everything heals; Healed checkers start
 //!  90 ........ 120 s  quiet period; clients keep going (SimConfig::run_for)
 //! 120 s              clients stop; wait for in-flight work
@@ -30,14 +31,17 @@ use std::time::Duration;
 use felix_cluster::history::checker::{self, Report};
 use felix_cluster::history::model::History;
 use felix_cluster::history::rng::Rng;
+use parking_lot::Mutex;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use crate::check::{CheckContext, Checker, ElectionSettles, Finding, Point};
+use crate::check::{CheckContext, Checker, Finding, Point, Severity, default_checkers};
 use crate::client::{Recorder, SimClient};
 use crate::cluster::{SimCluster, SimConfig};
 use crate::nemesis::{Nemesis, Plan};
 
+/// How often the checkers are called at [`Point::Quiet`].
+const SAMPLE_EVERY: Duration = Duration::from_secs(1);
 /// How long to wait after the clients stop for work the clients gave up on to
 /// finish, longer than any quorum wait.
 const DRAIN: Duration = Duration::from_secs(20);
@@ -61,7 +65,14 @@ pub struct SimOutcome {
 
 impl SimOutcome {
     pub fn passed(&self) -> bool {
-        self.report.violations.is_empty() && self.findings.is_empty()
+        self.report.violations.is_empty() && self.failures().next().is_none()
+    }
+
+    /// The findings that fail the run, without the warnings.
+    pub fn failures(&self) -> impl Iterator<Item = &Finding> {
+        self.findings
+            .iter()
+            .filter(|finding| finding.severity == Severity::Failure)
     }
 
     /// The command that runs this seed again.
@@ -94,7 +105,7 @@ impl std::fmt::Display for SimOutcome {
 
 /// Run `seed` with the checkers that run by default.
 pub fn run_seed(seed: u64, config: SimConfig) -> SimOutcome {
-    run_seed_with(seed, config, vec![Box::new(ElectionSettles::default())])
+    run_seed_with(seed, config, default_checkers())
 }
 
 /// Run `seed` with `checkers`, which see the cluster at the points named in
@@ -149,7 +160,7 @@ async fn drive(
     config: SimConfig,
     cluster: Arc<SimCluster>,
     recorder: Arc<Recorder>,
-    mut checkers: Vec<Box<dyn Checker>>,
+    checkers: Vec<Box<dyn Checker>>,
 ) -> SimOutcome {
     let begun = Instant::now();
     let stop = CancellationToken::new();
@@ -181,29 +192,70 @@ async fn drive(
 
     let run_start = Instant::now();
     let nemesis = Nemesis::new(cluster.clone(), recorder.clone());
+    let plan = if config.faults {
+        Plan::generate(seed, config.brokers, config.fault_window)
+    } else {
+        Plan::default()
+    };
     if config.faults {
-        let plan = Plan::generate(seed, config.brokers, config.fault_window);
         for step in &plan.steps {
             tracing::debug!(at = ?step.at, fault = %step.fault, "planned");
         }
         let nemesis = nemesis.clone();
+        let plan = plan.clone();
         tokio::spawn(async move { nemesis.run(&plan).await });
     }
+    let context = {
+        let (cluster, plan) = (cluster.clone(), plan.clone());
+        move |point, healed_at, history| CheckContext {
+            cluster: cluster.clone(),
+            point,
+            healed_at,
+            history,
+            plan: plan.clone(),
+        }
+    };
+
+    // Each checker is behind its own lock, so one that waits at the heal does
+    // not hold the others back, and a sample finds a busy one and skips it.
+    let checkers: Vec<_> = checkers
+        .into_iter()
+        .map(|checker| Arc::new(tokio::sync::Mutex::new(checker)))
+        .collect();
+    let sampled = Arc::new(Mutex::new(Vec::new()));
+    let sampler = tokio::spawn({
+        let (checkers, sampled, stop) = (checkers.clone(), sampled.clone(), stop.clone());
+        let (cluster, context) = (cluster.clone(), context.clone());
+        async move {
+            loop {
+                tokio::select! {
+                    () = stop.cancelled() => return,
+                    () = tokio::time::sleep(SAMPLE_EVERY) => {}
+                }
+                if !cluster.is_quiet() {
+                    continue;
+                }
+                let ctx = context(Point::Quiet, Duration::ZERO, History::default());
+                for checker in &checkers {
+                    if let Ok(mut checker) = checker.try_lock() {
+                        let found = checker.check(&ctx).await;
+                        sampled.lock().extend(found);
+                    }
+                }
+            }
+        }
+    });
+
     tokio::time::sleep_until(run_start + config.fault_window).await;
     nemesis.heal().await;
     let healed_at = cluster.elapsed();
 
     let mut waiting = Vec::new();
-    for mut checker in std::mem::take(&mut checkers) {
-        let ctx = CheckContext {
-            cluster: cluster.clone(),
-            point: Point::Healed,
-            healed_at,
-            history: History::default(),
-        };
+    for checker in &checkers {
+        let checker = checker.clone();
+        let ctx = context(Point::Healed, healed_at, recorder.history());
         waiting.push(tokio::spawn(async move {
-            let found = checker.check(&ctx).await;
-            (checker, found)
+            checker.lock().await.check(&ctx).await
         }));
     }
 
@@ -212,11 +264,11 @@ async fn drive(
     for client in clients {
         let _ = client.await;
     }
-    let mut findings = Vec::new();
+    let _ = sampler.await;
+    let mut findings = std::mem::take(&mut *sampled.lock());
     for task in waiting {
-        if let Ok((checker, found)) = task.await {
+        if let Ok(found) = task.await {
             findings.extend(found);
-            checkers.push(checker);
         }
     }
     tokio::time::sleep(DRAIN).await;
@@ -245,14 +297,9 @@ async fn drive(
 
     let mut history = recorder.history();
     let unread = drop_unread_lists(&mut history);
-    let ctx = CheckContext {
-        cluster: cluster.clone(),
-        point: Point::End,
-        healed_at,
-        history: history.clone(),
-    };
-    for checker in &mut checkers {
-        findings.extend(checker.check(&ctx).await);
+    let ctx = context(Point::End, healed_at, history.clone());
+    for checker in &checkers {
+        findings.extend(checker.lock().await.check(&ctx).await);
     }
     if !unread.is_empty() {
         findings.push(Finding::new(
