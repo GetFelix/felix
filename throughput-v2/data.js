@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793866416401,
+  "lastUpdate": 1793877149273,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -45396,6 +45396,58 @@ window.BENCHMARK_DATA = {
             "range": "9877.97",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1223263.48\nmean: 1225256.18\nstdev: 9877.97\ncv: 0.81%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c54d5561123ce6202f67e86888d3a00771181c37",
+          "message": "fix(replication): a leader named below its own ballot reports the generation refused (#1914) (#1919)\n\nA leader named below its own ballot, or whose ship or set is refused, reports the generation refused so the control plane renames it one up. Census and fence_groups diagnostics for stuck shards. Part of #1914.",
+          "timestamp": "2026-11-05T03:01:25-08:00",
+          "tree_id": "6a74f9a73c3e38307ea892e73b88ae3a2b18fae9",
+          "url": "https://github.com/GetFelix/felix/commit/c54d5561123ce6202f67e86888d3a00771181c37"
+        },
+        "date": 1793877148413,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 358167.33,
+            "range": "12729.19",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 358167.33\nmean: 355206.68\nstdev: 12729.19\ncv: 3.58%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 358167.33,
+            "range": "12729.19",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 358167.33\nmean: 355206.68\nstdev: 12729.19\ncv: 3.58%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79990.12,
+            "range": "482.97",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79990.12\nmean: 80015.57\nstdev: 482.97\ncv: 0.60%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 799901.2,
+            "range": "4829.70",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 799901.20\nmean: 800155.68\nstdev: 4829.70\ncv: 0.60%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
