@@ -22,29 +22,33 @@ fn promoted_router() -> Arc<ShardRouter> {
         "us-west-2",
         RegionRouter::new("us-west-2".to_string()),
     ));
+    promote(&router, 4, &[("broker-b", id(1)), ("broker-c", id(3))]);
+    router
+}
+
+/// Route a promotion of this broker at `generation` naming `ids`.
+fn promote(router: &ShardRouter, generation: u64, ids: &[(&str, StorageId)]) {
     let nodes = nodes();
     let table = RoutingTable::build_with(
         [felix_router::Placed {
             key: key(),
             leader: LOCAL.to_string(),
             replicas: vec!["broker-b".to_string(), "broker-c".to_string()],
-            generation: 4,
+            generation,
             draining: false,
             successor: None,
             routing: Default::default(),
             incarnation: 0,
-            fence_storage_ids: [
-                ("broker-b".to_string(), id(1).to_hex()),
-                ("broker-c".to_string(), id(3).to_hex()),
-            ]
-            .into(),
+            fence_storage_ids: ids
+                .iter()
+                .map(|(node, id)| (node.to_string(), id.to_hex()))
+                .collect(),
             member_storage_ids: Default::default(),
             pending: None,
         }],
         &nodes,
     );
     router.publish(table, &nodes);
-    router
 }
 
 /// broker-b was wiped and answers under `id(2)`, so its fence answer does not
@@ -245,6 +249,32 @@ async fn a_set_change_keeps_the_names_its_leader_reported() {
             ("broker-b".to_string(), id(2).to_hex()),
             ("broker-c".to_string(), id(3).to_hex()),
         ],
+        "{report:?}"
+    );
+}
+
+/// **A promotion names the copies itself.** A later promotion of the same
+/// leader that names broker-c by `id(4)` replaces what this leader named it
+/// by before; a member it names no identity for is named by none.
+#[tokio::test]
+async fn a_promotion_replaces_the_names_its_leader_reported() {
+    let (broker, _dir) = leader_with(3).await;
+    let router = promoted_router();
+    let followers = PromotedFollowers::default();
+    let gate = Awaiting {
+        closed: AtomicBool::new(false),
+    };
+    let mut cursors = HashMap::new();
+    pass(&followers, &broker, &router, &gate, &mut cursors).await;
+
+    followers.b_down.store(true, Ordering::SeqCst);
+    promote(&router, 6, &[("broker-c", id(4))]);
+    let later = pass(&followers, &broker, &router, &gate, &mut cursors).await;
+    let report = later.reports.last().expect("a report");
+    assert_eq!(report.generation, 6);
+    assert_eq!(
+        report.inherited_storage,
+        vec![("broker-c".to_string(), id(4).to_hex())],
         "{report:?}"
     );
 }

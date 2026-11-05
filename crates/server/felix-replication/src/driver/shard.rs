@@ -129,8 +129,8 @@ impl ShardCursors {
         }
     }
 
-    /// Empty, at a later `generation` of the same leader, keeping the names
-    /// its reports gave its followers: the identity a follower answered from,
+    /// Empty, at a later `generation` of the same leader, keeping what it
+    /// names its followers by: the identity a follower last answered from,
     /// else the one it inherited. `keep_for` drops them if the log turns out
     /// to be another incarnation's.
     ///
@@ -403,8 +403,9 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     let shard = crate::incarnation::shard_ref(broker, key, route.generation);
     let incarnation = shard.incarnation.unwrap_or(0);
     entry.keep_for(route.generation, incarnation);
-    // A promotion's assignment names the copies itself; only a set change
-    // under this leader keeps what it named them by before.
+    // A promotion's assignment names the copies itself. Any other route at a
+    // new generation, a promotion that named no identities included, keeps
+    // what this leader named them by before.
     let inherited_ids = entry
         .inherited
         .get_or_insert_with(|| match route.fence_storage_ids {
