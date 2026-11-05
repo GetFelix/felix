@@ -12,7 +12,8 @@ seed, so a failing seed can be run again.
 It lives in `crates/testing/felix-sim`. A run starts a small cluster (three
 to five brokers and a control plane), drives clients against it, injects faults
 for most of two virtual minutes, heals everything, and then checks what the
-clients saw and what the brokers ended up holding.
+clients saw and what the brokers ended up holding. Two virtual minutes take
+minutes of real time, not seconds (see [Running it](#running-it)).
 
 ## Running it
 
@@ -23,8 +24,19 @@ cargo test -p felix-sim --test seeds seeds
 ```
 
 `FELIX_SIM_SEEDS` sets how many seeds (default 4) and `FELIX_SIM_SEED_START`
-the first one. Each seed is 120 seconds of virtual time, which takes a few
-seconds of real time.
+the first one. Each seed is 120 seconds of virtual time and takes three to five
+minutes of real time with faults. The clock is paused, so waiting costs
+nothing, but real work does not: starting a cluster opens a durable log for
+each of 50 to 200 shards on every broker, and every crash restart opens them
+again. That disk work, and the broker tasks that run between timers, take real
+time that no virtual clock skips. Run seeds one at a time on a busy machine.
+
+A run that makes no progress ends instead of hanging. A thread of its own
+watches the virtual clock, and if it has not moved for four minutes of real
+time, or the whole run has used `real_time_limit` (eight minutes), the run
+stops and reports a `stalled` finding. That means some broker task never
+waits on a timer, which holds the paused clock still; the finding says so and
+prints no census, since the busy task would hold that up too.
 
 When a seed fails, the test prints the command that replays it:
 
@@ -55,20 +67,37 @@ cargo test -p felix-cluster --lib history::
    for the stream catalog (the `seeded` gate a real broker has), registers, and
    starts its shard tasks. Once every broker has registered, the run finalizes
    replica election, so brokers elect a new leader themselves when one is lost.
-2. **Faults.** For about the first 90 seconds a schedule drawn from the seed
-   crashes and restarts brokers, partitions them, pauses them, and makes the
-   control plane slow, paused or down. One fault the schedule always tries is a
-   paused control plane while a shard leader crashes.
+2. **Faults.** For the first 90 seconds a schedule drawn from the seed crashes
+   and restarts brokers, partitions them, freezes them, drops one direction of
+   a link, and makes the control plane slow, paused or down. Faults may
+   overlap. Eight steps in a hundred pause the control plane and, a second or
+   two later, crash the broker that leads the most shards, which is the case
+   election has to get right when nobody can say who leads. The step is drawn
+   like any other, so about two seeds in three have it and the rest never do.
+   The crash is skipped when half the brokers or more are already down, so
+   some runs keep a quorum. While the faults run, the checkers marked "every
+   second" below sample the cluster.
 3. **Heal and settle.** Every link is healed, the control plane answers again
    and crashed brokers restart. The cluster then has 60 virtual seconds to get
-   every shard served again.
-4. **Check.** The checkers below run on the clients' history and the brokers'
-   state.
+   every shard served again. The clients keep running until second 120.
+4. **Check.** Clients stop, work in flight drains for 20 seconds, a last read
+   takes each shard and cache key, and the checkers below run on the clients'
+   history and the brokers' state.
 
 A crash drops a broker's process state and reopens its data directory, so it
-also tests recovery. A pause is approximate: the broker keeps running but is
-cut off from everyone, the control plane included, which looks the same to its
-peers but lets its own timers keep firing.
+also tests recovery. It is a process crash, not a power cut: the kernel keeps
+what the broker wrote, so nothing unsynced is lost. The harness records the
+stop as clean in the broker's run state for that reason. Without that, a
+restart on a platform that cannot sync the filesystem after a crash (anything
+but Linux) would give the broker a new storage id, and it would refuse to lead
+shards it led before.
+
+A pause is approximate. The simulator cannot stop one broker's tasks on a
+runtime they share, so a frozen broker is cut off from every peer and from the
+control plane, as a partition from everyone, but keeps running. Its peers see
+what a paused process looks like. What the simulator does not reproduce is the
+paused broker waking up with stale timers and acting on a lease that ran out
+while it slept.
 
 Clients publish through the same function the broker's publish handler uses
 (`serving::direct_publish`): resolve the shard, enter the shard's fence, append,
@@ -80,21 +109,93 @@ for example when the quorum wait timed out).
 
 ## Checkers
 
-A seed fails when any checker reports a problem. History checkers look only at
-what clients saw; cluster checkers look at the brokers. Each cluster checker is
-named after the invariant in the formal model (`docs/formal/FelixShard.tla`)
-that it tests on the real code.
+A seed fails when any checker reports a problem, except a warning. History
+checkers look only at what clients saw; cluster checkers look at the brokers.
+Each cluster checker is named after the invariant in the formal model
+(`docs/formal/FelixShard.tla`) that it tests on the real code.
 
-| Checker | Fails when |
-| --- | --- |
-| Streams (history rules 1-19) | A read is not a prefix of one order of the stream, an acknowledged record is lost, a record shows up twice or was never written, or reads and writes form a cycle (G0, G1c, G-single, G2). See [history-checker.md](history-checker.md). |
-| Cache (history rule 20) | A cache key's puts and gets cannot be put in one order that respects real time, as one variable would. Unknown puts may or may not have happened. A key too tangled to decide within the search budget is reported as undecided, not as a pass. |
-| `ElectionSettles` | Some shard is not served by exactly one broker 60 virtual seconds after the faults heal. The report prints a census for each stuck shard: what every broker and the control plane think of it. |
-| `OneLeaderPerGeneration` | Two brokers led the same shard in the same generation. |
-| `AtMostOneServing` | Two brokers serve writes for one shard at the same moment, checked at quiet points between faults. |
-| `AckedHeldByLeader` | The current leader's log lacks a record a client was told is on a quorum. |
-| `AdoptedMatchesOpened` | A broker serves a generation of a shard that differs from the one it opened. |
-| Generation burn | A shard went through more generations than the faults explain. A warning, not a failure. |
+A cluster checker runs at up to three kinds of point:
+
+- **Quiet**: about once a virtual second from the start of the run, skipped
+  while any broker is still starting (it has no view of its shards yet). This
+  is the only way to see a state that lasts a few seconds, such as two
+  leaders, so it samples during the faults.
+- **Healed**: right after the nemesis heals everything. A checker may wait for
+  the cluster, as `ElectionSettles` does. It sees the history recorded so far.
+- **End**: after the final reads, with the complete history.
+
+| Checker | Runs | Fails when |
+| --- | --- | --- |
+| Streams (history rules 1-19) | End | A read is not a prefix of one order of the stream, an acknowledged record is lost, a record shows up twice or was never written, or reads and writes form a cycle (G0, G1c, G-single, G2). See [history-checker.md](history-checker.md). |
+| Cache (history rule 20) | End | A cache key's puts and gets cannot be put in one order that respects real time, as one variable would. Unknown puts may or may not have happened. A key too tangled to decide within the search budget is reported as undecided, not as a pass. |
+| `ElectionSettles` | Healed | Some shard is not served by exactly one broker 60 virtual seconds after the faults heal. The report prints a census for each stuck shard: what every broker and the control plane think of it. |
+| `OneLeaderPerGeneration` | every second, Healed, End | Two brokers had the same shard open for writes in the same generation, at any time in the run. A broker that restarts and opens a generation again is one leader. |
+| `AtMostOneServing` | every second, Healed, End | Two brokers would take a write for one shard at the same instant. The brokers are read in one step, so none moves between two reads. It covers shards protected by the lease only. The model asserts it for those, and for a shard acknowledged by a majority of followers it asserts `AckedHeldByLeader` instead: a deposed leader may serve out its lease there, because it cannot collect a majority once its successor has fenced one. Once election is finalized that is every stream shard. A run does not finalize `fenced_caches`, so its cache shards stay on the lease and are the ones checked. |
+| `AckedHeldByLeader` | Healed, End | The one broker serving a shard does not hold, at the offset the client was told, an append that was acknowledged. The record is read from the leader's log whether or not a quorum has committed it. A shard with no server or two is left to `ElectionSettles`. |
+| `AdoptedMatchesOpened` | every second, Healed, End | A broker that serves a shard at generation `g` does not route the shard to itself at `g`, or its lifecycle did not open `g`. The model's version of this also compares the replica set with the control plane's; the simulator does not read the set. |
+| `GenerationBurn` | End | A warning, never a failure. A shard went through more generations than `2 * faults + 2`, counting the faults in the plan that could have cost its leader: a crash, freeze or isolation of a broker that has led it, a split with a former leader in the minority, a dropped link to one, a paused or downed control plane, or the pause-then-crash fault. Many elections for few faults often means candidates deposing each other. |
+
+A violation that lasts is reported once, with a census of the shard. After three
+of one kind the rest are only counted.
+
+### Writing a checker
+
+A checker implements the `Checker` trait in `crates/testing/felix-sim/src/check.rs`:
+a `name` and an async `check`, which receives a `CheckContext` with the
+cluster, the `Point` it is called at, when the faults healed, the history and
+the plan of faults. It returns findings. Return at once for points it has
+nothing to say at.
+
+```rust
+struct NoTwoLeaders;
+
+#[async_trait::async_trait]
+impl Checker for NoTwoLeaders {
+    fn name(&self) -> &'static str {
+        "no-two-leaders"
+    }
+
+    async fn check(&mut self, ctx: &CheckContext) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        for key in ctx.cluster.shard_keys() {
+            if ctx.cluster.servers_of(&key).await.len() > 1 {
+                findings.push(Finding::new(self.name(), "two leaders").with(ctx.cluster.census(&key).await));
+            }
+        }
+        findings
+    }
+}
+```
+
+The cluster exposes what each broker believes through `SimCluster::stands`
+(one instant, nothing awaited) and `snapshot` (also the log tail), and the
+`census` prints it for a failure. To run the checker, add it to the list that
+`run_seed_with` takes, or to `default_checkers`. A checker keeps its own state
+between calls, which is how `OneLeaderPerGeneration` remembers a leader that
+crashed. Put the decision in a function of plain values and test it with a
+hand-built observation that breaks the rule and one that keeps it, as the
+tests under `check/` do; running a cluster in a unit test takes too long.
+
+Do not weaken a checker to make a seed pass. File the seed as an issue and pin
+it with `#[ignore = "#<issue>"]` in `tests/seeds.rs`.
+
+### Known failing seeds
+
+These seeds fail today. Each is pinned in `tests/seeds.rs` as an ignored test
+named after its issue, which passes when the bug is fixed; run them with
+`cargo test -p felix-sim --test seeds -- --ignored`. The default batch
+is seeds 1 to 4, so it fails until these are fixed.
+
+| Seed | What it finds | Issue |
+| --- | --- | --- |
+| 1 | The replication driver spins on a retry with no delay and the virtual clock stops (a `stalled` finding). | [#1941](https://github.com/GetFelix/felix/issues/1941) |
+| 1, 5 | A cache get or delete after a failover or restart misses a put that a quorum acknowledged. | [#1943](https://github.com/GetFelix/felix/issues/1943) |
+| 2, 3, 4 | The same stall as seed 1, within the first minute of faults. Seeds that stall give the cluster checkers little to look at. | [#1941](https://github.com/GetFelix/felix/issues/1941) |
+| 6 | The control plane pauses, a shard leader crashes, and after the heal the restarted leader stays in `fencing`: `ElectionSettles` reports the shard unserved. | [#1948](https://github.com/GetFelix/felix/issues/1948) |
+| 6 | After the heal a leader's committed mark stays below its log tail on 19 shards, so they cannot be read (`final-reads`). | [#1949](https://github.com/GetFelix/felix/issues/1949) |
+
+A stalled run may not stall on another replay: the brokers' interleaving
+differs, and seed 2 ran to the end the first time and stalled the second.
 
 ## What runs for real and what is simulated
 

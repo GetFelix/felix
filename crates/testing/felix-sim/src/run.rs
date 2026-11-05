@@ -95,6 +95,12 @@ impl std::fmt::Display for SimOutcome {
         for finding in &self.findings {
             write!(f, "{finding}")?;
         }
+        if !self.passed() {
+            writeln!(f, "faults, in virtual time from the start of the run:")?;
+            for event in &self.history.faults {
+                writeln!(f, "  {:>7.1}s {}", event.at as f64 / 1e9, event.what)?;
+            }
+        }
         if self.report.violations.is_empty() {
             writeln!(f, "history checker: no violations")
         } else {
@@ -302,14 +308,21 @@ async fn drive(
         findings.extend(checker.lock().await.check(&ctx).await);
     }
     if !unread.is_empty() {
-        findings.push(Finding::new(
+        let mut finding = Finding::new(
             "final-reads",
             format!(
                 "no final read for {} shards, left out of the history check: {}",
                 unread.len(),
                 unread.join(", ")
             ),
-        ));
+        );
+        for list in unread.iter().take(3) {
+            let shard = list.rsplit('/').next().and_then(|n| n.parse().ok());
+            if let Some(shard) = shard {
+                finding = finding.with(cluster.census(&crate::cluster::stream_key(shard)).await);
+            }
+        }
+        findings.push(finding);
     }
     finished(seed, config, history, findings, begun.elapsed())
 }

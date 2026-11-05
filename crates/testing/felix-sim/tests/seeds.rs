@@ -104,6 +104,57 @@ fn seed_1_replication_driver_does_not_spin_on_a_pending_fence() {
     assert!(!stalled(&outcome), "{outcome}");
 }
 
+/// More seeds that stall like seed 1. They stall at the first faults, so the
+/// cluster checkers see little of them until it is fixed.
+#[test]
+#[ignore = "#1941"]
+fn seed_2_replication_driver_does_not_spin() {
+    log();
+    let outcome = run_seed(2, SimConfig::for_seed(2));
+    assert!(!stalled(&outcome), "{outcome}");
+}
+
+#[test]
+#[ignore = "#1941"]
+fn seed_3_replication_driver_does_not_spin() {
+    log();
+    let outcome = run_seed(3, SimConfig::for_seed(3));
+    assert!(!stalled(&outcome), "{outcome}");
+}
+
+#[test]
+#[ignore = "#1941"]
+fn seed_4_replication_driver_does_not_spin() {
+    log();
+    let outcome = run_seed(4, SimConfig::for_seed(4));
+    assert!(!stalled(&outcome), "{outcome}");
+}
+
+/// Whether `checker` reported anything.
+fn found(outcome: &SimOutcome, checker: &str) -> bool {
+    outcome.findings.iter().any(|f| f.checker == checker)
+}
+
+/// The control plane pauses and a shard leader crashes; once everything heals
+/// a restarted leader stays in `fencing` and its shard is never served.
+#[test]
+#[ignore = "#1948"]
+fn seed_6_every_shard_is_served_after_a_paused_control_plane_and_a_leader_crash() {
+    log();
+    let outcome = run_seed(6, SimConfig::for_seed(6));
+    assert!(!found(&outcome, "election-settles"), "{outcome}");
+}
+
+/// A leader's committed mark stays below its log tail after the faults heal,
+/// so the shard cannot be read to its tail.
+#[test]
+#[ignore = "#1949"]
+fn seed_6_every_shard_can_be_read_after_the_faults_heal() {
+    log();
+    let outcome = run_seed(6, SimConfig::for_seed(6));
+    assert!(!found(&outcome, "final-reads"), "{outcome}");
+}
+
 /// A cache read or delete after a failover or restart misses a put that a
 /// quorum acknowledged.
 fn assert_cache_is_linearizable(seed: u64) {
