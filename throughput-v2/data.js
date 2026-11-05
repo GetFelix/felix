@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793895899417,
+  "lastUpdate": 1793896339865,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -45864,6 +45864,58 @@ window.BENCHMARK_DATA = {
             "range": "7041.24",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 811397.61\nmean: 811826.56\nstdev: 7041.24\ncv: 0.87%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e0258fd7729e9002404fa192cef3d76af2b1a9c8",
+          "message": "feat(broker,client): answer plain pipelined publishes as they complete (#1417, #1920) (#1926)\n\n* feat(client): a shard gets a publish stream of its own only while it stalls (#1417, #1920)\n\nHealthy shards ride the pooled publish streams. The writer times the\nanswer at the head of each stream; once it is overdue (8x the stream's\nusual head wait, at least 250 ms) the head's shard moves to a stream of\nits own, and so does any other shard that would queue behind it. A move\nwaits for the shard's publishes in flight to be answered, so per-shard\norder and idempotent sequences hold. A moved shard returns once it and\nthe pool are calm for 5 s, doubling up to 300 s if it keeps stalling.\nUnacked publishes pin their shard. No wire change.\n\nFELIX_PUB_SHARD_STREAMS is now the most shards moved at once per broker\n(default 64); the fixed per-shard streams are removed.\n\n* fix(client): shard streams leave a failed writer, keep a pinned shard out, judge own streams by their own wait, and give idle streams back (#1417)\n\n* fix(client): a stream's usual wait warms up from its answers, not its first one (#1417)\n\nSeeding it with the first answer let one slow cold-start answer raise the\noverdue bound eightfold, so a real stall went unnoticed (broker shard test\nunder coverage).\n\n* feat(broker,client): answer plain pipelined publishes as they complete (#1417, #1920)\n\nA pipelining stream answered every acked publish in request order, so one\nshard stuck on a quorum wait held back the answers of every shard sharing\nits stream. Only idempotent publishes need that order.\n\nA client now offers FEATURE_PUBLISH_ANSWER_ON_COMPLETION (extended word,\n0x40) with FEATURE_PUBLISH_PIPELINE. A broker that grants a window answers\nit back and from then on writes a plain acked publish's answer as soon as\nit is ready, keeping request order only among idempotent publishes. Every\nacked publish still holds its window slot until it is answered, and the\nstalled-stream check looks only at held-back answers. Peers that do not\noffer the bit exchange the same frames as before.\n\nThe Rust writer, when granted, waits for either an answer or a new request\ninstead of settling every outstanding answer before writing again. The read\nin progress owns the stream so it survives the select; the serial path adds\nno task or channel hop.\n\nDrops the adaptive dedicated shard streams this branch added in favour of\nthis, and keeps the failover_heal publish bound at 8 s.\n\n* chore: record that the TLA+ models are unaffected (#1417)\n\nSpec-Unaffected: answer order on a client publish stream is not modelled; the specs cover leases, replication, quorum and commit order, which this leaves alone.\n\n* fix(broker): close a stream whose plain answer was lost, and test idempotent order on it (#1417)\n\nOn a stream that answers on completion, a lost plain answer held nothing\nback, so the stall check never saw it, yet it kept its window slot for\ngood. The writer now times the oldest unanswered publish of any kind there.\n\nAdds a real-broker test that binary idempotent batches keep request order on\nsuch a stream, and says in the docs that completion-order answers need the\nbroker to grant the bit.\n\nSpec-Unaffected: answer order and stream closing on a client publish stream are not modelled.",
+          "timestamp": "2026-11-05T08:08:30-08:00",
+          "tree_id": "3e1c656223af7f5963b9287363b511c90cdce335",
+          "url": "https://github.com/GetFelix/felix/commit/e0258fd7729e9002404fa192cef3d76af2b1a9c8"
+        },
+        "date": 1793896339297,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 343540.65,
+            "range": "11905.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 343540.65\nmean: 344660.37\nstdev: 11905.46\ncv: 3.45%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 343540.65,
+            "range": "11905.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 343540.65\nmean: 344660.37\nstdev: 11905.46\ncv: 3.45%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79731.33,
+            "range": "7306.23",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79731.33\nmean: 76069.20\nstdev: 7306.23\ncv: 9.60%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 797313.27,
+            "range": "73062.28",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 797313.27\nmean: 760691.98\nstdev: 73062.28\ncv: 9.60%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
