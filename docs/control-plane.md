@@ -1076,12 +1076,14 @@ missing while the marker no longer matches the row's `incarnation` or
 dropped by the proposer below them. See
 [replication-design.md](replication-design.md#who-may-be-promoted).
 
-A leader promoted by a failover also reports, for each follower it has not
-reached yet, the identity that failover named it by
+A leader also reports, for each follower it has not reached yet at its
+generation, the identity it inherited for it: the one the failover that
+promoted it named, or after a set change that kept it as leader, the one it
+named the follower by at its previous generation
 (`inherited_storage_ids`, stored as `inherited_storage`; a malformed one is
 dropped). The next failover names such a follower by it in the assignment's
 `fence_storage_ids` instead of by an empty identity, so its fence answer can
-count (#1574). It never makes a follower caught up. Under Postgres its marker
+count (#1574, #1922). It never makes a follower caught up. Under Postgres its marker
 is `inherited_storage_at` (migration 0037); under Raft it needs metadata
 level 20 and is dropped below it, which names the follower by none, as
 before. See

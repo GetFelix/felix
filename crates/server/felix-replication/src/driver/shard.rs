@@ -74,6 +74,10 @@ pub struct ShardCursors {
     /// a follower this leader has not reached yet by it. `None` before that
     /// pass. See [`inherited_names`].
     pub(super) inherited: Option<BTreeMap<String, String>>,
+    /// What this leader named each follower by at its previous generation,
+    /// for `inherited` when the new one is not a promotion. See
+    /// [`ShardCursors::next`].
+    pub(super) carried: BTreeMap<String, String>,
     /// Followers whose cursors may describe a copy that is no longer there.
     /// See [`Unconfirmed`].
     pub(super) unconfirmed: Unconfirmed,
@@ -103,6 +107,7 @@ impl ShardCursors {
             learner: None,
             own_start: None,
             inherited: None,
+            carried: BTreeMap::new(),
             unconfirmed: Unconfirmed::default(),
         }
     }
@@ -122,6 +127,43 @@ impl ShardCursors {
                 ..Self::at(generation)
             };
         }
+    }
+
+    /// Empty, at a later `generation` of the same leader, keeping the names
+    /// its reports gave its followers: the identity a follower answered from,
+    /// else the one it inherited. `keep_for` drops them if the log turns out
+    /// to be another incarnation's.
+    ///
+    /// A follower this leader does not reach at the new generation
+    /// acknowledged nothing there, and everything it acknowledged before came
+    /// from the copy it was named by. Named by none after a set change, its
+    /// fence answer would never count, and a failover that needs it could
+    /// not open (#1922).
+    pub(super) fn next(&self, generation: u64) -> Self {
+        Self {
+            incarnation: self.incarnation,
+            carried: if generation > self.generation {
+                self.names()
+            } else {
+                BTreeMap::new()
+            },
+            ..Self::at(generation)
+        }
+    }
+
+    /// What a report at this generation names each follower by.
+    fn names(&self) -> BTreeMap<String, String> {
+        let inherited = self.inherited.as_ref();
+        self.followers
+            .iter()
+            .filter_map(|follower| {
+                let id = match follower.storage_id {
+                    Some(id) => id.to_hex(),
+                    None => inherited?.get(&follower.node_id)?.clone(),
+                };
+                Some((follower.node_id.clone(), id))
+            })
+            .collect()
     }
 }
 
@@ -361,9 +403,14 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     let shard = crate::incarnation::shard_ref(broker, key, route.generation);
     let incarnation = shard.incarnation.unwrap_or(0);
     entry.keep_for(route.generation, incarnation);
+    // A promotion's assignment names the copies itself; only a set change
+    // under this leader keeps what it named them by before.
     let inherited_ids = entry
         .inherited
-        .get_or_insert_with(|| inherited_names(route))
+        .get_or_insert_with(|| match route.fence_storage_ids {
+            Some(_) => inherited_names(route),
+            None => std::mem::take(&mut entry.carried),
+        })
         .clone();
     let Some(log) = broker
         .shard_log_for(

@@ -472,7 +472,13 @@ went to an earlier leader, from the copy that promotion named or from one
 before it. Storage identities never repeat: a wipe or a machine crash
 rotates one, and a process crash keeps it only when nothing was lost. An
 answer under the inherited identity therefore comes from a copy that has
-kept everything it acknowledged. A leader sends no report while it still
+kept everything it acknowledged. A set change that keeps the leader, such as
+seating a replacement for a drained follower, is not a promotion: at the new
+generation the leader names a follower it has not reached yet by the identity
+it named it by at the generation before, the copy it answered from or its own
+inherited one. Otherwise a follower cut off from the leader across the change
+is named with an empty identity, and a failover whose majority needs it can
+never open (#1922). A leader sends no report while it still
 fences, so a copy whose fence answer it did not count is named in its
 reports only once it has opened and ships to that copy. Without an inherited identity, from a leader nobody promoted or one that
 predates the field, the member is named with an empty identity, which
@@ -2575,7 +2581,8 @@ once the restarted broker has registered. Each report also names the
 incarnation every follower gave on the connection its positions came over
 (`replica_incarnations`, `null` for one that had not registered yet, omitted
 when empty). For a follower it has not reached yet at its generation, a
-leader promoted by a failover reports the identity that failover named it by
+leader reports the identity it inherited for it, from the failover that
+promoted it or from its own previous generation
 (`inherited_storage_ids`, omitted when empty, kept as `inherited_storage`).
 Placement reads it only to name that follower in the next failover's fence
 (see "Fencing a promotion"), never to decide who is caught up.

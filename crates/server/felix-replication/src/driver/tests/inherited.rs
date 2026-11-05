@@ -49,19 +49,24 @@ fn promoted_router() -> Arc<ShardRouter> {
 
 /// broker-b was wiped and answers under `id(2)`, so its fence answer does not
 /// count. broker-c answers under the `id(3)` it was named by, only while
-/// `c_up`. Both take the fence with an empty log and store every batch.
+/// `c_up`, and broker-b only until `b_down`. Both take the fence with an
+/// empty log and store every batch.
 #[derive(Default)]
 struct PromotedFollowers {
     c_up: AtomicBool,
+    b_down: AtomicBool,
 }
 
 impl PromotedFollowers {
     fn unreachable(&self, node_id: &str) -> Option<PeerError> {
-        (node_id == "broker-c" && !self.c_up.load(Ordering::SeqCst)).then(|| {
-            PeerError::Unavailable {
-                node_id: node_id.to_string(),
-                detail: "paused".to_string(),
-            }
+        let down = match node_id {
+            "broker-b" => self.b_down.load(Ordering::SeqCst),
+            "broker-c" => !self.c_up.load(Ordering::SeqCst),
+            _ => false,
+        };
+        down.then(|| PeerError::Unavailable {
+            node_id: node_id.to_string(),
+            detail: "paused".to_string(),
         })
     }
 }
@@ -205,11 +210,13 @@ async fn a_leader_still_fencing_reports_no_identity_from_its_fence_answers() {
     );
 }
 
-/// **A leader's later generation names nothing by inheritance**: only the
-/// promotion's own assignment carries identities, and a later one at a new
-/// generation carries none.
+/// **A set change that keeps the leader keeps what it named its followers
+/// by** (#1922). At generation 5 this leader reaches neither follower, and a
+/// report naming them by none would leave a failover unable to count either
+/// one's fence answer. broker-b is named by the copy it answered from at
+/// generation 4, and broker-c, never reached, by its promotion's identity.
 #[tokio::test]
-async fn a_later_generation_inherits_no_names() {
+async fn a_set_change_keeps_the_names_its_leader_reported() {
     let (broker, _dir) = leader_with(3).await;
     let router = promoted_router();
     let followers = PromotedFollowers::default();
@@ -220,16 +227,26 @@ async fn a_later_generation_inherits_no_names() {
 
     let promoted = pass(&followers, &broker, &router, &gate, &mut cursors).await;
     let report = promoted.reports.last().expect("a report");
+    assert_eq!(report.storage_ids, vec![("broker-b".to_string(), id(2))]);
     assert_eq!(
         report.inherited_storage,
         vec![("broker-c".to_string(), id(3).to_hex())]
     );
 
+    followers.b_down.store(true, Ordering::SeqCst);
     publish(&router, LOCAL, &["broker-b", "broker-c"], 5);
     let later = pass(&followers, &broker, &router, &gate, &mut cursors).await;
     let report = later.reports.last().expect("a report");
     assert_eq!(report.generation, 5);
-    assert!(report.inherited_storage.is_empty(), "{report:?}");
+    assert!(report.storage_ids.is_empty(), "{report:?}");
+    assert_eq!(
+        report.inherited_storage,
+        vec![
+            ("broker-b".to_string(), id(2).to_hex()),
+            ("broker-c".to_string(), id(3).to_hex()),
+        ],
+        "{report:?}"
+    );
 }
 
 /// Marks as a fleet that finalized acknowledging `Quorum` streams and caches
