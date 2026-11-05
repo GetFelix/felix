@@ -409,7 +409,8 @@ pub struct ReplicaReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub leader_incarnation: Option<u64>,
     /// The storage identity (32 lowercase hex) the leader saw for each
-    /// follower when it reported. Placement counts a follower from this
+    /// follower when it reported, or for one it has not reached since a set
+    /// change that kept it, the one it saw at the generation before. Placement counts a follower from this
     /// report as holding what it says only while this matches the identity
     /// the follower registered with, and never once they differ. Empty from
     /// brokers that predate it and, under Raft, until every member can apply

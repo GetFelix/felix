@@ -1068,3 +1068,54 @@ async fn a_promotion_carries_no_names() {
     assert_eq!(report.generation, 5);
     assert!(report.storage_ids.is_empty(), "{report:?}");
 }
+
+/// Names carry across more than one set change while the follower stays out
+/// of reach, and one that answers again is named by the copy it answered
+/// from, once.
+#[tokio::test]
+async fn carried_names_last_until_the_follower_answers() {
+    let (broker, _dir) = leader_with(3).await;
+    let mut cursors = HashMap::new();
+    let rebuilds = Rebuilds::disabled();
+    let at = |generation| router(LOCAL, &["broker-b"], generation);
+    pass(
+        &IdentifiedFollower::with(id(1)),
+        &broker,
+        &at(4),
+        &mut cursors,
+        &mut HashMap::new(),
+        &rebuilds,
+    )
+    .await;
+    for generation in [5, 6] {
+        let report = pass(
+            &WipedAndDown,
+            &broker,
+            &at(generation),
+            &mut cursors,
+            &mut HashMap::new(),
+            &rebuilds,
+        )
+        .await;
+        assert_eq!(
+            report.storage_ids,
+            vec![("broker-b".to_string(), id(1))],
+            "{report:?}"
+        );
+    }
+
+    let report = pass(
+        &IdentifiedFollower::with(id(2)),
+        &broker,
+        &at(7),
+        &mut cursors,
+        &mut HashMap::new(),
+        &rebuilds,
+    )
+    .await;
+    assert_eq!(
+        report.storage_ids,
+        vec![("broker-b".to_string(), id(2))],
+        "{report:?}"
+    );
+}

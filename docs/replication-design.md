@@ -2266,7 +2266,8 @@ every acknowledged record but not the old leader's unacknowledged tail, and
 with the floor it would not have been named until it had copied that tail.
 A follower on a draining broker that holds the log can still be promoted when
 no live follower does, so a drain under way does not turn this cost into an
-outage (`seating_a_replacement_keeps_what_the_old_set_acknowledged`).
+outage (`a_draining_follower_is_promoted_when_no_live_one_holds_the_log`,
+`seating_a_replacement_keeps_what_the_old_set_acknowledged`).
 `FelixShardReportFromAnswers.cfg` counts followers by their answers without
 the floor and loses the record, and `FelixShardReportFloor.cfg` passes
 (`a_new_leader_names_no_follower_before_it_answers`,

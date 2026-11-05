@@ -140,7 +140,9 @@ pub struct ShardReplicaStatus {
     pub by_round: bool,
     /// The storage identity each follower gave the leader, as 32 lowercase
     /// hex digits, keyed by node id. The positions above describe that copy
-    /// of a follower's log. A follower that gives none is absent. The leader
+    /// of a follower's log. A follower that gives none is absent. After a set
+    /// change that kept the leader, a follower it has not reached yet is named
+    /// by the identity it gave at the generation before, with no position. The leader
     /// names its own too, so placement can tell when it comes back on a data
     /// directory that is no longer the one it reported from. Omitted when
     /// empty, and by brokers that predate it.

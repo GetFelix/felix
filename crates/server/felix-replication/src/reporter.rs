@@ -143,6 +143,9 @@ pub struct ShardReport {
     pub by_round: bool,
     /// The storage identity each follower gave, for every follower that gave
     /// one. The positions above describe that copy of the log and no other.
+    /// After a set change that kept this leader, a follower it has not
+    /// reached yet is named by the identity it gave at the generation before;
+    /// it has no position here. See [`ShardReport::naming_carried`].
     pub storage_ids: Vec<(String, StorageId)>,
     /// The node incarnation each follower gave beside its storage identity,
     /// `None` for one that had not registered yet, for every follower that

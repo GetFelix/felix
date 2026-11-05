@@ -112,13 +112,15 @@ impl ShardCursors {
 
     /// What a report at this generation names each follower by.
     fn names(&self) -> BTreeMap<String, felix_storage::StorageId> {
-        let mut names = self.carried.clone();
-        names.extend(
-            self.followers
-                .iter()
-                .filter_map(|follower| Some((follower.node_id.clone(), follower.storage_id?))),
-        );
-        names
+        self.followers
+            .iter()
+            .filter_map(|follower| {
+                let id = follower
+                    .storage_id
+                    .or_else(|| self.carried.get(&follower.node_id).copied())?;
+                Some((follower.node_id.clone(), id))
+            })
+            .collect()
     }
 
     /// Start over at `generation` unless these cursors already describe the
