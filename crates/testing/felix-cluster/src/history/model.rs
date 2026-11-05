@@ -184,7 +184,13 @@ impl History {
                 RegisterAction::Put {
                     acknowledged: true, ..
                 } => puts.push(took),
-                RegisterAction::Put { .. } => unknown_puts += 1,
+                RegisterAction::PutIf {
+                    applied: Some(_), ..
+                }
+                | RegisterAction::Delete { removed: Some(_) } => puts.push(took),
+                RegisterAction::Put { .. }
+                | RegisterAction::PutIf { .. }
+                | RegisterAction::Delete { .. } => unknown_puts += 1,
                 RegisterAction::Get { .. } => gets.push(took),
             }
         }

@@ -315,7 +315,9 @@ async fn run_checked(campaign: &Campaign, nemesis: &mut impl Nemesis) -> History
             RegisterAction::Put {
                 acknowledged: true, ..
             } => (puts + 1, gets),
-            RegisterAction::Put { .. } => (puts, gets),
+            RegisterAction::Put { .. }
+            | RegisterAction::Delete { .. }
+            | RegisterAction::PutIf { .. } => (puts, gets),
             RegisterAction::Get { .. } => (puts, gets + 1),
         });
     if puts < 10 || gets < 10 {

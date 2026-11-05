@@ -33,6 +33,9 @@ pub struct Report {
     pub violations: Vec<Violation>,
     /// Copied from the history so the report can be read on its own.
     pub faults: Vec<FaultEvent>,
+    /// Cache keys the linearizability search could not decide in its budget.
+    /// Not violations: nothing was proven either way.
+    pub undecided: Vec<String>,
 }
 
 /// One broken rule, with enough to find it in the history.
@@ -78,6 +81,9 @@ pub enum Rule {
     ///     nor visibly dropped: it sat under a skip the subscriber was told
     ///     holds no event, or past where the subscriber stopped.
     MissingDelivery,
+    /// 12. A cache key has no order of its operations that a register and
+    ///     real time allow.
+    NotLinearizable,
     /// The final read has a hole, so the lost-write rule cannot be trusted.
     IncompleteFinalRead,
     /// The history itself is malformed: the recorder is wrong, not the broker.
@@ -98,6 +104,9 @@ impl Report {
 
 impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for note in &self.undecided {
+            writeln!(f, "undecided: {note}")?;
+        }
         if self.violations.is_empty() {
             return write!(f, "history is valid");
         }
@@ -156,6 +165,7 @@ impl Rule {
             Rule::DeliveryOrder => "9 delivery-order",
             Rule::LostDelivery => "10 lost-delivery",
             Rule::MissingDelivery => "11 missing-delivery",
+            Rule::NotLinearizable => "12 not-linearizable",
             Rule::IncompleteFinalRead => "incomplete-final-read",
             Rule::MalformedHistory => "malformed-history",
         }
@@ -190,7 +200,7 @@ pub fn check(history: &History) -> Report {
         };
         checker.run();
     }
-    super::register::check(&history.registers, &mut violations);
+    let undecided = super::register::check(&history.registers, &mut violations);
     super::commit::check(
         &history.commit_reads,
         &history.commit_values,
@@ -200,6 +210,7 @@ pub fn check(history: &History) -> Report {
     Report {
         violations,
         faults: history.faults.clone(),
+        undecided,
     }
 }
 

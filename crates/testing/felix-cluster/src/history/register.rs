@@ -1,14 +1,16 @@
 //! `Quorum` cache keys as registers: puts of unique values and gets, checked
 //! for a get that is stale or saw a value nobody put.
 //!
-//! Values are unique, so a get names the put it saw. The check is sound
-//! rather than complete: it reports only what no linearization could explain,
-//! and does not search for one.
+//! Values are unique, so a get names the put it saw. Two checks run. A fast
+//! sweep reports what no linearization could explain (a stale read, a
+//! phantom) by name. A key it finds nothing wrong with then goes to the
+//! [`linearizable`](super::linearizable) search, which is complete.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 
 use super::checker::{Rule, Violation};
+use super::linearizable::{self, Budget, Linearizability};
 use super::model::{FOREIGN_PAYLOAD, millis};
 
 /// One cache operation.
@@ -30,6 +32,18 @@ pub enum RegisterAction {
     Put { value: u64, acknowledged: bool },
     /// Read the key. `None` is a miss. A get that failed is not recorded.
     Get { value: Option<u64> },
+    /// Remove the key. `removed` is what the answer said was removed:
+    /// `Some(None)` when the key was not there, `None` when the delete failed
+    /// and may or may not have happened.
+    Delete { removed: Option<Option<u64>> },
+    /// Store `value` only if the key holds `expect` (`None`: no live entry).
+    /// `applied` is the answer, `None` when the request failed and may or may
+    /// not have applied.
+    PutIf {
+        expect: Option<u64>,
+        value: u64,
+        applied: Option<bool>,
+    },
 }
 
 impl fmt::Display for RegisterOp {
@@ -53,26 +67,84 @@ impl fmt::Display for RegisterOp {
             RegisterAction::Get { value: None } => {
                 write!(f, "client {process} get {key} -> miss [{span}]")
             }
+            RegisterAction::Delete { removed } => {
+                let outcome = match removed {
+                    Some(Some(value)) => format!("removed {value}"),
+                    Some(None) => "found nothing".to_string(),
+                    None => "info".to_string(),
+                };
+                write!(f, "client {process} delete {key} -> {outcome} [{span}]")
+            }
+            RegisterAction::PutIf {
+                expect,
+                value,
+                applied,
+            } => {
+                let expect = expect.map_or("absent".to_string(), |v| format!("holding {v}"));
+                let outcome = match applied {
+                    Some(true) => "applied",
+                    Some(false) => "refused",
+                    None => "info",
+                };
+                write!(
+                    f,
+                    "client {process} put {value} to {key} if {expect} -> {outcome} [{span}]"
+                )
+            }
         }
     }
 }
 
-/// Check every key. Keys start absent and are never deleted.
+/// Check every key, which starts absent. Returns the keys the linearizability
+/// search gave up on (see [`Budget`]), with the reason.
 ///
-/// A get is stale when it returns `u`, `u`'s put was acknowledged, and before
+/// The sweep: a get is stale when it returns `u`, `u`'s put was acknowledged, and before
 /// the get began some value `w` was already in effect, known either from
 /// `w`'s acknowledgement or from an earlier get that returned `w`, whose put
 /// began only after `u`'s was acknowledged. Every linearization then puts `u`
 /// before `w` before the get. A miss is stale once any value was in effect
 /// before it began.
-pub(crate) fn check(ops: &[RegisterOp], out: &mut Vec<Violation>) {
+pub(crate) fn check(ops: &[RegisterOp], out: &mut Vec<Violation>) -> Vec<String> {
+    check_with(ops, Budget::default(), out)
+}
+
+/// [`check`] with an explicit search budget.
+pub(crate) fn check_with(
+    ops: &[RegisterOp],
+    budget: Budget,
+    out: &mut Vec<Violation>,
+) -> Vec<String> {
+    let mut unknown = Vec::new();
     let mut keys: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
     for (index, op) in ops.iter().enumerate() {
         keys.entry(&op.key).or_default().push(index);
     }
     for (key, indices) in keys {
+        let before = out.len();
         check_key(ops, key, &indices, out);
+        if out.len() > before {
+            continue;
+        }
+        match linearizable::check_key(ops, &indices, budget) {
+            Linearizability::Ok => {}
+            Linearizability::Violation(witness) => out.push(Violation {
+                rule: Rule::NotLinearizable,
+                list: format!("cache key {key}"),
+                ops: witness
+                    .prefix
+                    .iter()
+                    .chain(&witness.stuck)
+                    .copied()
+                    .collect(),
+                explanation: witness.text,
+            }),
+            Linearizability::Unknown { steps } => unknown.push(format!(
+                "cache key {key}: not decided after {steps} steps, \
+                 so it is neither proven nor refuted"
+            )),
+        }
     }
+    unknown
 }
 
 fn check_key(ops: &[RegisterOp], key: &str, indices: &[usize], out: &mut Vec<Violation>) {
@@ -87,7 +159,8 @@ fn check_key(ops: &[RegisterOp], key: &str, indices: &[usize], out: &mut Vec<Vio
 
     let mut puts: HashMap<u64, usize> = HashMap::new();
     for &index in indices {
-        if let RegisterAction::Put { value, .. } = ops[index].action
+        if let RegisterAction::Put { value, .. } | RegisterAction::PutIf { value, .. } =
+            ops[index].action
             && let Some(first) = puts.insert(value, index)
         {
             push(
@@ -97,6 +170,15 @@ fn check_key(ops: &[RegisterOp], key: &str, indices: &[usize], out: &mut Vec<Vio
             );
         }
     }
+
+    // The sweep assumes plain puts and gets. A delete or conditional put can
+    // make an older value correct again, so those keys are left to the search.
+    let plain = indices.iter().all(|&index| {
+        matches!(
+            ops[index].action,
+            RegisterAction::Put { .. } | RegisterAction::Get { .. }
+        )
+    });
 
     // When each value is known to be in effect, and the put that wrote it.
     let mut evidence: Vec<(u64, usize)> = Vec::new();
@@ -135,6 +217,9 @@ fn check_key(ops: &[RegisterOp], key: &str, indices: &[usize], out: &mut Vec<Vio
             }
             _ => {}
         }
+    }
+    if !plain {
+        return;
     }
     evidence.sort_unstable();
     // latest[i]: of the puts in evidence[..=i], the one that began last.
