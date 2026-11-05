@@ -91,8 +91,13 @@ fn node(node_id: &str, port: u16) -> NodeRef {
 
 /// `LOCAL` following broker-a at `generation`, with broker-c.
 fn router(generation: u64) -> Arc<ShardRouter> {
+    router_of(LOCAL, generation)
+}
+
+/// broker-a leading at `generation`, as `local` sees it.
+fn router_of(local: &str, generation: u64) -> Arc<ShardRouter> {
     let router = Arc::new(ShardRouter::new(
-        LOCAL,
+        local,
         "us-west-2",
         RegionRouter::new("us-west-2".to_string()),
     ));
@@ -175,6 +180,10 @@ async fn follower() -> (Arc<Broker>, tempfile::TempDir) {
 }
 
 fn ctx(broker: &Arc<Broker>, voters: Voters) -> Ctx<Voters> {
+    ctx_with(broker, voters)
+}
+
+fn ctx_with<R>(broker: &Arc<Broker>, requester: R) -> Ctx<R> {
     let names = [
         GENERATION_START.name(),
         MAJORITY_ACK.name(),
@@ -190,7 +199,7 @@ fn ctx(broker: &Arc<Broker>, voters: Voters) -> Ctx<Voters> {
     let suspects = Arc::new(Suspects::default());
     suspects.publish(BTreeSet::from(["broker-a".to_string()]));
     Ctx {
-        requester: Arc::new(voters),
+        requester: Arc::new(requester),
         broker: Arc::clone(broker),
         router: router(3),
         marks,
@@ -198,6 +207,9 @@ fn ctx(broker: &Arc<Broker>, voters: Voters) -> Ctx<Voters> {
         suspects,
         held_back: Default::default(),
         deferring: Default::default(),
+        shard_after: crate::suspicion::DEFAULT_SHARD_SUSPECT_AFTER,
+        quiet: Default::default(),
+        stuck: Default::default(),
         pre_vote_gate: None,
     }
 }
@@ -253,7 +265,7 @@ async fn a_voter_silent_when_asked_again_does_not_stop_the_candidate() {
     voters.silent_again = vec!["broker-a", "broker-c"];
     let ctx = ctx(&broker, voters);
 
-    let (_, elected) = stand_and_watch(&ctx).await;
+    let elected = stand_and_watch(&ctx).await;
     assert_eq!(elected.generation, 4);
 }
 
@@ -264,7 +276,7 @@ async fn a_candidate_second_in_order_stands_when_its_voters_still_agree() {
     let (broker, _dir) = follower().await;
     let ctx = ctx(&broker, second_in_order(None));
 
-    let (_, elected) = stand_and_watch(&ctx).await;
+    let elected = stand_and_watch(&ctx).await;
     assert_eq!(elected.generation, 4);
     let asked = ctx.requester.asked.lock().expect("lock").clone();
     assert_eq!(asked.iter().filter(|node| *node == "broker-a").count(), 2);
@@ -410,7 +422,7 @@ async fn the_set_a_move_left_is_stood_on_jointly() {
     .await
     .expect("set");
 
-    let (_, elected) = tokio::time::timeout(Duration::from_secs(30), stand_and_watch(&ctx))
+    let elected = tokio::time::timeout(Duration::from_secs(30), stand_and_watch(&ctx))
         .await
         .expect("never stood");
 
@@ -481,7 +493,7 @@ async fn a_finished_moves_set_being_left_is_not_fenced_again() {
             assert_eq!(log.accepted_generation(), opened, "no ballot");
             continue;
         }
-        let (_, elected) = tokio::time::timeout(Duration::from_secs(30), stand_and_watch(&ctx))
+        let elected = tokio::time::timeout(Duration::from_secs(30), stand_and_watch(&ctx))
             .await
             .expect("never stood");
         let expected = (opened != 4).then(|| leaving.clone());
@@ -521,7 +533,7 @@ async fn an_unchanged_set_kept_beside_is_stood_on_once_joint_fences_are_on() {
     assert_eq!(log.accepted_generation(), 3, "no ballot");
 
     let on = ctx(&broker, voters(None));
-    let (_, elected) = tokio::time::timeout(Duration::from_secs(30), stand_and_watch(&on))
+    let elected = tokio::time::timeout(Duration::from_secs(30), stand_and_watch(&on))
         .await
         .expect("never stood");
     assert_eq!(elected.leaving, Some(set(3)));
@@ -649,6 +661,9 @@ async fn a_slow_dial_carries_over_to_the_next_round() {
         suspects,
         held_back: Default::default(),
         deferring: Default::default(),
+        shard_after: crate::suspicion::DEFAULT_SHARD_SUSPECT_AFTER,
+        quiet: Default::default(),
+        stuck: Default::default(),
         pre_vote_gate: None,
     };
     let log = shard_log(&ctx.broker, &key()).await.expect("log");
@@ -683,7 +698,7 @@ fn the_backoff_doubles_to_its_cap() {
 
 /// Stand for `key()` on the route `ctx` has, and return the round with the
 /// standing it recorded.
-async fn stand_and_watch(ctx: &Ctx<Voters>) -> (Round, Elected) {
+async fn stand_and_watch(ctx: &Ctx<Voters>) -> Elected {
     let route = ctx.router.snapshot().get(&key()).expect("route").clone();
     let watched = async {
         loop {
@@ -694,7 +709,12 @@ async fn stand_and_watch(ctx: &Ctx<Voters>) -> (Round, Elected) {
         }
     };
     let shard = key();
-    tokio::join!(stand(ctx, &shard, &route), watched)
+    // The standing stays until its route is published, which no test router
+    // does here, so only the record is waited for.
+    tokio::select! {
+        round = stand(ctx, &shard, &route) => panic!("ended {round:?} before it was recorded"),
+        elected = watched => elected,
+    }
 }
 
 /// **A candidate stands above the route's generation as well as its own
@@ -707,7 +727,7 @@ async fn a_candidate_stands_above_the_routes_generation() {
     let mut ctx = ctx(&broker, voters(None));
     ctx.router = router(5);
 
-    let (_, elected) = stand_and_watch(&ctx).await;
+    let elected = stand_and_watch(&ctx).await;
     assert_eq!(elected.generation, 6);
 }
 
@@ -721,7 +741,7 @@ async fn a_candidate_does_not_stand_past_the_adoption_window() {
     log.accept_generation(2 + ELECTION_GENERATION_WINDOW, Some("broker-a"))
         .await
         .expect("ballot");
-    let (_, elected) = stand_and_watch(&ctx(&broker, voters(None))).await;
+    let elected = stand_and_watch(&ctx(&broker, voters(None))).await;
     assert_eq!(elected.generation, 3 + ELECTION_GENERATION_WINDOW);
 
     let (broker, _dir) = follower().await;
@@ -824,7 +844,7 @@ async fn a_follower_of_a_newer_leader_it_does_not_suspect_does_not_stand() {
         "broker-a".to_string(),
         "broker-c".to_string(),
     ]));
-    let (_, elected) = tokio::time::timeout(Duration::from_secs(30), stand_and_watch(&ctx))
+    let elected = tokio::time::timeout(Duration::from_secs(30), stand_and_watch(&ctx))
         .await
         .expect("never stood");
     assert_eq!(elected.generation, 5);
@@ -855,7 +875,7 @@ async fn a_follower_stands_once_the_newer_leader_has_stood_down() {
     let route = ctx.router.snapshot().get(&key()).expect("route").clone();
     assert_eq!(stand(&ctx, &key(), &route).await, Round::Ineligible);
 
-    let (_, elected) = tokio::time::timeout(Duration::from_secs(30), stand_and_watch(&ctx))
+    let elected = tokio::time::timeout(Duration::from_secs(30), stand_and_watch(&ctx))
         .await
         .expect("never stood");
     assert_eq!(elected.generation, 5);
@@ -898,9 +918,221 @@ async fn a_follower_stands_over_a_newer_leader_that_never_starts() {
             assert_eq!(log.accepted_generation(), 4, "no ballot");
             continue;
         }
-        let (_, elected) = tokio::time::timeout(Duration::from_secs(30), stand_and_watch(&ctx))
+        let elected = tokio::time::timeout(Duration::from_secs(30), stand_and_watch(&ctx))
             .await
             .expect("never stood");
         assert_eq!(elected.generation, 5);
     }
+}
+
+/// Answers pre-votes from real replica handlers, one per broker.
+struct Cluster {
+    handlers: HashMap<String, crate::replica::ReplicaHandler>,
+}
+
+impl PeerRequester for Cluster {
+    async fn request(
+        &self,
+        node_id: &str,
+        _addr: SocketAddr,
+        message: InternalMessage,
+    ) -> Result<InternalMessage, PeerError> {
+        let InternalMessage::PreVote(request) = message else {
+            panic!("only pre-votes are asked here: {message:?}");
+        };
+        let handler = self.handlers.get(node_id).expect("a broker of the set");
+        Ok(handler.pre_vote(request).await)
+    }
+
+    fn offers_election(&self) -> bool {
+        true
+    }
+}
+
+/// `broker`'s copy taking `leader`'s ballot at `generation`.
+async fn ballot(broker: &Broker, generation: u64, leader: &str) {
+    let log = shard_log(broker, &key()).await.expect("log");
+    log.accept_generation(generation, Some(leader))
+        .await
+        .expect("ballot");
+}
+
+async fn start(broker: &Broker, generation: u64) {
+    let log = shard_log(broker, &key()).await.expect("log");
+    let start = log
+        .append_generation_start(generation)
+        .await
+        .expect("start");
+    log.record_generation(generation, start).expect("epoch");
+}
+
+/// **A shard stuck on a live leader heals by election with the control plane
+/// down** (#1914, the model's `FelixShardCpDown` trace). broker-a restarted
+/// fencing as the control plane's leader at 3, but `LOCAL` and broker-c
+/// promised 4 to broker-c's standing, which it withdrew. Every broker is
+/// alive, so none is suspected, and broker-a's fence is refused for good.
+/// Once the shard bound passes without a word from broker-a, `LOCAL` stands:
+/// broker-a refuses as the leader it is, broker-c grants, and that is a
+/// majority. Not before the bound.
+#[tokio::test(start_paused = true)]
+async fn a_shard_stuck_on_a_live_leader_heals_by_election() {
+    let (a, _a_dir) = follower().await;
+    start(&a, 3).await;
+    let (b, _b_dir) = follower().await;
+    ballot(&b, 4, "broker-c").await;
+    let (c, _c_dir) = follower().await;
+    ballot(&c, 4, "broker-c").await;
+    let handlers = [("broker-a", &a), ("broker-c", &c)]
+        .into_iter()
+        .map(|(node, broker)| {
+            let handler =
+                crate::replica::ReplicaHandler::new(Arc::clone(broker), router_of(node, 3));
+            (node.to_string(), handler)
+        })
+        .collect();
+    let ctx = ctx_with(&b, Cluster { handlers });
+    ctx.suspects.publish(BTreeSet::new());
+    let ctx = Arc::new(ctx);
+    let shutdown = CancellationToken::new();
+    let task = tokio::spawn(run(Arc::clone(&ctx), shutdown.clone()));
+    let log = shard_log(&b, &key()).await.expect("log");
+
+    tokio::time::sleep(ctx.shard_after - SHARD_SCAN * 2).await;
+    assert_eq!(log.accepted_generation(), 4, "stood before the bound");
+
+    let stood = async {
+        while log.accepted_generation() < 5 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    };
+    tokio::time::timeout(SHARD_SCAN * 4, stood)
+        .await
+        .expect("never stood");
+    assert_eq!(log.accepted_generation(), 5);
+    assert_eq!(log.accepted_leader().as_deref(), Some(LOCAL));
+    shutdown.cancel();
+    task.await.expect("run");
+}
+
+/// **An idle shard is not suspected** however long its leader is silent:
+/// its generation started here. Nothing is shipped on an idle shard, so
+/// silence alone would depose every idle leader.
+#[tokio::test(start_paused = true)]
+async fn an_idle_shard_is_not_suspected() {
+    let (broker, _dir) = follower().await;
+    start(&broker, 3).await;
+    let ctx = ctx(&broker, voters(None));
+    let route = ctx.router.snapshot().get(&key()).expect("route").clone();
+    let log = shard_log(&broker, &key()).await.expect("log");
+    assert!(!ctx.shard_stuck(&key(), &route, &log, Instant::now()));
+    tokio::time::advance(ctx.shard_after * 10).await;
+    assert!(!ctx.shard_stuck(&key(), &route, &log, Instant::now()));
+
+    ctx.suspects.publish(BTreeSet::new());
+    assert_eq!(stand(&ctx, &key(), &route).await, Round::Ineligible);
+    assert!(ctx.requester.asked.lock().expect("lock").is_empty());
+}
+
+/// **A leader heard within the bound is not suspected**, however long its
+/// generation takes to start here: a catch-up under load, or a leader whose
+/// batches come with gaps shorter than the bound. Once it goes quiet for the
+/// bound, it is.
+#[tokio::test(start_paused = true)]
+async fn a_leader_heard_within_the_bound_is_not_suspected() {
+    let (broker, _dir) = follower().await;
+    let ctx = ctx(&broker, voters(None));
+    let route = ctx.router.snapshot().get(&key()).expect("route").clone();
+    let log = shard_log(&broker, &key()).await.expect("log");
+    for _ in 0..10 {
+        ctx.elections.heard_leader(&key());
+        tokio::time::advance(ctx.shard_after * 9 / 10).await;
+        assert!(!ctx.shard_stuck(&key(), &route, &log, Instant::now()));
+    }
+    tokio::time::advance(ctx.shard_after / 10).await;
+    assert!(ctx.shard_stuck(&key(), &route, &log, Instant::now()));
+}
+
+/// **The control plane renaming the shard restarts the clock**, so with the
+/// control plane up its backstop acts first and the two do not both take a
+/// generation. A copy behind the route, which its leader has yet to fence,
+/// is never stuck.
+#[tokio::test(start_paused = true)]
+async fn a_rename_restarts_the_clock() {
+    let (broker, _dir) = follower().await;
+    ballot(&broker, 4, "broker-c").await;
+    let ctx = ctx(&broker, voters(None));
+    let at_3 = ctx.router.snapshot().get(&key()).expect("route").clone();
+    let at_4 = router(4).snapshot().get(&key()).expect("route").clone();
+    let log = shard_log(&broker, &key()).await.expect("log");
+    let stuck = |route: &Route| ctx.shard_stuck(&key(), route, &log, Instant::now());
+
+    assert!(!stuck(&at_3));
+    tokio::time::advance(ctx.shard_after * 7 / 10).await;
+    assert!(!stuck(&at_4), "renamed");
+    tokio::time::advance(ctx.shard_after * 4 / 10).await;
+    assert!(!stuck(&at_4), "the clock went on across the rename");
+    tokio::time::advance(ctx.shard_after * 6 / 10).await;
+    assert!(stuck(&at_4));
+
+    let at_5 = router(5).snapshot().get(&key()).expect("route").clone();
+    tokio::time::advance(ctx.shard_after * 2).await;
+    assert!(!stuck(&at_5), "behind the route");
+}
+
+/// Publish a route naming `LOCAL` leader at `generation` on `router`.
+fn publish_led_here(router: &ShardRouter, generation: u64) {
+    let nodes: HashMap<String, NodeRef> = [("broker-a", 7001), (LOCAL, 7002), ("broker-c", 7003)]
+        .into_iter()
+        .map(|(id, port)| (id.to_string(), node(id, port)))
+        .collect();
+    let table = RoutingTable::build(
+        [(
+            key(),
+            LOCAL.to_string(),
+            vec!["broker-a".to_string(), "broker-c".to_string()],
+            generation,
+        )],
+        &nodes,
+    );
+    router.publish(table, &nodes);
+}
+
+/// **The open bound runs from the route's publication, not the ballot**
+/// (#1914). The driver fences only published routes, and a routing feed
+/// waiting on a paused control plane held them back for seconds, so every
+/// standing was withdrawn before its fence began and the next went a
+/// generation higher. Once published, the standing still gives up after
+/// [`OPEN_WITHIN`].
+#[tokio::test(start_paused = true)]
+async fn a_standing_gets_its_open_bound_from_the_routes_publication() {
+    let (broker, _dir) = follower().await;
+    let ctx = ctx(&broker, voters(None));
+    let route = ctx.router.snapshot().get(&key()).expect("route").clone();
+    let publishing = async {
+        let generation = loop {
+            if let Some(elected) = ctx.elections.get(&key()) {
+                break elected.generation;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        tokio::time::sleep(OPEN_WITHIN * 3).await;
+        let kept = ctx.elections.get(&key()).is_some();
+        publish_led_here(&ctx.router, generation);
+        let published = Instant::now();
+        (kept, published)
+    };
+    let shard = key();
+    let (round, (kept, published)) = tokio::join!(stand(&ctx, &shard, &route), publishing);
+    assert!(kept, "withdrawn before its route was published");
+    assert_eq!(round, Round::Failed);
+    assert!(ctx.elections.get(&key()).is_none());
+    let waited = Instant::now().saturating_duration_since(published);
+    assert!(
+        waited >= OPEN_WITHIN,
+        "withdrawn {waited:?} after publication"
+    );
+    assert!(
+        waited < OPEN_WITHIN * 2,
+        "kept {waited:?} after publication"
+    );
 }

@@ -424,6 +424,61 @@ async fn a_replica_that_hears_its_leader_refuses_a_candidate() {
         .await);
 }
 
+/// **What the stickiness hears is what per-shard suspicion hears**: a
+/// stamped batch stored and a leader's fence taken, but not a candidate's
+/// fence. Otherwise a copy could suspect a leader its voters still hear, or
+/// the other way round.
+#[tokio::test]
+async fn a_replica_notes_hearing_its_leader_for_shard_suspicion() {
+    let (broker, _dir) = broker_with_storage().await;
+    let marks = Arc::new(crate::quorum::QuorumMarks::new());
+    let elections = Arc::new(crate::election::Elections::new(
+        LOCAL,
+        Arc::new(tokio::sync::Notify::new()),
+    ));
+    marks.set_elections(Arc::clone(&elections));
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 6))
+        .with_stickiness(Duration::ZERO)
+        .with_fleet(marks);
+    let key = felix_router::ShardKey {
+        tenant_id: TENANT.into(),
+        namespace: NAMESPACE.into(),
+        stream: STREAM.into(),
+        shard: 0,
+        kind: felix_router::ShardKind::Stream,
+    };
+
+    ok(&handler
+        .fence(SENDER, election_fence(6, voters(6), false))
+        .await);
+    let fenced = elections.last_heard(&key).expect("a leader's fence");
+
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    let answer = handler
+        .apply(
+            SENDER,
+            stamped(6, 0, &["a"], 6),
+            felix_broker::LogKind::Stream,
+        )
+        .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    let stored = elections.last_heard(&key).expect("a batch");
+    assert!(stored > fenced);
+
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    ok(&handler
+        .fence(Some("broker-c"), election_fence(7, voters(7), true))
+        .await);
+    assert_eq!(
+        elections.last_heard(&key),
+        Some(stored),
+        "a candidate's fence"
+    );
+}
+
 /// **A broker that does not vote in the set refuses its fence**: listed only
 /// as a learner (#1331), or not listed at all. Its answer must not count
 /// toward the sender's majority, and it takes no ballot.

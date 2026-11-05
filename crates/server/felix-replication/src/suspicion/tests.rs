@@ -230,3 +230,18 @@ async fn a_ping_is_answered_only_by_a_pong_in_time() {
         assert_eq!(ping(&peer, "broker-b", addr(), within).await, expected);
     }
 }
+
+/// **The shard bound stays off at zero and is at least a second otherwise**,
+/// so a value meant in seconds does not make every quiet moment a suspicion.
+#[test]
+fn the_shard_bound_is_off_or_at_least_a_second() {
+    assert_eq!(shard_bound(Duration::ZERO), Duration::ZERO);
+    assert_eq!(
+        shard_bound(Duration::from_millis(5)),
+        MIN_SHARD_SUSPECT_AFTER
+    );
+    assert_eq!(
+        shard_bound(DEFAULT_SHARD_SUSPECT_AFTER),
+        DEFAULT_SHARD_SUSPECT_AFTER
+    );
+}

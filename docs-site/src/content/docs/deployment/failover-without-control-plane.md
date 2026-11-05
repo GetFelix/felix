@@ -109,8 +109,9 @@ sequenceDiagram
 If two followers stand at once, the ballots decide: a replica gives its ballot
 for a generation to one of them only, so at most one gets a majority. The other
 backs off for 200 to 800 ms (doubling to at most 3 s) and tries again. A
-standing that has not opened within 3 s, and has no fence or catch-up still
-running, is withdrawn, and the next try is at a higher generation.
+standing that has not opened within 3 s of its route being published, and has
+no fence or catch-up still running, is withdrawn, and the next try is at a
+higher generation.
 
 The time to a new leader is the suspicion window, plus one pre-vote round, plus
 300 ms per replica ahead of the winner and a second pre-vote round if it waited,
@@ -136,7 +137,7 @@ On the brokers, at `info`:
 |---|---|
 | `standing for election: the leader is unreachable and a majority agreed` | This broker won its pre-vote and wrote its ballot. The line has `stream`, `shard`, `generation` and the old `leader`. |
 | `a majority took the fence; opening the shard for writes` | The shard opened at `generation`. Same line as for any failover. |
-| `the standing did not open in time; withdrawing it` | The shard had not opened 3 s after the ballot, and no fence or catch-up was still running. The broker tries again. |
+| `the standing did not open in time; withdrawing it` | The shard had not opened 3 s after the route naming this broker was published (or `FELIX_ELECTION_DEFER_FOR_MS` after the ballot, if it never was), and no fence or catch-up was still running. The broker tries again. |
 | `not standing for election` | The broker suspects the leader but will not stand. `why` says which rule held it back, for example `the pre-vote found no majority` with the answers it got. Logged once per reason. |
 
 On the control plane, `an elected leader reported; the control plane took its
@@ -235,6 +236,17 @@ and replaces a slow leader more often. Keep `FELIX_SHARD_ELECTION_HOLD_MS` on
 the control plane at twice that value. `FELIX_ELECTION_DEFER_FOR_MS` (60 s)
 bounds how long a newly elected leader that never opens holds its followers
 back before one of them may stand again.
+
+A shard can also get stuck on a leader whose broker is alive, for example one
+that keeps fencing after a restart while its copies have promised a newer
+generation elsewhere. Pings get answered, so no follower suspects that broker.
+A follower that has heard nothing from the leader for that shard for
+`FELIX_SHARD_SUSPECT_AFTER_MS` (120 s), and whose copy holds a generation that
+never started, may stand for that one shard. An idle shard is never suspected,
+since its generation started on every copy. With the control plane up, it
+renames the stuck leader before that bound runs out, so keep the value above
+the control plane's stuck-leader bound (70 s). Set it to `0` to turn per-shard
+suspicion off.
 
 ## How it is checked
 

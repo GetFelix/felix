@@ -53,6 +53,14 @@ const STANDING_AT_ONCE: usize = 64;
 /// How often eligibility and stepped-down standings are looked at between
 /// changes to the suspect list.
 const TICK: Duration = Duration::from_millis(250);
+/// How often followed shards are checked for a leader making no progress.
+/// Coarse against the bound, which is minutes, and it reads every quiet
+/// shard's log.
+const SHARD_SCAN: Duration = Duration::from_secs(5);
+/// The least wait after a failed round on a shard suspected alone. Its
+/// leader's broker answers, so a voter that still hears it refuses every
+/// round; retrying at the broker backoff would only load the voters.
+const SHARD_RETRY: Duration = Duration::from_secs(5);
 
 /// What one round of standing came to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,12 +87,128 @@ struct Ctx<R> {
     /// When each shard was first held back for following a newer leader,
     /// by the generation it follows. See [`Ctx::defers`].
     deferring: std::sync::Mutex<HashMap<ShardKey, (u64, Instant)>>,
+    /// See [`SuspicionConfig::shard_suspect_after`]; zero is off.
+    shard_after: Duration,
+    /// Since when each followed shard has had no word from its leader, by
+    /// what the clock started on. See [`Ctx::shard_stuck`].
+    quiet: std::sync::Mutex<HashMap<ShardKey, Quiet>>,
+    /// The shards the last scan found stuck.
+    stuck: std::sync::Mutex<HashSet<ShardKey>>,
     /// Test-only: while this file exists, a pre-vote waits before it asks,
     /// so a test can release two candidates' rounds together.
     pre_vote_gate: Option<std::path::PathBuf>,
 }
 
+/// What a shard's quiet clock started on. Any change restarts it: a new
+/// route is the control plane acting, a new ballot is a fence taken.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Quiet {
+    generation: u64,
+    leader: String,
+    accepted: u64,
+    since: Instant,
+}
+
 impl<R> Ctx<R> {
+    /// Whether this copy suspects `key` itself, though its leader's broker
+    /// may answer pings: it took a generation (`accepted`, at or above the
+    /// route's) that has not started here, and for the shard bound it has
+    /// neither stored a batch nor taken a fence from the route's leader.
+    ///
+    /// An idle shard is never stuck: its generation started. Nor is a copy
+    /// behind the route, which its leader has yet to fence; the copies it
+    /// fenced decide. The clock restarts when the route or the ballot
+    /// changes, so with the control plane up its own rename comes first.
+    fn shard_stuck(&self, key: &ShardKey, route: &Route, log: &StreamLog, now: Instant) -> bool {
+        if self.shard_after.is_zero() {
+            return false;
+        }
+        let accepted = log.accepted_generation();
+        let started = log
+            .generations()
+            .iter()
+            .any(|epoch| epoch.generation == accepted);
+        let mut quiet = self.quiet.lock().expect("quiet lock");
+        if accepted == 0 || accepted < route.generation || started {
+            quiet.remove(key);
+            return false;
+        }
+        let on = Quiet {
+            generation: route.generation,
+            leader: route.leader.node_id.clone(),
+            accepted,
+            since: now,
+        };
+        let since = match quiet.get(key) {
+            Some(known)
+                if Quiet {
+                    since: known.since,
+                    ..on.clone()
+                } == *known =>
+            {
+                known.since
+            }
+            _ => {
+                quiet.insert(key.clone(), on);
+                now
+            }
+        };
+        let since = self
+            .elections
+            .last_heard(key)
+            .map_or(since, |heard| heard.max(since));
+        now.saturating_duration_since(since) >= self.shard_after
+    }
+
+    /// Recheck every followed shard whose leader's broker this one does not
+    /// suspect, and keep [`Ctx::stuck`] current.
+    async fn scan_stuck(&self, suspected: &BTreeSet<String>) {
+        let local = self.router.local_node_id();
+        let now = Instant::now();
+        let mut followed = HashSet::new();
+        let mut stuck = HashSet::new();
+        for (key, route) in self.router.snapshot().iter() {
+            let follows = route.leader.node_id != local
+                && route
+                    .replicas
+                    .iter()
+                    .any(|replica| replica.node_id == local);
+            if !follows || suspected.contains(&route.leader.node_id) {
+                continue;
+            }
+            followed.insert(key.clone());
+            // A shard heard within the bound is not stuck whatever its log
+            // says, and under load that is every busy shard: no log read.
+            let heard = self
+                .elections
+                .last_heard(key)
+                .is_some_and(|heard| now.saturating_duration_since(heard) < self.shard_after);
+            if heard {
+                continue;
+            }
+            let Some(log) = shard_log(&self.broker, key).await else {
+                continue;
+            };
+            if self.shard_stuck(key, route, &log, now) {
+                stuck.insert(key.clone());
+            }
+        }
+        self.quiet
+            .lock()
+            .expect("quiet lock")
+            .retain(|key, _| followed.contains(key));
+        let mut known = self.stuck.lock().expect("stuck lock");
+        for key in stuck.difference(&known) {
+            tracing::warn!(
+                stream = %key.stream,
+                shard = key.shard,
+                after_ms = self.shard_after.as_millis() as u64,
+                "this shard's leader has made no progress here; standing for it is allowed",
+            );
+        }
+        *known = stuck;
+    }
+
     fn ineligible(&self, key: &ShardKey, why: &'static str) -> Round {
         self.held_back(key, why, "");
         Round::Ineligible
@@ -156,6 +280,13 @@ pub fn spawn<R: PeerRequester + Send + Sync + 'static>(
         suspects,
         held_back: Default::default(),
         deferring: Default::default(),
+        shard_after: if config.suspects_shards() {
+            config.shard_suspect_after
+        } else {
+            Duration::ZERO
+        },
+        quiet: Default::default(),
+        stuck: Default::default(),
         pre_vote_gate: pre_vote_gate(),
     });
     Some(tokio::spawn(run(ctx, shutdown)))
@@ -169,8 +300,10 @@ async fn run<R: PeerRequester + Send + Sync + 'static>(
     let mut ticker = tokio::time::interval(TICK);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut rounds: JoinSet<(ShardKey, Round)> = JoinSet::new();
-    let mut in_flight: HashSet<ShardKey> = HashSet::new();
+    // By whether the round stands on the shard's suspicion alone.
+    let mut in_flight: HashMap<ShardKey, bool> = HashMap::new();
     let mut backoff: HashMap<ShardKey, Backoff> = HashMap::new();
+    let mut scanned: Option<Instant> = None;
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => return,
@@ -178,13 +311,19 @@ async fn run<R: PeerRequester + Send + Sync + 'static>(
             _ = ticker.tick() => {}
             Some(done) = rounds.join_next() => {
                 if let Ok((key, round)) = done {
-                    in_flight.remove(&key);
+                    let shard_only = in_flight.remove(&key).unwrap_or(false);
                     match round {
                         Round::Opened => {
                             backoff.remove(&key);
                             ctx.held_back.lock().expect("held_back lock").remove(&key);
                         }
-                        Round::Failed => backoff.entry(key).or_default().failed(),
+                        Round::Failed => {
+                            let backoff = backoff.entry(key).or_default();
+                            backoff.failed();
+                            if shard_only {
+                                backoff.at_least(SHARD_RETRY);
+                            }
+                        }
                         Round::Ineligible => backoff.entry(key).or_default().wait(INELIGIBLE_FOR),
                     }
                 }
@@ -201,7 +340,14 @@ async fn run<R: PeerRequester + Send + Sync + 'static>(
         let names = ctx.suspects.current();
         let now = Instant::now();
         backoff.retain(|_, backoff| !backoff.idle(now));
-        if names.is_empty() {
+        if !ctx.shard_after.is_zero()
+            && scanned.is_none_or(|at| now.saturating_duration_since(at) >= SHARD_SCAN)
+        {
+            ctx.scan_stuck(&names).await;
+            scanned = Some(Instant::now());
+        }
+        let stuck = ctx.stuck.lock().expect("stuck lock").clone();
+        if names.is_empty() && stuck.is_empty() {
             // The next outage says again why a shard does not stand.
             ctx.held_back.lock().expect("held_back lock").clear();
             continue;
@@ -216,14 +362,15 @@ async fn run<R: PeerRequester + Send + Sync + 'static>(
                     .replicas
                     .iter()
                     .any(|replica| replica.node_id == local);
+            let broker_suspected = names.contains(&route.leader.node_id);
             if !follows
-                || !names.contains(&route.leader.node_id)
-                || in_flight.contains(key)
+                || !(broker_suspected || stuck.contains(key))
+                || in_flight.contains_key(key)
                 || backoff.get(key).is_some_and(|backoff| backoff.until > now)
             {
                 continue;
             }
-            in_flight.insert(key.clone());
+            in_flight.insert(key.clone(), !broker_suspected);
             let ctx = Arc::clone(&ctx);
             let key = key.clone();
             let route = route.clone();
@@ -269,6 +416,13 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
             "the shard does not acknowledge on its followers, or its log is not open here",
         );
     };
+    let suspected = |ctx: &Ctx<R>| {
+        ctx.suspects.current().contains(&route.leader.node_id)
+            || ctx.shard_stuck(key, route, &log, Instant::now())
+    };
+    if !suspected(ctx) {
+        return ctx.ineligible(key, "the leader is neither suspected nor stuck here");
+    }
     // This copy took another leader's fence above the route, and nothing
     // says that leader is gone: standing over it would only take its
     // follower away, leaving it a generation it can never serve at. It
@@ -419,7 +573,7 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
         }
     }
     // Someone may have stood meanwhile, or the leader come back.
-    let still = ctx.suspects.current().contains(&route.leader.node_id)
+    let still = suspected(ctx)
         && log.accepted_generation() < generation
         && ctx
             .elections
@@ -440,7 +594,8 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
         shard = key.shard,
         generation,
         leader = %route.leader.node_id,
-        "standing for election: the leader is unreachable and a majority agreed",
+        broker_suspected = ctx.suspects.current().contains(&route.leader.node_id),
+        "standing for election: the leader is unreachable or stuck and a majority agreed",
     );
     ctx.elections.record(
         key.clone(),
@@ -452,7 +607,13 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
             incarnation: crate::incarnation::of(&ctx.broker, key),
         },
     );
-    let deadline = Instant::now() + OPEN_WITHIN;
+    // The open bound runs from when the route naming this standing is
+    // published: the driver fences only published routes, and a routing feed
+    // waiting on an unanswering control plane can hold it back for seconds.
+    // Withdrawing before then only burns the generation. Unpublished for the
+    // defer bound, it is given up anyway.
+    let recorded_at = Instant::now();
+    let mut published_at: Option<Instant> = None;
     loop {
         if opened(&log, generation) {
             return Round::Opened;
@@ -467,7 +628,19 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
         }
         // A fence or catch-up still running is let finish: giving up now
         // would cost a generation, and the next try would need one more.
-        if Instant::now() >= deadline && !ctx.elections.is_fencing(key, generation) {
+        let now = Instant::now();
+        if published_at.is_none()
+            && ctx.router.snapshot().get(key).is_some_and(|route| {
+                route.generation == generation && route.leader.node_id == local
+            })
+        {
+            published_at = Some(now);
+        }
+        let due = match published_at {
+            Some(at) => now >= at + OPEN_WITHIN,
+            None => now >= recorded_at + ctx.elections.defer_for(),
+        };
+        if due && !ctx.elections.is_fencing(key, generation) {
             tracing::info!(
                 stream = %key.stream,
                 shard = key.shard,
@@ -719,6 +892,10 @@ impl Backoff {
 
     fn wait(&mut self, wait: Duration) {
         self.until = Instant::now() + wait;
+    }
+
+    fn at_least(&mut self, wait: Duration) {
+        self.until = self.until.max(Instant::now() + wait);
     }
 
     /// Long past its wait, so forgetting it changes nothing.

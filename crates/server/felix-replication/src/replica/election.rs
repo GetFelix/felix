@@ -640,6 +640,9 @@ impl ReplicaHandler {
     /// broker without `ELECTION` takes no lock here.
     pub(super) fn heard_leader(&self, key: &felix_router::ShardKey) {
         self.heard.lock().insert(key.clone(), Instant::now());
+        if let Some(elections) = self.fleet.as_ref().and_then(|marks| marks.elections()) {
+            elections.heard_leader(key);
+        }
     }
 
     /// Whether this broker's route names it leader of `key`, its log has

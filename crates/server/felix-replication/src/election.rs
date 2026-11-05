@@ -44,6 +44,9 @@ pub struct Elections {
     /// generation. Outlives the fence guard, so a fence retried pass after
     /// pass keeps its first time.
     fenced_since: Mutex<HashMap<ShardKey, (u64, Instant)>>,
+    /// When this copy last stored a batch or took a fence from each shard's
+    /// leader, for per-shard suspicion. A candidate's fence does not count.
+    heard: Mutex<HashMap<ShardKey, Instant>>,
     /// How long a copy defers to an elected leader that has not started its
     /// generation. See [`Self::with_defer_for`].
     defer_for: Duration,
@@ -140,6 +143,7 @@ impl Elections {
             fencing: Mutex::new(HashMap::new()),
             opened: Mutex::new(HashMap::new()),
             fenced_since: Mutex::new(HashMap::new()),
+            heard: Mutex::new(HashMap::new()),
             defer_for: crate::suspicion::DEFAULT_DEFER_FOR,
             changed,
         }
@@ -335,6 +339,16 @@ impl Elections {
             .lock()
             .get(key)
             .is_some_and(|(at, since)| *at == generation && since.elapsed() < self.defer_for)
+    }
+
+    /// Note that this copy heard `key`'s leader: a batch stored or a
+    /// leader's fence taken.
+    pub(crate) fn heard_leader(&self, key: &ShardKey) {
+        self.heard.lock().insert(key.clone(), Instant::now());
+    }
+
+    pub(crate) fn last_heard(&self, key: &ShardKey) -> Option<Instant> {
+        self.heard.lock().get(key).copied()
     }
 
     /// Whether the driver is fencing or catching up `key` at `generation`.

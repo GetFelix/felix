@@ -1293,6 +1293,35 @@ elected leader waits for the lease until the control plane is back (issue
 1. *Detecting.* A follower uses the detector it already runs: a leader that
    has not answered a ping for `FELIX_LEADER_SUSPECT_AFTER_MS` (S, 5 s by
    default) is gone as far as that follower is concerned.
+
+   A follower also suspects one shard, though its leader's broker answers
+   pings, when the shard is stuck there: the follower took a generation at
+   or above its route's, that generation has not started on its copy (no
+   start record), and for `FELIX_SHARD_SUSPECT_AFTER_MS` (120 s by default,
+   0 turns it off) it has neither stored a batch nor taken a fence from the
+   route's leader. A leader the control plane named that fences forever,
+   refused by copies that promised a newer generation to a candidate that
+   then withdrew, is the case this covers: with every broker alive, the
+   broker detector never fires, and with the control plane down nobody
+   else renames the shard.
+
+   It does not fire in steady state. An idle shard ships nothing, but its
+   generation started on every copy that took it, so silence alone is not
+   a suspicion. A busy shard is heard on every batch. A copy behind its
+   route, which the leader has not fenced yet (a restarted broker waiting
+   its turn), is not stuck either; the copies the leader did fence decide.
+   Suspecting a shard only lets the follower try: it still needs a majority
+   of pre-votes, and a leader that is open and serving refuses, as do
+   voters that heard it within S.
+
+   The clock restarts whenever the route's generation or leader, or the
+   copy's ballot, changes. With the control plane up, it renames a stuck
+   leader first (a refused report at once, or its stuck-leader backstop after
+   70 s by default), and the follower
+   never gets to stand: the two do not both spend a generation. Keep the
+   shard bound above the backstop's. A round that fails on the shard's
+   suspicion alone waits at least 5 s before the next, since a voter that
+   still hears the leader refuses every round.
 2. *Pre-vote.* Before it persists anything, a follower that suspects the
    leader asks its set whether it would get the next generation. A replica
    says yes only if it has not heard its own leader within S, it does not
@@ -4630,9 +4659,15 @@ leader stamps its batches with the kept set's generation, below its own,
 which a replica keeping that set takes (`SetCurrent`). Both records are
 dropped once the control plane names that generation or a newer one, and
 when the stream is deleted or recreated. A standing that has not opened
-within 3 s is withdrawn, unless its fence or catch-up is still running, as is
+within 3 s of its route being published is withdrawn, unless its fence or
+catch-up is still running, as is
 one whose generation the broker has since promised to someone else; a failed
-round backs off for 200 to 800 ms, the top doubling to 3 s.
+round backs off for 200 to 800 ms, the top doubling to 3 s. The 3 s counts
+from publication because the driver fences only published routes, and a
+routing feed waiting on a control plane that accepts connections but never
+answers can hold the route back for seconds; counted from the ballot, every
+standing was withdrawn before its fence began. A route still unpublished
+after `FELIX_ELECTION_DEFER_FOR_MS` is given up anyway.
 
 Three rules keep an election from getting stuck:
 
