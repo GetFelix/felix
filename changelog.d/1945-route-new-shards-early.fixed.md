@@ -1,0 +1,1 @@
+New shards in a bulk create are routed as soon as each one opens. The routing feed opened a pass's new shards one after another and published the routes only after the last, so with hundreds of streams created at once a shard ready early could not take publishes for many seconds, and its followers refused its leader's fence until their own pass finished (#1945).

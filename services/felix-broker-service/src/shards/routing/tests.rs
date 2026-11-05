@@ -444,6 +444,217 @@ mod feed {
         let _ = feed.await;
     }
 
+    /// A store whose every open takes `delay`, as one that fsyncs does.
+    struct SlowStore {
+        delay: Duration,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::shards::lifecycle::ShardStore for SlowStore {
+        async fn open(
+            &self,
+            _key: &ShardKey,
+            _generation: u64,
+            _incarnation: u64,
+            _begins_here: bool,
+        ) -> anyhow::Result<()> {
+            tokio::time::sleep(self.delay).await;
+            Ok(())
+        }
+
+        async fn release(&self, _key: &ShardKey) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// **A new shard serves once it is open, not once its whole batch is.**
+    /// A bulk create hands the feed hundreds of new shards in one pass, and
+    /// they open one after another.
+    #[tokio::test]
+    async fn a_new_shard_is_routed_before_the_rest_of_its_batch_opens() {
+        let shards = 8;
+        let assignments: Vec<_> = (0..shards)
+            .map(|shard| assignment(shard, "broker-a", 1))
+            .collect();
+        let (mut state, _router) = state(&assignments);
+        state.store = Arc::new(SlowStore {
+            delay: Duration::from_millis(150),
+        });
+        let ingress = Arc::clone(&state.ingress);
+        let shutdown = CancellationToken::new();
+        let local = || {
+            (0..shards)
+                .filter(|shard| matches!(ingress.dispatch(&key(*shard)), Dispatch::Local { .. }))
+                .count()
+        };
+
+        let feed = spawn_feed(state, None, Duration::from_secs(60), shutdown.clone());
+        until("a shard to be served locally", || local() > 0).await;
+        let first = local();
+        until("every shard to be served locally", || {
+            local() == shards as usize
+        })
+        .await;
+
+        assert!(
+            first < shards as usize,
+            "no shard was routed until all {shards} had opened"
+        );
+        shutdown.cancel();
+        let _ = feed.await;
+    }
+
+    /// **Only the new shards change mid-pass.** A shard reassigned away in
+    /// the same pass keeps the route and the serving state last published
+    /// until the pass ends, so a write to it is held as it was, not refused.
+    #[tokio::test]
+    async fn a_shard_moving_away_mid_pass_keeps_its_published_view() {
+        let (mut state, _router) = state(&[assignment(0, "broker-a", 1)]);
+        state.store = Arc::new(SlowStore {
+            delay: Duration::from_millis(150),
+        });
+        let ingress = Arc::clone(&state.ingress);
+        let ownership = Arc::clone(&state.ownership);
+        let changed = Arc::clone(&state.assignments_changed);
+        let shutdown = CancellationToken::new();
+        let feed = spawn_feed(state, None, Duration::from_secs(60), shutdown.clone());
+        until("shard 0 to be served locally", || {
+            matches!(ingress.dispatch(&key(0)), Dispatch::Local { generation: 1 })
+        })
+        .await;
+
+        let mut next = vec![assignment(0, "broker-b", 2)];
+        next.extend((1..5).map(|shard| assignment(shard, "broker-a", 1)));
+        ownership.write().await.reset(next);
+        changed.notify_one();
+        until("a new shard to be served locally", || {
+            (1..5).any(|shard| matches!(ingress.dispatch(&key(shard)), Dispatch::Local { .. }))
+        })
+        .await;
+        let mid_pass = ingress.dispatch(&key(0));
+        let all_open =
+            (1..5).all(|shard| matches!(ingress.dispatch(&key(shard)), Dispatch::Local { .. }));
+
+        assert!(!all_open, "the pass published nothing before it ended");
+        assert!(
+            matches!(mid_pass, Dispatch::Local { generation: 1 }),
+            "shard 0 changed mid-pass: {mid_pass:?}"
+        );
+        shutdown.cancel();
+        let _ = feed.await;
+    }
+
+    /// **A shard whose fence finishes mid-pass stays served.** The fence
+    /// publishes it on its own; the pass's interim publishes must not put it
+    /// back to not ready until the pass ends.
+    #[tokio::test]
+    async fn a_shard_fenced_mid_pass_stays_served() {
+        let (mut state, _router) = state(&[assignment(0, "broker-a", 1)]);
+        state.lifecycle.lock().await.fence_promotions();
+        state.store = Arc::new(SlowStore {
+            delay: Duration::from_millis(150),
+        });
+        let ingress = Arc::clone(&state.ingress);
+        let lifecycle = Arc::clone(&state.lifecycle);
+        let ownership = Arc::clone(&state.ownership);
+        let changed = Arc::clone(&state.assignments_changed);
+        let fencing = || async {
+            lifecycle
+                .lock()
+                .await
+                .counts()
+                .get(&crate::shards::lifecycle::Phase::Fencing)
+                .copied()
+                .unwrap_or(0)
+        };
+        let shutdown = CancellationToken::new();
+        let feed = spawn_feed(state, None, Duration::from_secs(60), shutdown.clone());
+        for _ in 0..200 {
+            if fencing().await == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        // Let the first pass end and publish shard 0 as not yet servable.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        ownership.write().await.reset(
+            (0..5)
+                .map(|shard| assignment(shard, "broker-a", 1))
+                .collect(),
+        );
+        changed.notify_one();
+        for _ in 0..200 {
+            if fencing().await >= 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        {
+            let mut owned = lifecycle.lock().await;
+            assert!(owned.fenced(&key(0), 1), "shard 0 was not fencing");
+            ingress.publish_servable(owned.servable());
+        }
+        // Long enough for at least one interim publish.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let mid_pass = ingress.dispatch(&key(0));
+        let opened = fencing().await;
+
+        assert!(opened < 4, "the pass ended before the check");
+        assert!(
+            matches!(mid_pass, Dispatch::Local { generation: 1 }),
+            "shard 0 went back mid-pass: {mid_pass:?}"
+        );
+        shutdown.cancel();
+        let _ = feed.await;
+    }
+
+    /// **A removal a fence publishes mid-pass stays published.** The pass
+    /// holds back its own removals, but must not put back one the fence's
+    /// publish already made.
+    #[tokio::test]
+    async fn a_shard_a_fence_unpublished_mid_pass_stays_unpublished() {
+        let (mut state, _router) = state(&[assignment(0, "broker-a", 1)]);
+        state.store = Arc::new(SlowStore {
+            delay: Duration::from_millis(150),
+        });
+        let ingress = Arc::clone(&state.ingress);
+        let lifecycle = Arc::clone(&state.lifecycle);
+        let ownership = Arc::clone(&state.ownership);
+        let changed = Arc::clone(&state.assignments_changed);
+        let local = || {
+            (1..5)
+                .filter(|shard| matches!(ingress.dispatch(&key(*shard)), Dispatch::Local { .. }))
+                .count()
+        };
+        let shutdown = CancellationToken::new();
+        let feed = spawn_feed(state, None, Duration::from_secs(60), shutdown.clone());
+        until("shard 0 to be served locally", || {
+            matches!(ingress.dispatch(&key(0)), Dispatch::Local { generation: 1 })
+        })
+        .await;
+
+        let mut next = vec![assignment(0, "broker-b", 2)];
+        next.extend((1..5).map(|shard| assignment(shard, "broker-a", 1)));
+        ownership.write().await.reset(next);
+        changed.notify_one();
+        until("a new shard to be served locally", || local() > 0).await;
+        // What a fence finishing on another shard publishes.
+        ingress.publish_servable(lifecycle.lock().await.servable());
+        let before = local();
+        until("an interim publish after the fence's", || local() > before).await;
+        let mid_pass = ingress.dispatch(&key(0));
+        let opened = local();
+
+        assert!(opened < 4, "the pass ended before the check");
+        assert!(
+            !matches!(mid_pass, Dispatch::Local { .. }),
+            "shard 0 was served again mid-pass: {mid_pass:?}"
+        );
+        shutdown.cancel();
+        let _ = feed.await;
+    }
+
     /// A shard led elsewhere is only forwardable once the catalog supplies an
     /// address. Before that it is known and unreachable, which is the state the
     /// address book exists to leave.
