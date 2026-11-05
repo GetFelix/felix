@@ -141,13 +141,9 @@ fn bearer_if(request: reqwest::RequestBuilder, bearer: Option<&str>) -> reqwest:
 async fn finish(request: reqwest::RequestBuilder) -> Result<LinkResponse> {
     let response = request.send().await?;
     let status = response.status();
-    let body = match response.bytes().await {
-        Ok(body) => body,
-        // A refusal is judged by its status, so a body that did not arrive
-        // costs only the text of the message.
-        Err(_) if !status.is_success() => Bytes::new(),
-        Err(err) => return Err(err.into()),
-    };
+    // Callers that decode the body fail on the empty one, as they did on a
+    // failed read. The rest judge by status alone and never read it.
+    let body = response.bytes().await.unwrap_or_default();
     Ok(LinkResponse { status, body })
 }
 
