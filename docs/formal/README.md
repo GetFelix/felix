@@ -31,6 +31,12 @@ One shard, three brokers, one control plane, discrete time.
   own: from then on the control plane renews nothing for it, which is every
   later heartbeat lost, and placement still waits out the timeout and margin
   from the node's last heartbeat before promoting (`left_within_lease`).
+  The control plane renews only a broker it names leader at the generation
+  the broker believes it leads. The code's lease is per broker, so it holds
+  a broker marked down until its routes show what changed while it was away;
+  `FelixShardLeaseAnyHeartbeat.cfg` checks the code's old rule in place of
+  this one. `FelixShardLeaseRoutesHeartbeat.cfg` checks the new one, assuming
+  what its head check gives: the routes it waits for show the move.
 - **Writes.** Admission checks the broker is serving. The write then waits,
   and claims its place in the log; with `FenceAtClaim` the claim checks the
   handoff fence again. `AckOnAdmit` acknowledges a `Leader` write when it is
@@ -211,6 +217,8 @@ that quietly became a pass would be a model that stopped saying anything.
 | Configuration | Knobs | Must |
 | --- | --- | --- |
 | `FelixShardLease.cfg` | drifting clocks, no writes: heartbeats, lapses, promotions | pass `AtMostOneServing` and `NoStaleCommit` (0.78M distinct states) |
+| `FelixShardLeaseAnyHeartbeat.cfg` | `FelixShardLease.cfg` with a heartbeat renewing a broker the control plane no longer names leader, as the code did before it waited on its routes | violate `AtMostOneServing`: a leader promoted away heartbeats again and renews at its old generation beside its successor |
+| `FelixShardLeaseRoutesHeartbeat.cfg` | `FelixShardLease.cfg` with the code's rule: that broker's renewal waits for routes at the assignment feed's head as of the accept, which name its successor | pass `AtMostOneServing` and `NoStaleCommit` (0.78M distinct states) |
 | `FelixShardLogOrder.cfg` | both lease checks, `Quorum`, two writes, promotion by log order | pass every invariant (1.52M distinct states) |
 | `FelixShardThinMargin.cfg` | drifting clocks with `Margin = 0` and `Eps = 0` | violate `AtMostOneServing` |
 | `FelixShardRealMarginsLease.cfg` | the margins the code runs: the broker gives up a quarter of the lease (`Eps = 1` of `L = 4`), and the control plane marks it down a quarter past its expiry (`Margin = 1`), against clocks that drift by a quarter; no writes | pass `AtMostOneServing` and `NoStaleCommit` (2.10M distinct states); with `Margin = 0` it finds two brokers serving |
