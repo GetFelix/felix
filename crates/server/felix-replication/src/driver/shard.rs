@@ -649,10 +649,10 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         // Nor below the log this leader inherited: an earlier leader may have
         // acknowledged any of it. Without the floor, a new leader whose
         // followers have not answered yet names all of them. Acknowledging by
-        // the followers does not lift it: after a failover that changed the
-        // set, a majority of the new one can lack the inherited records, and
-        // a follower named without them fences only brokers that lack them
-        // too (#1922).
+        // the followers does not lift it: once the set has changed since the
+        // records were acknowledged, a majority of the sets the next leader
+        // fences can lack them, and a follower named without them may fence
+        // only brokers that lack them too (#1922).
         if stepped_down() {
             promised
         } else {
@@ -1479,7 +1479,8 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         //
         // A shard acknowledging by its followers skips all of this: whoever
         // leads next fences a majority and takes the furthest log before it
-        // serves, so what promotion read no longer decides what survives.
+        // serves. That holds only while the report names nobody short of the
+        // log its leader inherited (see `acknowledged`).
         //
         // A report that did not land leaves the mark where it was, because
         // the argument above rests on the control plane knowing who holds

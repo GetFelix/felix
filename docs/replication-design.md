@@ -2947,14 +2947,13 @@ start was recorded. A cache's counter log gets the same floor.
 The floor holds when the followers decide the mark too (`majority_ack`, and
 `fenced_caches` for a cache). The promoted leader fences a majority and takes
 the furthest log, but that only helps when the majority it reaches holds the
-records. A failover that swaps a member for a spare can leave a majority of the
-new set without them (issue 1922). With four brokers and three replicas: B
-leads B, C and D and acknowledges a record on B and D while C lags. D is
-promoted and A replaces B, so the set is A, C and D. If D reported A and C
-before they answered and then died, A could be promoted, fence A, C and D
-together with A, B and C, get answers from A and C (a majority of both), and
-open without the record. Named only once they hold what D inherited, neither A
-nor C is a candidate until D has shipped the record to it.
+records. Once the replica set has changed since a record was acknowledged, a
+majority of the sets the next leader fences need not hold it. The model found
+such a run (issue 1922): a leader at a new generation named its followers
+caught up at offset 0 before they answered, one of them was promoted with an
+empty log, and its fence got answers only from brokers that never held the
+record. Named only once they hold what their leader inherited, those followers
+are not candidates until the leader has shipped the record to them.
 
 The cost is availability. Right after a failover no follower is named until
 one has copied everything the new leader inherited, including a tail the old
@@ -3003,7 +3002,9 @@ rather than being acknowledged on a report nobody received.
 With `majority_ack` finalized a `Quorum` stream shard drops this ordering: the
 report may trail the acknowledgement, and whichever replica is promoted fences
 a majority and takes the furthest log before it serves, which carries every
-acknowledged record ([Acknowledging by the followers](#acknowledging-by-the-followers)).
+acknowledged record as long as the report never names a follower short of the
+log its leader inherited (see "A new leader names nobody short of the log it
+inherited" below, and [Acknowledging by the followers](#acknowledging-by-the-followers)).
 Promotion still reads the report, and a report older than its freshness window
 still leaves the shard unplaced, so a leader cut off from the control plane for
 longer than that can only be replaced once it reports again.
