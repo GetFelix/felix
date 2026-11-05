@@ -782,7 +782,15 @@ pub(super) fn move_step<'a>(
 
     if let Some(successor) = existing.successor.as_deref() {
         let halted = halted_now(successor);
-        if !is_live(successor) || halted.is_some() {
+        // Each way out of a staged move renames the leader at a new
+        // generation, so a departed leader's move waits for the lease.
+        let gives_up = !is_live(successor) || halted.is_some();
+        let abandons =
+            moves.recovering && leader_live && existing.move_reason == Some(MoveReason::Balance);
+        if departed && (gives_up || abandons) {
+            return Decision::Waiting(Blocked::LeaderDeparted);
+        }
+        if gives_up {
             // Gone or halted before it led. Undone rather than waited out, or
             // the move holds its slot until it times out.
             let mut replicas = existing.replicas.clone();
@@ -806,7 +814,7 @@ pub(super) fn move_step<'a>(
         // would stop the shard's writes behind brokers that may take minutes
         // to report drained, and held, it would keep the move slot a drain or
         // a restore needs. Not the shard's fault, so its start is cleared.
-        if moves.recovering && leader_live && existing.move_reason == Some(MoveReason::Balance) {
+        if abandons {
             return Decision::Move(
                 MoveStep::Abandon {
                     successor: successor.to_string(),
@@ -831,6 +839,9 @@ pub(super) fn move_step<'a>(
             );
         }
         if moves.timed_out(caught_up, existing.move_started_at_millis) {
+            if departed {
+                return Decision::Waiting(Blocked::LeaderDeparted);
+            }
             return Decision::Move(
                 MoveStep::TimedOut {
                     successor: successor.to_string(),

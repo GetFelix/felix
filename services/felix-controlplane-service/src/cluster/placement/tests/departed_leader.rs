@@ -322,3 +322,67 @@ async fn the_reconciler_does_not_hand_a_departed_leader_its_shard_back() {
     assert_eq!(after.generation, fenced.generation, "{after:?}");
     assert_eq!(after.state, ShardState::Draining, "{after:?}");
 }
+
+/// A move still copying to broker-b, before the fence.
+fn staged_move() -> ShardAssignment {
+    ShardAssignment {
+        state: ShardState::Active,
+        ..fenced_move()
+    }
+}
+
+/// A refusal drops a staged move at a new generation under the same leader,
+/// unless that leader has deregistered.
+#[test]
+fn a_departed_leader_keeps_a_staged_move_it_refused() {
+    let reports = Fenced {
+        refused: true,
+        ..Fenced::default()
+    };
+    let dropped = decide_on(staged_move(), &reports, false, false);
+    assert!(
+        matches!(&dropped, Decision::Move(MoveStep::ElectionRefused, a) if a.leader == "broker-a" && a.successor.is_none()),
+        "{dropped:?}"
+    );
+    assert_eq!(
+        decide_on(staged_move(), &reports, true, false),
+        Decision::Waiting(Blocked::LeaderDeparted),
+    );
+}
+
+/// A staged move whose destination died is undone under the same leader,
+/// unless that leader has deregistered.
+#[test]
+fn a_departed_leader_keeps_a_staged_move_whose_destination_died() {
+    let reports = Fenced::default();
+    assert!(retaken_by_a(&decide_on(
+        staged_move(),
+        &reports,
+        false,
+        true
+    )));
+    assert_eq!(
+        decide_on(staged_move(), &reports, true, true),
+        Decision::Waiting(Blocked::LeaderDeparted),
+    );
+}
+
+/// A staged move past its timeout is undone under the same leader, unless
+/// that leader has deregistered.
+#[test]
+fn a_departed_leader_keeps_a_timed_out_staged_move() {
+    let late = ShardAssignment {
+        move_started_at_millis: Some(NOW - DEFAULT_MOVE_TIMEOUT_MILLIS - 1),
+        ..staged_move()
+    };
+    let reports = Fenced::default();
+    let undone = decide_on(late.clone(), &reports, false, false);
+    assert!(
+        matches!(&undone, Decision::Move(MoveStep::TimedOut { .. }, a) if a.leader == "broker-a"),
+        "{undone:?}"
+    );
+    assert_eq!(
+        decide_on(late, &reports, true, false),
+        Decision::Waiting(Blocked::LeaderDeparted),
+    );
+}

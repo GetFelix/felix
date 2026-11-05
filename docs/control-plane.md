@@ -1604,7 +1604,10 @@ the move's leader is draining, since that fence ends through its own steps.
 A move still copying to its destination is dropped instead: the leader that
 refused cannot ship to it, so the move would only wait for its timeout. The
 next generation drops a destination that was staged on top of the set, as an
-abandoned move does, and a later pass can start the move again. A follower replacement does not stop
+abandoned move does, and a later pass can start the move again. A leader that
+has deregistered is not named again: placement waits for its lease to run
+out, and the same holds for a staged move that times out or loses its
+destination under it. A follower replacement does not stop
 the step: the new generation keeps the joining copy, and the replacement goes
 on under the same leader.
 
