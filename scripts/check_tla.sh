@@ -115,6 +115,8 @@ tlc() {
 # Each configuration and what it must do. `pass`, or `violates <Invariant>`.
 expectations=(
   "FelixShardLease pass"
+  "FelixShardLeaseAnyHeartbeat violates AtMostOneServing"
+  "FelixShardLeaseRoutesHeartbeat pass"
   "FelixShardLogOrder pass"
   "FelixShardThinMargin violates AtMostOneServing"
   "FelixShardRealMarginsLease pass"

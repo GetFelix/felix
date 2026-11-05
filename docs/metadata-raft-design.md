@@ -788,6 +788,8 @@ the field itself, on every member alike, or refuses the command:
 | assignment `learners`, replica report `holds_start`, both in the snapshot, finalizing `joint_fence` | 23 | the learners are cleared before the write is proposed and the report is proposed without its start holders, so placement reads the shard as it did before learners and a replaced copy is never re-admitted, on every member; the finalize is refused |
 | stream `mount`, stream patch `mount`, and in the snapshot | 24 | a create or patch that sets or clears a mount is refused with 409 before it reaches the log, so no member stores a mounted stream as unmounted or lets two overlapping mounts through; streams without a mount are proposed as before |
 | replica report `refused`, and in the snapshot | 25 | the report is proposed without it, so a leader that cannot serve a generation promised to an elected node is not named again above it and the shard waits as before #1730 |
+| `adopt_elected_leader` `elected_set` | 26 | every member takes only the generation of a leader elected on a set other than the recorded one, and the report handler then moves the shard past it |
+| `adopt_elected_leader` `own_leader_set` | 27 | every member takes only the generation when the shard's own leader was elected on another set, and the report handler then moves the shard past it (#1929) |
 
 **A member refuses what it would drop.** From level 3 on, a member that
 decodes an entry carrying a non-empty field it does not know answers

@@ -335,8 +335,17 @@ pub(super) async fn plan_pass(
     read.positions.set_suspected_since(suspected);
     read.positions
         .set_give_ups(progress.give_ups(&read.existing));
+    // Below two report TTLs a leader that reports late but on time by the
+    // TTL would be taken for stuck.
+    let mut policy = policy;
+    policy.stuck_leader_millis = policy
+        .stuck_leader_millis
+        .map(|bound| bound.max(2 * super::replica_positions::report_ttl_millis(liveness)));
+    let stuck = progress.observe_stuck(&read.existing, &read.positions, policy.stuck_leader_millis);
+    read.positions.set_stuck(stuck);
     let plan = read.plan(policy);
     progress.note_give_ups(&plan, read.positions.as_of_millis());
+    progress.note_stuck_renames(&plan, read.positions.as_of_millis());
     let no_nodes = read.nodes.is_empty();
     let registered = registered_storage(&read.nodes);
     let joint_fence = read
