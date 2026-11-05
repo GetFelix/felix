@@ -272,21 +272,6 @@ pub(crate) async fn fence_shard_as<R: PeerRequester>(
             // The counter log carries no set, and is fenced on the new set
             // alone, as the model's `Counters` are.
             let set = set.as_ref().filter(|_| kind != LogKind::Counters);
-            // This copy already promised a newer generation, as a standing
-            // here that was given up leaves it, so `keep_own_set` can never
-            // take this one's ballot. Refused rather than pending, so the
-            // control plane names this broker again above it (#1940).
-            let accepted = log.accepted_generation();
-            if set.is_some() && candidacy.is_none() && accepted > route.generation {
-                return Err(Outcome::Refused {
-                    promised_to: String::new(),
-                    why: format!(
-                        "this broker's own copy has accepted generation {accepted}, past {}",
-                        route.generation
-                    ),
-                    took: Vec::new(),
-                });
-            }
             // A copy marked a learner on evidence of a wipe lost what it held; a
             // staged destination is a learner too, and may lead.
             if set.is_some()
@@ -299,6 +284,24 @@ pub(crate) async fn fence_shard_as<R: PeerRequester>(
                     ),
                     Vec::new(),
                 ));
+            }
+            // This copy already promised a newer generation, as a standing
+            // here that was given up leaves it, so `keep_own_set` can never
+            // take this one's ballot. Refused rather than pending, so the
+            // control plane names this broker again above it (#1940). Not
+            // for this generation promised to another node: as in
+            // `keep_own_set`, that waits rather than rename past a set this
+            // broker never fenced (#1872).
+            let accepted = log.accepted_generation();
+            if set.is_some() && candidacy.is_none() && accepted > route.generation {
+                return Err(Outcome::Refused {
+                    promised_to: String::new(),
+                    why: format!(
+                        "this broker's own copy has accepted generation {accepted}, past {}",
+                        route.generation
+                    ),
+                    took: Vec::new(),
+                });
             }
             // Under `joint_fence` a fence whose set being left is unknown
             // stays pending rather than fence the new set alone. A candidate

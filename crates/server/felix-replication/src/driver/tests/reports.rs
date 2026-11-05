@@ -1138,13 +1138,10 @@ async fn a_fence_met_by_a_newer_ballot_reports_the_refusal() {
     );
 }
 
-/// **A promoted leader whose own copy already promised a newer generation
-/// reports its generation refused while it is still fencing** (#1940). A
-/// standing here that was given up leaves that promise; every fence a
-/// majority takes then stays pending, since the open cannot take the
-/// generation's ballot on this copy, and the control plane waits on silence.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_fence_below_its_own_ballot_reports_the_refusal() {
+/// The first report from a driver still fencing `key()` at generation 4,
+/// with every follower taking the fence, its own copy holding a ballot at
+/// `ballot` from `ballot_leader`.
+async fn fence_refusal(ballot: u64, ballot_leader: &str) -> Option<ShardReplicaStatus> {
     let (broker, _dir) = leader_with(3).await;
     let log = broker
         .shard_log_for(
@@ -1158,7 +1155,9 @@ async fn a_fence_below_its_own_ballot_reports_the_refusal() {
         )
         .await
         .expect("log");
-    log.accept_generation(5, Some(LOCAL)).await.expect("ballot");
+    log.accept_generation(ballot, Some(ballot_leader))
+        .await
+        .expect("ballot");
     let (control_plane, received) = recording_control_plane().await;
     let shutdown = CancellationToken::new();
     let driver = spawn(
@@ -1175,13 +1174,27 @@ async fn a_fence_below_its_own_ballot_reports_the_refusal() {
         MoveThrottle::unlimited(),
         shutdown.clone(),
     );
-
     let report = first_report(&received, Duration::from_secs(5)).await;
     shutdown.cancel();
     driver.stop().await;
-    let report = report.expect("no report of the generation its own ballot left");
-    assert_eq!(report.generation, 4);
-    assert_eq!(report.refused, Some(RefusedGeneration::set_unknown(4)));
+    report
+}
+
+/// **A promoted leader whose own copy already promised a newer generation
+/// reports its generation refused while it is still fencing** (#1940). A
+/// standing here that was given up leaves that promise, and so does one
+/// this broker answered elsewhere; every fence a majority takes then stays pending,
+/// since the open cannot take the generation's ballot on this copy, and the
+/// control plane waits on silence.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fence_below_its_own_ballot_reports_the_refusal() {
+    for leader in [LOCAL, "broker-b"] {
+        let report = fence_refusal(5, leader)
+            .await
+            .expect("no report of the generation its own ballot left");
+        assert_eq!(report.generation, 4);
+        assert_eq!(report.refused, Some(RefusedGeneration::set_unknown(4)));
+    }
 }
 
 /// [`PromisedAwayFollowers`] that check sets, so a fence under
