@@ -32,7 +32,7 @@ mod census;
 mod node;
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -82,7 +82,9 @@ pub struct SimConfig {
     /// Whether to inject faults at all.
     pub faults: bool,
     /// The most real time a run may take, startup included. A run past it
-    /// stops and reports a stall: a broker loop that never waits.
+    /// stops and reports a stall. Separately, a run whose virtual time stands
+    /// still for four minutes of real time stalls: a broker loop that never
+    /// waits.
     pub real_time_limit: Duration,
     /// The storage sync mode. `None` costs the least real time; see
     /// [`SimBrokerConfig::fsync_mode`](felix_broker_service::sim::SimBrokerConfig::fsync_mode)
@@ -106,7 +108,7 @@ impl SimConfig {
             fault_window: Duration::from_secs(90),
             settle_within: Duration::from_secs(60),
             faults: true,
-            real_time_limit: Duration::from_secs(300),
+            real_time_limit: Duration::from_secs(480),
             fsync_mode: FsyncMode::None,
             controlplane: CpConfig::default(),
         }
@@ -141,6 +143,14 @@ pub struct SimCluster {
     /// Starts of any broker so far, so each run of one is told apart.
     starts: AtomicU64,
     stalled: CancellationToken,
+    /// Tells the stall watch to stop when the cluster is dropped.
+    done: Arc<AtomicBool>,
+}
+
+impl Drop for SimCluster {
+    fn drop(&mut self) {
+        self.done.store(true, Ordering::Relaxed);
+    }
 }
 
 impl SimCluster {
@@ -155,7 +165,7 @@ impl SimCluster {
         let nodes = (0..config.brokers)
             .map(|index| Node::new(index, &config))
             .collect::<Result<Vec<_>>>()?;
-        let stalled = spawn_stepper(config.real_time_limit);
+        let (stalled, done) = spawn_stall_watch(config.real_time_limit);
         let cluster = Arc::new(Self {
             config,
             seed,
@@ -165,6 +175,7 @@ impl SimCluster {
             started: Instant::now(),
             starts: AtomicU64::new(0),
             stalled,
+            done,
         });
         cluster.reset_links();
         cluster.create_catalog().await?;
@@ -234,7 +245,7 @@ impl SimCluster {
         });
     }
 
-    /// Cancelled when the run has used its real-time limit
+    /// Cancelled when the run stalls or uses its real-time limit
     /// ([`SimConfig::real_time_limit`]).
     pub fn stalled(&self) -> &CancellationToken {
         &self.stalled
@@ -432,49 +443,57 @@ impl SimCluster {
     }
 }
 
-/// The stepper's smallest and largest step, and how many scheduler rounds it
-/// waits between steps.
-const MIN_STEP: Duration = Duration::from_micros(250);
-const MAX_STEP: Duration = Duration::from_millis(20);
-const ROUNDS_PER_STEP: usize = 16;
+/// How long virtual time may stand still, in real time, before the run is
+/// called stalled.
+const STALL_AFTER: Duration = Duration::from_secs(240);
 
-/// Let virtual time pass while the brokers are busy.
+/// Watch for a run that has stopped making virtual progress.
 ///
 /// Tokio's paused clock moves only when every task is idle. A broker loop
-/// that always has work to do, such as a retry that is due the moment it is
-/// looked at, or file reads in flight, never lets the runtime idle, and the
-/// clock stops while the loop spins. A real clock does not wait for the
-/// broker. This task moves the clock a little after every few scheduler
-/// rounds, so work costs time, as it does on a real machine. When the cluster
-/// is waiting on timers the steps are quick.
+/// that always has work, such as a retry that is due the moment it is looked
+/// at, never lets the runtime idle, so the clock stops and the run hangs. A
+/// real clock would not wait for the broker; here the stall is the finding.
 ///
-/// A step that took long in real time doubles the next one, up to
-/// [`MAX_STEP`], so a loop that spins for good costs the run seconds rather
-/// than hours. `limit` is a ceiling on the real time the run may take: past
-/// it the returned token is cancelled and the run reports the stall.
-fn spawn_stepper(limit: Duration) -> CancellationToken {
+/// A task on the runtime records the virtual time every 50 ms, which it can
+/// only do while the clock moves. A thread of its own watches that record,
+/// and cancels the returned token when it has not changed for [`STALL_AFTER`]
+/// of real time, or when the run has taken `limit` of real time in all.
+fn spawn_stall_watch(limit: Duration) -> (CancellationToken, Arc<AtomicBool>) {
+    let progress = Arc::new(AtomicU64::new(0));
     let stalled = CancellationToken::new();
-    let signal = stalled.clone();
-    let began = std::time::Instant::now();
-    tokio::spawn(async move {
-        let mut step = MIN_STEP;
-        loop {
-            let round = std::time::Instant::now();
-            for _ in 0..ROUNDS_PER_STEP {
-                tokio::task::yield_now().await;
-            }
-            tokio::time::advance(step).await;
-            step = if round.elapsed() > Duration::from_micros(500) {
-                (step * 2).min(MAX_STEP)
-            } else {
-                (step / 2).max(MIN_STEP)
-            };
-            if began.elapsed() > limit && !signal.is_cancelled() {
-                signal.cancel();
+    let done = Arc::new(AtomicBool::new(false));
+    tokio::spawn({
+        let progress = Arc::clone(&progress);
+        let began = Instant::now();
+        async move {
+            loop {
+                progress.store(began.elapsed().as_millis() as u64 + 1, Ordering::Relaxed);
+                tokio::time::sleep(Duration::from_millis(50)).await;
             }
         }
     });
-    stalled
+    std::thread::Builder::new()
+        .name("sim-stall-watch".into())
+        .spawn({
+            let (progress, stalled, done) = (progress, stalled.clone(), Arc::clone(&done));
+            move || {
+                let began = std::time::Instant::now();
+                let (mut seen, mut since) = (0, std::time::Instant::now());
+                while !done.load(Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_millis(500));
+                    let now = progress.load(Ordering::Relaxed);
+                    if now != seen {
+                        (seen, since) = (now, std::time::Instant::now());
+                    }
+                    if since.elapsed() > STALL_AFTER || began.elapsed() > limit {
+                        stalled.cancel();
+                        return;
+                    }
+                }
+            }
+        })
+        .expect("start the stall watch");
+    (stalled, done)
 }
 
 /// The key of stream shard `shard`.

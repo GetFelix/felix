@@ -85,3 +85,36 @@ fn seeds() {
         failed.join("\n    ")
     );
 }
+
+// Seeds that exposed a bug. Each runs one seed and asserts only the finding
+// its issue is about, so it passes when that bug is fixed and not before.
+
+/// Whether a run stalled: virtual time stopped because a task never waited.
+fn stalled(outcome: &SimOutcome) -> bool {
+    outcome.findings.iter().any(|f| f.checker == "stalled")
+}
+
+/// The replication driver retries a pending fence with a zero delay, forever,
+/// when the gate awaits a generation the route does not have yet.
+#[test]
+#[ignore = "#1941"]
+fn seed_1_replication_driver_does_not_spin_on_a_pending_fence() {
+    log();
+    let outcome = run_seed(1, SimConfig::for_seed(1));
+    assert!(!stalled(&outcome), "{outcome}");
+}
+
+/// A get from a restarted broker misses a put that a quorum acknowledged.
+#[test]
+#[ignore = "#1943"]
+fn seed_1_cache_get_after_a_restart_sees_the_acknowledged_put() {
+    use felix_cluster::history::checker::Rule;
+    log();
+    let outcome = run_seed(1, SimConfig::for_seed(1));
+    let broken = outcome
+        .report
+        .violations
+        .iter()
+        .any(|v| v.rule == Rule::NotLinearizable);
+    assert!(!broken, "{outcome}");
+}

@@ -117,17 +117,23 @@ async fn run(seed: u64, config: SimConfig, checkers: Vec<Box<dyn Checker>>) -> S
         }
     };
     let stalled = cluster.stalled().clone();
+    let recorder = Recorder::new(config.shards);
     tokio::select! {
-        outcome = drive(seed, config.clone(), cluster.clone(), checkers) => outcome,
+        outcome = drive(seed, config.clone(), cluster.clone(), recorder.clone(), checkers) => outcome,
         () = stalled.cancelled() => {
-            let mut outcome = failed_start(seed, config.clone(), String::new(), begun.elapsed());
+            // Whatever the clients saw is checked as far as it can be without
+            // final reads: the fault timeline and what was acknowledged.
+            let mut history = recorder.history();
+            drop_unread_lists(&mut history);
+            let mut outcome = finished(seed, config.clone(), history, Vec::new(), begun.elapsed());
             let mut finding = Finding::new(
                     "stalled",
                     format!(
-                        "the run used its {:?} of real time at {:?} of virtual time: some task \
-                         keeps the runtime busy without waiting on a timer",
+                        "the run stalled at {:?} of virtual time, within its {:?} of real time: \
+                         some task keeps the runtime busy without waiting on a timer, so the \
+                         clock cannot move",
+                        cluster.elapsed(),
                         config.real_time_limit,
-                        cluster.elapsed()
                     ),
                 );
             for (key, serving) in cluster.unserved().await.into_iter().take(3) {
@@ -145,10 +151,10 @@ async fn drive(
     seed: u64,
     config: SimConfig,
     cluster: Arc<SimCluster>,
+    recorder: Arc<Recorder>,
     mut checkers: Vec<Box<dyn Checker>>,
 ) -> SimOutcome {
     let begun = Instant::now();
-    let recorder = Recorder::new(config.shards);
     let stop = CancellationToken::new();
     tokio::spawn({
         let cluster = cluster.clone();
@@ -221,7 +227,16 @@ async fn drive(
     let finisher_id = config.clients + READERS;
     let mut finisher = SimClient::new(finisher_id, cluster.clone(), recorder.clone(), rng.fork());
     for shard in 0..config.shards {
-        for _ in 0..3 {
+        // A shard nobody serves cannot be read; the election check has
+        // already said so.
+        if cluster
+            .servers_of(&crate::cluster::stream_key(shard))
+            .await
+            .is_empty()
+        {
+            continue;
+        }
+        for _ in 0..2 {
             if let Some(read) = finisher.read_shard(shard).await {
                 recorder.set_final_read(shard, read);
                 break;
@@ -252,16 +267,24 @@ async fn drive(
             ),
         ));
     }
-    let report = checker::check(&history);
-    let summary = history.summary();
+    finished(seed, config, history, findings, begun.elapsed())
+}
+
+fn finished(
+    seed: u64,
+    config: SimConfig,
+    history: History,
+    findings: Vec<Finding>,
+    elapsed: Duration,
+) -> SimOutcome {
     SimOutcome {
         seed,
         config,
-        report,
+        report: checker::check(&history),
         findings,
+        summary: history.summary(),
         history,
-        summary,
-        elapsed: begun.elapsed(),
+        elapsed,
     }
 }
 
