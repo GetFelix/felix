@@ -743,7 +743,7 @@ fn reissuing_names_the_recorded_set_when_an_elected_member_is_unknown() {
     let named_a = assignment();
     let next = named_a
         .reissuing(
-            &elected("broker-b", &["broker-c", "broker-d"], 7, 6),
+            &elected("broker-b", &["broker-c", "broker-d"], 7, 7),
             &|node| node != "broker-d",
         )
         .expect("reissued");
