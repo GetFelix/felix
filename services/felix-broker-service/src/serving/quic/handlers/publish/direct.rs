@@ -48,8 +48,11 @@ pub struct Refusal {
 /// Why a publish did not return an offset.
 #[derive(Debug)]
 pub enum DirectPublishError {
-    /// Nothing was appended: the fence or the claim refused it. Safe to send
-    /// again.
+    /// The fence refused the publish, or claiming its offsets failed, so no
+    /// offset was consumed and it is safe to send again. A claim that failed
+    /// on a disk write is the exception when the writer could not rewind
+    /// the file either: bytes may remain. The simulator has no I/O faults, so
+    /// it never sees that case.
     NotWritten(anyhow::Error),
     /// The batch was claimed, so it may be on disk and may yet reach a
     /// majority. A quorum timeout lands here, as do a flush failure and a lost

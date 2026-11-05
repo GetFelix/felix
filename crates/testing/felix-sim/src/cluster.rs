@@ -381,14 +381,6 @@ impl SimCluster {
             .collect()
     }
 
-    /// Whether no fault transition is in progress. A broker that is still
-    /// starting has no view of its shards yet and its peers are moving them,
-    /// so a sample taken then says little. Link, control plane and crash
-    /// changes are single steps that the next sample sees whole.
-    pub fn is_quiet(&self) -> bool {
-        !self.nodes.iter().any(|node| node.is_starting())
-    }
-
     /// How many running brokers would take a write for `key` right now.
     pub async fn servers_of(&self, key: &ShardKey) -> Vec<usize> {
         let mut serving = Vec::new();

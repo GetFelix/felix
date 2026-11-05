@@ -130,6 +130,14 @@ fn seed_4_replication_driver_does_not_spin() {
     assert!(!stalled(&outcome), "{outcome}");
 }
 
+#[test]
+#[ignore = "#1941"]
+fn seed_6_replication_driver_does_not_spin() {
+    log();
+    let outcome = run_seed(6, SimConfig::for_seed(6));
+    assert!(!stalled(&outcome), "{outcome}");
+}
+
 /// Whether `checker` reported anything.
 fn found(outcome: &SimOutcome, checker: &str) -> bool {
     outcome.findings.iter().any(|f| f.checker == checker)
@@ -138,39 +146,48 @@ fn found(outcome: &SimOutcome, checker: &str) -> bool {
 /// The control plane pauses and a shard leader crashes; once everything heals
 /// a restarted leader stays in `fencing` and its shard is never served.
 #[test]
-#[ignore = "#1948"]
+#[ignore = "#1948, and #1941 while seed 6 stalls"]
 fn seed_6_every_shard_is_served_after_a_paused_control_plane_and_a_leader_crash() {
     log();
     let outcome = run_seed(6, SimConfig::for_seed(6));
+    assert!(!stalled(&outcome), "the run stalled:\n{outcome}");
     assert!(!found(&outcome, "election-settles"), "{outcome}");
 }
 
 /// A leader's committed mark stays below its log tail after the faults heal,
 /// so the shard cannot be read to its tail.
 #[test]
-#[ignore = "#1949"]
+#[ignore = "#1949, and #1941 while seed 6 stalls"]
 fn seed_6_every_shard_can_be_read_after_the_faults_heal() {
     log();
     let outcome = run_seed(6, SimConfig::for_seed(6));
+    assert!(!stalled(&outcome), "the run stalled:\n{outcome}");
     assert!(!found(&outcome, "final-reads"), "{outcome}");
 }
 
 /// A cache read or delete after a failover or restart misses a put that a
-/// quorum acknowledged.
+/// quorum acknowledged. The search for a linearization only runs on a key the
+/// simpler rules (stale read, phantom) found nothing on, so any of the three
+/// is this bug; a run that stalled says nothing either way.
 fn assert_cache_is_linearizable(seed: u64) {
     use felix_cluster::history::checker::Rule;
     log();
     let outcome = run_seed(seed, SimConfig::for_seed(seed));
-    let broken = outcome
-        .report
-        .violations
-        .iter()
-        .any(|v| v.rule == Rule::NotLinearizable);
+    assert!(
+        !stalled(&outcome),
+        "the run stalled, so the cache was not checked:\n{outcome}"
+    );
+    let broken = outcome.report.violations.iter().any(|v| {
+        matches!(
+            v.rule,
+            Rule::StaleRead | Rule::Phantom | Rule::NotLinearizable
+        )
+    });
     assert!(!broken, "{outcome}");
 }
 
 #[test]
-#[ignore = "#1943"]
+#[ignore = "#1943, and #1941 while seed 1 stalls"]
 fn seed_1_cache_keeps_acknowledged_puts_across_a_restart() {
     assert_cache_is_linearizable(1);
 }

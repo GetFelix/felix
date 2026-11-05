@@ -116,10 +116,12 @@ Each cluster checker is named after the invariant in the formal model
 
 A cluster checker runs at up to three kinds of point:
 
-- **Quiet**: about once a virtual second from the start of the run, skipped
-  while any broker is still starting (it has no view of its shards yet). This
-  is the only way to see a state that lasts a few seconds, such as two
-  leaders, so it samples during the faults.
+- **Quiet**: about once a virtual second from the start of the run. A broker
+  that is still starting has no view of its shards yet and is left out of the
+  sample; the others are read, so the control plane pausing while a broker
+  restarts is still seen. This is the only way to see a state that lasts a few
+  seconds, such as two leaders, so it samples during the faults. It sees the
+  history recorded so far.
 - **Healed**: right after the nemesis heals everything. A checker may wait for
   the cluster, as `ElectionSettles` does. It sees the history recorded so far.
 - **End**: after the final reads, with the complete history.
@@ -127,11 +129,11 @@ A cluster checker runs at up to three kinds of point:
 | Checker | Runs | Fails when |
 | --- | --- | --- |
 | Streams (history rules 1-19) | End | A read is not a prefix of one order of the stream, an acknowledged record is lost, a record shows up twice or was never written, or reads and writes form a cycle (G0, G1c, G-single, G2). See [history-checker.md](history-checker.md). |
-| Cache (history rule 20) | End | A cache key's puts and gets cannot be put in one order that respects real time, as one variable would. Unknown puts may or may not have happened. A key too tangled to decide within the search budget is reported as undecided, not as a pass. |
+| Cache (history rule 20) | End | A cache key's puts and gets cannot be put in one order that respects real time, as one variable would. Unknown puts may or may not have happened. A key too tangled to decide within the search budget is reported as undecided and fails the seed, with the key and the number of steps tried. |
 | `ElectionSettles` | Healed | Some shard is not served by exactly one broker 60 virtual seconds after the faults heal. The report prints a census for each stuck shard: what every broker and the control plane think of it. |
 | `OneLeaderPerGeneration` | every second, Healed, End | Two brokers had the same shard open for writes in the same generation, at any time in the run. A broker that restarts and opens a generation again is one leader. |
-| `AtMostOneServing` | every second, Healed, End | Two brokers would take a write for one shard at the same instant. The brokers are read in one step, so none moves between two reads. It covers shards protected by the lease only. The model asserts it for those, and for a shard acknowledged by a majority of followers it asserts `AckedHeldByLeader` instead: a deposed leader may serve out its lease there, because it cannot collect a majority once its successor has fenced one. Once election is finalized that is every stream shard. A run does not finalize `fenced_caches`, so its cache shards stay on the lease and are the ones checked. |
-| `AckedHeldByLeader` | Healed, End | The one broker serving a shard does not hold, at the offset the client was told, an append that was acknowledged. The record is read from the leader's log whether or not a quorum has committed it. A shard with no server or two is left to `ElectionSettles`. |
+| `AtMostOneServing` | every second, Healed, End | Two brokers would take a write for one shard at the same instant. The brokers are read in one step, so none moves between two reads. It covers shards protected by the lease only. The model asserts it for those, and for a shard acknowledged by a majority of followers it asserts `AckedHeldByLeader` instead: a deposed leader may keep serving there until it learns of the newer generation, because it cannot collect a majority once its successor has fenced one. Each broker says which kind a shard is from its own write gate, so a shard opened before election was finalized stays checked. Once election is finalized that is every stream shard. A run does not finalize `fenced_caches`, so its cache shards stay on the lease and are the ones checked. |
+| `AckedHeldByLeader` | every second, Healed, End | A broker serving a shard does not hold, at the offset the client was told, an append that was acknowledged before the sample. A broker at the newest generation any broker knows must hold all of them. A deposed one still serving is held to the offsets inside its own log, since its successor has acknowledged records it never got: a hole or a different record there is a lost acknowledgement. The record is read from the broker's log whether or not a quorum has committed it. A shard with no server is left to `ElectionSettles`. |
 | `AdoptedMatchesOpened` | every second, Healed, End | A broker that serves a shard at generation `g` does not route the shard to itself at `g`, or its lifecycle did not open `g`. The model's version of this also compares the replica set with the control plane's; the simulator does not read the set. |
 | `GenerationBurn` | End | A warning, never a failure. A shard went through more generations than `2 * faults + 2`, counting the faults in the plan that could have cost its leader: a crash, freeze or isolation of a broker that has led it, a split with a former leader in the minority, a dropped link to one, a paused or downed control plane, or the pause-then-crash fault. Many elections for few faults often means candidates deposing each other. |
 
@@ -191,8 +193,9 @@ is seeds 1 to 4, so it fails until these are fixed.
 | 1 | The replication driver spins on a retry with no delay and the virtual clock stops (a `stalled` finding). | [#1941](https://github.com/GetFelix/felix/issues/1941) |
 | 1, 5 | A cache get or delete after a failover or restart misses a put that a quorum acknowledged. | [#1943](https://github.com/GetFelix/felix/issues/1943) |
 | 2, 3, 4 | The same stall as seed 1, within the first minute of faults. Seeds that stall give the cluster checkers little to look at. | [#1941](https://github.com/GetFelix/felix/issues/1941) |
-| 6 | The control plane pauses, a shard leader crashes, and after the heal the restarted leader stays in `fencing`: `ElectionSettles` reports the shard unserved. | [#1948](https://github.com/GetFelix/felix/issues/1948) |
-| 6 | After the heal a leader's committed mark stays below its log tail on 19 shards, so they cannot be read (`final-reads`). | [#1949](https://github.com/GetFelix/felix/issues/1949) |
+| 6 | Since placement keeps its memory between passes, the run stalls about 55 virtual seconds in, after the control plane pause and crash: the same driver spin as seed 1. | [#1941](https://github.com/GetFelix/felix/issues/1941) |
+| 6 | Found before that change, and not seen again while the run stalls: the control plane pauses, a shard leader crashes, and after the heal the restarted leader stays in `fencing`, so `ElectionSettles` reports the shard unserved. | [#1948](https://github.com/GetFelix/felix/issues/1948) |
+| 6 | Found before that change, and not seen again while the run stalls: after the heal a leader's committed mark stays below its log tail on 19 shards, so they cannot be read (`final-reads`). | [#1949](https://github.com/GetFelix/felix/issues/1949) |
 
 A stalled run may not stall on another replay: the brokers' interleaving
 differs, and seed 2 ran to the end the first time and stalled the second.
@@ -267,7 +270,11 @@ The simulator's link builds the same request a broker would send over HTTP and
 hands it to the control plane's real router in the same process, with an
 in-memory store. The control plane's background loops (placement and the sweep
 that marks silent brokers down) are not spawned; the simulator runs one round
-of each on their real cadence. A fault applies to every call:
+of each on their real cadence. Placement keeps what it has seen between
+rounds (when a fence started, how long a suspicion or a pending replica set
+has stood, whether a restore moves), as the real loop does, so timeouts that
+depend on it fire. A control plane that goes down forgets it, as a restarted
+process does; a pause keeps it. A fault applies to every call:
 
 | Fault | What a broker sees |
 | --- | --- |

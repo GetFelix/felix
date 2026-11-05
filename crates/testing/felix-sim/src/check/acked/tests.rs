@@ -76,3 +76,48 @@ fn only_acknowledged_appends_to_stream_shards_are_expected() {
     assert_eq!(by_shard[&1], vec![acked(None, 4)]);
     assert_eq!(by_shard.len(), 2);
 }
+
+fn served(name: &str, generation: u64, records: &[(u64, u64)]) -> Served {
+    Served {
+        name: name.to_string(),
+        generation: Some(generation),
+        held: held(records),
+    }
+}
+
+#[test]
+fn a_deposed_leader_missing_an_acknowledged_record_is_reported() {
+    let told = [acked(Some(0), 10), acked(Some(1), 11), acked(Some(3), 13)];
+    // b1 is current and has all; b2 serves at an older generation and has a
+    // hole at offset 1 inside its log.
+    let both = [
+        served("b1", 2, &[(0, 10), (1, 11), (2, 12), (3, 13)]),
+        served("b2", 1, &[(0, 10), (2, 12)]),
+    ];
+    let found = missing_by_server(&told, &both, Some(2));
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].0.name, "b2");
+    assert_eq!(found[0].1, vec![acked(Some(1), 11)]);
+}
+
+#[test]
+fn a_deposed_leader_is_not_held_to_what_its_successor_acknowledged() {
+    // Offset 3 was acknowledged by the generation-2 leader; b2 stopped at 1.
+    let told = [acked(Some(0), 10), acked(Some(3), 13)];
+    let both = [
+        served("b1", 2, &[(0, 10), (1, 12), (3, 13)]),
+        served("b2", 1, &[(0, 10), (1, 12)]),
+    ];
+    assert!(missing_by_server(&told, &both, Some(2)).is_empty());
+}
+
+#[test]
+fn the_newest_leader_must_hold_every_acknowledged_record() {
+    let told = [acked(Some(0), 10), acked(Some(3), 13), acked(None, 14)];
+    let alone = [served("b1", 2, &[(0, 10), (1, 12)])];
+    let found = missing_by_server(&told, &alone, Some(2));
+    assert_eq!(found[0].1, vec![acked(Some(3), 13), acked(None, 14)]);
+    // A newer generation exists that nobody serves: b1 is deposed, and its
+    // log is complete up to its end.
+    assert!(missing_by_server(&told, &alone, Some(3)).is_empty());
+}

@@ -5,9 +5,9 @@
 //! say whether that is allowed. A run holds a list of them and calls each at
 //! three kinds of point:
 //!
-//! - [`Point::Quiet`]: about once a virtual second while the run goes, whenever
-//!   no broker is starting ([`SimCluster::is_quiet`]). It happens during the
-//!   faults too, which is the only way to see a state that lasts seconds, such
+//! - [`Point::Quiet`]: about once a virtual second while the run goes. A broker
+//!   that is starting has no view of its shards and is left out of the
+//!   sample. It happens during the faults too, which is the only way to see a state that lasts seconds, such
 //!   as two brokers leading one shard. A checker that has nothing to look at
 //!   then returns at once. A call is skipped if the checker is still busy with
 //!   an earlier one.
@@ -76,8 +76,9 @@ pub use self::leadership::{AdoptedMatchesOpened, AtMostOneServing, OneLeaderPerG
 /// When a checker is called.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Point {
-    /// Between faults and during them, about once a virtual second, when no
-    /// broker is starting. The history is empty and `healed_at` is zero.
+    /// Between faults and during them, about once a virtual second, without
+    /// the brokers that are starting. The history holds what the clients have recorded so
+    /// far and `healed_at` is zero.
     Quiet,
     /// Right after every fault is healed.
     Healed,
@@ -92,7 +93,7 @@ pub struct CheckContext {
     /// When the faults healed, on the cluster's clock ([`SimCluster::elapsed`]).
     pub healed_at: Duration,
     /// What the clients recorded: complete at [`Point::End`], what had been
-    /// recorded by the heal at [`Point::Healed`], empty at [`Point::Quiet`].
+    /// recorded by the heal at [`Point::Healed`], so far at [`Point::Quiet`].
     pub history: History,
     /// The faults the nemesis was given, empty for a run without faults. Some
     /// may have been skipped (a crash that would take down a majority).

@@ -90,10 +90,11 @@ impl Checker for OneLeaderPerGeneration {
 /// It applies to shards whose writes are protected by the lease. The model
 /// asserts it for those only. A shard acknowledged by a majority of followers
 /// at the leader's generation (`AckByFollowers`) lets a deposed leader keep
-/// serving until its lease ends, because it cannot collect a majority once its
-/// successor has fenced one; there the model asserts `AckedHeldByLeader`
-/// instead, and so does this crate. The streams and caches of a run that has
-/// finalized election are in that design.
+/// serving until it learns of the newer generation, because it cannot collect
+/// a majority once its successor has fenced one; there the model asserts
+/// `AckedHeldByLeader` instead, and so does this crate. Each broker says which
+/// kind a shard is from its own write gate, so a shard opened before the fleet
+/// finalized election keeps this check.
 #[derive(Debug)]
 pub struct AtMostOneServing {
     digest: Digest,

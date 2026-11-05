@@ -64,8 +64,12 @@ pub struct SimOutcome {
 }
 
 impl SimOutcome {
+    /// Whether nothing failed. A cache key the search could not decide is not
+    /// a pass: nothing was proven for it.
     pub fn passed(&self) -> bool {
-        self.report.violations.is_empty() && self.failures().next().is_none()
+        self.report.violations.is_empty()
+            && self.report.undecided.is_empty()
+            && self.failures().next().is_none()
     }
 
     /// The findings that fail the run, without the warnings.
@@ -102,7 +106,14 @@ impl std::fmt::Display for SimOutcome {
             }
         }
         if self.report.violations.is_empty() {
-            writeln!(f, "history checker: no violations")
+            writeln!(f, "history checker: no violations")?;
+            for note in &self.report.undecided {
+                writeln!(
+                    f,
+                    "history checker: undecided, which fails the seed: {note}"
+                )?;
+            }
+            Ok(())
         } else {
             write!(f, "{}", self.report)
         }
@@ -231,17 +242,14 @@ async fn drive(
     let sampled = Arc::new(Mutex::new(Vec::new()));
     let sampler = tokio::spawn({
         let (checkers, sampled, stop) = (checkers.clone(), sampled.clone(), stop.clone());
-        let (cluster, context) = (cluster.clone(), context.clone());
+        let (context, recorder) = (context.clone(), recorder.clone());
         async move {
             loop {
                 tokio::select! {
                     () = stop.cancelled() => return,
                     () = tokio::time::sleep(SAMPLE_EVERY) => {}
                 }
-                if !cluster.is_quiet() {
-                    continue;
-                }
-                let ctx = context(Point::Quiet, Duration::ZERO, History::default());
+                let ctx = context(Point::Quiet, Duration::ZERO, recorder.history());
                 for checker in &checkers {
                     if let Ok(mut checker) = checker.try_lock() {
                         let found = checker.check(&ctx).await;
