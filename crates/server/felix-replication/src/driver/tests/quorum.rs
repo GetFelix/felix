@@ -487,8 +487,10 @@ fn unreachable_reporter() -> (
     let shutdown = tokio_util::sync::CancellationToken::new();
     let (reporter, _task) = crate::reporter::Reporter::spawn(
         crate::reporter::ReportTo {
-            client: reqwest::Client::new(),
-            base_url: "http://127.0.0.1:1".to_string(),
+            link: crate::controlplane_link::HttpControlPlaneLink::new(
+                reqwest::Client::new(),
+                "http://127.0.0.1:1",
+            ),
             node_id: LOCAL.to_string(),
             token: None,
             incarnation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1)),

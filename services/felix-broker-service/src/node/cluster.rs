@@ -398,8 +398,10 @@ pub(super) fn spawn_shard_tasks<R: PeerRequester + Send + Sync + 'static>(
                     elections
                 });
             let watch = tokio::spawn(shard_watch::run(
-                membership_client.clone(),
-                base_url.clone(),
+                felix_replication::controlplane_link::HttpControlPlaneLink::new(
+                    membership_client.clone(),
+                    base_url,
+                ),
                 // The assignment feed is cluster metadata, so it is read with
                 // the same credential the rest of membership uses.
                 credential.clone(),
@@ -423,8 +425,10 @@ pub(super) fn spawn_shard_tasks<R: PeerRequester + Send + Sync + 'static>(
                     elections,
                 },
                 Some(shard_routing::CatalogSource {
-                    client: membership_client.clone(),
-                    base_url: base_url.clone(),
+                    link: felix_replication::controlplane_link::HttpControlPlaneLink::new(
+                        membership_client.clone(),
+                        base_url,
+                    ),
                     token: credential.clone(),
                 }),
                 Duration::from_millis(config.controlplane_sync_interval_ms),
@@ -454,8 +458,11 @@ pub(super) fn spawn_shard_tasks<R: PeerRequester + Send + Sync + 'static>(
                     config.membership.as_ref().map(|membership| {
                         let (reporter, _task) = replication::reporter::Reporter::spawn(
                             replication::reporter::ReportTo {
-                                client: membership_client.clone(),
-                                base_url: base_url.clone(),
+                                link:
+                                    felix_replication::controlplane_link::HttpControlPlaneLink::new(
+                                        membership_client.clone(),
+                                        base_url,
+                                    ),
                                 node_id: membership.node_id.clone(),
                                 token: credential.clone().map(|credential| {
                                     Arc::new(credential)

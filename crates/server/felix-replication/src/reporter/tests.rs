@@ -42,8 +42,10 @@ fn counting_control_plane(
 
     (
         ReportTo {
-            client: reqwest::Client::new(),
-            base_url: format!("http://{addr}"),
+            link: crate::controlplane_link::HttpControlPlaneLink::new(
+                reqwest::Client::new(),
+                &format!("http://{addr}"),
+            ),
             node_id: "broker-a".to_string(),
             token: None,
             incarnation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -369,8 +371,10 @@ fn judging_control_plane(
     });
     (
         ReportTo {
-            client: reqwest::Client::new(),
-            base_url: format!("http://{addr}"),
+            link: crate::controlplane_link::HttpControlPlaneLink::new(
+                reqwest::Client::new(),
+                &format!("http://{addr}"),
+            ),
             node_id: "broker-a".to_string(),
             token: None,
             incarnation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -458,8 +462,10 @@ async fn a_report_names_the_leaders_own_storage_identity() {
     });
     let own = StorageId::from_bytes([7; 16]);
     let to = ReportTo {
-        client: reqwest::Client::new(),
-        base_url: format!("http://{addr}"),
+        link: crate::controlplane_link::HttpControlPlaneLink::new(
+            reqwest::Client::new(),
+            &format!("http://{addr}"),
+        ),
         node_id: "broker-a".to_string(),
         token: None,
         incarnation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1)),
@@ -507,8 +513,10 @@ async fn a_report_names_the_pending_set_it_started() {
         let _ = axum::serve(listener, app.into_make_service()).await;
     });
     let to = ReportTo {
-        client: reqwest::Client::new(),
-        base_url: format!("http://{addr}"),
+        link: crate::controlplane_link::HttpControlPlaneLink::new(
+            reqwest::Client::new(),
+            &format!("http://{addr}"),
+        ),
         node_id: "broker-a".to_string(),
         token: None,
         incarnation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1)),
@@ -596,4 +604,101 @@ fn a_refusal_is_carried_until_a_later_generation() {
     renamed.generation = 5;
     assert_eq!(refusals.carry(&renamed), None);
     assert_eq!(refusals.carry(&report("orders")), None, "ended at 5");
+}
+
+/// A link that answers the report itself carries it to the flushing task, with
+/// no socket in between.
+#[tokio::test]
+async fn a_fake_link_carries_a_report() {
+    struct Takes(Arc<Mutex<usize>>);
+
+    impl crate::controlplane_link::ControlPlaneLink for Takes {
+        fn endpoint(&self) -> String {
+            "fake".to_string()
+        }
+        async fn register(
+            &self,
+            _: &str,
+            _: &(impl serde::Serialize + Sync),
+        ) -> anyhow::Result<crate::controlplane_link::LinkResponse> {
+            unreachable!()
+        }
+        async fn node(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> anyhow::Result<crate::controlplane_link::LinkResponse> {
+            unreachable!()
+        }
+        async fn heartbeat(
+            &self,
+            _: &str,
+            _: &str,
+            _: &(impl serde::Serialize + Sync),
+            _: std::time::Duration,
+        ) -> anyhow::Result<crate::controlplane_link::LinkResponse> {
+            unreachable!()
+        }
+        async fn lifecycle(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> anyhow::Result<crate::controlplane_link::LinkResponse> {
+            unreachable!()
+        }
+        async fn node_catalog_page(
+            &self,
+            _: Option<&str>,
+            _: Option<&str>,
+        ) -> anyhow::Result<crate::controlplane_link::LinkResponse> {
+            unreachable!()
+        }
+        async fn assignment_snapshot(
+            &self,
+            _: Option<&str>,
+            _: std::time::Duration,
+        ) -> anyhow::Result<crate::controlplane_link::LinkResponse> {
+            unreachable!()
+        }
+        async fn assignment_changes(
+            &self,
+            _: Option<&str>,
+            _: u64,
+            _: std::time::Duration,
+            _: std::time::Duration,
+        ) -> anyhow::Result<crate::controlplane_link::LinkResponse> {
+            unreachable!()
+        }
+        async fn replica_status(
+            &self,
+            _: Option<&str>,
+            node_id: &str,
+            _: &(impl serde::Serialize + Sync),
+        ) -> anyhow::Result<crate::controlplane_link::LinkResponse> {
+            assert_eq!(node_id, "broker-a");
+            *self.0.lock() += 1;
+            Ok(crate::controlplane_link::LinkResponse {
+                status: reqwest::StatusCode::NO_CONTENT,
+                body: Default::default(),
+            })
+        }
+    }
+
+    let sent = Arc::new(Mutex::new(0));
+    let shutdown = CancellationToken::new();
+    let (reporter, task) = Reporter::spawn(
+        ReportTo {
+            link: Takes(Arc::clone(&sent)),
+            node_id: "broker-a".to_string(),
+            token: None,
+            incarnation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            storage_id: None,
+        },
+        shutdown.clone(),
+    );
+    assert!(reporter.send(report("orders")).await);
+    assert_eq!(*sent.lock(), 1);
+    shutdown.cancel();
+    task.await.expect("task");
 }

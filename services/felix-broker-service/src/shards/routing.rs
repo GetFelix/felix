@@ -25,6 +25,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
+use felix_replication::controlplane_link::ControlPlaneLink;
 use felix_router::{Resolution, ShardRouter, Unavailable};
 
 use crate::shards::lifecycle::Phase;
@@ -809,9 +810,8 @@ pub struct FeedState {
 }
 
 /// What the feed needs to read the node catalog.
-pub struct CatalogSource {
-    pub client: reqwest::Client,
-    pub base_url: String,
+pub struct CatalogSource<L> {
+    pub link: L,
     /// The same credential the assignment feed uses: `/v1/nodes` and
     /// `/v1/shard-assignments` both require `node.view:cluster:*`. Held, not
     /// copied, so a refresh reaches this feed too.
@@ -834,9 +834,9 @@ pub struct CatalogSource {
 /// accepts the request and never answers. A wake asks for a refresh too, because
 /// a broker that restarted re-registers under the same id on new ports, and
 /// nothing in the assignments says so.
-pub fn spawn_feed(
+pub fn spawn_feed<L: ControlPlaneLink>(
     state: FeedState,
-    catalog_source: Option<CatalogSource>,
+    catalog_source: Option<CatalogSource<L>>,
     interval: std::time::Duration,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> tokio::task::JoinHandle<()> {
@@ -986,8 +986,8 @@ pub fn spawn_feed(
 /// into one that refuses every remote publish. After a failure the next read
 /// waits for the tick, so a control plane that is down is not asked again on
 /// every assignment change.
-async fn refresh_catalog(
-    source: CatalogSource,
+async fn refresh_catalog<L: ControlPlaneLink>(
+    source: CatalogSource<L>,
     refreshed: tokio::sync::watch::Sender<Arc<crate::cluster::node_catalog::NodeCatalog>>,
     refresh_now: Arc<tokio::sync::Notify>,
     interval: std::time::Duration,
@@ -1007,8 +1007,7 @@ async fn refresh_catalog(
         // use from the next read.
         let bearer = source.token.as_ref().map(|token| token.bearer());
         let fetch = crate::cluster::node_catalog::fetch(
-            &source.client,
-            &source.base_url,
+            &source.link,
             bearer.as_deref().map(String::as_str),
         );
         let fetched = tokio::select! {
