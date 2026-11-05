@@ -2,6 +2,9 @@
 //! batches with its set, keeping that set, and rule 5, counting nothing more
 //! once it has answered a newer fence.
 
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering::Relaxed;
+
 use felix_wire::internal::PeerCapabilities;
 
 use super::quorum::{follower_ack_marks, follower_ack_marks_adopted, quorum_leader};
@@ -859,4 +862,98 @@ async fn the_running_driver_keeps_a_standing_until_its_shard_opens() {
         "an adoption must not make the open read as a plain bump"
     );
     driver.stop().await;
+}
+
+/// Fails every fence, and once one has failed awaits the generation above
+/// the route's when `above` is set (a broker standing as a candidate there
+/// before any route names it), or nothing (the promotion was given up).
+struct ClosedAfterAFence {
+    awaiting: Mutex<Option<u64>>,
+    above: bool,
+    opens: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl crate::promotion::PromotionGate for ClosedAfterAFence {
+    fn awaiting(&self, _key: &crate::ShardKey) -> Option<u64> {
+        *self.awaiting.lock().expect("lock")
+    }
+
+    async fn open(&self, _key: &crate::ShardKey, generation: u64) -> bool {
+        self.opens.fetch_add(1, Relaxed);
+        *self.awaiting.lock().expect("lock") = self.above.then_some(generation + 1);
+        false
+    }
+}
+
+/// Fails the fence at generation 4, lets `after` change the route or the
+/// gate, and checks the driver still waits between turns: on a paused clock
+/// a loop that never waits stops time, so a second of it never passes.
+fn waits_after_a_failed_fence(above: bool, after: fn(&ShardRouter)) {
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .start_paused(true)
+            .build()
+            .expect("runtime");
+        runtime.block_on(async move {
+            let (broker, _dir) = quorum_leader(3, 4).await;
+            let gate = Arc::new(ClosedAfterAFence {
+                awaiting: Mutex::new(Some(4)),
+                above,
+                opens: AtomicUsize::new(0),
+            });
+            let router = router(LOCAL, &["broker-b", "broker-c"], 4);
+            let driver = spawn(
+                Arc::new(FenceTaker),
+                Arc::clone(&broker),
+                Arc::clone(&router),
+                Arc::new(Unfenced),
+                Arc::clone(&gate) as Arc<dyn crate::promotion::PromotionGate>,
+                Published {
+                    marks: Arc::new(elected_marks(LOCAL)),
+                    halted: Arc::new(crate::halted::HaltedReplicas::new()),
+                    status: Arc::default(),
+                },
+                None,
+                Duration::from_secs(300),
+                Arc::default(),
+                RebuildPolicy::default(),
+                MoveThrottle::unlimited(),
+                CancellationToken::new(),
+            );
+            while gate.opens.load(Relaxed) == 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            after(&router);
+            // Well past the fence's backoff.
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            assert_eq!(gate.opens.load(Relaxed), 1, "no fence is due at 4 any more");
+            driver.stop().await;
+        });
+        let _ = done.send(());
+    });
+    assert!(
+        finished.recv_timeout(Duration::from_secs(30)).is_ok(),
+        "a second of paused time did not pass: the driver never waited"
+    );
+}
+
+/// **A failed fence the gate now awaits above the route's generation is not
+/// retried in a loop** (#1941). Once its backoff passed, the driver answered
+/// "retry now" for it on every turn and never waited, burning a core until
+/// the route caught up.
+#[test]
+fn a_fence_awaited_above_the_route_is_not_retried_in_a_loop() {
+    waits_after_a_failed_fence(true, |_| {});
+}
+
+/// **Nor is a failed fence for a shard whose route has moved to another
+/// leader** (#1941).
+#[test]
+fn a_fence_for_a_shard_led_elsewhere_now_is_not_retried_in_a_loop() {
+    waits_after_a_failed_fence(false, |router| {
+        publish(router, "broker-b", &[LOCAL, "broker-c"], 5);
+    });
 }

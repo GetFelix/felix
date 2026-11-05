@@ -600,7 +600,11 @@ When the fence applies:
 The cost is availability. A promoted leader that cannot reach a majority of
 its replicas does not serve, where on the lease alone it would have opened;
 it retries after 200 ms (`FENCE_RETRY`), doubling the wait with each failed
-attempt up to 2 s (`FENCE_RETRY_MAX`). Every other change of leader pays a round trip to a
+attempt up to 2 s (`FENCE_RETRY_MAX`). It retries only while it still leads
+the route at the generation it is fencing. Once the route names another
+leader, or the broker stands for a generation no route names yet, there is
+nothing to retry until the route changes, and that change wakes replication
+(#1941). Every other change of leader pays a round trip to a
 majority before it serves; a write that reaches the broker meanwhile waits
 for it, within the move hold's window (`FELIX_SHARD_MOVE_HOLD_MS`), instead of
 being refused. So does one that arrives while the shard's log is still
