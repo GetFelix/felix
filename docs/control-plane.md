@@ -1597,7 +1597,8 @@ generation's set and its own ballot in its log, but not the set before, and
 its watch, started from a snapshot, did not see the step. That earlier open
 already fenced the set before. A leader whose log keeps a set older than the
 one before reports the empty refusal too, once its own ballot and start record
-at the generation show it opened there. That is a leader elected at a
+at the generation show it opened there, nothing is pending on the route, and
+its kept set names exactly the route's set on the same copies. That is a leader elected at a
 generation placement then adopted, restarted: it keeps the set it stood on,
 and its election fenced the set before. Placement answers the empty refusal
 the same way (`set_unknown`): the same leader and set at the next

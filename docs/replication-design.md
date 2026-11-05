@@ -4463,13 +4463,27 @@ Once it is finalized on a broker that offers `ELECTION`:
   - The log keeps this generation's set under another node's ballot, kept
     from that node's fence or election request: nothing proves the set
     before was fenced from here. The fence stays pending.
-  - The log keeps an older set than the one before, and the broker's own
-    ballot and start record at this generation: it opened this generation
-    as leader. The case this is for is a leader elected here whose election
+  - The log keeps an older set than the one before, and all of this holds:
+    the broker's own ballot and a start record at this generation, no change
+    pending on the route, and a kept set with nothing beside it that names
+    exactly the route's set, on the same copies (a member either side names
+    no copy for does not match). That is a leader elected here whose election
     the control plane adopted, restarted: it keeps the set it stood on, from
-    an older generation, and its watch has no prior after a restart. Its
-    election fenced the set before, so it asks for a rename as above. The ballot
-    alone is not enough, because a standing that withdrew leaves one too.
+    an older generation, and its watch has no prior after a restart. A
+    candidate stands only on the set the control plane records, and adoption
+    keeps that set, so it is the set before. It asks for a rename as above,
+    and the rename's fence leaves both the control plane's set and the kept
+    one. The ballot alone is not enough, because a standing that withdrew
+    leaves one too.
+
+    The evidence does not prove that this generation's open was fenced. The
+    opens that leave the same evidence unfenced are still safe to rename: an
+    open on the lease happens only while followers do not decide
+    acknowledgements, so no set's majority holds an acknowledged record the
+    leader lacks; an open that continued this broker's own term (only before
+    `joint_fence` is finalized) had no other leader in between; and a
+    draining route is never fenced. A broker without the evidence keeps the
+    fence pending.
   - Otherwise, the log keeps an older set than the one before: the leader
     skipped a generation it never opened, and a rename would leave that
     generation's set unfenced. The fence stays pending.

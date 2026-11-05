@@ -574,17 +574,28 @@ pub(super) async fn sets<R: PeerRequester>(
         }
         // A leader elected at a generation the control plane then adopted
         // keeps the set it stood on, from an older generation, and after a
-        // restart nothing here names the set at the one before. Its own
-        // ballot and start record at this generation prove its election
-        // opened here and fenced that set, so a rename skips nothing. A
-        // ballot alone does not: a withdrawn standing leaves one too.
+        // restart nothing here names the set at the one before. A candidate
+        // stands only on the set the control plane records, and adoption
+        // keeps it, so that kept set is the one before, and the rename fences
+        // it beside the control plane's. The evidence: its own ballot and
+        // start record here (a ballot alone may be a withdrawn standing), and
+        // the kept set naming exactly the route's set on the same copies with
+        // nothing pending. These do not prove the open was fenced; the
+        // unfenced opens that also leave them are covered in
+        // docs/replication-design.md, "Planned handoff".
         Err(NoSetBefore::Skipped(generation))
             if log.accepted_generation() == generation
                 && log.accepted_leader().as_deref() == Some(local_node_id)
                 && log
                     .generations()
                     .iter()
-                    .any(|epoch| epoch.generation == generation) =>
+                    .any(|epoch| epoch.generation == generation)
+                && route.pending.is_none()
+                && stored.as_ref().is_some_and(|stored| {
+                    stored.leaving.is_none()
+                        && stored.earlier.is_empty()
+                        && names_the_route_set(&stored.current, route)
+                }) =>
         {
             return Err(NoSetBefore::Unknown(generation));
         }
@@ -612,6 +623,23 @@ pub(super) async fn sets<R: PeerRequester>(
         besides.extend(unopened);
     }
     Ok(across(requester, local_node_id, route, set, before, besides, joint).await)
+}
+
+/// Whether `kept` names exactly `route`'s set: the same voters, none a learner
+/// or wiped, each on the copy the route names. A copy either side leaves
+/// unnamed may be another one, so it does not match.
+fn names_the_route_set(kept: &Membership, route: &Route) -> bool {
+    let routed = crate::replica_set::kept(route, None).current;
+    kept.members.len() == routed.members.len()
+        && kept.members.iter().all(|member| {
+            !member.learner
+                && !member.wiped
+                && member.storage.is_some()
+                && routed
+                    .members
+                    .iter()
+                    .any(|named| named.node == member.node && named.storage == member.storage)
+        })
 }
 
 /// The fence for `route` leaving `before`, and each of `besides` when more

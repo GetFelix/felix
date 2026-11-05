@@ -1203,17 +1203,97 @@ async fn a_leader_at_generation_zero_renames_only_on_its_own_ballot() {
 /// Elected at a generation the control plane later adopted, it keeps the set
 /// it stood on from an older generation, and after a restart its watch has no
 /// prior: the set before is skipped. Its own ballot and start record at the
-/// generation prove its election opened there, so it reports the set unknown
-/// and is named one up. Without the start record the ballot may be a
-/// withdrawn standing, and another node's ballot proves nothing: both wait.
+/// generation, and a kept set naming exactly the route's on the same copies,
+/// show the kept set is the one before, so it reports the set unknown and is
+/// named one up. Without the start record the ballot may be a withdrawn
+/// standing, and another node's ballot proves nothing. A copy either side
+/// leaves unnamed or names differently may be another copy, and a change
+/// pending on the route leaves a set the kept one is not. All of those wait.
 #[tokio::test]
-async fn an_adopted_leader_restarted_on_an_older_kept_set_renames_only_if_it_opened() {
-    let route = swapped();
-    for (ballot, opened, renames) in [
-        (Some(LEADER), true, true),
-        (Some(LEADER), false, false),
-        (Some("broker-x"), true, false),
-        (None, true, false),
+async fn an_adopted_leader_restarted_on_an_older_kept_set_renames_only_on_evidence() {
+    let named = |nodes: &[&str]| -> Option<Arc<std::collections::BTreeMap<String, String>>> {
+        Some(Arc::new(
+            nodes
+                .iter()
+                .map(|node| (node.to_string(), storage_of(node).to_hex()))
+                .collect(),
+        ))
+    };
+    let all = [LEADER, "broker-x", "broker-z"];
+    let route = Route {
+        member_storage_ids: named(&all),
+        ..swapped()
+    };
+    let older_x = Some(Arc::new(
+        [
+            (LEADER.to_string(), storage_of(LEADER).to_hex()),
+            ("broker-x".to_string(), storage_of("broker-old").to_hex()),
+            ("broker-z".to_string(), storage_of("broker-z").to_hex()),
+        ]
+        .into(),
+    ));
+    let pending = Route {
+        pending: Some(Arc::new(felix_router::PendingChange {
+            generation: PROMOTED - 4,
+            leaving: vec![LEADER.into(), "broker-b".into(), "broker-c".into()],
+        })),
+        ..route.clone()
+    };
+    let unnamed = Route {
+        member_storage_ids: None,
+        ..route.clone()
+    };
+    for (case, ballot, opened, route, kept_copies, renames) in [
+        ("evidence", Some(LEADER), true, &route, named(&all), true),
+        (
+            "no start record",
+            Some(LEADER),
+            false,
+            &route,
+            named(&all),
+            false,
+        ),
+        (
+            "another's ballot",
+            Some("broker-x"),
+            true,
+            &route,
+            named(&all),
+            false,
+        ),
+        ("no ballot", None, true, &route, named(&all), false),
+        (
+            "another copy kept",
+            Some(LEADER),
+            true,
+            &route,
+            older_x.clone(),
+            false,
+        ),
+        (
+            "route names no copies",
+            Some(LEADER),
+            true,
+            &unnamed,
+            named(&all),
+            false,
+        ),
+        (
+            "kept names no copies",
+            Some(LEADER),
+            true,
+            &route,
+            None,
+            false,
+        ),
+        (
+            "a change pending",
+            Some(LEADER),
+            true,
+            &pending,
+            named(&all),
+            false,
+        ),
     ] {
         let replicas = replicas_with(&["broker-x", "broker-z"]);
         let (leader, _dir) = leader_holding(PROMOTED - 4, &["a"]).await;
@@ -1223,6 +1303,8 @@ async fn an_adopted_leader_restarted_on_an_older_kept_set_renames_only_if_it_ope
             .expect("log");
         let stood = Route {
             generation: PROMOTED - 4,
+            member_storage_ids: kept_copies,
+            pending: None,
             ..swapped()
         };
         log.accept_set(crate::replica_set::kept(&stood, None))
@@ -1248,7 +1330,7 @@ async fn an_adopted_leader_restarted_on_an_older_kept_set_renames_only_if_it_ope
             &leader,
             LEADER,
             &key(),
-            &route,
+            route,
             false,
             Some(&joint),
         )
@@ -1256,9 +1338,95 @@ async fn an_adopted_leader_restarted_on_an_older_kept_set_renames_only_if_it_ope
 
         match (&outcome, renames) {
             (Outcome::SetUnknown { .. }, true) | (Outcome::Pending { .. }, false) => {}
-            _ => panic!("ballot {ballot:?}, opened {opened}: {outcome:?}"),
+            _ => panic!("{case}: {outcome:?}"),
         }
     }
+}
+
+/// **The rename past an adopted election fences the control plane's set and
+/// the kept one** (#1966). After the restart the control plane names broker-a
+/// one generation up. Its watch saw the adopted set at the generation before,
+/// whose broker-x is the copy the control plane registered, while the log
+/// still keeps the set the election stood on, naming an older copy of
+/// broker-x. With broker-z down only the control plane's set has a majority,
+/// so the shard stays closed until broker-z answers.
+#[tokio::test]
+async fn the_rename_after_an_adopted_election_fences_both_sets() {
+    let mut replicas = replicas_with(&["broker-x", "broker-z"]);
+    let (leader, _dir) = leader_holding(PROMOTED - 4, &["a"]).await;
+    let log = leader
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    let mut stood = crate::replica_set::kept(
+        &Route {
+            generation: PROMOTED - 4,
+            ..swapped()
+        },
+        None,
+    );
+    for member in &mut stood.current.members {
+        if member.node == "broker-x" {
+            member.storage = Some(storage_of("broker-old"));
+        }
+    }
+    log.accept_set(stood)
+        .await
+        .expect("the set the election stood on");
+    log.accept_generation(PROMOTED - 1, Some(LEADER))
+        .await
+        .expect("ballot");
+    log.record_generation(PROMOTED - 1, log.commit_offset())
+        .expect("start record");
+    let copies: std::collections::BTreeMap<String, String> = [LEADER, "broker-x", "broker-z"]
+        .iter()
+        .map(|node| (node.to_string(), storage_of(node).to_hex()))
+        .collect();
+    let adopted = PriorSet {
+        generation: PROMOTED,
+        before: Some(Arc::new(PlacedSet {
+            leader: LEADER.into(),
+            replicas: vec!["broker-x".into(), "broker-z".into()],
+            successor: None,
+            storage_ids: Default::default(),
+            member_storage_ids: copies.clone(),
+        })),
+    };
+
+    let renamed = Route {
+        member_storage_ids: Some(Arc::new(copies)),
+        ..swapped()
+    };
+    let joint = Joint::new(&addr_of, Some(adopted));
+
+    replicas.get_mut("broker-z").reachable = false;
+    let outcome = fence_shard(
+        &replicas,
+        &leader,
+        LEADER,
+        &key(),
+        &renamed,
+        false,
+        Some(&joint),
+    )
+    .await;
+    let Outcome::Pending { why, .. } = &outcome else {
+        panic!("opened without a majority of the kept set: {outcome:?}");
+    };
+    assert!(why.contains("2 of 3 and 1 of 3 voters"), "{why}");
+
+    replicas.get_mut("broker-z").reachable = true;
+    let outcome = fence_shard(
+        &replicas,
+        &leader,
+        LEADER,
+        &key(),
+        &renamed,
+        false,
+        Some(&joint),
+    )
+    .await;
+    assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
 }
 
 /// **A set kept from another node's request is not one this broker opened**
