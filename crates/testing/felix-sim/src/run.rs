@@ -24,6 +24,7 @@
 //! virtual times, but the interleaving beneath them differs, so a replay may
 //! pass. Run it a few times before concluding a failure was a fluke.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use felix_cluster::history::checker::{self, Report};
@@ -34,7 +35,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::check::{CheckContext, Checker, ElectionSettles, Finding, Point};
 use crate::client::{Recorder, SimClient};
-use crate::cluster::{SimCluster, SimConfig};
+use crate::cluster::{SimCluster, SimConfig, describe};
 use crate::nemesis::{Nemesis, Plan};
 
 /// How long to wait after the clients stop for work the clients gave up on to
@@ -107,7 +108,7 @@ pub fn run_seed_with(seed: u64, config: SimConfig, checkers: Vec<Box<dyn Checker
     runtime.block_on(run(seed, config, checkers))
 }
 
-async fn run(seed: u64, config: SimConfig, mut checkers: Vec<Box<dyn Checker>>) -> SimOutcome {
+async fn run(seed: u64, config: SimConfig, checkers: Vec<Box<dyn Checker>>) -> SimOutcome {
     let begun = Instant::now();
     let cluster = match SimCluster::start(seed, config.clone()).await {
         Ok(cluster) => cluster,
@@ -115,8 +116,49 @@ async fn run(seed: u64, config: SimConfig, mut checkers: Vec<Box<dyn Checker>>) 
             return failed_start(seed, config, format!("{err:#}"), begun.elapsed());
         }
     };
+    let stalled = cluster.stalled().clone();
+    tokio::select! {
+        outcome = drive(seed, config.clone(), cluster.clone(), checkers) => outcome,
+        () = stalled.cancelled() => {
+            let mut outcome = failed_start(seed, config.clone(), String::new(), begun.elapsed());
+            let mut finding = Finding::new(
+                    "stalled",
+                    format!(
+                        "the run used its {:?} of real time at {:?} of virtual time: some task \
+                         keeps the runtime busy without waiting on a timer",
+                        config.real_time_limit,
+                        cluster.elapsed()
+                    ),
+                );
+            for (key, serving) in cluster.unserved().await.into_iter().take(3) {
+                finding = finding
+                    .with(format!("{} has {} serving", describe(&key), serving.len()))
+                    .with(cluster.census(&key).await);
+            }
+            outcome.findings = vec![finding];
+            outcome
+        }
+    }
+}
+
+async fn drive(
+    seed: u64,
+    config: SimConfig,
+    cluster: Arc<SimCluster>,
+    mut checkers: Vec<Box<dyn Checker>>,
+) -> SimOutcome {
+    let begun = Instant::now();
     let recorder = Recorder::new(config.shards);
     let stop = CancellationToken::new();
+    tokio::spawn({
+        let cluster = cluster.clone();
+        async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                tracing::info!(target: "felix_sim::run", at = ?cluster.elapsed(), "virtual time");
+            }
+        }
+    });
     let mut rng = Rng::new(seed);
 
     let mut clients = Vec::new();

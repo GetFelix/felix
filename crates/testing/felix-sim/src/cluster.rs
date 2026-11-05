@@ -81,6 +81,9 @@ pub struct SimConfig {
     pub settle_within: Duration,
     /// Whether to inject faults at all.
     pub faults: bool,
+    /// The most real time a run may take, startup included. A run past it
+    /// stops and reports a stall: a broker loop that never waits.
+    pub real_time_limit: Duration,
     /// The storage sync mode. `None` costs the least real time; see
     /// [`SimBrokerConfig::fsync_mode`](felix_broker_service::sim::SimBrokerConfig::fsync_mode)
     /// for what a restart does to the storage id under it.
@@ -103,6 +106,7 @@ impl SimConfig {
             fault_window: Duration::from_secs(90),
             settle_within: Duration::from_secs(60),
             faults: true,
+            real_time_limit: Duration::from_secs(300),
             fsync_mode: FsyncMode::None,
             controlplane: CpConfig::default(),
         }
@@ -136,6 +140,7 @@ pub struct SimCluster {
     started: Instant,
     /// Starts of any broker so far, so each run of one is told apart.
     starts: AtomicU64,
+    stalled: CancellationToken,
 }
 
 impl SimCluster {
@@ -150,6 +155,7 @@ impl SimCluster {
         let nodes = (0..config.brokers)
             .map(|index| Node::new(index, &config))
             .collect::<Result<Vec<_>>>()?;
+        let stalled = spawn_stepper(config.real_time_limit);
         let cluster = Arc::new(Self {
             config,
             seed,
@@ -158,6 +164,7 @@ impl SimCluster {
             nodes,
             started: Instant::now(),
             starts: AtomicU64::new(0),
+            stalled,
         });
         cluster.reset_links();
         cluster.create_catalog().await?;
@@ -225,6 +232,12 @@ impl SimCluster {
                 }
             }
         });
+    }
+
+    /// Cancelled when the run has used its real-time limit
+    /// ([`SimConfig::real_time_limit`]).
+    pub fn stalled(&self) -> &CancellationToken {
+        &self.stalled
     }
 
     pub fn cp(&self) -> &SimControlPlane {
@@ -417,6 +430,51 @@ impl SimCluster {
     pub(crate) fn nodes(&self) -> &[Node] {
         &self.nodes
     }
+}
+
+/// The stepper's smallest and largest step, and how many scheduler rounds it
+/// waits between steps.
+const MIN_STEP: Duration = Duration::from_micros(250);
+const MAX_STEP: Duration = Duration::from_millis(20);
+const ROUNDS_PER_STEP: usize = 16;
+
+/// Let virtual time pass while the brokers are busy.
+///
+/// Tokio's paused clock moves only when every task is idle. A broker loop
+/// that always has work to do, such as a retry that is due the moment it is
+/// looked at, or file reads in flight, never lets the runtime idle, and the
+/// clock stops while the loop spins. A real clock does not wait for the
+/// broker. This task moves the clock a little after every few scheduler
+/// rounds, so work costs time, as it does on a real machine. When the cluster
+/// is waiting on timers the steps are quick.
+///
+/// A step that took long in real time doubles the next one, up to
+/// [`MAX_STEP`], so a loop that spins for good costs the run seconds rather
+/// than hours. `limit` is a ceiling on the real time the run may take: past
+/// it the returned token is cancelled and the run reports the stall.
+fn spawn_stepper(limit: Duration) -> CancellationToken {
+    let stalled = CancellationToken::new();
+    let signal = stalled.clone();
+    let began = std::time::Instant::now();
+    tokio::spawn(async move {
+        let mut step = MIN_STEP;
+        loop {
+            let round = std::time::Instant::now();
+            for _ in 0..ROUNDS_PER_STEP {
+                tokio::task::yield_now().await;
+            }
+            tokio::time::advance(step).await;
+            step = if round.elapsed() > Duration::from_micros(500) {
+                (step * 2).min(MAX_STEP)
+            } else {
+                (step / 2).max(MIN_STEP)
+            };
+            if began.elapsed() > limit && !signal.is_cancelled() {
+                signal.cancel();
+            }
+        }
+    });
+    stalled
 }
 
 /// The key of stream shard `shard`.

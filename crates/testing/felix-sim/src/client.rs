@@ -39,6 +39,7 @@ use felix_broker_service::serving::direct_cache::{
 use felix_broker_service::serving::direct_publish::{
     DirectPublishError, Resolution, publish_direct, resolve_publish,
 };
+use felix_broker_service::serving::direct_read::check_readable;
 use felix_cluster::history::model::{
     Action, AppendOutcome, Consistency, Element, FOREIGN_PAYLOAD, FaultEvent, History, ListSpec, Op,
 };
@@ -268,6 +269,7 @@ impl SimClient {
             return AppendOutcome::Fail;
         };
         self.hints.insert(shard, handles.index);
+        tracing::debug!(client = self.id, shard, value, node = %handles.node_id, "append sent");
         let payloads = [Bytes::copy_from_slice(&value.to_le_bytes())];
         let quorum_timeout = quorum_timeout();
         let task = spawn_on(&handles.crashed, {
@@ -285,7 +287,9 @@ impl SimClient {
                 .await
             }
         });
-        match tokio::time::timeout(ack_wait(), task).await {
+        let result = tokio::time::timeout(ack_wait(), task).await;
+        tracing::debug!(client = self.id, shard, value, node = %handles.node_id, ?result, "append answered");
+        match result {
             Ok(Ok(Some(Ok(offset)))) => AppendOutcome::Ok { offset },
             Ok(Ok(Some(Err(DirectPublishError::NotWritten(_))))) => AppendOutcome::Fail,
             _ => AppendOutcome::Info,
@@ -427,7 +431,15 @@ impl SimClient {
                 .await
                 {
                     // Only the broker is wanted; the fence entry is released.
-                    Ok(Resolution::Local(target)) => Step::Local(target.generation),
+                    // A subscription is also refused by a broker that has
+                    // seen a newer generation, so ask that too.
+                    Ok(Resolution::Local(_)) => {
+                        let key = crate::cluster::stream_key(shard);
+                        match check_readable(Some(&h.ingress), &key) {
+                            Ok(()) => Step::Local(()),
+                            Err(_) => Step::Refused,
+                        }
+                    }
                     Ok(Resolution::Forward(owner)) => Step::Forward(owner.node_id),
                     Err(_) => Step::Refused,
                 }
@@ -438,7 +450,21 @@ impl SimClient {
             let handles = handles.clone();
             async move { read_all(&handles, shard).await }
         });
-        match tokio::time::timeout(READ_WITHIN, task).await {
+        let result = tokio::time::timeout(READ_WITHIN, task).await;
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            let seen = match &result {
+                Ok(Ok(Some(Some(elements)))) => {
+                    format!("{} records, last {:?}", elements.len(), elements.last())
+                }
+                other => format!("no read: {other:?}"),
+            };
+            let at = self
+                .cluster
+                .snapshot(handles.index, &crate::cluster::stream_key(shard))
+                .await;
+            tracing::debug!(client = self.id, shard, node = %handles.node_id, seen, ?at, "read");
+        }
+        match result {
             Ok(Ok(Some(Some(elements)))) => Some(elements),
             _ => None,
         }

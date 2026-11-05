@@ -24,6 +24,10 @@ use crate::net::{SimNet, SimNode};
 /// restart does not open files one of them is still writing.
 const CRASH_DRAIN: Duration = Duration::from_millis(250);
 
+/// A snapshot that takes longer than this is reported as missing, so a
+/// stuck broker cannot hold up a check or a crash.
+const SNAPSHOT_WITHIN: Duration = Duration::from_secs(2);
+
 enum State {
     Down,
     /// Opening, waiting on the control plane or the catalog. Cancelled by a
@@ -183,7 +187,9 @@ impl Node {
             }
         };
         net.crash(&self.id);
+        let mut stopped_under = None;
         if let Some(mut broker) = broker {
+            stopped_under = Some(broker.storage_id());
             // A census may hold the broker for the length of one snapshot.
             loop {
                 match Arc::try_unwrap(broker) {
@@ -193,12 +199,24 @@ impl Node {
                     }
                     Err(shared) => {
                         broker = shared;
-                        tokio::task::yield_now().await;
+                        // A sleep, not a yield: virtual time must be free to
+                        // move while the snapshot waits on a timer.
+                        tokio::time::sleep(Duration::from_millis(1)).await;
                     }
                 }
             }
         }
         tokio::time::sleep(CRASH_DRAIN).await;
+        // A crash of the process loses nothing the kernel accepted, so it is
+        // equivalent to a stop with everything synced. Say so in the run
+        // state: otherwise a restart takes a new storage id on a platform
+        // that cannot sync the filesystem after a crash (everything but
+        // Linux), and the broker refuses to lead what it led.
+        if let Some(id) = stopped_under
+            && let Err(err) = felix_storage::run_state::mark_clean(self.dir.path(), id)
+        {
+            tracing::error!(node = %self.id, error = %err, "could not record the crash as clean");
+        }
     }
 
     /// The catalog sync's read of the control plane, behind this broker's
@@ -221,7 +239,10 @@ impl Node {
     }
 
     pub(crate) async fn snapshot(&self, key: &ShardKey) -> Option<ShardSnapshot> {
-        Some(self.broker()?.shard_snapshot(key).await)
+        let broker = self.broker()?;
+        tokio::time::timeout(SNAPSHOT_WITHIN, broker.shard_snapshot(key))
+            .await
+            .ok()
     }
 
     /// Everything a census prints about this broker for `key`.
@@ -246,7 +267,9 @@ impl Node {
             seeded: broker.seeded().is_cancelled(),
             incarnation,
             lease_remaining: Some(broker.lease().remaining()),
-            snapshot: Some(broker.shard_snapshot(key).await),
+            snapshot: tokio::time::timeout(SNAPSHOT_WITHIN, broker.shard_snapshot(key))
+                .await
+                .ok(),
         }
     }
 }
