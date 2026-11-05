@@ -538,6 +538,7 @@ where
         sync_shutdown: &sync_shutdown,
     });
 
+    // After the last bind: anything bound below here could fail after ready.
     listening.cancel();
 
     // Only while the shard watch runs is there anything to hand off, and
