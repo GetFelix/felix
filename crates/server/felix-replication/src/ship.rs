@@ -423,6 +423,9 @@ async fn ship_batch<R: PeerRequester>(
         Err(err) => {
             metrics::record_shipped(unreachable_outcome(&err));
             cursor.stalled = true;
+            // Silence is no refusal. `route_behind` stays: the refence it
+            // drives is only an attempt and fails by itself while unreachable.
+            cursor.refuses_leader = false;
             return Progress::Retry;
         }
     };
