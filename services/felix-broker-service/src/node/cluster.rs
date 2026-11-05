@@ -380,10 +380,15 @@ pub(super) fn spawn_shard_tasks<R: PeerRequester + Send + Sync + 'static>(
                 .as_ref()
                 .filter(|pool| pool.offers_election())
                 .map(|_| {
-                    let elections = Arc::new(replication::election::Elections::new(
-                        router.local_node_id(),
-                        Arc::clone(&assignments_changed),
-                    ));
+                    let elections = Arc::new(
+                        replication::election::Elections::new(
+                            router.local_node_id(),
+                            Arc::clone(&assignments_changed),
+                        )
+                        .with_defer_for(
+                            replication::suspicion::SuspicionConfig::from_env().defer_for,
+                        ),
+                    );
                     quorum_marks.set_elections(Arc::clone(&elections));
                     elections
                 });
@@ -396,6 +401,7 @@ pub(super) fn spawn_shard_tasks<R: PeerRequester + Send + Sync + 'static>(
                 Arc::clone(ownership),
                 Arc::clone(&assignments_changed),
                 Duration::from_millis(config.controlplane_sync_interval_ms),
+                ingress.fence().lease().cloned(),
                 sync_shutdown.clone(),
             ));
             let feed = shard_routing::spawn_feed(

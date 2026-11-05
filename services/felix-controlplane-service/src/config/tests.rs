@@ -437,6 +437,7 @@ fn shard_move_pacing_comes_from_the_environment() {
         env::set_var("FELIX_SHARD_MOVE_FENCE_MAX_LAG_RECORDS", "0");
         env::set_var("FELIX_SHARD_MOVE_TIMEOUT_MS", "0");
         env::set_var("FELIX_SHARD_RESTORE_STALL_MS", "0");
+        env::set_var("FELIX_SHARD_STUCK_LEADER_MS", "0");
         env::set_var("FELIX_SHARD_PENDING_SET_TIMEOUT_MS", "0");
         env::set_var("FELIX_SHARD_ELECTION_HOLD_MS", "0");
         env::set_var("FELIX_PLACEMENT_SETTLE_MS", "0");
@@ -450,6 +451,7 @@ fn shard_move_pacing_comes_from_the_environment() {
     assert_eq!(config.fence_max_lag_records, 0);
     assert_eq!(config.timeout_millis, None);
     assert_eq!(config.restore_stall_millis, None);
+    assert_eq!(config.stuck_leader_millis, None);
     assert_eq!(config.pending_set_timeout_millis, None);
     assert_eq!(config.election_hold_millis, None);
 
@@ -674,6 +676,7 @@ shard_move_fence_max_lag_records: 500
 shard_move_timeout_ms: 60000
 shard_restore_after_ms: 90000
 shard_restore_stall_ms: 45000
+shard_stuck_leader_ms: 90000
 oidc_allowed_algorithms: ["ES256", "RS256"]
 node_liveness:
   heartbeat_interval_ms: 1100
@@ -718,6 +721,7 @@ bootstrap:
                 timeout_millis: Some(60_000),
                 restore_after_millis: Some(90_000),
                 restore_stall_millis: Some(45_000),
+                stuck_leader_millis: Some(90_000),
                 paused: false,
                 ..Default::default()
             }

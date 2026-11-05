@@ -291,3 +291,52 @@ async fn a_failed_writer_sync_stops_later_flushes() {
         .expect_err("flush after a failed writer sync");
     assert_eq!(log.durable_offset(), 0);
 }
+
+/// The names in `path` each time opening a log there flushed `path` itself.
+fn dir_syncs_opening(path: &std::path::Path, base: Option<Offset>) -> Vec<Vec<String>> {
+    crate::io::DIR_SYNCS.with(|syncs| syncs.borrow_mut().clear());
+    let log = match base {
+        Some(base) => DiskLog::open_at(path, "t/ns/s/0", config(FsyncMode::OnCommit), base),
+        None => DiskLog::open(path, "t/ns/s/0", config(FsyncMode::OnCommit)),
+    }
+    .expect("open");
+    drop(log);
+    crate::io::DIR_SYNCS.with(|syncs| {
+        syncs
+            .borrow()
+            .iter()
+            .filter(|(dir, _)| dir == path)
+            .map(|(_, names)| names.clone())
+            .collect()
+    })
+}
+
+/// **Opening a log flushes its directory once, after its files exist.** The
+/// first segment, its index and the durable mark all get their entries from
+/// that one flush. A bulk create opens hundreds of logs, and every extra flush
+/// there waits on the filesystem's journal.
+#[tokio::test]
+async fn opening_a_log_flushes_its_directory_once() {
+    let dir = tempdir().expect("dir");
+    let covered = [
+        crate::segment::segment_file_name(0),
+        crate::segment::index_file_name(0),
+        crate::disk_log::durable_mark::mark_file_name().to_string(),
+    ];
+    let fresh = dir.path().join("fresh");
+    let placed = dir.path().join("placed");
+    for (path, base, label) in [
+        (&fresh, None, "a new log"),
+        (&fresh, None, "an existing log"),
+        (&placed, Some(40), "a log placed at a base"),
+    ] {
+        let syncs = dir_syncs_opening(path, base);
+        assert_eq!(syncs.len(), 1, "{label}: {syncs:?}");
+        for name in &covered {
+            assert!(
+                syncs[0].contains(name),
+                "{label}: {name} missing from {syncs:?}"
+            );
+        }
+    }
+}
