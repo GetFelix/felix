@@ -34,6 +34,9 @@ if [ -z "$bin" ]; then
     tail -1)
 fi
 [ -x "$bin" ] || { echo "no seeds test binary: $bin" >&2; exit 2; }
+# `--exact replay` matching nothing would pass every seed without running one.
+"$bin" --list --exact replay 2>/dev/null | grep -q '^replay: test$' ||
+  { echo "$bin has no test named replay" >&2; exit 2; }
 
 mkdir -p "$out"
 : > "$out/failed.txt"

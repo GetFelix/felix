@@ -9,7 +9,8 @@ three-broker cluster while it injects faults, then checks what the clients saw.
 The cluster harness runs those brokers and injects the faults, and individual
 tests use it to pin one scenario at a time. The simulator runs the same broker
 code on virtual time, so it can try thousands of fault schedules a night. TLA+
-models cover the interleavings no injected fault reliably reaches. This page says what each one does and where the detail lives.
+models cover the interleavings no injected fault reliably reaches. This page
+says what each one does and where the detail lives.
 
 ## The history checker
 

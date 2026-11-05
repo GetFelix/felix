@@ -75,8 +75,10 @@ that count and its replay command:
 seed 1234 failed 3 of 3: FELIX_SIM_SEED=1234 cargo test -p felix-sim --test seeds replay -- --nocapture
 ```
 
-The job's `sim-sweep-<first seed>` artifact holds the log of every run of a
-failing seed. To replay one locally, run the command, with `RUST_LOG` set if
+A failed night opens an issue labelled `dst-nightly`, or comments on the
+open one, and the next green night closes it. The job's
+`sim-sweep-<first seed>` artifact holds the log of every run of a failing
+seed. To replay one locally, run the command, with `RUST_LOG` set if
 you want broker logs. The seeds are the same every night, so a seed that
 starts failing after a merge points at that merge.
 
