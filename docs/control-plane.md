@@ -1622,14 +1622,21 @@ and the fence needs the set at the generation before. A leader restarted at
 a generation it opened before `joint_fence` was finalized keeps that
 generation's set and its own ballot in its log, but not the set before, and
 its watch, started from a snapshot, did not see the step. That earlier open
-already fenced the set before. Placement answers the empty refusal
-the same way (`set_unknown`): the same leader and set at the next
-generation. The set that generation leaves is the one the broker kept and is
+already fenced the set before. A leader whose log keeps a set older than the
+one before reports the empty refusal too, once its own ballot and start record
+at the generation show it opened there, nothing is pending on the route, and
+its kept set names exactly the route's set on the same copies. That is a
+leader elected at a generation placement then adopted, restarted: it keeps
+the set it stood on, which is the set before.
+
+Placement answers the empty refusal the same way (`set_unknown`): the same
+leader and set at the next generation. The set that generation leaves is the one the broker kept and is
 named on now, so its fence can open there. Nothing in the control plane's
 state is new for this: the empty name is stored like any other.
 
 A broker reports it only from that evidence: this generation's set and a
-ballot naming itself, or generation 0, where a log never keeps a set and
+ballot naming itself, a ballot naming itself and a start record at this
+generation, or generation 0, where a log never keeps a set and
 nothing comes before it. A set kept from another node's fence or election
 request proves nothing was fenced from here, so that fence waits. So does
 one whose log keeps no set for the shard above generation 0. It may be a
