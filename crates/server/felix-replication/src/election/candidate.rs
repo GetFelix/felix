@@ -483,7 +483,9 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
     // The ballot is on disk before anything names this broker leader. A set
     // this copy took while the round ran (a fence or a batch below the new
     // generation) would leave the checks above stale, so the ballot is taken
-    // only on the set they read, under the lock every set raise takes.
+    // only on the set they read, under the lock every set raise takes. A
+    // learner flip from `admit_member` fails the round on purpose: the
+    // tally's voting members changed.
     match log.accept_generation_on_set(generation, local, read).await {
         Ok(Some(GenerationCheck::Raised)) => {}
         Ok(None) => {
