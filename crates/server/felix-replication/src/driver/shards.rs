@@ -255,6 +255,10 @@ struct ShardState {
     /// by too many replicas to open, or could not learn the set it leaves.
     /// Reported each tick, as a refused open is.
     fence_refused: Option<RefusedGeneration>,
+    /// After the shard opened, a follower refused it for a newer generation
+    /// and no majority is left without it
+    /// ([`crate::follower::refused_without_majority`]). Reported each tick.
+    ship_refused: Option<RefusedGeneration>,
     /// The last pass found this broker's own ballot past the generation it
     /// leads. Reported each tick, as a refused open is.
     ballot_refused: Option<RefusedGeneration>,
@@ -389,6 +393,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             state
                 .fence_refused
                 .clone()
+                .or_else(|| state.ship_refused.clone())
                 .or_else(|| state.ballot_refused.clone())
                 .filter(|refused| {
                     refused.generation == route.generation
@@ -1073,6 +1078,10 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                 behind,
             },
         );
+        let ship_refused = crate::follower::refused_without_majority(
+            &cursors.followers,
+            cursors.learner.as_deref(),
+        );
         self.streams.insert(key.clone(), cursors);
         self.group.insert(key.clone(), aux.group);
         self.dead_letters.insert(key.clone(), aux.dead_letters);
@@ -1083,6 +1092,20 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         }
         state.owed = owed;
         state.settled_at = settled.then_some(generation);
+        let report = ship_refused.is_some() && state.ship_refused.is_none();
+        state.ship_refused = ship_refused.map(|ballot| {
+            if report {
+                tracing::warn!(
+                    stream = %key.stream,
+                    shard = key.shard,
+                    generation,
+                    ballot,
+                    "a follower took a newer generation and no majority is left without it; \
+                     reporting the generation refused",
+                );
+            }
+            RefusedGeneration::set_unknown(generation)
+        });
         let now = tokio::time::Instant::now();
         state.ballot_above_since = ballot_above.map(|ballot| match state.ballot_above_since {
             Some((seen, since)) if seen == ballot => (ballot, since),
@@ -1146,6 +1169,9 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                     Queue::Refresh
                 },
             );
+        }
+        if let Some(refused) = self.states.get(&key).and_then(|s| s.ship_refused.clone()) {
+            self.report_refusal(key, refused);
         }
         self.fill();
     }

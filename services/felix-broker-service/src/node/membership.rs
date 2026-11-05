@@ -66,7 +66,6 @@ pub(super) fn keep_credential_current(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn spawn(
     config: &BrokerConfig,
-    membership_client: &reqwest::Client,
     gate_readiness_on_sync: bool,
     seeded: &CancellationToken,
     lease: &Option<Arc<LeaseState>>,
@@ -98,8 +97,12 @@ pub(super) fn spawn(
             let node_credential = credential
                 .clone()
                 .expect("a cluster member has a credential");
+            // Its own client: the heartbeat runs on a runtime of its own, and a
+            // pooled connection belongs to the runtime that opened it.
+            let client = crate::cluster::controlplane_client::build()
+                .expect("the control-plane client built once already");
             Some(membership::spawn(
-                membership_client.clone(),
+                client,
                 base_url.clone(),
                 membership_config.clone(),
                 node_credential,

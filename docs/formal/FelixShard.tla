@@ -1406,7 +1406,7 @@ SendHeartbeat(b) ==
                     log, hwm, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, fenceVars >>
 
-AcceptHeartbeat(b) ==
+AcceptLeaderHeartbeat(b) ==
     /\ hbOut[b]
     /\ leader = b /\ bgen[b] = gen
     /\ now <= cpExpiry
@@ -1416,6 +1416,49 @@ AcceptHeartbeat(b) ==
     /\ UNCHANGED << now, clock, gen, leader, report, inflight, bgen, hbAt,
                     log, hwm, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, fenceVars >>
+
+\* A heartbeat renews only while the control plane names the broker leader
+\* at the generation it believes it leads. The two operators below take its
+\* place in a configuration (`AcceptHeartbeat <- ...`) to check the code's
+\* rule, which is per broker rather than per shard.
+AcceptHeartbeat(b) == AcceptLeaderHeartbeat(b)
+
+\* What the code did before #1955: the control plane accepts the heartbeat of
+\* a broker it no longer names leader, and the broker renews on it at the
+\* generation it still believes it leads, its routes not yet showing the
+\* move. FelixShardLeaseAnyHeartbeat.cfg.
+AcceptAnyHeartbeat(b) ==
+    \/ AcceptLeaderHeartbeat(b)
+    \/ /\ hbOut[b]
+       /\ ~(leader = b /\ bgen[b] = gen)
+       /\ hbOut' = [hbOut EXCEPT ![b] = FALSE]
+       /\ bexpiry' = [bexpiry EXCEPT ![b] = hbAt[b] + L]
+       /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, hbAt,
+                       log, hwm, halted, queued, pending, acked, writes, staleCommit >>
+       /\ UNCHANGED << handoffVars, fenceVars >>
+
+\* The code's rule since: such a broker was marked down, and a renewal after
+\* that counts only once its routes reach the assignment feed's head as of
+\* the accept. Those routes name the new leader or generation, so the broker
+\* stops believing it leads instead of renewing. That the routes show the
+\* move is assumed here, not modelled: it is what the head check gives, and
+\* the unit tests check the head (a lagging member's answer falls short).
+\* FelixShardLeaseRoutesHeartbeat.cfg.
+AcceptHeartbeatOnRoutes(b) ==
+    \/ AcceptLeaderHeartbeat(b)
+    \/ /\ hbOut[b]
+       /\ ~(leader = b /\ bgen[b] = gen)
+       /\ hbOut' = [hbOut EXCEPT ![b] = FALSE]
+       /\ bgen' = [bgen EXCEPT ![b] = 0]
+       /\ queued' = [queued EXCEPT ![b] = 0]
+       /\ pending' = [pending EXCEPT ![b] = 0]
+       /\ stopped' = [stopped EXCEPT ![b] = FALSE]
+       /\ fencing' = [fencing EXCEPT ![b] = FALSE]
+       /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bexpiry,
+                       hbAt, log, hwm, halted, acked, writes, staleCommit,
+                       draining, successor, moves, ver, cpView, staged, promised, answered,
+                       confirmed, out, mine, joining, leaving, joinedAt, ballot, opened, setVars,
+                       ackGen >>
 
 LoseHeartbeat(b) ==
     /\ hbOut[b]

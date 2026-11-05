@@ -128,6 +128,17 @@ naming a leader at the same generation, ballots let only one of them open
 there. If the elected one opened, the control plane moves the shard to it on
 its next report.
 
+Elections start only when followers cannot reach a leader's broker. A shard
+can also get stuck on a broker that is up: a fence that never finishes, or a
+copy that stopped accepting the leader. When the control plane sees no
+progress from such a leader for `FELIX_SHARD_STUCK_LEADER_MS` (70 s), it
+names the same leader again one generation up. The leader fences its
+followers again before it serves, so no acknowledged write is lost. An idle
+shard counts as progressing, a shard that never opened gets twice as long,
+and each control-plane instance renames one shard at most four times an
+hour. When many leaders look stuck at once the fault may not be theirs, so
+they are renamed one a pass.
+
 ## What you see
 
 On the brokers, at `info`:
@@ -142,6 +153,10 @@ On the brokers, at `info`:
 On the control plane, `an elected leader reported; the control plane took its
 generation`, with `adopted=true` when the elected broker became the shard's
 leader.
+A stuck leader named again logs a warning, `this shard's leader shows no
+progress at its generation on a live broker; naming it again one generation
+up`, with `reason` (`never_opened`, `stopped_reporting` or `not_committing`),
+and counts in `felix_shard_move_steps_total{step="stuck"}`.
 
 Metrics:
 
@@ -232,7 +247,9 @@ including any broker you add or replace later.
 The defaults suit most clusters. `FELIX_LEADER_SUSPECT_AFTER_MS` sets how long
 followers wait before they suspect a leader; a shorter window fails over faster
 and replaces a slow leader more often. Keep `FELIX_SHARD_ELECTION_HOLD_MS` on
-the control plane at twice that value.
+the control plane at twice that value. `FELIX_ELECTION_DEFER_FOR_MS` (60 s)
+bounds how long a newly elected leader that never opens holds its followers
+back before one of them may stand again.
 
 ## How it is checked
 
