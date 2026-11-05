@@ -393,6 +393,7 @@ async fn an_answer_from_behind_the_checkpoint_rolls_nothing_back() {
         Arc::clone(&ownership),
         Arc::new(Notify::new()),
         Duration::from_millis(10),
+        None,
         shutdown.clone(),
     ));
 
@@ -556,6 +557,7 @@ async fn a_fake_link_drives_the_watch() {
         Arc::clone(&ownership),
         Arc::new(Notify::new()),
         Duration::from_millis(10),
+        None,
         shutdown.clone(),
     ));
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -567,4 +569,140 @@ async fn a_fake_link_drives_the_watch() {
         Some(2),
     );
     assert_eq!(link.calls()[0], "assignment_snapshot");
+}
+
+/// A renewal after a surrender waits for routes that reach the feed head it
+/// was accepted at (#1955). The watch is mid long-poll, which the control
+/// plane holds as one lost in a partition would be; it asks again at once
+/// without the hold. The first answers come from a member that has not
+/// applied the move: newer than the renewal, and short of its head, they
+/// confirm nothing. The caught-up answer moves the shard and confirms it.
+#[tokio::test]
+async fn a_renewal_after_a_surrender_waits_for_the_feed_head_it_was_accepted_at() {
+    use axum::extract::Query;
+    use axum::{Json, Router, routing::get};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    let caught_up = Arc::new(AtomicBool::new(false));
+    let lagging_answers = Arc::new(AtomicUsize::new(0));
+    let (up, lagging) = (Arc::clone(&caught_up), Arc::clone(&lagging_answers));
+    let router = Router::new()
+        .route(
+            "/v1/shard-assignments/snapshot",
+            get(|| async {
+                Json(serde_json::json!({
+                    "items": [{
+                        "tenant_id": "t1", "namespace": "ns", "stream": "orders",
+                        "shard": 0, "leader": "b1", "generation": 2, "state": "active"
+                    }],
+                    "next_seq": 10
+                }))
+            }),
+        )
+        .route(
+            "/v1/shard-assignments/changes",
+            get(move |Query(query): Query<HashMap<String, String>>| {
+                let (up, lagging) = (Arc::clone(&up), Arc::clone(&lagging));
+                async move {
+                    if query.get("wait_ms").map(String::as_str) != Some("0") {
+                        std::future::pending::<()>().await;
+                    }
+                    if !up.load(Ordering::Acquire) {
+                        lagging.fetch_add(1, Ordering::AcqRel);
+                        return Json(serde_json::json!({ "items": [], "next_seq": 10 }));
+                    }
+                    Json(serde_json::json!({
+                        "items": [{
+                            "seq": 10,
+                            "key": { "tenant_id": "t1", "namespace": "ns", "stream": "orders", "shard": 0 },
+                            "assignment": {
+                                "tenant_id": "t1", "namespace": "ns", "stream": "orders",
+                                "shard": 0, "leader": "b2", "generation": 3, "state": "active"
+                            }
+                        }],
+                        "next_seq": 11
+                    }))
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+
+    let lease = Arc::new(crate::cluster::lease::LeaseState::new(Duration::from_secs(
+        60,
+    )));
+    let ownership = Arc::new(RwLock::new(ShardOwnership::default()));
+    let shutdown = CancellationToken::new();
+    let watch = tokio::spawn(run(
+        felix_replication::controlplane_link::HttpControlPlaneLink::new(
+            reqwest::Client::new(),
+            &format!("http://{addr}"),
+        ),
+        None,
+        Arc::clone(&ownership),
+        Arc::new(Notify::new()),
+        Duration::from_millis(10),
+        Some(Arc::clone(&lease)),
+        shutdown.clone(),
+    ));
+    let seeded = async {
+        while ownership.read().await.get(&key(0)).is_none() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(5), seeded)
+        .await
+        .expect("the watch never seeded");
+    // Let the watch settle into its held long-poll.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    lease.renew();
+    lease.surrender();
+    lease.renew_at(lease.now(), Some(11));
+    let current = |owned: &ShardOwnership| {
+        lease.routes_current(owned.as_of().expect("answered"), owned.checkpoint());
+    };
+    current(&*ownership.read().await);
+    assert!(
+        !lease.is_valid_now(),
+        "routes from before the renewal confirmed it"
+    );
+
+    let asked = async {
+        while lagging_answers.load(Ordering::Acquire) < 2 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(5), asked)
+        .await
+        .expect("the watch kept waiting on its held poll");
+    current(&*ownership.read().await);
+    assert!(
+        !lease.is_valid_now(),
+        "a member that has not applied the move confirmed the renewal"
+    );
+
+    caught_up.store(true, Ordering::Release);
+    let moved = async {
+        while ownership.read().await.get(&key(0)).map(|a| a.generation) != Some(3) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(5), moved)
+        .await
+        .expect("the watch never caught up");
+    current(&*ownership.read().await);
+    assert!(
+        lease.is_valid_now(),
+        "the caught-up routes did not confirm the lease"
+    );
+
+    shutdown.cancel();
+    watch.await.expect("watch");
+    server.abort();
 }

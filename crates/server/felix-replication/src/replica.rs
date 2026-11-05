@@ -275,7 +275,7 @@ impl ReplicaHandler {
         }
         let Some(log) = self
             .broker
-            .shard_log_for(
+            .shard_log_off_runtime(
                 log_kind,
                 &key.tenant_id,
                 &key.namespace,
@@ -502,7 +502,7 @@ impl ReplicaHandler {
         // is the authority either way.
         let Some(log) = self
             .broker
-            .shard_log_for(
+            .shard_log_off_runtime(
                 log_kind,
                 &key.tenant_id,
                 &key.namespace,
@@ -683,7 +683,7 @@ impl ReplicaHandler {
         // and silently keeping nothing.
         let Some(log) = self
             .broker
-            .shard_log_for(
+            .shard_log_off_runtime(
                 log_kind,
                 &key.tenant_id,
                 &key.namespace,
@@ -964,6 +964,7 @@ impl ReplicaHandler {
                         batch.shard.generation,
                         batch.generations.as_deref(),
                     )
+                    .await
                 {
                     tracing::warn!(
                         stream = %key.stream,
@@ -1180,7 +1181,7 @@ impl ReplicaHandler {
         }
         let Some(log) = self
             .broker
-            .shard_log_for(
+            .shard_log_off_runtime(
                 log_kind,
                 &key.tenant_id,
                 &key.namespace,
@@ -1254,12 +1255,14 @@ impl ReplicaHandler {
         if log_kind == felix_broker::LogKind::Cache {
             let counters = self
                 .broker
-                .shard_log(
+                .shard_log_off_runtime(
                     felix_broker::LogKind::Counters,
                     &key.tenant_id,
                     &key.namespace,
                     &key.stream,
                     key.shard,
+                    None,
+                    None,
                 )
                 .await
                 .map_or(0, |log| log.accepted_generation());
@@ -1387,7 +1390,7 @@ impl ReplicaHandler {
         }
         let Some(log) = self
             .broker
-            .shard_log_for(
+            .shard_log_off_runtime(
                 log_kind,
                 &key.tenant_id,
                 &key.namespace,
@@ -1544,7 +1547,7 @@ impl ReplicaHandler {
         };
         let log = self
             .broker
-            .shard_log_for(
+            .shard_log_off_runtime(
                 own,
                 &key.tenant_id,
                 &key.namespace,
@@ -1596,7 +1599,7 @@ impl ReplicaHandler {
             Some(own) => {
                 opened = self
                     .broker
-                    .shard_log_for(
+                    .shard_log_off_runtime(
                         own,
                         &key.tenant_id,
                         &key.namespace,
@@ -1782,7 +1785,7 @@ impl ReplicaHandler {
             Some(own) => {
                 opened = self
                     .broker
-                    .shard_log_for(
+                    .shard_log_off_runtime(
                         own,
                         &key.tenant_id,
                         &key.namespace,
@@ -1986,7 +1989,7 @@ impl ReplicaHandler {
                     correlation_id,
                     ErrorCode::FencedEpoch,
                     0,
-                    format!("this broker is at generation {have}, the sender at {named}"),
+                    view_detail(have, named),
                 ))
             }
             ReplicaRole::Behind { have, named } => {
@@ -1998,7 +2001,7 @@ impl ReplicaHandler {
                     correlation_id,
                     ErrorCode::StaleRoute,
                     0,
-                    format!("this broker is at generation {have}, the sender at {named}"),
+                    view_detail(have, named),
                 ))
             }
             ReplicaRole::NotAReplica => {
@@ -2087,10 +2090,7 @@ fn confirmed_refusal(
                 correlation_id,
                 ErrorCode::FencedEpoch,
                 0,
-                format!(
-                    "the control plane assigned generation {assigned}, the sender is at \
-                         {generation}"
-                ),
+                assigned_detail(*assigned, generation),
             ))
         }
         Confirmed::Assigned {
@@ -2268,16 +2268,47 @@ pub(crate) fn superseded_detail(accepted: u64, generation: u64) -> String {
     format!("this broker accepted generation {accepted}, the sender is at {generation}")
 }
 
-/// The newer generation a `FencedEpoch` refusal says this replica's ballot
-/// already holds, when it refused a sender at `generation` for that.
-/// `None` for any other refusal, such as a routing view that has moved on.
+/// What a replica answers a sender at `generation` when the control plane's
+/// confirmed assignment is at the newer `assigned`; [`assigned_newer`] reads
+/// it back.
+pub(crate) fn assigned_detail(assigned: u64, generation: u64) -> String {
+    format!("the control plane assigned generation {assigned}, the sender is at {generation}")
+}
+
+/// Whether a `FencedEpoch` refusal of a sender at `generation` says the
+/// control plane assigned a newer generation. Unlike a ballot or a view,
+/// which an election may leave behind with no leader, that names one.
+pub(crate) fn assigned_newer(detail: &str, generation: u64) -> bool {
+    detail
+        .strip_prefix("the control plane assigned generation ")
+        .and_then(|rest| rest.strip_suffix(&format!(", the sender is at {generation}")))
+        .and_then(|assigned| assigned.parse::<u64>().ok())
+        .is_some_and(|assigned| assigned > generation)
+}
+
+/// What a replica answers a sender at `generation` when its routing view is
+/// at `have`; [`superseded_by`] reads it back from a fenced refusal.
+pub(crate) fn view_detail(have: u64, generation: u64) -> String {
+    format!("this broker is at generation {have}, the sender at {generation}")
+}
+
+/// The newer generation a `FencedEpoch` refusal says this replica holds,
+/// when it refused a sender at `generation` for that: its ballot, or its
+/// routing view ([`ReplicaRole::Fenced`]). A view above the control plane's
+/// comes from a candidate's fence this replica took, whose ballot it also
+/// holds. `None` for any other refusal.
 pub(crate) fn superseded_by(detail: &str, generation: u64) -> Option<u64> {
-    let accepted = detail
-        .strip_prefix("this broker accepted generation ")?
-        .strip_suffix(&format!(", the sender is at {generation}"))?
+    let newer = detail
+        .strip_prefix("this broker accepted generation ")
+        .and_then(|rest| rest.strip_suffix(&format!(", the sender is at {generation}")))
+        .or_else(|| {
+            detail
+                .strip_prefix("this broker is at generation ")?
+                .strip_suffix(&format!(", the sender at {generation}"))
+        })?
         .parse::<u64>()
         .ok()?;
-    (accepted > generation).then_some(accepted)
+    (newer > generation).then_some(newer)
 }
 
 /// Where a batch from a leader at `generation` must start for every record
@@ -2306,7 +2337,7 @@ fn unverified_from(
 /// what they keep. A batch from a sender that predates labels says only who
 /// sent it, so its generation is taken to start where the batch appended: an
 /// overclaim when the sender inherited the records, which is why labels exist.
-pub(crate) fn label_appended(
+pub(crate) async fn label_appended(
     log: &felix_broker::StreamLog,
     from: u64,
     durable: u64,
@@ -2323,9 +2354,12 @@ pub(crate) fn label_appended(
                     start_offset: start.start_offset,
                 })
                 .collect();
-            log.label_generations(from, &epochs)
+            log.label_generations_off_runtime(from, epochs).await
         }
-        None => log.record_generation(sender_generation, from).map(|_| ()),
+        None => log
+            .record_generation_off_runtime(sender_generation, from)
+            .await
+            .map(|_| ()),
     }
 }
 

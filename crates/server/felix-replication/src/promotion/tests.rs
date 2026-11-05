@@ -173,6 +173,8 @@ struct Replica {
     group_storage: Option<StorageId>,
     /// Refuses every fence with this detail.
     refuses: Option<&'static str>,
+    /// The code `refuses` answers with.
+    refuses_with: ErrorCode,
     /// Whether the pool has recorded its capabilities, as it has once
     /// connected; otherwise they are learned by asking.
     recorded: bool,
@@ -193,6 +195,7 @@ impl Replica {
             storage: Some(storage_of(node_id)),
             group_storage: None,
             refuses: None,
+            refuses_with: ErrorCode::Unavailable,
             recorded: true,
             _dir: dir,
         }
@@ -326,7 +329,7 @@ impl PeerRequester for Replicas {
             return Ok(InternalMessage::ReplicateError(
                 felix_wire::internal::ReplicateError {
                     correlation_id: fence.correlation_id,
-                    code: ErrorCode::Unavailable,
+                    code: replica.refuses_with,
                     expected_offset: 0,
                     detail: detail.to_string(),
                 },
@@ -574,6 +577,29 @@ async fn a_refusal_says_why_in_the_pending_fence() {
         why.ends_with("; broker-c refused: names broker-d; see abandon"),
         "{why}"
     );
+}
+
+/// **A replica that counts a newer set has the fence reported refused**,
+/// naming no node (#1914). A set never goes back, so the fence never opens
+/// at this generation, and left pending nothing would rename the shard.
+#[tokio::test]
+async fn a_replica_counting_a_newer_set_has_the_fence_refused() {
+    let mut replicas = Replicas::new();
+    replicas.get_mut("broker-b").refuses = Some("this broker counts the set of generation 9");
+    replicas.get_mut("broker-b").refuses_with = ErrorCode::StaleSet;
+    replicas.get_mut("broker-c").reachable = false;
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route(), true, None).await;
+
+    let Outcome::Refused {
+        promised_to, why, ..
+    } = outcome
+    else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!(promised_to, "");
+    assert!(why.contains("counts a newer replica set"), "{why}");
 }
 
 /// Promise `node_id`'s log of the shard to `to` at the promoted generation,

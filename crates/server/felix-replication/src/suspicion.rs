@@ -26,6 +26,11 @@ use crate::peer::PeerRequester;
 
 /// How long a leader may go without answering before this broker names it.
 pub const DEFAULT_SUSPECT_AFTER: Duration = Duration::from_secs(5);
+/// How long an elected leader that has not started its generation holds the
+/// shard. Generous: a fence or catch-up under load can take many seconds,
+/// and giving up on one costs a generation.
+pub const DEFAULT_DEFER_FOR: Duration = Duration::from_secs(60);
+const MIN_DEFER_FOR: Duration = Duration::from_secs(1);
 
 /// The shortest gap between pings, whatever `suspect_after` is.
 const MIN_PROBE_EVERY: Duration = Duration::from_millis(50);
@@ -35,24 +40,36 @@ const MIN_PROBE_EVERY: Duration = Duration::from_millis(50);
 pub struct SuspicionConfig {
     /// Silence past this names the leader. Zero turns the watch off.
     pub suspect_after: Duration,
+    /// How long a copy defers to an elected leader that has not started its
+    /// generation. See `Elections::with_defer_for`.
+    pub defer_for: Duration,
 }
 
 impl Default for SuspicionConfig {
     fn default() -> Self {
         Self {
             suspect_after: DEFAULT_SUSPECT_AFTER,
+            defer_for: DEFAULT_DEFER_FOR,
         }
     }
 }
 
 impl SuspicionConfig {
-    /// `FELIX_LEADER_SUSPECT_AFTER_MS`, or the default.
+    /// `FELIX_LEADER_SUSPECT_AFTER_MS` and `FELIX_ELECTION_DEFER_FOR_MS`, or
+    /// the defaults.
     pub fn from_env() -> Self {
-        let suspect_after = std::env::var("FELIX_LEADER_SUSPECT_AFTER_MS")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-            .map_or(DEFAULT_SUSPECT_AFTER, Duration::from_millis);
-        Self { suspect_after }
+        let millis = |name: &str, default: Duration| {
+            std::env::var(name)
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .map_or(default, Duration::from_millis)
+        };
+        Self {
+            suspect_after: millis("FELIX_LEADER_SUSPECT_AFTER_MS", DEFAULT_SUSPECT_AFTER),
+            // Zero would drop the deferral altogether and let a follower
+            // stand over every standing still fencing.
+            defer_for: millis("FELIX_ELECTION_DEFER_FOR_MS", DEFAULT_DEFER_FOR).max(MIN_DEFER_FOR),
+        }
     }
 
     /// Four pings per window, so one lost ping is not a suspicion.

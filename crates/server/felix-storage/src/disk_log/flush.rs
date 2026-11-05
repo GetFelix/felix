@@ -56,6 +56,8 @@ impl LogInner {
         // seen here rather than missed: `commit_roll` sets it before releasing
         // the lock this read just took.
         let retired = self.pending_seal.lock().clone();
+        // Read under the flush lock, which a truncation takes too.
+        let rewinds = self.mark.rewinds();
         let had_pending_seal = retired.is_some();
 
         let started = std::time::Instant::now();
@@ -83,28 +85,43 @@ impl LogInner {
         #[cfg(not(target_os = "linux"))]
         let via_uring: Option<std::io::Result<()>> = None;
 
+        #[cfg(test)]
+        let injected = self
+            .fail_next_flush
+            .swap(false, std::sync::atomic::Ordering::AcqRel);
+        #[cfg(not(test))]
+        let injected = false;
+        let injected_failure = move || {
+            if injected {
+                Err(std::io::Error::other("injected fsync failure"))
+            } else {
+                Ok(())
+            }
+        };
+
+        // The mark is written only once the sync has returned, so it never runs
+        // ahead of the device. Flushes are serialised, so marks land in order.
         let outcome = match via_uring {
-            Some(result) => result,
+            Some(result) => result
+                .and_then(|()| injected_failure())
+                .map(|()| self.note_synced_since(segment_id, synced_bytes, rewinds)),
             None => {
+                let marker = Arc::clone(&self);
                 self.flusher
                     .run(move || {
                         // The retired segment first, for the same reason.
                         if let Some(retired) = retired {
                             sync_data(&retired)?;
                         }
-                        sync_data(&handle)
+                        sync_data(&handle)?;
+                        injected_failure()?;
+                        // On this thread too: the mark is a write, and a write
+                        // waits on a busy filesystem journal like a sync does.
+                        marker.note_synced_since(segment_id, synced_bytes, rewinds);
+                        Ok(())
                     })
                     .await
             }
-        };
-        #[cfg(test)]
-        let outcome = if self
-            .fail_next_flush
-            .swap(false, std::sync::atomic::Ordering::AcqRel)
-        {
-            Err(std::io::Error::other("injected fsync failure"))
-        } else {
-            outcome
         };
         if let Err(err) = outcome {
             let err = StorageError::SyncFailed(err.to_string());
@@ -145,10 +162,6 @@ impl LogInner {
             metrics::gauge!(metrics_names::UNSYNCED_BYTES)
                 .set(segments.active().unsynced_bytes() as f64);
         }
-        // Only now that the sync has returned, so the mark never runs ahead of
-        // the device. Flushes are serialised, so marks land in order.
-        self.note_synced(segment_id, synced_bytes);
-
         // Rechecked after the flush, not only before it. A rollover can fail
         // while this flush is in flight, and `durable_upto` spans the retired
         // segment as well as the active one -- reporting it would acknowledge
