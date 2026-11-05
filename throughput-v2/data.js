@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793887775360,
+  "lastUpdate": 1793888675820,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -45708,6 +45708,58 @@ window.BENCHMARK_DATA = {
             "range": "7650.80",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 904548.13\nmean: 902128.55\nstdev: 7650.80\ncv: 0.85%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ec1aac78330e284dd8a2b3f68cb13f0940050878",
+          "message": "feat(placement): the control plane renames a live leader stuck at its generation (#1914) (#1923)\n\nThe control plane renames a live leader that stays stuck at its generation past the stuck-leader window (70 s default), and the fleet guard renames the longest-overdue shard each pass. Backstop for elections that never settle.",
+          "timestamp": "2026-11-05T06:00:01-08:00",
+          "tree_id": "085d89e240cfcc97f7509553598cf320568abbb2",
+          "url": "https://github.com/GetFelix/felix/commit/ec1aac78330e284dd8a2b3f68cb13f0940050878"
+        },
+        "date": 1793888674964,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 543661.21,
+            "range": "34886.93",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 543661.21\nmean: 528080.28\nstdev: 34886.93\ncv: 6.61%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 543661.21,
+            "range": "34886.93",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 543661.21\nmean: 528080.28\nstdev: 34886.93\ncv: 6.61%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 121298.75,
+            "range": "474.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 121298.75\nmean: 121226.62\nstdev: 474.05\ncv: 0.39%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1212987.52,
+            "range": "4740.48",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1212987.52\nmean: 1212266.16\nstdev: 4740.48\ncv: 0.39%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
