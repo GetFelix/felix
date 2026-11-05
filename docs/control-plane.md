@@ -1572,8 +1572,8 @@ an older generation and one that is no longer fresh. It skips the step while
 the move's leader is draining, since that fence ends through its own steps.
 A move still copying to its destination is dropped instead: the leader that
 refused cannot ship to it, so the move would only wait for its timeout. The
-next generation leaves the destination out, as an abandoned move does, and a
-later pass can start the move again. A follower replacement does not stop
+next generation drops a destination that was staged on top of the set, as an
+abandoned move does, and a later pass can start the move again. A follower replacement does not stop
 the step: the new generation keeps the joining copy, and the replacement goes
 on under the same leader.
 
