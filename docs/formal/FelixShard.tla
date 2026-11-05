@@ -733,6 +733,25 @@ NamedFenceSkipsBallot == FALSE
 \* say how few, so it takes a bound below the generations `Elections`
 \* allows.
 CpDown == FALSE
+\* `CpStops`: the control plane runs, then stops for good at some point
+\* (`CpStop`), and the brokers carry on with what it last told them.
+\* `BrokerSuspicion`: a replica stands only when the broker of the leader it
+\* follows is down, as felix-replication's suspicion.rs pings the leader's
+\* broker, not its shards. `ShardSuspicion` adds the per-shard trigger: it
+\* also stands when that shard's leader makes no progress, which with writes
+\* always pending is a leader it does not hear serving (`Hears`).
+\* `PreVoteBounded`: under `StandBehindBallot`, a broker still fencing
+\* refuses a pre-vote only while its fence can still complete; a refusal
+\* that outlasts its bound is one whose fence cannot.
+CpStops == FALSE
+BrokerSuspicion == FALSE
+ShardSuspicion == FALSE
+PreVoteBounded == FALSE
+\* `WithdrawsStuck`: under `Withdraws`, a candidate gives its standing up only
+\* once its fence cannot complete. That assumes the stand timeout outlasts a
+\* fence that can; without it a scheduler that always times the candidate out
+\* first elects forever, which no bound on elections can show ending.
+WithdrawsStuck == FALSE
 \* `Withdraws`: a candidate still fencing may give its standing up at any
 \* time, as one that has not opened within the stand timeout does
 \* (`OPEN_WITHIN` in felix-replication's election/candidate.rs). It keeps
@@ -993,7 +1012,8 @@ VARIABLES
     readmit,    \* under `WipedNonVoter`, a pending re-admission: {} or {<<wiped broker, generation, leader>>}
     learner,    \* under `WipedNonVoter`, the learner mark each copy keeps in its set file
     marked,     \* the wiped mark kept beside it, which under `GroupLogs` outlasts it
-    cpLearner   \* under `WipedNonVoter`, the copies placement holds as learners
+    cpLearner,  \* under `WipedNonVoter`, the copies placement holds as learners
+    cpGone      \* under `CpStops`, whether the control plane has stopped, for good
 
 \* The counter log's state, which only a cache shard's actions change.
 counterVars == << clog, chwm, cconfirmed, canswered, cacked >>
@@ -1017,7 +1037,7 @@ vars == << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
            hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit,
            draining, successor, stopped, moves, ver, cpView, staged, heard,
            promised, fencing, answered, confirmed, out, mine, joining, leaving, joinedAt,
-           counterVars, ballot, opened, setVars, ackGen, idVars, named, wipeVars >>
+           counterVars, ballot, opened, setVars, ackGen, idVars, named, wipeVars, cpGone >>
 
 \* A VIEW for a configuration where time stands still (`MaxTime = 0`), there
 \* is no handoff (`~Handoff`), no leader is reclaimed (`~Reclaims`), and
@@ -1366,6 +1386,7 @@ Init ==
     /\ joining = {}
     /\ leaving = {}
     /\ joinedAt = 0
+    /\ cpGone = FALSE
     /\ CounterInit
     /\ ballot = [b \in Brokers |-> IF Ballots /\ promised[b] = 1 THEN {leader} ELSE {}]
     /\ opened = IF TracksOpens /\ ~Creates THEN {<<1, leader>>} ELSE {}
@@ -2325,10 +2346,22 @@ FinishChange(b) ==
     /\ UNCHANGED handoffVars
 
 \* A yes to `f`'s pre-vote from `m`, under `PreVoteAsked`.
+\* The leader `f` follows: the one it last promised, or the control plane's
+\* if that was its own standing. A broker never suspects itself.
+Followed(f) == IF ballot[f] \subseteq {f} THEN {leader} ELSE ballot[f]
+
+\* `b`'s fence cannot complete from where it stands: too few members can
+\* still take its generation.
+FenceStuck(b) ==
+    LET can == { m \in FenceMembers(b) \ halted :
+                   IF m = b THEN promised[m] <= bgen[b] ELSE MayPromise(m, b, bgen[b]) }
+    IN \/ ~LeaderMajority(b, can)
+       \/ JointFence /\ ~MajorityOfOld(can, b)
+
 PreVoteYes(m, f) ==
     /\ m \notin halted /\ ~Hears(m) /\ ~Ahead(m, f)
     /\ ~(bgen[m] > 0 /\ ~fencing[m])
-    /\ StandBehindBallot => ~fencing[m]
+    /\ StandBehindBallot => ~fencing[m] \/ (PreVoteBounded /\ FenceStuck(m))
 
 \* Whether `f` would stand while another's round was open, under `Backoff`.
 StandsBeside(f) == \E m \in Brokers \ ({f} \cup halted) : fencing[m] /\ Candidate(m)
@@ -2352,6 +2385,8 @@ Elect(f) ==
     /\ Adopt > 0 => promised[f] < Adopt
     /\ SetCheck => f \in mine[f] /\ setGen[f] > 0
     /\ StandBehindBallot => \A c \in ballot[f] : c = f \/ c \in halted \/ promised[f] <= gen
+    /\ BrokerSuspicion => \/ Followed(f) \subseteq halted
+                          \/ ShardSuspicion /\ f \notin Followed(f) /\ ~Hears(f)
     /\ StandsAboveKeptSet => setGen[f] <= promised[f] + 1
     /\ ~WipeWaits(f) /\ WipeFloor(f, f, promised[f] + 1) /\ ~NonVoter(f)
     \* Pre-vote: a majority of its set, itself included, no longer hears a leader.
@@ -2424,6 +2459,7 @@ FailStop(b) ==
 Withdraw(b) ==
     /\ Withdraws
     /\ fencing[b] /\ bgen[b] > 0 /\ Candidate(b)
+    /\ WithdrawsStuck => FenceStuck(b)
     /\ \E back \in IF b = leader /\ gen < bgen[b] /\ <<gen, b>> \notin opened
                     THEN {0, gen} ELSE {0} :
          /\ bgen' = [bgen EXCEPT ![b] = back]
@@ -3856,12 +3892,15 @@ EndPass(b) ==
 quietVars == << counterVars, heard, idVars, named, wipeVars >>
 loudVars == << heard, idVars, named, wipeVars >>
 
+\* Whether the control plane takes steps.
+CpUp == ~CpDown /\ ~cpGone
+
 \* Every action is its own disjunct, with what it leaves alone conjoined
 \* inside it. TLC splits a next-state relation only at disjunctions and
 \* constant `\E`, and its simulation mode picks an action before a successor:
 \* folded into one action, a walk would pick among successor states, and
 \* Tick's clock choices would crowd out everything else.
-Next ==
+Steps ==
     \/ Tick /\ UNCHANGED quietVars
     \/ \E b \in Brokers :
         \/ SendHeartbeat(b) /\ UNCHANGED quietVars
@@ -3908,22 +3947,36 @@ Next ==
         \/ CleanStop(b) /\ UNCHANGED << counterVars, heard, named >>
         \/ Register(b) /\ UNCHANGED << counterVars, heard, named >>
         \/ OpenForWrites(b) /\ UNCHANGED loudVars
-        \/ ~CpDown /\ Decide(Now, b, cpView) /\ UNCHANGED << heard, decideIdVars, named >>
-        \/ /\ ~CpDown /\ WriteDropsLearners
+        \/ CpUp /\ Decide(Now, b, cpView) /\ UNCHANGED << heard, decideIdVars, named >>
+        \/ /\ CpUp /\ WriteDropsLearners
            /\ Decide(Now, b, cpView)
            /\ cpLearner' = {}
            /\ UNCHANGED << heard, sid, wipes, checked, registered, inc, restarting, leftDirty, gaveUp,
                           wipedAt, readmit, learner, marked, named >>
-        \/ /\ ~CpDown
+        \/ /\ CpUp
            /\ \E p \in Planners : \E v \in cpView[p] : Decide(v, b, [cpView EXCEPT ![p] = {}])
            /\ UNCHANGED << heard, decideIdVars, named >>
         \/ CommitCounter(b) /\ UNCHANGED loudVars
         \/ AckCounters(b) /\ UNCHANGED loudVars
     \/ LoseReport /\ UNCHANGED quietVars
-    \/ ~CpDown /\ CpFlip /\ UNCHANGED quietVars
-    \/ ~CpDown /\ CpFlipNamed /\ UNCHANGED << clog, chwm, cacked, heard, idVars, named, wipeVars >>
-    \/ ~CpDown /\ (\E p \in Planners : Snapshot(p)) /\ UNCHANGED quietVars
-    \/ ~CpDown /\ DeliverReport /\ UNCHANGED << counterVars, idVars, wipeVars >>
+    \/ CpUp /\ CpFlip /\ UNCHANGED quietVars
+    \/ CpUp /\ CpFlipNamed /\ UNCHANGED << clog, chwm, cacked, heard, idVars, named, wipeVars >>
+    \/ CpUp /\ (\E p \in Planners : Snapshot(p)) /\ UNCHANGED quietVars
+    \/ CpUp /\ DeliverReport /\ UNCHANGED << counterVars, idVars, wipeVars >>
+
+\* The control plane stops for good, under `CpStops`.
+CpStop ==
+    /\ CpStops /\ ~cpGone
+    /\ cpGone' = TRUE
+    /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
+           hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit,
+           draining, successor, stopped, moves, ver, cpView, staged, heard,
+           promised, fencing, answered, confirmed, out, mine, joining, leaving, joinedAt,
+           counterVars, ballot, opened, setVars, ackGen, idVars, named, wipeVars >>
+
+Next ==
+    \/ Steps /\ UNCHANGED cpGone
+    \/ CpStop
 
 Spec == Init /\ [][Next]_vars
 
@@ -3931,13 +3984,13 @@ Spec == Init /\ [][Next]_vars
 \* it stays possible. Nothing of the control plane's is.
 Fairness ==
     /\ \A b \in Brokers :
-        /\ WF_vars(Elect(b) /\ UNCHANGED quietVars)
-        /\ WF_vars(GiveUpRound(b) /\ UNCHANGED quietVars)
-        /\ WF_vars(OpenForWrites(b) /\ UNCHANGED loudVars)
+        /\ WF_vars(Elect(b) /\ UNCHANGED << quietVars, cpGone >>)
+        /\ WF_vars(GiveUpRound(b) /\ UNCHANGED << quietVars, cpGone >>)
+        /\ WF_vars(OpenForWrites(b) /\ UNCHANGED << loudVars, cpGone >>)
     /\ \A b, f \in Brokers :
-        /\ WF_vars(AnswerFence(b, f) /\ UNCHANGED quietVars)
-        /\ WF_vars(RefuseStaleSet(b, f) /\ UNCHANGED quietVars)
-        /\ WF_vars(Ship(b, f) /\ UNCHANGED quietVars)
+        /\ WF_vars(AnswerFence(b, f) /\ UNCHANGED << quietVars, cpGone >>)
+        /\ WF_vars(RefuseStaleSet(b, f) /\ UNCHANGED << quietVars, cpGone >>)
+        /\ WF_vars(Ship(b, f) /\ UNCHANGED << quietVars, cpGone >>)
 
 LiveSpec == Spec /\ Fairness
 
@@ -3946,18 +3999,47 @@ LiveSpec == Spec /\ Fairness
 \* mark, each taken once it stays possible.
 CpFairness ==
     /\ \A b \in Brokers :
-        /\ WF_vars(Promote(Now, b, cpView) /\ UNCHANGED << counterVars, heard, decideIdVars, named >>)
-        /\ WF_vars(Withdraw(b) /\ UNCHANGED quietVars)
-        /\ WF_vars(Depose(b) /\ UNCHANGED quietVars)
-        /\ WF_vars(Restart(b) /\ UNCHANGED << counterVars, heard, named, wipeVars >>)
-        /\ WF_vars(AckQuorum(b) /\ UNCHANGED quietVars)
+        /\ WF_vars(Promote(Now, b, cpView)
+                   /\ UNCHANGED << counterVars, heard, decideIdVars, named, cpGone >>)
+        /\ WF_vars(Withdraw(b) /\ UNCHANGED << quietVars, cpGone >>)
+        /\ WF_vars(Depose(b) /\ UNCHANGED << quietVars, cpGone >>)
+        /\ WF_vars(Restart(b) /\ UNCHANGED << counterVars, heard, named, wipeVars, cpGone >>)
+        /\ WF_vars(AckQuorum(b) /\ UNCHANGED << quietVars, cpGone >>)
     /\ WF_vars(CpRename(Now, cpView)
                /\ UNCHANGED << counterVars, expect, inherited, seen, seenInc, fenceIds,
-                               heard, decideIdVars, named >>)
+                               heard, decideIdVars, named, cpGone >>)
 
 \* With the control plane up and every stopped broker back, the leader it
 \* names ends up serving, and stays.
 CpLeaderServes == <>[]LeaderServes
+
+\* With the control plane stopped for good at some point and every stopped
+\* broker back, elections alone get a leader serving: a candidate's stand
+\* timeout, a restart and the leader's mark are taken once they stay
+\* possible, and so is the control plane's stop. Nothing of the control
+\* plane's is owed while it runs.
+CpDownFairness ==
+    /\ \A b \in Brokers :
+        /\ WF_vars(Withdraw(b) /\ UNCHANGED << quietVars, cpGone >>)
+        /\ WF_vars(Depose(b) /\ UNCHANGED << quietVars, cpGone >>)
+        /\ WF_vars(Restart(b) /\ UNCHANGED << counterVars, heard, named, wipeVars, cpGone >>)
+        /\ WF_vars(AckQuorum(b) /\ UNCHANGED << quietVars, cpGone >>)
+    /\ WF_vars(CpStop)
+
+\* The live members that hold `l`'s generation for `l`, and so take its batches.
+Backers(l) == { m \in Members(l) \ halted :
+                  promised[m] = bgen[l] /\ (Ballots => ballot[m] \subseteq {l}) }
+
+\* A live broker leads, open and serving, with a mark over its whole log and a
+\* majority that takes its batches. A member left promised past it is not
+\* counted against it: it serves without that copy.
+ElectedServes ==
+    \E l \in Brokers \ halted :
+        /\ bgen[l] > 0 /\ ~fencing[l] /\ ~stopped[l]
+        /\ hwm[l] = Len(log[l])
+        /\ LeaderMajority(l, Backers(l))
+
+CpDownServes == <>[]ElectedServes
 
 \* Some live broker leads, open, at a generation no live broker promised past.
 LeaderSettled ==
@@ -3982,12 +4064,15 @@ ReportFairness ==
     \A b \in Brokers :
         /\ WF_vars(CpAdopt(Now, b, cpView)
                    /\ UNCHANGED << counterVars, expect, inherited, seen, seenInc, fenceIds,
-                                   heard, decideIdVars, named >>)
+                                   heard, decideIdVars, named, cpGone >>)
         /\ WF_vars(CpReissue(Now, b, cpView)
                    /\ UNCHANGED << counterVars, expect, inherited, seen, seenInc, fenceIds,
-                                   heard, decideIdVars, named >>)
+                                   heard, decideIdVars, named, cpGone >>)
 
 ReissueSpec == Spec /\ Fairness /\ ReportFairness
+
+\* Liveness once the control plane stops (FelixShardCpDown*.cfg).
+CpDownSpec == Spec /\ Fairness /\ CpDownFairness
 
 \* Liveness with the control plane up (FelixShardCpLive.cfg).
 CpLiveSpec == Spec /\ Fairness /\ ReportFairness /\ CpFairness
@@ -4234,6 +4319,7 @@ CountersOnMajority ==
 
 TypeOK ==
     /\ now \in 0..MaxTime
+    /\ cpGone \in BOOLEAN
     /\ gen \in Nat
     /\ leader \in Brokers
     /\ halted \subseteq Brokers
