@@ -769,10 +769,11 @@ WithdrawsStuck == FALSE
 \* a stopped leader and names only live brokers, and a restarted leader opens
 \* its assignment again.
 \* `SupersededRefused`: a leader whose own ballot holds a generation above the
-\* control plane's reports its open refused naming no node, and its fence
-\* counts a member whose ballot is newer as promised away (#1916:
-\* `Superseded` in services/felix-broker-service/src/shards/lifecycle.rs and
-\* `promotion.rs`). Off, those stay silent. `OwnBallotRefused`: the fence's
+\* control plane's reports its open refused naming no node (#1916:
+\* `Superseded` in services/felix-broker-service/src/shards/lifecycle.rs).
+\* Off, it stays silent. A member answering with a newer ballot ends the
+\* code's fence refused at once (`superseded_by` in promotion.rs); the model
+\* drops such a member from the fence's count only under `OverlayRefused`. `OwnBallotRefused`: the fence's
 \* step on the leader's own log reports the same refusal (`keep_own_set` in
 \* promotion.rs); off, it stays pending. `AboveReported`: the control
 \* plane's leader that is not open at its generation and whose own log holds
@@ -2081,7 +2082,9 @@ Promote(v, f, views) ==
     /\ pending' = [pending EXCEPT ![f] = IF TakesNaming(f) THEN 0 ELSE @]
     /\ report' = NoReport
     /\ draining' = FALSE
-    /\ stopped' = [stopped EXCEPT ![f] = FALSE]
+    \* Being deposed is per generation (`deposed_at` in fence.rs): a refused
+    \* naming leaves it.
+    /\ stopped' = [stopped EXCEPT ![f] = IF TakesNaming(f) THEN FALSE ELSE @]
     \* A promoted destination leads, so it is part of the set from here.
     /\ staged' = staged \ {f}
     \* What `choose_replicas` in placement/plan.rs would write: the old set
@@ -2526,7 +2529,8 @@ Depose(b) ==
 \* Under `Restarts`, a stopped broker starts again with what it persisted, as
 \* a new incarnation. The control plane's leader opens its assignment, which
 \* it takes unless it promised the generation away; then it reports the
-\* refusal (`RenameDue`).
+\* refusal (`RenameDue`). Being deposed is held in memory (`Gate` in
+\* shards/lifecycle/fence.rs), so the reopened leader starts undeposed.
 Restart(b) ==
     /\ Restarts
     /\ b \in halted
@@ -2539,11 +2543,13 @@ Restart(b) ==
             /\ answered' = [answered EXCEPT ![b] = {}]
             /\ confirmed' = [confirmed EXCEPT ![b] = [m \in Brokers |-> 0]]
             /\ Promise(b, b, gen)
-       ELSE UNCHANGED << bgen, bexpiry, fencing, answered, confirmed, promised, ballot >>
+            /\ stopped' = [stopped EXCEPT ![b] = FALSE]
+       ELSE UNCHANGED << bgen, bexpiry, fencing, answered, confirmed, promised, ballot, stopped >>
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, hbOut, hbAt,
                     log, hwm, queued, pending, acked, writes, staleCommit,
                     opened, setVars, ackGen >>
-    /\ UNCHANGED handoffVars
+    /\ UNCHANGED << draining, successor, moves, ver, cpView, staged, out, joining, leaving,
+                    joinedAt, mine >>
     /\ UNCHANGED << sid, seen, seenInc, wipes, checked, registered, restarting, expect, inherited,
                     leftDirty, gaveUp, fenceIds >>
 
@@ -3424,6 +3430,7 @@ Refused(left, stillFencing) ==
     \* (`open_failed` in lifecycle.rs). A restarted leader that opened again
     \* and then lost the generation is counted too, which the code does not
     \* report.
+    \/ PromisedAway(leader, leader, gen)
     \/ /\ SupersededRefused /\ promised[leader] > gen
        /\ bgen[leader] < gen
        /\ (<<gen, leader>> \notin opened \/ (Restarts /\ inc[leader] > 0))
@@ -3476,7 +3483,7 @@ CpRename(v, views) ==
     /\ gen' = gen + 1
     /\ cpExpiry' = now + L
     /\ report' = NoReport
-    /\ stopped' = [stopped EXCEPT ![leader] = FALSE]
+    /\ stopped' = [stopped EXCEPT ![leader] = IF MayPromise(leader, leader, gen + 1) THEN FALSE ELSE @]
     \* The leader may hold a ballot above this generation too, and then its
     \* open is refused again and reported, until a rename passes the ballot.
     /\ IF MayPromise(leader, leader, gen + 1)
