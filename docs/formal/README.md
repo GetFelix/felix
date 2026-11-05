@@ -199,6 +199,7 @@ newcomer as a top-up instead of undoing it; that case is a unit test only.
 | `QuorumReportNamesASuccessor` | Under `Quorum`, a report from a leader still serving names a follower that may take over, whenever a majority is still replicating. A liveness property in invariant form, checked in `FelixShard.cfg`. |
 | `ElectionSettles` | With the control plane down, elections end with a live leader that stays open and that no live broker has promised past. A temporal property (`<>[]LeaderSettled`), checked under `LiveSpec` in `FelixShardElectLive.cfg`. |
 | `NoStandAgainstHeardLeader` | Nobody starts fencing against an open leader that a majority of its set still hears. An action property, checked with the liveness configurations. |
+| `CollisionSuperseded` | With the control plane up, it does not stay at a generation whose leader can never open, because another broker was elected there and opened, while that broker still leads. A temporal property, checked under `ReissueSpec` in `FelixShardElectLiveReissue.cfg`. |
 
 ## The configurations, and what each must do
 
@@ -227,6 +228,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardElectNoBallot.cfg` | the same without ballots, one generation of elections and no writes | violate `OneLeaderPerGeneration` |
 | `FelixShardElectStaleSet.cfg` | `FelixShardElect.cfg` with a follower replacement, as in `FelixShardFencedAckSeat.cfg`, and one generation of elections past the control plane's | violate `AckedHeldByLeader`: the replica that left stands on the set it started in, and opens without a record the new set acknowledged |
 | `FelixShardElectAdopt.cfg` | `FelixShardElectStaleSet.cfg` with the set check, the joint fence, and the control plane adopting elected leaders up to generation 2 (`Adopt = 2`, which also bounds the generations replicas stand for) and replacing followers under them | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm`, `AdoptedMatchesOpened`, `SetChangesJoint` (not yet measured) |
+| `FelixShardElectAdoptAboveKeptSet.cfg` | `FelixShardElectReissueReplace.cfg` with no writes, adoption up to generation 4, refusals that teach no set and candidates standing no lower than the generation of the set they keep (`StandsAboveKeptSet`); not registered, run by hand | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm`, `AdoptedMatchesOpened`, `SetChangesJoint`: no violation through depth 19 (6.1M distinct states), run not finished; the generation-only adoption broke `AdoptedMatchesOpened` |
 | `FelixShardElectAdoptTwoWrites.cfg` | the same with two writes | pass, the same invariants (nightly) |
 | `FelixShardElectAdoptFailover.cfg` | `FelixShardElectAdopt.cfg` taken to a failover after a recorded-only adoption: placement promotes on suspicion up to generation 3 (`Suspicions = 3`), so the control plane's set and the set in the promoted broker's log can differ, and the fence takes a majority of both (`FenceRecordedSet` beside `FenceOwnSet`) | too big for one run (192.5M distinct states at depth 20, no violation, after six hours); checked in the pieces below |
 | `FelixShardElectAdoptFailover{Same,Apart}{0,1}{,Stood}Gen{2,3,4}.cfg`, `FelixShardElectAdoptFailoverSame{0,1}Stood{One,Several}{Dest,Other}Gen2.cfg` | `FelixShardElectAdoptFailover.cfg` split at its first failover (`SplitAtFailover`, `CutOverPiece`): the promoted broker's own set is the control plane's or not, 0 or 1 writes were admitted before it, a replica had stood past the control plane's generation or not, and the failover takes generation 2, 3, or 4 and up (`PieceGens`). Each piece also checks everything before its failover, so together they reach every state the whole does | pass, the same invariants. Twelve pieces hold no failover: they hold just the 1.48M distinct states before one (depth 36, 3 to 5 min on a four-core CI runner) and check that they stay empty (`NoCutOverInPiece`). `Apart0Gen4` 13.5M distinct, 46 min; `Apart1Gen4` 15.5M, 54 min; `Same0Gen4` 36.3M, 2 h 15 min; these run nightly. `Same1Gen4` 56.8M, 3 h 40 min, and `Same1Gen2` 149.3M, depth 51, 5 h 20 min (close to the six-hour job limit), also run nightly. Five did not finish in six hours, with no violation by then: `Same0Gen2` (130M distinct), `Same0Gen3` (224M), `Same1Gen3` (111M), `Apart0Gen3` (108M), `Apart1Gen3` (156M). They need another split and are not checked yet. `Same0StoodGen2` ran out of runner disk and `Same1StoodGen2` did not finish, so each is split again into `Stood{One,Several}{Dest,Other}` (`PieceStoodCounts`, `PieceDestStood`: one or several replicas stood, the promoted broker among them or not). Those eight are not measured yet |
@@ -244,10 +246,15 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardElectSwapFlipJoinLagsFirstStart.cfg` | the same with the flip taking the generation's first start record instead of the named stint's (#1787) | violate `AckedOnMajority`: a destination elected past the old leader acknowledges a write on the old set, the cut-over names it again at that generation, the joining copy holds that stint's start but not the write, and the flip follows the start once a majority of both sets holds it, leaving the write on one copy of the new set |
 | `FelixShardElectPreVote.cfg` | `FelixShardElect.cfg` with pre-vote and stickiness (`PreVote`), time to 2 so leases lapse and elections follow, two writes, the set check | pass, the same invariants (not yet measured) |
 | `FelixShardElectLive.cfg` | three brokers with the control plane down (`CpDown`), no writes, no symmetry, up to four generations of elections, one broker (the leader or not) allowed to stop for good (`FailStops = 1`), a candidate whose own detector may be wrong (`DetectorMisfires`), a pre-vote the open leader refuses (`PreVoteAsked`), and backoff with at most two split rounds (`Backoff`, `Splits = 2`), under fairness (`LiveSpec`) | pass `ElectionSettles` and `NoStandAgainstHeardLeader` (3,000 distinct states, 1 s locally) |
-| `FelixShardElectLiveLoosePreVote.cfg` | the same with the pre-vote the code asks today: any live member that hears no leader says yes, the open leader included | violate `NoStandAgainstHeardLeader`: a follower whose detector misfires gets the leader's yes and its own and deposes a leader the rest of the set hears (#1815) |
+| `FelixShardElectLiveLoosePreVote.cfg` | the same with a looser pre-vote: any live member that hears no leader says yes, the open leader included | violate `NoStandAgainstHeardLeader`: a follower whose detector misfires gets the leader's yes and its own and deposes a leader the rest of the set hears (#1815) |
 | `FelixShardElectLiveNoBackoff.cfg` | the same without backoff | violate `ElectionSettles`: candidates split, stand again at once and split again until every generation the model allows is used, and nobody leads |
+| `FelixShardElectLiveReissue.cfg` | `FelixShardElectLive.cfg` with the control plane up: promotion on the followers' word up to generation 1 (`Suspicions = 1`), adoption up to generation 3, two generations of elections, no broker stopping, and the control plane moving past a generation claimed twice (`Reissues`, CpReissue), with adoption and the reissue taken once they stay possible (`ReissueSpec`) | pass `CollisionSuperseded` (503K distinct states, 4 min locally) |
+| `FelixShardElectLiveNoReissue.cfg` | the same without the reissue | violate `CollisionSuperseded`: placement names one broker at the generation another is elected at and opens, and the control plane keeps naming the one that cannot open |
 | `FelixShardElectNoBallotAcks.cfg` | `FelixShardElect.cfg` without ballots, two generations of elections and two writes, the set check on so the first leader can follow a candidate | violate `AckedHeldByLeader`, checked per generation |
 | `FelixShardElectAdoptPromote.cfg` | `FelixShardElect.cfg` with one write, the set check, adoption up to generation 2 and promotion on suspicion up to generation 2 | pass, the same invariants (186K distinct states without the write; not yet measured with it) |
+| `FelixShardElectReissue.cfg` | `FelixShardElectAdoptPromote.cfg` with promotion on suspicion up to generation 1 and the control plane moving past a generation it named one leader at while another was elected and opened there: the next generation, under the elected leader, on the control plane's set (`Reissues`, CpReissue) | pass, the same invariants (130,796 distinct states, 6 s locally) |
+| `FelixShardElectReissueReplace.cfg` | `FelixShardElectReissue.cfg` with four brokers, a spare that promotion puts in place of the old leader (`ReplaceOnPromote`), no write, and adoption up to generation 2: the elected leader's set differs from the control plane's when they collide, so the reissue is a pending change from the elected set to the control plane's, and the reissued leader fences both (`ReissuePending`) | pass, the same invariants (66,576 distinct states, 4 s locally) |
+| `FelixShardElectReissueReplaceBatchSet.cfg` | `FelixShardElectReissueReplace.cfg` with one write, adoption up to generation 4, candidates standing no lower than the kept set's generation (`StandsAboveKeptSet`), refusals that teach no set, and a follower keeping its own old set as the one being left when it learns a set from a batch (`LearnsLeavingSet` off) | violate `AckedHeldByLeader`: a candidate fences no majority of the elected set and opens without the acknowledged write, so a broker takes the set being left only from the leader's fence or the control plane |
 | `FelixShardSwapCounters.cfg` | `FelixShardElectSwapFlip.cfg` on a cache shard (`Counters`), one write, no elections: the cut-over waits for the destination's counter log, the counter mark needs both majorities while the change is pending (`CountersJoint`), and the flip waits for the counter log's start record (`FlipChecksCounters`) | pass the same invariants and `CountersOnSetMajority` (not yet measured; over 4M distinct states) |
 | `FelixShardSwapCountersFlipUnchecked.cfg` | the same with the flip on the cache log's start alone | violate `CountersOnSetMajority`: an update acknowledged on {a, b}, the cut-over to b on {b, c, d}, and after the flip only b holds it (#1830) |
 | `FelixShardSwapCountersNewSetOnly.cfg` | the same with the counter mark on the new set alone while the change is pending | violate `CountersOnSetMajority`: the update is acknowledged on a majority of the new set, and the old set the control plane still records holds it on one replica (#1830) |
@@ -759,8 +766,8 @@ mid-fence, a replica that had learned the new set from it stood and opened on
 a majority of the new set alone, and a replica of the old set opened beside
 it at the same generation (OneLeaderPerGeneration).
 
-The control plane flips only after the joint fence. `Swap` records the new
-set as pending (`cpNext`, written at `cpNextGen`) and the old set stays the
+The control plane flips only after the joint fence. `Swap` records the new set
+as pending (`cpNext`, written at `cpNextGen`) and the old set stays the
 control plane's (`CpSet`), so `AckedOnMajority` keeps measuring records
 against it. While its change is pending a leader acknowledges on a majority
 of both sets (`HeldAtGen`) and ships to both. `CpFlip` takes the new set once
@@ -790,20 +797,32 @@ again, past the generation it was named at, never opened the named stint
 and so never reported it.
 
 A failover (`Promote`) abandons the pending change; it writes the set at a
-generation above the pending one. While a change is pending, `CpAdopt`
-adopts only a leader on the pending set and takes just the generation of one
-on the old set, which the new set's higher set generation deposes; the walk
-found an adopted old-set leader fenced that way. No placement change other
-than a failover starts while one is pending. Only the control plane ends a
-pending change, so while it is down a lost majority of the old set stops
-writes, and a destination lost before the rest of the new set learns it
-leaves the change pending until a failover clears it; nothing here checks
-liveness. `AdoptedMatchesOpened` compares the control plane's leader, while
-it still holds the control plane's generation, with the pending set while
-there is one, since that is the set the control plane named it for. The swap
-walk found the window this closes: a replica removed by a cut-over that
-never heard of it stood, fenced the stopped old leader, and acknowledged on
-a majority of the old set, which the control plane had already dropped
+generation above the pending one. While a change is pending, `CpAdopt` adopts
+only a leader on the pending set that is in the old set, and not a joining
+copy, and takes just the generation of one on the old set, which the new set's
+higher set generation deposes; the walk found an adopted old-set leader fenced
+that way. The one exception is the control plane's own leader on the old set:
+it opened past the change, and only it could have taken it, so the change is
+dropped. With no change pending, a leader elected on a set other than the
+recorded one is not adopted on its generation alone. A majority of the elected
+set may hold records no majority of the recorded one does, and a later
+failover would promote from the recorded set. If the leader is in the recorded
+set, the control plane writes the next generation under it with the elected
+set as the set being left and the recorded one pending, as a cut-over does
+(see the reissue below). If it is not, the elected set becomes the recorded
+set at its generation. `FelixShardElectAdoptAboveKeptSet.cfg` found the
+generation-only form leaving a pending change below the adopted generation
+that no leader could complete. No placement change other than a failover
+starts while one is pending. Only the control plane ends a pending change, so
+while it is down a lost majority of the old set stops writes, and a
+destination lost before the rest of the new set learns it leaves the change
+pending until a failover clears it; nothing here checks liveness.
+`AdoptedMatchesOpened` compares the control plane's leader, while it still
+holds the control plane's generation, with the pending set while there is one,
+since that is the set the control plane named it for. The swap walk found the
+window this closes: a replica removed by a cut-over that never heard of it
+stood, fenced the stopped old leader, and acknowledged on a majority of the
+old set, which the control plane had already dropped
 (`AckedOnMajority`).
 
 Three rules come from TLC. The first version let a refused candidate fence on
@@ -896,6 +915,36 @@ generation is left and nobody leads, which is how the model shows splitting
 forever. `NoStandAgainstHeardLeader` rules churn out directly, since it holds
 at every step. Not covered: liveness with writes in flight, or with a wiped
 voter.
+
+With the control plane up, placement can name a leader at the generation a
+candidate is elected at. Ballots let only one of the two open there. When the
+elected one opens, the control plane's leader never will. Short of another
+promotion or election, the generation stays there. On the elected leader's
+report the control plane writes the next generation with it as leader
+(CpReissue, `reissue_past_collision`). When the set it was elected on is not
+the control plane's, the write is a set change from the elected set to the
+control plane's, shaped as a cut-over: the elected set becomes the recorded
+one, a candidate refuses to stand while the change is pending, a failover
+promotes from the elected set, and the leader fences both sets jointly. The
+change completes only once it opened on both. The leader ships to the
+pending set alone, so when the control plane's set and the leader do not
+hold a majority of the elected set the change could never complete; the
+elected set is then named alone, with nothing pending (`ReissueAt`, shared
+with `CpAdopt`). No configuration reaches that case: with sets of three out of
+four brokers, any two sets share two members. The model also leaves out the
+code's window of 16 generations past the control plane's, beyond which
+adoption takes the generation alone.
+The report may be old, so the leader takes the generation only if it has not
+promised it to another; otherwise it never opens there. `FelixShardElectReissue.cfg` checks that this
+keeps one leader per generation and every acknowledged record.
+`FelixShardElectLiveReissue.cfg` checks that the control plane then moves on
+(`CollisionSuperseded`); without the reissue it does not
+(`FelixShardElectLiveNoReissue.cfg`). The property is stated while the
+elected leader still leads: once it is deposed, a later election moves the
+generation on, and the model bounds elections. It is close to the reissue's
+own enabling condition, since the liveness configurations have no set
+changes or joining copies to hold it back; what it adds is that adoption and
+the reissue are taken at all.
 
 These check the design in `docs/replication-design.md`, "Electing without
 the control plane", which the broker now follows once `replica_election` is

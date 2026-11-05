@@ -31,10 +31,14 @@ fn key() -> ShardKey {
     }
 }
 
-/// Answers every pre-vote as `answers` says for the node asked, and records
-/// who was asked.
+/// Answers every pre-vote as `answers` says for the node asked, or from its
+/// second ask on as `then` says if it names the node, and records who was
+/// asked.
 struct Voters {
     answers: Vec<(&'static str, Option<PreVoteRefusal>)>,
+    then: Vec<(&'static str, Option<PreVoteRefusal>)>,
+    /// Nodes that do not answer from their second ask on.
+    silent_again: Vec<&'static str>,
     asked: Mutex<Vec<String>>,
 }
 
@@ -49,11 +53,21 @@ impl PeerRequester for Voters {
             matches!(message, InternalMessage::PreVote(_)),
             "{message:?}"
         );
-        self.asked.lock().expect("lock").push(node_id.to_string());
-        let (_, refusal) = self
-            .answers
-            .iter()
-            .find(|(node, _)| *node == node_id)
+        let again = {
+            let mut asked = self.asked.lock().expect("lock");
+            let again = asked.iter().any(|asked| asked == node_id);
+            asked.push(node_id.to_string());
+            again
+        };
+        if again && self.silent_again.contains(&node_id) {
+            return Err(PeerError::Disconnected {
+                node_id: node_id.to_string(),
+            });
+        }
+        let (_, refusal) = again
+            .then(|| self.then.iter().find(|(node, _)| *node == node_id))
+            .flatten()
+            .or_else(|| self.answers.iter().find(|(node, _)| *node == node_id))
             .expect("asked a node outside the set");
         Ok(InternalMessage::PreVoteAnswer(PreVoteAnswer {
             correlation_id: 0,
@@ -153,6 +167,7 @@ async fn follower() -> (Arc<Broker>, tempfile::TempDir) {
     log.accept_set(ReplicaSet {
         current: set(3),
         leaving: None,
+        earlier: Vec::new(),
     })
     .await
     .expect("set");
@@ -192,8 +207,67 @@ fn voters(c: Option<PreVoteRefusal>) -> Voters {
             ("broker-a", Some(PreVoteRefusal::LeaderReachable)),
             ("broker-c", c),
         ],
+        then: Vec::new(),
+        silent_again: Vec::new(),
         asked: Mutex::new(Vec::new()),
     }
+}
+
+/// broker-a granting puts `LOCAL` second in the order, so it waits its place
+/// and asks again; broker-a answers that second ask with `then`.
+fn second_in_order(then: Option<PreVoteRefusal>) -> Voters {
+    Voters {
+        answers: vec![("broker-a", None), ("broker-c", None)],
+        then: vec![("broker-a", then)],
+        silent_again: Vec::new(),
+        asked: Mutex::new(Vec::new()),
+    }
+}
+
+/// **A candidate second in the order does not stand against one ahead that
+/// stood while it waited.** broker-a's ballot is on disk, so it refuses the
+/// second ask, though its fence has not reached `LOCAL`. Standing anyway
+/// would split the vote at one generation (#1914).
+#[tokio::test(start_paused = true)]
+async fn a_voter_ahead_that_stood_meanwhile_is_not_stood_against() {
+    let (broker, _dir) = follower().await;
+    let ctx = ctx(
+        &broker,
+        second_in_order(Some(PreVoteRefusal::StaleGeneration)),
+    );
+    let route = ctx.router.snapshot().get(&key()).expect("route").clone();
+
+    assert_eq!(stand(&ctx, &key(), &route).await, Round::Failed);
+    let log = shard_log(&broker, &key()).await.expect("log");
+    assert_eq!(log.accepted_generation(), 3, "no ballot");
+    assert!(ctx.elections.get(&key()).is_none());
+}
+
+/// **A voter silent when asked again does not stop a candidate**: silence
+/// is not evidence that anyone stood.
+#[tokio::test(start_paused = true)]
+async fn a_voter_silent_when_asked_again_does_not_stop_the_candidate() {
+    let (broker, _dir) = follower().await;
+    let mut voters = second_in_order(None);
+    voters.silent_again = vec!["broker-a", "broker-c"];
+    let ctx = ctx(&broker, voters);
+
+    let (_, elected) = stand_and_watch(&ctx).await;
+    assert_eq!(elected.generation, 4);
+}
+
+/// **A candidate second in the order stands once its voters still agree**
+/// after its wait, having asked each twice.
+#[tokio::test(start_paused = true)]
+async fn a_candidate_second_in_order_stands_when_its_voters_still_agree() {
+    let (broker, _dir) = follower().await;
+    let ctx = ctx(&broker, second_in_order(None));
+
+    let (_, elected) = stand_and_watch(&ctx).await;
+    assert_eq!(elected.generation, 4);
+    let asked = ctx.requester.asked.lock().expect("lock").clone();
+    assert_eq!(asked.iter().filter(|node| *node == "broker-a").count(), 2);
+    assert_eq!(asked.iter().filter(|node| *node == "broker-c").count(), 2);
 }
 
 /// **A follower with a majority's pre-vote stands**: the ballot for the next
@@ -304,6 +378,7 @@ async fn a_pending_set_change_is_not_stood_on() {
     log.accept_set(ReplicaSet {
         current: set(4),
         leaving: Some(leaving),
+        earlier: Vec::new(),
     })
     .await
     .expect("set");
@@ -329,6 +404,7 @@ async fn the_set_a_move_left_is_stood_on_jointly() {
     log.accept_set(ReplicaSet {
         current: set(4),
         leaving: Some(leaving.clone()),
+        earlier: Vec::new(),
     })
     .await
     .expect("set");
@@ -350,6 +426,7 @@ async fn the_set_a_move_left_is_stood_on_jointly() {
         log.accept_set(ReplicaSet {
             current: set(4),
             leaving: Some(leaving.clone()),
+            earlier: Vec::new(),
         })
         .await
         .expect("set");
@@ -392,6 +469,7 @@ async fn a_finished_moves_set_being_left_is_not_fenced_again() {
         log.accept_set(ReplicaSet {
             current: set(4),
             leaving: Some(left.clone()),
+            earlier: Vec::new(),
         })
         .await
         .expect("set");
@@ -421,6 +499,7 @@ async fn an_unchanged_set_kept_beside_is_stood_on_once_joint_fences_are_on() {
     log.accept_set(ReplicaSet {
         current: set(4),
         leaving: Some(set(3)),
+        earlier: Vec::new(),
     })
     .await
     .expect("set");
@@ -447,6 +526,31 @@ async fn an_unchanged_set_kept_beside_is_stood_on_once_joint_fences_are_on() {
     assert_eq!(elected.leaving, Some(set(3)));
 }
 
+/// A set kept from before a fence that never opened is not stood on: the
+/// candidate would fence its own set alone and miss a majority of the
+/// earlier one (#1881).
+#[tokio::test(start_paused = true)]
+async fn a_set_keeping_earlier_sets_is_not_stood_on() {
+    let (broker, _dir) = follower().await;
+    let log = shard_log(&broker, &key()).await.expect("log");
+    let mut earlier = set(2);
+    earlier.members[2].node = "broker-d".to_string();
+    log.accept_set_keeping_earlier(ReplicaSet {
+        current: set(4),
+        leaving: None,
+        earlier: vec![earlier],
+    })
+    .await
+    .expect("set");
+    assert!(!log.replica_set().expect("kept").earlier.is_empty());
+
+    let ctx = ctx(&broker, voters(None));
+    let route = ctx.router.snapshot().get(&key()).expect("route").clone();
+    assert_eq!(stand(&ctx, &key(), &route).await, Round::Ineligible);
+    assert!(ctx.requester.asked.lock().expect("lock").is_empty());
+    assert_eq!(log.accepted_generation(), 3, "no ballot");
+}
+
 /// The place counts voters with a log ahead and granting voters with a
 /// lower node id.
 #[tokio::test]
@@ -456,7 +560,13 @@ async fn the_place_counts_the_voters_ahead() {
     let place = |c| {
         let ctx = ctx(&broker, voters(c));
         let log = log.clone();
-        async move { pre_vote(&ctx, &key(), &log, &set(3), 4).await.ok() }
+        async move {
+            pre_vote(&ctx, &key(), &log, &set(3), 4)
+                .await
+                .ok()
+                .filter(PreVoted::majority)
+                .map(|voted| voted.place)
+        }
     };
     assert_eq!(place(None).await, Some(0), "broker-c sorts after broker-b");
     assert_eq!(place(Some(PreVoteRefusal::LogBehind)).await, None);
@@ -541,9 +651,19 @@ async fn a_slow_dial_carries_over_to_the_next_round() {
     };
     let log = shard_log(&ctx.broker, &key()).await.expect("log");
 
-    assert!(pre_vote(&ctx, &key(), &log, &set(3), 4).await.is_err());
+    assert!(
+        !pre_vote(&ctx, &key(), &log, &set(3), 4)
+            .await
+            .expect("answers")
+            .majority()
+    );
     tokio::time::sleep(BACKOFF_FIRST_TOP).await;
-    assert_eq!(pre_vote(&ctx, &key(), &log, &set(3), 4).await, Ok(0));
+    assert_eq!(
+        pre_vote(&ctx, &key(), &log, &set(3), 4)
+            .await
+            .map(|voted| voted.place),
+        Ok(0)
+    );
 }
 
 /// A failed round waits from the floor to a top that doubles to the cap.

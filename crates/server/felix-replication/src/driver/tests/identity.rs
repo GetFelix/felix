@@ -979,3 +979,331 @@ async fn a_drain_on_an_idle_shard_hands_over_to_a_level_successor() {
     );
     assert_eq!(follower.asked("broker-c"), 1);
 }
+
+/// Under identity 1: `broker-b` stores every batch at once, `broker-c` never
+/// answers one, and `broker-d` is down.
+struct OneSlow;
+
+impl PeerRequester for OneSlow {
+    async fn request(
+        &self,
+        node_id: &str,
+        _addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, PeerError> {
+        match node_id {
+            "broker-c" => std::future::pending().await,
+            "broker-d" => Err(PeerError::Unavailable {
+                node_id: node_id.to_string(),
+                detail: "down".to_string(),
+            }),
+            _ => {
+                let InternalMessage::ReplicateRecords(batch) = message else {
+                    panic!("the driver sent something other than a replication batch");
+                };
+                Ok(InternalMessage::ReplicateOk(ReplicateOk {
+                    correlation_id: 0,
+                    durable_offset: batch.first_offset + batch.payloads.len() as u64,
+                    learner: false,
+                }))
+            }
+        }
+    }
+
+    async fn identity(
+        &self,
+        node_id: &str,
+        _addr: SocketAddr,
+    ) -> std::result::Result<PeerIdentity, PeerError> {
+        if node_id == "broker-d" {
+            return Err(PeerError::Unavailable {
+                node_id: node_id.to_string(),
+                detail: "down".to_string(),
+            });
+        }
+        Ok(PeerIdentity::storage(id(1)))
+    }
+}
+
+/// Under identity 1, every follower but one is down; that one stores every
+/// batch at once.
+struct AllDownBut(&'static str);
+
+impl PeerRequester for AllDownBut {
+    async fn request(
+        &self,
+        node_id: &str,
+        addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, PeerError> {
+        if node_id != self.0 {
+            return Err(PeerError::Unavailable {
+                node_id: node_id.to_string(),
+                detail: "down".to_string(),
+            });
+        }
+        OneSlow.request(node_id, addr, message).await
+    }
+
+    async fn identity(
+        &self,
+        _node_id: &str,
+        _addr: SocketAddr,
+    ) -> std::result::Result<PeerIdentity, PeerError> {
+        Ok(PeerIdentity::storage(id(1)))
+    }
+}
+
+/// The mark one pass makes on five records at generation 4, with `broker-b`
+/// answering for all of them, `broker-d` down, and `broker-c` silent on a
+/// cursor at five that an earlier pass's answer vouched for, as `change`
+/// leaves it. Four replicas, so the mark needs `broker-c` as well as
+/// `broker-b`.
+async fn mark_with_earlier_vouch(change: impl FnOnce(&mut FollowerCursor)) -> u64 {
+    mark_with_earlier_vouch_from(&OneSlow, change).await
+}
+
+/// [`mark_with_earlier_vouch`] with the followers `requester` plays.
+async fn mark_with_earlier_vouch_from(
+    requester: &impl PeerRequester,
+    change: impl FnOnce(&mut FollowerCursor),
+) -> u64 {
+    let (broker, _dir) = super::quorum::quorum_leader(5, 4).await;
+    let router = router(LOCAL, &["broker-b", "broker-c", "broker-d"], 4);
+    let marks = super::quorum::follower_ack_marks();
+    let nodes = nodes();
+    let fresh = |node: &str| FollowerCursor {
+        storage_id: Some(id(1)),
+        ..FollowerCursor::new(node, nodes[node].advertise_addr, 0)
+    };
+    let mut slow = FollowerCursor {
+        next_offset: 5,
+        confirmed: 5,
+        stalled: false,
+        ..fresh("broker-c")
+    };
+    slow.vouched = Some(crate::follower::Vouched {
+        identity: slow.identity(),
+        generation: 4,
+        offset: 5,
+    });
+    change(&mut slow);
+    let mut entry = ShardCursors::at(4);
+    entry.followers = vec![fresh("broker-b"), slow, fresh("broker-d")];
+    let mut cursors = HashMap::from([(key(), entry)]);
+
+    let (mut group, mut dead, mut counters) = (HashMap::new(), HashMap::new(), HashMap::new());
+    let pass = replicate_once(
+        requester,
+        &broker,
+        &router,
+        &marks,
+        None,
+        &mut cursors,
+        &mut group,
+        &mut dead,
+        &mut counters,
+    );
+    // The pass waits on `broker-c` for good; the mark is decided before.
+    let _ = tokio::time::timeout(Duration::from_secs(1), pass).await;
+    marks.offset(&watch_key(&key()), 4).unwrap_or(0)
+}
+
+/// **An answer an earlier pass checked still counts (#1895).** Two slow
+/// followers answering in different passes otherwise never make a mark
+/// together, though each held the records when it answered.
+#[tokio::test(start_paused = true)]
+async fn an_earlier_passs_checked_answer_counts_toward_the_mark() {
+    assert_eq!(mark_with_earlier_vouch(|_| {}).await, 5);
+}
+
+/// Like [`OneSlow`], but `broker-b` answers only after 100 ms and
+/// `broker-c`'s request fails after 10 ms, as one whose process died under a
+/// pooled connection does once the request times out.
+struct LateAndFailed;
+
+impl PeerRequester for LateAndFailed {
+    async fn request(
+        &self,
+        node_id: &str,
+        addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, PeerError> {
+        match node_id {
+            "broker-b" => tokio::time::sleep(Duration::from_millis(100)).await,
+            "broker-c" => {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                return Err(PeerError::Unavailable {
+                    node_id: node_id.to_string(),
+                    detail: "timed out".to_string(),
+                });
+            }
+            _ => {}
+        }
+        OneSlow.request(node_id, addr, message).await
+    }
+
+    async fn identity(
+        &self,
+        node_id: &str,
+        addr: SocketAddr,
+    ) -> std::result::Result<PeerIdentity, PeerError> {
+        OneSlow.identity(node_id, addr).await
+    }
+}
+
+/// **An earlier answer stops counting once a request to that follower
+/// fails.** The probe may have read a pooled connection older than a crash,
+/// so a failed request is the first sign the copy may be gone, and counting
+/// on through it let a wiped copy stand in the majority.
+#[tokio::test(start_paused = true)]
+async fn an_earlier_answer_stops_counting_when_a_request_fails() {
+    // Behind at three, so the leader ships to it.
+    let mark = mark_with_earlier_vouch_from(&LateAndFailed, |cursor| {
+        cursor.next_offset = 3;
+        cursor.confirmed = 3;
+        if let Some(vouched) = &mut cursor.vouched {
+            vouched.offset = 3;
+        }
+    })
+    .await;
+    assert_eq!(mark, 0, "counted a follower whose request failed");
+}
+
+/// **It counts only for the copy that gave it.** A cursor that has since
+/// moved to another incarnation, or another storage identity, names a copy
+/// that never answered for these records.
+#[tokio::test(start_paused = true)]
+async fn an_earlier_answer_from_another_copy_does_not_count() {
+    let restarted = mark_with_earlier_vouch(|cursor| {
+        if let Some(vouched) = &mut cursor.vouched {
+            vouched.identity.incarnation = Incarnation::At(7);
+        }
+    })
+    .await;
+    assert_eq!(restarted, 0, "counted an answer from another incarnation");
+    let wiped = mark_with_earlier_vouch(|cursor| {
+        if let Some(vouched) = &mut cursor.vouched {
+            vouched.identity = PeerIdentity::storage(id(2));
+        }
+    })
+    .await;
+    assert_eq!(wiped, 0, "counted an answer from another storage identity");
+}
+
+/// **Nor at another generation**: what a follower held under an earlier
+/// leader says nothing about this leader's log.
+#[tokio::test(start_paused = true)]
+async fn an_earlier_answer_at_an_older_generation_does_not_count() {
+    let mark = mark_with_earlier_vouch(|cursor| {
+        if let Some(vouched) = &mut cursor.vouched {
+            vouched.generation = 3;
+        }
+    })
+    .await;
+    assert_eq!(mark, 0);
+}
+
+/// **It counts for no more than it vouched for, nor more than the cursor
+/// still holds**, and not at all for a learner.
+#[tokio::test(start_paused = true)]
+async fn an_earlier_answer_counts_only_what_it_vouched_for() {
+    let vouched_less = mark_with_earlier_vouch(|cursor| {
+        if let Some(vouched) = &mut cursor.vouched {
+            vouched.offset = 3;
+        }
+    })
+    .await;
+    assert_eq!(vouched_less, 3, "counted past what the answer vouched for");
+    let rewound = mark_with_earlier_vouch(|cursor| cursor.confirmed = 2).await;
+    assert_eq!(rewound, 2, "counted past what the cursor holds");
+    let learner = mark_with_earlier_vouch(|cursor| cursor.learner = true).await;
+    assert_eq!(learner, 0, "counted a learner");
+}
+
+/// **A follower found wiped since its answer does not count on it.**
+/// `broker-c` answered for all five records under identity 1 in an earlier
+/// pass and was wiped since; the probe finds identity 2 while its exchange is
+/// still under way. Counting its earlier answer there acknowledged three
+/// records only the leader holds.
+#[tokio::test(start_paused = true)]
+async fn a_follower_wiped_since_its_answer_does_not_count_on_it() {
+    let (broker, _dir) = super::quorum::quorum_leader(5, 4).await;
+    let router = router(LOCAL, &["broker-b", "broker-c"], 4);
+    let marks = super::quorum::follower_ack_marks();
+    let nodes = nodes();
+    let at = |node: &str, confirmed: u64| {
+        let mut cursor = FollowerCursor {
+            next_offset: confirmed,
+            confirmed,
+            stalled: false,
+            storage_id: Some(id(1)),
+            ..FollowerCursor::new(node, nodes[node].advertise_addr, 0)
+        };
+        cursor.vouched = Some(crate::follower::Vouched {
+            identity: cursor.identity(),
+            generation: 4,
+            offset: confirmed,
+        });
+        cursor
+    };
+    let mut entry = ShardCursors::at(4);
+    entry.followers = vec![at("broker-b", 2), at("broker-c", 5)];
+    let mut cursors = HashMap::from([(key(), entry)]);
+
+    let (mut group, mut dead, mut counters) = (HashMap::new(), HashMap::new(), HashMap::new());
+    let pass = replicate_once(
+        &WipedAndDown,
+        &broker,
+        &router,
+        &marks,
+        None,
+        &mut cursors,
+        &mut group,
+        &mut dead,
+        &mut counters,
+    );
+    let _ = tokio::time::timeout(Duration::from_secs(1), pass).await;
+
+    let mark = marks.offset(&watch_key(&key()), 4).unwrap_or(0);
+    assert!(
+        mark <= 2,
+        "acknowledged up to {mark} on a copy that was wiped"
+    );
+}
+
+/// **One follower answering pass after pass is still one follower.** Its
+/// earlier answer and its new one are the same vote, so with `broker-c` and
+/// `broker-d` silent the four-replica mark stays where it was.
+#[tokio::test(start_paused = true)]
+async fn a_follower_answering_in_two_passes_counts_once() {
+    let (broker, _dir) = super::quorum::quorum_leader(5, 4).await;
+    let router = router(LOCAL, &["broker-b", "broker-c", "broker-d"], 4);
+    let marks = super::quorum::follower_ack_marks();
+    let nodes = nodes();
+    let fresh = |node: &str| FollowerCursor {
+        storage_id: Some(id(1)),
+        ..FollowerCursor::new(node, nodes[node].advertise_addr, 0)
+    };
+    let mut entry = ShardCursors::at(4);
+    entry.followers = vec![fresh("broker-b"), fresh("broker-c"), fresh("broker-d")];
+    let mut cursors = HashMap::from([(key(), entry)]);
+    let (mut group, mut dead, mut counters) = (HashMap::new(), HashMap::new(), HashMap::new());
+    for _ in 0..2 {
+        let pass = replicate_once(
+            &AllDownBut("broker-b"),
+            &broker,
+            &router,
+            &marks,
+            None,
+            &mut cursors,
+            &mut group,
+            &mut dead,
+            &mut counters,
+        );
+        pass.await;
+    }
+    let held = &cursors[&key()].followers[0];
+    assert_eq!(held.vouched.map(|vouched| vouched.offset), Some(5));
+    assert_eq!(marks.offset(&watch_key(&key()), 4).unwrap_or(0), 0);
+}

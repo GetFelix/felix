@@ -22,15 +22,15 @@ mod message;
 mod replicate;
 
 pub use election::{
-    FenceElection, MAX_SET_MEMBERS, MAX_SET_NODE_BYTES, PreVote, PreVoteAnswer, PreVoteRefusal,
-    ReplicaSetView, SetMember,
+    FenceElection, MAX_EARLIER_SETS, MAX_SET_MEMBERS, MAX_SET_NODE_BYTES, PreVote, PreVoteAnswer,
+    PreVoteRefusal, ReplicaSetView, SetMember,
 };
 pub use error_code::ErrorCode;
 pub use fence::{Fence, FenceOk, PeerCapabilities, Ping, Pong, ReplicateFetch};
 pub use forward::{
     AckMode, CacheOpKind, ForwardCacheCondition, ForwardCacheError, ForwardCacheOk, ForwardCacheOp,
-    ForwardCacheOutcome, ForwardLease, ForwardPublish, ForwardPublishError, ForwardPublishOk,
-    LeaseForwardCacheOk, NotLeader,
+    ForwardCacheOutcome, ForwardLease, ForwardProducer, ForwardPublish, ForwardPublishError,
+    ForwardPublishOk, LeaseForwardCacheOk, NotLeader,
 };
 pub use handshake::{Hello, HelloOk};
 pub use header::{

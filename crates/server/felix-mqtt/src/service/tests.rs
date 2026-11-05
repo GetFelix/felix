@@ -109,10 +109,12 @@ impl Authenticator for FakeAuth {
         match (tenant_id, token) {
             ("acme", "good") => {
                 let revoke = Arc::clone(&self.revoke);
-                let mut principal = Principal::anonymous("acme").with_revocation(move || {
-                    let revoke = Arc::clone(&revoke);
-                    Box::pin(async move { revoke.notified().await })
-                });
+                let mut principal = Principal::anonymous("acme")
+                    .with_credential(crate::Credential::new(token))
+                    .with_revocation(move || {
+                        let revoke = Arc::clone(&revoke);
+                        Box::pin(async move { revoke.notified().await })
+                    });
                 if let Some(at) = self.expires_at {
                     principal = principal.with_expiry(at);
                 }

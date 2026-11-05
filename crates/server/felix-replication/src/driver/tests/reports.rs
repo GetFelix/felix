@@ -1066,3 +1066,198 @@ async fn a_fence_promised_away_by_a_majority_reports_the_refusal() {
     assert_eq!(report.refused, Some(refused(4)));
     assert_eq!(report.leader_offset, None, "a refusal measures no tail");
 }
+
+/// Offers the fence's capabilities and answers every fence that its ballot
+/// already holds generation 7, as a follower whose own standing persisted
+/// its ballot and never opened does.
+struct SupersededFollowers;
+
+impl PeerRequester for SupersededFollowers {
+    async fn request(
+        &self,
+        _node_id: &str,
+        _addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, PeerError> {
+        match message {
+            InternalMessage::Fence(fence) => Ok(InternalMessage::ReplicateError(
+                felix_wire::internal::ReplicateError {
+                    correlation_id: fence.correlation_id,
+                    code: felix_wire::internal::ErrorCode::FencedEpoch,
+                    expected_offset: 0,
+                    detail: crate::replica::superseded_detail(7, fence.shard.generation),
+                },
+            )),
+            other => panic!("unexpected {:?}", other.kind()),
+        }
+    }
+
+    async fn capabilities(
+        &self,
+        _node_id: &str,
+        _addr: SocketAddr,
+    ) -> std::result::Result<felix_wire::internal::PeerCapabilities, PeerError> {
+        Ok(crate::promotion::REQUIRED)
+    }
+}
+
+/// **A leader whose fence a replica answers with a newer ballot no
+/// assignment named reports the generation refused** (#1914). Elections
+/// that withdrew their standings leave such ballots; the control plane
+/// never hears of them, so without the report it names this broker at a
+/// generation that can never be fenced and waits on silence for good.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fence_met_by_a_newer_ballot_reports_the_refusal() {
+    let (broker, _dir) = leader_with(3).await;
+    let (control_plane, received) = recording_control_plane().await;
+    let shutdown = CancellationToken::new();
+    let driver = spawn(
+        Arc::new(SupersededFollowers),
+        broker,
+        router(LOCAL, &["broker-b", "broker-c"], 4),
+        Arc::new(Unfenced),
+        Arc::new(FencingAtFour),
+        published(),
+        Some(control_plane.reporter(shutdown.clone())),
+        Duration::from_millis(50),
+        Arc::default(),
+        RebuildPolicy::default(),
+        MoveThrottle::unlimited(),
+        shutdown.clone(),
+    );
+
+    let report = first_report(&received, Duration::from_secs(5)).await;
+    shutdown.cancel();
+    driver.stop().await;
+    let report = report.expect("no report of the refused fence");
+    assert_eq!(report.generation, 4);
+    assert_eq!(
+        report.refused,
+        Some(RefusedGeneration::set_unknown(4)),
+        "refused naming no node, so placement names it again one up"
+    );
+}
+
+/// [`PromisedAwayFollowers`] that check sets, so a fence under
+/// `joint_fence` needs the set it leaves. Any fence that went out would come
+/// back promised to broker-d.
+struct ElectingFollowers;
+
+impl PeerRequester for ElectingFollowers {
+    async fn request(
+        &self,
+        node_id: &str,
+        addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, PeerError> {
+        PromisedAwayFollowers.request(node_id, addr, message).await
+    }
+
+    async fn capabilities(
+        &self,
+        _node_id: &str,
+        _addr: SocketAddr,
+    ) -> std::result::Result<felix_wire::internal::PeerCapabilities, PeerError> {
+        Ok(crate::promotion::REQUIRED.union(felix_wire::internal::PeerCapabilities::ELECTION))
+    }
+
+    fn offers_election(&self) -> bool {
+        true
+    }
+}
+
+/// The first report of a leader at generation 4 under `joint_fence` whose
+/// watch saw nothing before 4, with generation 4's own set kept in its log,
+/// with its own ballot, as a leader keeps that opened at 4 before
+/// `joint_fence` was on, or none.
+/// The first report naming a refusal, or none within `within`.
+async fn joint_fence_refusal(keep_own_set: bool, within: Duration) -> Option<ShardReplicaStatus> {
+    use felix_common::fleet::{FleetGate, GENERATION_START, JOINT_FENCE, MAJORITY_ACK};
+
+    let (broker, _dir) = leader_with(3).await;
+    let routes = router(LOCAL, &["broker-b", "broker-c"], 4);
+    if keep_own_set {
+        let route = routes.snapshot().get(&key()).cloned().expect("route");
+        let log = broker
+            .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+            .await
+            .expect("log");
+        log.accept_generation(4, Some(LOCAL))
+            .await
+            .expect("own ballot at 4");
+        log.accept_set(crate::replica_set::kept(&route, None))
+            .await
+            .expect("keep generation 4's set");
+    }
+    let (control_plane, received) = recording_control_plane().await;
+    let names = [GENERATION_START, MAJORITY_ACK, JOINT_FENCE].map(|feature| feature.name());
+    let fleet = FleetGate::new(names.to_vec());
+    fleet.restart(names.to_vec());
+    let published = Published {
+        marks: Arc::new(QuorumMarks::with_fleet(Arc::new(fleet))),
+        ..published()
+    };
+    let shutdown = CancellationToken::new();
+    let driver = spawn(
+        Arc::new(ElectingFollowers),
+        broker,
+        routes,
+        Arc::new(Unfenced),
+        Arc::new(FencingAtFour),
+        published,
+        Some(control_plane.reporter(shutdown.clone())),
+        Duration::from_millis(50),
+        Arc::default(),
+        RebuildPolicy::default(),
+        MoveThrottle::unlimited(),
+        shutdown.clone(),
+    );
+
+    let refusal = tokio::time::timeout(within, async {
+        loop {
+            let found = received
+                .lock()
+                .expect("lock")
+                .iter()
+                .find(|report| report.refused.is_some())
+                .cloned();
+            if let Some(report) = found {
+                return report;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .ok();
+    shutdown.cancel();
+    driver.stop().await;
+    refusal
+}
+
+/// **Under `joint_fence`, a leader that cannot learn the set its generation
+/// leaves reports the generation refused, naming no node** (#1872). Its log
+/// keeps generation 4's own set without the one before, and its watch saw
+/// nothing before 4, as after a restart. Without the report its fence stays
+/// pending and the control plane, which hears nothing, never names it again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fence_with_an_unknown_set_before_reports_the_generation_refused() {
+    let report = joint_fence_refusal(true, Duration::from_secs(5))
+        .await
+        .expect("no report of the unfenceable generation");
+    assert_eq!(report.generation, 4);
+    assert_eq!(report.refused, Some(RefusedGeneration::set_unknown(4)));
+    assert_eq!(report.leader_offset, None, "a refusal measures no tail");
+}
+
+/// **A leader with no kept set reports no refusal** (#1872). It may be a
+/// failover's new leader whose watch started from a snapshot: the set at 3
+/// can still be acknowledging behind a partition, and a rename to 5 would
+/// leave it unfenced. Its fence waits instead.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fence_with_no_kept_set_reports_no_refusal() {
+    let refusal = joint_fence_refusal(false, Duration::from_secs(2)).await;
+    assert_eq!(
+        refusal, None,
+        "asked for a rename with no evidence nothing came before"
+    );
+}

@@ -210,6 +210,13 @@ pub enum Kind {
     /// separate kind so an answer that does not say it is one stays byte for
     /// byte what an older leader reads.
     ReplicateLearnerOk = 47,
+    /// `ElectionFence` followed by the older sets the fence also needs a
+    /// majority of: a count (at least one) and the sets. Sent only to a peer
+    /// that offered [`PeerCapabilities::KEPT_SETS`]; a fence with no older
+    /// set travels as kind 41, byte for byte as before.
+    ///
+    /// [`PeerCapabilities::KEPT_SETS`]: super::PeerCapabilities::KEPT_SETS
+    ElectionKeptFence = 48,
     /// `ReplicateTimedRecords` followed by each record's key-and-headers
     /// block. An older follower refuses it rather than storing the records
     /// without their blocks.
@@ -220,6 +227,10 @@ pub enum Kind {
     /// block. An older owner refuses it rather than writing the records
     /// without their blocks.
     HeaderedForwardPublish = 51,
+    /// `HeaderedForwardPublish` followed by the producer id and batch
+    /// sequence it is applied under. An older owner refuses it rather than
+    /// writing the batch without the sequence check.
+    SequencedForwardPublish = 52,
 }
 
 impl Kind {
@@ -274,9 +285,11 @@ impl Kind {
             45 => Ok(Kind::LeaseForwardCacheOp),
             46 => Ok(Kind::LeaseForwardCacheOk),
             47 => Ok(Kind::ReplicateLearnerOk),
+            48 => Ok(Kind::ElectionKeptFence),
             49 => Ok(Kind::ReplicateHeaderedRecords),
             50 => Ok(Kind::ReplicateHeaderedFetch),
             51 => Ok(Kind::HeaderedForwardPublish),
+            52 => Ok(Kind::SequencedForwardPublish),
             other => Err(Error::UnsupportedInternalKind(other)),
         }
     }

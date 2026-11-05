@@ -715,6 +715,17 @@ async fn open_fenced(
             );
             false
         }
+        Outcome::SetUnknown { why } => {
+            tracing::warn!(
+                stream = %key.stream,
+                shard = key.shard,
+                generation,
+                why = %why,
+                "the set this generation leaves is not known here; reporting it refused",
+            );
+            metrics::record_fence_set_unknown();
+            false
+        }
         Outcome::Refused {
             promised_to, why, ..
         } => {
@@ -724,7 +735,8 @@ async fn open_fenced(
                 generation,
                 promised_to = %promised_to,
                 why = %why,
-                "a replica promised the generation to another node and no majority took it; reporting the refusal",
+                "replicas promised the generation to another node or took a newer one, and no \
+                 majority took it; reporting the refusal",
             );
             false
         }

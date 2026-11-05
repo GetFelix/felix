@@ -1,4 +1,5 @@
 //! What a test asks for when it starts a cluster.
+use std::time::Duration;
 
 /// How to build a cluster.
 #[derive(Clone)]
@@ -59,6 +60,12 @@ pub struct ClusterConfig {
     /// to turn it on. Needs brokers built with debug assertions, which honour
     /// `FELIX_TEST_FLEET_FEATURES`. Off by default.
     pub joint_fence: bool,
+    /// How long the control plane waits on a silent broker before it marks
+    /// it down, plus the quarter it adds before re-placing its shards. One
+    /// second by default, so failure tests see a stopped broker leave in
+    /// seconds; a test that needs elections to run first sets a deployment's
+    /// 15 seconds.
+    pub node_expiry: Duration,
 }
 
 impl Default for ClusterConfig {
@@ -80,6 +87,7 @@ impl Default for ClusterConfig {
             proxy_links: false,
             power_loss: false,
             joint_fence: false,
+            node_expiry: Duration::from_secs(1),
         }
     }
 }
@@ -103,6 +111,8 @@ pub struct StreamSpec {
     /// Whether the stream is durable. On by default; off makes it in-memory,
     /// for measurements that must not include the disk.
     pub durable: bool,
+    /// The MQTT topic prefix the stream is mounted at, if any.
+    pub mount: Option<String>,
 }
 
 impl StreamSpec {
@@ -111,6 +121,14 @@ impl StreamSpec {
     pub fn in_memory(self) -> Self {
         Self {
             durable: false,
+            ..self
+        }
+    }
+
+    /// The same stream, mounted at the MQTT topic prefix `prefix`.
+    pub fn mounted_at(self, prefix: impl Into<String>) -> Self {
+        Self {
+            mount: Some(prefix.into()),
             ..self
         }
     }
@@ -133,6 +151,7 @@ impl StreamSpec {
             consistency: "Leader".to_string(),
             region: None,
             durable: true,
+            mount: None,
         }
     }
 
@@ -147,6 +166,7 @@ impl StreamSpec {
             consistency: "Quorum".to_string(),
             region: None,
             durable: true,
+            mount: None,
         }
     }
 
@@ -159,6 +179,7 @@ impl StreamSpec {
             consistency: "Leader".to_string(),
             region: None,
             durable: true,
+            mount: None,
         }
     }
 }

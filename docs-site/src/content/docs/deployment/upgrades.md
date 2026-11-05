@@ -573,6 +573,11 @@ anyway is refused as invalid (`unsupported frame flags`) and nothing is stored.
   `headers_unsupported` in `felix_broker_replication_shipped_total`. The
   finalize needs every broker to report the feature, so no follower is held
   once it is done.
+- **MQTT forwards** need the owner to be on a build that offers
+  `SEQUENCED_FORWARDS` too. During a rolling upgrade, an MQTT message that
+  reaches an upgraded broker for a shard an older broker owns is refused
+  `not_owner`, which is what every broker did before forwarding existed. It
+  is forwarded once the owner is upgraded.
 - **Kafka keys and headers** reach this format only with
   `FELIX_KAFKA_RECORD_HEADERS=true`, which is off by default. Enabling the
   Kafka listener alone never moves a log to v8, though nearly every Kafka
@@ -713,6 +718,13 @@ finalize it. See the runbook above.
 | Control-plane metadata version (Raft) | Safe until something at the new level is written, such as a jump-hash stream. After that, **not** below it: a member from metadata version 3 on refuses entries and snapshots with fields it does not know, and stops; an older one silently drops them. Roll the member forward |
 | `INTERNAL_VERSION` | Cutover again, in both directions |
 | `FORMAT_VERSION` | **Not possible.** Restore from backup |
+
+A broker rolled back from 0.7 can refuse a shard's replica set file. In the
+short window before a 0.7 broker reads whether `joint_fence` is finalized, it
+keeps older replica sets in that file, and an older build fails to open a log
+whose file has them. Start the broker on 0.7 again and roll it back once the
+shard's next replica set is written; a broker that knows `joint_fence` is off
+drops the older sets at that write.
 
 ## What this does not cover
 

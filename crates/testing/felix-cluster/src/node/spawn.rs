@@ -9,12 +9,12 @@ use super::{
     BrokerNode, boot_id_file, clock_fault_file, partition_file, storage_dir, storage_fault_file,
 };
 use crate::proxy::Links;
-use crate::{ClusterConfig, ControlPlane, Credentials, pki, ports};
+use crate::{ClusterConfig, Credentials, pki, ports};
 
 /// Start one broker process, behind `links` when the cluster proxies them.
 pub(crate) fn spawn_broker(
     binary: &PathBuf,
-    control_plane: &ControlPlane,
+    control_plane_url: &str,
     credentials: &Credentials,
     config: &ClusterConfig,
     root: &Path,
@@ -37,7 +37,7 @@ pub(crate) fn spawn_broker(
             let route = links.route(&node_id, internal_addr)?;
             (route.advertise, route.control_plane_url)
         }
-        None => (internal_addr, control_plane.base_url.clone()),
+        None => (internal_addr, control_plane_url.to_string()),
     };
     let metrics_addr = ports::free_tcp()?;
     let data_dir = root.join(&node_id);
@@ -114,9 +114,7 @@ pub(crate) fn spawn_broker(
         command.env("FELIX_STORAGE_POWER_LOSS_ROOT", &storage);
     }
     if config.joint_fence {
-        command
-            .env("FELIX_INTERNAL_ELECTION", "true")
-            .env("FELIX_TEST_FLEET_FEATURES", joint_fence_features());
+        command.envs(joint_fence_broker_env());
     }
     command.envs(config.broker_env.iter().map(|(key, value)| (key, value)));
     if let Some(env) = config.node_env.get(index) {
@@ -193,6 +191,21 @@ pub fn broker_binary() -> Result<PathBuf> {
 
 /// What a broker of this build reports, plus `joint_fence` and the
 /// `ELECTION` capability it offers under `FELIX_INTERNAL_ELECTION`.
+/// The broker environment [`ClusterConfig::joint_fence`] sets: every broker
+/// offers `ELECTION` and reports `joint_fence`. Alone, in
+/// `ClusterConfig::broker_env`, nothing finalizes the feature, so a test can
+/// run without it and finalize it later with
+/// [`Cluster::finalize_fleet_features`](crate::Cluster::finalize_fleet_features).
+pub fn joint_fence_broker_env() -> Vec<(String, String)> {
+    vec![
+        ("FELIX_INTERNAL_ELECTION".to_string(), "true".to_string()),
+        (
+            "FELIX_TEST_FLEET_FEATURES".to_string(),
+            joint_fence_features(),
+        ),
+    ]
+}
+
 fn joint_fence_features() -> String {
     use felix_common::fleet::{IMPLEMENTED, JOINT_FENCE, NON_VOTING, PEER_ELECTION, START_HOLDERS};
     IMPLEMENTED

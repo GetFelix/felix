@@ -102,8 +102,11 @@ impl InternalMessage {
     /// The kind this message is sent as.
     pub fn kind(&self) -> Kind {
         match self {
-            // The credential decides the kind, so a forwarder that has one
-            // always sends the kind an owner will check it on.
+            // A named producer decides the kind first: dropping it would lose
+            // the owner's duplicate check. Then the credential, so a
+            // forwarder that has one always sends the kind an owner will
+            // check it on.
+            Self::ForwardPublish(m) if m.producer.is_some() => Kind::SequencedForwardPublish,
             Self::ForwardPublish(m)
                 if m.headers
                     .as_deref()
@@ -143,6 +146,9 @@ impl InternalMessage {
             Self::ReplicateCounterBootstrap(_) => Kind::ReplicateCounterBootstrap,
             Self::ReplicateRebuild(_) => Kind::ReplicateRebuild,
             Self::ReplicateMarkedRecords(m) => records_kind(m, Kind::ReplicateMarkedRecords),
+            Self::Fence(m) if m.election.as_ref().is_some_and(|e| !e.earlier.is_empty()) => {
+                Kind::ElectionKeptFence
+            }
             Self::Fence(m) if m.election.is_some() => Kind::ElectionFence,
             Self::Fence(_) => Kind::Fence,
             Self::FenceOk(_) => Kind::FenceOk,
@@ -165,6 +171,9 @@ impl InternalMessage {
     /// any. The pool refuses to send one the peer did not offer.
     pub fn required_capability(&self) -> Option<PeerCapabilities> {
         let election = match self {
+            Self::Fence(m) if m.election.as_ref().is_some_and(|e| !e.earlier.is_empty()) => {
+                Some(PeerCapabilities::ELECTION.union(PeerCapabilities::KEPT_SETS))
+            }
             Self::Fence(m) if m.election.is_some() => Some(PeerCapabilities::ELECTION),
             Self::PreVote(_) | Self::PreVoteAnswer(_) => Some(PeerCapabilities::ELECTION),
             _ if self.set_generation().is_some() => Some(PeerCapabilities::ELECTION),
@@ -177,6 +186,11 @@ impl InternalMessage {
                 | Kind::HeaderedForwardPublish
         )
         .then_some(PeerCapabilities::RECORD_HEADERS);
+        let headers = if self.kind() == Kind::SequencedForwardPublish {
+            Some(PeerCapabilities::RECORD_HEADERS.union(PeerCapabilities::SEQUENCED_FORWARDS))
+        } else {
+            headers
+        };
         match (election, headers) {
             (Some(election), Some(headers)) => Some(election.union(headers)),
             (election, headers) => election.or(headers),

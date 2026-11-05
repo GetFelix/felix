@@ -3,6 +3,7 @@
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
+use felix_controlplane_service::config::NodeLivenessConfig;
 
 use super::{Cluster, READY_TIMEOUT};
 use crate::node::{FAILURE_LOG_LINES, broker_binary, spawn_broker};
@@ -35,7 +36,14 @@ impl Cluster {
             .build()
             .context("build harness HTTP client")?;
 
-        let control_plane = ControlPlane::start(&config.tenant_id).await?;
+        let control_plane = ControlPlane::start_with(
+            &config.tenant_id,
+            NodeLivenessConfig {
+                expiry_timeout_ms: config.node_expiry.as_millis() as u64,
+                ..crate::controlplane::LIVENESS
+            },
+        )
+        .await?;
         let credentials = control_plane.credentials(&config.tenant_id);
 
         // Metadata first: a broker syncs streams at startup, and one that starts
@@ -55,7 +63,7 @@ impl Cluster {
             nodes.push(
                 spawn_broker(
                     &binary,
-                    &control_plane,
+                    &control_plane.base_url,
                     &credentials,
                     &config,
                     root.path(),
@@ -168,13 +176,10 @@ impl Cluster {
     /// another go, not a different one, and a durable log it already wrote must
     /// still be there.
     pub(super) fn respawn(&mut self, index: usize) -> Result<()> {
-        let control_plane = self
-            .control_plane
-            .as_ref()
-            .ok_or_else(|| anyhow!("control plane is gone"))?;
+        let control_plane_url = self.control_plane_base_url()?;
         let replacement = spawn_broker(
             &self.binary,
-            control_plane,
+            &control_plane_url,
             &self.credentials,
             &self.config,
             self._root.path(),
@@ -383,6 +388,7 @@ async fn seed_metadata(
                 // recovered their logs. An ephemeral stream would let a broker
                 // report ready before it could serve anything.
                 "durable": spec.durable,
+                "mount": spec.mount,
             }),
         )
         .await

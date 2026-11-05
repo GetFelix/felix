@@ -251,7 +251,7 @@ fn a_trim_does_not_count_a_learner_toward_the_rest_holding_the_tail() {
 
 /// Three brokers with storage ids 1 to 3, a durable `Quorum` stream of three
 /// copies led by broker-b, and `joint_fence` finalized when asked.
-async fn cluster(joint_fence: bool) -> (InMemoryStore, ShardAssignment) {
+pub(super) async fn cluster(joint_fence: bool) -> (InMemoryStore, ShardAssignment) {
     let store = InMemoryStore::new(StoreConfig {
         changes_limit: 1000,
         change_retention_max_rows: Some(1000),
