@@ -63,28 +63,6 @@ fn copy_broker_logs(data_dir: &Path, dest: &Path, node_id: &str) {
     );
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_restarted_brokers_previous_log_is_kept_beside_its_current_one() {
-        let data = tempfile::tempdir().unwrap();
-        let dest = tempfile::tempdir().unwrap();
-        std::fs::write(data.path().join("broker.log"), "after").unwrap();
-        std::fs::write(data.path().join("broker.log.previous"), "before").unwrap();
-        copy_broker_logs(data.path(), dest.path(), "node-1");
-        assert_eq!(
-            std::fs::read_to_string(dest.path().join("node-1.log")).unwrap(),
-            "after"
-        );
-        assert_eq!(
-            std::fs::read_to_string(dest.path().join("node-1.log.previous")).unwrap(),
-            "before"
-        );
-    }
-}
-
 /// Send this process's tracing to `<dir>/controlplane-<test binary>.log`.
 ///
 /// The control plane runs inside the test process, so nothing records what it
@@ -126,4 +104,26 @@ pub(crate) fn capture_control_plane() {
             .with_writer(Mutex::new(file))
             .try_init();
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_restarted_brokers_previous_log_is_kept_beside_its_current_one() {
+        let data = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        std::fs::write(data.path().join("broker.log"), "after").unwrap();
+        std::fs::write(data.path().join("broker.log.previous"), "before").unwrap();
+        copy_broker_logs(data.path(), dest.path(), "node-1");
+        assert_eq!(
+            std::fs::read_to_string(dest.path().join("node-1.log")).unwrap(),
+            "after"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dest.path().join("node-1.log.previous")).unwrap(),
+            "before"
+        );
+    }
 }
