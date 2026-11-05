@@ -53,6 +53,11 @@ const STANDING_AT_ONCE: usize = 64;
 /// How often eligibility and stepped-down standings are looked at between
 /// changes to the suspect list.
 const TICK: Duration = Duration::from_millis(250);
+/// How long a ballot naming this broker that no standing here wrote holds
+/// it off standing. The control plane named this broker and the routes have
+/// not caught up yet, which takes a reconcile; after a restart it may be a
+/// standing this process no longer remembers, so it is not held off forever.
+const NAMED_HERE_FOR: Duration = Duration::from_secs(30);
 
 /// What one round of standing came to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +81,11 @@ struct Ctx<R> {
     /// Why each shard last could not stand, so the reason is logged once
     /// when it changes rather than every round.
     held_back: std::sync::Mutex<HashMap<ShardKey, (&'static str, String)>>,
+    /// The generation each shard last stood at here.
+    stood: std::sync::Mutex<HashMap<ShardKey, u64>>,
+    /// When a ballot naming this broker that no standing here wrote was
+    /// first seen, by generation. See [`Ctx::named_here`].
+    named_here: std::sync::Mutex<HashMap<ShardKey, (u64, Instant)>>,
     /// Test-only: while this file exists, a pre-vote waits before it asks,
     /// so a test can release two candidates' rounds together.
     pre_vote_gate: Option<std::path::PathBuf>,
@@ -85,6 +95,26 @@ impl<R> Ctx<R> {
     fn ineligible(&self, key: &ShardKey, why: &'static str) -> Round {
         self.held_back(key, why, "");
         Round::Ineligible
+    }
+
+    /// Whether this copy's ballot at `accepted` names this broker without a
+    /// standing here having written it, so the control plane named this
+    /// broker leader there and it is opening the shard. Bounded by
+    /// [`NAMED_HERE_FOR`].
+    fn named_here(&self, key: &ShardKey, accepted: u64) -> bool {
+        if self.stood.lock().expect("stood lock").get(key) == Some(&accepted) {
+            return false;
+        }
+        let now = Instant::now();
+        let mut named = self.named_here.lock().expect("named_here lock");
+        let since = match named.get(key) {
+            Some((at, since)) if *at == accepted => *since,
+            _ => {
+                named.insert(key.clone(), (accepted, now));
+                now
+            }
+        };
+        now.saturating_duration_since(since) < NAMED_HERE_FOR
     }
 
     fn held_back(&self, key: &ShardKey, why: &'static str, answers: &str) {
@@ -131,6 +161,8 @@ pub fn spawn<R: PeerRequester + Send + Sync + 'static>(
         elections,
         suspects,
         held_back: Default::default(),
+        stood: Default::default(),
+        named_here: Default::default(),
         pre_vote_gate: pre_vote_gate(),
     });
     Some(tokio::spawn(run(ctx, shutdown)))
@@ -311,10 +343,23 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
         );
     }
 
+    // The control plane named this broker leader above the route this round
+    // read, and the lifecycle took that ballot before the routes caught up.
+    // The shard is led here: standing would raise this copy's own ballot past
+    // the generation it serves, and it would never count a mark there again.
+    let accepted = log.accepted_generation();
+    if accepted > route.generation
+        && log
+            .accepted_leader()
+            .is_some_and(|leader| *leader == *local)
+        && ctx.named_here(key, accepted)
+    {
+        return ctx.ineligible(key, "this broker was named leader at a newer generation");
+    }
     // Above the route's generation too: the control plane may have named
     // one this replica was never fenced at, and standing there would collide
     // with that leader's.
-    let generation = log.accepted_generation().max(route.generation) + 1;
+    let generation = accepted.max(route.generation) + 1;
     // The control plane adopts an election only this far past its own
     // generation, so a standing beyond it could never be handed over and its
     // route would never drop.
@@ -357,8 +402,12 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
             return Round::Failed;
         }
     }
-    // Someone may have stood meanwhile, or the leader come back.
+    // Someone may have stood meanwhile, the leader come back, or the routes
+    // named a new leader, perhaps this broker.
     let still = ctx.suspects.current().contains(&route.leader.node_id)
+        && ctx.router.snapshot().get(key).is_some_and(|now| {
+            now.leader.node_id == route.leader.node_id && now.generation == route.generation
+        })
         && log.accepted_generation() < generation
         && ctx
             .elections
@@ -374,6 +423,10 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
     ) {
         return Round::Failed;
     }
+    ctx.stood
+        .lock()
+        .expect("stood lock")
+        .insert(key.clone(), generation);
     tracing::info!(
         stream = %key.stream,
         shard = key.shard,

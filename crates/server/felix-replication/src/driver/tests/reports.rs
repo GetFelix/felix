@@ -1261,3 +1261,81 @@ async fn a_fence_with_no_kept_set_reports_no_refusal() {
         "asked for a rename with no evidence nothing came before"
     );
 }
+
+/// The first report from a driver leading `key()` at generation 4 that
+/// names a refusal, its log holding a ballot at `ballot` from `ballot_leader`,
+/// or none within two seconds.
+async fn ballot_refusal(ballot: u64, ballot_leader: &str) -> Option<ShardReplicaStatus> {
+    let (broker, _dir) = leader_with(3).await;
+    let log = broker
+        .shard_log_for(
+            felix_broker::LogKind::Stream,
+            TENANT,
+            NAMESPACE,
+            STREAM,
+            0,
+            None,
+            None,
+        )
+        .await
+        .expect("log");
+    log.accept_generation(ballot, Some(ballot_leader))
+        .await
+        .expect("ballot");
+    let (control_plane, received) = recording_control_plane().await;
+    let shutdown = CancellationToken::new();
+    let driver = spawn(
+        Arc::new(AcceptingFollower::default()),
+        broker,
+        router(LOCAL, &["broker-b", "broker-c"], 4),
+        Arc::new(Unfenced),
+        Arc::new(crate::promotion::NoGate),
+        published(),
+        Some(control_plane.reporter(shutdown.clone())),
+        Duration::from_millis(50),
+        Arc::default(),
+        RebuildPolicy::default(),
+        MoveThrottle::unlimited(),
+        shutdown.clone(),
+    );
+    let refusal = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let found = received
+                .lock()
+                .expect("lock")
+                .iter()
+                .find(|report| report.refused.is_some())
+                .cloned();
+            if let Some(report) = found {
+                return report;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .ok();
+    shutdown.cancel();
+    driver.stop().await;
+    refusal
+}
+
+/// **An open leader whose own ballot is past its generation reports the
+/// generation refused** (#1933). A standing it gave up leaves the ballot;
+/// the leader then counts its own copy for nothing, and with a follower down
+/// every write waits out its quorum timeout while the rest confirm. Placement
+/// names it again one up.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_leader_past_its_generation_by_its_own_ballot_reports_the_refusal() {
+    let report = ballot_refusal(5, LOCAL)
+        .await
+        .expect("no report of the generation its own ballot left");
+    assert_eq!(report.generation, 4);
+    assert_eq!(report.refused, Some(RefusedGeneration::set_unknown(4)));
+}
+
+/// **A leader whose copy took another node's ballot reports nothing for
+/// it**: that node may be standing, and rule 5 deposes this leader instead.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_leader_past_its_generation_by_another_ballot_reports_no_refusal() {
+    assert_eq!(ballot_refusal(5, "broker-b").await, None);
+}

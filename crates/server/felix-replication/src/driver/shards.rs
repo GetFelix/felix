@@ -255,6 +255,9 @@ struct ShardState {
     /// by too many replicas to open, or could not learn the set it leaves.
     /// Reported each tick, as a refused open is.
     fence_refused: Option<RefusedGeneration>,
+    /// The last pass found this broker's own ballot past the generation it
+    /// leads. Reported each tick, as a refused open is.
+    ballot_refused: Option<RefusedGeneration>,
     /// What its last pass left.
     last: Option<LastPass>,
 }
@@ -379,10 +382,11 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
     /// two, in case the set has changed since.
     fn refusal(&self, key: &ShardKey, route: &felix_router::Route) -> Option<RefusedGeneration> {
         self.refused_open(key, route).or_else(|| {
-            self.states
-                .get(key)?
+            let state = self.states.get(key)?;
+            state
                 .fence_refused
                 .clone()
+                .or_else(|| state.ballot_refused.clone())
                 .filter(|refused| {
                     refused.generation == route.generation
                         && route.leader.node_id == self.cx.router.local_node_id()
@@ -1006,6 +1010,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             again,
             drain_pending,
             behind,
+            ballot_above,
             ..
         } = pass;
         // Busy from earlier passes too: a follower this pass launched nobody
@@ -1075,6 +1080,19 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         }
         state.owed = owed;
         state.settled_at = settled.then_some(generation);
+        if let Some(ballot) = ballot_above
+            && state.ballot_refused.is_none()
+        {
+            tracing::warn!(
+                stream = %key.stream,
+                shard = key.shard,
+                generation,
+                ballot,
+                "this broker's own ballot is past the generation it leads, so no write \
+                 there can be acknowledged; reporting the generation refused",
+            );
+        }
+        state.ballot_refused = ballot_above.map(|_| RefusedGeneration::set_unknown(generation));
         state.last = Some(LastPass {
             scan,
             halted,
