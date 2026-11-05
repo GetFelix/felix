@@ -119,7 +119,7 @@ impl Cluster {
                 .ok_or_else(|| anyhow!("control plane is gone"))?;
             let node = spawn_broker(
                 &self.binary,
-                control_plane,
+                &control_plane.base_url,
                 &self.credentials,
                 &self.config,
                 self._root.path(),
@@ -156,6 +156,44 @@ impl Cluster {
             },
         )
         .await
+    }
+
+    /// Start a stopped broker again and return at once, without waiting for it
+    /// to be ready. Works while the control plane is crashed, which is the
+    /// point: a broker started then waits for the control plane before it
+    /// opens its storage. Pair it with [`Self::await_node_ready`].
+    pub fn start_node_unready(&mut self, node_id: &str) -> Result<()> {
+        let index = self
+            .nodes
+            .iter()
+            .position(|node| node.node_id == node_id)
+            .ok_or_else(|| anyhow!("unknown node {node_id}"))?;
+        if self.nodes[index].is_running() {
+            bail!("{node_id} is still running");
+        }
+        let log = self.nodes[index].data_dir.join("broker.log");
+        let _ = std::fs::rename(&log, log.with_extension("log.previous"));
+        self.respawn(index)
+    }
+
+    /// Wait for a broker started with [`Self::start_node_unready`] to report
+    /// ready and the control plane to count it placeable.
+    pub async fn await_node_ready(&mut self, node_id: &str) -> Result<()> {
+        let index = self
+            .nodes
+            .iter()
+            .position(|node| node.node_id == node_id)
+            .ok_or_else(|| anyhow!("unknown node {node_id}"))?;
+        self.await_placeable(index).await
+    }
+
+    /// The control plane's address, whether it is running or crashed.
+    pub(super) fn control_plane_base_url(&self) -> Result<String> {
+        match (&self.control_plane, &self.crashed_control_plane) {
+            (Some(control_plane), _) => Ok(control_plane.base_url.clone()),
+            (None, Some(stopped)) => Ok(stopped.base_url()),
+            (None, None) => bail!("control plane is gone"),
+        }
     }
 
     /// Wait for the broker at `index` to report ready and the control plane
