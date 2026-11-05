@@ -7,12 +7,16 @@ use felix_broker_service::node::run_with_shutdown;
 use felix_common::lifecycle;
 
 fn main() -> Result<()> {
-    tokio::runtime::Builder::new_multi_thread()
+    let result = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .on_thread_park(name_runtime_worker)
         .build()
         .context("start the async runtime")?
-        .block_on(run())
+        .block_on(run());
+    // Log lines are written from their own thread, which does not outlive
+    // `main`.
+    felix_broker_service::observability::log_writer::flush();
+    result
 }
 
 /// Rename a runtime worker the first time it parks (Linux only). Workers and

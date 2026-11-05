@@ -272,6 +272,27 @@ impl DurableStorage {
         Some(StreamLog { log })
     }
 
+    /// What [`DurableStorage::open_stream_for`] would return (or
+    /// [`DurableStorage::open_stream`] with `None`), when the log is open
+    /// already; `None` without creating or recovering anything otherwise.
+    pub fn opened_stream_for(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        incarnation: Option<u64>,
+    ) -> Option<StreamLog> {
+        let key = ShardKey {
+            tenant: tenant.to_string(),
+            namespace: namespace.to_string(),
+            stream: stream.to_string(),
+            shard,
+        };
+        let log = self.provider.opened_incarnation(&key, incarnation)?;
+        Some(StreamLog { log })
+    }
+
     /// Close one stream shard's log, for a shard this broker no longer holds.
     ///
     /// Every [`StreamLog`] already handed out for it fails from here on; the

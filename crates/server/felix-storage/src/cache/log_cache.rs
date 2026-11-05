@@ -664,6 +664,31 @@ impl LogCache {
             .await)
     }
 
+    /// What [`LogCache::shard_log_for`] would return, when the shard is open
+    /// already; `None` without creating or recovering anything otherwise.
+    /// `None` for `incarnation` checks nothing, as [`LogCache::shard_log`] does.
+    pub async fn opened_shard_log(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+        incarnation: Option<u64>,
+    ) -> Option<DiskLog> {
+        let held = self
+            .incarnations
+            .resolve(tenant, namespace, cache)
+            .filter(|held| incarnation.is_none_or(|expected| expected == *held))?;
+        let id = (
+            tenant.to_string(),
+            namespace.to_string(),
+            cache.to_string(),
+            shard,
+            held,
+        );
+        Some(self.shards.get_open(&id)?.current_log().await)
+    }
+
     /// [`LogCache::shard_log`], or [`LogCache::shard_log_at`] with a base,
     /// only when `incarnation` is the one set for `name`: refused with
     /// [`StorageError::Closed`] otherwise, before anything is created. See

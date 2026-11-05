@@ -1997,11 +1997,8 @@ async fn open_broker_log(
     key: &ShardKey,
     incarnation: u64,
 ) -> Option<felix_broker::StreamLog> {
-    let broker = std::sync::Arc::clone(broker);
-    let key = key.clone();
-    let runtime = tokio::runtime::Handle::current();
-    let opened = tokio::task::spawn_blocking(move || {
-        runtime.block_on(broker.shard_log_for(
+    broker
+        .shard_log_off_runtime(
             kind,
             &key.tenant_id,
             &key.namespace,
@@ -2009,14 +2006,8 @@ async fn open_broker_log(
             key.shard,
             None,
             (incarnation != 0).then_some(incarnation),
-        ))
-    })
-    .await;
-    match opened {
-        Ok(log) => log,
-        Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
-        Err(_) => None,
-    }
+        )
+        .await
 }
 
 /// Accept `generation` on a log this broker is about to lead, failing if the
