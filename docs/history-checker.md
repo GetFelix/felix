@@ -80,6 +80,8 @@ before B was invoked" means the same thing to every client.
 | 10 | No lost deliveries | A live subscriber is delivered a record the final log does not hold at that offset: another value is there, no record is, or the log ends before it |
 | 11 | No missing deliveries | A record in the final log sits at an offset a subscriber was told holds no event (`skipped_before`), or past the last offset the subscriber was delivered once it had time to catch up |
 
+| 12-19 | No dependency cycles | Appends and reads form a loop of "must come before" edges, so no single order explains them (see "Cycles") |
+
 Rule 8 leans on the order of the three looks. Every commit event the first
 read saw was committed before the state was read, so the state must be at
 least that commit; a commit landing in between can only make the state newer,
@@ -95,6 +97,44 @@ get that returned it completes. Every linearization then orders `u` before
 it reports only what no linearization explains and does not search for one.
 A deposed leader serving a value one write behind its successor is what it
 is for.
+
+### Cycles
+
+Rules 12 to 19 draw a graph of the operations on one list and look for a
+loop. An edge points from the operation that has to come first:
+
+- **ww**: one append sits right before another in the list.
+- **wr**: an append came first because a read saw it.
+- **rw**: a read came first because it did not see the append sitting just
+  after its last record.
+- **rt**: one operation finished before the other began.
+
+A loop means nothing can be the real order of the list. The name says what
+kind of loop it is:
+
+| Name | The loop is made of | Example |
+| --- | --- | --- |
+| `G0` | ww only | Value A sits before B, and also after B, because A appears at two offsets |
+| `G1c` | ww and wr | A read saw `B`, and `B` can only sit after that read |
+| `G-single` | exactly one rw | A read missed `B`, yet the loop puts `B` before the read |
+| `G2` | two or more rw | Two reads each missed an append the other had seen |
+| `...-realtime` | any of the above plus an rt edge | A read began after `B` was acknowledged and did not see it |
+
+The realtime forms are the ones a real log produces. `G-single-realtime` is a
+stale read: `append(B)` returned, then a read began and stopped before `B`.
+`G1c-realtime` is a read that saw a record which, by the clock, was only
+appended after the read finished. With one agreed order of offsets, the plain
+forms only appear next to a duplicate, which rule 2 already reports, so those
+are not named twice. An append whose outcome is unknown never starts an rt
+edge, because it may land late.
+
+The rw edge needs reads that stop at the true end of the log. A live
+subscriber may drop its newest records, so the cluster runs leave
+`History::exact_tails` off and report no rw edges. The simulator's reads do
+not drop their tail and turn it on. The loops are found with Tarjan's
+strongly connected components, then one short loop per component, so a large
+history costs about as much as reading it. `check_list_append(&History)`
+returns the cycles alone.
 
 Two more findings concern the harness rather than the broker.
 `incomplete-final-read` means the final read has a hole. When that happens,
@@ -117,6 +157,13 @@ The campaign only runs `Quorum` streams. Under `Quorum`, readers stop at the
 quorum mark, so a read that sees past the end of the final log is a real
 violation.
 
+> `random_correct_histories_have_no_cycle`: a seeded correct list with
+> overlapping and unknown appends, reads from the start or mid-list with
+> dropped records, and a subscriber that resumes, passes all rules over 300
+> seeds. `a_contradictory_order_is_g0`, `a_read_that_saw_the_future_is_g1c_realtime`,
+> `a_stale_read_is_g_single_realtime` and `two_anti_dependencies_are_g2`: one
+> case per cycle class.
+>
 > `random_linearizable_histories_are_valid`: histories generated from a
 > correct log, with concurrency, unknown outcomes and dropped records, pass.
 > `breaking_a_valid_history_is_caught`: losing, duplicating or failing one

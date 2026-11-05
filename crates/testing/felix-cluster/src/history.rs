@@ -33,6 +33,6 @@ mod subscriber;
 mod workload;
 
 pub use campaign::{Campaign, Mode};
-pub use checker::{Report, Rule, Violation, check};
+pub use checker::{Report, Rule, Violation, check, check_list_append};
 pub use model::History;
 pub use nemesis::{Fault, FaultFamily, FaultKind, Nemesis, RandomNemesis};
