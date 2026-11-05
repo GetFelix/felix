@@ -258,6 +258,9 @@ struct ShardState {
     /// The last pass found this broker's own ballot past the generation it
     /// leads. Reported each tick, as a refused open is.
     ballot_refused: Option<RefusedGeneration>,
+    /// The ballot past the led generation the passes have seen, and since
+    /// when. Reported only once it outlasts [`super::BALLOT_ABOVE_FOR`].
+    ballot_above_since: Option<(u64, tokio::time::Instant)>,
     /// What its last pass left.
     last: Option<LastPass>,
 }
@@ -1080,6 +1083,17 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         }
         state.owed = owed;
         state.settled_at = settled.then_some(generation);
+        let now = tokio::time::Instant::now();
+        state.ballot_above_since = ballot_above.map(|ballot| match state.ballot_above_since {
+            Some((seen, since)) if seen == ballot => (ballot, since),
+            _ => (ballot, now),
+        });
+        // A promotion's ballot lands before its route; only one that stays
+        // means a standing here was given up.
+        let ballot_above = state
+            .ballot_above_since
+            .filter(|(_, since)| now.duration_since(*since) >= super::BALLOT_ABOVE_FOR)
+            .map(|(ballot, _)| ballot);
         if let Some(ballot) = ballot_above
             && state.ballot_refused.is_none()
         {

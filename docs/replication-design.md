@@ -4631,13 +4631,17 @@ Five rules keep an election from getting stuck:
   leader's own ballot moved past the generation it serves. Its own copy then
   stopped counting toward a majority there, and every write waited out its
   quorum timeout while the followers confirmed it (issue #1933).
-- **A leader past its generation by its own ballot reports it.** If a
-  leader's own copy still holds a newer ballot of its own after its standing
-  is withdrawn, it can never acknowledge a write at the generation it
-  serves. Each tick it reports that generation refused, naming no node, and
-  logs a warning the first time. The control plane then names it one
-  generation up, as it does for any refused generation. A ballot from
-  another node is left to rule 5, since that node may be standing.
+- **A leader past its generation by its own ballot reports it.** A leader
+  whose own copy holds a newer ballot of its own cannot acknowledge a write
+  at the generation it serves. A promotion leaves that state for a moment,
+  because it takes the new ballot before the routes name the new
+  generation. A withdrawn standing leaves it for good. So once it has lasted
+  3 s, with no standing of this broker under way at that ballot, the leader
+  reports its generation refused each tick, naming no node, and logs a
+  warning the first time. The control plane then names it one generation
+  up, as it does for any refused generation. A ballot from another node is
+  left to the stepping-down rule (rule 5 of the protocol above), since that
+  node may be standing.
 
 Elections need `joint_fence` finalized first, which the control plane allows
 once every serving broker offers `ELECTION`, names start holders and keeps a
@@ -4655,6 +4659,7 @@ the kept set alone never reaches.
 > `a_withdrawn_standing_stands_again`,
 > `a_leader_past_its_generation_by_its_own_ballot_reports_the_refusal`,
 > `a_leader_past_its_generation_by_another_ballot_reports_no_refusal`,
+> `a_leader_standing_at_its_ballot_reports_no_refusal`,
 > `a_granted_pre_vote_puts_the_ballot_on_disk_then_records_the_standing`,
 > `a_refused_pre_vote_writes_nothing`,
 > `a_set_the_control_plane_does_not_record_is_not_stood_on`,

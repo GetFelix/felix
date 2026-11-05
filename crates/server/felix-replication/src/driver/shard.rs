@@ -277,8 +277,8 @@ pub(super) struct ShardPass<'a> {
     pub(super) drain_pending: bool,
     /// No follower that could still catch up holds all of the log.
     pub(super) behind: bool,
-    /// This broker's own ballot holds this newer generation, from a standing
-    /// it gave up, so it cannot count a mark at the pass's generation.
+    /// This broker's own ballot holds this newer generation, so it cannot
+    /// count a mark at the pass's generation.
     pub(super) ballot_above: Option<u64>,
 }
 
@@ -605,11 +605,12 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     if stepped_down() {
         fence.deposed(mark_key, route.generation);
     }
-    // This broker's own ballot is past the generation it leads, as a standing
-    // here leaves once it is withdrawn. The leader stops counting its own
-    // copy, so its marks stall while its followers confirm; reporting the
-    // generation refused gets it named again one up (#1933). Not while the
-    // standing is still under way: it may yet open there.
+    // This broker's own ballot is past the generation it leads: a promotion
+    // whose route has not landed yet, or a standing here that was withdrawn.
+    // In the second case the leader stops counting its own copy, so its marks
+    // stall while its followers confirm; the driver reports the generation
+    // refused if it lasts, to be named again one up (#1933). Not while a
+    // standing is under way at that ballot: it may yet open there.
     let ballot_above = {
         let accepted = log.accepted_generation();
         (accepted > route.generation
