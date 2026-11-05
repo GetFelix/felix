@@ -28,6 +28,7 @@ on:
       - "scripts/perf/**"
       - "Cargo.toml"
       - "Cargo.lock"
+      - ".cargo/config.toml"
       - "rust-toolchain.toml"
       - ".github/workflows/perf-pr.yml"
 
