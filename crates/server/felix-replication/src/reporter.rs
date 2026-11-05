@@ -336,17 +336,20 @@ pub(super) fn moving(followers: &[FollowerCursor]) -> Vec<(String, u64)> {
 /// would never be named again. A report at a later generation means the
 /// control plane acted, and ends it.
 #[derive(Default)]
-struct Refusals(BTreeMap<ShardKey, RefusedGeneration>);
+struct Refusals(BTreeMap<ShardKey, (u64, RefusedGeneration)>);
 
 impl Refusals {
     /// The refusal `report` should carry that it does not carry itself.
+    /// Only at the same stream incarnation: a stream recreated under the
+    /// name can come back at the old one's generation.
     fn carry(&mut self, report: &ShardReport) -> Option<RefusedGeneration> {
         if let Some(refused) = &report.refused {
-            self.0.insert(report.key.clone(), refused.clone());
+            self.0
+                .insert(report.key.clone(), (report.incarnation, refused.clone()));
             return None;
         }
-        let held = self.0.get(&report.key)?;
-        if report.generation > held.generation {
+        let (incarnation, held) = self.0.get(&report.key)?;
+        if report.incarnation != *incarnation || report.generation > held.generation {
             self.0.remove(&report.key);
             return None;
         }

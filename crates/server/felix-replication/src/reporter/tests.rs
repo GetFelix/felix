@@ -579,6 +579,19 @@ fn a_refusal_is_carried_until_a_later_generation() {
     let mut given_up = report("orders");
     given_up.given_up = true;
     assert_eq!(refusals.carry(&given_up), None, "a probe report");
+    let mut older = report("orders");
+    older.generation = 3;
+    assert_eq!(refusals.carry(&older), None, "an older pass");
+    assert_eq!(refusals.carry(&report("orders")), Some(refused.clone()));
+    let mut recreated = report("orders");
+    recreated.incarnation = 7;
+    assert_eq!(refusals.carry(&recreated), None, "a recreated stream");
+    assert_eq!(
+        refusals.carry(&report("orders")),
+        None,
+        "ended by the recreate"
+    );
+    refusals.carry(&refusal);
     let mut renamed = report("orders");
     renamed.generation = 5;
     assert_eq!(refusals.carry(&renamed), None);

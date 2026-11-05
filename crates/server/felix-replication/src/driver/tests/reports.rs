@@ -1612,6 +1612,12 @@ async fn a_refusal_stays_on_every_later_report() {
         dropped.len(),
         reports.len() - first
     );
+    assert!(
+        reports[first + 1..]
+            .iter()
+            .any(|report| report.refused.is_some() && report.leader_offset.is_some()),
+        "no measured report after the refusal carries it"
+    );
 }
 
 /// **An open leader that a follower refuses for a newer ballot, with no
