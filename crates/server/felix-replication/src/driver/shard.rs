@@ -1170,7 +1170,10 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 // fence reaches it: a candidate's generation is in no route,
                 // and a set being left is not learned from a batch (#1009).
                 if cursor.route_behind {
-                    if let Some(candidacy) = &candidacy {
+                    // Only a fence the follower took makes the next pass
+                    // worth asking for on an append. Otherwise it catches up
+                    // from the control plane and the tick retries it (#1944).
+                    cursor.refused = if let Some(candidacy) = &candidacy {
                         crate::promotion::refence(
                             requester,
                             &cursor.node_id,
@@ -1179,7 +1182,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                             log_kind,
                             candidacy,
                         )
-                        .await;
+                        .await
                     } else if refences_kept {
                         crate::promotion::refence_kept(
                             requester,
@@ -1190,8 +1193,10 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                             log.replica_set().as_ref(),
                             set_stamp,
                         )
-                        .await;
-                    }
+                        .await
+                    } else {
+                        false
+                    };
                 }
                 // A follower level with the tail was sent nothing, so nothing
                 // vouches for a position the mark still has to count. Its

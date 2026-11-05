@@ -107,8 +107,18 @@ pub(super) async fn authenticate(
                 )
                 && publish_ctx.publish_window > 0)
                 .then_some(publish_ctx.publish_window);
+            // Plain publishes answered as they complete, only for a client
+            // that offered it: an older one counts on request order.
+            let on_completion = publish_window.is_some()
+                && felix_wire::supports_feature(
+                    session.peer_features_hi,
+                    felix_wire::FEATURE_PUBLISH_ANSWER_ON_COMPLETION,
+                );
             if let Some(window) = publish_window {
                 session.ack_order.enable();
+                if on_completion {
+                    session.ack_order.answer_on_completion();
+                }
                 session.publish_window = Some(std::sync::Arc::new(tokio::sync::Semaphore::new(
                     window as usize,
                 )));
@@ -263,9 +273,15 @@ pub(super) async fn authenticate(
                     Some(_) => felix_wire::FEATURE_LEASE_TOKEN,
                     None => 0,
                 };
+                // Answered back only when granted, so a client that did not
+                // offer it gets the frame it always got.
+                let on_completion = match on_completion {
+                    true => felix_wire::FEATURE_PUBLISH_ANSWER_ON_COMPLETION,
+                    false => 0,
+                };
                 (*features, *server_features_hi) = felix_wire::answer_features(
                     *features,
-                    SERVED_FEATURES_HI | lease,
+                    SERVED_FEATURES_HI | lease | on_completion,
                     session.peer_features,
                 );
             }

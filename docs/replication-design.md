@@ -3893,11 +3893,26 @@ append stream and the rest never shipped: their writes were never acknowledged
   picked up by the same scan, so a busy shard does not touch the shared wake-up
   on every append. Each word of the set sits on its own cache line, so
   publishers to different shards rarely contend. A scan woken by an append passes
-  the shards whose bit is set, plus any shard whose last pass left work: a mark
-  below the tail, a follower behind, halted, rebuilding or not answering, an
-  exchange still out, or a drain or route change in progress. A shard whose
-  last pass settled is skipped. A consumer-group acknowledgement that moves
-  the cursor, and a record being dead-lettered, mark their shard the same way.
+  the shards whose bit is set, the shards with a drain or route change in
+  progress, and the shards owed a pass. A shard is owed one when its mark is
+  below its tail, or no follower that could still catch up holds its whole
+  log, and some follower is in reach: not halted, and its last batch went through,
+  or was refused only because its routing view is behind this generation and
+  then took the fence the leader sent it again (an elected leader, or a fleet
+  that has finalized `replica_election` and a log that keeps its set). That
+  refusal counts because the next pass is what brings the follower level, even
+  when it arrives after its pass ended.
+  A follower the batch did not reach, one whose routing view only the control
+  plane can fix, or one refusing for any other reason (a full disk, a bad
+  credential) is out of reach.
+  Every other shard is skipped, including one whose only lagging followers are
+  out of reach. A follower cannot catch up while it is down, so asking its
+  shards on every append filled the slots with passes that could do nothing,
+  while writes on other shards waited them out (#1944). A shard whose pass
+  ended with more to ship queues itself, and a busy follower's answer that
+  moves its cursor asks for its shard's pass. A consumer-group acknowledgement
+  that moves the cursor, and a record being dead-lettered, mark their shard the
+  same way.
   Two shards that hash to the same bit both get a pass, which costs a pass and
   nothing else.
 - **The tick and a route change pass every shard.** That refreshes each
@@ -3922,8 +3937,8 @@ append stream and the rest never shipped: their writes were never acknowledged
 flowchart LR
   A[append marks its shard] --> S[scan]
   T[tick or route change] --> S
-  S -->|marked, or last pass left work| W{slot free?}
-  S -->|settled, append wake| X[skipped]
+  S -->|marked, mark owed, or moving| W{slot free?}
+  S -->|anything else, append wake| X[skipped]
   W -->|yes| P[pass]
   W -->|no| Q[urgent or refresh queue]
   P -->|ends, wants another| Q
@@ -3932,8 +3947,13 @@ flowchart LR
 ```
 
 None of this changes what a pass does or what an acknowledgement rests on: it
-only decides which shard's pass runs next. Skipping a settled shard skips a pass
-that would have shipped nothing.
+only decides which shard's pass runs next. A skipped shard waits for the next
+tick, which puts it in the refresh queue unless it is owed a pass. While
+urgent shards wait, that queue gets one start in five, so on a broker leading
+many busy shards a skipped shard can wait several seconds. That is why a shard owed a pass must
+never be skipped: a write waiting on its mark would time out first. What a
+skipped shard waits for is a rebuild of a halted follower, or a follower that
+has come back on a shard nobody is writing to.
 
 **A `Quorum` cache's counters ride the same exchanges.** A counter add is
 acknowledged at the counter log's own mark, under the same majority rule, and
@@ -4599,9 +4619,32 @@ Once it is finalized on a broker that offers `ELECTION`:
   - The log keeps this generation's set under another node's ballot, kept
     from that node's fence or election request: nothing proves the set
     before was fenced from here. The fence stays pending.
-  - The log keeps an older set than the one before: the leader skipped a
-    generation it never opened, and a rename would leave that generation's
-    set unfenced. The fence stays pending.
+  - The log keeps an older set than the one before, and all of this holds:
+    the broker's own ballot and a start record at this generation, no change
+    pending on the route, and a kept set that names exactly the route's set
+    on the same copies. A member that either side names no copy for does
+    not match. The log may also keep the set this one left, but only on the
+    same copies (as a plain generation bump leaves it), and no earlier sets.
+    That is a leader elected here whose election the control plane adopted,
+    restarted: it keeps the set it stood on, from
+    an older generation, and its watch has no prior after a restart. A
+    candidate stands only on the set the control plane records, and adoption
+    keeps that set, so it is the set before. It asks for a rename as above,
+    and the rename's fence leaves both the control plane's set and the kept
+    one. The ballot alone is not enough, because a standing that withdrew
+    leaves one too.
+
+    The evidence does not prove that this generation's open was fenced. The
+    opens that leave the same evidence unfenced are still safe to rename: an
+    open on the lease happens only while followers do not decide
+    acknowledgements, so no set's majority holds an acknowledged record the
+    leader lacks; an open that continued this broker's own term (only before
+    `joint_fence` is finalized) had no other leader in between; and a
+    draining route is never fenced. A broker without the evidence keeps the
+    fence pending.
+  - Otherwise, the log keeps an older set than the one before: the leader
+    skipped a generation it never opened, and a rename would leave that
+    generation's set unfenced. The fence stays pending.
   - The log keeps no set, above generation 0: this may be a failover's new leader whose watch
     started from a snapshot, while the old leader, cut off, still
     acknowledges on a majority of the old set. The fence stays pending.
