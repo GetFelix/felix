@@ -130,6 +130,14 @@ jobs:
               for pid in $(pgrep -x felix-broker); do
                 d=$(for k in /proc/$pid/task/*; do st=$(awk '{print $3}' $k/stat 2>/dev/null); if [ "$st" = D ]; then echo "$(cat $k/comm 2>/dev/null)@$(cat $k/wchan 2>/dev/null)"; fi; done | sort | uniq -c | tr -s ' ' | tr '\n' ';')
                 if [ -n "$d" ]; then echo "$t D pid=$pid $d"; fi
+                for k in /proc/$pid/task/*; do
+                  st=$(awk '{print $3}' $k/stat 2>/dev/null)
+                  if [ "$st" = D ] && [ "$(cat $k/comm 2>/dev/null)" = felix-rt-worker ]; then
+                    sc=$(sudo cat $k/syscall 2>/dev/null); fd=$(echo "$sc" | awk '{print $2}')
+                    target=""; if [ -n "$fd" ] && [ "$fd" != running ]; then target=$(sudo readlink /proc/$pid/fd/$((fd)) 2>/dev/null); fi
+                    echo "$t W pid=$pid tid=${k##*/} sys=[$(echo "$sc" | cut -d' ' -f1-3)] fd=$target kstack=$(sudo cat $k/stack 2>/dev/null | awk '{print $2}' | head -14 | tr '\n' ',')"
+                  fi
+                done
               done
               for pid in $(pgrep -f 'scale-[0-9a-f]+'); do
                 d=$(for k in /proc/$pid/task/*; do st=$(awk '{print $3}' $k/stat 2>/dev/null); if [ "$st" = D ]; then echo "$(cat $k/comm 2>/dev/null)@$(cat $k/wchan 2>/dev/null)"; fi; done | sort | uniq -c | tr -s ' ' | tr '\n' ';')
