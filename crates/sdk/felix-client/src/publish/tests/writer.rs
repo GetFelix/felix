@@ -492,6 +492,23 @@ async fn drain_publish_queue_returns_errors() {
     assert!(err3.to_string().contains("closed"));
 }
 
+/// A failed writer closes its queue, so routing sees it is gone while senders
+/// still hold it, and stops sending there.
+#[tokio::test]
+async fn a_failed_writer_closes_its_queue() {
+    let (tx, mut rx) = mpsc::channel::<PublishRequest>(4);
+    let drain = tokio::spawn(async move { drain_publish_queue(&mut rx, "closed").await });
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !tx.is_closed() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the queue stayed open");
+    drop(tx);
+    drain.await.expect("drain");
+}
+
 /// A batch's `publish_width` goes ahead of it once, and again only when the
 /// width changes, so the broker always holds the width of the batch it reads.
 #[tokio::test]

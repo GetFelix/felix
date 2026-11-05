@@ -1605,8 +1605,9 @@ stateDiagram-v2
   250 ms, is overdue, and the head's own shard is marked as stalled. A
   publish of any other shard that finds its pooled stream's head overdue moves
   that shard too, rather than queue behind it. Such a shard is not marked, and
-  goes back once the pool is calm. A broker that is slow for every shard raises
-  the usual wait instead of moving them all. A full window is not evidence by
+  goes back once the pool is calm. Each stream, pooled or own, keeps its own
+  usual wait, seeded by its first answer, so a broker that is slow for every
+  shard raises the usual wait instead of moving them all. A full window is not evidence by
   itself: a busy healthy stream fills it too.
 - **Order across a move.** Every publish holds a claim on its shard until its
   answer is read. The publish that moves a shard first waits for the shard's
@@ -1614,10 +1615,12 @@ stateDiagram-v2
   nothing of the shard is still on the old stream when the first publish goes
   out on the new one. The way back works the same. A shard that ever publishes
   without an ack is never moved, since such a publish has no answer to wait
-  for.
+  for. A shard whose own stream fails goes back to the pool at once: the
+  stream failed everything it held, so nothing is left on it to overtake.
 - **No churn.** A shard on its own stream rejoins the pool after 5 s without an
-  overdue answer, on its own stream or at the pool's head. One that stalls again soon after returning stays out twice as
-  long the next time, up to 5 minutes.
+  overdue answer, on its own stream or at the pool's head. One that stalls
+  again soon after returning stays out twice as long the next time, up to
+  5 minutes.
 - **What it cannot fix.** A move does not reach publishes already sent. The
   stream-mates queued behind a stalled head before it was overdue still wait
   for that head's answer,
@@ -1630,7 +1633,8 @@ stateDiagram-v2
 An idempotent producer's batches move the same way: the batches in flight
 drain first, so a re-sent run never straddles two streams. A shard whose
 leader moves to another broker starts on that broker's pool, since each
-broker connection keeps its own. A client moves at most
+broker connection keeps its own. Its stream on the old broker is closed once
+nothing has been sent on it for 30 s, which frees its place under the cap. A client moves at most
 `publish_shard_streams` shards per broker onto streams of their own at once
 (64 by default); a stalled shard past that stays on the pool. Each such stream
 is opened on the least-loaded connection.

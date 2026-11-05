@@ -159,9 +159,8 @@ pub(crate) async fn run_publisher_writer_with_limit(
             return Err(anyhow::anyhow!(message));
         }};
     }
-    // Resolve every outstanding ack. The broker answers each publish as it
-    // completes, not in the order they were written, so an answer goes to the
-    // request it names. One naming no outstanding request means the stream
+    // Resolve every outstanding ack. Without pipelining the broker answers
+    // each publish as it completes, so an answer goes to the request it names. One naming no outstanding request means the stream
     // cannot be trusted, and neither can anything waiting on it.
     macro_rules! resolve_one {
         () => {{
@@ -706,6 +705,9 @@ pub(super) fn note_head_answered(
 }
 
 pub(crate) async fn drain_publish_queue(rx: &mut mpsc::Receiver<PublishRequest>, message: &str) {
+    // Closed first, so routing sees the writer is gone (`tx.is_closed`) and
+    // stops sending to it, instead of having every later publish failed here.
+    rx.close();
     while let Some(request) = rx.recv().await {
         match request {
             PublishRequest::Message { response, .. }

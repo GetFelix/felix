@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use super::fake_worker;
 use crate::publish::routing::Selected;
-use crate::publish::shard_streams::{CALM_FIRST, STALL_FLOOR, now_nanos};
+use crate::publish::shard_streams::{CALM_FIRST, HeadWatch, STALL_FLOOR, now_nanos};
 use crate::publish::writer::PublishWorker;
 use crate::publish::{OpenWorker, Publisher, PublisherInner};
 
@@ -286,5 +286,171 @@ async fn a_failed_open_keeps_the_shard_pooled() {
         route(&f.publisher, "orders", 1).await,
         Own::Pooled
     ));
+    assert_eq!(own_count(&f), 0);
+}
+
+/// Moves `shard` of "orders" onto its own stream and calms the pool's head.
+async fn move_out(f: &Fixture, shard: u32) -> (u64, Arc<PublishWorker>) {
+    let id = ticket_id(&f.publisher, "orders", shard).await;
+    stall_pooled(f, "orders", id);
+    tokio::time::advance(STALL_FLOOR * 2).await;
+    let own = route(&f.publisher, "orders", shard).await.shard();
+    f.publisher
+        .select_worker("t", "ns", "orders")
+        .expect("pooled writer")
+        .head
+        .set(None, 0);
+    (id, own)
+}
+
+/// An unacked publish written while the shard drains for its way back pins
+/// it: the shard stays on its own stream rather than send its next publish on
+/// another stream that could overtake it.
+#[tokio::test(start_paused = true)]
+async fn a_pin_during_the_drain_back_keeps_the_shard_out() {
+    let f = fixture(4);
+    move_out(&f, 1).await;
+    let held = f
+        .publisher
+        .route("t", "ns", "orders", Some(b"k".as_slice()), Some(1))
+        .await
+        .expect("route");
+    assert!(matches!(held.worker, Selected::Shard(_)));
+    tokio::time::advance(CALM_FIRST * 2).await;
+    let publisher = f.publisher.clone();
+    let back =
+        tokio::spawn(async move { matches!(route(&publisher, "orders", 1).await, Own::Pooled) });
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    assert!(!back.is_finished(), "went back with a publish in flight");
+    held.ticket.as_ref().expect("ticket").pin();
+    drop(held);
+    assert!(
+        !back.await.expect("routed"),
+        "a pinned shard went back to the pool"
+    );
+    assert_eq!(own_count(&f), 1);
+}
+
+/// The first answer seeds a stream's usual wait, so a broker that is slow for
+/// every shard does not look stalled while the average warms up.
+#[test]
+fn the_first_answer_seeds_the_usual_wait() {
+    let head = HeadWatch::default();
+    head.sample(Duration::from_millis(300));
+    assert!(head.bound() >= Duration::from_secs(1), "{:?}", head.bound());
+}
+
+/// On its own stream a shard is judged by that stream's usual wait, not the
+/// floor: steady answers slower than the floor still let it go back.
+#[tokio::test(start_paused = true)]
+async fn a_steady_slow_own_stream_lets_the_shard_go_back() {
+    let f = fixture(4);
+    let (id, own) = move_out(&f, 1).await;
+    own.head.sample(Duration::from_millis(300));
+    for _ in 0..30 {
+        own.head.set(Some(id), now_nanos());
+        tokio::time::advance(Duration::from_millis(300)).await;
+        if matches!(route(&f.publisher, "orders", 1).await, Own::Pooled) {
+            return;
+        }
+        own.head.set(None, 0);
+    }
+    panic!("a shard answered steadily at 300 ms never went back");
+}
+
+/// A shard that stops publishing here, as when its leader moves to another
+/// broker, gives its stream and its place under the cap back once idle, even
+/// though nothing routes that shard again.
+#[tokio::test(start_paused = true)]
+async fn an_idle_own_stream_is_given_back() {
+    let f = fixture(4);
+    move_out(&f, 1).await;
+    assert_eq!(own_count(&f), 1);
+    tokio::time::advance(Duration::from_secs(40)).await;
+    assert!(matches!(
+        route(&f.publisher, "orders", 2).await,
+        Own::Pooled
+    ));
+    assert_eq!(own_count(&f), 0);
+}
+
+/// Places for shards nothing publishes to any more are forgotten once there
+/// are many, so a client publishing to many streams does not grow for good.
+#[tokio::test(start_paused = true)]
+async fn unused_places_are_forgotten() {
+    let f = fixture(4);
+    for shard in 0..5000 {
+        route(&f.publisher, "orders", shard).await;
+    }
+    tokio::time::advance(CALM_FIRST * 2).await;
+    route(&f.publisher, "orders", 0).await;
+    let shard_streams = f
+        .publisher
+        .inner
+        .shard_streams
+        .as_ref()
+        .expect("shard streams");
+    assert!(
+        shard_streams.cell_count() < 100,
+        "{} places kept",
+        shard_streams.cell_count()
+    );
+}
+
+/// A stream that finishes opening after `close` is not installed: close has
+/// already collected the writers to finish, so it would never be finished.
+#[tokio::test(start_paused = true)]
+async fn a_stream_opened_after_close_is_dropped() {
+    let opens = Arc::new(AtomicUsize::new(0));
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let open: OpenWorker = {
+        let opens = Arc::clone(&opens);
+        let gate = Arc::clone(&gate);
+        Arc::new(move || {
+            let opens = Arc::clone(&opens);
+            let gate = Arc::clone(&gate);
+            Box::pin(async move {
+                gate.notified().await;
+                opens.fetch_add(1, Ordering::SeqCst);
+                Ok(fake_worker())
+            })
+        })
+    };
+    let publisher = Publisher {
+        inner: Arc::new(PublisherInner::with_shard_streams(
+            Arc::new(vec![fake_worker()]),
+            4,
+            open,
+        )),
+    };
+    let f = Fixture {
+        publisher,
+        opens,
+        fail: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    };
+    let id = ticket_id(&f.publisher, "orders", 1).await;
+    stall_pooled(&f, "orders", id);
+    tokio::time::advance(STALL_FLOOR * 2).await;
+    let publisher = f.publisher.clone();
+    let moving =
+        tokio::spawn(async move { matches!(route(&publisher, "orders", 1).await, Own::Pooled) });
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    let shard_streams = f
+        .publisher
+        .inner
+        .shard_streams
+        .as_ref()
+        .expect("shard streams");
+    assert!(shard_streams.close().is_empty());
+    gate.notify_waiters();
+    assert!(
+        moving.await.expect("routed"),
+        "a stream opened after close was used"
+    );
+    assert_eq!(f.opens.load(Ordering::SeqCst), 1);
     assert_eq!(own_count(&f), 0);
 }
