@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793910036161,
+  "lastUpdate": 1793911147593,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -46072,6 +46072,58 @@ window.BENCHMARK_DATA = {
             "range": "96154.21",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1425609.42\nmean: 1389409.76\nstdev: 96154.21\ncv: 6.92%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6f4019cb169a8e872fe1935aa9b238acb43bff3d",
+          "message": "fix(replication): an append's pass no longer waits behind new shards' first passes (#1987) (#1997)\n\nLease renewals no longer queue behind a bulk of new shards' first passes.",
+          "timestamp": "2026-11-05T12:34:53-08:00",
+          "tree_id": "c2aad42a1661a626a8c860c0c7ae8c45a41bfbf2",
+          "url": "https://github.com/GetFelix/felix/commit/6f4019cb169a8e872fe1935aa9b238acb43bff3d"
+        },
+        "date": 1793911147006,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 520924.52,
+            "range": "24434.47",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 520924.52\nmean: 510292.52\nstdev: 24434.47\ncv: 4.79%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 520924.52,
+            "range": "24434.47",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 520924.52\nmean: 510292.52\nstdev: 24434.47\ncv: 4.79%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 118721.07,
+            "range": "1439.69",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 118721.07\nmean: 118584.27\nstdev: 1439.69\ncv: 1.21%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1187210.7,
+            "range": "14396.90",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1187210.70\nmean: 1185842.71\nstdev: 14396.90\ncv: 1.21%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
