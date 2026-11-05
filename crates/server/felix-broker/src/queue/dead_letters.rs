@@ -342,6 +342,21 @@ impl DeadLetters {
         })
     }
 
+    /// What [`DeadLetters::shard_log_for`] would return, when the log is open
+    /// already. See `LogCache::opened_shard_log`.
+    pub async fn opened_shard_log(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        incarnation: Option<u64>,
+    ) -> Option<felix_storage::disk_log::DiskLog> {
+        self.entries
+            .opened_shard_log(tenant_id, namespace, stream, shard, incarnation)
+            .await
+    }
+
     /// [`DeadLetters::shard_log`], created at `base_offset` if absent and given,
     /// only when `incarnation` is the one set for the stream. See
     /// `LogCache::shard_log_for`.

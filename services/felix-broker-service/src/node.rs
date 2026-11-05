@@ -400,9 +400,23 @@ where
     // The same, for the peer listener's handshake, which must tell "not
     // registered yet" from incarnation 0 and learn when it changes.
     let (registered, registered_watch) = tokio::sync::watch::channel(None);
+    // Its own client: the heartbeat runs on a runtime of its own, and a pooled
+    // connection belongs to the runtime that opened it.
+    let heartbeat_link = config
+        .membership
+        .as_ref()
+        .and(config.controlplane_url.as_deref())
+        .map(|base_url| {
+            replication::controlplane_link::HttpControlPlaneLink::new(
+                crate::cluster::controlplane_client::build()
+                    .expect("the control-plane client built once already"),
+                base_url,
+            )
+        });
     let membership = membership::spawn(
         &config,
-        &link,
+        heartbeat_link,
+        true,
         gate_readiness_on_sync,
         &seeded,
         &lease,

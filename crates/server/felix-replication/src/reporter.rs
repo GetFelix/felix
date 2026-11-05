@@ -155,9 +155,11 @@ pub struct ShardReport {
     pub node_incarnations: Vec<(String, Option<u64>)>,
     /// For each follower with no entry in `storage_ids`, the identity (32
     /// hex digits) the assignment that promoted this leader named for it,
-    /// where it named one. This leader has not reached such a follower at
-    /// its generation, so every acknowledgement the follower gave went to an
-    /// earlier leader, from the copy that assignment named or one before it.
+    /// where it named one, or after a set change that kept this leader, the
+    /// one it named the follower by at its previous generation. This leader
+    /// has not reached such a follower at its generation, so every
+    /// acknowledgement the follower gave went to an earlier generation, from
+    /// the copy named or one before it.
     /// Storage identities never repeat, so a fence answer under that
     /// identity comes from a copy that has kept all of it.
     pub inherited_storage: Vec<(String, String)>,

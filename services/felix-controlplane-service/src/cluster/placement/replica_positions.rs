@@ -141,6 +141,9 @@ pub struct ReplicaPositions {
     suspected_since: HashMap<(String, String), u64>,
     /// Moves given up at the fence in a row, by shard, and when the last was.
     give_ups: HashMap<ShardKey, (u32, u64)>,
+    /// Leaders this instance has watched show no progress, by shard and
+    /// generation; see `progress`.
+    stuck: HashMap<(ShardKey, u64), crate::cluster::placement::StuckLeader>,
     /// Each node as a report is judged against: its registered storage
     /// identity, and whether a leader that is down stopped reporting.
     nodes: HashMap<String, NodeView>,
@@ -203,6 +206,7 @@ impl ReplicaPositions {
             pending: HashMap::new(),
             suspected_since: HashMap::new(),
             give_ups: HashMap::new(),
+            stuck: HashMap::new(),
             nodes: HashMap::new(),
             assignments: HashMap::new(),
             members: HashMap::new(),
@@ -332,6 +336,32 @@ impl ReplicaPositions {
     /// Note the moves given up at the fence, by shard.
     pub(super) fn set_give_ups(&mut self, give_ups: HashMap<ShardKey, (u32, u64)>) {
         self.give_ups = give_ups;
+    }
+
+    /// Note the leaders this instance has watched show no progress.
+    pub(super) fn set_stuck(
+        &mut self,
+        stuck: HashMap<(ShardKey, u64), crate::cluster::placement::StuckLeader>,
+    ) {
+        self.stuck = stuck;
+    }
+
+    /// The last report on `key`, however old.
+    pub(super) fn last_report(&self, key: &ShardKey) -> Option<&ReplicaReport> {
+        self.reports.get(key)
+    }
+
+    /// Every report held, however old.
+    pub(super) fn all_reports(&self) -> impl Iterator<Item = &ReplicaReport> {
+        self.reports.values()
+    }
+
+    /// `node_id`'s registered incarnation, while it is not down or gone.
+    pub(super) fn up_incarnation(&self, node_id: &str) -> Option<u64> {
+        self.nodes
+            .get(node_id)
+            .filter(|node| !node.down)
+            .map(|node| node.incarnation)
     }
 
     /// Read every report the store holds, as of the store's clock.
@@ -562,10 +592,12 @@ impl CaughtUp for ReplicaPositions {
         // (`left_unconfirmed`), so its identity stays.
         ids.retain(|node, _| old_set.contains(&node.as_str()) || new_set.contains(&node.as_str()));
         // A member the report names no identity for had not been reached by
-        // its leader, so it acknowledged nothing to that leader. It is named by
-        // the identity the leader's own promotion held it to, which covers
-        // every acknowledgement it gave before, since identities never repeat
-        // (#1574). Without one it is named with none, which no answer matches.
+        // its leader at this generation, so it acknowledged nothing there. It
+        // is named by the identity the leader inherited for it, from its own
+        // promotion or its previous generation, which covers every
+        // acknowledgement it gave before, since identities never repeat
+        // (#1574, #1922). Without one it is named with none, which no answer
+        // matches.
         // One registered without an identity predates identities and is left
         // unnamed, as is a replica outside the old set, which gave the old
         // leader nothing to count.
@@ -693,6 +725,14 @@ impl CaughtUp for ReplicaPositions {
 
     fn fence_give_ups(&self, key: &ShardKey) -> Option<(u32, u64)> {
         self.give_ups.get(key).copied()
+    }
+
+    fn stuck_leader(
+        &self,
+        key: &ShardKey,
+        generation: u64,
+    ) -> Option<crate::cluster::placement::StuckLeader> {
+        self.stuck.get(&(key.clone(), generation)).copied()
     }
 
     fn pending_since_millis(&self, key: &ShardKey, generation: u64) -> Option<u64> {

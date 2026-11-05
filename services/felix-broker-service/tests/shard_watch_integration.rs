@@ -245,6 +245,7 @@ impl Cluster {
             ownership,
             Arc::default(),
             Duration::from_millis(10),
+            None,
             shutdown,
         ))
     }
@@ -268,6 +269,7 @@ impl Cluster {
             ownership,
             changed,
             interval,
+            None,
             shutdown,
         ))
     }
@@ -571,6 +573,7 @@ async fn a_control_plane_without_long_poll_is_polled_on_the_interval() {
         Arc::new(RwLock::new(ShardOwnership::default())),
         Arc::default(),
         Duration::from_millis(100),
+        None,
         shutdown.clone(),
     ));
 

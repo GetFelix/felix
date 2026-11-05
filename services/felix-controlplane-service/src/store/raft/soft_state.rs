@@ -88,6 +88,10 @@ pub(crate) enum LeaderRequest {
     ShardAssignment {
         key: crate::model::ShardKey,
     },
+    /// The shard-assignment feed's `next_seq` as the leader holds it, for a
+    /// broker that must not take a lagging member's feed as current. A leader
+    /// that predates it fails to read it, and the asker answers without one.
+    ShardAssignmentHead,
 }
 
 /// The leader's soft state and the rules for judging by it.
@@ -286,6 +290,18 @@ impl SoftState {
                     .get_shard_assignment(&key)
                     .await
                     .map(|assignment| MetaResponse::Assignment { assignment })
+                    .map_err(Into::into))
+            }
+            LeaderRequest::ShardAssignmentHead => {
+                self.confirm_read().await?;
+                Ok(self
+                    .machine
+                    .store()
+                    .confirmed_shard_assignment_head()
+                    .await
+                    .map(|head| MetaResponse::AssignmentHead {
+                        next_seq: head.unwrap_or_default(),
+                    })
                     .map_err(Into::into))
             }
         }

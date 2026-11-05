@@ -418,6 +418,51 @@ async fn logs_open_only_for_the_registered_incarnation() {
     assert!(!entries.contains(&4) && !sums.contains(&4));
 }
 
+/// The same refusals hold once the log is open, when
+/// `shard_log_off_runtime` hands it back without opening anything.
+#[tokio::test]
+async fn an_open_log_is_handed_back_only_for_its_incarnation() {
+    let dir = tempdir().expect("dir");
+    let broker = Arc::new(broker(&dir).await);
+    register(&broker, CACHE, 5).await;
+
+    for kind in [LogKind::Cache, LogKind::Counters] {
+        let open = |incarnation| {
+            let broker = Arc::clone(&broker);
+            async move {
+                broker
+                    .shard_log_off_runtime(kind, "t1", "default", CACHE, 0, None, incarnation)
+                    .await
+            }
+        };
+        assert!(open(Some(5)).await.is_some(), "{kind:?} refused when new");
+        assert!(open(Some(5)).await.is_some(), "{kind:?} refused when open");
+        assert!(
+            open(None).await.is_some(),
+            "{kind:?} refused with none named"
+        );
+        assert!(
+            open(Some(4)).await.is_none(),
+            "{kind:?} handed back at an incarnation not registered"
+        );
+    }
+    assert!(
+        broker
+            .remove_cache("t1", "default", CACHE)
+            .await
+            .expect("remove")
+    );
+    for kind in [LogKind::Cache, LogKind::Counters] {
+        assert!(
+            broker
+                .shard_log_off_runtime(kind, "t1", "default", CACHE, 0, None, Some(5))
+                .await
+                .is_none(),
+            "{kind:?} handed back after the cache was removed"
+        );
+    }
+}
+
 #[tokio::test]
 async fn an_unregistered_cache_opens_before_caches_carry_incarnations() {
     let dir = tempdir().expect("dir");

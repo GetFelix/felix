@@ -67,7 +67,8 @@ pub(super) fn keep_credential_current(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn spawn<L: ControlPlaneLink + Clone>(
     config: &BrokerConfig,
-    link: &Option<L>,
+    link: Option<L>,
+    own_thread: bool,
     gate_readiness_on_sync: bool,
     seeded: &CancellationToken,
     lease: &Option<Arc<LeaseState>>,
@@ -99,8 +100,8 @@ pub(super) fn spawn<L: ControlPlaneLink + Clone>(
             let node_credential = credential
                 .clone()
                 .expect("a cluster member has a credential");
-            Some(membership::spawn(
-                link.clone(),
+            Some(membership::spawn_with(
+                link,
                 membership_config.clone(),
                 node_credential,
                 serving,
@@ -112,6 +113,7 @@ pub(super) fn spawn<L: ControlPlaneLink + Clone>(
                 registered,
                 Some(storage_id),
                 data_dir.map(std::path::Path::to_path_buf),
+                own_thread,
             ))
         }
         _ => {

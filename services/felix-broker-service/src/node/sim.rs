@@ -417,7 +417,8 @@ impl<L: ControlPlaneLink + Clone> OpenedBroker<L> {
 
         let membership = membership::spawn(
             &config,
-            &link,
+            link.clone(),
+            false,
             true,
             &seeded,
             &Some(Arc::clone(&lease)),
