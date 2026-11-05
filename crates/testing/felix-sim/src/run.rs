@@ -21,8 +21,8 @@
 //! cost nothing. Blocking work runs on this runtime rather than on threads
 //! (`felix_common::blocking`), and election jitter is drawn from the seed
 //! (`felix_common::jitter`). Built with `--cfg tokio_unstable`, `select!` is
-//! seeded too; without it, it picks among ready branches at random, so the
-//! interleaving beneath the same faults can differ and a replay may pass.
+//! seeded too. Hash map order still varies by process, so the interleaving
+//! beneath the same faults can differ and a replay may pass.
 //! See `docs/simulation.md`.
 
 use std::sync::Arc;

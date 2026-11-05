@@ -18,8 +18,9 @@
 //! | `RUST_LOG` | broker and harness logs | none |
 //!
 //! A run is repeatable to the extent described in `felix_sim::run`: the same
-//! seed injects the same faults at the same virtual times, and built with
-//! `RUSTFLAGS="--cfg tokio_unstable"` the brokers' interleaving repeats too.
+//! seed injects the same faults at the same virtual times, but the brokers'
+//! own interleaving can still differ (hash map order), so a failure may take
+//! more than one replay to show again.
 //!
 //! A seed that exposed a bug is pinned below with `#[ignore = "#<issue>"]`,
 //! and runs with `cargo test -p felix-sim --test seeds -- --ignored`.

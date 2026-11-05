@@ -57,7 +57,9 @@ RUSTFLAGS="--cfg tokio_unstable" FELIX_SIM_SEED=<n> FELIX_SIM_HISTORY=run1.txt \
 read) to a file, so two runs can be diffed.
 
 Three things the brokers do would otherwise make two runs differ, and under
-the simulator each is held to the run's one thread and its seed:
+the simulator each is held to the run's one thread and its seed. Hash map
+iteration order still varies by process, so a replay is close to exact, not
+guaranteed:
 
 - **Blocking work.** Shard opens, reads, rollovers and the log's append and
   flush threads run on real threads in a broker, and finish in real time.
