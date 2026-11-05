@@ -421,7 +421,7 @@ fi
 # five hours in CI (docs/formal/README.md has how far each got). Nor are
 # FelixShardCpLive and FelixShardCpLiveNoStandBehindBallot, which run past a
 # pull request's hour, and FelixShardElectAdoptAboveKeptSetReissued, which
-# models a fix (#1930) not yet on main.
+# had not finished after seven minutes and 3.9M distinct states on a laptop.
 # FelixShardElectSwap is not registered: it does not finish in one run, so
 # it is checked in pieces split at the cut-over. The eleven that take under 45
 # minutes are registered above; FelixShardElectSwapKeep0, the four

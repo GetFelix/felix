@@ -2556,9 +2556,12 @@ Restart(b) ==
             /\ confirmed' = [confirmed EXCEPT ![b] = [m \in Brokers |-> 0]]
             /\ Promise(b, b, gen)
             \* Its fence carries the assignment's set at the assignment's
-            \* generation (`replica_set::view` in `fence_shard`, promotion.rs),
-            \* not the one its log last kept.
-            /\ IF SetCheck /\ setGen[b] <= gen
+            \* generation (`replica_set::view` in `fence_shard`, promotion.rs).
+            \* Under `JointFence` only when its log keeps the set right before
+            \* (`set_before` in promotion/joint.rs): a set kept at the
+            \* generation is reported unknown, and an older one leaves the
+            \* fence pending for good (`Skipped`), unreported (#1989).
+            /\ IF SetCheck /\ setGen[b] < gen /\ (JointFence => setGen[b] = gen - 1)
                THEN /\ mine' = [mine EXCEPT ![b] = IF cpNext = {} THEN CpSet ELSE cpNext]
                     /\ setGen' = [setGen EXCEPT ![b] = gen]
                     /\ oldSet' = [oldSet EXCEPT ![b] = IF cpNext = {} THEN {} ELSE {CpSet}]
@@ -3506,7 +3509,10 @@ RenameDue ==
 \* it renames to the next generation. A halt report (`HaltRefusal`) carries
 \* the follower's ballot, and placement names the generation above the
 \* highest (`follower_ballot` in driver/shard.rs, #1949). The code takes the
-\* floor only inside the adoption window; the model always does.
+\* floor only inside the adoption window; the model always does. The model
+\* also reads each follower's ballot now, where the code keeps the one the
+\* halt carried: a ballot taken after the halt costs the code one more
+\* refused rename and report, which the model skips.
 RenameGen ==
     IF /\ RenamePastBallot /\ AboveRefusal /\ ~OtherRefusal
        /\ ballot[leader] \notin {{}, {leader}}
