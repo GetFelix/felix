@@ -193,9 +193,10 @@ is seeds 1 to 4, so it fails until these are fixed.
 | 1 | The replication driver spins on a retry with no delay and the virtual clock stops (a `stalled` finding). | [#1941](https://github.com/GetFelix/felix/issues/1941) |
 | 1, 5 | A cache get or delete after a failover or restart misses a put that a quorum acknowledged. | [#1943](https://github.com/GetFelix/felix/issues/1943) |
 | 2, 3, 4 | The same stall as seed 1, within the first minute of faults. Seeds that stall give the cluster checkers little to look at. | [#1941](https://github.com/GetFelix/felix/issues/1941) |
-| 6 | Since placement keeps its memory between passes, the run stalls about 55 virtual seconds in, after the control plane pause and crash: the same driver spin as seed 1. | [#1941](https://github.com/GetFelix/felix/issues/1941) |
-| 6 | Found before that change, and not seen again while the run stalls: the control plane pauses, a shard leader crashes, and after the heal the restarted leader stays in `fencing`, so `ElectionSettles` reports the shard unserved. | [#1948](https://github.com/GetFelix/felix/issues/1948) |
-| 6 | Found before that change, and not seen again while the run stalls: after the heal a leader's committed mark stays below its log tail on 19 shards, so they cannot be read (`final-reads`). | [#1949](https://github.com/GetFelix/felix/issues/1949) |
+| 6 | The run can stall about 55 virtual seconds in, after the control plane pause and crash: the same driver spin as seed 1. | [#1941](https://github.com/GetFelix/felix/issues/1941) |
+| 2, 6 | With the driver spin worked around: the control plane pauses, a shard leader crashes, and after the heal the restarted leader stays in `fencing`, so `ElectionSettles` reports the shard unserved. | [#1948](https://github.com/GetFelix/felix/issues/1948) |
+| 2, 6 | With the driver spin worked around: after the heal a leader's committed mark stays below its log tail, so the shard cannot be read (`final-reads`). | [#1949](https://github.com/GetFelix/felix/issues/1949) |
+| 4 | With the driver spin worked around: a broker frozen while its cache shards moved serves them again at the old generation next to the new leader (`AtMostOneServing`). | [#1955](https://github.com/GetFelix/felix/issues/1955) |
 
 A stalled run may not stall on another replay: the brokers' interleaving
 differs, and seed 2 ran to the end the first time and stalled the second.

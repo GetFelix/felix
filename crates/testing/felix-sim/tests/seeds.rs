@@ -165,6 +165,17 @@ fn seed_6_every_shard_can_be_read_after_the_faults_heal() {
     assert!(!found(&outcome, "final-reads"), "{outcome}");
 }
 
+/// A broker frozen while its cache shards moved serves them again at the old
+/// generation, next to the new leader, once it thaws.
+#[test]
+#[ignore = "#1955, and #1941 while seed 4 stalls"]
+fn seed_4_a_thawed_broker_does_not_serve_shards_that_moved() {
+    log();
+    let outcome = run_seed(4, SimConfig::for_seed(4));
+    assert!(!stalled(&outcome), "the run stalled:\n{outcome}");
+    assert!(!found(&outcome, "at-most-one-serving"), "{outcome}");
+}
+
 /// A cache read or delete after a failover or restart misses a put that a
 /// quorum acknowledged. The search for a linearization only runs on a key the
 /// simpler rules (stale read, phantom) found nothing on, so any of the three
