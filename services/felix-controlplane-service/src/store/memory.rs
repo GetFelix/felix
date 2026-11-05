@@ -192,7 +192,9 @@ impl InMemoryStore {
 
     /// [`ControlPlaneStore::adopt_elected_leader`] in the form a Raft entry
     /// names: with `elected_set` false, as members below the level that
-    /// knows it apply it.
+    /// knows it apply it, and with `own_leader_set` false, as members below
+    /// the level that names this set's own leader on the set it was elected
+    /// on apply it (only its generation is taken).
     pub(crate) async fn apply_adopt_elected_leader(
         &self,
         key: &ShardKey,
@@ -654,7 +656,28 @@ impl ControlPlaneStore for InMemoryStore {
         expected_generation: u64,
         elected: crate::model::ElectedLeader,
     ) -> StoreResult<crate::store::AssignmentWrite> {
-        shards::adopt_elected_leader(self, key, expected_generation, &elected, true, true).await
+        let own_leader_set = {
+            #[cfg(test)]
+            {
+                !self
+                    .faults
+                    .keep_own_leader
+                    .load(std::sync::atomic::Ordering::Relaxed)
+            }
+            #[cfg(not(test))]
+            {
+                true
+            }
+        };
+        shards::adopt_elected_leader(
+            self,
+            key,
+            expected_generation,
+            &elected,
+            true,
+            own_leader_set,
+        )
+        .await
     }
 
     async fn get_shard_assignment(&self, key: &ShardKey) -> StoreResult<ShardAssignment> {
@@ -1164,6 +1187,10 @@ pub(crate) struct Faults {
     pub(crate) shard_reads: std::sync::atomic::AtomicU32,
     /// Counts reads of revocation cutoffs, not a failure.
     pub(crate) cutoff_reads: std::sync::atomic::AtomicU32,
+    /// Adopts elected leaders as members below the own-leader-set level
+    /// do: an own leader elected on another set has only its generation
+    /// taken.
+    pub(crate) keep_own_leader: std::sync::atomic::AtomicBool,
     /// Once set, the next shard write says it has read its stream or cache,
     /// then waits to be resumed (or 300 ms) before it writes.
     pub(crate) shard_write_pause: std::sync::Mutex<Option<ShardWritePause>>,

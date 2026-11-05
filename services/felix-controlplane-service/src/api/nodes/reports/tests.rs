@@ -1083,6 +1083,33 @@ async fn its_own_leader_elected_on_another_set_is_named_on_it() {
     assert_named_on_x_z(&assignment, at + 1);
 }
 
+/// **Below the own-leader-set level one report still moves the shard past
+/// the election.** Those members take only the generation of the control
+/// plane's own leader elected on another set, so the leader is named at the
+/// elected generation on the wrong set. The same report reissues it on the
+/// elected set (#1929), instead of leaving that to the next one.
+#[tokio::test]
+async fn below_the_own_leader_set_level_one_report_moves_on() {
+    let (store, keys, named_x) = named_x_beside_z().await;
+    store
+        .faults
+        .keep_own_leader
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let at = named_x.generation + 2;
+    let state = app_state_ready(Arc::clone(&store) as _);
+    let _ = post_report(
+        state,
+        &keys,
+        serde_json::json!([elected_on_x_z(at, named_x.generation)]),
+    )
+    .await;
+    let assignment = store
+        .get_shard_assignment(&shard_zero())
+        .await
+        .expect("get");
+    assert_named_on_x_z(&assignment, at + 1);
+}
+
 /// **The same leader on another set at the same generation is a collision.**
 /// The control plane named broker-x on {x, y} at the generation x was elected
 /// at on {x, z}. The record is not the set x opened on, so the shard moves on

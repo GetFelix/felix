@@ -488,6 +488,7 @@ async fn adopt_if_elected(
                 stream = %key.stream,
                 shard = key.shard,
                 adopted,
+                named_on_elected_set,
                 "an elected leader reported; the control plane took its generation",
             );
             // Taken as a generation only (below level 26, or an elected set
