@@ -1445,8 +1445,8 @@ elected leader waits for the lease until the control plane is back (issue
     leader's open is refused for the newer generation, or its fence is,
     whether the ballot is on a majority of its replicas or only in its own
     log (a standing it withdrew before fencing anyone leaves exactly that).
-    It reports the refusal naming no node. The control plane names it one generation up each time until it
-    is past the ballot (issue #1914).
+    It reports the refusal naming no node. The control plane names it one
+    generation up each time until it is past the ballot (issue #1914).
 
 **Why it is safe.** Ballots give one leader per generation: each generation
 is fenced on one set, any two majorities of one set share a replica, and
