@@ -636,11 +636,13 @@ fn a_floor_above_the_next_generation_is_taken_within_the_window() {
     assert_eq!(generation_at_least(7, 0), Ok(8));
     assert_eq!(generation_at_least(7, 8), Ok(8));
     assert_eq!(generation_at_least(7, 10), Ok(10));
+    // One past a ballot at the edge of the window.
     assert_eq!(
-        generation_at_least(7, 7 + ELECTION_GENERATION_WINDOW),
-        Ok(7 + ELECTION_GENERATION_WINDOW)
+        generation_at_least(7, 8 + ELECTION_GENERATION_WINDOW),
+        Ok(8 + ELECTION_GENERATION_WINDOW)
     );
-    assert!(generation_at_least(7, 8 + ELECTION_GENERATION_WINDOW).is_err());
+    assert!(generation_at_least(7, 9 + ELECTION_GENERATION_WINDOW).is_err());
+    assert!(generation_at_least(i64::MAX as u64 - 1, i64::MAX as u64 + 1).is_err());
     assert!(generation_at_least(i64::MAX as u64, 0).is_err());
 }
 

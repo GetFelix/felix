@@ -1006,16 +1006,17 @@ pub(crate) fn next_generation(current: u64) -> Result<u64, String> {
 }
 
 /// The generation a write over `current` takes: the next one, or
-/// `at_least` when that is higher (0 for none). Refused past the election
-/// window, as an adoption is, so no write pushes later ones toward the top
-/// of the range.
+/// `at_least` when that is higher (0 for none). `at_least` is one past a
+/// ballot, so it is refused when that ballot is past the election window,
+/// as an adoption is, and so no write pushes later ones toward the top of
+/// the range.
 pub(crate) fn generation_at_least(current: u64, at_least: u64) -> Result<u64, String> {
     let next = next_generation(current)?;
     if at_least <= next {
         return Ok(next);
     }
-    check_elected_generation(current, at_least)?;
-    Ok(at_least)
+    check_elected_generation(current, at_least - 1)?;
+    next_generation(at_least - 1)
 }
 
 /// Whether adopting an election at `elected` over `current` is allowed:

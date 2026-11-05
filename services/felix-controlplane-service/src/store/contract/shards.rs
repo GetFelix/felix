@@ -929,9 +929,6 @@ async fn pausing_moves_is_persisted(store: &dyn ControlPlaneStore) {
     assert!(!store.moves_paused().await.expect("read"));
 }
 
-/// A conditional write lands only over the generation it names, or where
-/// there is no assignment when it names none; anything else writes nothing
-/// and publishes nothing.
 /// A placement write with a floor lands on it when it is above the next
 /// generation, and on the next one otherwise; a floor past the election
 /// window is refused, writing nothing (#1951).
@@ -964,7 +961,7 @@ async fn a_write_at_least_a_generation_lands_there_within_the_window(
     assert_eq!(next.generation, at + 4);
     let past = write(
         Some(at + 4),
-        at + 5 + crate::model::ELECTION_GENERATION_WINDOW,
+        at + 6 + crate::model::ELECTION_GENERATION_WINDOW,
     )
     .await;
     assert!(matches!(past, Err(StoreError::Conflict(_))), "{past:?}");
@@ -979,6 +976,9 @@ async fn a_write_at_least_a_generation_lands_there_within_the_window(
     );
 }
 
+/// A conditional write lands only over the generation it names, or where
+/// there is no assignment when it names none; anything else writes nothing
+/// and publishes nothing.
 async fn a_conditional_write_lands_only_at_the_expected_generation(store: &dyn ControlPlaneStore) {
     clear(store).await;
 

@@ -174,8 +174,8 @@ Later control-plane changes are on `main`:
 - An elected leader is adopted on the replica set it was elected on: level
   26, with no Postgres migration. Finalizing `replica_election` needs that
   level.
-- A leader that answered another candidate's fence, when that candidate
-  never opened, reports the candidate's ballot with its refusal, and
+- A leader that answered another candidate's fence, when the control plane
+  never adopted that candidate, reports the candidate's ballot with its refusal, and
   placement names it again one past that ballot (#1951): migration `0043`,
   level 28. Below it the leader is named one generation up, as before, and
   can stay stuck until something else moves the shard.

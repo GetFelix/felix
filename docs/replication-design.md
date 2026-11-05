@@ -4632,10 +4632,10 @@ Five rules keep an election from getting stuck:
   stopped counting toward a majority there, and every write waited out its
   quorum timeout while the followers confirmed it (issue #1933).
 - **A leader past its generation by a ballot in its own copy reports it.**
-  A leader whose own copy holds a ballot above its generation that names
-  the leader itself cannot acknowledge a write at the generation it serves. A promotion leaves that state for a moment,
-  because it takes the new ballot before the routes name the new
-  generation. A withdrawn standing leaves it for good. So once it has lasted
+  A leader cannot acknowledge a write at the generation it serves once its
+  own copy holds a newer ballot naming the leader itself. A promotion
+  leaves that state for a moment, because it takes the new ballot before
+  the routes name the new generation. A withdrawn standing leaves it for good. So once it has lasted
   3 s, with no standing of this broker under way at that ballot, the leader
   reports its generation refused each tick, naming no node, and logs a
   warning the first time. The control plane then names it one generation

@@ -878,24 +878,20 @@ pub(super) fn move_step<'a>(
     }
 }
 
-/// The step that drops a destination that stopped being live, or halted.
 /// The generation a leader refused for another node's newer `ballot` in its
 /// own copy is named at, at least: one past the ballot, since its fence finds
 /// the ballot's generation promised away and waits there. 0, the next
 /// generation as usual, when the ballot is not above `generation` or is past
-/// the window an election may stand in, which only a corrupt report shows.
+/// the window a candidate may stand in, which only a corrupt report shows.
 fn above_ballot(generation: u64, ballot: u64) -> u64 {
-    match ballot.checked_add(1) {
-        Some(above)
-            if ballot > generation
-                && crate::model::check_elected_generation(generation, above).is_ok() =>
-        {
-            above
-        }
-        _ => 0,
+    if ballot > generation && crate::model::check_elected_generation(generation, ballot).is_ok() {
+        ballot + 1
+    } else {
+        0
     }
 }
 
+/// The step that drops a destination that stopped being live, or halted.
 fn given_up(successor: &str, halted: Option<String>) -> MoveStep {
     match halted {
         Some(reason) => MoveStep::Halted {

@@ -220,6 +220,25 @@ async fn a_refusal_above_another_ballot_names_the_leader_past_it() {
     assert_eq!(pass(&store).await, renamed, "answered once");
 }
 
+/// A ballot at the edge of the election window, where a candidate may
+/// still stand, is passed like any other.
+#[tokio::test]
+async fn a_ballot_at_the_edge_of_the_window_names_the_leader_past_it() {
+    let (store, placed) = joint_fence_cluster(true).await;
+    let ballot = placed.generation + crate::model::ELECTION_GENERATION_WINDOW;
+
+    reports_refusal(
+        &store,
+        &placed,
+        RefusedGeneration::above(placed.generation, ballot),
+    )
+    .await;
+    let renamed = pass(&store).await;
+
+    assert_eq!(renamed.generation, ballot + 1, "{renamed:?}");
+    assert_eq!(renamed.leader, placed.leader);
+}
+
 /// A ballot past the election window is a corrupt report, as it would be
 /// for an adoption: the leader is named one up, as for no ballot.
 #[tokio::test]
@@ -231,7 +250,7 @@ async fn a_ballot_past_the_window_names_the_leader_one_up() {
         &placed,
         RefusedGeneration::above(
             placed.generation,
-            placed.generation + crate::model::ELECTION_GENERATION_WINDOW,
+            placed.generation + crate::model::ELECTION_GENERATION_WINDOW + 1,
         ),
     )
     .await;

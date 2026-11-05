@@ -1619,8 +1619,8 @@ reading as a refusal.
 
 A refusal can carry the ballot the leader's own copy holds for another node
 above its generation. Placement then names the leader one past that ballot
-instead of one up, as long as it is within the election window, 16
-generations. Under Raft the ballot needs metadata level 28 and is dropped
+instead of one up, as long as the ballot is at most 16 generations (the
+election window) above the shard's. Under Raft the ballot needs metadata level 28 and is dropped
 below it, so the leader is named one up on every member. Under Postgres it
 is migration 0043 (`refused_ballot`), with `refused_ballot_at` as its
 marker.

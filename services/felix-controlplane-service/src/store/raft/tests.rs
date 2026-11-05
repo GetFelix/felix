@@ -1243,7 +1243,7 @@ async fn a_refused_ballot_waits_for_every_member() {
     assert_eq!(
         one_up,
         assigned.generation + 1,
-        "named past the ballot below its level"
+        "named one up below its level"
     );
 
     version.store(
