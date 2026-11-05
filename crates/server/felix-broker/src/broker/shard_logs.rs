@@ -299,6 +299,108 @@ impl Broker {
         }
     }
 
+    /// [`Broker::shard_log_for`], with any open that creates or recovers a
+    /// log done on the blocking pool. Such an open fsyncs files and
+    /// directories, and on a runtime worker a slow disk stalls every task
+    /// queued behind it, the lease heartbeat included. A log already open is
+    /// returned without leaving the worker.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn shard_log_off_runtime(
+        self: &Arc<Self>,
+        kind: LogKind,
+        tenant_id: &str,
+        namespace: &str,
+        name: &str,
+        shard: u32,
+        base_offset: Option<u64>,
+        incarnation: Option<u64>,
+    ) -> Option<StreamLog> {
+        if let Some(log) = self
+            .opened_log(kind, tenant_id, namespace, name, shard, incarnation)
+            .await
+        {
+            return Some(log);
+        }
+        let broker = Arc::clone(self);
+        let scope = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            name.to_string(),
+        );
+        let runtime = tokio::runtime::Handle::current();
+        let opened = tokio::task::spawn_blocking(move || {
+            let (tenant_id, namespace, name) = &scope;
+            runtime.block_on(broker.shard_log_for(
+                kind,
+                tenant_id,
+                namespace,
+                name,
+                shard,
+                base_offset,
+                incarnation,
+            ))
+        })
+        .await;
+        match opened {
+            Ok(log) => log,
+            Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
+            Err(_) => None,
+        }
+    }
+
+    /// What [`Broker::shard_log_for`] would return, when the log is open
+    /// already; `None` without opening anything otherwise.
+    async fn opened_log(
+        &self,
+        kind: LogKind,
+        tenant_id: &str,
+        namespace: &str,
+        name: &str,
+        shard: u32,
+        incarnation: Option<u64>,
+    ) -> Option<StreamLog> {
+        if !self.may_open(kind, tenant_id, namespace, name) {
+            return None;
+        }
+        let log = match kind {
+            LogKind::Stream => {
+                return self.durable_storage.as_ref()?.opened_stream_for(
+                    tenant_id,
+                    namespace,
+                    name,
+                    shard,
+                    incarnation,
+                );
+            }
+            LogKind::Cache => {
+                self.cache
+                    .as_log_cache()?
+                    .opened_shard_log(tenant_id, namespace, name, shard, incarnation)
+                    .await
+            }
+            LogKind::Counters => {
+                self.counters
+                    .as_ref()?
+                    .opened_shard_log(tenant_id, namespace, name, shard, incarnation)
+                    .await
+            }
+            LogKind::GroupCursors => {
+                self.consumer_groups
+                    .as_ref()?
+                    .opened_shard_log(tenant_id, namespace, name, shard, incarnation)
+                    .await
+            }
+            LogKind::GroupDeadLetters => {
+                self.group_reader
+                    .as_ref()?
+                    .dead_letters()
+                    .opened_shard_log(tenant_id, namespace, name, shard, incarnation)
+                    .await
+            }
+        };
+        log.map(StreamLog::from_log)
+    }
+
     /// Whether a log of `kind` for `name` may be opened here now. On a broker
     /// that learns its streams and caches from the control plane, their logs
     /// only once it knows which incarnation to open: before that, records

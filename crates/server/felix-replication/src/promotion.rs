@@ -1561,6 +1561,7 @@ async fn catch_up<R: PeerRequester>(
                         shard.generation,
                         Some(generations),
                     )
+                    .await
                     .map_err(|err| format!("could not label the records from {start}: {err}"))?;
                 }
                 next = applied.durable_offset;
@@ -1589,6 +1590,7 @@ async fn catch_up<R: PeerRequester>(
     // as the model's log' = log[f] carries them.
     if let Some(taken) = taken_labels.filter(|taken| !taken.is_empty()) {
         crate::replica::label_appended(log, compared_from, tail, shard.generation, Some(&taken))
+            .await
             .map_err(|err| format!("could not label the records from {compared_from}: {err}"))?;
     }
     // A cache's index, a counter shard's sums and the group logs' entries

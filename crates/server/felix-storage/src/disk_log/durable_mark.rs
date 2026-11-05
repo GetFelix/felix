@@ -127,6 +127,11 @@ pub(super) struct MarkFile {
 struct MarkState {
     /// The furthest mark written since the last rewind.
     last: Option<DurableMark>,
+    /// How many times the mark has been moved back.
+    rewinds: u64,
+    /// The thread that wrote it.
+    #[cfg(test)]
+    writer: Option<String>,
 }
 
 impl MarkFile {
@@ -146,16 +151,42 @@ impl MarkFile {
         })
     }
 
-    /// Record that `mark` has been synced. Called only after the sync returned.
-    /// A mark behind the one already recorded is ignored.
+    /// [`MarkFile::record_since`] as of now.
+    #[cfg(test)]
     pub(super) fn record(&self, mark: DurableMark) -> std::io::Result<()> {
+        self.record_since(mark, self.rewinds())
+    }
+
+    /// How many times the mark has been moved back, for
+    /// [`MarkFile::record_since`].
+    pub(super) fn rewinds(&self) -> u64 {
+        self.state.lock().rewinds
+    }
+
+    /// Record that `mark` has been synced, unless the mark was moved back
+    /// since `rewinds` was read. Called only after the sync returned. A mark
+    /// behind the one already recorded is ignored. A flush whose caller
+    /// stopped waiting finishes on the flush thread after its lock is gone,
+    /// so a truncation can land before it writes: its mark would then point
+    /// past the cut.
+    pub(super) fn record_since(&self, mark: DurableMark, rewinds: u64) -> std::io::Result<()> {
         let mut state = self.state.lock();
-        if state.last >= Some(mark) {
+        if state.rewinds != rewinds || state.last >= Some(mark) {
             return Ok(());
         }
         crate::io::write_at(&self.file, &mark.encode(), 0)?;
         state.last = Some(mark);
+        #[cfg(test)]
+        {
+            state.writer = std::thread::current().name().map(str::to_string);
+        }
         Ok(())
+    }
+
+    /// The thread that wrote the last mark [`MarkFile::record_since`] recorded.
+    #[cfg(test)]
+    pub(super) fn writer(&self) -> Option<String> {
+        self.state.lock().writer.clone()
     }
 
     /// Sync whatever the mark last recorded. For a clean shutdown, so the
@@ -171,6 +202,7 @@ impl MarkFile {
     pub(super) fn record_durably(&self, mark: DurableMark) -> std::io::Result<()> {
         let mut state = self.state.lock();
         state.last = None;
+        state.rewinds += 1;
         crate::io::write_at(&self.file, &mark.encode(), 0)?;
         self.sync()?;
         state.last = Some(mark);
@@ -185,10 +217,19 @@ impl LogInner {
     /// what recovery may repair after a power loss but never loses a record
     /// that the log still has.
     pub(super) fn note_synced(&self, segment: SegmentId, synced_bytes: u64) {
-        self.warn_unmarked(self.mark.record(DurableMark {
-            segment,
-            synced_bytes,
-        }));
+        self.note_synced_since(segment, synced_bytes, self.mark.rewinds());
+    }
+
+    /// [`LogInner::note_synced`] for a flush that read `rewinds` under the
+    /// flush lock; dropped if a rewind came since. See [`MarkFile::record_since`].
+    pub(super) fn note_synced_since(&self, segment: SegmentId, synced_bytes: u64, rewinds: u64) {
+        self.warn_unmarked(self.mark.record_since(
+            DurableMark {
+                segment,
+                synced_bytes,
+            },
+            rewinds,
+        ));
     }
 
     /// Record that every segment before `active` is sealed, and so synced
