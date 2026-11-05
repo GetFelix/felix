@@ -297,6 +297,22 @@ fn a_draining_follower_is_promoted_when_no_live_one_holds_the_log() {
     );
     let (_, leader, _) = both.to_place().next().expect("placed");
     assert_eq!(leader, "broker-c");
+
+    // Nor is a draining move destination promoted, as for a live one.
+    let mut moving = existing[0].clone();
+    moving.successor = Some("broker-b".to_string());
+    let destination = plan(
+        &streams,
+        &[],
+        &nodes,
+        &[moving],
+        &CaughtUpNodes(["broker-b".to_string()].into()),
+    );
+    assert_eq!(
+        destination.to_place().count(),
+        0,
+        "the move's destination was promoted"
+    );
 }
 
 /// And it is placed the moment a replica can take over, so the state above is

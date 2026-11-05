@@ -509,12 +509,12 @@ fn plan_once(
                 .collect(),
             _ => eligible.clone(),
         };
-        // With the leader gone, a draining follower leads when no live one
+        // With the leader gone or replaced, a draining follower leads when no live one
         // holds the log. It still serves, and the drain moves the shard off it
         // afterwards. Passed over, the shard has no leader at all while the
         // live followers wait to catch up from a leader that is gone (#1922).
         let draining: Vec<&Node> = match current.get(&key) {
-            Some(previous) if !is_serving(&previous.leader) => nodes
+            Some(previous) if replaced || !is_serving(&previous.leader) => nodes
                 .iter()
                 .filter(|node| {
                     node.status.lifecycle == NodeLifecycle::Draining
