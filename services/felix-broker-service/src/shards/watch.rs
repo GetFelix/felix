@@ -153,9 +153,29 @@ pub struct ShardOwnership {
     /// The set each shard had right before its current assignment, where this
     /// broker saw that step. A joint fence takes the set it leaves from here.
     priors: HashMap<ShardKey, felix_router::PriorSet>,
+    /// When the request behind the newest answer applied here started.
+    as_of: Option<tokio::time::Instant>,
+    /// The feed seq the newest answer applied here brought this view to.
+    checkpoint: Option<u64>,
 }
 
 impl ShardOwnership {
+    /// When the request behind the newest answer applied here started: every
+    /// change the control plane committed before then is in this view.
+    pub(crate) fn as_of(&self) -> Option<tokio::time::Instant> {
+        self.as_of
+    }
+
+    /// The feed seq this view is caught up to, as of the same answer.
+    pub(crate) fn checkpoint(&self) -> Option<u64> {
+        self.checkpoint
+    }
+
+    pub(crate) fn answered(&mut self, started: tokio::time::Instant, seq: u64) {
+        self.as_of = Some(self.as_of.map_or(started, |was| was.max(started)));
+        self.checkpoint = Some(seq);
+    }
+
     /// Apply a change, ignoring one that would move a shard backwards.
     ///
     /// Returns whether anything changed. A duplicate delivery is therefore
@@ -392,6 +412,7 @@ pub fn check_continuity(since: u64, first_seq: Option<u64>, next_seq: u64) -> Op
 /// `changed` is notified after every snapshot and every batch of changes that
 /// moved something, so the routing feed acts on it now rather than at its
 /// next tick.
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     link: impl ControlPlaneLink,
     // Held rather than copied: this task outlives many token lifetimes, and a
@@ -401,8 +422,12 @@ pub async fn run(
     ownership: Arc<RwLock<ShardOwnership>>,
     changed: Arc<Notify>,
     interval: Duration,
+    lease: Option<Arc<crate::cluster::lease::LeaseState>>,
     shutdown: CancellationToken,
 ) {
+    if let Some(lease) = &lease {
+        lease.follow_routes();
+    }
     // `None` means "no valid checkpoint": take a snapshot before polling.
     let mut checkpoint: Option<u64> = None;
     // The furthest this broker has applied. A snapshot older than that came
@@ -419,7 +444,16 @@ pub async fn run(
         tokio::select! {
             _ = shutdown.cancelled() => return,
             _ = tokio::time::sleep(delay) => {}
+            _ = wanted(&lease) => {}
         }
+        // A renewal waits on this answer, so it is asked for without the
+        // long-poll's hold.
+        let urgent = lease.as_ref().is_some_and(|lease| lease.wants_routes());
+        let wait = if urgent {
+            Duration::ZERO
+        } else {
+            LONG_POLL_WAIT
+        };
 
         // Read per poll, not once: a refreshed token has to reach this loop
         // without it knowing refresh exists.
@@ -430,10 +464,16 @@ pub async fn run(
         // and shutdown must not wait for it.
         let result = tokio::select! {
             _ = shutdown.cancelled() => return,
+            // A held poll, or one lost in a partition, would keep the renewal
+            // waiting until it times out. Asked again at once instead.
+            _ = wanted(&lease), if !urgent => {
+                delay = Duration::ZERO;
+                continue;
+            }
             result = async {
                 match checkpoint {
                     None => snapshot(&link, token, &ownership, floor).await,
-                    Some(since) => poll(&link, token, &ownership, since).await,
+                    Some(since) => poll(&link, token, &ownership, since, wait).await,
                 }
             } => result,
         };
@@ -448,7 +488,10 @@ pub async fn run(
                 checkpoint = Some(seq);
                 floor = floor.max(seq);
                 mm::record_checkpoint(seq);
-                if moved {
+                ownership.write().await.answered(started, seq);
+                // Unmoved too when a renewal waits: the feed's publish is
+                // what confirms it.
+                if moved || urgent {
                     changed.notify_one();
                 }
                 next_delay(interval, moved, started.elapsed())
@@ -481,7 +524,7 @@ pub async fn run(
                 tracing::warn!(?reason, "shard watch must resnapshot");
                 mm::record_resync(reason);
                 checkpoint = None;
-                interval
+                if urgent { Duration::ZERO } else { interval }
             }
             Err(err) => {
                 failures = failures.saturating_add(1);
@@ -494,6 +537,14 @@ pub async fn run(
                 backoff(interval, failures)
             }
         };
+    }
+}
+
+/// Resolves when `lease` waits on the routes; never without one.
+async fn wanted(lease: &Option<Arc<crate::cluster::lease::LeaseState>>) {
+    match lease {
+        Some(lease) => lease.routes_wanted().await,
+        None => std::future::pending().await,
     }
 }
 
@@ -568,15 +619,11 @@ async fn poll(
     bearer: Option<&str>,
     ownership: &Arc<RwLock<ShardOwnership>>,
     since: u64,
+    wait: Duration,
 ) -> Result<Progress> {
     let response: ChangesResponse = decode(
-        link.assignment_changes(
-            bearer,
-            since,
-            LONG_POLL_WAIT,
-            LONG_POLL_WAIT + LONG_POLL_SLACK,
-        )
-        .await,
+        link.assignment_changes(bearer, since, wait, LONG_POLL_WAIT + LONG_POLL_SLACK)
+            .await,
     )
     .context("shard assignment changes")?;
 

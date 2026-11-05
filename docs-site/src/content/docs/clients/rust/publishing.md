@@ -308,10 +308,20 @@ same writer, so each stream's publishes reach the broker in order.
 `RoundRobin` spreads load evenly across writers, but publishes to one stream
 can arrive out of order.
 
-Under `HashStream` the client goes one step further: each shard of a stream
-gets a stream of its own. The broker answers a stream's pipelined publishes in
-order, so shards sharing a stream would wait on the slowest; on separate
-streams a shard stalled on a quorum holds up only itself. Each shard stream
+A shard stalled on a quorum does not hold up the other shards on its publish
+stream, against a broker that answers plain acked publishes as they complete
+(`FEATURE_PUBLISH_ANSWER_ON_COMPLETION`, which current brokers grant with a
+publish window). The client keeps writing to the stream while an answer is
+outstanding, so publishes to healthy shards are answered while the stalled one
+waits. An older broker that grants a window answers every publish in request
+order, so there a stalled shard holds back the answers behind it. Each shard keeps its own order, because
+the broker commits a shard's publishes in the order the stream carried them.
+Only an idempotent producer's batches are answered in the order they were
+sent; see [idempotent producers](#idempotent-producers).
+
+Under `HashStream` the client also gives the first shards it sees a stream of
+their own. A stalled shard still holds its slots in the stream's publish
+window, so on a stream of its own it uses up only its own window. Each shard stream
 is placed on the least-loaded connection, so a busy multi-shard stream
 spreads over the client's connections and the broker's listeners instead of
 riding one. The stream opens on the shard's first publish, which pays one
@@ -322,9 +332,10 @@ extra round trip to authenticate it, and stays open. A client keeps at most
 The cap is per broker and first come, first served across every stream the
 client publishes to: the first four shards (tenant, namespace, stream, shard)
 it publishes to each get a dedicated stream, and every later shard uses the
-shared pool permanently. A stalled dedicated shard holds up only itself; a
-stalled pooled shard can hold up every other pooled shard, including other
-streams' shards.
+shared pool permanently. A stalled shard on the pool takes slots from the
+pool stream's window while it waits. Against a broker that answers on
+completion, it does not hold back the other pooled shards' answers; against an
+older one, it does.
 
 Four fully isolates streams of up to four shards. Isolation matters when a
 shard can stall on its own, as with quorum waits or a dead follower on a
@@ -334,7 +345,7 @@ an 8 vCPU broker with a 48-shard stream and 256 B acked publishes, 16 streams
 measured about 97 MB/s, 4 about 125 MB/s and 0 (everything on the pool) about
 162 MB/s. For wide replicated streams that need isolation, raise
 `FELIX_PUB_SHARD_STREAMS` to the total number of shards the client publishes
-to on a broker. Adaptive dedicated streams are tracked in #1417.
+to on a broker.
 
 Each broker connection asks for a stream's width on its first keyed publish
 to it (one more round trip) and picks a key's stream from that answer alone,
@@ -512,8 +523,9 @@ producer.publish_batches("acme", "prod", "orders", batches).await?;
 
 The window is whatever the broker granted the stream
 (`FELIX_BROKER_PUBLISH_WINDOW`, 256 by default), capped at 64 because the leader
-remembers 64 sequences per producer. The broker answers a pipelining stream in
-the order it sent the batches, so when one fails the producer knows it is the
+remembers 64 sequences per producer. The broker answers a stream's idempotent
+batches in the order it sent them, even when it answers other publishes as they
+complete, so when one fails the producer knows it is the
 earliest failure; it and every batch behind it are in doubt, and a
 `Client` producer re-sends them, in order, under the same sequences until
 they land. If the call still fails, make **the same call again**: the batches

@@ -144,8 +144,10 @@ threads; dropping it instead stops the runtime without blocking.
 
 Nothing here sleeps for a fixed duration and hopes. Start-up returns only once:
 
-1. every broker answers `/ready`,
-2. the control plane considers every broker placeable,
+1. every broker answers `/ready` (a broker that exits first, for instance on a
+   port something else took, is started again with new ports),
+2. the control plane considers every broker placeable (a broker that exits
+   now fails start-up at once with its log, since it had reported ready),
 3. every shard has a leader (placement is *stepped*, not waited for, so it does
    not depend on a reconcile timer),
 4. **a publish succeeds**,
@@ -225,6 +227,14 @@ heartbeat stamps as old as the outage. `crash_control_plane` and
 `recover_control_plane` do the same in two steps, so a test can act while it
 is down. If `run_placement` was running, it runs again after either restart.
 `stop_control_plane` stops it for good.
+
+`pause_control_plane` and `resume_control_plane` freeze the control plane in
+place, the way `SIGSTOP` freezes a process. It runs in the test process, so
+the harness holds every worker thread of its runtime instead of sending a
+signal. Its port still takes connections and requests, and nothing answers
+them, so a broker's request waits out its own timeout rather than failing at
+once as it does against a crashed control plane. No sweep or placement runs
+until it resumes.
 
 `kill_node` kills without waiting for the control plane to react. A test
 measuring how long failover takes has to start its clock at the kill, not after

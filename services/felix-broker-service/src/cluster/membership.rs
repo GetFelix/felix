@@ -134,6 +134,10 @@ struct HeartbeatRequest {
     /// plane always read.
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     suspects: BTreeSet<String>,
+    /// Set while the lease waits on the routes, which then have to reach the
+    /// answer's `assignment_seq`. Left out otherwise, as before.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    want_assignment_seq: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -155,6 +159,10 @@ struct HeartbeatResponse {
     expiry_timeout_ms: Option<u64>,
     #[serde(default)]
     fleet_features: BTreeSet<String>,
+    /// The assignment feed's head as of the accept, when asked for. Absent
+    /// from a control plane that predates it.
+    #[serde(default)]
+    assignment_seq: Option<u64>,
 }
 
 /// A registered identity, and what the control plane told us about it.
@@ -380,6 +388,32 @@ pub async fn run_heartbeat(
     fleet: Arc<FleetGate>,
     suspects: Arc<felix_replication::suspicion::Suspects>,
 ) -> HeartbeatEnd {
+    run_heartbeat_checked(
+        link,
+        registration,
+        shutdown,
+        consecutive_failures,
+        lease,
+        fleet,
+        suspects,
+        None,
+    )
+    .await
+}
+
+/// [`run_heartbeat`], skipping every beat while `pulse` says the broker's
+/// main runtime has stopped.
+#[allow(clippy::too_many_arguments)]
+async fn run_heartbeat_checked(
+    link: impl ControlPlaneLink,
+    registration: Registration,
+    shutdown: CancellationToken,
+    consecutive_failures: Arc<AtomicU64>,
+    lease: Arc<crate::cluster::lease::LeaseState>,
+    fleet: Arc<FleetGate>,
+    suspects: Arc<felix_replication::suspicion::Suspects>,
+    pulse: Option<Arc<RuntimePulse>>,
+) -> HeartbeatEnd {
     let mut suspected = suspects.subscribe();
     let mut interval = Duration::from_millis(registration.heartbeat_interval_ms.max(1));
     let mut last_success = std::time::Instant::now();
@@ -400,6 +434,17 @@ pub async fn run_heartbeat(
             Ok(()) = suspected.changed(), if failures == 0 => {}
         }
         let suspects = suspected.borrow_and_update().clone();
+        if let Some(silent) = pulse.as_ref().and_then(|pulse| pulse.hung()) {
+            // Renewing here would keep the shards this broker leads on a
+            // process that serves nothing. Letting the lease run out hands
+            // them to a live copy.
+            tracing::error!(
+                node_id = %registration.node_id,
+                silent_ms = silent.as_millis() as u64,
+                "the broker's runtime has stopped; not renewing the lease",
+            );
+            continue;
+        }
 
         // Before the request, not after the answer: see `LeaseState::renew_at`.
         let sent = lease.now();
@@ -412,6 +457,7 @@ pub async fn run_heartbeat(
             HeartbeatRequest {
                 incarnation: registration.incarnation,
                 suspects,
+                want_assignment_seq: lease.awaits_routes(),
             },
             lease.usable() / LEASE_REQUEST_FRACTION,
         )
@@ -427,7 +473,7 @@ pub async fn run_heartbeat(
                     if let Some(expiry) = response.expiry_timeout_ms {
                         lease.adopt(Duration::from_millis(expiry.max(1)));
                     }
-                    lease.renew_at(sent);
+                    lease.renew_at(sent, response.assignment_seq);
                 }
                 mm::record_heartbeat_success();
                 for feature in fleet.observe(response.fleet_features.iter().map(String::as_str)) {
@@ -530,9 +576,48 @@ pub fn spawn(
     storage_id: Option<StorageId>,
     record_in: Option<std::path::PathBuf>,
 ) -> MembershipTask {
+    spawn_with(
+        link,
+        config,
+        credential,
+        serving,
+        shutdown,
+        lease,
+        fleet,
+        suspects,
+        incarnation,
+        registered,
+        storage_id,
+        record_in,
+        true,
+    )
+}
+
+/// [`spawn`], on a thread of its own when `own_thread`, else on the current
+/// runtime. The simulator wants the latter: its virtual clock and network live
+/// on one runtime, which a heartbeat on a real-time runtime could not reach.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn spawn_with(
+    link: impl ControlPlaneLink + Clone,
+    config: MembershipConfig,
+    credential: crate::cluster::credential::NodeCredential,
+    serving: CancellationToken,
+    shutdown: CancellationToken,
+    lease: Arc<crate::cluster::lease::LeaseState>,
+    fleet: Arc<FleetGate>,
+    suspects: Arc<felix_replication::suspicion::Suspects>,
+    incarnation: Arc<AtomicU64>,
+    registered: tokio::sync::watch::Sender<Option<u64>>,
+    storage_id: Option<StorageId>,
+    record_in: Option<std::path::PathBuf>,
+    own_thread: bool,
+) -> MembershipTask {
     let fatal = CancellationToken::new();
     let consecutive_failures = Arc::new(AtomicU64::new(0));
-    let handle = tokio::spawn({
+    // On the current runtime the heartbeat cannot outlive a hung runtime, so
+    // there is nothing for the pulse to prove.
+    let pulse = own_thread.then(|| RuntimePulse::start(RUNTIME_HUNG_AFTER, shutdown.clone()));
+    let task = {
         let fatal = fatal.clone();
         let consecutive_failures = Arc::clone(&consecutive_failures);
         let lease = Arc::clone(&lease);
@@ -605,7 +690,7 @@ pub fn spawn(
                 incarnation.store(registration.incarnation, Ordering::Release);
                 registered.send_replace(Some(registration.incarnation));
 
-                match run_heartbeat(
+                match run_heartbeat_checked(
                     link.clone(),
                     registration,
                     shutdown.clone(),
@@ -613,6 +698,7 @@ pub fn spawn(
                     Arc::clone(&lease),
                     Arc::clone(&fleet),
                     Arc::clone(&suspects),
+                    pulse.clone(),
                 )
                 .await
                 {
@@ -626,7 +712,12 @@ pub fn spawn(
                 }
             }
         }
-    });
+    };
+    let handle = if own_thread {
+        spawn_on_own_thread(task)
+    } else {
+        tokio::spawn(task)
+    };
 
     MembershipTask {
         handle,
@@ -634,6 +725,109 @@ pub fn spawn(
         consecutive_failures,
         lease,
         fleet,
+    }
+}
+
+/// Run `task` on a thread of its own, with a runtime of its own.
+///
+/// The heartbeat is the lease renewal, so it must not share workers with
+/// anything that can block on disk: a broker whose every runtime worker waits
+/// on a stalled filesystem journal would otherwise stop renewing and lose its
+/// lease while it is otherwise healthy. The returned handle joins the task.
+/// Aborting it stops the task at its next await; a request already in flight
+/// finishes first.
+fn spawn_on_own_thread<F>(task: F) -> tokio::task::JoinHandle<()>
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    let stop = CancellationToken::new();
+    let (done, finished) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name("felix-membership".to_string())
+        .spawn({
+            let stop = stop.clone();
+            move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build the membership runtime");
+                let ended = runtime.block_on(async move {
+                    let task = tokio::spawn(task);
+                    let abort = task.abort_handle();
+                    tokio::select! {
+                        ended = task => ended,
+                        _ = stop.cancelled() => {
+                            abort.abort();
+                            Ok(())
+                        }
+                    }
+                });
+                let _ = done.send(ended);
+            }
+        })
+        .expect("start the membership thread");
+    tokio::spawn(async move {
+        // Dropped with this task, so aborting the handle stops the heartbeat.
+        let _stop = stop.drop_guard();
+        match finished.await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
+            Ok(Err(_)) => {}
+            Err(_) => panic!("the membership thread stopped without finishing"),
+        }
+    })
+}
+
+/// How long the broker's main runtime may go without running a task before
+/// the heartbeat stops renewing the lease. Well past a filesystem journal
+/// stall (seconds), so only a runtime that is stuck for good loses its shards.
+const RUNTIME_HUNG_AFTER: Duration = Duration::from_secs(10);
+
+/// Proof that the broker's main runtime still runs tasks, for the heartbeat on
+/// its own thread. Without it a deadlocked broker would keep renewing a lease
+/// it cannot serve under, and the shards it leads would never fail over.
+struct RuntimePulse {
+    started: std::time::Instant,
+    /// Milliseconds after `started` the main runtime last ran the ticker.
+    last: AtomicU64,
+    hung_after: Duration,
+}
+
+impl RuntimePulse {
+    /// Tick from the current runtime until `shutdown`.
+    fn start(hung_after: Duration, shutdown: CancellationToken) -> Arc<Self> {
+        let pulse = Arc::new(Self::new(hung_after));
+        let ticking = Arc::clone(&pulse);
+        tokio::spawn(async move {
+            loop {
+                ticking.tick();
+                tokio::select! {
+                    _ = shutdown.cancelled() => return,
+                    _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+                }
+            }
+        });
+        pulse
+    }
+
+    fn new(hung_after: Duration) -> Self {
+        Self {
+            started: std::time::Instant::now(),
+            last: AtomicU64::new(0),
+            hung_after,
+        }
+    }
+
+    fn tick(&self) {
+        let now = self.started.elapsed().as_millis() as u64;
+        self.last.store(now, Ordering::Release);
+    }
+
+    /// How long the runtime has been silent, when that is past `hung_after`.
+    fn hung(&self) -> Option<Duration> {
+        let last = Duration::from_millis(self.last.load(Ordering::Acquire));
+        let silent = self.started.elapsed().saturating_sub(last);
+        (silent > self.hung_after).then_some(silent)
     }
 }
 
