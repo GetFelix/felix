@@ -283,6 +283,10 @@ pub struct NodeHeartbeatRequest {
     /// pings. Absent from a broker that suspects nobody, or predates it.
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     pub suspects: std::collections::BTreeSet<String>,
+    /// Asks for `assignment_seq` in the answer. Absent from a broker that
+    /// does not need it, or predates it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub want_assignment_seq: bool,
 }
 
 /// What the control plane tells a broker in return.
@@ -302,6 +306,13 @@ pub struct NodeHeartbeatResponse {
     /// only ever adds to what it has from this.
     #[serde(default)]
     pub fleet_features: std::collections::BTreeSet<String>,
+    /// The shard-assignment feed's `next_seq`, read after this heartbeat was
+    /// accepted: every assignment change committed before then has a lower
+    /// seq. Only when asked for, and left out by a Raft leader that predates
+    /// it. A broker marked down serves again only on routes built from the
+    /// feed at or past it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignment_seq: Option<u64>,
 }
 
 /// A broker claiming its identity on boot.

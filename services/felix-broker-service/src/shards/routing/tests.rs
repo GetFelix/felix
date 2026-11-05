@@ -879,6 +879,47 @@ mod feed {
         server.abort();
     }
 
+    /// After a surrender the lease serves again only once the feed has
+    /// published routes from a watch answer that reaches the head the renewal
+    /// was accepted at (#1955). The feed's publish is what confirms it.
+    #[tokio::test]
+    async fn a_published_watch_answer_at_the_renewals_head_confirms_the_lease() {
+        let (state, _router) = state(&[assignment(0, "broker-a", 1)]);
+        let lease = Arc::new(crate::cluster::lease::LeaseState::new(Duration::from_secs(
+            60,
+        )));
+        state.ingress.fence().bind_lease(Arc::clone(&lease));
+        lease.follow_routes();
+        let ownership = Arc::clone(&state.ownership);
+        let changed = Arc::clone(&state.assignments_changed);
+        let shutdown = CancellationToken::new();
+        let feed = spawn_feed(state, None, Duration::from_millis(20), shutdown.clone());
+
+        lease.renew();
+        lease.surrender();
+        lease.renew_at(lease.now(), Some(5));
+        ownership
+            .write()
+            .await
+            .answered(tokio::time::Instant::now(), 4);
+        changed.notify_one();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            !lease.is_valid_now(),
+            "routes short of the renewal's head confirmed it"
+        );
+
+        ownership
+            .write()
+            .await
+            .answered(tokio::time::Instant::now(), 5);
+        changed.notify_one();
+        until("the lease to be confirmed", || lease.is_valid_now()).await;
+
+        shutdown.cancel();
+        let _ = feed.await;
+    }
+
     /// Cancellation ends the task rather than leaving it ticking.
     #[tokio::test]
     async fn the_feed_stops_when_cancelled() {
