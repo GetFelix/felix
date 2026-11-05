@@ -11,6 +11,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
+use std::time::Duration;
 
 use felix_common::membership::ElectedLeadership;
 use felix_router::ShardKey;
@@ -18,6 +19,7 @@ use felix_storage::disk_log::Membership;
 use felix_wire::internal::ReplicaSetView;
 use parking_lot::Mutex;
 use tokio::sync::Notify;
+use tokio::time::Instant;
 
 mod candidate;
 
@@ -38,6 +40,13 @@ pub struct Elections {
     /// this broker's standing fenced it. Outlives the entry, which the
     /// overlay drops when the control plane adopts the leadership.
     opened: Mutex<HashMap<ShardKey, (u64, u64)>>,
+    /// When each of this broker's standings was recorded or first fenced, by
+    /// generation. Outlives the fence guard, so a fence retried pass after
+    /// pass keeps its first time.
+    fenced_since: Mutex<HashMap<ShardKey, (u64, Instant)>>,
+    /// How long a copy defers to an elected leader that has not started its
+    /// generation. See [`Self::with_defer_for`].
+    defer_for: Duration,
     /// Woken on every change, for the routing feed to lay the new view over
     /// the control plane's.
     changed: Arc<Notify>,
@@ -130,8 +139,24 @@ impl Elections {
             recorded: Mutex::new(HashMap::new()),
             fencing: Mutex::new(HashMap::new()),
             opened: Mutex::new(HashMap::new()),
+            fenced_since: Mutex::new(HashMap::new()),
+            defer_for: crate::suspicion::DEFAULT_DEFER_FOR,
             changed,
         }
+    }
+
+    /// Bound how long an elected leader that never starts its generation
+    /// holds the shard: a fencing leader refuses pre-votes, and a follower
+    /// that took its fence does not stand, only this long. Without a bound a
+    /// leader stuck fencing, or one that dropped the shard, holds the shard
+    /// until the control plane names a new generation.
+    pub fn with_defer_for(mut self, defer_for: Duration) -> Self {
+        self.defer_for = defer_for;
+        self
+    }
+
+    pub(crate) fn defer_for(&self) -> Duration {
+        self.defer_for
     }
 
     /// Record `elected` for `key`, replacing one at an older generation. An
@@ -142,6 +167,9 @@ impl Elections {
             match entries.get(&key) {
                 Some(known) if known.generation >= elected.generation => false,
                 _ => {
+                    if elected.leader == self.local_node_id {
+                        self.note_standing(&key, elected.generation);
+                    }
                     entries.insert(key, elected);
                     true
                 }
@@ -264,15 +292,49 @@ impl Elections {
         self.opened.lock().get(key) == Some(&(generation, incarnation))
     }
 
+    /// Whether `key` opened here at `generation` on this broker's standing,
+    /// in any incarnation.
+    pub(crate) fn opened_at(&self, key: &ShardKey, generation: u64) -> bool {
+        self.opened
+            .lock()
+            .get(key)
+            .is_some_and(|(opened, _)| *opened == generation)
+    }
+
     /// Mark `key`'s standing at `generation` as being fenced until the
     /// returned guard drops, so the candidate does not give it up meanwhile.
     pub(crate) fn fencing(&self, key: &ShardKey, generation: u64) -> Fencing<'_> {
         self.fencing.lock().insert(key.clone(), generation);
+        self.note_standing(key, generation);
         Fencing {
             elections: self,
             key: key.clone(),
             generation,
         }
+    }
+
+    fn note_standing(&self, key: &ShardKey, generation: u64) {
+        let mut since = self.fenced_since.lock();
+        if since.get(key).is_none_or(|(at, _)| *at != generation) {
+            since.insert(key.clone(), (generation, Instant::now()));
+        }
+    }
+
+    /// Whether this broker stands for `key` at `generation`, recorded and
+    /// not yet withdrawn, whether or not the driver has reached its fence.
+    pub(crate) fn stands_at(&self, key: &ShardKey, generation: u64) -> bool {
+        self.entries.lock().get(key).is_some_and(|elected| {
+            elected.leader == self.local_node_id && elected.generation == generation
+        })
+    }
+
+    /// Whether this broker recorded or first fenced its standing for `key` at
+    /// `generation` within [`Self::defer_for`].
+    pub(crate) fn fenced_within_defer(&self, key: &ShardKey, generation: u64) -> bool {
+        self.fenced_since
+            .lock()
+            .get(key)
+            .is_some_and(|(at, since)| *at == generation && since.elapsed() < self.defer_for)
     }
 
     /// Whether the driver is fencing or catching up `key` at `generation`.
