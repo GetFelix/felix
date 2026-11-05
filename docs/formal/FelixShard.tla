@@ -779,8 +779,11 @@ WithdrawsStuck == FALSE
 \* plane's leader that is not open at its generation and whose own log holds
 \* a newer one it does not stand at (it answered a candidate's fence, or
 \* stood and withdrew, after opening there) reports the generation refused.
-\* Not in the code: such a leader reports nothing, and only a new standing
-\* moves the shard on (#1951).
+\* Not in the code yet (#1951): such a leader reports nothing, and only a new
+\* standing moves the shard on. `RenamePastBallot`: a refusal carries the
+\* ballot the leader lost to and placement renames above it, not at the next
+\* generation, which may be that ballot's (#1951). The leader then also no
+\* longer reports a generation its own copy promised away (#1872's wait).
 \* The rest follow the list of dead ends in #1914, each off as on main.
 \* `OverlayRefused`: a member that took a candidate's fence above the
 \* fence's generation answers "at generation X" from its in-memory election
@@ -813,6 +816,7 @@ Restarts == FALSE
 SupersededRefused == TRUE
 OwnBallotRefused == FALSE
 AboveReported == FALSE
+RenamePastBallot == FALSE
 \* `Reissues`: under `Adopt`, when the control plane named one leader at the
 \* generation another was elected and opened at, it moves the shard to the
 \* next generation under the elected one (CpReissue).
@@ -3430,7 +3434,10 @@ Refused(left, stillFencing) ==
     \* (`open_failed` in lifecycle.rs). A restarted leader that opened again
     \* and then lost the generation is counted too, which the code does not
     \* report.
-    \/ PromisedAway(leader, leader, gen)
+    \* Its own copy promised the generation to another. Under
+    \* `RenamePastBallot` a fenced open waits there instead (`keep_own_set` in
+    \* promotion.rs, #1872) and reports nothing; a rename never lands there.
+    \/ ~RenamePastBallot /\ PromisedAway(leader, leader, gen)
     \/ /\ SupersededRefused /\ promised[leader] > gen
        /\ bgen[leader] < gen
        /\ (<<gen, leader>> \notin opened \/ (Restarts /\ inc[leader] > 0))
@@ -3461,6 +3468,16 @@ RenameDue ==
           \/ /\ bgen[leader] < gen \/ stillFencing
              /\ Refused(left, stillFencing)
 
+\* The generation a rename names. Under `RenamePastBallot` a refusal for a
+\* ballot the leader's copy holds for another node carries that ballot, and
+\* placement names the generation above it (`RefusedGeneration::above` in
+\* driver/shards.rs, #1951); otherwise the next one. The code takes the floor
+\* only inside the adoption window; the model always does.
+RenameGen ==
+    IF RenamePastBallot /\ promised[leader] > gen /\ ballot[leader] \notin {{}, {leader}}
+    THEN promised[leader] + 1
+    ELSE gen + 1
+
 \* Under `Renames`, the control plane names its leader again at the next
 \* generation, the same set and any pending change kept, once that leader
 \* reports it cannot serve the control plane's generation: a recorded
@@ -3480,27 +3497,27 @@ CpRename(v, views) ==
     /\ Cas(v)
     /\ ver' = ver + 1
     /\ cpView' = views
-    /\ gen' = gen + 1
+    /\ gen' = RenameGen
     /\ cpExpiry' = now + L
     /\ report' = NoReport
-    /\ stopped' = [stopped EXCEPT ![leader] = IF MayPromise(leader, leader, gen + 1) THEN FALSE ELSE @]
+    /\ stopped' = [stopped EXCEPT ![leader] = IF MayPromise(leader, leader, RenameGen) THEN FALSE ELSE @]
     \* The leader may hold a ballot above this generation too, and then its
     \* open is refused again and reported, until a rename passes the ballot.
-    /\ IF MayPromise(leader, leader, gen + 1)
-       THEN /\ bgen' = [bgen EXCEPT ![leader] = gen + 1]
+    /\ IF MayPromise(leader, leader, RenameGen)
+       THEN /\ bgen' = [bgen EXCEPT ![leader] = RenameGen]
             /\ bexpiry' = [bexpiry EXCEPT ![leader] = clock[leader] + L]
             /\ queued' = [queued EXCEPT ![leader] = 0]
             /\ pending' = [pending EXCEPT ![leader] = 0]
-            /\ Promise(leader, leader, gen + 1)
+            /\ Promise(leader, leader, RenameGen)
             /\ confirmed' = [confirmed EXCEPT ![leader] = [m \in Brokers |-> 0]]
             /\ IF SetCheck
                THEN /\ mine' = [mine EXCEPT ![leader] = IF cpNext = {} THEN CpSet ELSE cpNext]
-                    /\ setGen' = [setGen EXCEPT ![leader] = gen + 1]
+                    /\ setGen' = [setGen EXCEPT ![leader] = RenameGen]
                     /\ oldSet' = [oldSet EXCEPT ![leader] = IF cpNext = {} THEN {} ELSE {CpSet}]
                ELSE UNCHANGED << mine, setGen, oldSet >>
             /\ IF RenameUnfenced
-               THEN /\ log' = [log EXCEPT ![leader] = Opened(leader, gen + 1)]
-                    /\ Opens(leader, gen + 1)
+               THEN /\ log' = [log EXCEPT ![leader] = Opened(leader, RenameGen)]
+                    /\ Opens(leader, RenameGen)
                     /\ fencing' = [fencing EXCEPT ![leader] = FALSE]
                     /\ UNCHANGED answered
                ELSE /\ fencing' = [fencing EXCEPT ![leader] = TRUE]
