@@ -346,8 +346,8 @@ pub trait ControlPlaneStore: Send + Sync {
     /// Under Raft it needs metadata level 21 on every member, and is
     /// refused below it. Below level 26 it applies
     /// [`ShardAssignment::adopting`], which takes only the generation of a
-    /// leader elected on another set, and below level 28 it still records
-    /// an elected set older than the recorded one.
+    /// leader elected on another set, and below level 28 it ignores the set
+    /// an elected leader fenced beside its own.
     async fn adopt_elected_leader(
         &self,
         key: &ShardKey,

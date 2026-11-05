@@ -1558,7 +1558,8 @@ async fn an_adoption_on_another_set_waits_for_every_member() {
                 leader: "broker-y".to_string(),
                 generation: current + 1,
                 replicas: vec!["broker-x".to_string()],
-                set_generation: current,
+                set_generation: assigned.generation,
+                leaving: Vec::new(),
             },
         )
     };
@@ -1660,6 +1661,7 @@ async fn its_own_leader_on_another_set_waits_for_every_member() {
                 generation: current + 1,
                 replicas: vec!["broker-w".to_string(), "broker-y".to_string()],
                 set_generation: assigned.generation,
+                leaving: Vec::new(),
             },
         )
     };
@@ -3369,6 +3371,7 @@ async fn adoption_waits_for_every_member() {
         generation: assigned.generation + 3,
         replicas: vec!["broker-x".to_string(), "broker-z".to_string()],
         set_generation: assigned.generation,
+        leaving: Vec::new(),
     };
     let adopt = || store.adopt_elected_leader(&key, assigned.generation, elected.clone());
 
@@ -3408,12 +3411,13 @@ async fn adoption_waits_for_every_member() {
     );
 }
 
-/// **Below level 28 an elected set older than the recorded one is still
-/// recorded.** A member at 27 applies that form, so every member does while
-/// one is in the group. Once every member is at 28 the elected leader is
-/// named on the recorded set with nothing pending (#1970).
+/// **Below level 28 the set an elected leader fenced beside its own is
+/// ignored.** A member at 27 records the elected set, so every member does
+/// while one is in the group. Once every member is at 28 the elected leader,
+/// whose fence covered the recorded set, is named on it with nothing pending
+/// (#1970).
 #[tokio::test]
-async fn an_adoption_on_an_older_set_waits_for_every_member() {
+async fn an_adoption_beside_the_recorded_set_waits_for_every_member() {
     use crate::model::{ElectedLeader, ShardAssignment, ShardKey, ShardKind, ShardState};
     let dir = tempfile::tempdir().expect("tempdir");
     let (store, version) = store_with_member_at(dir.path(), 27).await;
@@ -3474,6 +3478,11 @@ async fn an_adoption_on_an_older_set_waits_for_every_member() {
                 generation: current + 1,
                 replicas: vec!["broker-b".to_string(), "broker-d".to_string()],
                 set_generation: older.generation,
+                leaving: vec![
+                    "broker-a".to_string(),
+                    "broker-b".to_string(),
+                    "broker-c".to_string(),
+                ],
             },
         )
     };

@@ -29,6 +29,7 @@ async fn adopted_on_the_pending_set() -> (InMemoryStore, ShardAssignment, u64) {
                 generation: cut_over.generation + AHEAD,
                 replicas: vec!["broker-b".to_string(), "broker-d".to_string()],
                 set_generation: pending.generation,
+                leaving: Vec::new(),
             },
         )
         .await
@@ -136,6 +137,7 @@ async fn a_planner_on_an_older_read_loses_to_adoption() {
                 generation: fenced.generation + AHEAD,
                 replicas: vec!["broker-a".to_string(), "broker-b".to_string()],
                 set_generation: fenced.generation,
+                leaving: Vec::new(),
             },
         )
         .await
@@ -184,6 +186,7 @@ async fn an_election_on_the_old_set_is_recorded_not_adopted() {
                 generation: cut_over.generation + AHEAD,
                 replicas: vec!["broker-b".to_string(), "broker-c".to_string()],
                 set_generation: cut_over.generation - 1,
+                leaving: Vec::new(),
             },
         )
         .await
@@ -228,6 +231,7 @@ async fn reissued_past_a_collision() -> (InMemoryStore, ShardAssignment) {
                 generation: named_a.generation,
                 replicas: vec!["broker-c".to_string(), "broker-d".to_string()],
                 set_generation: named_a.generation,
+                leaving: Vec::new(),
             },
             &|_| true,
         )
@@ -321,6 +325,7 @@ async fn an_election_past_a_reissue_keeps_the_elected_set_recorded() {
                 generation: reissued.generation + 1,
                 replicas: vec!["broker-c".to_string(), "broker-d".to_string()],
                 set_generation: reissued.generation - 1,
+                leaving: Vec::new(),
             },
         )
         .await

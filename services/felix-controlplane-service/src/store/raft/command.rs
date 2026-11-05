@@ -260,10 +260,11 @@ pub enum MetaCommand {
         /// instead of only its generation being taken (#1929).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         own_leader_set: bool,
-        /// Level 28: an elected set older than the recorded one is not
-        /// recorded; the leader is named on the recorded set (#1970).
+        /// Level 28: a leader whose fence covered the recorded set beside
+        /// the elected one (`elected.leaving`) is named on the recorded set,
+        /// with the elected set not recorded (#1970).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        predated_set: bool,
+        fenced_recorded_set: bool,
     },
     /// The placement lease goes to `holder`, advancing the token if it
     /// changes hands. Proposed only by a confirmed leader, so no expiry.

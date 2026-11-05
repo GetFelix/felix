@@ -359,6 +359,12 @@ impl Elections {
                     .map(|member| member.node.clone())
                     .collect(),
                 set_generation: elected.set.generation,
+                leaving: elected
+                    .leaving
+                    .iter()
+                    .flat_map(|leaving| &leaving.members)
+                    .map(|member| member.node.clone())
+                    .collect(),
             }
         })
     }

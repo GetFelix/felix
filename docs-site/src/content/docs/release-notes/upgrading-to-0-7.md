@@ -178,8 +178,9 @@ Later control-plane changes are on `main`:
   level. Level 27 does the same when the elected leader is the one the
   control plane already names; below it, the same report moves the shard
   past the election at once, and the next report is only a fallback.
-  Level 28 names it on the control plane's set instead when the elected set
-  is older than the control plane's (a change it abandoned).
+  Level 28 names it on the control plane's set instead when its fence
+  covered that set beside the elected one (a change the control plane
+  dropped before it settled).
 
 In short, Postgres runs migrations `0037` to `0042` on start (`0039` to
 `0042` are on `main` only), and under Raft these features wait for metadata

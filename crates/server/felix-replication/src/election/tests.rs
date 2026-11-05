@@ -116,11 +116,26 @@ fn a_report_names_only_this_brokers_own_leadership() {
             generation: 5,
             replicas: vec!["b".to_string(), "c".to_string()],
             set_generation: 3,
+            leaving: Vec::new(),
         })
     );
     assert_eq!(elections.reported(&key(), 4), None);
     elections.record(key(), elected("b", 6));
     assert_eq!(elections.reported(&key(), 6), None);
+
+    // A set kept beside the one it stood on is named too: the control plane
+    // names this leader on that set only with this evidence of its fence.
+    elections.record(
+        key(),
+        Elected {
+            leaving: Some(set(2)),
+            ..elected("a", 7)
+        },
+    );
+    assert_eq!(
+        elections.reported(&key(), 7).map(|elected| elected.leaving),
+        Some(vec!["a".to_string(), "b".to_string(), "c".to_string()])
+    );
 }
 
 /// A fence in progress is marked until its guard drops, and only for its

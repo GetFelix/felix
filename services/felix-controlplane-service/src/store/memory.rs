@@ -194,8 +194,9 @@ impl InMemoryStore {
     /// names: with `elected_set` false, as members below the level that
     /// knows it apply it, with `own_leader_set` false, as members below
     /// the level that names this set's own leader on the set it was elected
-    /// on apply it (only its generation is taken), and with `predated_set`
-    /// false, as members that still record an older elected set apply it.
+    /// on apply it (only its generation is taken), and with
+    /// `fenced_recorded_set` false, as members that ignore the set an
+    /// elected leader fenced beside its own apply it.
     pub(crate) async fn apply_adopt_elected_leader(
         &self,
         key: &ShardKey,
@@ -203,7 +204,7 @@ impl InMemoryStore {
         elected: &crate::model::ElectedLeader,
         elected_set: bool,
         own_leader_set: bool,
-        predated_set: bool,
+        fenced_recorded_set: bool,
     ) -> StoreResult<crate::store::AssignmentWrite> {
         shards::adopt_elected_leader(
             self,
@@ -212,7 +213,7 @@ impl InMemoryStore {
             elected,
             elected_set,
             own_leader_set,
-            predated_set,
+            fenced_recorded_set,
         )
         .await
     }

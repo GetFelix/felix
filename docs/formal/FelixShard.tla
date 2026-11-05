@@ -2863,6 +2863,10 @@ CpHoldsSetOf(b) ==
 takeVars == << bgen, bexpiry, queued, pending, stopped, promised, ballot, fencing,
                answered, confirmed, mine, setGen, oldSet >>
 
+\* Whether `b`'s fence covered `S` beside its own set, as its report says
+\* (`ElectedLeadership.leaving`).
+FencedBeside(b, S) == JointFence /\ S \in oldSet[b]
+
 \* The write naming `b`, elected at `g` on `E`, at `g + 1` in the control
 \* plane's set `S` (`reissuing` in services/felix-controlplane-service/src/
 \* model/shard.rs). With `pends` and `E /= S`, a majority of `E` may hold
@@ -2919,10 +2923,10 @@ ReissueAt(b, g, E, S, pends) ==
 \* - if it is in the recorded set but was elected on another, that set is
 \*   written as the set being left and the recorded one as pending from it,
 \*   at the next generation (ReissueAt), because a majority of the elected
-\*   set may hold records no majority of the recorded one does; unless the
-\*   elected set is older than the record, a change the control plane
-\*   abandoned unsettled, in which case `b` is named on the recorded set
-\*   and fences the elected one beside it;
+\*   set may hold records no majority of the recorded one does; unless
+\*   `b`'s fence covered the recorded set beside the elected one (its report
+\*   names the set it kept beside its own), in which case `b` is named on
+\*   the recorded set and fences the elected one beside it;
 \* - if it is outside the recorded set, its set becomes the recorded set at
 \*   its generation.
 \* Otherwise (the control plane's leader on another set, a change pending or
@@ -2966,11 +2970,11 @@ CpAdopt(v, b, views) ==
        ELSE IF recordedOnly
        THEN /\ gen' = g
             /\ UNCHANGED << leader, cpExpiry, report, draining, nextVars, out, takeVars >>
-       \* An elected set older than the record's is not written
-       \* (`reissuing_from` in services/felix-controlplane-service/src/model/
-       \* shard.rs): the control plane wrote `S` after it, and `b` fences both.
+       \* Not when `b` fenced `S` beside `E` (`reissuing_from` in
+       \* services/felix-controlplane-service/src/model/shard.rs): it holds
+       \* what a majority of `S` acknowledged, and `S` is kept.
        ELSE IF b \in S
-       THEN ReissueAt(b, g, E, S, setGen[b] >= gen)
+       THEN ReissueAt(b, g, E, S, ~FencedBeside(b, S))
        ELSE /\ gen' = g
             /\ leader' = b
             /\ cpExpiry' = now + L
@@ -3009,7 +3013,7 @@ CpReissue(v, b, views) ==
     /\ Cas(v)
     /\ ver' = ver + 1
     /\ cpView' = views
-    /\ ReissueAt(b, gen, mine[b], CpSet, ReissuePending /\ SetCheck /\ setGen[b] >= gen)
+    /\ ReissueAt(b, gen, mine[b], CpSet, ReissuePending /\ SetCheck /\ ~FencedBeside(b, CpSet))
     /\ UNCHANGED << now, clock, inflight, hbOut, hbAt, log, hwm, halted,
                     acked, writes, staleCommit >>
     /\ UNCHANGED << successor, moves, staged, joining, leaving, joinedAt >>
