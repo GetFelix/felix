@@ -98,6 +98,7 @@ impl ReplicaHandler {
         key: &felix_router::ShardKey,
         log: &felix_broker::StreamLog,
         election: &FenceElection,
+        from: (u64, Option<&str>),
     ) -> Option<InternalMessage> {
         let joint = self.keeps_earlier_sets();
         keep(
@@ -106,6 +107,7 @@ impl ReplicaHandler {
             log,
             self.mark_local(log, kept_from(election)),
             joint,
+            from,
         )
         .await
     }
@@ -121,6 +123,7 @@ impl ReplicaHandler {
         log: &felix_broker::StreamLog,
         stamped: u64,
         generation: u64,
+        sender: Option<&str>,
     ) -> Option<InternalMessage> {
         if let Some(refusal) = stale_set(correlation_id, key, log, stamped) {
             return Some(refusal);
@@ -207,8 +210,15 @@ impl ReplicaHandler {
         // The kept sets are carried even though the batch's leader opened:
         // they are dropped only once this log holds the batch's records.
         let joint = self.keeps_earlier_sets();
-        if let Some(refusal) =
-            keep(correlation_id, key, log, self.mark_local(log, set), joint).await
+        if let Some(refusal) = keep(
+            correlation_id,
+            key,
+            log,
+            self.mark_local(log, set),
+            joint,
+            (generation, sender),
+        )
+        .await
         {
             return Some(refusal);
         }
@@ -379,6 +389,7 @@ impl ReplicaHandler {
         log_kind: felix_broker::LogKind,
         log: &felix_broker::StreamLog,
         request: &Fence,
+        sender: Option<&str>,
     ) -> Option<InternalMessage> {
         let opened;
         let own = match super::own_kind(log_kind) {
@@ -416,15 +427,19 @@ impl ReplicaHandler {
             _ => {}
         }
         // A set from a sender running ahead of itself is refused by the set
-        // check; learning it would mask that.
+        // check; learning it would mask that. No ballot is taken here, but a
+        // sender this copy has promised past is not learned from: a
+        // candidate's own copy must keep the set it stood on.
         if let Some(election) = &request.election
             && election.set.generation <= request.shard.generation
-            && let Err(err) = crate::replica_set::accept(
-                log,
-                self.mark_local(log, kept_from(election)),
-                self.keeps_earlier_sets(),
-            )
-            .await
+            && let Err(err) = log
+                .accept_set_from(
+                    self.mark_local(log, kept_from(election)),
+                    self.keeps_earlier_sets(),
+                    request.shard.generation,
+                    sender,
+                )
+                .await
         {
             tracing::warn!(error = %err, "could not keep the set a fence carried");
         }
@@ -780,18 +795,23 @@ fn kept_from(election: &FenceElection) -> ReplicaSet {
 }
 
 /// `joint`: the fleet finalized `joint_fence`, so earlier sets are kept.
+/// `from` is the generation and sender whose ballot this copy took. The set is
+/// refused if a newer ballot landed since, a candidate's included: it stood on
+/// the set it kept then, and must not be left counting a set it never fenced.
 async fn keep(
     correlation_id: u64,
     key: &felix_router::ShardKey,
     log: &felix_broker::StreamLog,
     set: ReplicaSet,
     joint: bool,
+    (generation, sender): (u64, Option<&str>),
 ) -> Option<InternalMessage> {
     let sent = set.current.generation;
-    match crate::replica_set::accept(log, set, joint).await {
-        Ok(SetCheck::Current | SetCheck::Raised) => None,
+    match log.accept_set_from(set, joint, generation, sender).await {
+        Ok(Ok(SetCheck::Current | SetCheck::Raised)) => None,
         // Raised by another request since the check above.
-        Ok(SetCheck::Stale { known }) => Some(refuse_stale(correlation_id, key, sent, known)),
+        Ok(Ok(SetCheck::Stale { known })) => Some(refuse_stale(correlation_id, key, sent, known)),
+        Ok(Err(ballot)) => super::ballot_refusal(ballot, correlation_id, key, generation, sender),
         Err(err) => {
             metrics::record_replicated(metrics::OUTCOME_ERROR);
             Some(refused(

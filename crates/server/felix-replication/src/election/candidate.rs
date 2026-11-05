@@ -326,6 +326,9 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
     let Some(kept) = log.replica_set() else {
         return ctx.ineligible(key, "this copy keeps no replica set");
     };
+    // What the checks below read: the ballot is taken only while the copy
+    // still keeps exactly this.
+    let read = kept.clone();
     // A change pending on the kept set is left to the control plane: an
     // elected route names one set, so the followers' would not know which
     // set to leave. Costs availability only. A set being left with the same
@@ -477,12 +480,17 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
     if !still {
         return Round::Failed;
     }
-    // The ballot is on disk before anything names this broker leader.
-    if !matches!(
-        log.accept_generation(generation, Some(local)).await,
-        Ok(GenerationCheck::Raised)
-    ) {
-        return Round::Failed;
+    // The ballot is on disk before anything names this broker leader. A set
+    // this copy took while the round ran (a fence or a batch below the new
+    // generation) would leave the checks above stale, so the ballot is taken
+    // only on the set they read, under the lock every set raise takes.
+    match log.accept_generation_on_set(generation, local, read).await {
+        Ok(Some(GenerationCheck::Raised)) => {}
+        Ok(None) => {
+            ctx.held_back(key, "the kept replica set changed while the round ran", "");
+            return Round::Failed;
+        }
+        _ => return Round::Failed,
     }
     ctx.stood
         .lock()

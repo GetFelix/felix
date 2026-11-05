@@ -725,7 +725,14 @@ impl ReplicaHandler {
         }
         if let Some(stamped) = batch.set_generation
             && let Some(refusal) = self
-                .check_batch_set(correlation_id, &key, &log, stamped, batch.shard.generation)
+                .check_batch_set(
+                    correlation_id,
+                    &key,
+                    &log,
+                    stamped,
+                    batch.shard.generation,
+                    sender,
+                )
                 .await
         {
             return refusal;
@@ -1277,7 +1284,7 @@ impl ReplicaHandler {
             }
         }
         if let Some(refusal) = self
-            .refuse_non_voter_fence(correlation_id, &key, log_kind, &log, &request)
+            .refuse_non_voter_fence(correlation_id, &key, log_kind, &log, &request, sender)
             .await
         {
             return refusal;
@@ -1326,7 +1333,7 @@ impl ReplicaHandler {
         // After the ballot, as the open expects, and before the answer.
         if let Some(election) = &request.election
             && let Some(refusal) = self
-                .keep_fence_set(correlation_id, &key, &log, election)
+                .keep_fence_set(correlation_id, &key, &log, election, (generation, sender))
                 .await
         {
             return refusal;
@@ -2162,15 +2169,38 @@ async fn accept_sender(
     sender: Option<&str>,
 ) -> Option<InternalMessage> {
     match log.accept_generation(generation, sender).await {
-        Ok(GenerationCheck::Current | GenerationCheck::Raised) => None,
-        Ok(GenerationCheck::Promised { leader }) => Some(promised_elsewhere(
+        Ok(check) => ballot_refusal(check, correlation_id, key, generation, sender),
+        Err(err) => {
+            metrics::record_replicated(metrics::OUTCOME_ERROR);
+            Some(refused(
+                correlation_id,
+                ErrorCode::StorageFailed,
+                0,
+                err.to_string(),
+            ))
+        }
+    }
+}
+
+/// The refusal a ballot's answer to `sender` at `generation` calls for, if
+/// any.
+fn ballot_refusal(
+    check: GenerationCheck,
+    correlation_id: u64,
+    key: &felix_router::ShardKey,
+    generation: u64,
+    sender: Option<&str>,
+) -> Option<InternalMessage> {
+    match check {
+        GenerationCheck::Current | GenerationCheck::Raised => None,
+        GenerationCheck::Promised { leader } => Some(promised_elsewhere(
             correlation_id,
             key,
             generation,
             &leader,
             sender,
         )),
-        Ok(GenerationCheck::Superseded { accepted }) => {
+        GenerationCheck::Superseded { accepted } => {
             tracing::warn!(
                 stream = %key.stream,
                 shard = key.shard,
@@ -2184,15 +2214,6 @@ async fn accept_sender(
                 ErrorCode::FencedEpoch,
                 0,
                 superseded_detail(accepted, generation),
-            ))
-        }
-        Err(err) => {
-            metrics::record_replicated(metrics::OUTCOME_ERROR);
-            Some(refused(
-                correlation_id,
-                ErrorCode::StorageFailed,
-                0,
-                err.to_string(),
             ))
         }
     }

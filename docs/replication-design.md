@@ -4720,6 +4720,17 @@ are kept only while a fence leaving them never opened, so a majority of one
 may hold an acknowledged write that no later set has. A candidate's fence
 leaves at most one set, so the control plane handles that shard.
 
+These checks read the kept set once, and the round's pre-votes take time.
+Meanwhile the copy can take a newer set: another leader's fence below the
+candidate's generation, or a fence a replaced copy learns from without taking
+its ballot. So the candidate writes its ballot only if the copy still keeps
+the set it checked (`DiskLog::accept_generation_on_set`). Every set write
+takes the same lock and is refused once the copy has promised a newer
+generation, or this one to another leader (`DiskLog::accept_set_from`). The
+set and the ballot land in one order or the other. If the set came first, the
+candidate writes no ballot, records nothing and sends no fence. If the ballot
+came first, the set is refused, and so is the fence that carried it (#1970).
+
 A replica that takes a candidate's fence records the candidate the same way,
 so it takes the candidate's batches and sends clients to it. The elected
 leader stamps its batches with the kept set's generation, below its own,

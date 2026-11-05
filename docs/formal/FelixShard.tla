@@ -2346,7 +2346,9 @@ Elect(f) ==
     \* differ from it in learner flags only (`stand` in crates/server/
     \* felix-replication/src/election/candidate.rs refuses "the kept replica
     \* set has a change pending" and "keeps earlier sets"). Across a change
-    \* the control plane names the leader. The code's further check, that the
+    \* the control plane names the leader. The code takes the ballot only on
+    \* the set those checks read (`accept_generation_on_set`), so the guard
+    \* and the promise are one step, as here. Its further check, that the
     \* routes record the kept set, is left out: that only adds behaviours.
     /\ SetCheck => oldSet[f] \subseteq {mine[f]}
     /\ StandsAboveKeptSet => setGen[f] <= promised[f] + 1

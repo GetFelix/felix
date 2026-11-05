@@ -34,7 +34,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use super::{DiskLog, LogInner, SetCheck};
+use super::{DiskLog, GenerationCheck, LogInner, SetCheck};
 use crate::io::sync_dir;
 use crate::{Result, StorageError, StorageId};
 
@@ -348,6 +348,24 @@ impl DiskLog {
         self.raise_set(set, true).await
     }
 
+    /// [`Self::accept_set`], or [`Self::accept_set_keeping_earlier`] with
+    /// `keep_earlier`, for a set `leader` sent at `generation`: refused with
+    /// the ballot's answer, and nothing written, once this log accepted a
+    /// newer generation or another leader at this one. Checked under the
+    /// writer's lock, so a set and a candidate's ballot
+    /// ([`Self::accept_generation_on_set`]) land in one order or the other:
+    /// a candidate never counts a set it did not stand on.
+    pub async fn accept_set_from(
+        &self,
+        set: ReplicaSet,
+        keep_earlier: bool,
+        generation: u64,
+        leader: Option<&str>,
+    ) -> Result<std::result::Result<SetCheck, GenerationCheck>> {
+        let from = (generation, leader.map(Arc::from));
+        self.raise_set_from(set, keep_earlier, Some(from)).await
+    }
+
     /// Whether this log holds a record written at `generation`. A leader
     /// writes one only once its fence opened, so this is the evidence that
     /// it did. The generation's epoch outlives a trim of its records. A
@@ -356,18 +374,38 @@ impl DiskLog {
         holds_records_in(&self.inner, generation)
     }
 
-    async fn raise_set(&self, mut set: ReplicaSet, keep_earlier: bool) -> Result<SetCheck> {
+    async fn raise_set(&self, set: ReplicaSet, keep_earlier: bool) -> Result<SetCheck> {
+        let raised = self.raise_set_from(set, keep_earlier, None).await?;
+        Ok(raised.expect("no sender to check"))
+    }
+
+    async fn raise_set_from(
+        &self,
+        mut set: ReplicaSet,
+        keep_earlier: bool,
+        from: Option<(u64, Option<Arc<str>>)>,
+    ) -> Result<std::result::Result<SetCheck, GenerationCheck>> {
         if let Some(found) = check_set(self.set_generation(), set.current.generation) {
-            return Ok(found);
+            return Ok(Ok(found));
         }
         let inner = Arc::clone(&self.inner);
         tokio::task::spawn_blocking(move || {
             // The ballot's writer lock: it serializes writes per shard, so
             // the file only ever moves forward in generation.
             let _persisted = inner.replica_persisted.lock();
+            if let Some((generation, leader)) = &from
+                && let Some(refused) =
+                    super::ballot::check(&inner.ballot.read(), *generation, leader.as_deref())
+                && matches!(
+                    refused,
+                    GenerationCheck::Superseded { .. } | GenerationCheck::Promised { .. }
+                )
+            {
+                return Ok(Err(refused));
+            }
             let known = inner.set_generation.load(Ordering::Acquire);
             if let Some(found) = check_set(known, set.current.generation) {
-                return Ok(found);
+                return Ok(Ok(found));
             }
             if keep_earlier {
                 // In the file's order and without repeats, whatever the sender sent.
@@ -434,7 +472,7 @@ impl DiskLog {
             *inner.wiped.write() = wiped;
             *inner.replica_set.write() = Some(set);
             inner.set_generation.store(generation, Ordering::Release);
-            Ok(SetCheck::Raised)
+            Ok(Ok(SetCheck::Raised))
         })
         .await
         .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
