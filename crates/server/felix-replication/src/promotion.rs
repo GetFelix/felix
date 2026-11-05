@@ -97,10 +97,11 @@ pub enum Outcome {
     /// Not yet, and not in this attempt: a replica promised this generation
     /// to `promised_to`, and either so many did that no majority is left to
     /// take it or every other replica that did not take it was unreachable
-    /// or timed out. Or, with `promised_to` empty, a replica's ballot holds a
-    /// newer generation, which may be one no assignment named. The shard stays closed,
-    /// and this broker reports the refusal so the control plane names it
-    /// again above the generation (#1730).
+    /// or timed out. Or, with `promised_to` empty, a replica's ballot, or
+    /// this broker's own, holds a newer generation, which may be one no
+    /// assignment named. The shard stays closed, and this broker reports
+    /// the refusal so the control plane names it again above the generation
+    /// (#1730).
     Refused {
         promised_to: String,
         why: String,
@@ -271,6 +272,21 @@ pub(crate) async fn fence_shard_as<R: PeerRequester>(
             // The counter log carries no set, and is fenced on the new set
             // alone, as the model's `Counters` are.
             let set = set.as_ref().filter(|_| kind != LogKind::Counters);
+            // This copy already promised a newer generation, as a standing
+            // here that was given up leaves it, so `keep_own_set` can never
+            // take this one's ballot. Refused rather than pending, so the
+            // control plane names this broker again above it (#1940).
+            let accepted = log.accepted_generation();
+            if set.is_some() && candidacy.is_none() && accepted > route.generation {
+                return Err(Outcome::Refused {
+                    promised_to: String::new(),
+                    why: format!(
+                        "this broker's own copy has accepted generation {accepted}, past {}",
+                        route.generation
+                    ),
+                    took: Vec::new(),
+                });
+            }
             // A copy marked a learner on evidence of a wipe lost what it held; a
             // staged destination is a learner too, and may lead.
             if set.is_some()
