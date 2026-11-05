@@ -72,6 +72,12 @@ one comes back every heartbeat stamp is as old as the outage, and sweeping at
 once would mark the whole fleet down. A broker that stays silent through the
 grace window is expired as usual.
 
+A control plane that was paused (a stopped process, a frozen VM) has the same
+problem without restarting: the heartbeats sent during the pause are still
+queued when it resumes, and the first sweep would run before it reads them. So
+when the sweep finds more than two sweep intervals have passed since its last
+tick, it does not count that gap as silence from any broker.
+
 Expiry needs two clocks to agree. The last heartbeat stamp has to be older
 than the timeout on the store's wall clock, and the instance running the sweep
 has to have seen the stamp stay unchanged for as long on its own monotonic

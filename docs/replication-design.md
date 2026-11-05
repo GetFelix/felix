@@ -439,6 +439,12 @@ leader of three would need only itself and open with neither follower fenced
 (#1845). The same list sizes the acknowledgement count, the read round, and
 the set the fence carries.
 
+The catalog read runs in the background, and routes never wait for it. A
+broker publishes its routes as soon as it has reconciled its shards, with
+the newest catalog it has. A control plane that takes the request and never
+answers would otherwise hold every route behind a 5 s timeout, longer than
+a candidate waits to open (3 s), and no election would settle.
+
 **An answer counts only from the copy the failover's report named.** A
 follower that crashed under `FsyncMode::Periodic` or `None` comes back under a
 new storage identity without the tail it had not synced, and it may already
@@ -1292,7 +1298,11 @@ elected leader waits for the lease until the control plane is back (issue
 
 1. *Detecting.* A follower uses the detector it already runs: a leader that
    has not answered a ping for `FELIX_LEADER_SUSPECT_AFTER_MS` (S, 5 s by
-   default) is gone as far as that follower is concerned.
+   default) is gone as far as that follower is concerned. A durable broker
+   answers pings only once it serves clients. One that restarted and is
+   waiting for the control plane to seed it refuses them, and a refusal counts as no
+   answer, so its followers elect around it instead of waiting for the
+   control plane to come back.
 2. *Pre-vote.* Before it persists anything, a follower that suspects the
    leader asks its set whether it would get the next generation. A replica
    says yes only if it has not heard its own leader within S, it does not

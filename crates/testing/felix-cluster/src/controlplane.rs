@@ -79,7 +79,18 @@ pub struct ControlPlane {
     shutdown: CancellationToken,
     task: tokio::task::JoinHandle<()>,
     runtime: Runtime,
-    pause: Arc<Pause>,
+    pause: PauseHandle,
+}
+
+/// Lets a paused runtime go when the control plane is dropped, as after a
+/// test panics: a held worker would otherwise never exit.
+#[derive(Default)]
+struct PauseHandle(Arc<Pause>);
+
+impl Drop for PauseHandle {
+    fn drop(&mut self) {
+        self.0.release();
+    }
 }
 
 /// Whether the runtime is paused, and how many workers are held.
@@ -87,6 +98,17 @@ pub struct ControlPlane {
 struct Pause {
     state: std::sync::Mutex<(bool, usize)>,
     changed: std::sync::Condvar,
+}
+
+impl Pause {
+    fn release(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.0 = false;
+        self.changed.notify_all();
+    }
 }
 
 impl ControlPlane {
@@ -245,7 +267,7 @@ impl ControlPlane {
             shutdown,
             task,
             runtime,
-            pause: Arc::default(),
+            pause: PauseHandle::default(),
         })
     }
 
@@ -257,13 +279,14 @@ impl ControlPlane {
     /// Every worker thread of its runtime is held, so no task can run. A crash
     /// fails a request at once; this makes it wait out its own timeout.
     pub fn pause(&self) -> Result<()> {
+        let pause = &self.pause.0;
         {
-            let mut state = self.pause.state.lock().expect("pause lock");
+            let mut state = pause.state.lock().expect("pause lock");
             anyhow::ensure!(!state.0, "the control plane is already paused");
             state.0 = true;
         }
         for _ in 0..WORKERS {
-            let pause = Arc::clone(&self.pause);
+            let pause = Arc::clone(pause);
             // Blocking on purpose: a worker that blocks runs nothing else, and
             // with all of them blocked nothing in the runtime runs.
             self.runtime.handle().spawn(async move {
@@ -276,26 +299,24 @@ impl ControlPlane {
                 state.1 -= 1;
             });
         }
-        let state = self.pause.state.lock().expect("pause lock");
-        let (state, waited) = self
-            .pause
+        let state = pause.state.lock().expect("pause lock");
+        let (state, waited) = pause
             .changed
             .wait_timeout_while(state, Duration::from_secs(5), |state| state.1 < WORKERS)
             .expect("pause lock");
-        anyhow::ensure!(
-            !waited.timed_out(),
-            "only {} of {WORKERS} control plane workers stopped",
-            state.1
-        );
+        let held = state.1;
+        drop(state);
+        if waited.timed_out() {
+            pause.release();
+            anyhow::bail!("only {held} of {WORKERS} control plane workers stopped");
+        }
         Ok(())
     }
 
     /// Let a [`Self::pause`]d control plane run again. Does nothing if it is
     /// not paused.
     pub fn resume(&self) {
-        let mut state = self.pause.state.lock().expect("pause lock");
-        state.0 = false;
-        self.pause.changed.notify_all();
+        self.pause.0.release();
     }
 
     /// Create `tenant_id` and bind this control plane's signing keys to it.

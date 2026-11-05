@@ -134,6 +134,7 @@ pub(super) fn bind_peer_listener(
     incarnation: tokio::sync::watch::Receiver<Option<u64>>,
     unclean: Option<Arc<replication::unclean::UncleanStart>>,
     controlplane: Option<(&reqwest::Client, &str, &Option<NodeCredential>)>,
+    serving: Option<&CancellationToken>,
     peer_shutdown: &CancellationToken,
 ) -> Result<PeerListener> {
     Ok(
@@ -182,6 +183,10 @@ pub(super) fn bind_peer_listener(
                 }
                 .with_storage_identity(storage_id)
                 .with_node_incarnation(incarnation);
+                let server = match serving {
+                    Some(serving) => server.with_serving(serving.clone()),
+                    None => server,
+                };
                 match &peer_config.tls {
                     Some(tls) => tracing::info!(
                         addr = %server.local_addr()?,

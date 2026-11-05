@@ -511,6 +511,9 @@ where
             .controlplane_url
             .as_deref()
             .map(|base_url| (&membership_client, base_url, &credential)),
+        // Peers suspect a broker that cannot serve clients yet, so they stand
+        // for the shards it leads instead of waiting on it.
+        gate_readiness_on_sync.then_some(&seeded),
         &peer_listener_shutdown,
     )?;
     let shard_tasks = cluster::spawn_shard_tasks(cluster::ShardTaskDeps {

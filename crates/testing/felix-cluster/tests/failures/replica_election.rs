@@ -548,8 +548,9 @@ async fn a_follower_is_elected_while_the_control_plane_is_paused() {
 /// **A leader restarted while the control plane is paused does not keep its
 /// shards.** It cannot serve until the control plane seeds it, so it must not
 /// read as alive to the followers watching it: they suspect it and elect one
-/// of themselves. Five seconds of silence before suspicion here, so the
-/// restarted broker is up and answering before anyone suspects the killed one.
+/// of themselves. It restarts on the same ports, so the followers' pings
+/// reach it, and suspicion waits five seconds here, so it is up and answering
+/// before anyone suspects the killed one.
 #[serial]
 #[tokio::test]
 async fn a_leader_restarted_while_the_control_plane_is_paused_is_replaced() {
@@ -571,7 +572,7 @@ async fn a_leader_restarted_while_the_control_plane_is_paused_is_replaced() {
         .expect("pause the control plane");
     cluster.kill_node(&before.leader).expect("kill the leader");
     cluster
-        .start_node_unready(&before.leader)
+        .start_node_unready_in_place(&before.leader)
         .expect("start the leader again without waiting for it");
 
     let mut opened = BTreeMap::new();

@@ -69,6 +69,7 @@ impl Cluster {
                     root.path(),
                     index,
                     links.as_ref(),
+                    None,
                 )
                 .with_context(|| format!("start broker {index}"))?,
             );
@@ -176,6 +177,15 @@ impl Cluster {
     /// another go, not a different one, and a durable log it already wrote must
     /// still be there.
     pub(super) fn respawn(&mut self, index: usize) -> Result<()> {
+        self.respawn_on(index, None)
+    }
+
+    /// [`Self::respawn`], on `same_ports` (client, internal) when given.
+    pub(super) fn respawn_on(
+        &mut self,
+        index: usize,
+        same_ports: Option<(std::net::SocketAddr, std::net::SocketAddr)>,
+    ) -> Result<()> {
         let control_plane_url = self.control_plane_base_url()?;
         let replacement = spawn_broker(
             &self.binary,
@@ -185,6 +195,7 @@ impl Cluster {
             self._root.path(),
             index,
             self.links.as_ref(),
+            same_ports,
         )?;
         self.nodes[index] = replacement;
         Ok(())
