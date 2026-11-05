@@ -2385,6 +2385,9 @@ Elect(f) ==
     /\ Adopt > 0 => promised[f] < Adopt
     /\ SetCheck => f \in mine[f] /\ setGen[f] > 0
     /\ StandBehindBallot => \A c \in ballot[f] : c = f \/ c \in halted \/ promised[f] <= gen
+    \* A replica with a round in flight does not start another (`in_flight`
+    \* in election/candidate.rs).
+    /\ BrokerSuspicion => bgen[f] = 0
     /\ BrokerSuspicion => \/ Followed(f) \subseteq halted
                           \/ ShardSuspicion /\ f \notin Followed(f) /\ ~Hears(f)
     /\ StandsAboveKeptSet => setGen[f] <= promised[f] + 1
