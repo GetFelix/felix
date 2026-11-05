@@ -11,6 +11,10 @@ publishable, because `felixctl bench` links it.
 - [`felix-conformance`](felix-conformance) is the client conformance kit: the
   scenario catalogue and the verifier that checks a client's results against
   it. Apache-2.0, so a third party can vendor it.
+- [`felix-sim`](felix-sim) is the deterministic simulator: brokers in one
+  process on tokio's virtual time, over an in-memory peer network with seeded
+  faults. So far it holds the network; see
+  [docs/simulation.md](../../docs/simulation.md).
 - [`felix-loadgen`](felix-loadgen) drives a remote cluster for the
   real-network performance suite. Its scenarios are also a library, which
   `felixctl bench` runs.
