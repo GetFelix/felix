@@ -551,13 +551,12 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
     /// cuts))` if so. See [`Self::want`].
     ///
     /// Woken by an append, a scan asks only the shards appended to, the ones
-    /// owed a mark, and the ones moving. The rest would ship nothing new: a
-    /// shard left with work to do enqueued itself when its pass ended, a busy
-    /// follower's answer asks for its own pass, and the tick passes every
-    /// shard, which is what refreshes its report and retries a follower that
-    /// is gone. Asked on every append anywhere, a shard with a dead follower
-    /// would never settle and would take a slot from the shards with writes
-    /// waiting on them (#1944).
+    /// owed a mark, and the ones moving. The rest wait for the tick, which
+    /// passes every shard: it refreshes the report and retries a follower that
+    /// is gone. A shard left with work enqueued itself when its pass ended,
+    /// and a busy follower's answer that moves its cursor asks for a pass.
+    /// Asked on every append anywhere, a shard with a dead follower would take
+    /// a slot from the shards with writes waiting on them (#1944).
     fn asks(
         &mut self,
         key: &ShardKey,
@@ -1040,7 +1039,15 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             .cx
             .marks
             .offset_at(&watch_key(&key), incarnation, generation);
-        let owed = behind || tail.is_some_and(|tail| mark.is_some_and(|mark| mark < tail));
+        // Only while some follower is answering: with every one of them down
+        // or refusing, a pass on each append could not raise the mark, and the
+        // tick retries them (#1944).
+        let reachable = cursors
+            .followers
+            .iter()
+            .any(|cursor| cursor.halted.is_none() && !cursor.stalled);
+        let owed =
+            reachable && (behind || tail.is_some_and(|tail| mark.is_some_and(|mark| mark < tail)));
         self.cx
             .status
             .pass_ended(&watch_key(&key), scan, mark, outstanding);

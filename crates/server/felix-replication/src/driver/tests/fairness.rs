@@ -26,8 +26,8 @@ const COLD: u32 = HOT;
 #[derive(Default)]
 struct Follower {
     stored: Mutex<Vec<(u32, u64)>>,
-    /// A follower that is gone: every request to it fails.
-    gone: Option<&'static str>,
+    /// Followers that are gone: every request to them fails.
+    gone: &'static [&'static str],
 }
 
 impl Follower {
@@ -47,7 +47,7 @@ impl PeerRequester for Follower {
         _addr: SocketAddr,
         message: InternalMessage,
     ) -> std::result::Result<InternalMessage, PeerError> {
-        if self.gone == Some(node_id) {
+        if self.gone.contains(&node_id) {
             return Err(PeerError::Unavailable {
                 node_id: node_id.to_string(),
                 detail: "gone".to_string(),
@@ -273,6 +273,18 @@ async fn an_append_passes_only_the_shard_it_was_for() {
 /// writes timed out while one follower was down (#1944).
 #[tokio::test(start_paused = true)]
 async fn an_append_passes_only_its_shard_while_a_follower_is_gone() {
+    append_passes_only_its_shard(&["broker-c"]).await;
+}
+
+/// **Nor does a shard whose followers are all gone, though its mark is
+/// owed.** No pass can raise the mark until one of them answers, so the
+/// shards wait for the tick rather than taking a slot on every append.
+#[tokio::test(start_paused = true)]
+async fn an_append_passes_only_its_shard_while_every_follower_is_gone() {
+    append_passes_only_its_shard(&["broker-b", "broker-c"]).await;
+}
+
+async fn append_passes_only_its_shard(gone: &'static [&'static str]) {
     const SHARDS: u32 = 4;
     let (broker, _dir) = leader_with_shards(SHARDS, 1).await;
     let router = Arc::new(ShardRouter::new(
@@ -284,7 +296,7 @@ async fn an_append_passes_only_its_shard_while_a_follower_is_gone() {
     let marks = QuorumMarks::new();
     let status = ShardStatusBoard::new();
     let peers = Follower {
-        gone: Some("broker-c"),
+        gone,
         ..Follower::default()
     };
     let rebuilds = Rebuilds::new(RebuildPolicy::default());
@@ -322,8 +334,10 @@ async fn an_append_passes_only_its_shard_while_a_follower_is_gone() {
     while !settle(&mut shards) {
         step(&mut shards).await;
     }
-    assert!(
-        peers.stored.lock().expect("lock").contains(&(2, 2)),
-        "the appended record was not shipped to the follower still up"
-    );
+    if gone.len() < 2 {
+        assert!(
+            peers.stored.lock().expect("lock").contains(&(2, 2)),
+            "the appended record was not shipped to the follower still up"
+        );
+    }
 }

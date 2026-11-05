@@ -3712,14 +3712,16 @@ append stream and the rest never shipped: their writes were never acknowledged
   picked up by the same scan, so a busy shard does not touch the shared wake-up
   on every append. Each word of the set sits on its own cache line, so
   publishers to different shards rarely contend. A scan woken by an append passes
-  the shards whose bit is set, the shards whose mark is below their tail, and the
-  shards with a drain or route change in progress. Every other shard is skipped,
-  even one with a follower behind, halted or not answering: a pass now would ship
-  it nothing new. A shard whose pass ended with more to ship queues itself, a
-  busy follower's answer asks for its shard's pass, and the tick retries the
-  rest. A follower that is down never catches up, so asking its shards on every
-  append filled the slots with passes that could do nothing while writes on
-  other shards waited them out (#1944). A consumer-group acknowledgement that moves
+  the shards whose bit is set, the shards whose mark is below their tail while a
+  follower is answering, and the shards with a drain or route change in progress.
+  Every other shard is skipped, even one with a follower behind, halted or not
+  answering, and waits for the next tick. A shard whose pass ended with more to
+  ship queues itself, and a busy follower's answer that moves its cursor asks
+  for its shard's pass. A follower cannot catch up while it is down, so asking
+  its shards on every append filled the slots with passes that could do
+  nothing, while writes on other shards waited them out (#1944). The cost is a
+  wait of at most one tick for a rebuild of a halted follower, or for a
+  follower that has come back, on a shard nobody is writing to. A consumer-group acknowledgement that moves
   the cursor, and a record being dead-lettered, mark their shard the same way.
   Two shards that hash to the same bit both get a pass, which costs a pass and
   nothing else.
@@ -3756,7 +3758,7 @@ flowchart LR
 
 None of this changes what a pass does or what an acknowledgement rests on: it
 only decides which shard's pass runs next. A shard skipped on an append wake
-gets its pass at the tick, and a pass then would have shipped nothing more.
+gets its pass at the next tick.
 
 **A `Quorum` cache's counters ride the same exchanges.** A counter add is
 acknowledged at the counter log's own mark, under the same majority rule, and
