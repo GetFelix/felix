@@ -106,7 +106,7 @@ loop. An edge points from the operation that has to come first:
 - **ww**: one append sits right before another in the list.
 - **wr**: an append came first because a read saw it.
 - **rw**: a read came first because it did not see the append sitting just
-  after its last record.
+  after its last record (the first append, for a read that returned nothing).
 - **rt**: one operation finished before the other began.
 
 A loop means nothing can be the real order of the list. The name says what
@@ -124,16 +124,19 @@ The realtime forms are the ones a real log produces. `G-single-realtime` is a
 stale read: `append(B)` returned, then a read began and stopped before `B`.
 `G1c-realtime` is a read that saw a record which, by the clock, was only
 appended after the read finished. With one agreed order of offsets, the plain
-forms only appear next to a duplicate, which rule 2 already reports, so those
-are not named twice. An append whose outcome is unknown never starts an rt
-edge, because it may land late.
+forms only appear next to a contradiction in that order: a duplicate (rule 2)
+or a read that disagrees with the final read about what an offset holds
+(rule 3). Those rules already report it, so the cycle is not named twice. An
+append whose outcome is unknown never starts an rt edge, because it may land
+late.
 
 The rw edge needs reads that stop at the true end of the log. A live
 subscriber may drop its newest records, so the cluster runs leave
 `History::exact_tails` off and report no rw edges. The simulator's reads do
-not drop their tail and turn it on. The loops are found with Tarjan's
-strongly connected components, then one short loop per component, so a large
-history costs about as much as reading it. `check_list_append(&History)`
+not drop their tail and turn it on; with it on, a read that returned nothing
+means the list was empty, so reads start at the list's base. The loops are
+found with Tarjan's strongly connected components, then one short loop per
+component, so a large history costs about as much as reading it. `check_list_append(&History)`
 returns the cycles alone.
 
 **Rule 20, linearizability.** A cache key is *linearizable* when every

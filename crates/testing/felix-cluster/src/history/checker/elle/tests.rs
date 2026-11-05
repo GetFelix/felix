@@ -135,6 +135,19 @@ fn a_stale_read_is_g_single_realtime() {
     assert!(check(&lenient).is_valid());
 }
 
+/// A read that returned nothing after an append was acknowledged missed it,
+/// as a new leader with a zero quorum mark would.
+#[test]
+fn an_empty_read_after_an_ack_is_g_single_realtime() {
+    let ops = vec![append(0, 0, 10, 0, OK), read(1, 20, 30, &[])];
+    let h = history(ops, &[(0, 0)]);
+    assert_eq!(rules(&h), vec![Rule::GSingleRealtime]);
+
+    // An empty read before the acknowledgement is fine.
+    let ops = vec![read(1, 0, 5, &[]), append(0, 10, 20, 0, OK)];
+    assert!(check(&history(ops, &[(0, 0)])).is_valid());
+}
+
 /// Cycles with two anti-dependencies are named G2. With one total order a
 /// shorter cycle with one always exists, so the search finds G-single first;
 /// the classifier is checked on the longer cycle directly.
@@ -308,10 +321,12 @@ fn random_history(seed: u64, appends: u64) -> History {
         let complete = invoke + 1 + rng.below(50);
         let instant = invoke + rng.below(complete - invoke);
         let visible = effects.iter().filter(|(e, _)| *e < instant).count();
-        let from = if rng.percent(40) {
+        // Under exact tails an empty read means an empty list, so a read
+        // that starts mid-list always has a record to return.
+        let from = if visible == 0 || rng.percent(40) {
             0
         } else {
-            rng.below(visible as u64 + 1)
+            rng.below(visible as u64)
         };
         let mut seen: Vec<(u64, u64)> = log[..visible]
             .iter()

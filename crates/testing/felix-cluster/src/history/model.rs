@@ -42,7 +42,9 @@ pub struct History {
     /// read ran. A subscriber may drop its newest records, so a recorder
     /// whose reads can do that leaves this off, and the checker then cannot
     /// call a short read stale. A recorder whose reads cannot (the
-    /// simulator's) turns it on to get the anti-dependency edges.
+    /// simulator's) turns it on to get the anti-dependency edges. It also
+    /// means an empty read saw an empty list, so reads must start at the
+    /// list's base.
     pub exact_tails: bool,
 }
 

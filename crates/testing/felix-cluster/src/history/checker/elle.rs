@@ -8,7 +8,8 @@
 //!
 //! - `ww`: an append sits right before another append.
 //! - `wr`: a read saw an append, the last one it saw.
-//! - `rw`: a read did not see the append just after its last record. Only
+//! - `rw`: a read did not see the append just after its last record (the
+//!   first append, for an empty read). Only
 //!   with [`History::exact_tails`], since a subscriber may drop its newest
 //!   records and a short read is then not proof of anything.
 //! - `rt`: one operation finished before another began. Appends whose
@@ -19,10 +20,12 @@
 //! `G2` more. A `-realtime` suffix means an `rt` edge was needed.
 //!
 //! With one total order and single-operation transactions, a cycle needs at
-//! least one `rt` edge unless the order itself is contradictory (a value at
-//! two offsets), so `G1c`, `G-single` and `G2` without `-realtime` only show
-//! up next to a duplicate. Cycles already named by rules 2 to 6 are not
-//! reported a second time.
+//! least one `rt` edge unless the order itself is contradictory: a value at
+//! two offsets, or a read that disagrees with the final read about what an
+//! offset holds (rule 3), which gives a backward `wr` edge. So `G1c`,
+//! `G-single` and `G2` without `-realtime` only show up next to one of
+//! those. Cycles already named by rules 2 to 6 are not reported a second
+//! time.
 //!
 //! Cycles are found with Tarjan's strongly connected components, then one
 //! short cycle per component by breadth-first search from a few of its
@@ -161,15 +164,18 @@ impl<'a> ListGraph<'a> {
                 continue;
             }
             let seen: Vec<&Element> = observed.iter().filter(|e| e.offset >= base).collect();
-            let Some(last) = seen.last() else { continue };
             let reader = node(index, &mut ops);
             if let Some(&w) = seen.iter().rev().find_map(|e| owner.get(&e.value)) {
                 edges.push((w, reader, Edge::Wr));
             }
             if history.exact_tails {
+                // An empty read missed the list's first record.
+                let from = seen
+                    .last()
+                    .map_or(Bound::Unbounded, |last| Bound::Excluded(last.offset));
                 let saw: HashSet<u64> = seen.iter().map(|e| e.value).collect();
                 let missed = position
-                    .range((Bound::Excluded(last.offset), Bound::Unbounded))
+                    .range((from, Bound::Unbounded))
                     .find_map(|(_, v)| owner.get(v).filter(|_| !saw.contains(v)));
                 if let Some(&x) = missed {
                     edges.push((reader, x, Edge::Rw));
