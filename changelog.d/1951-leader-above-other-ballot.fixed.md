@@ -1,0 +1,1 @@
+An open leader that answered a candidate's higher fence stopped serving, and if that candidate then withdrew, the shard was never served again: nothing reported it, and nobody stands against a live leader. The leader now reports its generation refused once that ballot has lasted 10 s, so the control plane names it again one generation up (#1951).

@@ -277,9 +277,10 @@ pub(super) struct ShardPass<'a> {
     pub(super) drain_pending: bool,
     /// No follower that could still catch up holds all of the log.
     pub(super) behind: bool,
-    /// This broker's own ballot holds this newer generation, so it cannot
-    /// count a mark at the pass's generation.
-    pub(super) ballot_above: Option<u64>,
+    /// This broker's own copy holds this newer generation, so it cannot
+    /// count a mark at the pass's generation, and whether its ballot names
+    /// this broker.
+    pub(super) ballot_above: Option<(u64, bool)>,
 }
 
 impl ShardPass<'_> {
@@ -610,17 +611,20 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     // In the second case the leader stops counting its own copy, so its marks
     // stall while its followers confirm; the driver reports the generation
     // refused if it lasts, to be named again one up (#1933). Not while a
-    // standing is under way at that ballot: it may yet open there.
+    // standing is under way at that ballot: it may yet open there. A ballot
+    // naming another node means this leader answered that node's fence and
+    // stepped down; if that node withdraws, nothing else reports the shard,
+    // so it is reported too, after a longer wait (#1951).
     let ballot_above = {
         let accepted = log.accepted_generation();
+        let own = log
+            .accepted_leader()
+            .is_some_and(|leader| *leader == *route.leader.node_id);
         (accepted > route.generation
-            && log
-                .accepted_leader()
-                .is_some_and(|leader| *leader == *route.leader.node_id)
             && marks
                 .elections()
                 .is_none_or(|elections| elections.candidacy(key, accepted).is_none()))
-        .then_some(accepted)
+        .then_some((accepted, own))
     };
     // A set change the control plane has not taken yet: a record is held
     // only when a majority of the set being left holds it too (rule 8).

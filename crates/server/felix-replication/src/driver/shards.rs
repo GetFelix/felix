@@ -255,12 +255,14 @@ struct ShardState {
     /// by too many replicas to open, or could not learn the set it leaves.
     /// Reported each tick, as a refused open is.
     fence_refused: Option<RefusedGeneration>,
-    /// The last pass found this broker's own ballot past the generation it
-    /// leads. Reported each tick, as a refused open is.
+    /// The last pass found this broker's own copy holding a ballot past the
+    /// generation it leads. Reported each tick, as a refused open is.
     ballot_refused: Option<RefusedGeneration>,
-    /// The ballot past the led generation the passes have seen, and since
-    /// when. Reported only once it outlasts [`super::BALLOT_ABOVE_FOR`].
-    ballot_above_since: Option<(u64, tokio::time::Instant)>,
+    /// The ballot past the led generation the passes have seen, whether it
+    /// names this broker, and since when. Reported only once it outlasts
+    /// [`super::BALLOT_ABOVE_FOR`], or [`super::BALLOT_ELSEWHERE_FOR`] for
+    /// another node's.
+    ballot_above_since: Option<((u64, bool), tokio::time::Instant)>,
     /// What its last pass left.
     last: Option<LastPass>,
 }
@@ -1088,12 +1090,20 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             Some((seen, since)) if seen == ballot => (ballot, since),
             _ => (ballot, now),
         });
-        // A promotion's ballot lands before its route; only one that stays
-        // means a standing here was given up.
+        // A promotion's ballot lands before its route, and a candidate this
+        // leader answered may yet open; only a ballot that stays means the
+        // standing was given up.
         let ballot_above = state
             .ballot_above_since
-            .filter(|(_, since)| now.duration_since(*since) >= super::BALLOT_ABOVE_FOR)
-            .map(|(ballot, _)| ballot);
+            .filter(|((_, own), since)| {
+                now.duration_since(*since)
+                    >= if *own {
+                        super::BALLOT_ABOVE_FOR
+                    } else {
+                        super::BALLOT_ELSEWHERE_FOR
+                    }
+            })
+            .map(|((ballot, _), _)| ballot);
         if let Some(ballot) = ballot_above
             && state.ballot_refused.is_none()
         {
@@ -1102,8 +1112,8 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                 shard = key.shard,
                 generation,
                 ballot,
-                "this broker's own ballot is past the generation it leads, so no write \
-                 there can be acknowledged; reporting the generation refused",
+                "this broker's own copy holds a ballot past the generation it leads, so no \
+                 write there can be acknowledged; reporting the generation refused",
             );
         }
         state.ballot_refused = ballot_above.map(|_| RefusedGeneration::set_unknown(generation));

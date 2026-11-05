@@ -1432,13 +1432,19 @@ async fn a_leader_standing_at_its_ballot_reports_no_refusal() {
     );
 }
 
-/// **A leader whose copy took another node's ballot reports nothing for
-/// it**: that node may be standing, and the stepping-down rule deposes this
-/// leader instead.
+/// **An open leader that answered another node's higher fence reports its
+/// generation refused once that node has had time to open** (#1951). It
+/// stepped down when its copy took the ballot; if the candidate withdraws,
+/// nobody suspects this live broker and nobody stands again, so without the
+/// report the shard is never served. Not before [`BALLOT_ELSEWHERE_FOR`]: a
+/// candidate that opens moves the route on first.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_leader_past_its_generation_by_another_ballot_reports_no_refusal() {
-    assert_eq!(
-        ballot_refusal(5, "broker-b", false, BALLOT_ABOVE_FOR * 2).await,
-        None
-    );
+async fn a_leader_past_its_generation_by_another_ballot_reports_the_refusal() {
+    let early = BALLOT_ELSEWHERE_FOR - Duration::from_millis(500);
+    assert_eq!(ballot_refusal(5, "broker-b", false, early).await, None);
+    let report = ballot_refusal(5, "broker-b", false, BALLOT_ELSEWHERE_FOR * 2)
+        .await
+        .expect("no report of the generation another node's ballot left");
+    assert_eq!(report.generation, 4);
+    assert_eq!(report.refused, Some(RefusedGeneration::set_unknown(4)));
 }
