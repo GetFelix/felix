@@ -316,7 +316,9 @@ match TLS configuration on both sides before drawing conclusions.
 Three CI workflows keep this data current without anyone having to remember
 to re-run the harness by hand:
 
-- `.github/workflows/perf-pr.yml` runs on every PR. It builds both the PR's
+- `.github/workflows/perf-pr.yml` runs on PRs that touch hot-path code (the
+  server, protocol and client crates, the broker service, `scripts/perf/`, the
+  lockfile). It builds both the PR's
   merge-base and the PR head, then benchmarks them on the same runner
   instance (a small fast subset, not the full matrix below, plus one
   64 KiB-payload cell that reaches the subscriber byte bound), then posts a
