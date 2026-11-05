@@ -461,6 +461,8 @@ async fn ship_batch<R: PeerRequester>(
         }
         Progress::Halted(halt) => {
             cursor.halted = Some(halt);
+            // Fixed at the halt, since nothing more is shipped to it. A
+            // candidate that stands again higher is met by the rename's fence.
             cursor.fenced_by = fenced_by(&answer, shard.generation);
             tracing::error!(
                 node_id = %cursor.node_id,

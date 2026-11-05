@@ -1095,8 +1095,18 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         let now = tokio::time::Instant::now();
         // A follower's ballot is another node's standing too, so it waits as
         // long as one this broker answered.
-        let from_follower = ballot_above.is_none() && follower_ballot.is_some();
-        let ballot_above = ballot_above.or(follower_ballot.map(|ballot| (ballot, false)));
+        // Another node's ballot in either place: the higher one, so a single
+        // rename gets past both.
+        let from_follower = match (ballot_above, follower_ballot) {
+            (None, Some(_)) => true,
+            (Some((own_ballot, false)), Some(theirs)) => theirs > own_ballot,
+            _ => false,
+        };
+        let ballot_above = match (ballot_above, follower_ballot) {
+            (Some((ballot, false)), Some(theirs)) => Some((ballot.max(theirs), false)),
+            (None, Some(theirs)) => Some((theirs, false)),
+            (ballot_above, _) => ballot_above,
+        };
         state.ballot_above_since = ballot_above.map(|ballot| match state.ballot_above_since {
             Some((seen, since)) if seen == ballot => (ballot, since),
             _ => (ballot, now),

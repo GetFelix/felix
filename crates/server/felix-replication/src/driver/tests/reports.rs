@@ -1578,12 +1578,12 @@ async fn a_leader_a_follower_fenced_for_a_newer_ballot_reports_the_refusal() {
 /// then named this leader at.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_leader_a_follower_fenced_at_its_own_generation_reports_the_refusal() {
-    let report = follower_ballot_refusal(
-        crate::replica::promised_detail(4, "broker-b"),
-        BALLOT_ELSEWHERE_FOR * 2,
-    )
-    .await
-    .expect("no report of the generation a follower promised away");
+    let detail = || crate::replica::promised_detail(4, "broker-b");
+    let early = BALLOT_ELSEWHERE_FOR - Duration::from_millis(500);
+    assert_eq!(follower_ballot_refusal(detail(), early).await, None);
+    let report = follower_ballot_refusal(detail(), BALLOT_ELSEWHERE_FOR * 2)
+        .await
+        .expect("no report of the generation a follower promised away");
     assert_eq!(report.generation, 4);
     assert_eq!(report.refused, Some(RefusedGeneration::above(4, 4)));
 }
