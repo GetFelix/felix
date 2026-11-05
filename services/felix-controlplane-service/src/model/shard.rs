@@ -900,7 +900,8 @@ pub struct ReplicaReport {
     pub given_up: bool,
     /// For a follower the leader had not reached yet at its generation, the
     /// storage identity (32 lowercase hex) the assignment that promoted the
-    /// leader named for it. A failover from this report names such a member
+    /// leader named for it, or after a set change that kept the leader, the
+    /// one it named the follower by at its previous generation. A failover from this report names such a member
     /// by it instead of by none. Empty from brokers that predate it and,
     /// under Raft, until every member can apply it; such a member is then
     /// named by none, as before.
