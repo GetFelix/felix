@@ -781,15 +781,21 @@ WithdrawsStuck == FALSE
 \* `DeposeOnAssigned`: one follower's newer ballot no longer deposes the
 \* generation (fence.rs `depose`); off, the leader stops serving reads.
 \* `StandBehindBallot`: a replica that promised its generation to another
-\* live candidate does not stand above it (candidate.rs `stand`), and a
-\* broker still fencing answers no pre-vote (replica/election.rs
-\* `pre_vote`).
+\* candidate still standing there does not stand above it (candidate.rs
+\* `stand`), and a broker still fencing answers no pre-vote
+\* (replica/election.rs `pre_vote`). A candidate that stopped, withdrew or
+\* came back without its standing frees the promise. `StandBehindDeadOnly`
+\* frees it only once the candidate is down. `StandBehindBounded`: the
+\* hold lasts a bound with no progress on the shard; one that outlasts it is
+\* one whose candidate's fence cannot complete.
 \* `CatchAllRename`: placement renames a live leader that is not serving and
 \* cannot get there from where it stands, whatever it reported.
 OverlayRefused == FALSE
 HaltReported == FALSE
 DeposeOnAssigned == FALSE
 StandBehindBallot == FALSE
+StandBehindDeadOnly == FALSE
+StandBehindBounded == FALSE
 CatchAllRename == FALSE
 Withdraws == FALSE
 Restarts == FALSE
@@ -2358,6 +2364,15 @@ FenceStuck(b) ==
     IN \/ ~LeaderMajority(b, can)
        \/ JointFence /\ ~MajorityOfOld(can, b)
 
+\* `c` still stands at `g`: up, fencing there, on its own election.
+Standing(c, g) == c \notin halted /\ fencing[c] /\ bgen[c] = g /\ Candidate(c)
+
+\* Under `StandBehindBallot`, `f` may stand above what it promised `c`.
+FreedFrom(f, c) ==
+    \/ c = f \/ c \in halted \/ promised[f] <= gen
+    \/ ~StandBehindDeadOnly /\ ~Standing(c, promised[f])
+    \/ StandBehindBounded /\ FenceStuck(c)
+
 PreVoteYes(m, f) ==
     /\ m \notin halted /\ ~Hears(m) /\ ~Ahead(m, f)
     /\ ~(bgen[m] > 0 /\ ~fencing[m])
@@ -2373,18 +2388,21 @@ StandsBeside(f) == \E m \in Brokers \ ({f} \cup halted) : fencing[m] /\ Candidat
 \* any time, as a failure detector that is sometimes wrong would let it.
 \* Under `SetCheck` only a member of the set it knows stands, and only once
 \* it has learned one.
-Elect(f) ==
+\* The model's bound on elections, not the code's.
+ElectBound(f) ==
+    /\ promised[f] < gen + Elections
+    \* With adoption the control plane's generation follows elections up, so
+    \* `Adopt` bounds them too, or neither ends.
+    /\ Adopt > 0 => promised[f] < Adopt
+
+ElectStep(f) ==
     /\ Elections > 0
     /\ f \notin halted
     /\ bgen[f] = 0 \/ fencing[f]
     \* With `Backoff` a candidate stands again only once it gave its round up.
     /\ Backoff => bgen[f] = 0
-    /\ promised[f] < gen + Elections
-    \* With adoption the control plane's generation follows elections up, so
-    \* `Adopt` bounds them too, or neither ends.
-    /\ Adopt > 0 => promised[f] < Adopt
     /\ SetCheck => f \in mine[f] /\ setGen[f] > 0
-    /\ StandBehindBallot => \A c \in ballot[f] : c = f \/ c \in halted \/ promised[f] <= gen
+    /\ StandBehindBallot => \A c \in ballot[f] : FreedFrom(f, c)
     \* A replica with a round in flight does not start another (`in_flight`
     \* in election/candidate.rs).
     /\ BrokerSuspicion => bgen[f] = 0
@@ -2418,6 +2436,8 @@ Elect(f) ==
                     log, hwm, halted, acked, writes, staleCommit, opened, ackGen,
                     setGen, oldSet, installed, cpNext, cpNextGen, cutOver >>
     /\ UNCHANGED handoffVars
+
+Elect(f) == ElectBound(f) /\ ElectStep(f)
 
 \* Under `Backoff`, a candidate whose round failed gives it up and waits: the
 \* answers it has and those still possible make no majority. A member can no
@@ -4036,13 +4056,30 @@ Backers(l) == { m \in Members(l) \ halted :
 \* A live broker leads, open and serving, with a mark over its whole log and a
 \* majority that takes its batches. A member left promised past it is not
 \* counted against it: it serves without that copy.
-ElectedServes ==
-    \E l \in Brokers \ halted :
-        /\ bgen[l] > 0 /\ ~fencing[l] /\ ~stopped[l]
-        /\ hwm[l] = Len(log[l])
-        /\ LeaderMajority(l, Backers(l))
+ServesWith(l) ==
+    /\ l \notin halted /\ bgen[l] > 0 /\ ~fencing[l] /\ ~stopped[l]
+    /\ hwm[l] = Len(log[l])
+    /\ LeaderMajority(l, Backers(l))
+
+ElectedServes == \E l \in Brokers : ServesWith(l)
 
 CpDownServes == <>[]ElectedServes
+
+\* The leader serving has every live member of its set behind it. Not owed:
+\* with the control plane down, a member left promised past a leader that
+\* goes on serving on the rest stays one copy short for good, since every
+\* other member hears that leader and refuses its pre-vote. The witness is
+\* FelixShardCpDownDegraded.cfg.
+FullyBacked == \E l \in Brokers : ServesWith(l) /\ Members(l) \ halted \subseteq Backers(l)
+
+\* Some live broker would stand, but the model's bound on elections stops it.
+Exhausted == \E f \in Brokers : ~ElectBound(f) /\ ENABLED ElectStep(f)
+
+\* `CpDownServes`, or elections stop only at the bound with a broker that
+\* would stand again: what a bounded model can say of an unbounded run.
+CpDownServesInBound == <>[]ElectedServes \/ <>[]Exhausted
+
+CpDownFullyBacked == <>[]FullyBacked \/ <>[]Exhausted
 
 \* Some live broker leads, open, at a generation no live broker promised past.
 LeaderSettled ==
