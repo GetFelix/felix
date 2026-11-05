@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793916150228,
+  "lastUpdate": 1793916553635,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -46332,6 +46332,58 @@ window.BENCHMARK_DATA = {
             "range": "150239.89",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1659256.31\nmean: 1585172.31\nstdev: 150239.89\ncv: 9.48%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ce3a4d40df7fbf747c1e68c5d1ff67d0575beeff",
+          "message": "fix(broker): the routing feed's end-of-pass publish keeps a fence that finishes meanwhile (#1962) (#1983)\n\nThe routing feed end-of-pass publish keeps a fence that finishes meanwhile.",
+          "timestamp": "2026-11-05T14:05:11-08:00",
+          "tree_id": "06be666dd5fa575c37e7ddd758a57384d35d1a36",
+          "url": "https://github.com/GetFelix/felix/commit/ce3a4d40df7fbf747c1e68c5d1ff67d0575beeff"
+        },
+        "date": 1793916552959,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 624460.04,
+            "range": "47149.75",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 624460.04\nmean: 630519.71\nstdev: 47149.75\ncv: 7.48%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 624460.04,
+            "range": "47149.75",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 624460.04\nmean: 630519.71\nstdev: 47149.75\ncv: 7.48%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 153340.13,
+            "range": "11717.98",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 153340.13\nmean: 147603.79\nstdev: 11717.98\ncv: 7.94%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1533401.26,
+            "range": "117179.81",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1533401.26\nmean: 1476037.87\nstdev: 117179.81\ncv: 7.94%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
