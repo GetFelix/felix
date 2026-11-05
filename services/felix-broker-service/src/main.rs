@@ -29,6 +29,7 @@ fn name_runtime_worker() {
     {
         thread_local!(static NAMED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
         if !NAMED.with(|named| named.replace(true)) {
+            felix_storage::io_probe::mark_worker();
             // SAFETY: PR_SET_NAME reads a NUL-terminated string of at most 16
             // bytes, which the literal is.
             unsafe {

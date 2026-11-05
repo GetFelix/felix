@@ -96,6 +96,7 @@ pub(crate) fn read_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<us
 
 /// Write all of `buf` at `offset` without touching the file cursor.
 pub(crate) fn write_at(file: &File, mut buf: &[u8], mut offset: u64) -> io::Result<()> {
+    worker_probe::report("write_at");
     while !buf.is_empty() {
         #[cfg(unix)]
         let written = file.write_at(buf, offset);
@@ -214,6 +215,7 @@ pub(crate) fn preallocate(file: &File, offset: u64, len: u64) -> io::Result<()> 
 /// The measured cost is the same either way (~4ms per flush on APFS), which is
 /// itself the evidence that the flush is reaching the device.
 pub(crate) fn sync_data(file: &File) -> io::Result<()> {
+    worker_probe::report("sync_data");
     before_sync(file, SyncKind::Data)?;
     #[cfg(target_os = "macos")]
     {
@@ -244,6 +246,7 @@ pub(crate) fn sync_data(file: &File) -> io::Result<()> {
 /// entry is durable too; without this a crash can leave a segment that exists in
 /// the page cache but not in the directory after reboot.
 pub(crate) fn sync_dir(path: &std::path::Path) -> io::Result<()> {
+    worker_probe::report("sync_dir");
     before_sync_dir(path)?;
     #[cfg(unix)]
     {
@@ -266,6 +269,7 @@ pub(crate) fn sync_dir(path: &std::path::Path) -> io::Result<()> {
 /// flushes `path`'s parent, which makes a directory that a crashed earlier run
 /// created but never flushed durable now.
 pub(crate) fn create_dir_all_durable(path: &std::path::Path) -> io::Result<()> {
+    worker_probe::report("create_dir_all_durable");
     let mut created = Vec::new();
     let mut next = Some(path);
     while let Some(dir) = next.filter(|dir| !dir.as_os_str().is_empty() && !dir.is_dir()) {
@@ -361,6 +365,7 @@ pub(crate) fn devices_under(
 /// renamed into place (indexes, generation history), where the extra metadata
 /// round trip does not matter.
 pub(crate) fn sync_all(file: &File) -> io::Result<()> {
+    worker_probe::report("sync_all");
     before_sync(file, SyncKind::All)?;
     file.sync_all()
 }
@@ -417,6 +422,7 @@ fn before_sync_dir(path: &std::path::Path) -> io::Result<()> {
 /// without `fault-injection` is compiled out. An injected failure writes half
 /// of `buf` before it reports, like a disk that fills mid-batch.
 pub(crate) fn write_all(mut file: &File, buf: &[u8]) -> io::Result<()> {
+    worker_probe::report("write_all");
     #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
     {
         crate::fault::refresh();
@@ -448,3 +454,39 @@ fn injected_fault() -> io::Result<()> {
 
 #[cfg(test)]
 mod tests;
+
+/// Scratch probe: report each distinct call stack that does file I/O on a
+/// runtime worker, once, to stderr.
+pub mod worker_probe {
+    use std::cell::Cell;
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+
+    thread_local!(static WORKER: Cell<bool> = const { Cell::new(false) });
+    static SEEN: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+
+    pub fn mark_worker() {
+        WORKER.with(|w| w.set(true));
+    }
+
+    pub(crate) fn report(what: &str) {
+        if !WORKER.with(|w| w.get()) {
+            return;
+        }
+        let bt = std::backtrace::Backtrace::force_capture().to_string();
+        let frames: Vec<&str> = bt
+            .lines()
+            .filter(|l| {
+                l.contains("felix")
+                    && !l.contains("worker_probe")
+                    && !l.trim_start().starts_with("at ")
+            })
+            .take(14)
+            .collect();
+        let key = format!("{what}|{}", frames.join("|"));
+        let mut seen = SEEN.lock().unwrap();
+        if seen.get_or_insert_with(HashSet::new).insert(key) {
+            eprintln!("WORKER-IO {what}\n{}", frames.join("\n"));
+        }
+    }
+}

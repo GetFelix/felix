@@ -78,3 +78,5 @@ pub use disk_log::{DiskLog, DiskLogProvider, inspect};
 pub use error::{Corruption, CorruptionKind, CorruptionSite, Result, StorageError};
 pub use incarnation::{MarkerRead, StreamMarker};
 pub use storage_identity::StorageId;
+
+pub use io::worker_probe as io_probe;
