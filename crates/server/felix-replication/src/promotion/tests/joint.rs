@@ -1208,7 +1208,8 @@ async fn a_leader_at_generation_zero_renames_only_on_its_own_ballot() {
 /// named one up. Without the start record the ballot may be a withdrawn
 /// standing, and another node's ballot proves nothing. A copy either side
 /// leaves unnamed or names differently may be another copy, and a change
-/// pending on the route leaves a set the kept one is not. All of those wait.
+/// pending on the route leaves a set the kept one is not. So does a kept set
+/// with a learner, a wiped copy or another set kept earlier. All of those wait.
 #[tokio::test]
 async fn an_adopted_leader_restarted_on_an_older_kept_set_renames_only_on_evidence() {
     let named = |nodes: &[&str]| -> Option<Arc<std::collections::BTreeMap<String, String>>> {
@@ -1246,9 +1247,9 @@ async fn an_adopted_leader_restarted_on_an_older_kept_set_renames_only_on_eviden
     let (own, x) = (Some(LEADER), Some("broker-x"));
     let (same, other) = (named(&all), older_x);
     // (case, ballot, start record, route, kept set's copies, copies of the
-    // set kept as leaving, renames)
-    for (case, ballot, opened, route, kept_copies, left_copies, renames) in [
-        ("evidence", own, true, &route, &same, None, true),
+    // set kept as leaving, renames, what else the kept set says)
+    for (case, ballot, opened, route, kept_copies, left_copies, renames, alter) in [
+        ("evidence", own, true, &route, &same, None, true, ""),
         (
             "leaving the same copies",
             own,
@@ -1257,6 +1258,7 @@ async fn an_adopted_leader_restarted_on_an_older_kept_set_renames_only_on_eviden
             &same,
             Some(&same),
             true,
+            "",
         ),
         (
             "leaving other copies",
@@ -1266,11 +1268,30 @@ async fn an_adopted_leader_restarted_on_an_older_kept_set_renames_only_on_eviden
             &same,
             Some(&other),
             false,
+            "",
         ),
-        ("no start record", own, false, &route, &same, None, false),
-        ("another's ballot", x, true, &route, &same, None, false),
-        ("no ballot", None, true, &route, &same, None, false),
-        ("another copy kept", own, true, &route, &other, None, false),
+        (
+            "no start record",
+            own,
+            false,
+            &route,
+            &same,
+            None,
+            false,
+            "",
+        ),
+        ("another's ballot", x, true, &route, &same, None, false, ""),
+        ("no ballot", None, true, &route, &same, None, false, ""),
+        (
+            "another copy kept",
+            own,
+            true,
+            &route,
+            &other,
+            None,
+            false,
+            "",
+        ),
         (
             "route names no copies",
             own,
@@ -1279,6 +1300,7 @@ async fn an_adopted_leader_restarted_on_an_older_kept_set_renames_only_on_eviden
             &same,
             None,
             false,
+            "",
         ),
         (
             "kept names no copies",
@@ -1288,8 +1310,48 @@ async fn an_adopted_leader_restarted_on_an_older_kept_set_renames_only_on_eviden
             &None,
             None,
             false,
+            "",
         ),
-        ("a change pending", own, true, &pending, &same, None, false),
+        (
+            "a change pending",
+            own,
+            true,
+            &pending,
+            &same,
+            None,
+            false,
+            "",
+        ),
+        (
+            "another set kept earlier",
+            own,
+            true,
+            &route,
+            &same,
+            None,
+            false,
+            "earlier",
+        ),
+        (
+            "a learner kept",
+            own,
+            true,
+            &route,
+            &same,
+            None,
+            false,
+            "learner",
+        ),
+        (
+            "a wiped copy kept",
+            own,
+            true,
+            &route,
+            &same,
+            None,
+            false,
+            "wiped",
+        ),
     ] {
         let replicas = replicas_with(&["broker-x", "broker-z"]);
         let (leader, _dir) = leader_holding(PROMOTED - 4, &["a"]).await;
@@ -1312,9 +1374,20 @@ async fn an_adopted_leader_restarted_on_an_older_kept_set_renames_only_on_eviden
             };
             crate::replica_set::kept(&left, None).current
         });
-        log.accept_set(kept)
-            .await
-            .expect("the set the election stood on");
+        match alter {
+            "learner" => kept.current.members[1].learner = true,
+            "wiped" => kept.current.members[1].wiped = true,
+            "earlier" => {
+                kept.earlier = vec![self::named(PROMOTED - 5, [LEADER, "broker-y", "broker-w"])]
+            }
+            _ => {}
+        }
+        if kept.earlier.is_empty() {
+            log.accept_set(kept).await
+        } else {
+            log.accept_set_keeping_earlier(kept).await
+        }
+        .expect("the set the election stood on");
         if let Some(ballot) = ballot {
             log.accept_generation(PROMOTED, Some(ballot))
                 .await

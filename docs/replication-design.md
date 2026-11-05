@@ -4466,10 +4466,11 @@ Once it is finalized on a broker that offers `ELECTION`:
   - The log keeps an older set than the one before, and all of this holds:
     the broker's own ballot and a start record at this generation, no change
     pending on the route, and a kept set that names exactly the route's set
-    on the same copies. A member with no copy named on either side does not
-    match. The log may also keep the set this one left, but only on the same
-    copies (as a plain generation bump leaves it), and no earlier sets. That is a leader elected here whose election
-    the control plane adopted, restarted: it keeps the set it stood on, from
+    on the same copies. A member that either side names no copy for does
+    not match. The log may also keep the set this one left, but only on the
+    same copies (as a plain generation bump leaves it), and no earlier sets.
+    That is a leader elected here whose election the control plane adopted,
+    restarted: it keeps the set it stood on, from
     an older generation, and its watch has no prior after a restart. A
     candidate stands only on the set the control plane records, and adoption
     keeps that set, so it is the set before. It asks for a rename as above,
