@@ -984,13 +984,13 @@ async fn a_round_on_routes_that_moved_on_writes_no_ballot() {
 
 /// When, in a round second in the order, the copy's kept set changes.
 #[derive(Clone, Copy)]
-enum Changes {
+enum ChangesIn {
     /// While the first pre-vote is out.
-    InFirstPreVote,
+    FirstPreVote,
     /// While the candidate waits its place.
-    InPlaceDelay,
+    PlaceDelay,
     /// While the second pre-vote is out.
-    InSecondPreVote,
+    SecondPreVote,
 }
 
 /// The routes name broker-a at 5 while `LOCAL` keeps the set of 3 with its
@@ -1001,7 +1001,7 @@ enum Changes {
 /// keeps a fence's set. Either way the round's checks read a set the copy no
 /// longer keeps, so it must write no ballot and record nothing, and so never
 /// fence.
-async fn set_changes_during_the_round(when: Changes, with_ballot: bool) {
+async fn set_changes_during_the_round(when: ChangesIn, with_ballot: bool) {
     let (broker, _dir) = follower().await;
     let log = shard_log(&broker, &key()).await.expect("log");
     let changed = {
@@ -1025,10 +1025,10 @@ async fn set_changes_during_the_round(when: Changes, with_ballot: bool) {
     };
     let mut voters = second_in_order(None);
     match when {
-        Changes::InFirstPreVote => voters.on_ask = Mutex::new(Some((0, Box::pin(changed)))),
+        ChangesIn::FirstPreVote => voters.on_ask = Mutex::new(Some((0, Box::pin(changed)))),
         // broker-a and broker-c answered the first; this is the third ask.
-        Changes::InSecondPreVote => voters.on_ask = Mutex::new(Some((2, Box::pin(changed)))),
-        Changes::InPlaceDelay => {
+        ChangesIn::SecondPreVote => voters.on_ask = Mutex::new(Some((2, Box::pin(changed)))),
+        ChangesIn::PlaceDelay => {
             tokio::spawn(async move {
                 tokio::time::sleep(PLACE_DELAY / 2).await;
                 changed.await;
@@ -1056,37 +1056,37 @@ async fn set_changes_during_the_round(when: Changes, with_ballot: bool) {
 /// (#1970): during the first pre-vote.
 #[tokio::test(start_paused = true)]
 async fn a_fence_taken_in_the_first_pre_vote_stops_the_standing() {
-    set_changes_during_the_round(Changes::InFirstPreVote, true).await;
+    set_changes_during_the_round(ChangesIn::FirstPreVote, true).await;
 }
 
 /// **A fence taken mid-round stops it**: while it waits its place.
 #[tokio::test(start_paused = true)]
 async fn a_fence_taken_in_the_place_delay_stops_the_standing() {
-    set_changes_during_the_round(Changes::InPlaceDelay, true).await;
+    set_changes_during_the_round(ChangesIn::PlaceDelay, true).await;
 }
 
 /// **A fence taken mid-round stops it**: during the second pre-vote.
 #[tokio::test(start_paused = true)]
 async fn a_fence_taken_in_the_second_pre_vote_stops_the_standing() {
-    set_changes_during_the_round(Changes::InSecondPreVote, true).await;
+    set_changes_during_the_round(ChangesIn::SecondPreVote, true).await;
 }
 
 /// **A set kept with no ballot mid-round stops it**: during the first
 /// pre-vote.
 #[tokio::test(start_paused = true)]
 async fn a_set_kept_in_the_first_pre_vote_stops_the_standing() {
-    set_changes_during_the_round(Changes::InFirstPreVote, false).await;
+    set_changes_during_the_round(ChangesIn::FirstPreVote, false).await;
 }
 
 /// **A set kept with no ballot mid-round stops it**: while it waits its place.
 #[tokio::test(start_paused = true)]
 async fn a_set_kept_in_the_place_delay_stops_the_standing() {
-    set_changes_during_the_round(Changes::InPlaceDelay, false).await;
+    set_changes_during_the_round(ChangesIn::PlaceDelay, false).await;
 }
 
 /// **A set kept with no ballot mid-round stops it**: during the second
 /// pre-vote.
 #[tokio::test(start_paused = true)]
 async fn a_set_kept_in_the_second_pre_vote_stops_the_standing() {
-    set_changes_during_the_round(Changes::InSecondPreVote, false).await;
+    set_changes_during_the_round(ChangesIn::SecondPreVote, false).await;
 }

@@ -798,7 +798,7 @@ fn kept_from(election: &FenceElection) -> ReplicaSet {
 /// `from` is the generation and sender whose ballot this copy took. The set is
 /// refused if a newer ballot landed since, a candidate's included: it stood on
 /// the set it kept then, and must not be left counting a set it never fenced.
-async fn keep(
+pub(super) async fn keep(
     correlation_id: u64,
     key: &felix_router::ShardKey,
     log: &felix_broker::StreamLog,

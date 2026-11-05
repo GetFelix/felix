@@ -2374,7 +2374,8 @@ Elect(f) ==
     \* Counter-fence answers from an earlier generation do not count at this one.
     /\ canswered' = [canswered EXCEPT ![f] = {}]
     /\ cconfirmed' = [cconfirmed EXCEPT ![f] = [m \in Brokers |-> 0]]
-    \* A replica standing beside a set with the same copies fences that set too.
+    \* A replica standing while a set change is pending fences the old set too
+    \* (under `SetCheck`, only one with the same copies stands).
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, hbOut, hbAt,
                     log, hwm, halted, acked, writes, staleCommit, opened, ackGen,
                     setGen, oldSet, installed, cpNext, cpNextGen, cutOver >>

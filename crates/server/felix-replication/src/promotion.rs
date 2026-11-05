@@ -1370,14 +1370,25 @@ async fn keep_own_set(
             took: Vec::new(),
         }),
         Ok(Ok(_)) => Ok(()),
+        Ok(Err(felix_storage::disk_log::GenerationCheck::Promised { leader })) => {
+            Err(Outcome::Refused {
+                why: format!(
+                    "this broker cannot lead generation {}: it promised it to {leader}",
+                    route.generation
+                ),
+                promised_to: leader,
+                took: Vec::new(),
+            })
+        }
         Ok(Err(ballot)) => Err(Outcome::Refused {
-            promised_to: match &ballot {
-                felix_storage::disk_log::GenerationCheck::Promised { leader } => leader.clone(),
-                _ => String::new(),
-            },
+            promised_to: String::new(),
             why: format!(
-                "this broker cannot lead generation {}: its ballot moved on ({ballot:?})",
-                route.generation
+                "this broker cannot lead generation {}: its own ballot holds {}",
+                route.generation,
+                match ballot {
+                    felix_storage::disk_log::GenerationCheck::Superseded { accepted } => accepted,
+                    _ => route.generation,
+                }
             ),
             took: Vec::new(),
         }),

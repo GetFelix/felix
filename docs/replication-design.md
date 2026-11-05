@@ -4724,10 +4724,11 @@ These checks read the kept set once, and the round's pre-votes take time.
 Meanwhile the copy can take a newer set: another leader's fence below the
 candidate's generation, or a fence a replaced copy learns from without taking
 its ballot. So the candidate writes its ballot only if the copy still keeps
-the set it checked (`DiskLog::accept_generation_on_set`). Every set write
-takes the same lock and is refused once the copy has promised a newer
-generation, or this one to another leader (`DiskLog::accept_set_from`). The
-set and the ballot land in one order or the other. If the set came first, the
+the set it checked (`DiskLog::accept_generation_on_set`). Every set the
+copy takes from a fence, a batch or its own leadership takes the same lock and
+is refused once the copy has promised a newer generation, or this one to
+another leader (`DiskLog::accept_set_from`). The set and the ballot land in
+one order or the other. If the set came first, the
 candidate writes no ballot, records nothing and sends no fence. If the ballot
 came first, the set is refused, and so is the fence that carried it (#1970).
 
