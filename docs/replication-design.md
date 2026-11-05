@@ -4463,9 +4463,16 @@ Once it is finalized on a broker that offers `ELECTION`:
   - The log keeps this generation's set under another node's ballot, kept
     from that node's fence or election request: nothing proves the set
     before was fenced from here. The fence stays pending.
-  - The log keeps an older set than the one before: the leader skipped a
-    generation it never opened, and a rename would leave that generation's
-    set unfenced. The fence stays pending.
+  - The log keeps an older set than the one before, and the broker's own
+    ballot and start record at this generation: it was elected here, the
+    control plane adopted the election, and it restarted. An elected leader
+    keeps the set it stood on, from an older generation, and its watch has
+    no prior after a restart. Its election opened this generation and
+    fenced the set before, so it asks for a rename as above. The ballot
+    alone is not enough, because a standing that withdrew leaves one too.
+  - Otherwise, the log keeps an older set than the one before: the leader
+    skipped a generation it never opened, and a rename would leave that
+    generation's set unfenced. The fence stays pending.
   - The log keeps no set, above generation 0: this may be a failover's new leader whose watch
     started from a snapshot, while the old leader, cut off, still
     acknowledges on a majority of the old set. The fence stays pending.

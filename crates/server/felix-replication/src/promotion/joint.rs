@@ -295,8 +295,11 @@ pub(crate) enum NoSetBefore {
     /// kept set: no log keeps one there, and no generation precedes it.
     Unknown(u64),
     /// As [`Self::Unknown`], but this log keeps the set of an older
-    /// generation than the one before: this broker never opened the
-    /// generation in between, whose set a rename would leave unfenced.
+    /// generation than the one before: this broker may never have opened
+    /// the generation in between, whose set a rename would leave unfenced.
+    /// [`sets`] returns [`Self::Unknown`] instead when this broker's own
+    /// ballot and start record at this generation show its election opened
+    /// it.
     Skipped(u64),
     /// As [`Self::Unknown`], but this log keeps no set and nothing says the
     /// route is the shard's first assignment. An earlier set may hold
@@ -568,6 +571,22 @@ pub(super) async fn sets<R: PeerRequester>(
                 || log.accepted_leader().as_deref() != Some(local_node_id) =>
         {
             return Err(NoSetBefore::NotOpened(generation));
+        }
+        // A leader elected at a generation the control plane then adopted
+        // keeps the set it stood on, from an older generation, and after a
+        // restart nothing here names the set at the one before. Its own
+        // ballot and start record at this generation prove its election
+        // opened here and fenced that set, so a rename skips nothing. A
+        // ballot alone does not: a withdrawn standing leaves one too.
+        Err(NoSetBefore::Skipped(generation))
+            if log.accepted_generation() == generation
+                && log.accepted_leader().as_deref() == Some(local_node_id)
+                && log
+                    .generations()
+                    .iter()
+                    .any(|epoch| epoch.generation == generation) =>
+        {
+            return Err(NoSetBefore::Unknown(generation));
         }
         before => before?,
     };

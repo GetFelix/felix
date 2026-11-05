@@ -1199,6 +1199,68 @@ async fn a_leader_at_generation_zero_renames_only_on_its_own_ballot() {
     }
 }
 
+/// **An adopted election's leader that restarts asks for a rename** (#1966).
+/// Elected at a generation the control plane later adopted, it keeps the set
+/// it stood on from an older generation, and after a restart its watch has no
+/// prior: the set before is skipped. Its own ballot and start record at the
+/// generation prove its election opened there, so it reports the set unknown
+/// and is named one up. Without the start record the ballot may be a
+/// withdrawn standing, and another node's ballot proves nothing: both wait.
+#[tokio::test]
+async fn an_adopted_leader_restarted_on_an_older_kept_set_renames_only_if_it_opened() {
+    let route = swapped();
+    for (ballot, opened, renames) in [
+        (Some(LEADER), true, true),
+        (Some(LEADER), false, false),
+        (Some("broker-x"), true, false),
+        (None, true, false),
+    ] {
+        let replicas = replicas_with(&["broker-x", "broker-z"]);
+        let (leader, _dir) = leader_holding(PROMOTED - 4, &["a"]).await;
+        let log = leader
+            .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+            .await
+            .expect("log");
+        let stood = Route {
+            generation: PROMOTED - 4,
+            ..swapped()
+        };
+        log.accept_set(crate::replica_set::kept(&stood, None))
+            .await
+            .expect("the set the election stood on");
+        if let Some(ballot) = ballot {
+            log.accept_generation(PROMOTED, Some(ballot))
+                .await
+                .expect("ballot");
+        }
+        if opened {
+            log.record_generation(PROMOTED, log.commit_offset())
+                .expect("start record");
+        }
+        assert_eq!(
+            log.replica_set().map(|set| set.current.generation),
+            Some(PROMOTED - 4)
+        );
+
+        let joint = Joint::new(&addr_of, None);
+        let outcome = fence_shard(
+            &replicas,
+            &leader,
+            LEADER,
+            &key(),
+            &route,
+            false,
+            Some(&joint),
+        )
+        .await;
+
+        match (&outcome, renames) {
+            (Outcome::SetUnknown { .. }, true) | (Outcome::Pending { .. }, false) => {}
+            _ => panic!("ballot {ballot:?}, opened {opened}: {outcome:?}"),
+        }
+    }
+}
+
 /// **A set kept from another node's request is not one this broker opened**
 /// (#1872). Its log keeps the route's own generation's set, but the ballot
 /// there names broker-x, as a vote in x's election leaves it. Nothing proves

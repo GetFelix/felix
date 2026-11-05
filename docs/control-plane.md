@@ -1595,7 +1595,10 @@ and the fence needs the set at the generation before. A leader restarted at
 a generation it opened before `joint_fence` was finalized keeps that
 generation's set and its own ballot in its log, but not the set before, and
 its watch, started from a snapshot, did not see the step. That earlier open
-already fenced the set before. Placement answers the empty refusal
+already fenced the set before. A leader elected at a generation placement then
+adopted reports it too after a restart, once its log shows it opened there: it
+keeps the set it stood on, from an older generation, and its election fenced
+the set before. Placement answers the empty refusal
 the same way (`set_unknown`): the same leader and set at the next
 generation. The set that generation leaves is the one the broker kept and is
 named on now, so its fence can open there. Nothing in the control plane's
