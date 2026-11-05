@@ -344,7 +344,20 @@ impl Elections {
     /// Note that this copy heard `key`'s leader: a batch stored or a
     /// leader's fence taken.
     pub(crate) fn heard_leader(&self, key: &ShardKey) {
-        self.heard.lock().insert(key.clone(), Instant::now());
+        let now = Instant::now();
+        let mut heard = self.heard.lock();
+        // On every stamped batch: no key clone once the shard is known.
+        match heard.get_mut(key) {
+            Some(at) => *at = now,
+            None => {
+                heard.insert(key.clone(), now);
+            }
+        }
+    }
+
+    /// Drop what was heard for shards this copy no longer follows.
+    pub(crate) fn forget_heard_except(&self, followed: &std::collections::HashSet<ShardKey>) {
+        self.heard.lock().retain(|key, _| followed.contains(key));
     }
 
     pub(crate) fn last_heard(&self, key: &ShardKey) -> Option<Instant> {

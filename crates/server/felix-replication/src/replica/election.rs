@@ -639,7 +639,15 @@ impl ReplicaHandler {
     /// check. Called only for fences and batches that carry a set, so a
     /// broker without `ELECTION` takes no lock here.
     pub(super) fn heard_leader(&self, key: &felix_router::ShardKey) {
-        self.heard.lock().insert(key.clone(), Instant::now());
+        let now = Instant::now();
+        let mut heard = self.heard.lock();
+        match heard.get_mut(key) {
+            Some(at) => *at = now,
+            None => {
+                heard.insert(key.clone(), now);
+            }
+        }
+        drop(heard);
         if let Some(elections) = self.fleet.as_ref().and_then(|marks| marks.elections()) {
             elections.heard_leader(key);
         }

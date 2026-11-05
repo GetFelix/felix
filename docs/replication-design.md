@@ -1307,7 +1307,12 @@ elected leader waits for the lease until the control plane is back (issue
 
    It does not fire in steady state. An idle shard ships nothing, but its
    generation started on every copy that took it, so silence alone is not
-   a suspicion. A busy shard is heard on every batch. A copy behind its
+   a suspicion. The exception is deliberate: a copy left holding a newer
+   ballot by a withdrawn candidate refuses its leader's batches for good,
+   and after the bound it stands. On an idle shard the other follower may
+   grant, which costs the working leader one generation and brings the
+   copy back. Each standing it gives up restarts its clock, so the worst
+   case is the bound plus about a minute per generation spent. A busy shard is heard on every batch. A copy behind its
    route, which the leader has not fenced yet (a restarted broker waiting
    its turn), is not stuck either; the copies the leader did fence decide.
    Suspecting a shard only lets the follower try: it still needs a majority

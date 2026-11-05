@@ -242,8 +242,10 @@ that keeps fencing after a restart while its copies have promised a newer
 generation elsewhere. Pings get answered, so no follower suspects that broker.
 A follower that has heard nothing from the leader for that shard for
 `FELIX_SHARD_SUSPECT_AFTER_MS` (120 s), and whose copy holds a generation that
-never started, may stand for that one shard. An idle shard is never suspected,
-since its generation started on every copy. With the control plane up, it
+never started, may stand for that one shard. An idle shard is not suspected,
+since its generation started on every copy. The one exception: a copy left
+holding a ballot from a candidate that gave up refuses its leader's batches,
+and standing is how it gets back in, at the cost of one generation. With the control plane up, it
 renames the stuck leader before that bound runs out, so keep the value above
 the control plane's stuck-leader bound (70 s). Set it to `0` to turn per-shard
 suspicion off.

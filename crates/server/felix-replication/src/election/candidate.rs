@@ -61,6 +61,9 @@ const SHARD_SCAN: Duration = Duration::from_secs(5);
 /// leader's broker answers, so a voter that still hears it refuses every
 /// round; retrying at the broker backoff would only load the voters.
 const SHARD_RETRY: Duration = Duration::from_secs(5);
+/// Of [`STANDING_AT_ONCE`], how many rounds may stand on a shard's suspicion
+/// alone, so shards of a broker that really died never queue behind them.
+const SHARD_AT_ONCE: usize = 16;
 
 /// What one round of standing came to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -173,10 +176,13 @@ impl<R> Ctx<R> {
                     .replicas
                     .iter()
                     .any(|replica| replica.node_id == local);
-            if !follows || suspected.contains(&route.leader.node_id) {
+            if !follows {
                 continue;
             }
             followed.insert(key.clone());
+            if suspected.contains(&route.leader.node_id) {
+                continue;
+            }
             // A shard heard within the bound is not stuck whatever its log
             // says, and under load that is every busy shard: no log read.
             let heard = self
@@ -186,7 +192,16 @@ impl<R> Ctx<R> {
             if heard {
                 continue;
             }
-            let Some(log) = shard_log(&self.broker, key).await else {
+            // Only a log already open: a copy not open cannot be stuck, and
+            // opening every quiet shard's log here would recover them all on
+            // this task after a restart. `stand` reads it properly.
+            let log = match key.kind {
+                ShardKind::Stream => self.broker.durable_storage().and_then(|storage| {
+                    storage.opened_stream(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+                }),
+                ShardKind::Cache => shard_log(&self.broker, key).await,
+            };
+            let Some(log) = log else {
                 continue;
             };
             if self.shard_stuck(key, route, &log, now) {
@@ -197,6 +212,7 @@ impl<R> Ctx<R> {
             .lock()
             .expect("quiet lock")
             .retain(|key, _| followed.contains(key));
+        self.elections.forget_heard_except(&followed);
         let mut known = self.stuck.lock().expect("stuck lock");
         for key in stuck.difference(&known) {
             tracing::warn!(
@@ -353,7 +369,12 @@ async fn run<R: PeerRequester + Send + Sync + 'static>(
             continue;
         }
         let local = ctx.router.local_node_id();
-        for (key, route) in ctx.router.snapshot().iter() {
+        let snapshot = ctx.router.snapshot();
+        // Shards of a suspected broker first: a real outage is not held up
+        // behind shards suspected alone, which get a smaller share.
+        let mut order: Vec<_> = snapshot.iter().collect();
+        order.sort_by_key(|(_, route)| !names.contains(&route.leader.node_id));
+        for (key, route) in order {
             if in_flight.len() >= STANDING_AT_ONCE {
                 break;
             }
@@ -367,6 +388,11 @@ async fn run<R: PeerRequester + Send + Sync + 'static>(
                 || !(broker_suspected || stuck.contains(key))
                 || in_flight.contains_key(key)
                 || backoff.get(key).is_some_and(|backoff| backoff.until > now)
+            {
+                continue;
+            }
+            if !broker_suspected
+                && in_flight.values().filter(|shard_only| **shard_only).count() >= SHARD_AT_ONCE
             {
                 continue;
             }
