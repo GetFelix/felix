@@ -4673,7 +4673,7 @@ within 3 s is withdrawn, unless its fence or catch-up is still running, as is
 one whose generation the broker has since promised to someone else; a failed
 round backs off for 200 to 800 ms, the top doubling to 3 s.
 
-Three rules keep an election from getting stuck:
+Five rules keep an election from getting stuck:
 
 - **A candidate stands above its route's generation.** The control plane
   may have named a generation that never fenced this replica. Standing at
@@ -4692,6 +4692,34 @@ Three rules keep an election from getting stuck:
   records the new leader like any other. A broker refuses a pre-vote as the
   leader only while the shard is open there at its route's generation, so a
   stale route naming it cannot block the next election either.
+- **A broker never stands against its own leadership.** The control plane
+  can name a broker leader while a round of that broker is still asking for
+  votes against the old leader. The broker takes the new generation's ballot
+  before its routes catch up, so the round checks two things before it
+  writes its own ballot. If the copy's ballot names this broker and no
+  standing here wrote it, the broker does not stand: the control plane named
+  it. A ballot left by a standing from before a restart looks the same, so
+  this holds for 30 s at most. The round also gives up if the routes no
+  longer name the leader it suspected. Without these checks, the new
+  leader's own ballot moved past the generation it serves. Its own copy then
+  stopped counting toward a majority there, and every write waited out its
+  quorum timeout while the followers confirmed it (issue #1933).
+- **A leader past its generation by its own ballot reports it.** A leader
+  whose own copy holds a newer ballot of its own cannot acknowledge a write
+  at the generation it serves. A promotion leaves that state for a moment,
+  because it takes the new ballot before the routes name the new
+  generation. A withdrawn standing leaves it for good. So once it has lasted
+  3 s, with no standing of this broker under way at that ballot, the leader
+  reports its generation refused each tick, naming no node, and logs a
+  warning the first time. The control plane then names it one generation
+  up, as it does for any refused generation. A ballot from another node is
+  left to the stepping-down rule (rule 5 of the protocol above), since that
+  node may be standing.
+  That rule is for an open leader. A leader still fencing can never open
+  if its own copy already holds a newer ballot, whoever it names: the open
+  takes the generation's ballot on its own copy, which refuses it. So its
+  fence reports the generation refused at once instead of asking the set
+  (issue #1940).
 
 Elections need `joint_fence` finalized first, which the control plane allows
 once every serving broker offers `ELECTION`, names start holders and keeps a
@@ -4704,6 +4732,13 @@ set other than the kept one. In the second case a
 majority of the recorded set may hold acknowledged records that a fence of
 the kept set alone never reaches.
 
+> `a_broker_named_leader_does_not_stand_before_its_routes_catch_up`,
+> `a_round_on_routes_that_moved_on_writes_no_ballot`,
+> `a_withdrawn_standing_stands_again`,
+> `a_leader_past_its_generation_by_its_own_ballot_reports_the_refusal`,
+> `a_leader_past_its_generation_by_another_ballot_reports_no_refusal`,
+> `a_leader_standing_at_its_ballot_reports_no_refusal`,
+> `a_fence_below_its_own_ballot_reports_the_refusal`,
 > `a_granted_pre_vote_puts_the_ballot_on_disk_then_records_the_standing`,
 > `a_refused_pre_vote_writes_nothing`,
 > `a_set_the_control_plane_does_not_record_is_not_stood_on`,
