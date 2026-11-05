@@ -106,6 +106,14 @@ plus the cadence expected of it:
 `fleet_features` is the set of enabled features described in
 [Fleet features](#fleet-features).
 
+A broker that was marked down and registered again sends
+`"want_assignment_seq": true` until its routes catch up. The answer then
+carries `assignment_seq`, the shard-assignment feed's `next_seq` read after
+the heartbeat was accepted (on the Raft leader, after confirming it still
+leads). The broker serves again only on routes built from the feed at or past
+it, so its renewal cannot bring back shards that moved while it was away. A
+Raft leader that predates the field leaves it out.
+
 A broker that cannot reach the leader of a shard it follows also sends
 `"suspects": ["broker-2"]`, the leaders that have not answered its pings for
 `FELIX_LEADER_SUSPECT_AFTER_MS`. The control plane keeps the list as soft

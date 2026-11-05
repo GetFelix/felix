@@ -2408,10 +2408,10 @@ async fn revocation_cutoffs_are_read_on_the_leader() {
     );
 }
 
-/// A confirmed shard assignment is read on the leader, so a member that has
-/// not applied the latest assignment still answers with it, and a shard with
-/// none answers unassigned. The lagging member is a second store over the
-/// same group whose own state is empty.
+/// A confirmed shard assignment, and the feed's head, are read on the
+/// leader, so a member that has not applied the latest assignment still
+/// answers with it, and a shard with none answers unassigned. The lagging
+/// member is a second store over the same group whose own state is empty.
 #[tokio::test]
 async fn confirmed_shard_assignments_are_read_on_the_leader() {
     use crate::model::{ShardKind, ShardState};
@@ -2491,6 +2491,31 @@ async fn confirmed_shard_assignments_are_read_on_the_leader() {
             .await
             .expect("read"),
         ConfirmedAssignment::Unassigned
+    );
+
+    // The feed's head too: a broker marked down serves again only on routes
+    // that reach it, so a lagging member's head would bring back #1955.
+    let head = leader
+        .local()
+        .shard_assignment_changes(0)
+        .await
+        .expect("feed");
+    assert!(head.next_seq > 0);
+    assert_eq!(
+        behind
+            .local()
+            .shard_assignment_changes(0)
+            .await
+            .expect("feed")
+            .next_seq,
+        0
+    );
+    assert_eq!(
+        behind
+            .confirmed_shard_assignment_head()
+            .await
+            .expect("read"),
+        Some(head.next_seq)
     );
 }
 
