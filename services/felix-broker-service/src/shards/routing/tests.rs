@@ -346,21 +346,32 @@ mod feed {
     /// A `/v1/nodes` endpoint that can be told to start failing, so the
     /// refresh-failure path is exercised without stopping a server.
     async fn nodes_endpoint(failing: Arc<AtomicBool>) -> (String, tokio::task::JoinHandle<()>) {
-        nodes_endpoint_at(failing, Arc::new(AtomicU16::new(7002))).await
+        nodes_endpoint_at(
+            failing,
+            Arc::new(AtomicU16::new(7002)),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .await
     }
 
     /// As [`nodes_endpoint`], with broker-b's port settable, as a restart that
-    /// re-registers on new ports would change it.
+    /// re-registers on new ports would change it, and an endpoint that can be
+    /// told to take requests and never answer, as a paused control plane does.
     async fn nodes_endpoint_at(
         failing: Arc<AtomicBool>,
         port: Arc<AtomicU16>,
+        hanging: Arc<AtomicBool>,
     ) -> (String, tokio::task::JoinHandle<()>) {
         let app = Router::new().route(
             "/v1/nodes",
             get(move || {
                 let failing = Arc::clone(&failing);
+                let hanging = hanging.load(Ordering::Acquire);
                 let port = port.load(Ordering::Acquire);
                 async move {
+                    if hanging {
+                        std::future::pending::<()>().await;
+                    }
                     if failing.load(Ordering::Acquire) {
                         return Err(axum::http::StatusCode::SERVICE_UNAVAILABLE);
                     }
@@ -856,8 +867,12 @@ mod feed {
     #[tokio::test]
     async fn a_wake_refreshes_the_address_of_a_node_that_moved() {
         let port = Arc::new(AtomicU16::new(7002));
-        let (base_url, server) =
-            nodes_endpoint_at(Arc::new(AtomicBool::new(false)), Arc::clone(&port)).await;
+        let (base_url, server) = nodes_endpoint_at(
+            Arc::new(AtomicBool::new(false)),
+            Arc::clone(&port),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .await;
         let (state, _router) = state(&[assignment(0, "broker-b", 1)]);
         let ingress = Arc::clone(&state.ingress);
         let ownership = Arc::clone(&state.ownership);
@@ -898,6 +913,81 @@ mod feed {
 
         until("the wake to forward to broker-b's new address", || {
             forwards_to(7102)
+        })
+        .await;
+
+        shutdown.cancel();
+        let _ = feed.await;
+        server.abort();
+    }
+
+    /// **A control plane that never answers does not hold up a route.** An
+    /// election's leader has to be published within seconds, and the catalog
+    /// read waits up to `CATALOG_FETCH_TIMEOUT` on a paused control plane. The
+    /// woken pass publishes from what it already has.
+    #[tokio::test]
+    async fn a_hung_catalog_read_does_not_delay_the_routes() {
+        let hanging = Arc::new(AtomicBool::new(false));
+        let (base_url, server) = nodes_endpoint_at(
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicU16::new(7002)),
+            Arc::clone(&hanging),
+        )
+        .await;
+        let (state, _router) = state(&[assignment(0, "broker-b", 1)]);
+        let ingress = Arc::clone(&state.ingress);
+        let ownership = Arc::clone(&state.ownership);
+        let assignments_changed = Arc::clone(&state.assignments_changed);
+        let shutdown = CancellationToken::new();
+        let feed = spawn_feed(
+            state,
+            Some(CatalogSource {
+                link: HttpControlPlaneLink::new(
+                    reqwest::Client::builder()
+                        .no_proxy()
+                        .build()
+                        .expect("client"),
+                    &base_url,
+                ),
+                token: None,
+            }),
+            Duration::from_secs(60),
+            shutdown.clone(),
+        );
+        until("the first tick to learn broker-b's address", || {
+            matches!(ingress.dispatch(&key(0)), Dispatch::Forward { .. })
+        })
+        .await;
+
+        hanging.store(true, Ordering::Release);
+        ownership
+            .write()
+            .await
+            .apply(&key(0), Some(assignment(0, "broker-a", 2)));
+        assignments_changed.notify_one();
+
+        let served = tokio::time::timeout(Duration::from_secs(1), async {
+            while ingress.dispatch(&key(0)) != (Dispatch::Local { generation: 2 }) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(
+            served.is_ok(),
+            "the route waited on the catalog read: {:?}",
+            ingress.dispatch(&key(0))
+        );
+        // The address book survives the hung read.
+        ownership
+            .write()
+            .await
+            .apply(&key(0), Some(assignment(0, "broker-b", 3)));
+        assignments_changed.notify_one();
+        until("the shard to forward to broker-b again", || {
+            matches!(
+                ingress.dispatch(&key(0)),
+                Dispatch::Forward { generation: 3, .. }
+            )
         })
         .await;
 

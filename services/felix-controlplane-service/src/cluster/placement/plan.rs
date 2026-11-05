@@ -336,6 +336,7 @@ fn plan_once(
     let (replica_election, fenced_caches) = (policy.replica_election, policy.fenced_caches);
     let joint_fence = policy.joint_fence;
     let election_hold = policy.election_hold_millis;
+    let departed = policy.departed.clone();
     let mut moves = Moves::counting(existing, policy, &|assignment| {
         let replication_factor = placeable_of
             .get(owner_of(&assignment.key).as_str())
@@ -513,11 +514,13 @@ fn plan_once(
         // holds the log. It still serves, and the drain moves the shard off it
         // afterwards. Passed over, the shard has no leader at all while the
         // live followers wait to catch up from a leader that is gone (#1922).
+        // One that deregistered has stopped, so it is never chosen (#1977).
         let draining: Vec<&Node> = match current.get(&key) {
             Some(previous) if replaced || !is_serving(&previous.leader) => nodes
                 .iter()
                 .filter(|node| {
                     node.status.lifecycle == NodeLifecycle::Draining
+                        && !departed.contains(&node.node_id)
                         && allowed(&node.node_id)
                         && !(fenced && previous.successor.as_deref() == Some(node.node_id.as_str()))
                 })

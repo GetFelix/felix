@@ -11,6 +11,13 @@
 //! That includes an in-memory publish's ack, which can wait behind an earlier
 //! durable publish's commit ack on the same stream.
 //!
+//! A client that also offered `FEATURE_PUBLISH_ANSWER_ON_COMPLETION` gets
+//! request order only among its idempotent publishes, which need it: a
+//! producer must see batch n fail before a sequence gap for batch n+1. Every
+//! other answer is written as soon as it is ready, so a publish to a stalled
+//! shard does not hold back publishes to other shards on the same stream.
+//! Those still take a window slot and keep it until they are answered.
+//!
 //! Each registration can carry a permit from the stream's publish window.
 //! It is released when the answer is written, which is what bounds how many
 //! acknowledged publishes one stream has unanswered.
@@ -28,11 +35,15 @@ use super::ack::Outgoing;
 #[derive(Default)]
 pub(crate) struct AckOrder {
     enabled: AtomicBool,
+    /// Only idempotent publishes wait for earlier answers.
+    on_completion: AtomicBool,
     slots: Mutex<VecDeque<Slot>>,
 }
 
 struct Slot {
     request_id: u64,
+    /// Answered in request order among the other ordered slots.
+    ordered: bool,
     answer: Option<Outgoing>,
     registered: Instant,
     _window: Option<OwnedSemaphorePermit>,
@@ -48,17 +59,31 @@ impl AckOrder {
         self.enabled.store(true, Ordering::Release);
     }
 
+    /// From now on keep request order only among idempotent publishes, and
+    /// answer the rest as they complete.
+    pub(crate) fn answer_on_completion(&self) {
+        self.on_completion.store(true, Ordering::Release);
+    }
+
     pub(crate) fn is_enabled(&self) -> bool {
         self.enabled.load(Ordering::Acquire)
     }
 
     /// Record that the publish `request_id` was read and will be answered.
+    /// `idempotent` publishes keep request order among themselves either way.
     ///
     /// Must be called before the publish is handed on, so no answer can reach
     /// the writer ahead of its registration.
-    pub(crate) fn register(&self, request_id: u64, window: Option<OwnedSemaphorePermit>) {
+    pub(crate) fn register(
+        &self,
+        request_id: u64,
+        idempotent: bool,
+        window: Option<OwnedSemaphorePermit>,
+    ) {
+        let ordered = idempotent || !self.on_completion.load(Ordering::Acquire);
         self.lock().push_back(Slot {
             request_id,
+            ordered,
             answer: None,
             registered: Instant::now(),
             _window: window,
@@ -80,29 +105,46 @@ impl AckOrder {
             return;
         };
         let mut slots = self.lock();
-        let Some(slot) = slots
-            .iter_mut()
-            .find(|slot| slot.request_id == request_id && slot.answer.is_none())
+        let Some(index) = slots
+            .iter()
+            .position(|slot| slot.request_id == request_id && slot.answer.is_none())
         else {
             ready.push(outgoing);
             return;
         };
-        slot.answer = Some(outgoing);
-        while slots.front().is_some_and(|slot| slot.answer.is_some()) {
-            if let Some(answer) = slots.pop_front().and_then(|slot| slot.answer) {
+        if !slots[index].ordered {
+            // Dropping the slot frees its window permit.
+            slots.remove(index);
+            ready.push(outgoing);
+            return;
+        }
+        slots[index].answer = Some(outgoing);
+        // Unordered slots still waiting do not hold anything back.
+        while let Some(head) = slots.iter().position(|slot| slot.ordered)
+            && slots[head].answer.is_some()
+        {
+            if let Some(answer) = slots.remove(head).and_then(|slot| slot.answer) {
                 ready.push(answer);
             }
         }
     }
 
-    /// When the oldest unanswered publish was read, if a later answer is
-    /// waiting on it.
+    /// When the oldest unanswered ordered publish was read, if a later answer
+    /// is held behind it. Answering on completion, when the oldest unanswered
+    /// publish of any kind was read, held answers or not.
     ///
     /// Every registered publish is answered within the ack timeout, so a head
     /// that outlives it lost its answer somewhere; the writer closes the
-    /// stream rather than hold everything behind it forever.
+    /// stream rather than hold everything behind it forever. A lost plain
+    /// answer holds nothing back, but it keeps its window slot, and enough of
+    /// them would stop the stream's reads.
     pub(crate) fn blocked_since(&self) -> Option<Instant> {
         let slots = self.lock();
+        if self.on_completion.load(Ordering::Acquire) {
+            // Answered slots never stay at the front, so it is the oldest
+            // unanswered one.
+            return slots.front().map(|slot| slot.registered);
+        }
         let head = slots.front()?;
         slots
             .iter()

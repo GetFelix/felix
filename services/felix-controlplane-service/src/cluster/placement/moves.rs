@@ -167,6 +167,11 @@ pub struct MovePolicy {
     /// held as a learner and re-admitted (#1737). Read from the store, as
     /// `replica_election` is.
     pub joint_fence: bool,
+    /// Brokers that deregistered while their last lease may still run.
+    /// Placement sees them as draining so what they lead stays put, but none
+    /// is promoted: a broker deregisters as it stops. Not configuration: each
+    /// pass reads it from the store.
+    pub departed: BTreeSet<String>,
     /// Where a stream with a home region may have copies: that region, and
     /// any region the allowlist bridges it to (`FELIX_REGION_BRIDGES`). A
     /// stream without one is placed anywhere.
@@ -191,6 +196,7 @@ impl Default for MovePolicy {
             replica_election: false,
             fenced_caches: false,
             joint_fence: false,
+            departed: BTreeSet::new(),
             regions: Arc::new(RegionRouter::new(String::new())),
         }
     }
@@ -490,25 +496,30 @@ pub(super) fn move_step<'a>(
     // new fenced term, safe either way. The next generation is above the
     // promise, so the leader opens, and its fence deposes the elected node
     // through the ballot. The set, a pending change and a copy being added
-    // are untouched. Not during a move that ends through its own steps, which
-    // would lose its successor or its fence to the new generation.
-    if existing.successor.is_none()
-        && existing.state != ShardState::Draining
+    // are untouched. A staged move is dropped with it: its destination copies
+    // from a leader that cannot open, so it would only wait out the move
+    // timeout (#1965). Not during a fence, which ends through its own steps
+    // and would lose its drained report to the new generation.
+    if existing.state != ShardState::Draining
         && let Some(refused) = caught_up.leader_refusal(key, existing.generation, leader)
     {
-        return Decision::Move(
-            if refused.is_promise() {
-                MoveStep::ElectionRefused
-            } else {
-                MoveStep::SetUnknown
-            },
-            ShardAssignment {
+        let renamed = match existing.successor.as_deref() {
+            Some(successor) => undo_staged(existing, successor, replication_factor),
+            None => ShardAssignment {
                 generation: 0,
                 fence_storage_ids: Default::default(),
                 member_storage_ids: Default::default(),
                 learners: Default::default(),
                 ..existing.clone()
             },
+        };
+        return Decision::Move(
+            if refused.is_promise() {
+                MoveStep::ElectionRefused
+            } else {
+                MoveStep::SetUnknown
+            },
+            renamed,
         );
     }
 
