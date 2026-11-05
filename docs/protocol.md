@@ -1606,8 +1606,8 @@ stateDiagram-v2
   publish of any other shard that finds its pooled stream's head overdue moves
   that shard too, rather than queue behind it. Such a shard is not marked, and
   goes back once the pool is calm. Each stream, pooled or own, keeps its own
-  usual wait, seeded by its first answer, so a broker that is slow for every
-  shard raises the usual wait instead of moving them all. A full window is not evidence by
+  usual wait, so a broker that is slow for every shard raises the usual wait
+  instead of moving them all. A full window is not evidence by
   itself: a busy healthy stream fills it too.
 - **Order across a move.** Every publish holds a claim on its shard until its
   answer is read. The publish that moves a shard first waits for the shard's

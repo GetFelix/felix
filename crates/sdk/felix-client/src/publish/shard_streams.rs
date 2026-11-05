@@ -203,14 +203,8 @@ impl HeadWatch {
     pub(crate) fn sample(&self, waited: Duration) {
         let waited = waited.min(self.bound()).as_nanos() as u64;
         let old = self.smoothed.load(Ordering::Relaxed);
-        // The first answer seeds the average, so a broker slow for every
-        // shard is not taken for a stall while the average warms up from 0.
-        let new = if old == 0 {
-            waited
-        } else {
-            old - old / 8 + waited / 8
-        };
-        self.smoothed.store(new, Ordering::Relaxed);
+        self.smoothed
+            .store(old - old / 8 + waited / 8, Ordering::Relaxed);
     }
 
     /// When the current head became the head, as [`now_nanos`].

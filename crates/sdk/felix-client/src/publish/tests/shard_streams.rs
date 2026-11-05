@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use super::fake_worker;
 use crate::publish::routing::Selected;
-use crate::publish::shard_streams::{CALM_FIRST, HeadWatch, STALL_FLOOR, now_nanos};
+use crate::publish::shard_streams::{CALM_FIRST, STALL_FLOOR, now_nanos};
 use crate::publish::writer::PublishWorker;
 use crate::publish::{OpenWorker, Publisher, PublisherInner};
 
@@ -333,28 +333,20 @@ async fn a_pin_during_the_drain_back_keeps_the_shard_out() {
     assert_eq!(own_count(&f), 1);
 }
 
-/// The first answer seeds a stream's usual wait, so a broker that is slow for
-/// every shard does not look stalled while the average warms up.
-#[test]
-fn the_first_answer_seeds_the_usual_wait() {
-    let head = HeadWatch::default();
-    head.sample(Duration::from_millis(300));
-    assert!(head.bound() >= Duration::from_secs(1), "{:?}", head.bound());
-}
-
 /// On its own stream a shard is judged by that stream's usual wait, not the
-/// floor: steady answers slower than the floor still let it go back.
+/// floor: a broker that answers every publish slower than the floor raises
+/// the bound within a few answers, and the shard still goes back.
 #[tokio::test(start_paused = true)]
 async fn a_steady_slow_own_stream_lets_the_shard_go_back() {
     let f = fixture(4);
     let (id, own) = move_out(&f, 1).await;
-    own.head.sample(Duration::from_millis(300));
-    for _ in 0..30 {
+    for _ in 0..40 {
         own.head.set(Some(id), now_nanos());
         tokio::time::advance(Duration::from_millis(300)).await;
         if matches!(route(&f.publisher, "orders", 1).await, Own::Pooled) {
             return;
         }
+        own.head.sample(Duration::from_millis(300));
         own.head.set(None, 0);
     }
     panic!("a shard answered steadily at 300 ms never went back");
