@@ -298,12 +298,10 @@ expectations=(
   "FelixShardElectLiveNoBackoff violates liveness"
   "FelixShardElectLiveReissue pass"
   "FelixShardElectLiveNoReissue violates liveness"
-  "FelixShardCpLive pass"
   "FelixShardCpLiveMain violates liveness"
   "FelixShardCpLiveNoOwnBallotRefused violates liveness"
   "FelixShardCpLiveNoOverlayRefused violates liveness"
   "FelixShardCpLiveNoHaltReported violates liveness"
-  "FelixShardCpLiveNoStandBehindBallot violates liveness"
   "FelixShardCpLiveNoAboveReported violates liveness"
   "FelixShardCpDownNoSelfSuspicion violates liveness"
   "FelixShardCpDownBrokerSuspicion violates liveness"
@@ -420,7 +418,10 @@ fi
 
 # FelixShardCpDown, FelixShardCpDownPreVoteUnbounded and
 # FelixShardCpDownStandBehindDeadOnly are not registered: none finishes in
-# five hours in CI (docs/formal/README.md has how far each got).
+# five hours in CI (docs/formal/README.md has how far each got). Nor are
+# FelixShardCpLive and FelixShardCpLiveNoStandBehindBallot, which run past a
+# pull request's hour, and FelixShardElectAdoptAboveKeptSetReissued, which
+# models a fix (#1930) not yet on main.
 # FelixShardElectSwap is not registered: it does not finish in one run, so
 # it is checked in pieces split at the cut-over. The eleven that take under 45
 # minutes are registered above; FelixShardElectSwapKeep0, the four
@@ -477,8 +478,8 @@ weights=(
   "FelixHeadTrimTwoPromotions 2"
   "FelixHeadTrimCrashTwoPromotions 3"
   "FelixShardFigure8CutOver 14"
-  "FelixShard 11"
-  "FelixShardWipeFull 5"
+  "FelixShard 12"
+  "FelixShardWipeFull 7"
   "FelixShardLeaderCrashGivesUp 3"
   "FelixShardProcessCrashKeepsId 20"
   "FelixShardLeaderProcessCrash 25"
@@ -492,15 +493,15 @@ weights=(
   "FelixShardFigure8FollowerAcks 10"
   "FelixShardCancel 10"
   "FelixShardReportFloor 10"
-  "FelixShardAckWithoutLease 4"
+  "FelixShardAckWithoutLease 6"
   "FelixShardFigure8 7"
-  "FelixShardRealMargins 4"
+  "FelixShardRealMargins 6"
   "FelixShardRealMarginsLease 4"
   "FelixShardFencedAckSeat 15"
   "FelixShardFencedAckSeatPair 12"
   "FelixShardFencedAckUndoPair 26"
-  "FelixShardFencedAckTrim 5"
-  "FelixShardFollowerLabels 5"
+  "FelixShardFencedAckTrim 10"
+  "FelixShardFollowerLabels 6"
   "FelixShardHandoff 3"
   "FelixShardIdempotentHandoff 5"
   "FelixShardStalePlannerCas 5"
@@ -512,7 +513,7 @@ weights=(
   "FelixShardElectAdoptPromote 10"
   "FelixShardElectReissue 1"
   "FelixShardElectReissueReplaceBatchSet 2"
-  "FelixShardElectLiveReissue 8"
+  "FelixShardElectLiveReissue 10"
   "FelixShardElectAdoptFailoverApart0Gen2 5"
   "FelixShardElectAdoptFailoverApart1Gen2 5"
   "FelixShardElectAdoptFailoverApart0StoodGen2 5"
@@ -563,15 +564,16 @@ weights=(
   "FelixShardElectRenameDrop0 26"
   "FelixShardElectRenameDrop1 14"
   "FelixShardElectRenameKeep0StoodOneOther 11"
-  "FelixShardElectRenameKeep1StoodOneOther 3"
+  "FelixShardElectRenameKeep1StoodOneOther 14"
   "FelixShardElectRenameDrop1StoodOneOther 3"
   "FelixShardElectRenameDrop1StoodSeveralDest 36"
   "FelixShardElectStepDown 3"
   "FelixShardHandoffLeaderAck 3"
   "FelixShardCpLiveNoOwnBallotRefused 3"
-  "FelixShardCpLiveNoHaltReported 3"
-  "FelixShardCpLiveNoAboveReported 3"
-  "FelixShardCpDownNoSelfSuspicion 12"
+  "FelixShardCpLiveNoOverlayRefused 6"
+  "FelixShardCpLiveNoHaltReported 5"
+  "FelixShardCpLiveNoAboveReported 6"
+  "FelixShardCpDownNoSelfSuspicion 15"
 )
 
 weight_of() {

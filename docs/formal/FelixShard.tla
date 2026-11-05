@@ -790,8 +790,9 @@ WithdrawsStuck == FALSE
 \* (replica.rs `check_role`), which the fence parses as a refusal and counts
 \* as promised away. Off, that answer leaves the fence pending.
 \* `HaltReported`: an open leader whose follower refuses its batches for a
-\* newer ballot reports the halt, and placement renames it. Off, the halt
-\* (`Halt::Fenced` in driver/ship.rs) is dropped from the report.
+\* newer ballot reports the generation refused with that ballot (`fenced_by`
+\* in driver/ship.rs, reported from driver/shards.rs), and placement renames
+\* it. Off, nothing reports the halt.
 \* `DeposeOnAssigned`: one follower's newer ballot no longer deposes the
 \* generation (fence.rs `depose`); off, the leader stops serving reads.
 \* `StandBehindBallot`: a replica that promised its generation to another
@@ -828,6 +829,13 @@ Reissues == FALSE
 \* beside it (`logged_besides` in
 \* crates/server/felix-replication/src/promotion/joint.rs).
 ReissuePending == TRUE
+\* `ReissueOwnOnOtherSet`: under `AdoptMatch`, the control plane's own leader
+\* elected on a set other than the recorded one is reissued on its elected set
+\* like any other member (`adopting_elected_set` in services/
+\* felix-controlplane-service/src/model/shard.rs, #1929). Off, only its
+\* generation is taken, and the record names a set a majority of which may
+\* lack what the leader acknowledged (AdoptedMatchesOpened).
+ReissueOwnOnOtherSet == FALSE
 \* `StandsAboveKeptSet`: a candidate stands no lower than the generation of
 \* the set it keeps, since the joint fence refuses a set newer than its
 \* generation (`set_before` in promotion/joint.rs). Only a set learned from a
@@ -3073,6 +3081,7 @@ ReissueAt(b, g, E, S, pends) ==
 \*   set may hold records no majority of the recorded one does;
 \* - if it is outside the recorded set, its set becomes the recorded set at
 \*   its generation.
+\* Under `ReissueOwnOnOtherSet` that includes the control plane's own leader.
 \* Otherwise (the control plane's leader on another set, a change pending or
 \* a copy joining) only the generation is taken, so every later one the
 \* control plane issues is above it. A leader on the old set of a pending
@@ -3094,7 +3103,8 @@ CpAdopt(v, b, views) ==
            \* the set being left. Only it could take the change, so the
            \* change is dropped.
            skipped == cpNext /= {} /\ leader = b /\ joining = {} /\ E = S
-           recordedOnly == \/ leader = b \/ cpNext /= {} \/ joining /= {}
+           recordedOnly == \/ leader = b /\ ~(ReissueOwnOnOtherSet /\ E /= S)
+                           \/ cpNext /= {} \/ joining /= {}
                            \/ ~SetCheck \/ E \cap staged /= {}
        IN
        IF AdoptMatch => CpHoldsSetOf(b) /\ b \in CpSet /\ b \notin joining
@@ -3451,7 +3461,13 @@ Refused(left, stillFencing) ==
     \/ /\ stillFencing /\ JointFence
        /\ ~MajorityOfOld(left \cup {leader}, leader)
 
-\* A refusal other than `AboveReported`'s. These carry no ballot.
+\* Under `HaltReported`, the open leader's report that a follower refused its
+\* batches for a newer ballot. It carries that ballot.
+HaltRefusal ==
+    /\ HaltReported /\ bgen[leader] = gen /\ ~fencing[leader]
+    /\ \E m \in Members(leader) \ {leader} : promised[m] > gen
+
+\* A refusal other than `AboveReported`'s. Only `HaltRefusal` carries a ballot.
 OtherRefusal ==
     LET left == { m \in FenceMembers(leader) :
                     /\ ~PromisedAway(m, leader, gen)
@@ -3460,8 +3476,7 @@ OtherRefusal ==
                     /\ ~(OverlayRefused /\ m /= leader /\ promised[m] > gen) }
         stillFencing == bgen[leader] = gen /\ fencing[leader]
         open == bgen[leader] = gen /\ ~fencing[leader]
-    IN \/ /\ HaltReported /\ open
-          /\ \E m \in Members(leader) \ {leader} : promised[m] > gen
+    IN \/ HaltRefusal
        \/ CatchAllRename /\ ~LeaderServes /\ CannotServe
        \/ /\ bgen[leader] < gen \/ stillFencing
           /\ Refused(left, stillFencing)
@@ -3479,12 +3494,17 @@ RenameDue ==
 \* placement names the generation above it (`RefusedGeneration::above` in
 \* driver/shards.rs, #1951; placement's side is proposed there). A refused
 \* open or fence is reported first and carries none (`Shards::refusal`), so
-\* it renames to the next generation. The code takes the floor only inside
-\* the adoption window; the model always does.
+\* it renames to the next generation. A halt report (`HaltRefusal`) carries
+\* the follower's ballot, and placement names the generation above the
+\* highest (`follower_ballot` in driver/shard.rs, #1949). The code takes the
+\* floor only inside the adoption window; the model always does.
 RenameGen ==
     IF /\ RenamePastBallot /\ AboveRefusal /\ ~OtherRefusal
        /\ ballot[leader] \notin {{}, {leader}}
     THEN promised[leader] + 1
+    ELSE IF RenamePastBallot /\ HaltRefusal
+    THEN LET above == { promised[m] : m \in Members(leader) \ {leader} }
+         IN (CHOOSE p \in above : \A q \in above : q <= p) + 1
     ELSE gen + 1
 
 \* Under `Renames`, the control plane names its leader again at the next
