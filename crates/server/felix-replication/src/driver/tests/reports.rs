@@ -659,7 +659,7 @@ async fn a_slow_control_plane_does_not_stall_the_remaining_followers() {
 }
 
 /// A leader of `count` records on a registered stream at `consistency`.
-async fn registered_leader(
+pub(super) async fn registered_leader(
     count: usize,
     consistency: felix_broker::ConsistencyLevel,
 ) -> (Arc<Broker>, TempDir) {

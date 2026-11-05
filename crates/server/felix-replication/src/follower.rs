@@ -47,6 +47,10 @@ pub struct FollowerCursor {
     /// A new cursor starts stalled, since its offset is only where shipping
     /// will start and says nothing about what the follower holds.
     pub stalled: bool,
+    /// The follower's last answer to a batch was a refusal that retrying
+    /// resolves, such as a routing view behind this generation. Stalled, but
+    /// up and answering, unlike a follower the request never reached.
+    pub(crate) refused: bool,
     /// The follower refused the frame kind that carries a commit offset, so
     /// it is shipped without one.
     pub legacy_frames: bool,
@@ -102,6 +106,7 @@ impl FollowerCursor {
             rebuild_refused: None,
             shipped_bytes: 0,
             stalled: true,
+            refused: false,
             legacy_frames: false,
             storage_id: None,
             incarnation: Incarnation::Unsent,

@@ -136,6 +136,8 @@ async fn ship_batch<R: PeerRequester>(
     end: Option<u64>,
     set_stamp: Option<u64>,
 ) -> Progress {
+    // Set again only by the follower's answer to this batch.
+    cursor.refused = false;
     if let Some(halt) = cursor.halted {
         let backing_off = cursor
             .rebuild_refused
@@ -427,6 +429,7 @@ async fn ship_batch<R: PeerRequester>(
 
     let progress = read_answer(&answer);
     cursor.stalled = progress == Progress::Retry;
+    cursor.refused = cursor.stalled;
     cursor.route_behind = matches!(
         &answer,
         InternalMessage::ReplicateError(err) if err.code == ErrorCode::StaleRoute
