@@ -34,11 +34,15 @@ use shards::{Context, Event, Shards, WakeKind};
 
 /// How many shards a pass ships at the same time.
 ///
-/// Each one in flight holds a peer request and may hold an HTTP report, so a
-/// broker leading thousands of shards must not open thousands of those at
-/// once. High enough that one slow follower does not gate the rest, low enough
-/// to stay a bounded amount of concurrent work.
-const SHARD_CONCURRENCY: usize = 16;
+/// A slot is held for a round trip to the shard's followers, so this caps how
+/// many shards a broker can ship per second: at 16, a leader whose 1000 shards
+/// all had writes waiting gave each a pass only every 5 to 10 s, and every
+/// `Quorum` write timed out (#1944). Each pass in flight holds one peer
+/// request per follower, so the bound is a quarter of the peer pool's
+/// requests per peer (1024 by default), leaving room for the exchanges that
+/// outlive their pass, auxiliary logs and fences. Only shards with work take
+/// a slot.
+const SHARD_CONCURRENCY: usize = 256;
 
 /// How many promoted shards are fenced at the same time. Apart from
 /// [`SHARD_CONCURRENCY`], so a burst of new shards fencing cannot take the
