@@ -219,6 +219,7 @@ fn report() -> ReplicaReport {
         refused: Some(felix_common::membership::RefusedGeneration {
             generation: 1,
             promised_to: s("b"),
+            ballot: 0,
         }),
         holds_start: BTreeSet::from([s("c")]),
     }

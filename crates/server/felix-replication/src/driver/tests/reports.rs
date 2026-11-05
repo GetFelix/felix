@@ -885,6 +885,7 @@ fn refused(generation: u64) -> RefusedGeneration {
     RefusedGeneration {
         generation,
         promised_to: "broker-d".to_string(),
+        ballot: 0,
     }
 }
 
@@ -1446,5 +1447,5 @@ async fn a_leader_past_its_generation_by_another_ballot_reports_the_refusal() {
         .await
         .expect("no report of the generation another node's ballot left");
     assert_eq!(report.generation, 4);
-    assert_eq!(report.refused, Some(RefusedGeneration::set_unknown(4)));
+    assert_eq!(report.refused, Some(RefusedGeneration::above(4, 5)));
 }

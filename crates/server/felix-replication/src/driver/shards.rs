@@ -654,6 +654,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                     Outcome::Refused { promised_to, .. } => Some(RefusedGeneration {
                         generation,
                         promised_to: promised_to.clone(),
+                        ballot: 0,
                     }),
                     Outcome::SetUnknown { .. } => Some(RefusedGeneration::set_unknown(generation)),
                     _ => None,
@@ -1103,8 +1104,8 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                         super::BALLOT_ELSEWHERE_FOR
                     }
             })
-            .map(|((ballot, _), _)| ballot);
-        if let Some(ballot) = ballot_above
+            .map(|(ballot, _)| ballot);
+        if let Some((ballot, _)) = ballot_above
             && state.ballot_refused.is_none()
         {
             tracing::warn!(
@@ -1116,7 +1117,16 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                  write there can be acknowledged; reporting the generation refused",
             );
         }
-        state.ballot_refused = ballot_above.map(|_| RefusedGeneration::set_unknown(generation));
+        // Another node's ballot is carried, so placement names this broker
+        // above it: at the ballot's own generation this copy has promised
+        // the generation away, and the fence waits (#1951).
+        state.ballot_refused = ballot_above.map(|(ballot, own)| {
+            if own {
+                RefusedGeneration::set_unknown(generation)
+            } else {
+                RefusedGeneration::above(generation, ballot)
+            }
+        });
         state.last = Some(LastPass {
             scan,
             halted,

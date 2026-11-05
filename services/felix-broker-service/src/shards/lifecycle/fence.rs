@@ -402,6 +402,7 @@ impl felix_replication::driver::WriteFence for ShardFence {
             .map(|(generation, promised_to)| RefusedGeneration {
                 generation: *generation,
                 promised_to: promised_to.clone(),
+                ballot: 0,
             })
     }
 

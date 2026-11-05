@@ -1227,6 +1227,46 @@ async fn a_set_kept_under_another_ballot_keeps_the_fence_pending() {
     assert!(why.contains("is not known here"), "{why}");
 }
 
+/// **Named above another node's ballot, the leader fences** (#1951). The
+/// copy is as [`a_set_kept_under_another_ballot_keeps_the_fence_pending`]
+/// leaves it: it answered broker-x's fence at its generation, and broker-x
+/// never opened. At that generation the fence waits for good; one above it,
+/// where placement names a leader that reports the ballot, it goes through.
+#[tokio::test]
+async fn a_leader_named_above_another_ballot_fences() {
+    let replicas = replicas_with(&["broker-x", "broker-z"]);
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+    let log = leader
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    log.accept_generation(PROMOTED, Some("broker-x"))
+        .await
+        .expect("ballot");
+    log.accept_set(crate::replica_set::kept(&swapped(), None))
+        .await
+        .expect("keep the set the request carried");
+
+    let route = Route {
+        generation: PROMOTED + 1,
+        ..swapped()
+    };
+    let addr_of = addr_of;
+    let joint = Joint::new(&addr_of, None);
+    let outcome = fence_shard(
+        &replicas,
+        &leader,
+        LEADER,
+        &key(),
+        &route,
+        false,
+        Some(&joint),
+    )
+    .await;
+
+    assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
+}
+
 /// **A promise away is not refused while a set is being left.** broker-b
 /// promised the generation to broker-d and broker-c is down, so the old set
 /// holds only broker-x's answer. A rename resets the copies the next joint

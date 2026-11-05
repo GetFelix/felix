@@ -622,6 +622,7 @@ async fn a_refusal_is_stored_and_read_by_placement() {
         Some(felix_common::membership::RefusedGeneration {
             generation,
             promised_to: "broker-d".to_string(),
+            ballot: 0,
         })
     );
     use crate::cluster::placement::CaughtUp;

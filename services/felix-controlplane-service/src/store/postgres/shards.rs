@@ -965,6 +965,7 @@ fn replica_report_from_db(row: DbReplicaReport) -> StoreResult<ReplicaReport> {
                 Some(felix_common::membership::RefusedGeneration {
                     generation: generation as u64,
                     promised_to,
+                    ballot: 0,
                 })
             }
             _ => None,

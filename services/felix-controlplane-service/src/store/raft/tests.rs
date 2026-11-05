@@ -1931,6 +1931,7 @@ async fn a_refusal_waits_for_every_member() {
         refused: Some(felix_common::membership::RefusedGeneration {
             generation: assigned.generation,
             promised_to: "broker-z".to_string(),
+            ballot: 0,
         }),
     };
     let held = || async {

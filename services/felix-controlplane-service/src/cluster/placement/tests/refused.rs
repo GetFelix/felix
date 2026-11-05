@@ -23,6 +23,7 @@ async fn refuses(store: &InMemoryStore, assignment: &ShardAssignment, refused: u
         RefusedGeneration {
             generation: refused,
             promised_to: "broker-d".to_string(),
+            ballot: 0,
         },
     )
     .await;

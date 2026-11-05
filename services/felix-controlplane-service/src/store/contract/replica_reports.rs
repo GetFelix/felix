@@ -434,6 +434,7 @@ pub(super) async fn a_refusal_is_kept(store: &dyn ControlPlaneStore) {
     let refused = felix_common::membership::RefusedGeneration {
         generation: at,
         promised_to: "broker-z".to_string(),
+        ballot: 0,
     };
     let mut sent = report(shard, at, &[], 21_000);
     sent.refused = Some(refused.clone());
