@@ -1070,12 +1070,9 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                 behind,
             },
         );
-        // Read before the cursors go back, while the exchanges this pass
-        // left under way are known.
         let ship_refused = crate::follower::refused_without_majority(
             &cursors.followers,
             cursors.learner.as_deref(),
-            unanswered,
         );
         self.streams.insert(key.clone(), cursors);
         self.group.insert(key.clone(), aux.group);

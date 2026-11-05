@@ -233,11 +233,11 @@ pub fn caught_up(tail: u64, followers: &[FollowerCursor]) -> Vec<String> {
 ///
 /// Such a refusal never goes back, and it came after the fence, so no fence
 /// reports it. A follower counts as left unless it is halted, a learner, the
-/// staged `learner`, or stalled with no exchange `in_flight`.
+/// staged `learner`, or stalled: one whose exchanges hang to their timeout
+/// must not hold the report off.
 pub(crate) fn refused_without_majority(
     followers: &[FollowerCursor],
     learner: Option<&str>,
-    in_flight: impl Fn(&str) -> bool,
 ) -> Option<u64> {
     let set: Vec<&FollowerCursor> = followers
         .iter()
@@ -251,7 +251,7 @@ pub(crate) fn refused_without_majority(
     let left = set
         .iter()
         .filter(|follower| follower.halted.is_none() && !follower.learner)
-        .filter(|follower| !follower.stalled || in_flight(&follower.node_id))
+        .filter(|follower| !follower.stalled)
         .count();
     (left + 1 < crate::quorum::majority_of(set.len())).then_some(ballot)
 }

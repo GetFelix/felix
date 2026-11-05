@@ -1298,7 +1298,7 @@ elected leader waits for the lease until the control plane is back (issue
    says yes only if it has not heard its own leader within S, it does not
    lead the shard itself (a leader hears itself, so its yes would let one
    follower with a wrong detector depose it), it is not still fencing a
-   generation it won, the asker's
+   generation it won or has just opened it, the asker's
    log is at least as far ahead as its own by (last generation, length), and
    the asker's set is no older than the one it knows. Nobody persists
    anything for a pre-vote. The follower stands only on a majority of yeses,
@@ -1452,9 +1452,10 @@ elected leader waits for the lease until the control plane is back (issue
     another candidate's fence, once the leader has opened. That follower
     then refuses every batch. If the leader has no majority left without
     it, no write can be acknowledged at that generation again, so the
-    leader reports the generation refused the same way. It counts a
-    follower as left while it still answers, and reports only on a
-    refusal that names a newer generation, which never goes back. A
+    leader reports the generation refused the same way. A follower whose
+    last batch did not get through does not count toward that majority,
+    and only a refusal that names a newer generation counts, because a
+    replica's generation never goes back. A
     follower that took another leader's fence above its route does not
     stand against that leader unless it suspects it too.
 

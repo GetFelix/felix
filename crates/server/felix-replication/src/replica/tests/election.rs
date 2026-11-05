@@ -757,8 +757,8 @@ async fn only_a_taken_candidate_fence_records_its_sender() {
     );
 }
 
-/// **A leader still fencing the generation it won refuses a pre-vote against
-/// itself** (#1914). It has no start record yet, but a yes then lets a
+/// **A leader fencing or just opened at the generation it won refuses a
+/// pre-vote against itself** (#1914). It has no start record yet, but a yes then lets a
 /// follower it just fenced, whose third replica is gone, take the next
 /// generation before the leader serves. Once the fence ends, a route alone
 /// refuses nothing again.
@@ -790,5 +790,25 @@ async fn a_leader_still_fencing_refuses_a_pre_vote() {
     assert_eq!(
         pre_vote_answer(handler.pre_vote(pre_vote_at(7)).await),
         None
+    );
+
+    // Opened on the standing, with no start record yet.
+    elections.record(
+        key.clone(),
+        crate::election::Elected {
+            leader: LOCAL.to_string(),
+            generation: 6,
+            set: felix_storage::disk_log::Membership {
+                generation: 6,
+                members: Vec::new(),
+            },
+            leaving: None,
+            incarnation: 0,
+        },
+    );
+    elections.opened(&key, 6);
+    assert_eq!(
+        pre_vote_answer(handler.pre_vote(pre_vote_at(7)).await),
+        Some(felix_wire::internal::PreVoteRefusal::LeaderReachable)
     );
 }

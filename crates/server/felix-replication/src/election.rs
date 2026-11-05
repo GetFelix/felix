@@ -264,6 +264,15 @@ impl Elections {
         self.opened.lock().get(key) == Some(&(generation, incarnation))
     }
 
+    /// Whether `key` opened here at `generation` on this broker's standing,
+    /// in any incarnation.
+    pub(crate) fn opened_at(&self, key: &ShardKey, generation: u64) -> bool {
+        self.opened
+            .lock()
+            .get(key)
+            .is_some_and(|(opened, _)| *opened == generation)
+    }
+
     /// Mark `key`'s standing at `generation` as being fenced until the
     /// returned guard drops, so the candidate does not give it up meanwhile.
     pub(crate) fn fencing(&self, key: &ShardKey, generation: u64) -> Fencing<'_> {
