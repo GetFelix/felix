@@ -40,6 +40,7 @@ use felix_wire::internal::{InternalMessage, ReplicateOk, ReplicateRecords};
 use tempfile::TempDir;
 
 use super::shard::*;
+use super::shards::Queue;
 use super::*;
 use crate::peer::PeerError;
 use crate::reporter::ReportTo;

@@ -184,6 +184,16 @@ async fn step(shards: &mut Shards<'_, Follower>) -> bool {
     }
 }
 
+/// Run every pass and exchange under way to its end.
+async fn settle(shards: &mut Shards<'_, Follower>) {
+    if shards.passes.is_empty() {
+        shards.scan(WakeKind::Tick);
+    }
+    while !shards.passes.is_empty() || !shards.exchanges.is_empty() {
+        step(shards).await;
+    }
+}
+
 /// **A shard with one append gets a pass while busier shards keep
 /// appending.** More shards than slots append before every scan, and one
 /// more shard takes a single append once they hold every slot, which is the
@@ -198,7 +208,7 @@ async fn a_shard_with_one_append_is_not_starved_by_busier_ones() {
         "us-west-2",
         felix_router::RegionRouter::new("us-west-2".to_string()),
     ));
-    lead(&router, HOT);
+    lead(&router, HOT + 1);
     let marks = QuorumMarks::new();
     let status = ShardStatusBoard::new();
     let peers = Follower::default();
@@ -217,6 +227,8 @@ async fn a_shard_with_one_append_is_not_starved_by_busier_ones() {
         throttle: &throttle,
         refresh: Duration::from_secs(300),
     });
+    // Every shard has had its first pass, which waits as urgent.
+    settle(&mut shards).await;
 
     for shard in 0..HOT {
         append(&broker, shard).await;
@@ -224,7 +236,6 @@ async fn a_shard_with_one_append_is_not_starved_by_busier_ones() {
     shards.scan(WakeKind::Append);
     assert_eq!(shards.passes.len(), SHARD_CONCURRENCY, "the slots are full");
 
-    lead(&router, HOT + 1);
     append(&broker, COLD).await;
 
     // The hot shards past the slots asked first, so they go first; then it
@@ -712,4 +723,480 @@ async fn a_straggler_refusal_on_a_level_shard_leaves_it_alone() {
         1,
         "a level shard got a pass for a follower stuck behind on routing"
     );
+}
+
+/// Counts the shards scans visit (one `withheld` question each), and
+/// withholds the shards listed.
+#[derive(Default)]
+struct Counting {
+    visited: std::sync::atomic::AtomicUsize,
+    withheld: Mutex<Vec<u32>>,
+}
+
+impl Counting {
+    fn take_visited(&self) -> usize {
+        self.visited.swap(0, std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl WriteFence for Counting {
+    fn quiesced(&self, _key: &crate::ShardKey) -> bool {
+        true
+    }
+
+    fn withheld(&self, key: &crate::ShardKey, _generation: u64) -> bool {
+        self.visited
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.withheld.lock().expect("lock").contains(&key.shard)
+    }
+}
+
+/// **An append wake costs the driver the shards it concerns, not the whole
+/// table.** Every pass is polled on the driver's one task, and appends wake
+/// it many times a second. When each wake walked every route, a broker
+/// creating shards in bulk spent most of that task on scans, and a lease
+/// renewal's pass on its own shard waited seconds behind them (#1987). The
+/// tick and a route change still visit every shard.
+#[tokio::test(start_paused = true)]
+async fn an_append_wake_visits_only_the_shards_it_concerns() {
+    const SHARDS: u32 = 1_000;
+    const LEASES: u32 = 0;
+    let (broker, _dir) = leader_with_shards(2, 1).await;
+    let router = Arc::new(ShardRouter::new(
+        LOCAL,
+        "us-west-2",
+        felix_router::RegionRouter::new("us-west-2".to_string()),
+    ));
+    lead(&router, SHARDS);
+    let marks = QuorumMarks::new();
+    let status = ShardStatusBoard::new();
+    let peers = Follower::default();
+    let fence = Counting::default();
+    let rebuilds = Rebuilds::new(RebuildPolicy::default());
+    let throttle = MoveThrottle::unlimited();
+    let mut shards = Shards::new(Context {
+        requester: &peers,
+        broker: &broker,
+        router: &router,
+        fence: &fence,
+        gate: &crate::promotion::NoGate,
+        marks: &marks,
+        status: &status,
+        reporter: None,
+        rebuilds: &rebuilds,
+        throttle: &throttle,
+        refresh: Duration::from_secs(300),
+    });
+    let settle =
+        |shards: &mut Shards<'_, Follower>| shards.passes.is_empty() && shards.exchanges.is_empty();
+    for _ in 0..2 {
+        shards.scan(WakeKind::Tick);
+        while !settle(&mut shards) {
+            step(&mut shards).await;
+        }
+    }
+    assert!(
+        fence.take_visited() >= 2 * SHARDS as usize,
+        "the tick did not visit every shard"
+    );
+
+    for _ in 0..50 {
+        append(&broker, LEASES).await;
+        shards.scan(WakeKind::Append);
+        let visited = fence.take_visited();
+        assert!(
+            visited <= 8,
+            "an append to one shard visited {visited} of {SHARDS}"
+        );
+        assert!(
+            status
+                .live_report(&watch_key(&shard_key(LEASES)))
+                .is_some_and(|live| live.pass.is_some()),
+            "the appended shard got no pass"
+        );
+        while !settle(&mut shards) {
+            step(&mut shards).await;
+        }
+    }
+    let stored = peers.stored.lock().expect("lock").clone();
+    assert!(
+        stored.contains(&(LEASES, 51)),
+        "the last append was not shipped"
+    );
+
+    shards.scan(WakeKind::Routes);
+    assert!(
+        fence.take_visited() >= SHARDS as usize,
+        "a route change did not visit every shard"
+    );
+}
+
+/// **A shard withheld at the last full scan gets a pass on the next append
+/// once it is led, with no route change.** An append wake visits only some
+/// shards, so the ones it skipped as not led are checked again on each.
+#[tokio::test(start_paused = true)]
+async fn a_shard_led_after_the_last_full_scan_gets_a_pass_on_the_next_append() {
+    let (broker, _dir) = leader_with_shards(2, 1).await;
+    let router = Arc::new(ShardRouter::new(
+        LOCAL,
+        "us-west-2",
+        felix_router::RegionRouter::new("us-west-2".to_string()),
+    ));
+    lead(&router, 2);
+    let marks = QuorumMarks::new();
+    let status = ShardStatusBoard::new();
+    let peers = Follower::default();
+    let fence = Counting::default();
+    fence.withheld.lock().expect("lock").push(1);
+    let rebuilds = Rebuilds::new(RebuildPolicy::default());
+    let throttle = MoveThrottle::unlimited();
+    let mut shards = Shards::new(Context {
+        requester: &peers,
+        broker: &broker,
+        router: &router,
+        fence: &fence,
+        gate: &crate::promotion::NoGate,
+        marks: &marks,
+        status: &status,
+        reporter: None,
+        rebuilds: &rebuilds,
+        throttle: &throttle,
+        refresh: Duration::from_secs(300),
+    });
+    let settle =
+        |shards: &mut Shards<'_, Follower>| shards.passes.is_empty() && shards.exchanges.is_empty();
+    shards.scan(WakeKind::Tick);
+    while !settle(&mut shards) {
+        step(&mut shards).await;
+    }
+    assert!(!peers.stored_for(1), "a withheld shard shipped");
+
+    fence.withheld.lock().expect("lock").clear();
+    append(&broker, 0).await;
+    shards.scan(WakeKind::Append);
+    while !settle(&mut shards) {
+        step(&mut shards).await;
+    }
+    assert!(
+        peers.stored_for(1),
+        "the shard led since the last full scan got no pass on an append"
+    );
+}
+
+/// **Stale queue entries do not pile up.** A shard that moves from the
+/// refresh queue to the appended one leaves its refresh entry behind. Those
+/// entries grew with every tick while appends kept the urgent queue busy, and
+/// one revived by the shard queueing again let it jump the shards queued
+/// since.
+#[tokio::test(start_paused = true)]
+async fn stale_queue_entries_do_not_pile_up() {
+    let (broker, _dir) = leader_with_shards(HOT + 1, 0).await;
+    let router = Arc::new(ShardRouter::new(
+        LOCAL,
+        "us-west-2",
+        felix_router::RegionRouter::new("us-west-2".to_string()),
+    ));
+    lead(&router, HOT + 1);
+    let marks = QuorumMarks::new();
+    let status = ShardStatusBoard::new();
+    let peers = Follower::default();
+    let rebuilds = Rebuilds::new(RebuildPolicy::default());
+    let throttle = MoveThrottle::unlimited();
+    let mut shards = Shards::new(Context {
+        requester: &peers,
+        broker: &broker,
+        router: &router,
+        fence: &Unfenced,
+        gate: &crate::promotion::NoGate,
+        marks: &marks,
+        status: &status,
+        reporter: None,
+        rebuilds: &rebuilds,
+        throttle: &throttle,
+        refresh: Duration::from_secs(300),
+    });
+    shards.scan(WakeKind::Tick);
+    assert_eq!(shards.passes.len(), SHARD_CONCURRENCY);
+    let queued_entries = |shards: &Shards<'_, Follower>| shards.queue_entries();
+    // Every tick queues every waiting shard once, however many ticks pass.
+    for round in 0..20 {
+        shards.scan(WakeKind::Tick);
+        // A tick queues every shard for a refresh, and an append moves half
+        // of them up, leaving their refresh entries behind.
+        for shard in (0..=HOT).filter(|shard| round % 2 == 0 || shard % 2 == 0) {
+            append(&broker, shard).await;
+        }
+        shards.scan(WakeKind::Append);
+        while !shards.passes.is_empty() {
+            step(&mut shards).await;
+        }
+    }
+    assert!(
+        queued_entries(&shards) <= HOT as usize + 1,
+        "{} queue entries for {} shards",
+        queued_entries(&shards),
+        HOT + 1
+    );
+}
+
+/// **An append's pass goes ahead of a bulk of new shards' first passes.**
+/// A bulk create puts hundreds of shards new to the driver in the urgent
+/// queue at once, and each first pass is slow while the followers open
+/// their copies. A lease renewal on a shard already led here queued behind
+/// all of them and waited seconds (#1987). It now takes the next free slot,
+/// even when the new shards were written to before their first pass.
+#[tokio::test(start_paused = true)]
+async fn an_append_is_not_queued_behind_new_shards() {
+    const LEASES: u32 = 0;
+    const BULK: u32 = 64;
+    let (broker, _dir) = leader_with_shards(BULK + 1, 0).await;
+    let router = Arc::new(ShardRouter::new(
+        LOCAL,
+        "us-west-2",
+        felix_router::RegionRouter::new("us-west-2".to_string()),
+    ));
+    lead(&router, 1);
+    let marks = QuorumMarks::new();
+    let status = ShardStatusBoard::new();
+    let peers = Follower::default();
+    let rebuilds = Rebuilds::new(RebuildPolicy::default());
+    let throttle = MoveThrottle::unlimited();
+    let mut shards = Shards::new(Context {
+        requester: &peers,
+        broker: &broker,
+        router: &router,
+        fence: &Unfenced,
+        gate: &crate::promotion::NoGate,
+        marks: &marks,
+        status: &status,
+        reporter: None,
+        rebuilds: &rebuilds,
+        throttle: &throttle,
+        refresh: Duration::from_secs(300),
+    });
+    let settle =
+        |shards: &mut Shards<'_, Follower>| shards.passes.is_empty() && shards.exchanges.is_empty();
+    shards.scan(WakeKind::Tick);
+    while !settle(&mut shards) {
+        step(&mut shards).await;
+    }
+
+    lead(&router, BULK + 1);
+    shards.scan(WakeKind::Routes);
+    assert_eq!(shards.passes.len(), SHARD_CONCURRENCY, "the slots are full");
+    // Written to before their first pass: still not ahead of the append.
+    for shard in 1..=BULK {
+        append(&broker, shard).await;
+    }
+    shards.scan(WakeKind::Append);
+    append(&broker, LEASES).await;
+    shards.scan(WakeKind::Append);
+
+    let leases = watch_key(&shard_key(LEASES));
+    let mut folds = 0;
+    while !status
+        .live_report(&leases)
+        .is_some_and(|live| live.pass.is_some())
+    {
+        assert!(
+            folds < 2,
+            "the appended shard waited behind {folds} new shards' passes"
+        );
+        while !step(&mut shards).await {}
+        folds += 1;
+    }
+}
+
+/// **Shards new here still get their passes while appends keep coming.**
+/// Appended shards go first, but never more than a few in a row while an
+/// urgent one waits.
+#[tokio::test(start_paused = true)]
+async fn new_shards_are_not_starved_by_appends() {
+    let (broker, _dir) = leader_with_shards(HOT + 1, 0).await;
+    let router = Arc::new(ShardRouter::new(
+        LOCAL,
+        "us-west-2",
+        felix_router::RegionRouter::new("us-west-2".to_string()),
+    ));
+    lead(&router, HOT);
+    let marks = QuorumMarks::new();
+    let status = ShardStatusBoard::new();
+    let peers = Follower::default();
+    let rebuilds = Rebuilds::new(RebuildPolicy::default());
+    let throttle = MoveThrottle::unlimited();
+    let mut shards = Shards::new(Context {
+        requester: &peers,
+        broker: &broker,
+        router: &router,
+        fence: &Unfenced,
+        gate: &crate::promotion::NoGate,
+        marks: &marks,
+        status: &status,
+        reporter: None,
+        rebuilds: &rebuilds,
+        throttle: &throttle,
+        refresh: Duration::from_secs(300),
+    });
+    // Every shard has had its first pass, which waits as urgent.
+    settle(&mut shards).await;
+    for shard in 0..HOT {
+        append(&broker, shard).await;
+    }
+    shards.scan(WakeKind::Append);
+    assert_eq!(shards.passes.len(), SHARD_CONCURRENCY, "the slots are full");
+
+    // New, and nothing appended to it.
+    lead(&router, HOT + 1);
+    shards.scan(WakeKind::Routes);
+    let new = watch_key(&shard_key(COLD));
+    let mut folds = 0;
+    while !status
+        .live_report(&new)
+        .is_some_and(|live| live.pass.is_some())
+    {
+        assert!(
+            folds <= REFRESH_SHARE + 1,
+            "the new shard got no pass in {folds} passes ending"
+        );
+        for shard in 0..HOT {
+            append(&broker, shard).await;
+        }
+        shards.scan(WakeKind::Append);
+        while !step(&mut shards).await {}
+        folds += 1;
+    }
+}
+
+/// **A new leader's first pass starts within a bounded number of passes
+/// while appends and refreshes both wait.** After a failover the new leader
+/// has no state for the shards it took over, so their first passes queue as
+/// urgent behind whatever appended shards are waiting. With all three queues
+/// busy, at most [`REFRESH_SHARE`] appended passes and two refreshes start
+/// before the urgent queue's head does.
+#[tokio::test(start_paused = true)]
+async fn a_new_leaders_first_pass_starts_within_the_bound() {
+    const QUIET: u32 = 8;
+    let (broker, _dir) = leader_with_shards(HOT + QUIET + 1, 0).await;
+    let router = Arc::new(ShardRouter::new(
+        LOCAL,
+        "us-west-2",
+        felix_router::RegionRouter::new("us-west-2".to_string()),
+    ));
+    lead(&router, HOT + QUIET);
+    let marks = QuorumMarks::new();
+    let status = ShardStatusBoard::new();
+    let peers = Follower::default();
+    let rebuilds = Rebuilds::new(RebuildPolicy::default());
+    let throttle = MoveThrottle::unlimited();
+    let mut shards = Shards::new(Context {
+        requester: &peers,
+        broker: &broker,
+        router: &router,
+        fence: &Unfenced,
+        gate: &crate::promotion::NoGate,
+        marks: &marks,
+        status: &status,
+        reporter: None,
+        rebuilds: &rebuilds,
+        throttle: &throttle,
+        refresh: Duration::from_secs(300),
+    });
+    // Every shard has had its first pass, which waits as urgent.
+    settle(&mut shards).await;
+    // Hot shards append before every scan; the tick queues the quiet ones
+    // for a refresh, so every queue has shards waiting.
+    let round = |shards: &mut Shards<'_, Follower>| shards.scan(WakeKind::Tick);
+    for shard in 0..HOT {
+        append(&broker, shard).await;
+    }
+    round(&mut shards);
+    assert_eq!(shards.passes.len(), SHARD_CONCURRENCY, "the slots are full");
+    for _ in 0..2 * SHARD_CONCURRENCY {
+        for shard in 0..HOT {
+            append(&broker, shard).await;
+        }
+        round(&mut shards);
+        while !step(&mut shards).await {}
+    }
+    assert!(shards.refresh_waits(), "a refresh waits");
+
+    // Taken over in a failover: no state here, nothing appended.
+    lead(&router, HOT + QUIET + 1);
+    shards.scan(WakeKind::Routes);
+    let new = watch_key(&shard_key(HOT + QUIET));
+    let mut folds = 0;
+    while !status
+        .live_report(&new)
+        .is_some_and(|live| live.pass.is_some())
+    {
+        assert!(
+            folds <= REFRESH_SHARE + 2,
+            "the new leader's first pass did not start in {folds} passes ending"
+        );
+        for shard in 0..HOT {
+            append(&broker, shard).await;
+        }
+        round(&mut shards);
+        while !step(&mut shards).await {}
+        folds += 1;
+    }
+}
+
+/// **A stale queue entry never revives ahead of shards queued since.** A
+/// shard that left the refresh queue and queued there again waits at the
+/// back, behind the shard that queued while it ran, and is not dropped.
+#[tokio::test(start_paused = true)]
+async fn a_requeued_shard_waits_behind_the_shards_queued_since() {
+    let (broker, _dir) = leader_with_shards(HOT + 2, 0).await;
+    let router = Arc::new(ShardRouter::new(
+        LOCAL,
+        "us-west-2",
+        felix_router::RegionRouter::new("us-west-2".to_string()),
+    ));
+    lead(&router, HOT + 2);
+    let marks = QuorumMarks::new();
+    let status = ShardStatusBoard::new();
+    let peers = Follower::default();
+    let rebuilds = Rebuilds::new(RebuildPolicy::default());
+    let throttle = MoveThrottle::unlimited();
+    let mut shards = Shards::new(Context {
+        requester: &peers,
+        broker: &broker,
+        router: &router,
+        fence: &Unfenced,
+        gate: &crate::promotion::NoGate,
+        marks: &marks,
+        status: &status,
+        reporter: None,
+        rebuilds: &rebuilds,
+        throttle: &throttle,
+        refresh: Duration::from_secs(300),
+    });
+    settle(&mut shards).await;
+    // Hold every slot with shards other than the two under test.
+    let (first, second) = (shard_key(HOT), shard_key(HOT + 1));
+    for shard in 0..HOT {
+        append(&broker, shard).await;
+    }
+    shards.scan(WakeKind::Append);
+    assert_eq!(shards.passes.len(), SHARD_CONCURRENCY, "the slots are full");
+
+    // `first` queues for a refresh, is moved up and started (its refresh
+    // entry stays behind), then queues for a refresh again after `second`.
+    shards.queue_for_test(&first, Queue::Refresh);
+    shards.queue_for_test(&first, Queue::Appended);
+    shards.leave_queue_for_test(&first);
+    shards.queue_for_test(&second, Queue::Refresh);
+    shards.queue_for_test(&first, Queue::Refresh);
+
+    while !shards.runs(&first) && !shards.runs(&second) {
+        assert!(!shards.passes.is_empty(), "neither shard got a pass");
+        step(&mut shards).await;
+    }
+    assert!(shards.runs(&second), "the shard queued first starts first");
+    assert!(!shards.runs(&first), "the old entry jumped the queue");
+    while !shards.runs(&first) {
+        assert!(!shards.passes.is_empty(), "the requeued shard was dropped");
+        step(&mut shards).await;
+    }
 }

@@ -19,7 +19,7 @@ mod election;
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use felix_broker::Broker;
 use felix_broker::replication::{self, Divergence};
@@ -29,6 +29,7 @@ use felix_wire::internal::{
     ErrorCode, Fence, FenceOk, GenerationStart, InternalMessage, ReplicaLog, ReplicateBootstrap,
     ReplicateError, ReplicateFetch, ReplicateOk, ReplicateRebuild, ReplicateRecords,
 };
+use tokio::time::Instant;
 
 /// The most one fetch answer carries, whatever the leader asked for.
 const MAX_FETCH_BYTES: usize = 4 * 1024 * 1024;

@@ -479,6 +479,33 @@ async fn a_replica_notes_hearing_its_leader_for_shard_suspicion() {
     );
 }
 
+/// Stickiness is judged on tokio's clock, so a simulation on virtual time
+/// sees a silent leader's window close.
+#[tokio::test(start_paused = true)]
+async fn stickiness_runs_on_tokio_time() {
+    let (broker, _dir) = broker_with_storage().await;
+    let stickiness = Duration::from_secs(60);
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4))
+        .with_stickiness(stickiness);
+    handler
+        .apply(
+            SENDER,
+            stamped(4, 0, &["a"], 4),
+            felix_broker::LogKind::Stream,
+        )
+        .await;
+    let candidate = Some("broker-c");
+    let answer = handler
+        .fence(candidate, election_fence(5, voters(5), true))
+        .await;
+    assert_eq!(refusal(&answer).code, ErrorCode::Unavailable);
+
+    tokio::time::advance(stickiness).await;
+    ok(&handler
+        .fence(candidate, election_fence(5, voters(5), true))
+        .await);
+}
+
 /// **A broker that does not vote in the set refuses its fence**: listed only
 /// as a learner (#1331), or not listed at all. Its answer must not count
 /// toward the sender's majority, and it takes no ballot.
