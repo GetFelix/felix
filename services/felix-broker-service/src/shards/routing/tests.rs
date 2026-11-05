@@ -721,7 +721,12 @@ mod feed {
             }
         }));
         let shutdown = CancellationToken::new();
-        let feed = spawn_feed(state, None, Duration::from_secs(60), shutdown.clone());
+        let feed = spawn_feed(
+            state,
+            no_catalog(),
+            Duration::from_secs(60),
+            shutdown.clone(),
+        );
         // One interim publish for the new shard, then the end-of-pass one.
         until("the first pass to publish", || {
             publishes.load(std::sync::atomic::Ordering::SeqCst) >= 2
@@ -990,11 +995,13 @@ mod feed {
         let feed = spawn_feed(
             state,
             Some(CatalogSource {
-                client: reqwest::Client::builder()
-                    .no_proxy()
-                    .build()
-                    .expect("client"),
-                base_url,
+                link: HttpControlPlaneLink::new(
+                    reqwest::Client::builder()
+                        .no_proxy()
+                        .build()
+                        .expect("client"),
+                    &base_url,
+                ),
                 token: None,
             }),
             Duration::from_secs(60),
