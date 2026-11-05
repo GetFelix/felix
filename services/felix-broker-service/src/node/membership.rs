@@ -99,8 +99,10 @@ pub(super) fn spawn(
                 .clone()
                 .expect("a cluster member has a credential");
             Some(membership::spawn(
-                membership_client.clone(),
-                base_url.clone(),
+                felix_replication::controlplane_link::HttpControlPlaneLink::new(
+                    membership_client.clone(),
+                    base_url,
+                ),
                 membership_config.clone(),
                 node_credential,
                 serving,
@@ -142,7 +144,9 @@ pub(super) async fn registered(
     ) else {
         return Ok(None);
     };
-    membership::await_registered(client, base_url, &membership.node_id, credential).await
+    let link =
+        felix_replication::controlplane_link::HttpControlPlaneLink::new(client.clone(), base_url);
+    membership::await_registered(&link, &membership.node_id, credential).await
 }
 
 /// The initial lease: conservative, and invalid until the first heartbeat.

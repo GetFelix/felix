@@ -1,11 +1,16 @@
 //! Ingress dispatch: what a broker does with a request for each ownership state.
 use std::collections::HashMap;
 
+use felix_replication::controlplane_link::HttpControlPlaneLink;
 use felix_router::{NodeRef, RegionRouter};
 
 use super::*;
 use crate::shards::lifecycle::ShardLifecycle;
 use crate::shards::watch::ShardAssignment;
+
+fn no_catalog() -> Option<CatalogSource<HttpControlPlaneLink>> {
+    None
+}
 
 mod hold;
 mod quorum;
@@ -434,7 +439,12 @@ mod feed {
         let ingress = Arc::clone(&state.ingress);
         let shutdown = CancellationToken::new();
 
-        let feed = spawn_feed(state, None, Duration::from_millis(20), shutdown.clone());
+        let feed = spawn_feed(
+            state,
+            no_catalog(),
+            Duration::from_millis(20),
+            shutdown.clone(),
+        );
         until("the shard to be served locally", || {
             matches!(ingress.dispatch(&key(0)), Dispatch::Local { .. })
         })
@@ -458,11 +468,13 @@ mod feed {
         let feed = spawn_feed(
             state,
             Some(CatalogSource {
-                client: reqwest::Client::builder()
-                    .no_proxy()
-                    .build()
-                    .expect("client"),
-                base_url,
+                link: HttpControlPlaneLink::new(
+                    reqwest::Client::builder()
+                        .no_proxy()
+                        .build()
+                        .expect("client"),
+                    &base_url,
+                ),
                 token: Some(crate::cluster::credential::NodeCredential::new("a-token")),
             }),
             Duration::from_millis(20),
@@ -479,6 +491,40 @@ mod feed {
         server.abort();
     }
 
+    /// The feed reads the catalog through the link alone.
+    #[tokio::test]
+    async fn a_fake_link_supplies_the_catalog() {
+        let link = crate::test_support::fake_link::FakeLink::default().reply(
+            "node_catalog_page",
+            serde_json::json!({
+                "items": [{
+                    "node": {
+                        "node_id": "broker-b",
+                        "spec": { "advertise_addr": "10.0.0.4:7002", "region": "us-west-2" },
+                    },
+                    "placement": { "eligible": true },
+                }],
+            }),
+        );
+        let (state, _router) = state(&[assignment(0, "broker-b", 1)]);
+        let ingress = Arc::clone(&state.ingress);
+        let shutdown = CancellationToken::new();
+
+        let feed = spawn_feed(
+            state,
+            Some(CatalogSource { link, token: None }),
+            Duration::from_millis(20),
+            shutdown.clone(),
+        );
+        until("the remote shard to become forwardable", || {
+            matches!(ingress.dispatch(&key(0)), Dispatch::Forward { .. })
+        })
+        .await;
+
+        shutdown.cancel();
+        let _ = feed.await;
+    }
+
     /// **A control-plane blip must not erase the address book.** Dropping it
     /// would turn every remote publish into a refusal, which looks exactly like
     /// a cluster with no brokers in it.
@@ -493,11 +539,13 @@ mod feed {
         let feed = spawn_feed(
             state,
             Some(CatalogSource {
-                client: reqwest::Client::builder()
-                    .no_proxy()
-                    .build()
-                    .expect("client"),
-                base_url,
+                link: HttpControlPlaneLink::new(
+                    reqwest::Client::builder()
+                        .no_proxy()
+                        .build()
+                        .expect("client"),
+                    &base_url,
+                ),
                 token: None,
             }),
             Duration::from_millis(20),
@@ -534,7 +582,12 @@ mod feed {
         let assignments_changed = Arc::clone(&state.assignments_changed);
         let routes_changed = Arc::clone(&state.routes_changed);
         let shutdown = CancellationToken::new();
-        let feed = spawn_feed(state, None, Duration::from_secs(60), shutdown.clone());
+        let feed = spawn_feed(
+            state,
+            no_catalog(),
+            Duration::from_secs(60),
+            shutdown.clone(),
+        );
 
         // The first tick fires at once; let it pass.
         until("the first tick to publish", || {
@@ -582,11 +635,13 @@ mod feed {
         let feed = spawn_feed(
             state,
             Some(CatalogSource {
-                client: reqwest::Client::builder()
-                    .no_proxy()
-                    .build()
-                    .expect("client"),
-                base_url,
+                link: HttpControlPlaneLink::new(
+                    reqwest::Client::builder()
+                        .no_proxy()
+                        .build()
+                        .expect("client"),
+                    &base_url,
+                ),
                 token: None,
             }),
             Duration::from_secs(60),
@@ -625,7 +680,12 @@ mod feed {
     async fn the_feed_stops_when_cancelled() {
         let (state, _router) = state(&[assignment(0, "broker-a", 1)]);
         let shutdown = CancellationToken::new();
-        let feed = spawn_feed(state, None, Duration::from_millis(20), shutdown.clone());
+        let feed = spawn_feed(
+            state,
+            no_catalog(),
+            Duration::from_millis(20),
+            shutdown.clone(),
+        );
 
         shutdown.cancel();
         tokio::time::timeout(Duration::from_secs(5), feed)

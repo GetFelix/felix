@@ -25,6 +25,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
+use felix_replication::controlplane_link::ControlPlaneLink;
 use felix_router::{Resolution, ShardRouter, Unavailable};
 
 use crate::shards::lifecycle::Phase;
@@ -796,9 +797,8 @@ pub struct FeedState {
 }
 
 /// What the feed needs to read the node catalog.
-pub struct CatalogSource {
-    pub client: reqwest::Client,
-    pub base_url: String,
+pub struct CatalogSource<L> {
+    pub link: L,
     /// The same credential the assignment feed uses: `/v1/nodes` and
     /// `/v1/shard-assignments` both require `node.view:cluster:*`. Held, not
     /// copied, so a refresh reaches this feed too.
@@ -817,9 +817,9 @@ pub struct CatalogSource {
 /// the assignments says so. Wakes follow the watch's change batches, so this
 /// is at most one catalog read per batch, and it runs alongside reconcile
 /// rather than in front of it.
-pub fn spawn_feed(
+pub fn spawn_feed<L: ControlPlaneLink>(
     state: FeedState,
-    catalog_source: Option<CatalogSource>,
+    catalog_source: Option<CatalogSource<L>>,
     interval: std::time::Duration,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> tokio::task::JoinHandle<()> {
@@ -877,8 +877,7 @@ pub fn spawn_feed(
                 let source = catalog_source.as_ref()?;
                 let bearer = source.token.as_ref().map(|token| token.bearer());
                 let fetch = crate::cluster::node_catalog::fetch(
-                    &source.client,
-                    &source.base_url,
+                    &source.link,
                     bearer.as_deref().map(String::as_str),
                 );
                 Some(

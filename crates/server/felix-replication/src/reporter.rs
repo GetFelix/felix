@@ -26,6 +26,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use super::{FollowerCursor, caught_up};
+use crate::controlplane_link::ControlPlaneLink;
 use crate::peer::Incarnation;
 
 /// Most reports in one request.
@@ -56,7 +57,10 @@ pub struct Reporter {
 impl Reporter {
     /// Start the flushing task. It runs until `shutdown`, or until every
     /// `Reporter` handle is dropped.
-    pub fn spawn(to: ReportTo, shutdown: CancellationToken) -> (Self, tokio::task::JoinHandle<()>) {
+    pub fn spawn<L: ControlPlaneLink>(
+        to: ReportTo<L>,
+        shutdown: CancellationToken,
+    ) -> (Self, tokio::task::JoinHandle<()>) {
         let (tx, rx) = mpsc::channel(QUEUE_DEPTH);
         let task = tokio::spawn(flush_loop(to, rx, shutdown));
         (Self { tx }, task)
@@ -89,9 +93,8 @@ impl Reporter {
 ///
 /// Optional: a broker with no control plane has nobody to tell, and the reports
 /// are only ever read by one.
-pub struct ReportTo {
-    pub client: reqwest::Client,
-    pub base_url: String,
+pub struct ReportTo<L = crate::controlplane_link::HttpControlPlaneLink> {
+    pub link: L,
     pub node_id: String,
     /// Held, not copied: this reports for the life of the process, across
     /// however many access tokens that spans.
@@ -325,7 +328,11 @@ pub(super) fn moving(followers: &[FollowerCursor]) -> Vec<(String, u64)> {
         .collect()
 }
 
-async fn flush_loop(to: ReportTo, mut rx: mpsc::Receiver<Pending>, shutdown: CancellationToken) {
+async fn flush_loop<L: ControlPlaneLink>(
+    to: ReportTo<L>,
+    mut rx: mpsc::Receiver<Pending>,
+    shutdown: CancellationToken,
+) {
     loop {
         let first = tokio::select! {
             _ = shutdown.cancelled() => break,
@@ -374,7 +381,7 @@ async fn flush_loop(to: ReportTo, mut rx: mpsc::Receiver<Pending>, shutdown: Can
 /// reports is worse than none, since promotion is gated on *recent* positions.
 /// The answer instead gates the quorum mark, so "could not tell" reads as
 /// false — see the caller.
-async fn send_reports(to: &ReportTo, reports: &[ShardReport]) -> Vec<bool> {
+async fn send_reports<L: ControlPlaneLink>(to: &ReportTo<L>, reports: &[ShardReport]) -> Vec<bool> {
     if reports.is_empty() {
         return Vec::new();
     }
@@ -443,19 +450,19 @@ async fn send_reports(to: &ReportTo, reports: &[ShardReport]) -> Vec<bool> {
             })
             .collect(),
     };
-    let url = format!("{}/v1/nodes/{}/replica-status", to.base_url, to.node_id);
-    let mut request = to.client.post(&url).json(&body);
-    if let Some(token) = &to.token {
-        request = request.bearer_auth(token.bearer());
-    }
-    let response = match request.send().await {
+    let bearer = to.token.as_ref().map(|token| token.bearer());
+    let response = match to
+        .link
+        .replica_status(bearer.as_deref().map(String::as_str), &to.node_id, &body)
+        .await
+    {
         Ok(response) => response,
         Err(err) => {
             tracing::warn!(error = %err, "could not send a replica report");
             return refused();
         }
     };
-    let status = response.status();
+    let status = response.status;
     // A control plane that predates per-shard answers says 204 and nothing
     // else. It stored what it accepted and skipped the rest without saying,
     // which is all this broker can go on; see "Replica reports" in
@@ -467,7 +474,7 @@ async fn send_reports(to: &ReportTo, reports: &[ShardReport]) -> Vec<bool> {
         tracing::warn!(%status, "the control plane refused a replica report");
         return refused();
     }
-    match response.json::<ReplicaStatusResponse>().await {
+    match response.json::<ReplicaStatusResponse>() {
         Ok(answer) => landed_per_shard(reports, &answer),
         Err(err) => {
             tracing::warn!(%status, error = %err, "unreadable answer to a replica report");
