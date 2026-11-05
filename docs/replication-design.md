@@ -585,7 +585,7 @@ When the fence applies:
   (`a_cache_log_that_fails_to_open_keeps_the_shard_closed`,
   `a_counter_log_that_fails_to_open_keeps_the_shard_closed`); before it, the
   shard opens on the lease.
-- Only when every replica in the new set that answers offers both `FENCE` and
+- Only when every replica in the new set offers both `FENCE` and
   `TAIL_FETCH`, and for a cache shard `CACHE_FENCE` too, as its latest
   handshake with this broker in either direction says, and this broker offers
   them too. Otherwise the shard opens at once
@@ -593,7 +593,8 @@ When the fence applies:
   and a peer that did not offer them is never sent either message. For a
   cache shard only a replica that answers counts here. One this broker cannot
   reach, as one that crashed, is treated as silent: the fence goes on and
-  needs a majority of the whole set, as it does without the lease. On the
+  needs a majority of the whole set, as it does without the lease. With two
+  replicas and one down, the shard stays closed until it returns. On the
   lease the shard would skip the catch-up, and the promoted broker could
   serve without a put the old leader acknowledged (#1943,
   `an_unreachable_replica_does_not_skip_the_catch_up`,

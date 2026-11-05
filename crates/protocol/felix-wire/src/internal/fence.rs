@@ -38,9 +38,9 @@ impl PeerCapabilities {
     pub const FORWARD_OFFSETS: Self = Self(1 << 3);
     /// Answers [`Fence`] and [`ReplicateFetch`] for a cache shard's counter
     /// log ([`ReplicaLog::Counters`]), and reads cache and counter batches
-    /// labelled with their generations. A promoted cache shard is fenced only
-    /// when every replica that answers offers it; one that cannot be
-    /// reached does not open it on the lease.
+    /// labelled with their generations. A promoted cache shard is fenced
+    /// unless a replica answers without it; an unreachable replica does not
+    /// count either way.
     pub const CACHE_FENCE: Self = Self(1 << 4);
     /// Reads batches that carry each record's append time on the leader
     /// ([`ReplicateRecords::times`]) and stores that time, and answers a
