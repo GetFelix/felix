@@ -247,7 +247,9 @@ including any broker you add or replace later.
 The defaults suit most clusters. `FELIX_LEADER_SUSPECT_AFTER_MS` sets how long
 followers wait before they suspect a leader; a shorter window fails over faster
 and replaces a slow leader more often. Keep `FELIX_SHARD_ELECTION_HOLD_MS` on
-the control plane at twice that value.
+the control plane at twice that value. `FELIX_ELECTION_DEFER_FOR_MS` (60 s)
+bounds how long a newly elected leader that never opens holds its followers
+back before one of them may stand again.
 
 ## How it is checked
 

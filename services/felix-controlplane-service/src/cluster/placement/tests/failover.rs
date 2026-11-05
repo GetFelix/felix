@@ -257,6 +257,64 @@ fn a_replicated_shard_with_no_caught_up_replica_is_left_unplaceable() {
     );
 }
 
+/// **A draining follower takes over when it alone holds the log.** The leader
+/// is gone, the live follower has not caught up, and the follower on a
+/// draining broker has. Leaving the shard unplaced would wait on a catch-up
+/// that needs the leader that is gone (#1922).
+#[test]
+fn a_draining_follower_is_promoted_when_no_live_one_holds_the_log() {
+    let streams = vec![Stream {
+        consistency: ConsistencyLevel::Quorum,
+        ..replicated_stream("orders", 1, 3)
+    }];
+    let nodes = vec![
+        node("broker-b", NodeLifecycle::Draining, None),
+        node("broker-c", NodeLifecycle::Live, None),
+    ];
+    let existing = vec![assigned("orders", "broker-a", &["broker-b", "broker-c"])];
+
+    let only_draining = plan(
+        &streams,
+        &[],
+        &nodes,
+        &existing,
+        &CaughtUpNodes(["broker-b".to_string()].into()),
+    );
+    let (_, leader, replicas) = only_draining.to_place().next().expect("placed");
+    assert_eq!(leader, "broker-b");
+    assert_eq!(
+        replicas.iter().collect::<BTreeSet<_>>(),
+        BTreeSet::from([&"broker-a".to_string(), &"broker-c".to_string()]),
+    );
+
+    // A live follower that holds the log is still preferred.
+    let both = plan(
+        &streams,
+        &[],
+        &nodes,
+        &existing,
+        &CaughtUpNodes(["broker-b".to_string(), "broker-c".to_string()].into()),
+    );
+    let (_, leader, _) = both.to_place().next().expect("placed");
+    assert_eq!(leader, "broker-c");
+
+    // Nor is a draining move destination promoted, as for a live one.
+    let mut moving = existing[0].clone();
+    moving.successor = Some("broker-b".to_string());
+    let destination = plan(
+        &streams,
+        &[],
+        &nodes,
+        &[moving],
+        &CaughtUpNodes(["broker-b".to_string()].into()),
+    );
+    assert_eq!(
+        destination.to_place().count(),
+        0,
+        "the move's destination was promoted"
+    );
+}
+
 /// And it is placed the moment a replica can take over, so the state above is
 /// a pause rather than a dead end.
 #[test]
