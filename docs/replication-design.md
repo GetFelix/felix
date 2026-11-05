@@ -445,7 +445,14 @@ set the report named no identity for, but that is registered with one, was
 not yet known to its leader when the report was made, so everything it
 answered that leader came later: the assignment names it with an empty
 identity, which nothing matches (`FelixShardFencedCrashCountsUnnamed.cfg`
-finds the record lost when it counts). A replica the assignment does not
+finds the record lost when it counts). A set change that keeps the leader,
+such as seating a replacement for a drained follower, is not a promotion: at
+the new generation the leader names a follower it has not reached yet by the
+identity it named it by at the generation before. That follower acknowledged
+nothing at the new generation, and everything before from that copy.
+Otherwise a follower cut off from the leader across the change is named with
+an empty identity, and a failover whose majority needs it can never open
+(#1922). A replica the assignment does not
 name counts as it always has: one outside the old set, which gave the old
 leader nothing to count, such as a new copy a `Leader` failover brings in,
 and one registered without an identity, a build from before them, where
@@ -1863,7 +1870,9 @@ connections would leave a leader reporting the old incarnation for as long
 as the connection lived, and an unverified follower uncounted for as long.
 
 Each report names the identity every follower was counted under
-(`replica_storage_ids`, lowercase hex, omitted when empty). A follower that
+(`replica_storage_ids`, lowercase hex, omitted when empty), and after a set
+change that kept its leader, the identity a follower not reached yet was
+counted under at the generation before. A follower that
 gives no identity, an older build, is reported without one. The control plane
 keeps them with the report (`follower_storage`), and each broker registers its
 own identity (`storage_id`). Placement compares the two for every follower it
@@ -2255,6 +2264,9 @@ leaves the shard unplaced until a broker holding the log returns, where
 before a follower could have been promoted at once. In issue 878 broker-2 held
 every acknowledged record but not the old leader's unacknowledged tail, and
 with the floor it would not have been named until it had copied that tail.
+A follower on a draining broker that holds the log can still be promoted when
+no live follower does, so a drain under way does not turn this cost into an
+outage (`seating_a_replacement_keeps_what_the_old_set_acknowledged`).
 `FelixShardReportFromAnswers.cfg` counts followers by their answers without
 the floor and loses the record, and `FelixShardReportFloor.cfg` passes
 (`a_new_leader_names_no_follower_before_it_answers`,

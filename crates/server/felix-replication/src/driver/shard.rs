@@ -1,7 +1,7 @@
 //! One shard's pass: ship to each follower, advance the quorum mark, and
 //! build the report.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -66,6 +66,10 @@ pub struct ShardCursors {
     /// The generation this leader leads at, and where it begins. See
     /// [`own_start`].
     pub(super) own_start: Option<(u64, u64)>,
+    /// What this leader named each follower by at its previous generation,
+    /// for a follower it has not reached at this one. See
+    /// [`ShardCursors::next`].
+    pub(super) carried: BTreeMap<String, felix_storage::StorageId>,
 }
 
 impl ShardCursors {
@@ -80,7 +84,41 @@ impl ShardCursors {
             followers: Vec::new(),
             learner: None,
             own_start: None,
+            carried: BTreeMap::new(),
         }
+    }
+
+    /// Empty, at a later `generation` of the same leader, keeping what it
+    /// names its followers by: the identity a follower last answered from,
+    /// else the one it carried. `keep_for` drops them if the log turns out
+    /// to be another incarnation's.
+    ///
+    /// A follower this leader does not reach at the new generation
+    /// acknowledged nothing there, and everything it acknowledged before came
+    /// from the copy it was named by. Named by none after a set change, its
+    /// fence answer would never count, and a failover that needs it could
+    /// not open (#1922).
+    pub(super) fn next(&self, generation: u64) -> Self {
+        Self {
+            incarnation: self.incarnation,
+            carried: if generation > self.generation {
+                self.names()
+            } else {
+                BTreeMap::new()
+            },
+            ..Self::at(generation)
+        }
+    }
+
+    /// What a report at this generation names each follower by.
+    fn names(&self) -> BTreeMap<String, felix_storage::StorageId> {
+        let mut names = self.carried.clone();
+        names.extend(
+            self.followers
+                .iter()
+                .filter_map(|follower| Some((follower.node_id.clone(), follower.storage_id?))),
+        );
+        names
     }
 
     /// Start over at `generation` unless these cursors already describe the
@@ -277,6 +315,11 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     let shard = crate::incarnation::shard_ref(broker, key, route.generation);
     let incarnation = shard.incarnation.unwrap_or(0);
     entry.keep_for(route.generation, incarnation);
+    // A promotion names the copies it fences itself; the names carried from
+    // an earlier stint as leader are for a set change that kept this leader.
+    if route.fence_storage_ids.is_some() {
+        entry.carried.clear();
+    }
     let Some(log) = broker
         .shard_log_for(
             log_kind,
@@ -856,7 +899,8 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                         false,
                     )
                     .at_incarnation(incarnation)
-                    .serving_by_round(by_round),
+                    .serving_by_round(by_round)
+                    .naming_carried(route, &entry.carried),
                     &aux.counters.followers,
                 ),
                 offset,
@@ -1000,7 +1044,8 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                         false,
                     )
                     .at_incarnation(incarnation)
-                    .serving_by_round(by_round),
+                    .serving_by_round(by_round)
+                    .naming_carried(route, &entry.carried),
                     &aux.counters.followers,
                 ),
                 offset,
@@ -1197,7 +1242,8 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
             drained,
         )
         .at_incarnation(incarnation)
-        .serving_by_round(by_round),
+        .serving_by_round(by_round)
+        .naming_carried(route, &entry.carried),
         &aux.counters.followers,
     );
     // A follower missing some of that state would lose it if it led, so it is

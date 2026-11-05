@@ -756,7 +756,9 @@ is in progress; it is always one of `replicas`, and absent otherwise. See
 `POST /v1/nodes/{node_id}/replica-status` is how a shard's leader tells the
 control plane which replicas hold its log and how far each has got. Promotion
 is gated on it: a lost leader is replaced only by a replica reported caught up,
-and among those by the one reported furthest ahead. A report may also carry
+and among those by the one reported furthest ahead. A replica on a draining
+broker is picked only when no live one is caught up; the drain then moves the
+shard off it as usual. A report may also carry
 `drained: true`, the leader's word that it has stopped serving the shard at
 that generation and its log will not grow: the fence of a planned move. For a
 cache, `replica_counter_offsets` says how far each replica has got with the

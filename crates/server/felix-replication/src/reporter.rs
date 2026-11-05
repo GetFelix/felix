@@ -168,6 +168,31 @@ impl ShardReport {
     pub(super) fn serving_by_round(self, by_round: bool) -> Self {
         Self { by_round, ..self }
     }
+
+    /// This report, naming each of `route`'s followers it has no identity
+    /// for by the one `carried` from the leader's previous generation.
+    ///
+    /// Such a follower has not answered at this generation, so it
+    /// acknowledged nothing here and everything before from that copy. The
+    /// control plane names it in the next failover's fence by this identity;
+    /// left out, it is named with none and its fence answer never counts
+    /// (#1922). It does not make the follower a candidate: that still takes
+    /// its position.
+    pub(super) fn naming_carried(
+        mut self,
+        route: &felix_router::Route,
+        carried: &std::collections::BTreeMap<String, StorageId>,
+    ) -> Self {
+        for follower in &route.replicas {
+            let node = &follower.node_id;
+            if let Some(id) = carried.get(node)
+                && !self.storage_ids.iter().any(|(named, _)| named == node)
+            {
+                self.storage_ids.push((node.clone(), *id));
+            }
+        }
+        self
+    }
 }
 
 /// Who could take this shard over, as of `tail`.

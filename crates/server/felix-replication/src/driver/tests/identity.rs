@@ -977,3 +977,94 @@ async fn a_drain_on_an_idle_shard_hands_over_to_a_level_successor() {
     );
     assert_eq!(follower.asked("broker-c"), 1);
 }
+
+/// **A set change that keeps the leader keeps what it named its followers
+/// by** (#1922). At generation 5 this leader cannot reach broker-b. Named by
+/// none, its fence answer would never count, and a failover whose majority
+/// needs it could not open. It is named by the copy it answered from at
+/// generation 4, and still not offered for promotion.
+#[tokio::test]
+async fn a_set_change_keeps_the_names_its_leader_reported() {
+    let (broker, _dir) = leader_with(3).await;
+    let mut cursors = HashMap::new();
+    let rebuilds = Rebuilds::disabled();
+    let report = pass(
+        &IdentifiedFollower::with(id(1)),
+        &broker,
+        &router(LOCAL, &["broker-b"], 4),
+        &mut cursors,
+        &mut HashMap::new(),
+        &rebuilds,
+    )
+    .await;
+    assert_eq!(report.storage_ids, vec![("broker-b".to_string(), id(1))]);
+
+    let report = pass(
+        &WipedAndDown,
+        &broker,
+        &router(LOCAL, &["broker-b"], 5),
+        &mut cursors,
+        &mut HashMap::new(),
+        &rebuilds,
+    )
+    .await;
+    assert_eq!(report.generation, 5);
+    assert_eq!(
+        report.storage_ids,
+        vec![("broker-b".to_string(), id(1))],
+        "{report:?}"
+    );
+    assert!(report.caught_up.is_empty(), "{report:?}");
+}
+
+/// **A promotion carries no names.** A later assignment that promotes this
+/// leader names the copies its fence counts itself, so what it named its
+/// followers by before is dropped.
+#[tokio::test]
+async fn a_promotion_carries_no_names() {
+    let (broker, _dir) = leader_with(3).await;
+    let mut cursors = HashMap::new();
+    let rebuilds = Rebuilds::disabled();
+    pass(
+        &IdentifiedFollower::with(id(1)),
+        &broker,
+        &router(LOCAL, &["broker-b"], 4),
+        &mut cursors,
+        &mut HashMap::new(),
+        &rebuilds,
+    )
+    .await;
+
+    let promoted = Arc::new(ShardRouter::new(
+        LOCAL,
+        "us-west-2",
+        RegionRouter::new("us-west-2".to_string()),
+    ));
+    let nodes = nodes();
+    let table = RoutingTable::build_with(
+        [felix_router::Placed {
+            key: key(),
+            leader: LOCAL.to_string(),
+            replicas: vec!["broker-b".to_string()],
+            generation: 5,
+            draining: false,
+            successor: None,
+            routing: Default::default(),
+            incarnation: 0,
+            fence_storage_ids: [("broker-b".to_string(), id(2).to_hex())].into(),
+        }],
+        &nodes,
+    );
+    promoted.publish(table, &nodes);
+    let report = pass(
+        &WipedAndDown,
+        &broker,
+        &promoted,
+        &mut cursors,
+        &mut HashMap::new(),
+        &rebuilds,
+    )
+    .await;
+    assert_eq!(report.generation, 5);
+    assert!(report.storage_ids.is_empty(), "{report:?}");
+}
