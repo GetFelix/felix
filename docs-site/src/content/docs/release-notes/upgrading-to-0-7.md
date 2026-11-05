@@ -61,6 +61,13 @@ carry `client_flags_ext` and `server_flags_ext` to agree on
 before. The Rust client offers it; the Python, TypeScript, C and C# clients do
 not yet. Header names starting with `felix.` are reserved.
 
+A pipelining client can also offer `FEATURE_PUBLISH_ANSWER_ON_COMPLETION`
+*(main)*. A broker that grants it a publish window then answers plain acked
+publishes as they complete and keeps request order only among idempotent
+ones, so a shard stalled during a failover no longer holds back the answers
+of every other shard on its stream. Older clients and brokers exchange the
+same frames as before. The Rust client offers it; nothing to configure.
+
 ## New settings
 
 None of these is required. Each default keeps the 0.6.2 behavior.
