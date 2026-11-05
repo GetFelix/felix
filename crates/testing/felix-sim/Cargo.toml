@@ -12,10 +12,17 @@ readme.workspace = true
 publish = false
 
 [dependencies]
+anyhow = { workspace = true }
+axum = { workspace = true }
+felix-common = { path = "../../server/felix-common" }
+felix-controlplane-service = { path = "../../../services/felix-controlplane-service" }
 felix-replication = { path = "../../server/felix-replication" }
 felix-wire = { path = "../../protocol/felix-wire" }
 parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 tokio = { workspace = true }
+tower = { version = "0.5", features = ["util"] }
 
 [dev-dependencies]
 async-trait = { workspace = true }

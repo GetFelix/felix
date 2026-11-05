@@ -6,5 +6,7 @@
 //! injected from a seed and replayed. See `docs/simulation.md`.
 //!
 //! - [`net`]: the in-memory peer network.
+//! - [`controlplane`]: the real control plane in process, with faults.
 
+pub mod controlplane;
 pub mod net;
