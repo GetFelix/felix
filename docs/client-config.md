@@ -134,11 +134,16 @@ Connections").
   - Most publish streams a client opens per broker for one shard each,
     beside the pool. Default: `4`. `0` turns them off. The first
     four shards seen per broker (across all streams) get a stream each; later
-    shards use the pool, where a stalled shard can hold up other pooled shards.
+    shards use the pool, where a stalled shard takes slots from the pooled
+    stream's publish window. When the broker also grants
+    `FEATURE_PUBLISH_ANSWER_ON_COMPLETION`, it answers plain acked publishes
+    as they complete and the writer keeps sending while one is outstanding,
+    so the stalled shard's answers do not hold back the others'. An older
+    broker that grants a window keeps request order, and there they do.
     To isolate every shard, raise it to the total number of shards published
     to on a broker.
   - Each publish goes on its shard's own stream, so a shard stalled on the
-    broker holds up only itself, and one stream's shards spread over the
+    broker uses up only its own publish window, and one stream's shards spread over the
     client's connections and listeners. Opened on the shard's first publish,
     on the least-loaded connection, and kept. Shards past the cap use the
     pool. Only with `hash_stream`. A plain `Connection` learns a stream's width

@@ -287,7 +287,7 @@ async fn the_writer_answers_a_pipelining_stream_in_request_order() -> Result<()>
     let order = Arc::new(AckOrder::new());
     order.enable();
     for id in 1..=4 {
-        order.register(id, None);
+        order.register(id, false, None);
     }
     let (out_ack_tx, out_ack_rx) = mpsc::channel(8);
     let (ack_throttle_tx, _ack_throttle_rx) = watch::channel(false);
@@ -325,8 +325,8 @@ async fn a_lost_answer_closes_a_pipelining_stream() -> Result<()> {
     let (send, _recv) = connection.open_bi().await?;
     let order = Arc::new(AckOrder::new());
     order.enable();
-    order.register(1, None);
-    order.register(2, None);
+    order.register(1, false, None);
+    order.register(2, false, None);
     let (out_ack_tx, out_ack_rx) = mpsc::channel(8);
     let (ack_throttle_tx, _ack_throttle_rx) = watch::channel(false);
     let (cancel_tx, cancel_rx) = watch::channel(false);
@@ -351,6 +351,46 @@ async fn a_lost_answer_closes_a_pipelining_stream() -> Result<()> {
     timeout(Duration::from_secs(5), cancelled.wait_for(|cancel| *cancel))
         .await
         .context("the stalled stream was never closed")??;
+    timeout(Duration::from_secs(5), writer).await??;
+    Ok(())
+}
+
+/// **A lost plain answer closes a stream that answers on completion.** It
+/// holds no other answer back, but it keeps its window slot for good, and
+/// enough of them would stop the stream's reads with the client still waiting.
+#[tokio::test]
+async fn a_lost_answer_closes_a_stream_that_answers_on_completion() -> Result<()> {
+    let (connection, _reader) = answers_as_read().await?;
+    let (send, _recv) = connection.open_bi().await?;
+    let order = Arc::new(AckOrder::new());
+    order.enable();
+    order.answer_on_completion();
+    order.register(1, false, None);
+    order.register(2, false, None);
+    let (out_ack_tx, out_ack_rx) = mpsc::channel(8);
+    let (ack_throttle_tx, _ack_throttle_rx) = watch::channel(false);
+    let (cancel_tx, cancel_rx) = watch::channel(false);
+    let mut cancelled = cancel_tx.subscribe();
+    let writer = tokio::spawn(run_writer_loop(
+        send,
+        out_ack_rx,
+        Default::default(),
+        Arc::clone(&order),
+        Duration::from_millis(100),
+        Arc::new(std::sync::atomic::AtomicUsize::new(1)),
+        ack_throttle_tx,
+        cancel_tx,
+        cancel_rx,
+    ));
+    out_ack_tx
+        .send(Outgoing::Message(Message::PublishOk {
+            request_id: 2,
+            offset: None,
+        }))
+        .await?;
+    timeout(Duration::from_secs(5), cancelled.wait_for(|cancel| *cancel))
+        .await
+        .context("the stream with a lost answer was never closed")??;
     timeout(Duration::from_secs(5), writer).await??;
     Ok(())
 }
