@@ -4656,7 +4656,9 @@ Five rules keep an election from getting stuck:
   if its own copy already holds a newer ballot, whoever it names: the open
   takes the generation's ballot on its own copy, which refuses it. So its
   fence reports the generation refused at once instead of asking the set
-  (issue #1940).
+  (issue #1940). When that ballot names another node, this report carries
+  it too, so the leader is named past it in one step rather than one
+  generation per report.
 
 Elections need `joint_fence` finalized first, which the control plane allows
 once every serving broker offers `ELECTION`, names start holders and keeps a

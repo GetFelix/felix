@@ -651,10 +651,14 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                     Outcome::Fenced { .. } | Outcome::Lease { .. } => (None, None),
                 };
                 let refused = match &outcome {
-                    Outcome::Refused { promised_to, .. } => Some(RefusedGeneration {
+                    Outcome::Refused {
+                        promised_to,
+                        ballot,
+                        ..
+                    } => Some(RefusedGeneration {
                         generation,
                         promised_to: promised_to.clone(),
-                        ballot: 0,
+                        ballot: *ballot,
                     }),
                     Outcome::SetUnknown { .. } => Some(RefusedGeneration::set_unknown(generation)),
                     _ => None,

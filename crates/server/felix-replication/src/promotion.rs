@@ -104,6 +104,9 @@ pub enum Outcome {
     /// (#1730).
     Refused {
         promised_to: String,
+        /// A newer generation this broker's own copy accepted for another
+        /// node, which placement names it above; 0 when there is none.
+        ballot: u64,
         why: String,
         took: Vec<String>,
     },
@@ -292,10 +295,16 @@ pub(crate) async fn fence_shard_as<R: PeerRequester>(
             // for this generation promised to another node: as in
             // `keep_own_set`, that waits rather than rename past a set this
             // broker never fenced (#1872).
+            // A ballot naming another node is carried: a rename only one up
+            // would be refused again, one generation per report (#1951).
             let accepted = log.accepted_generation();
             if set.is_some() && candidacy.is_none() && accepted > route.generation {
+                let own = log
+                    .accepted_leader()
+                    .is_some_and(|leader| *leader == *local_node_id);
                 return Err(Outcome::Refused {
                     promised_to: String::new(),
+                    ballot: if own { 0 } else { accepted },
                     why: format!(
                         "this broker's own copy has accepted generation {accepted}, past {}",
                         route.generation
@@ -675,6 +684,7 @@ async fn fence_log<R: PeerRequester>(
                     }
                     return Err(Outcome::Refused {
                         promised_to: promised_away[0].1.clone(),
+                        ballot: 0,
                         why,
                         took: took(&answered),
                     });
@@ -692,6 +702,7 @@ async fn fence_log<R: PeerRequester>(
             {
                 return Err(Outcome::Refused {
                     promised_to: String::new(),
+                    ballot: 0,
                     why: format!("{node_id} has accepted a newer generation: {}", err.detail),
                     took: took(&answered),
                 });
@@ -776,6 +787,7 @@ async fn fence_log<R: PeerRequester>(
         if let Some((_, promised_to)) = promised_away.first().filter(|_| explained) {
             return Err(Outcome::Refused {
                 promised_to: promised_to.clone(),
+                ballot: 0,
                 why,
                 took: took(&answered),
             });
