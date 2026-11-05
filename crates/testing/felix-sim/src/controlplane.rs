@@ -41,9 +41,9 @@ use axum::http::{Method, Request, header};
 use felix_common::fleet;
 use felix_controlplane_service::api::readiness::{AlwaysReady, Readiness};
 use felix_controlplane_service::api::types::{
-    FeatureFlags, FleetFeaturesResponse, FleetFinalizeResponse, NamespaceCreateRequest,
-    NodeRegistrationRequest, Region, ShardAssignmentSnapshotResponse, StreamCreateRequest,
-    TenantCreateRequest,
+    CacheCreateRequest, FeatureFlags, FleetFeaturesResponse, FleetFinalizeResponse,
+    NamespaceCreateRequest, NodeRegistrationRequest, Region, ShardAssignmentSnapshotResponse,
+    StreamCreateRequest, TenantCreateRequest,
 };
 use felix_controlplane_service::api::{AppState, build_router};
 use felix_controlplane_service::auth::felix_token::{CONTROLPLANE_AUDIENCE, mint_token_for};
@@ -459,6 +459,37 @@ impl SimControlPlane {
         response.json()
     }
 
+    /// Create a cache with quorum acknowledgement, `shards` shards each held
+    /// by `replication_factor` brokers.
+    pub async fn create_quorum_cache(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        shards: u32,
+        replication_factor: u32,
+    ) -> Result<()> {
+        let body = CacheCreateRequest {
+            cache: cache.to_string(),
+            display_name: cache.to_string(),
+            shards,
+            replication_factor,
+            consistency: ConsistencyLevel::Quorum,
+        };
+        let response = self
+            .as_tenant(
+                tenant_id,
+                Method::POST,
+                &format!("/v1/tenants/{tenant_id}/namespaces/{namespace}/caches"),
+                Some(serde_json::to_value(body)?),
+            )
+            .await?;
+        if !response.status.is_success() {
+            bail!("create cache: {} {}", response.status, response.text());
+        }
+        Ok(())
+    }
+
     /// A request carrying a token for `tenant_id`, which the router checks
     /// against that tenant's own keys.
     async fn as_tenant(
@@ -485,6 +516,7 @@ impl SimControlPlane {
                     [
                         format!("ns.manage:tenant:{tenant_id}"),
                         format!("stream.manage:tenant:{tenant_id}"),
+                        format!("cache.manage:tenant:{tenant_id}"),
                     ]
                     .to_vec(),
                     TOKEN_TTL,
@@ -500,8 +532,23 @@ impl SimControlPlane {
         self.send(method, path, body, &token).await
     }
 
-    /// Finalize a fleet feature as an operator would.
+    /// Finalize a fleet feature as an operator would. A feature that is only
+    /// used alongside others is refused until those are enabled; they are
+    /// finalized first.
     pub async fn finalize_feature(&self, feature: &str) -> Result<FleetFinalizeResponse> {
+        let preview = self
+            .request(
+                Method::POST,
+                &format!("/v1/fleet/features/{feature}/finalize?dry_run=true"),
+                None,
+            )
+            .await?;
+        if preview.status.is_success() {
+            let preview: FleetFinalizeResponse = preview.json()?;
+            for required in &preview.requires {
+                Box::pin(self.finalize_feature(required)).await?;
+            }
+        }
         let response = self
             .request(
                 Method::POST,
@@ -519,8 +566,8 @@ impl SimControlPlane {
         response.json()
     }
 
-    /// Finalize `joint_fence`, then `replica_election`, once every serving
-    /// broker has registered with [`broker_features`].
+    /// Finalize `joint_fence`, then `replica_election`, and what they need,
+    /// once every serving broker has registered with [`broker_features`].
     pub async fn finalize_election(&self) -> Result<()> {
         self.finalize_feature(fleet::JOINT_FENCE.name()).await?;
         self.finalize_feature(fleet::REPLICA_ELECTION.name())

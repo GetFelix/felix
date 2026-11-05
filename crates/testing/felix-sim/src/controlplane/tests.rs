@@ -1,4 +1,3 @@
-use std::cell::Cell;
 use std::future::Future;
 
 use felix_controlplane_service::api::types::{NodeHeartbeatRequest, NodeRegistrationResponse};
@@ -6,18 +5,8 @@ use tokio::time::Instant;
 
 use super::*;
 
-thread_local! {
-    static START: Cell<Option<Instant>> = const { Cell::new(None) };
-}
-
-/// Virtual time since this test's runtime started.
-fn elapsed() -> Duration {
-    START.with(|start| start.get().map_or(Duration::ZERO, |at| at.elapsed()))
-}
-
 async fn control_plane() -> SimControlPlane {
-    START.with(|start| start.set(Some(Instant::now())));
-    felix_common::clock::sim::install(elapsed);
+    crate::clock::install();
     SimControlPlane::new(CpConfig::default()).await.unwrap()
 }
 

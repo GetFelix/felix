@@ -13,6 +13,7 @@ publish = false
 
 [dependencies]
 anyhow = { workspace = true }
+async-trait = { workspace = true }
 axum = { workspace = true }
 bytes = { workspace = true }
 felix-broker = { path = "../../server/felix-broker" }
@@ -28,12 +29,14 @@ parking_lot = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
-tokio = { workspace = true }
+# `test-util` for the paused clock a run is built on.
+tokio = { workspace = true, features = ["test-util"] }
+tokio-util = { workspace = true }
 tracing = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
 
 [dev-dependencies]
-async-trait = { workspace = true }
+tracing-subscriber = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 
 [lints]

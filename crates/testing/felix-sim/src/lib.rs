@@ -5,8 +5,25 @@
 //! a real cluster (a partition, a lost answer, a crash mid-request) can be
 //! injected from a seed and replayed. See `docs/simulation.md`.
 //!
+//! The pieces, bottom up:
+//!
 //! - [`net`]: the in-memory peer network.
 //! - [`controlplane`]: the real control plane in process, with faults.
+//! - [`link`]: one broker's path to the control plane, which a fault can cut.
+//! - [`cluster`]: three to five real brokers, the control plane and the
+//!   network on one clock.
+//! - [`nemesis`]: the faults, drawn from the seed.
+//! - [`client`]: logical clients, and the history they record.
+//! - [`check`]: checks on the live cluster, and how to add one.
+//! - [`run`]: one seed start to finish. [`run::run_seed`] is the entry point;
+//!   `tests/seeds.rs` shows it used.
 
+pub mod check;
+pub mod client;
+mod clock;
+pub mod cluster;
 pub mod controlplane;
+pub mod link;
+pub mod nemesis;
 pub mod net;
+pub mod run;

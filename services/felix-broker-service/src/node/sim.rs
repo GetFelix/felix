@@ -70,7 +70,7 @@ impl CatalogFetch for FetcherSource {
 #[derive(Debug, Clone)]
 pub struct SimBrokerConfig {
     pub node_id: String,
-    /// Durable storage root. Opened with `FsyncMode::None`.
+    /// Durable storage root.
     pub data_dir: PathBuf,
     pub region: String,
     /// The address peers are told to reach this broker at. Never bound.
@@ -80,6 +80,11 @@ pub struct SimBrokerConfig {
     pub features: BTreeSet<String>,
     /// How often the control plane is polled (`FELIX_CONTROLPLANE_SYNC_INTERVAL_MS`).
     pub sync_interval: Duration,
+    /// How the logs sync. Under anything but `OnCommit` a restart that finds
+    /// the last run did not stop cleanly takes a new storage id on a platform
+    /// that cannot sync the data directory's filesystem after a crash (all but
+    /// Linux), which makes peers copy the whole log again.
+    pub fsync_mode: felix_storage::log::FsyncMode,
 }
 
 impl SimBrokerConfig {
@@ -93,6 +98,7 @@ impl SimBrokerConfig {
             sync_interval: Duration::from_millis(
                 BrokerConfig::default().controlplane_sync_interval_ms,
             ),
+            fsync_mode: felix_storage::log::FsyncMode::None,
             node_id,
             data_dir: data_dir.into(),
         }
@@ -129,7 +135,7 @@ impl SimBrokerConfig {
         DurableStorageConfig {
             root: self.data_dir.clone(),
             log: felix_storage::log::LogConfig {
-                fsync_mode: felix_storage::log::FsyncMode::None,
+                fsync_mode: self.fsync_mode,
                 ..Default::default()
             },
             offload_dir: None,

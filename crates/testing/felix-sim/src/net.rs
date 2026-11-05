@@ -39,7 +39,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use felix_replication::peer::config::PeerTransportConfig;
-use felix_replication::peer::identity::PeerIdentity;
+use felix_replication::peer::identity::{Incarnation, PeerIdentity};
 use felix_replication::peer::pool::{
     PeerError, PeerRequester, request_timeout, required_capability,
 };
@@ -104,6 +104,18 @@ impl SimNet {
             node.alive = false;
             node.known.clear();
             node.died.send_replace(true);
+        }
+    }
+
+    /// Change the incarnation `peer`'s node announces in a handshake from now
+    /// on, as a broker does once it registers. Ignored once `peer` has ended.
+    pub fn set_identity(&self, peer: &SimPeer, incarnation: Incarnation) {
+        let mut state = self.inner.state.lock();
+        if let Some(node) = state.nodes.get_mut(&peer.node_id)
+            && node.alive
+            && node.incarnation == peer.incarnation
+        {
+            node.identity.incarnation = incarnation;
         }
     }
 
