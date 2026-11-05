@@ -80,6 +80,18 @@ pub struct LeaseState {
     /// Signalled when the lease goes from held to lapsed, for whatever has to
     /// stop when it does: the readers of the shards this broker led.
     lapsed: tokio::sync::Notify,
+    /// Whether an assignment watch confirms this broker's routes, so a
+    /// surrender can wait for it. See [`LeaseState::follow_routes`].
+    routes_followed: AtomicBool,
+    /// Set by a surrender while routes are followed: no renewal counts until
+    /// the routes are confirmed newer than it.
+    routes_unconfirmed: AtomicBool,
+    /// When the first renewal after the surrender arrived. Routes fetched by a
+    /// request that started after it confirm the lease.
+    confirm_after: parking_lot::Mutex<Option<tokio::time::Instant>>,
+    /// Signalled when a renewal is waiting on the routes, so the watch asks at
+    /// once instead of finishing a long-poll.
+    routes_wanted: tokio::sync::Notify,
 }
 
 impl LeaseState {
@@ -106,6 +118,50 @@ impl LeaseState {
             clock,
             usable_millis: AtomicU64::new(usable_millis(lease)),
             lapsed: tokio::sync::Notify::new(),
+            routes_followed: AtomicBool::new(false),
+            routes_unconfirmed: AtomicBool::new(false),
+            confirm_after: parking_lot::Mutex::new(None),
+            routes_wanted: tokio::sync::Notify::new(),
+        }
+    }
+
+    /// Hold every renewal after a surrender until [`LeaseState::routes_current`]
+    /// confirms the routes. Called by the assignment watch when it starts.
+    ///
+    /// A surrender means the control plane marked this broker down, and may
+    /// have moved its shards meanwhile. Renewing at once would bring back the
+    /// authority to serve them on routes from before the move, which can lag
+    /// for as long as a long-poll lost in a partition takes to time out (#1955).
+    pub(crate) fn follow_routes(&self) {
+        self.routes_followed.store(true, Ordering::Release);
+    }
+
+    /// Resolves when a renewal is waiting on the routes. One waiter, the watch.
+    pub(crate) fn routes_wanted(&self) -> tokio::sync::futures::Notified<'_> {
+        self.routes_wanted.notified()
+    }
+
+    /// Whether a renewal is waiting for the routes to be confirmed.
+    pub(crate) fn wants_routes(&self) -> bool {
+        self.routes_unconfirmed.load(Ordering::Acquire) && self.confirm_after.lock().is_some()
+    }
+
+    /// The routes in use were built from assignments fetched by a request that
+    /// started at `started`. Confirms a renewal that arrived before it.
+    pub(crate) fn routes_current(&self, started: tokio::time::Instant) {
+        if !self.routes_unconfirmed.load(Ordering::Acquire) {
+            return;
+        }
+        let mut after = self.confirm_after.lock();
+        if after.is_some_and(|after| started >= after) {
+            *after = None;
+            self.routes_unconfirmed.store(false, Ordering::Release);
+            if !self.remaining().is_zero() {
+                self.looks_valid.store(true, Ordering::Release);
+            }
+            tracing::info!(
+                "routes confirmed since the control plane marked this broker down; serving again"
+            );
         }
     }
 
@@ -148,6 +204,16 @@ impl LeaseState {
         // out-of-order one must not move the anchor backwards and shorten the
         // lease.
         self.renewed_at_millis.fetch_max(stamp, Ordering::Release);
+        if self.routes_unconfirmed.load(Ordering::Acquire) {
+            let mut after = self.confirm_after.lock();
+            // Anchored once: moving it on every heartbeat could outrun a watch
+            // slower than the heartbeat interval for good.
+            if after.is_none() {
+                *after = Some(tokio::time::Instant::now());
+                self.routes_wanted.notify_one();
+            }
+            return;
+        }
         self.looks_valid.store(true, Ordering::Release);
     }
 
@@ -163,6 +229,10 @@ impl LeaseState {
     /// For a broker that has been told it is no longer a member: it should stop
     /// serving now rather than run out the remaining margin.
     pub fn surrender(&self) {
+        if self.routes_followed.load(Ordering::Acquire) {
+            *self.confirm_after.lock() = None;
+            self.routes_unconfirmed.store(true, Ordering::Release);
+        }
         let held = self.looks_valid.swap(false, Ordering::AcqRel);
         self.renewed_at_millis.store(0, Ordering::Release);
         if held {
@@ -189,7 +259,7 @@ impl LeaseState {
     /// or was never held.
     pub fn remaining(&self) -> Duration {
         let stamp = self.renewed_at_millis.load(Ordering::Acquire);
-        if stamp == 0 {
+        if stamp == 0 || self.routes_unconfirmed.load(Ordering::Acquire) {
             return Duration::ZERO;
         }
         let elapsed = self.now().saturating_duration_since(self.base).as_millis() as u64 + 1;

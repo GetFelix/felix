@@ -116,6 +116,54 @@ async fn surrender_takes_effect_at_once() {
     );
 }
 
+/// A broker marked down may have lost its shards while it was away, so once
+/// its routes are followed a renewal after the surrender serves nothing until
+/// routes fetched after that renewal are in use (#1955).
+#[tokio::test(start_paused = true)]
+async fn a_renewal_after_a_surrender_waits_for_newer_routes() {
+    let lease = LeaseState::on_tokio_clock(LEASE);
+    lease.follow_routes();
+    lease.renew();
+    assert!(
+        lease.is_valid_now(),
+        "a first renewal needs no confirmation"
+    );
+
+    lease.surrender();
+    let fetched_before = tokio::time::Instant::now();
+    tokio::time::advance(Duration::from_millis(10)).await;
+    lease.renew();
+    assert!(lease.wants_routes());
+    assert!(!lease.looks_valid());
+    assert!(
+        !lease.is_valid_now(),
+        "renewed on routes from before the move"
+    );
+
+    lease.routes_current(fetched_before);
+    assert!(
+        !lease.is_valid_now(),
+        "routes older than the renewal confirmed it"
+    );
+
+    tokio::time::advance(Duration::from_millis(10)).await;
+    lease.routes_current(tokio::time::Instant::now());
+    assert!(!lease.wants_routes());
+    assert!(lease.looks_valid());
+    assert!(lease.is_valid_now());
+}
+
+/// Without a watch to confirm routes, a surrender ends at the next renewal.
+#[tokio::test(start_paused = true)]
+async fn without_followed_routes_a_renewal_after_a_surrender_serves_at_once() {
+    let lease = LeaseState::on_tokio_clock(LEASE);
+    lease.renew();
+    lease.surrender();
+    lease.renew();
+    assert!(!lease.wants_routes());
+    assert!(lease.is_valid_now());
+}
+
 /// The refresh task moves the cached flag to false on its own, so the admission
 /// path stops accepting without needing a publish to discover it.
 #[tokio::test(start_paused = true)]

@@ -851,7 +851,7 @@ pub fn spawn_feed(
             let joint = joint_fence
                 .as_ref()
                 .is_some_and(|fleet| fleet.supports(felix_common::fleet::JOINT_FENCE));
-            let (assignments, renewals, priors) = {
+            let (assignments, renewals, priors, as_of) = {
                 let owned = ownership.read().await;
                 (
                     owned.assignments().clone(),
@@ -861,6 +861,7 @@ pub fn spawn_feed(
                     } else {
                         HashMap::new()
                     },
+                    owned.as_of(),
                 )
             };
             let assignments = match &elections {
@@ -923,6 +924,11 @@ pub fn spawn_feed(
                 servable,
             );
             crate::shards::watch::metrics::set_catalog_nodes(catalog.len());
+            // After the publish, so a lease held back for the routes serves
+            // only on routes at least as new as the renewal.
+            if let (Some(lease), Some(as_of)) = (ingress.fence().lease(), as_of) {
+                lease.routes_current(as_of);
+            }
             if woken {
                 routes_changed.notify_one();
             }

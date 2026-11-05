@@ -391,6 +391,7 @@ async fn an_answer_from_behind_the_checkpoint_rolls_nothing_back() {
         Arc::clone(&ownership),
         Arc::new(Notify::new()),
         Duration::from_millis(10),
+        None,
         shutdown.clone(),
     ));
 
@@ -523,4 +524,109 @@ fn an_unmarked_snapshot_item_is_not_first() {
     let mut owned = ShardOwnership::default();
     owned.reset(vec![item(None).assignment]);
     assert_eq!(prior_leader(&owned), None);
+}
+
+/// A renewal after a surrender waits for routes newer than it (#1955). The
+/// watch is mid long-poll, which the control plane holds as one lost in a
+/// partition would be; it asks again at once without the hold, and its answer
+/// moves the shard and confirms the lease.
+#[tokio::test]
+async fn a_renewal_after_a_surrender_has_the_watch_ask_again_at_once() {
+    use axum::extract::Query;
+    use axum::{Json, Router, routing::get};
+
+    let router = Router::new()
+        .route(
+            "/v1/shard-assignments/snapshot",
+            get(|| async {
+                Json(serde_json::json!({
+                    "items": [{
+                        "tenant_id": "t1", "namespace": "ns", "stream": "orders",
+                        "shard": 0, "leader": "b1", "generation": 2, "state": "active"
+                    }],
+                    "next_seq": 10
+                }))
+            }),
+        )
+        .route(
+            "/v1/shard-assignments/changes",
+            get(|Query(query): Query<HashMap<String, String>>| async move {
+                if query.get("wait_ms").map(String::as_str) != Some("0") {
+                    std::future::pending::<()>().await;
+                }
+                Json(serde_json::json!({
+                    "items": [{
+                        "seq": 10,
+                        "key": { "tenant_id": "t1", "namespace": "ns", "stream": "orders", "shard": 0 },
+                        "assignment": {
+                            "tenant_id": "t1", "namespace": "ns", "stream": "orders",
+                            "shard": 0, "leader": "b2", "generation": 3, "state": "active"
+                        }
+                    }],
+                    "next_seq": 11
+                }))
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+
+    let lease = Arc::new(crate::cluster::lease::LeaseState::new(Duration::from_secs(
+        60,
+    )));
+    let ownership = Arc::new(RwLock::new(ShardOwnership::default()));
+    let shutdown = CancellationToken::new();
+    let watch = tokio::spawn(run(
+        reqwest::Client::new(),
+        format!("http://{addr}"),
+        None,
+        Arc::clone(&ownership),
+        Arc::new(Notify::new()),
+        Duration::from_millis(10),
+        Some(Arc::clone(&lease)),
+        shutdown.clone(),
+    ));
+    let seeded = async {
+        while ownership.read().await.get(&key(0)).is_none() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(5), seeded)
+        .await
+        .expect("the watch never seeded");
+    // Let the watch settle into its held long-poll.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    lease.renew();
+    lease.surrender();
+    lease.renew();
+    let as_of = ownership.read().await.as_of();
+    lease.routes_current(as_of.expect("seeded"));
+    assert!(
+        !lease.is_valid_now(),
+        "routes from before the renewal confirmed it"
+    );
+
+    let moved = async {
+        while ownership.read().await.get(&key(0)).map(|a| a.generation) != Some(3) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(5), moved)
+        .await
+        .expect("the watch kept waiting on its held poll");
+    let as_of = ownership.read().await.as_of();
+    lease.routes_current(as_of.expect("answered"));
+    assert!(
+        lease.is_valid_now(),
+        "the newer routes did not confirm the lease"
+    );
+
+    shutdown.cancel();
+    watch.await.expect("watch");
+    server.abort();
 }

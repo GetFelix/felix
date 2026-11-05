@@ -392,6 +392,7 @@ pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
                 Arc::clone(ownership),
                 Arc::clone(&assignments_changed),
                 Duration::from_millis(config.controlplane_sync_interval_ms),
+                ingress.fence().lease().cloned(),
                 sync_shutdown.clone(),
             ));
             let feed = shard_routing::spawn_feed(
