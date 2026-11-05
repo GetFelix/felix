@@ -740,12 +740,17 @@ CpDown == FALSE
 \* broker, not its shards. `ShardSuspicion` adds the per-shard trigger: it
 \* also stands when that shard's leader makes no progress, which with writes
 \* always pending is a leader it does not hear serving (`Hears`).
+\* `SelfSuspicion`: under `ShardSuspicion`, a broker named the shard's leader
+\* that holds no generation for it (its open refused for its own newer
+\* ballot) stands too. The code never stands for a shard
+\* whose route names its own node (`follows` in election/candidate.rs).
 \* `PreVoteBounded`: under `StandBehindBallot`, a broker still fencing
 \* refuses a pre-vote only while its fence can still complete; a refusal
 \* that outlasts its bound is one whose fence cannot.
 CpStops == FALSE
 BrokerSuspicion == FALSE
 ShardSuspicion == FALSE
+SelfSuspicion == FALSE
 PreVoteBounded == FALSE
 \* `WithdrawsStuck`: under `Withdraws`, a candidate gives its standing up only
 \* once its fence cannot complete. That assumes the stand timeout outlasts a
@@ -2410,6 +2415,7 @@ ElectStep(f) ==
     /\ BrokerSuspicion => bgen[f] = 0
     /\ BrokerSuspicion => \/ Followed(f) \subseteq halted
                           \/ ShardSuspicion /\ f \notin Followed(f) /\ ~Hears(f)
+                          \/ SelfSuspicion /\ Followed(f) = {f} /\ bgen[f] = 0 /\ ~Hears(f)
     /\ StandsAboveKeptSet => setGen[f] <= promised[f] + 1
     /\ ~WipeWaits(f) /\ WipeFloor(f, f, promised[f] + 1) /\ ~NonVoter(f)
     \* Pre-vote: a majority of its set, itself included, no longer hears a leader.
@@ -3421,7 +3427,10 @@ Refused(left, stillFencing) ==
 
 RenameDue ==
     LET left == { m \in FenceMembers(leader) :
-                    ~PromisedAway(m, leader, gen) /\ ~(OverlayRefused /\ promised[m] > gen) }
+                    /\ ~PromisedAway(m, leader, gen)
+                    \* The leader's own log answers through `keep_own_set`, not
+                    \* `check_role`: that is `OwnBallotRefused`.
+                    /\ ~(OverlayRefused /\ m /= leader /\ promised[m] > gen) }
         stillFencing == bgen[leader] = gen /\ fencing[leader]
         open == bgen[leader] = gen /\ ~fencing[leader]
     IN /\ Renames
