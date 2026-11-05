@@ -1418,10 +1418,8 @@ elected leader waits for the lease until the control plane is back (issue
     any assignment, so a planner acting on an older read loses. Otherwise it
     names the leader on the set it was elected on (in the control plane's
     set, at the next generation with the control plane's set pending from
-    it), or, while a change is pending or a copy joins, records the
-    generation only. That includes a leader the control plane already
-    names: elected on another set, it is reissued, not kept on the
-    recorded set. It issues every later generation above it. It
+    it, even when it is the leader the control plane already names). While
+    a change is pending or a copy joins, it records the generation only. It issues every later generation above it. It
     never reissues a generation at or below one it was told was elected. A
     leader on the old set is passed over while a change is pending: the new
     set's leader, carrying a newer set generation, deposes it. If the

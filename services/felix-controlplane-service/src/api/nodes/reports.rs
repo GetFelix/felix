@@ -580,8 +580,8 @@ async fn reissue_past_collision(
                 generation = written.generation,
                 stream = %key.stream,
                 shard = key.shard,
-                "an elected leader reported the generation this control plane named another \
-                 leader at; moved the shard to the next one",
+                "an elected leader reported a generation this control plane named another \
+                 leader or set at; moved the shard to the next one",
             );
             state.placement_wakes.request_pass();
             Ok(written)

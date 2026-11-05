@@ -705,11 +705,32 @@ impl ShardAssignment {
     /// any set. The rest is as [`Self::adopting`], and so is an elected set
     /// naming a node `known` (the catalog) does not hold, which no write can
     /// name. Applied under Raft only by members at the level that knows it
-    /// (`ELECTED_SET_LEVEL`).
+    /// (`OWN_LEADER_SET_LEVEL`).
     pub fn adopting_elected_set(
         &self,
         elected: &ElectedLeader,
         known: &dyn Fn(&str) -> bool,
+    ) -> Option<ShardAssignment> {
+        self.adopting_on_elected_set(elected, known, true)
+    }
+
+    /// [`Self::adopting_elected_set`] as Raft members at `ELECTED_SET_LEVEL`
+    /// apply it: this set's own leader elected on another set has only its
+    /// generation taken. Kept so those members apply the same entries the
+    /// same way until the group reaches the next level.
+    pub(crate) fn adopting_elected_set_keeping_own_leader(
+        &self,
+        elected: &ElectedLeader,
+        known: &dyn Fn(&str) -> bool,
+    ) -> Option<ShardAssignment> {
+        self.adopting_on_elected_set(elected, known, false)
+    }
+
+    fn adopting_on_elected_set(
+        &self,
+        elected: &ElectedLeader,
+        known: &dyn Fn(&str) -> bool,
+        own_leader_set: bool,
     ) -> Option<ShardAssignment> {
         let adopted = self.adopting(elected)?;
         let elected_set: BTreeSet<&String> = std::iter::once(&elected.leader)
@@ -731,7 +752,12 @@ impl ShardAssignment {
         // Not `adopted.leader == elected.leader`: when this set's own leader
         // was elected on another set, that holds with only the generation
         // taken, and the record would then differ from the set it opened on.
-        if self.names_elected_set(elected)
+        let took_leader = if own_leader_set {
+            self.names_elected_set(elected)
+        } else {
+            adopted.leader == elected.leader
+        };
+        if took_leader
             || self.pending_set.is_some()
             || self.joining.is_some()
             || !known(&elected.leader)

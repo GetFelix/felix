@@ -199,8 +199,17 @@ impl InMemoryStore {
         expected_generation: u64,
         elected: &crate::model::ElectedLeader,
         elected_set: bool,
+        own_leader_set: bool,
     ) -> StoreResult<crate::store::AssignmentWrite> {
-        shards::adopt_elected_leader(self, key, expected_generation, elected, elected_set).await
+        shards::adopt_elected_leader(
+            self,
+            key,
+            expected_generation,
+            elected,
+            elected_set,
+            own_leader_set,
+        )
+        .await
     }
 
     /// [`ControlPlaneStore::create_stream`], with incarnations decided by `decide`.
@@ -645,7 +654,7 @@ impl ControlPlaneStore for InMemoryStore {
         expected_generation: u64,
         elected: crate::model::ElectedLeader,
     ) -> StoreResult<crate::store::AssignmentWrite> {
-        shards::adopt_elected_leader(self, key, expected_generation, &elected, true).await
+        shards::adopt_elected_leader(self, key, expected_generation, &elected, true, true).await
     }
 
     async fn get_shard_assignment(&self, key: &ShardKey) -> StoreResult<ShardAssignment> {

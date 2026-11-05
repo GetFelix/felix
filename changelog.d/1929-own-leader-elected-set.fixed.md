@@ -6,3 +6,4 @@
   up, leaving the elected set for the recorded one, as for any other leader
   elected on another set. A report at the assignment's own generation from
   the named leader on another set is handled the same way.
+  Under Raft the adoption change waits for metadata level 27 on every member.
