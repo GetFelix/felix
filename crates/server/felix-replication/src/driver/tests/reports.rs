@@ -1139,10 +1139,14 @@ async fn a_fence_met_by_a_newer_ballot_reports_the_refusal() {
     );
 }
 
-/// The first report from a driver still fencing `key()` at generation 4,
+/// The first refusal reported within `within` by a driver still fencing `key()` at generation 4,
 /// with every follower taking the fence, its own copy holding a ballot at
 /// `ballot` from `ballot_leader`.
-async fn fence_refusal(ballot: u64, ballot_leader: &str) -> Option<ShardReplicaStatus> {
+async fn fence_refusal(
+    ballot: u64,
+    ballot_leader: &str,
+    within: Duration,
+) -> Option<ShardReplicaStatus> {
     let (broker, _dir) = leader_with(3).await;
     let log = broker
         .shard_log_for(
@@ -1175,7 +1179,22 @@ async fn fence_refusal(ballot: u64, ballot_leader: &str) -> Option<ShardReplicaS
         MoveThrottle::unlimited(),
         shutdown.clone(),
     );
-    let report = first_report(&received, Duration::from_secs(5)).await;
+    let report = tokio::time::timeout(within, async {
+        loop {
+            let found = received
+                .lock()
+                .expect("lock")
+                .iter()
+                .find(|report| report.refused.is_some())
+                .cloned();
+            if let Some(report) = found {
+                return report;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .ok();
     shutdown.cancel();
     driver.stop().await;
     report
@@ -1186,21 +1205,29 @@ async fn fence_refusal(ballot: u64, ballot_leader: &str) -> Option<ShardReplicaS
 /// standing here that was given up leaves that promise, and so does one
 /// this broker answered elsewhere; every fence a majority takes then stays pending,
 /// since the open cannot take the generation's ballot on this copy, and the
-/// control plane waits on silence. A ballot naming another node is carried,
-/// so placement names this broker past it in one step rather than one
-/// generation per report (#1951).
+/// control plane waits on silence.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_fence_below_its_own_ballot_reports_the_refusal() {
-    for (leader, refused) in [
-        (LOCAL, RefusedGeneration::set_unknown(4)),
-        ("broker-b", RefusedGeneration::above(4, 7)),
-    ] {
-        let report = fence_refusal(7, leader)
-            .await
-            .expect("no report of the generation its own ballot left");
-        assert_eq!(report.generation, 4);
-        assert_eq!(report.refused, Some(refused));
-    }
+    let report = fence_refusal(7, LOCAL, Duration::from_secs(5))
+        .await
+        .expect("no report of the generation its own ballot left");
+    assert_eq!(report.generation, 4);
+    assert_eq!(report.refused, Some(RefusedGeneration::set_unknown(4)));
+}
+
+/// **A fence below another node's ballot reports it once it has lasted
+/// [`BALLOT_ELSEWHERE_FOR`], with the ballot** (#1951). Carried, placement
+/// names this broker past it in one step rather than one generation per
+/// report; held back, a standing that may yet open there is not deposed.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fence_below_another_ballot_reports_it_after_the_wait() {
+    let early = BALLOT_ELSEWHERE_FOR - Duration::from_millis(500);
+    assert_eq!(fence_refusal(7, "broker-b", early).await, None);
+    let report = fence_refusal(7, "broker-b", BALLOT_ELSEWHERE_FOR * 2)
+        .await
+        .expect("no report of the generation another node's ballot left");
+    assert_eq!(report.generation, 4);
+    assert_eq!(report.refused, Some(RefusedGeneration::above(4, 7)));
 }
 
 /// [`PromisedAwayFollowers`] that check sets, so a fence under

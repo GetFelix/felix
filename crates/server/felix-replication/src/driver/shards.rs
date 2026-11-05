@@ -1191,7 +1191,22 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             self.fill();
             return;
         };
-        state.fence_refused = refused.clone();
+        // Another node's ballot is held back as an open leader's is: its
+        // standing may yet open, and a rename past it would depose it.
+        let now = tokio::time::Instant::now();
+        let elsewhere = refused
+            .as_ref()
+            .map(|refused| refused.ballot)
+            .filter(|&b| b > 0);
+        state.ballot_above_since = elsewhere.map(|ballot| match state.ballot_above_since {
+            Some((seen, since)) if seen == (ballot, false) => (seen, since),
+            _ => ((ballot, false), now),
+        });
+        state.fence_refused = refused.filter(|_| {
+            state
+                .ballot_above_since
+                .is_none_or(|(_, since)| now.duration_since(since) >= super::BALLOT_ELSEWHERE_FOR)
+        });
         if let Some(next) = state.running.take() {
             state.held.append(&mut next.answered.lock());
         }
@@ -1231,6 +1246,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                 behind: false,
             },
         );
+        let refused = state.fence_refused.clone();
         if opened || std::mem::take(&mut state.again) {
             self.want(&key, true, false);
         }

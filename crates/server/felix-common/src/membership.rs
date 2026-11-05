@@ -216,7 +216,8 @@ pub struct RefusedGeneration {
     /// set already accepted a newer generation ([`Self::set_unknown`]).
     pub promised_to: String,
     /// A newer generation the broker's own copy accepted for another node,
-    /// whose standing never opened. Placement names the broker again above
+    /// reported once it has lasted long enough that its standing is taken
+    /// not to open. Placement names the broker again above
     /// it rather than one up, since a fence at the ballot's own generation
     /// finds that generation promised away and waits. 0, and omitted, when
     /// there is none, and from brokers that predate it.
