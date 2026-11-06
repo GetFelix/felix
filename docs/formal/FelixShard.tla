@@ -788,8 +788,19 @@ RefuseShortCopy == FALSE
 \* `OwnBallotLedBefore`: as before #2025, a ballot naming this broker that
 \* this process did not open at counts as one it led, its own candidacy's
 \* included.
+\* `UncleanLeads`: the restart may also hit a broker whose ballot names
+\* itself: one that led, or stood, with or without opening, or crashed with
+\* its candidacy recorded in memory but before its ballot was on disk (that
+\* restart is a follower's, as nothing of it reached disk). Its machine crash
+\* may cost it any suffix of its log. Its new process reads the ballot as a
+\* copy it led (`led_before`) and refuses until a leader ships to it.
+\* `UncleanForgetsLed`: that process does not, the unsafe rule.
 UncleanCrashes == 0
 OwnBallotLedBefore == FALSE
+UncleanLeads == FALSE
+UncleanForgetsLed == FALSE
+\* `VouchOnGeneration`: see `Vouch`.
+VouchOnGeneration == FALSE
 ShortCopyChecksSet == TRUE
 ShortCopyChecksKeys == TRUE
 FenceIdsSetOnly == FALSE
@@ -2627,7 +2638,8 @@ Followed(f) == IF ballot[f] \subseteq {f} THEN {leader} ELSE ballot[f]
 \* still take its generation.
 FenceStuck(b) ==
     LET can == { m \in FenceMembers(b) \ halted :
-                   IF m = b THEN promised[m] <= bgen[b] ELSE MayPromise(m, b, bgen[b]) }
+                   IF m = b THEN promised[m] <= bgen[b]
+                   ELSE MayPromise(m, b, bgen[b]) /\ ~Unvouched(m) }
     IN \/ ~LeaderMajority(b, can)
        \/ JointFence /\ ~MajorityOfOld(can, b)
 
@@ -2727,13 +2739,14 @@ Elect(f) == ElectBound(f) /\ ElectStep(f)
 \* Under `Backoff`, a candidate whose round failed gives it up and waits: the
 \* answers it has and those still possible make no majority. A member can no
 \* longer answer once it is down, promised past the candidate or hears a
-\* leader. It keeps what it promised.
+\* leader, or refuses from a copy its unclean start doubts (`Unvouched`). It
+\* keeps what it promised.
 GiveUpRound(b) ==
     /\ Backoff
     /\ fencing[b] /\ bgen[b] > 0 /\ Candidate(b)
     /\ LET can == answered[b] \cup {b} \cup
                   { m \in FenceMembers(b) \ halted :
-                      MayPromise(m, b, bgen[b]) /\ ~(PreVote /\ Hears(m)) }
+                      MayPromise(m, b, bgen[b]) /\ ~(PreVote /\ Hears(m)) /\ ~Unvouched(m) }
        IN \/ ~LeaderMajority(b, can)
           \/ JointFence /\ ~MajorityOfOld(can, b)
     /\ bgen' = [bgen EXCEPT ![b] = 0]
@@ -4053,17 +4066,33 @@ Crash(f) ==
 \* copy under its new identity and a leader caught it up, which vouches for
 \* it, before the control plane stopped. Its log is the one it had, and its
 \* ballot names the leader that shipped. The process still knows it started
-\* uncleanly.
+\* uncleanly. Under `UncleanLeads` it may instead be a broker whose ballot
+\* names itself, which leads nothing, answers nothing and stands for nothing
+\* until a leader ships to it, so no re-admission is needed first.
 UncleanRestart(f) ==
     /\ Elections > 0
     /\ Cardinality({ m \in Brokers : doubt[m] /= "clean" }) < UncleanCrashes
-    /\ doubt[f] = "clean" /\ f \notin halted /\ bgen[f] = 0 /\ ballot[f] /= {f}
+    /\ doubt[f] = "clean" /\ f \notin halted
+    /\ IF ballot[f] = {f}
+       THEN \* Led or stood: the ballot on disk names it, which its new
+            \* process reads as the copy it led.
+            /\ UncleanLeads
+            /\ \E k \in 0..Len(log[f]) :
+                  /\ log' = [log EXCEPT ![f] = SubSeq(@, 1, k)]
+                  /\ hwm' = [hwm EXCEPT ![f] = IF @ > k THEN k ELSE @]
+            /\ bgen' = [bgen EXCEPT ![f] = 0]
+            /\ fencing' = [fencing EXCEPT ![f] = FALSE]
+            /\ queued' = [queued EXCEPT ![f] = 0]
+            /\ pending' = [pending EXCEPT ![f] = 0]
+            /\ doubt' = [doubt EXCEPT ![f] = IF UncleanForgetsLed THEN "vouched" ELSE "led"]
+       ELSE /\ bgen[f] = 0
+            /\ doubt' = [doubt EXCEPT ![f] = "vouched"]
+            /\ UNCHANGED << log, hwm, bgen, fencing, queued, pending >>
     /\ sid' = [sid EXCEPT ![f] = @ + 1]
     /\ registered' = [registered EXCEPT ![f] = sid[f] + 2]
     /\ inc' = [inc EXCEPT ![f] = @ + 1]
-    /\ doubt' = [doubt EXCEPT ![f] = "vouched"]
-    /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
-                    hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
+    /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bexpiry,
+                    hbOut, hbAt, halted, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, fenceVars, seen, seenInc, wipes, checked, restarting,
                     expect, inherited, leftDirty, gaveUp, fenceIds >>
 
@@ -4084,9 +4113,18 @@ RefuseOpen(b) ==
     /\ UNCHANGED handoffVars
 
 \* A batch stored from a leader vouches for the copy (`UncleanStart::vouch`).
-Vouch(f) == doubt' = IF doubt[f] = "led" THEN [doubt EXCEPT ![f] = "vouched"] ELSE doubt
+\* Under `VouchOnGeneration` only one that leaves the copy holding a record
+\* of that leader's generation: the leader writes its start record after
+\* every record it holds, so the copy then holds everything acknowledged
+\* before the crash. Without it, a batch that brings back only part of a
+\* lost suffix vouches for a copy still short of it.
+Vouch(b, f) ==
+    doubt' = IF /\ doubt[f] = "led"
+                /\ VouchOnGeneration => \E i \in 1..Len(log'[f]) : log'[f][i].g = bgen[b]
+             THEN [doubt EXCEPT ![f] = "vouched"]
+             ELSE doubt
 ShipStep(b, f) ==
-    Ship(b, f) /\ Vouch(f) /\ UNCHANGED << counterVars, heard, idVarsButDoubt, named, refusalVars, wipeVars >>
+    Ship(b, f) /\ Vouch(b, f) /\ UNCHANGED << counterVars, heard, idVarsButDoubt, named, refusalVars, wipeVars >>
 
 \* `f`, back from a process crash that kept its identity, stops cleanly and
 \* starts again in the same boot. The stop syncs what this run wrote and
