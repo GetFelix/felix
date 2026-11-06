@@ -14,6 +14,13 @@ CONSTANTS a, b, c
 \* record first, and shipped that nowhere either. Starting b stepped down
 \* keeps it from shipping its log late, which Figure 8 does not need and
 \* which multiplies the states a pass has to cover.
+\* Under `AckWaits`, the clients of x and y are still waiting on the brokers
+\* that wrote them, each at its generation and offset.
+SeededWaits ==
+    IF AckWaits
+    THEN LET at == IF StartRecord THEN 2 ELSE 1
+         IN {<< 1, a, 1, at >>, << 2, b, 2, at >>}
+    ELSE {}
 SeededInit ==
     /\ now = 0
     /\ clock = [m \in Brokers |-> 0]
@@ -61,6 +68,7 @@ SeededInit ==
     /\ setGen = [m \in Brokers |-> IF SetCheck THEN 1 ELSE 0]
     /\ oldSet = [m \in Brokers |-> {}]
     /\ ackGen = {}
+    /\ waits = SeededWaits
     /\ installed = {}
     /\ cpNext = {}
     /\ cpNextGen = 0
@@ -120,6 +128,7 @@ SeededCutOverInit ==
     /\ setGen = [m \in Brokers |-> IF SetCheck THEN 1 ELSE 0]
     /\ oldSet = [m \in Brokers |-> {}]
     /\ ackGen = {}
+    /\ waits = SeededWaits
     /\ installed = {}
     /\ cpNext = {}
     /\ cpNextGen = 0

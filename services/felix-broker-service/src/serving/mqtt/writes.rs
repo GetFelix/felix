@@ -206,10 +206,10 @@ impl<P: PeerRequester + Send + Sync + 'static> BrokerWrites<P> {
         deadline: Option<Instant>,
     ) -> Sent {
         let ingress = self.ingress.as_deref();
-        let permit = match dispatch_write(ingress, key).await {
+        let (permit, generation) = match dispatch_write(ingress, key).await {
             (Dispatch::Local { generation }, mut held) => {
                 match fence::enter_or_keep(&mut held, ingress, Some(key), generation) {
-                    Ok(permit) => permit,
+                    Ok(permit) => (permit, generation),
                     Err(_) => return Sent::Refused(Refusal::NotOwner),
                 }
             }
@@ -277,6 +277,7 @@ impl<P: PeerRequester + Send + Sync + 'static> BrokerWrites<P> {
                 handle,
                 shard,
                 &outcome,
+                generation,
                 self.marks.as_deref(),
                 ingress,
                 wait,

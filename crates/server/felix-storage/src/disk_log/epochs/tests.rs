@@ -26,6 +26,27 @@ fn the_newest_generation_ends_at_the_tail() {
     assert_eq!(map.end_of(2, 400), Some(400));
 }
 
+/// **Records that land after a cut with no label are unknown** until a
+/// generation is recorded or labelled over them: the entry before the cut
+/// would otherwise claim them.
+#[test]
+fn records_after_a_cut_are_unlabelled_until_a_generation_covers_them() {
+    let mut map = map(&[(3, 0)]);
+    map.cut_at(1);
+    assert!(map.labelled(0, 0), "below the cut keeps its label");
+    assert!(!map.labelled(1, 1));
+    assert!(!map.labelled(0, 5), "a range reaching past the cut");
+
+    map.record(5, 3);
+    assert!(!map.labelled(1, 2), "taken before the new generation began");
+    assert!(map.labelled(3, 9), "the new generation's own");
+
+    let mut labelled = map.clone();
+    labelled.truncate_from(1);
+    labelled.record(4, 1);
+    assert!(labelled.labelled(0, 9), "labelled over from the cut");
+}
+
 #[test]
 fn a_generation_never_seen_has_no_end() {
     // The case that must refuse. Interpolating between neighbours would be a

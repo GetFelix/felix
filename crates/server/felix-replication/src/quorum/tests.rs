@@ -761,6 +761,10 @@ async fn cache_and_counter_acks_skip_the_lease_where_followers_decide_the_mark()
             Some(&Unleased),
             QUICK,
             Access::Write,
+            Some(CacheWrite {
+                generation: 3,
+                from: 0,
+            }),
         )
         .await;
         let add = await_counter_quorum(
@@ -770,12 +774,257 @@ async fn cache_and_counter_acks_skip_the_lease_where_followers_decide_the_mark()
             Some(&Unleased),
             QUICK,
             Some(1),
+            3,
             "counter add",
         )
         .await;
         assert_eq!(write.is_ok(), by_followers, "put: {write:?}");
         assert_eq!(add.is_ok(), by_followers, "add: {add:?}");
     }
+}
+
+/// A shard this broker leads at a set generation, with the lease.
+struct LeadsAt(u64);
+
+impl ShardServing for LeadsAt {
+    fn replicated(&self, _key: &ShardKey) -> bool {
+        true
+    }
+
+    fn generation(&self, _key: &ShardKey) -> Option<u64> {
+        Some(self.0)
+    }
+
+    fn lease_valid(&self) -> bool {
+        true
+    }
+
+    fn record_ack_refusal(&self) {}
+}
+
+/// **A cache put and a counter add written at one generation and waited out
+/// at a newer one are acknowledged only while the log still holds them at
+/// theirs** (#2048). Once another leader's records replace them, as a
+/// promotion's catch-up does, the newer mark passing their offset says
+/// nothing about them.
+#[tokio::test]
+async fn cache_and_counter_waits_at_a_newer_generation_check_the_log_still_holds_the_write() {
+    use felix_broker::LogKind;
+    use felix_storage::log::Epoch;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let broker = quorum_cache_broker(dir.path()).await;
+    let cache = ShardKey {
+        kind: crate::ShardKind::Cache,
+        ..key("sessions")
+    };
+    broker
+        .cache()
+        .put(
+            "t1",
+            "ns",
+            "sessions",
+            0,
+            "k",
+            bytes::Bytes::from_static(b"v"),
+            None,
+        )
+        .await
+        .expect("put");
+    let (_, offset) = broker
+        .counters()
+        .expect("counters")
+        .add("t1", "ns", "sessions", 0, "n", 1)
+        .await
+        .expect("add");
+    let mut logs = Vec::new();
+    for kind in [LogKind::Cache, LogKind::Counters] {
+        let log = broker
+            .shard_log(kind, "t1", "ns", "sessions", 0)
+            .await
+            .expect("log");
+        log.record_generation(3, 0).expect("generation");
+        logs.push(log);
+    }
+    let marks = QuorumMarks::new();
+    marks.publish(&cache, 5, 1 << 20);
+    marks.counters().publish(&cache, 5, 1 << 20);
+    let waits = || async {
+        let put = await_cache_quorum(
+            &broker,
+            &cache,
+            Some(&marks),
+            Some(&LeadsAt(5)),
+            QUICK,
+            Access::Write,
+            Some(CacheWrite {
+                generation: 3,
+                from: 0,
+            }),
+        )
+        .await;
+        let add = await_counter_quorum(
+            &broker,
+            &cache,
+            Some(&marks),
+            Some(&LeadsAt(5)),
+            QUICK,
+            Some(offset + 1),
+            3,
+            "counter add",
+        )
+        .await;
+        (put, add)
+    };
+
+    let (put, add) = waits().await;
+    put.expect("the cache log still holds the put at 3");
+    add.expect("the counter log still holds the add at 3");
+
+    for log in &logs {
+        log.truncate(0).await.expect("truncate");
+        log.append(&[bytes::Bytes::from_static(b"other")])
+            .await
+            .expect("append");
+        log.label_generations(
+            0,
+            &[Epoch {
+                generation: 4,
+                start_offset: 0,
+            }],
+        )
+        .expect("label");
+    }
+    let (put, add) = waits().await;
+    for (what, result) in [("put", put), ("add", add)] {
+        let err = result.expect_err(what);
+        assert!(
+            matches!(
+                err.downcast_ref::<QuorumError>(),
+                Some(QuorumError::LeadershipLost { .. })
+            ),
+            "{what}: {err:?}"
+        );
+    }
+}
+
+/// **A cache put cut before the wait reads the tail is not acknowledged.**
+/// A promotion's catch-up can truncate the put between its write and the
+/// tail the wait reads, which then ends below it. The tail read before the
+/// put is where the put starts, so a tail that never got past it means the
+/// put is gone, however the record below is labelled.
+#[tokio::test]
+async fn a_cache_put_cut_before_its_wait_reads_the_tail_is_not_acknowledged() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let broker = quorum_cache_broker(dir.path()).await;
+    let cache = ShardKey {
+        kind: crate::ShardKind::Cache,
+        ..key("sessions")
+    };
+    let put = |key: &'static str| {
+        broker.cache().put(
+            "t1",
+            "ns",
+            "sessions",
+            0,
+            key,
+            bytes::Bytes::from_static(b"v"),
+            None,
+        )
+    };
+    put("before").await.expect("put");
+    let log = broker
+        .shard_log(felix_broker::LogKind::Cache, "t1", "ns", "sessions", 0)
+        .await
+        .expect("log");
+    log.record_generation(3, 0).expect("generation");
+    let marks = QuorumMarks::new();
+    let at = cache_write_at(&broker, &cache, 3, Some(&marks), Some(&LeadsAt(5)))
+        .await
+        .expect("a quorum write");
+    put("k").await.expect("put");
+    assert!(log.tail_offset().await.expect("tail") > at.from);
+    log.truncate(at.from).await.expect("truncate");
+
+    marks.publish(&cache, 5, 1 << 20);
+    let err = await_cache_quorum(
+        &broker,
+        &cache,
+        Some(&marks),
+        Some(&LeadsAt(5)),
+        QUICK,
+        Access::Write,
+        Some(at),
+    )
+    .await
+    .expect_err("the put was cut");
+    assert!(
+        matches!(
+            err.downcast_ref::<QuorumError>(),
+            Some(QuorumError::LeadershipLost { .. })
+        ),
+        "{err:?}"
+    );
+}
+
+/// A cache write that waits for no replicated quorum reads no tail: a broker
+/// with no replica set, a shard placed with none, or a `Leader` cache.
+#[tokio::test]
+async fn a_cache_write_with_no_quorum_to_wait_for_reads_no_tail() {
+    struct Unreplicated;
+    impl ShardServing for Unreplicated {
+        fn replicated(&self, _key: &ShardKey) -> bool {
+            false
+        }
+        fn generation(&self, _key: &ShardKey) -> Option<u64> {
+            Some(3)
+        }
+        fn lease_valid(&self) -> bool {
+            true
+        }
+        fn record_ack_refusal(&self) {}
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let broker = quorum_cache_broker(dir.path()).await;
+    broker
+        .register_cache(
+            "t1",
+            "ns",
+            "plain",
+            felix_broker::CacheMetadata {
+                consistency: felix_broker::ConsistencyLevel::Leader,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("cache");
+    let quorum = ShardKey {
+        kind: crate::ShardKind::Cache,
+        ..key("sessions")
+    };
+    let leader = ShardKey {
+        kind: crate::ShardKind::Cache,
+        ..key("plain")
+    };
+    let marks = QuorumMarks::new();
+    assert_eq!(
+        cache_write_at::<LeadsAt>(&broker, &quorum, 3, None, None).await,
+        None
+    );
+    assert_eq!(
+        cache_write_at(&broker, &quorum, 3, Some(&marks), Some(&Unreplicated)).await,
+        None
+    );
+    assert_eq!(
+        cache_write_at(&broker, &leader, 3, Some(&marks), Some(&LeadsAt(3))).await,
+        None
+    );
+    assert!(
+        cache_write_at(&broker, &quorum, 3, Some(&marks), Some(&LeadsAt(3)))
+            .await
+            .is_some()
+    );
 }
 
 /// **A stall logs once per shard per window, not once per publish.** Every
