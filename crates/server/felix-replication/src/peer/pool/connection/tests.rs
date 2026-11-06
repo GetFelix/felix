@@ -154,6 +154,7 @@ mod correlation {
                 code: ErrorCode::LogGap,
                 expected_offset: 9,
                 detail: "behind".to_string(),
+                reason: None,
             }),
             InternalMessage::ReplicateBootstrap(ReplicateBootstrap {
                 correlation_id: 7,

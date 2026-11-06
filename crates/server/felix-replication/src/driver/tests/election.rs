@@ -558,6 +558,7 @@ impl PeerRequester for BehindFollower {
                         .refusal
                         .map_or("behind", |(_, detail)| detail)
                         .to_string(),
+                    reason: None,
                 },
             ));
         }

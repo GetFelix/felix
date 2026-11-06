@@ -26,8 +26,9 @@ use felix_broker::replication::{self, Divergence};
 use felix_router::{ReplicaRole, ShardRouter};
 use felix_storage::disk_log::GenerationCheck;
 use felix_wire::internal::{
-    ErrorCode, Fence, FenceOk, GenerationStart, InternalMessage, ReplicaLog, ReplicateBootstrap,
-    ReplicateError, ReplicateFetch, ReplicateOk, ReplicateRebuild, ReplicateRecords,
+    ErrorCode, Fence, FenceOk, GenerationStart, InternalMessage, RefusalReason, ReplicaLog,
+    ReplicateBootstrap, ReplicateError, ReplicateFetch, ReplicateOk, ReplicateRebuild,
+    ReplicateRecords,
 };
 use tokio::time::Instant;
 
@@ -1277,11 +1278,13 @@ impl ReplicaHandler {
                 .map_or(0, |log| log.accepted_generation());
             if counters > generation {
                 metrics::record_replicated(metrics::OUTCOME_FENCED);
-                return refused(
+                return refused_for(
                     correlation_id,
                     ErrorCode::FencedEpoch,
-                    0,
-                    superseded_detail(counters, generation),
+                    RefusalReason::Accepted {
+                        accepted: counters,
+                        sender: generation,
+                    },
                 );
             }
         }
@@ -1576,11 +1579,13 @@ impl ReplicaHandler {
         let accepted = log.accepted_generation();
         (accepted > generation).then(|| {
             metrics::record_replicated(metrics::OUTCOME_FENCED);
-            refused(
+            refused_for(
                 correlation_id,
                 ErrorCode::FencedEpoch,
-                0,
-                superseded_detail(accepted, generation),
+                RefusalReason::Accepted {
+                    accepted,
+                    sender: generation,
+                },
             )
         })
     }
@@ -2032,11 +2037,13 @@ impl ReplicaHandler {
             ReplicaRole::Follower => None,
             ReplicaRole::Fenced { have, named } => {
                 metrics::record_replicated(metrics::OUTCOME_FENCED);
-                Some(refused(
+                Some(refused_for(
                     correlation_id,
                     ErrorCode::FencedEpoch,
-                    0,
-                    view_detail(have, named),
+                    RefusalReason::View {
+                        have,
+                        sender: named,
+                    },
                 ))
             }
             ReplicaRole::Behind { have, named } => {
@@ -2044,20 +2051,21 @@ impl ReplicaHandler {
                 // has not caught up. Retryable, and the leader will find us
                 // ready once it has.
                 metrics::record_replicated(metrics::OUTCOME_BEHIND);
-                Some(refused(
+                Some(refused_for(
                     correlation_id,
                     ErrorCode::StaleRoute,
-                    0,
-                    view_detail(have, named),
+                    RefusalReason::View {
+                        have,
+                        sender: named,
+                    },
                 ))
             }
             ReplicaRole::NotAReplica => {
                 metrics::record_replicated(metrics::OUTCOME_REFUSED);
-                Some(refused(
+                Some(refused_for(
                     correlation_id,
                     ErrorCode::Unauthorized,
-                    0,
-                    NOT_A_REPLICA.to_string(),
+                    RefusalReason::NotAReplica,
                 ))
             }
         }
@@ -2133,11 +2141,13 @@ fn confirmed_refusal(
                 "refusing a leader the control plane has replaced",
             );
             metrics::record_replicated(metrics::OUTCOME_FENCED);
-            Some(refused(
+            Some(refused_for(
                 correlation_id,
                 ErrorCode::FencedEpoch,
-                0,
-                assigned_detail(*assigned, generation),
+                RefusalReason::Assigned {
+                    assigned: *assigned,
+                    sender: generation,
+                },
             ))
         }
         Confirmed::Assigned {
@@ -2249,11 +2259,13 @@ fn ballot_refusal(
                 "refusing a leader older than one this replica already accepted",
             );
             metrics::record_replicated(metrics::OUTCOME_FENCED);
-            Some(refused(
+            Some(refused_for(
                 correlation_id,
                 ErrorCode::FencedEpoch,
-                0,
-                superseded_detail(accepted, generation),
+                RefusalReason::Accepted {
+                    accepted,
+                    sender: generation,
+                },
             ))
         }
     }
@@ -2297,17 +2309,19 @@ fn promised_elsewhere(
         "refusing a second leader at a generation this replica accepted from another",
     );
     metrics::record_replicated(metrics::OUTCOME_FENCED);
-    refused(
+    refused_for(
         correlation_id,
         ErrorCode::FencedEpoch,
-        0,
-        promised_detail(generation, leader),
+        RefusalReason::PromisedTo {
+            generation,
+            leader: leader.to_string(),
+        },
     )
 }
 
 /// The detail of a refusal at a generation promised to `leader`. Brokers that
-/// predate [`promised_to`] send the same text, so it is the only place the
-/// promise is named on the wire.
+/// predate [`RefusalReason`] send only this text, which [`promised_to`] reads
+/// back from them.
 pub(crate) fn promised_detail(generation: u64, leader: &str) -> String {
     format!("this broker accepted generation {generation} from {leader}")
 }
@@ -2315,12 +2329,20 @@ pub(crate) fn promised_detail(generation: u64, leader: &str) -> String {
 /// The node a `FencedEpoch` refusal says `generation` was promised to, or
 /// `None` when the refusal is for any other reason, such as a newer
 /// generation.
-pub(crate) fn promised_to(detail: &str, generation: u64) -> Option<&str> {
-    detail
-        .strip_prefix(&format!(
-            "this broker accepted generation {generation} from "
-        ))
-        .filter(|leader| !leader.is_empty())
+pub(crate) fn promised_to(err: &ReplicateError, generation: u64) -> Option<&str> {
+    match &err.reason {
+        Some(RefusalReason::PromisedTo {
+            generation: promised,
+            leader,
+        }) => (*promised == generation && !leader.is_empty()).then_some(leader.as_str()),
+        Some(_) => None,
+        None => err
+            .detail
+            .strip_prefix(&format!(
+                "this broker accepted generation {generation} from "
+            ))
+            .filter(|leader| !leader.is_empty()),
+    }
 }
 
 /// What a replica answers a batch for a shard whose route at that
@@ -2331,10 +2353,13 @@ pub(crate) const NOT_A_REPLICA: &str = "this broker is not a replica of that sha
 /// does not follow that leader there: its route names it outside the set,
 /// as the leader the control plane named, or its ballot holds the
 /// generation for another node.
-pub(crate) fn refuses_leader(code: ErrorCode, detail: &str, generation: u64) -> bool {
-    match code {
-        ErrorCode::Unauthorized => detail == NOT_A_REPLICA,
-        ErrorCode::FencedEpoch => promised_to(detail, generation).is_some(),
+pub(crate) fn refuses_leader(err: &ReplicateError, generation: u64) -> bool {
+    match err.code {
+        ErrorCode::Unauthorized => match &err.reason {
+            Some(reason) => *reason == RefusalReason::NotAReplica,
+            None => err.detail == NOT_A_REPLICA,
+        },
+        ErrorCode::FencedEpoch => promised_to(err, generation).is_some(),
         _ => false,
     }
 }
@@ -2355,12 +2380,19 @@ pub(crate) fn assigned_detail(assigned: u64, generation: u64) -> String {
 /// Whether a `FencedEpoch` refusal of a sender at `generation` says the
 /// control plane assigned a newer generation. Unlike a ballot or a view,
 /// which an election may leave behind with no leader, that names one.
-pub(crate) fn assigned_newer(detail: &str, generation: u64) -> bool {
-    detail
-        .strip_prefix("the control plane assigned generation ")
-        .and_then(|rest| rest.strip_suffix(&format!(", the sender is at {generation}")))
-        .and_then(|assigned| assigned.parse::<u64>().ok())
-        .is_some_and(|assigned| assigned > generation)
+pub(crate) fn assigned_newer(err: &ReplicateError, generation: u64) -> bool {
+    match &err.reason {
+        Some(RefusalReason::Assigned { assigned, sender }) => {
+            *sender == generation && *assigned > generation
+        }
+        Some(_) => false,
+        None => err
+            .detail
+            .strip_prefix("the control plane assigned generation ")
+            .and_then(|rest| rest.strip_suffix(&format!(", the sender is at {generation}")))
+            .and_then(|assigned| assigned.parse::<u64>().ok())
+            .is_some_and(|assigned| assigned > generation),
+    }
 }
 
 /// What a replica answers a sender at `generation` when its routing view is
@@ -2374,18 +2406,46 @@ pub(crate) fn view_detail(have: u64, generation: u64) -> String {
 /// routing view ([`ReplicaRole::Fenced`]). A view above the control plane's
 /// comes from a candidate's fence this replica took, whose ballot it also
 /// holds. `None` for any other refusal.
-pub(crate) fn superseded_by(detail: &str, generation: u64) -> Option<u64> {
-    let newer = detail
-        .strip_prefix("this broker accepted generation ")
-        .and_then(|rest| rest.strip_suffix(&format!(", the sender is at {generation}")))
-        .or_else(|| {
+pub(crate) fn superseded_by(err: &ReplicateError, generation: u64) -> Option<u64> {
+    let newer = match &err.reason {
+        Some(
+            RefusalReason::Accepted {
+                accepted: newer,
+                sender,
+            }
+            | RefusalReason::View {
+                have: newer,
+                sender,
+            },
+        ) => (*sender == generation).then_some(*newer)?,
+        Some(_) => return None,
+        None => {
+            let detail = &err.detail;
             detail
-                .strip_prefix("this broker is at generation ")?
-                .strip_suffix(&format!(", the sender at {generation}"))
-        })?
-        .parse::<u64>()
-        .ok()?;
+                .strip_prefix("this broker accepted generation ")
+                .and_then(|rest| rest.strip_suffix(&format!(", the sender is at {generation}")))
+                .or_else(|| {
+                    detail
+                        .strip_prefix("this broker is at generation ")?
+                        .strip_suffix(&format!(", the sender at {generation}"))
+                })?
+                .parse::<u64>()
+                .ok()?
+        }
+    };
     (newer > generation).then_some(newer)
+}
+
+/// The text a refusal for `reason` carries, which is all a leader that
+/// predates [`RefusalReason`] reads.
+fn detail_of(reason: &RefusalReason) -> String {
+    match reason {
+        RefusalReason::PromisedTo { generation, leader } => promised_detail(*generation, leader),
+        RefusalReason::Accepted { accepted, sender } => superseded_detail(*accepted, *sender),
+        RefusalReason::View { have, sender } => view_detail(*have, *sender),
+        RefusalReason::Assigned { assigned, sender } => assigned_detail(*assigned, *sender),
+        RefusalReason::NotAReplica => NOT_A_REPLICA.to_string(),
+    }
 }
 
 /// Where a batch from a leader at `generation` must start for every record
@@ -2524,6 +2584,17 @@ fn shard_key(
     }
 }
 
+/// A refusal for `reason`, with the detail an older leader reads instead.
+fn refused_for(correlation_id: u64, code: ErrorCode, reason: RefusalReason) -> InternalMessage {
+    InternalMessage::ReplicateError(ReplicateError {
+        correlation_id,
+        code,
+        expected_offset: 0,
+        detail: detail_of(&reason),
+        reason: Some(reason),
+    })
+}
+
 fn refused(
     correlation_id: u64,
     code: ErrorCode,
@@ -2535,6 +2606,7 @@ fn refused(
         code,
         expected_offset,
         detail,
+        reason: None,
     })
 }
 

@@ -193,6 +193,7 @@ fn every_body_begins_with_its_correlation_id() {
             code: ErrorCode::LogGap,
             expected_offset: 3,
             detail: "gap".to_string(),
+            reason: None,
         }),
         InternalMessage::ReplicateBootstrap(ReplicateBootstrap {
             correlation_id: id,

@@ -1111,12 +1111,12 @@ fn refusal(
     let detail = &err.detail;
     match err.code {
         ErrorCode::FencedEpoch => Some(
-            if let Some(leader) = crate::replica::promised_to(detail, generation) {
+            if let Some(leader) = crate::replica::promised_to(err, generation) {
                 Refusal::PromisedTo {
                     leader: leader.to_string(),
                     why: format!("{node_id} refused: {detail}"),
                 }
-            } else if crate::replica::superseded_by(detail, generation).is_some() {
+            } else if crate::replica::superseded_by(err, generation).is_some() {
                 Refusal::Final(format!(
                     "{node_id} has accepted a newer generation: {detail}"
                 ))

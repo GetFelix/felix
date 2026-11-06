@@ -2618,15 +2618,29 @@ async fn confirmed_shard_assignments_are_read_on_the_leader() {
     ));
     assert_eq!(
         behind.confirmed_shard_assignment(&key).await.expect("read"),
-        ConfirmedAssignment::Assigned(assigned)
+        ConfirmedAssignment::Assigned(assigned.clone())
     );
-    let unplaced = ShardKey { shard: 1, ..key };
+    let unplaced = ShardKey {
+        shard: 1,
+        ..key.clone()
+    };
     assert_eq!(
         behind
             .confirmed_shard_assignment(&unplaced)
             .await
             .expect("read"),
         ConfirmedAssignment::Unassigned
+    );
+    // Several at once, in order, after one read on the leader.
+    assert_eq!(
+        behind
+            .confirmed_shard_assignments(&[unplaced, key])
+            .await
+            .expect("read"),
+        [
+            ConfirmedAssignment::Unassigned,
+            ConfirmedAssignment::Assigned(assigned)
+        ]
     );
 
     // The feed's head too: a broker marked down serves again only on routes

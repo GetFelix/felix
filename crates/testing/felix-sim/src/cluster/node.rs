@@ -165,20 +165,16 @@ impl Node {
             _ => return Ok(()),
         };
         let registered = opened.incarnation_watch();
-        let peer = Arc::new(
-            net.start(SimNode {
-                node_id: self.id.clone(),
-                // A caller reads kept-ballot fence answers, as the pool offers.
-                capabilities: opened
-                    .capabilities()
-                    .union(felix_wire::internal::PeerCapabilities::KEPT_BALLOTS),
-                identity: PeerIdentity {
-                    storage: Some(opened.storage_id()),
-                    incarnation: Incarnation::Unregistered,
-                },
-                handler: opened.handler(),
-            }),
-        );
+        let peer = Arc::new(net.start(SimNode {
+            node_id: self.id.clone(),
+            capabilities: opened.capabilities(),
+            outgoing: opened.outgoing_capabilities(),
+            identity: PeerIdentity {
+                storage: Some(opened.storage_id()),
+                incarnation: Incarnation::Unregistered,
+            },
+            handler: opened.handler(),
+        }));
         let broker = Arc::new(opened.run(Arc::clone(&peer)));
         let handles = NodeHandles {
             index: self.index,

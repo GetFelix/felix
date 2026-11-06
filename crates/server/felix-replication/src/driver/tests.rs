@@ -389,6 +389,7 @@ impl PeerRequester for DivergingFollower {
                 code: felix_wire::internal::ErrorCode::LogConflict,
                 expected_offset: 0,
                 detail: "diverged".to_string(),
+                reason: None,
             },
         ))
     }
