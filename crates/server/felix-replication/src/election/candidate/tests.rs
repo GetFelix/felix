@@ -1843,11 +1843,7 @@ async fn a_leader_the_control_plane_collided_with_fences_again_one_generation_up
     let InternalMessage::ReplicateError(refused) = answer else {
         panic!("broker-a stored a batch from the leader it collided with: {answer:?}");
     };
-    assert!(crate::replica::refuses_leader(
-        refused.code,
-        &refused.detail,
-        4
-    ));
+    assert!(crate::replica::refuses_leader(&refused, 4));
 
     let shutdown = CancellationToken::new();
     let task = tokio::spawn(run(Arc::clone(&ctx), shutdown.clone()));

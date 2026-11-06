@@ -62,3 +62,26 @@ async fn a_caller_that_reads_the_flag_is_told_the_copy_is_a_learner() {
             .learner
     );
 }
+
+/// **A refusal's reason goes only to a caller that offered
+/// `REFUSAL_REASONS`.** An older caller would reject the trailing fields as
+/// a malformed body; it reads the detail it always has.
+#[test]
+fn a_refusal_reason_goes_only_to_a_caller_that_reads_it() {
+    let refusal = InternalMessage::ReplicateError(felix_wire::internal::ReplicateError {
+        correlation_id: 1,
+        code: felix_wire::internal::ErrorCode::Unauthorized,
+        expected_offset: 0,
+        detail: crate::replica::NOT_A_REPLICA.to_string(),
+        reason: Some(felix_wire::internal::RefusalReason::NotAReplica),
+    });
+    let reason = |caller| match crate::peer::server::for_caller(refusal.clone(), caller) {
+        InternalMessage::ReplicateError(err) => err.reason,
+        other => panic!("expected a refusal, got {other:?}"),
+    };
+    assert_eq!(reason(PeerCapabilities::LEARNER_ACKS), None);
+    assert_eq!(
+        reason(PeerCapabilities::REFUSAL_REASONS),
+        Some(felix_wire::internal::RefusalReason::NotAReplica)
+    );
+}

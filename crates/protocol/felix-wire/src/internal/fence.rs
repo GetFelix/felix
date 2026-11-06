@@ -132,6 +132,12 @@ impl PeerCapabilities {
     ///
     /// [`ForwardPublish::producer`]: super::ForwardPublish::producer
     pub const SEQUENCED_FORWARDS: Self = Self(1 << 18);
+    /// Offered by a caller that reads [`ReplicateError::reason`], so a
+    /// refusal to it carries the reason as fields after its detail. To any
+    /// other caller the refusal goes without them.
+    ///
+    /// [`ReplicateError::reason`]: super::ReplicateError::reason
+    pub const REFUSAL_REASONS: Self = Self(1 << 19);
 
     pub fn from_bits(bits: u64) -> Self {
         Self(bits)
