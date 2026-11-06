@@ -89,6 +89,9 @@ pub(super) struct DirNode {
 struct DirData {
     current: BTreeMap<OsString, Node>,
     durable: BTreeMap<OsString, Node>,
+    /// The directory was removed, or replaced by a rename. A rename that
+    /// moved a file into it still commits, but its creation does not.
+    removed: bool,
 }
 
 /// What a stat reports.
@@ -220,7 +223,10 @@ impl Tree {
         let (parent, name) = parent_of(&state.root, &names)?;
         let mut entries = parent.data.lock();
         match entries.current.get(name) {
-            Some(Node::Dir(dir)) => unlink_all(dir),
+            Some(Node::Dir(dir)) => {
+                unlink_all(dir);
+                dir.data.lock().removed = true;
+            }
             Some(Node::File(_)) => {
                 return Err(kind(io::ErrorKind::NotADirectory, "not a directory"));
             }
@@ -275,8 +281,10 @@ impl Tree {
             _ => {}
         }
         let replaced = target.cloned();
-        if let Some(Node::File(file)) = &replaced {
-            file.data.lock().unlinked = true;
+        match &replaced {
+            Some(Node::File(file)) => file.data.lock().unlinked = true,
+            Some(Node::Dir(dir)) => dir.data.lock().removed = true,
+            None => {}
         }
         source.current.remove(from_name);
         let destination = other.as_deref_mut().unwrap_or(&mut source);
@@ -442,7 +450,10 @@ fn unlink_all(dir: &Arc<DirNode>) {
         .collect();
     for (name, node) in children {
         match &node {
-            Node::Dir(child) => unlink_all(child),
+            Node::Dir(child) => {
+                unlink_all(child);
+                child.data.lock().removed = true;
+            }
             Node::File(file) => file.data.lock().remove(),
         }
         dir.data.lock().current.remove(&name);

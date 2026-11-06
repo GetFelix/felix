@@ -404,7 +404,7 @@ fn a_removed_directory_stays_gone_when_the_rename_into_it_commits_later() {
         io::sync_dir(&sim.root).expect("sync");
         io::sync_dir(&sim.path("x")).expect("sync");
         sim.crash(seed);
-        assert!(!sim.path("y").exists(), "seed {seed}");
+        assert!(!fs::exists(sim.path("y")), "seed {seed}");
     }
 }
 
@@ -423,8 +423,8 @@ fn a_directory_made_again_is_not_overwritten_by_a_late_rename_commit() {
         io::sync_dir(&sim.root).expect("sync");
         io::sync_dir(&sim.path("x")).expect("sync");
         sim.crash(seed);
-        assert!(sim.path("y").exists(), "seed {seed}");
-        assert!(!sim.path("y/f").exists(), "seed {seed}");
+        assert!(fs::exists(sim.path("y")), "seed {seed}");
+        assert!(!fs::exists(sim.path("y/f")), "seed {seed}");
     }
 }
 
@@ -439,8 +439,31 @@ fn syncing_an_unlinked_file_commits_the_unlink() {
         fs::remove_file(sim.path("a")).expect("unlink");
         io::sync_data(&file).expect("sync");
         sim.crash(seed);
-        assert!(!sim.path("a").exists(), "seed {seed}");
+        assert!(!fs::exists(sim.path("a")), "seed {seed}");
     }
+}
+
+#[test]
+fn a_synced_rename_survives_the_directory_it_moved_into_being_renamed() {
+    let mut kept_y = 0;
+    for seed in 0..64 {
+        let sim = Sim::new("rename-into-renamed");
+        fs::create_dir_all(sim.path("x")).expect("dir");
+        durable_file(&sim.path("x/f"), b"data");
+        io::sync_dir(&sim.root).expect("sync");
+        fs::create_dir_all(sim.path("y")).expect("dir");
+        fs::rename(sim.path("x/f"), sim.path("y/f")).expect("rename");
+        fs::rename(sim.path("y"), sim.path("z")).expect("rename");
+        io::sync_dir(&sim.path("x")).expect("sync");
+        sim.crash(seed);
+        // The file is under y or z, whichever name the directory has.
+        let found = ["y/f", "z/f"]
+            .iter()
+            .any(|path| fs::read(sim.path(path)).is_ok_and(|bytes| bytes == b"data"));
+        assert!(found, "seed {seed}: the synced rename lost the file");
+        kept_y += usize::from(fs::exists(sim.path("y/f")));
+    }
+    assert!(kept_y > 0, "the rename of y was never lost");
 }
 
 #[test]

@@ -61,16 +61,13 @@ pub(super) fn commit(pending: &mut Vec<Rename>, count: usize) {
             .durable
             .insert(rename.to_name, rename.node);
         for (parent, name, child) in rename.chains {
-            // A directory removed or replaced since stays out, even when its
-            // parent was synced after the rename.
-            let mut parent = parent.data.lock();
-            if parent
-                .current
-                .get(&name)
-                .is_some_and(|now| same(now, &child))
-            {
-                parent.durable.insert(name, child);
+            // A directory that was removed since stays out, even when its
+            // parent was synced after the rename. One that was only renamed
+            // on is still where the rename left it.
+            if matches!(&child, Node::Dir(dir) if dir.data.lock().removed) {
+                continue;
             }
+            parent.data.lock().durable.insert(name, child);
         }
     }
 }
