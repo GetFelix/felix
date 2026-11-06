@@ -455,8 +455,9 @@ jobs:
   # The felix-sim seed batch (tests/seeds.rs, ignored in the workspace tests).
   # Non-blocking and left out of `ci-ok` until its known liveness stalls are
   # fixed, so a seed that stalls does not fail the required gates. Built with
-  # `--cfg tokio_unstable`, which clock skew needs, in a target directory of its
-  # own as `task sim:replay` does; half the seeds run with bounded skew.
+  # `--cfg tokio_unstable`, which clock skew needs. The job's own cache key and
+  # warm slot keep that build apart, so it uses the plain target/ the cache
+  # saves. Half the seeds run with bounded skew.
   sim-seeds:
     needs: changes
     if: needs.changes.outputs.code == 'true' && github.event_name != 'workflow_dispatch'
@@ -493,9 +494,7 @@ jobs:
         env:
           FELIX_SIM_SEED_START: "1"
           FELIX_SIM_SEEDS: "2"
-        run: |
-          CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}/tokio-unstable" \
-            cargo test -p felix-sim --test seeds -- --ignored --exact seeds --nocapture
+        run: cargo test -p felix-sim --test seeds -- --ignored --exact seeds --nocapture
 
       - name: Seeds with bounded clock skew
         if: ${{ !cancelled() }}
@@ -503,9 +502,7 @@ jobs:
           FELIX_SIM_SEED_START: "3"
           FELIX_SIM_SEEDS: "2"
           FELIX_SIM_CLOCKS: bounded
-        run: |
-          CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}/tokio-unstable" \
-            cargo test -p felix-sim --test seeds -- --ignored --exact seeds --nocapture
+        run: cargo test -p felix-sim --test seeds -- --ignored --exact seeds --nocapture
 
   # felix-cluster's suites, the three longest each on a runner of its own
   # (Taskfile.yml, test:cluster). One cluster per runner, as before: they are
