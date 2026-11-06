@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793963300317,
+  "lastUpdate": 1793968043338,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -47164,6 +47164,58 @@ window.BENCHMARK_DATA = {
             "range": "74593.98",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1754065.41\nmean: 1731279.32\nstdev: 74593.98\ncv: 4.31%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8e27040474ec82897869a6894a28e1d95e60f738",
+          "message": "fix(placement): pace re-admissions, rename stuck leaders from the lease holder only (#2020)\n\nFixes the control-plane findings from the RC review: readmits are capped per pass and stop while placement is paused; the stuck-rename gate skips learners; only the placement lease holder renames stuck leaders; Postgres enforces that a mounted stream is durable (migration 0044); one ShardAssignment::renamed() replaces 18 copies; doc and dead-check cleanups.",
+          "timestamp": "2026-11-06T12:20:12Z",
+          "tree_id": "083ce6b596a4f0c270b7cabdbc35e22809589bad",
+          "url": "https://github.com/GetFelix/felix/commit/8e27040474ec82897869a6894a28e1d95e60f738"
+        },
+        "date": 1793968042668,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 354897.62,
+            "range": "8189.08",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 354897.62\nmean: 354772.91\nstdev: 8189.08\ncv: 2.31%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 354897.62,
+            "range": "8189.08",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 354897.62\nmean: 354772.91\nstdev: 8189.08\ncv: 2.31%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81774.59,
+            "range": "7290.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81774.59\nmean: 76674.10\nstdev: 7290.12\ncv: 9.51%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 817745.87,
+            "range": "72901.15",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 817745.87\nmean: 766741.04\nstdev: 72901.15\ncv: 9.51%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
