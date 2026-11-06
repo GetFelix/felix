@@ -205,9 +205,9 @@ after two virtual seconds with no append in flight. In the same instant:
 3. The data directory becomes what the device held, and the broker restarts
    on it later, as after any crash.
 
-The run state still says the broker was running, so the restart is an unclean
-start in the run-state sense. Under `OnCommit` it keeps its storage id and
-does not run `UncleanStart`, because nothing it acknowledged was unsynced. Its
+The run state still says the broker was running, so the restart reads the
+stop as a crash. Under `OnCommit` it still keeps its storage id and does not
+run `UncleanStart`, because nothing it acknowledged was unsynced. Its
 copy is trusted, so the power loss does not count towards the shards
 `ElectionSettles` exempts after unclean kills. If a restart after a power
 loss did run `UncleanStart`, the copy would count like a killed one.
@@ -328,6 +328,11 @@ Seeds 1 to 20, built with the flag, as of the change that made replay exact:
 | 7, 8, 10, 12, 15, 16, 17, 18, 20 | After the heal some shards are served by nobody (`ElectionSettles`), so they cannot be read (`final-reads`). The census shows the control plane still naming the old leader while the brokers route to an elected one. | not filed yet |
 | 2, 11 | A shard cannot be read to its tail after the heal (`final-reads`). | not filed yet |
 | 9 | The history checker finds a read that misses an append acknowledged before it began (rule 16, G-single-realtime). | not filed yet |
+
+With power loss added, seeds 1, 4, 6 and 7 run under `OnCommit`, and seeds 1
+and 4 cut the power during an append. Seeds 1, 4, 6 and 8 pass. Seeds 2, 3, 5
+and 7 fail only `ElectionSettles` and `final-reads`: shards nobody serves
+after the heal. None of them has a history violation.
 
 Any change to the code a run executes can move a seed from one row to
 another, because the run takes a different path from the first difference
