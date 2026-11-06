@@ -25,6 +25,9 @@ pub struct UncleanStart {
     /// The last ballot this process wrote standing for election on each
     /// shard, with what the copy said of the crash before its first standing.
     stood: parking_lot::Mutex<HashMap<ShardKey, Stood>>,
+    /// The crash lost no ballot: the directory was neither restored nor one
+    /// that already replaced a lost copy, and ballots are always synced.
+    kept_promises: bool,
 }
 
 /// A ballot this process wrote for its own candidacy. It replaced the ballot
@@ -47,7 +50,19 @@ impl UncleanStart {
             led: parking_lot::Mutex::new(HashMap::default()),
             vouched: parking_lot::Mutex::new(HashSet::default()),
             stood: parking_lot::Mutex::new(HashMap::default()),
+            kept_promises: false,
         }
+    }
+
+    /// Note that the crash lost no ballot this directory took.
+    pub fn with_kept_promises(mut self, kept: bool) -> Self {
+        self.kept_promises = kept;
+        self
+    }
+
+    /// Whether every ballot this directory took survived the crash.
+    pub fn kept_promises(&self) -> bool {
+        self.kept_promises
     }
 
     /// A leader shipped `key` to this process, so its copy has been compared

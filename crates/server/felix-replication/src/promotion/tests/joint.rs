@@ -1865,3 +1865,157 @@ async fn a_member_without_kept_sets_counts_as_not_answering() {
     assert!(why.contains("1 of 3 voters of the set being left"), "{why}");
     assert!(!replicas.sent_to("broker-c"), "asked broker-c");
 }
+
+/// broker-a's joint fence at 5, after serving 4 on {broker-a, broker-b,
+/// broker-c}, `continuing` that generation or failing over to 5. Both
+/// followers restarted after an unclean crash, so each answers from a new
+/// storage id, while the old set and the fence ids name the ones before.
+/// Each still holds its ballot naming broker-a at 4, and broker-b a record
+/// past the leader's. With `kept`, the crash kept every ballot, so their
+/// answers attest it; without, they answer as a restored copy can, with
+/// nothing to show it never promised 5 elsewhere.
+async fn fence_followers_from_new_copies(
+    continuing: bool,
+    kept: bool,
+) -> (Outcome, Arc<Broker>, TempDir) {
+    fence_followers_promised_at(continuing, kept, 4).await
+}
+
+/// [`fence_followers_from_new_copies`], with each follower's ballot naming
+/// broker-a at `promised`.
+async fn fence_followers_promised_at(
+    continuing: bool,
+    kept: bool,
+    promised: u64,
+) -> (Outcome, Arc<Broker>, TempDir) {
+    let mut replicas = replicas_with(&[]);
+    replicas.ballots = true;
+    replicas
+        .get("broker-b")
+        .holds("broker-b", 4, 0, &["a", "b"])
+        .await;
+    replicas
+        .get("broker-c")
+        .holds("broker-c", 4, 0, &["a"])
+        .await;
+    let after_the_crash = |id: &str| storage_of(&format!("{id}-after-the-crash"));
+    for id in ["broker-b", "broker-c"] {
+        replicas
+            .get(id)
+            .broker
+            .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+            .await
+            .expect("log")
+            .accept_generation(promised, Some(LEADER))
+            .await
+            .expect("ballot");
+        let replica = replicas.get_mut(id);
+        replica.storage = Some(after_the_crash(id));
+        if kept {
+            replica.handler = ReplicaHandler::new(Arc::clone(&replica.broker), router_for(id, 3))
+                .with_unclean_start(Arc::new(
+                    crate::unclean::UncleanStart::new(id).with_kept_promises(true),
+                ));
+        }
+    }
+    let (leader, dir) = leader_holding(4, &["a"]).await;
+    kept_naming(
+        &leader,
+        &[LEADER, "broker-b", "broker-c"],
+        &[],
+        &[
+            ("broker-b", storage_of("broker-b")),
+            ("broker-c", storage_of("broker-c")),
+        ],
+    )
+    .await;
+    let named = |id_of: &dyn Fn(&str) -> StorageId| {
+        Some(Arc::new(
+            ["broker-b", "broker-c"]
+                .map(|id| (id.to_string(), id_of(id).to_hex()))
+                .into(),
+        ))
+    };
+    let route = Route {
+        fence_storage_ids: named(&storage_of),
+        member_storage_ids: named(&after_the_crash),
+        ..route()
+    };
+    let addr_of = addr_of;
+    let joint = Joint::new(&addr_of, None).with_continuing(continuing);
+
+    let outcome = fence_shard(
+        &replicas,
+        &leader,
+        LEADER,
+        &key(),
+        &route,
+        false,
+        Some(&joint),
+    )
+    .await;
+    (outcome, leader, dir)
+}
+
+/// **A continuing leader's joint fence counts followers answering from new
+/// copies that kept their ballots.** broker-a holds every record
+/// acknowledged before generation 5, and each follower attests its kept
+/// ballot named broker-a at 4, so the fence needs only their promises, and
+/// it takes no follower's tail (#2047).
+#[tokio::test]
+async fn a_continuing_joint_fence_counts_followers_answering_from_new_copies() {
+    let (outcome, leader, _dir) = fence_followers_from_new_copies(true, true).await;
+
+    assert_eq!(
+        outcome,
+        Outcome::Fenced {
+            caught_up_from: None
+        }
+    );
+    assert_eq!(held(&leader).await, vec!["a"]);
+}
+
+/// **The same answers do not open a failover's joint fence.** A leader that
+/// did not serve the generation before may lack what those copies lost, so
+/// the old set has only its own answer and the fence waits.
+#[tokio::test]
+async fn a_failover_joint_fence_does_not_count_followers_answering_from_new_copies() {
+    let (outcome, _leader, _dir) = fence_followers_from_new_copies(false, true).await;
+
+    assert!(
+        matches!(&outcome, Outcome::Pending { why, .. } if why.contains("another copy")),
+        "{outcome:?}"
+    );
+}
+
+/// **A continuing leader does not count a new copy that attests nothing.**
+/// A copy restored from a snapshot passes every refusal: its ballot names
+/// broker-a at 4, but it may have promised 5 to another leader before the
+/// restore rolled that ballot back. Its promise refuses older leaders and
+/// counts for nothing here, so the fence waits (#2047).
+#[tokio::test]
+async fn a_continuing_joint_fence_does_not_count_new_copies_that_attest_no_kept_ballot() {
+    let (outcome, _leader, _dir) = fence_followers_from_new_copies(true, false).await;
+
+    assert!(
+        matches!(&outcome, Outcome::Pending { why, .. } if why.contains("another copy")),
+        "{outcome:?}"
+    );
+}
+
+/// **A retried continuing fence still counts copies that kept their
+/// ballots.** The first round reached both followers, so each ballot already
+/// names broker-a at 5, but their answers were lost. Each round fences
+/// afresh, so the retry must be attested again: a kept ballot naming the
+/// leader at the generation itself promised it to no one else (#2047).
+#[tokio::test]
+async fn a_retried_continuing_fence_counts_copies_whose_ballot_names_it_already() {
+    let (outcome, _leader, _dir) = fence_followers_promised_at(true, true, PROMOTED).await;
+
+    assert_eq!(
+        outcome,
+        Outcome::Fenced {
+            caught_up_from: None
+        }
+    );
+}

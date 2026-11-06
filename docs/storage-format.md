@@ -58,6 +58,7 @@ a segment, should be rejected on its first four bytes rather than misparsed.
   registration                               ← the node incarnation of the last registration
   controlplane.view                          ← what the control plane last said about this node's shards
   replaced-storage                           ← the node was once registered under another storage id
+  lost-copy                                  ← whether this directory ever replaced a copy the node lost
   node-id                                    ← the id offloaded keys start with, when offload is on without FELIX_NODE_ID
   acme_default_orders_0-0d3aed4b998d2798/     ← one directory per stream shard
     00000000000000000000.log                 ← segment data
@@ -1231,6 +1232,24 @@ without the control plane also checks the fields: it may use a
 `controlplane.view` only if the view names that storage id and an
 incarnation above `after`. A file holding only `replaced`, as older releases
 write it, or one that does not parse, refuses every view.
+
+## `lost-copy`: the directory replaced a copy the node lost
+
+One text file at the durable root, written at a start before the node
+registers, holding `kept` or `lost` and a newline. It says `lost` once the
+directory was found to replace a copy the node lost: a directory the control
+plane last registered under another id than the one it had before this start
+rotated it (a wipe, or a copy from elsewhere), or one older than the node's
+last registration (a restore). Unlike `replaced-storage` it is not written
+when a crash rotated the directory's own id. It never goes back to `kept`
+and is never removed. Anything other than `kept` reads as `lost`. A directory
+without it that has `replaced-storage` counts as `lost`, since older releases
+also wrote that marker after their own crashes.
+
+After an unclean crash, a broker attests a kept ballot to a continuing
+leader (`FenceKeptOk`, `docs/internal-protocol.md`) only when this file says
+`kept` and the control plane's record names the id from before the crash.
+An older release neither reads nor writes the file.
 
 ## Consumer-group cursor values
 

@@ -33,6 +33,8 @@ pub(super) struct Stored {
     /// Set when this start found the data directory older than the node's
     /// last registration.
     pub(super) replaced_storage: bool,
+    /// Set after an unclean start whose directory kept every ballot it took.
+    pub(super) kept_promises: bool,
 }
 
 /// Open storage and the broker over it.
@@ -41,7 +43,7 @@ pub(super) fn open_storage(
     durable: Option<DurableStorageConfig>,
     registered: Option<&Registered>,
 ) -> Result<Stored> {
-    let (broker, durable_storage, storage_id, unclean, replaced_storage) =
+    let (broker, durable_storage, storage_id, unclean, replaced_storage, kept_promises) =
         storage::open_with(config, durable, registered)?;
     Ok(Stored {
         broker,
@@ -49,6 +51,7 @@ pub(super) fn open_storage(
         storage_id,
         unclean,
         replaced_storage,
+        kept_promises,
     })
 }
 
@@ -83,6 +86,7 @@ pub(super) async fn wire_broker(
         storage_id,
         unclean,
         replaced_storage,
+        kept_promises,
     } = stored;
     let ingress_router = cluster
         .as_ref()
@@ -93,9 +97,10 @@ pub(super) async fn wire_broker(
     // can lead from or vouch for (#1295).
     let unclean = match (&config.membership, cluster) {
         (Some(membership), Some((_, ingress, _, _))) if unclean => {
-            let unclean = Arc::new(felix_replication::unclean::UncleanStart::new(
-                membership.node_id.as_str(),
-            ));
+            let unclean = Arc::new(
+                felix_replication::unclean::UncleanStart::new(membership.node_id.as_str())
+                    .with_kept_promises(kept_promises),
+            );
             ingress.fence().bind_unclean_start(Arc::clone(&unclean));
             Some(unclean)
         }

@@ -4892,6 +4892,43 @@ Once it is finalized on a broker that offers `ELECTION`:
   A member of the old set that no route names any more is reached
   at the address the node catalog gives, and answers even though its own
   routing view leaves it out.
+- A leader moving on to the next generation of a shard it serves (same
+  process, not draining, exactly one generation up) is a continuing leader.
+  It wrote every record acknowledged before, so its joint fence needs only
+  promises, and it takes no tail from an answer. It counts an answer from
+  the copy the sets expect, as any fence does. It also counts an answer
+  from another copy of a member when the answer attests a kept ballot
+  (`FenceKeptOk`, negotiated with `KEPT_BALLOTS`): the copy's ballot, before
+  this fence, named that leader at the generation before or at this one (a
+  retried fence finds it there, and it promised this generation to no one
+  else), and its directory kept every ballot it took. Without the attestation the answer still
+  refuses older leaders but counts for nothing. A restored directory can
+  pass every refusal and answer from a new storage id, though before the
+  restore it may have promised this generation to another leader.
+- A copy doubted after an unclean crash, a learner because its storage id
+  rotated, answers a continuing leader's fence, and attests, only when its
+  ballot names that leader at the generation before or at this one, and the crash kept
+  every ballot. It promises and stays doubted until a leader ships to it.
+  Every other copy refuses as before. A broker knows the crash kept every
+  ballot only when the control plane's record of the node names the storage
+  id the directory had before the crash rotated it, and the directory never
+  replaced a lost copy. That is kept in a `lost-copy` marker under the data
+  directory, written before the node registers and never cleared: set for a
+  wiped directory the control plane knew another id for, a restored one, or
+  one whose old id the control plane did not have. A start from the
+  control-plane view, which opens before asking, never counts as keeping
+  them. A directory an older build ran counts as a lost copy if it has the
+  replaced-storage marker, since that build wrote it after its own crashes
+  too. A wiped or restored directory may have promised the generation to a
+  candidate and then lost that ballot, and a ballot it took since proves
+  nothing, so its promise now could make a second leader there
+  ([#1331](https://github.com/GetFelix/felix/issues/1331)). So a set change
+  that re-admits a member after two members crashed uncleanly opens under
+  the leader that kept serving
+  ([#2047](https://github.com/GetFelix/felix/issues/2047)). A failover
+  after the same two crashes still waits, as in
+  [A leader's own crash](#a-leaders-own-crash): stop the promoted broker,
+  run `felixctl placement abandon <name> <shard> --yes`, and start it again.
 - Outside a pending cut-over, a failover can leave two sets. When the
   control plane records an election without taking the elected leader's
   set, its own set and the one the elected leader shipped with can differ,
@@ -5007,7 +5044,17 @@ acknowledgement is the one it was.
 > count. `without_joint_fence_a_set_change_fences_the_new_set_alone`: the
 > fence is unchanged when the feature is off.
 > `under_joint_fence_the_next_generation_is_refused_by_a_replica_that_promised_it`:
-> the fenced next-generation open. `a_two_member_swap_waits_for_the_old_majority`
+> the fenced next-generation open.
+> `a_continuing_joint_fence_counts_followers_answering_from_new_copies`,
+> `a_continuing_joint_fence_does_not_count_new_copies_that_attest_no_kept_ballot`
+> and `a_failover_joint_fence_does_not_count_followers_answering_from_new_copies`:
+> a continuing leader counts another copy's promise only with the kept-ballot
+> attestation, a failover not at all.
+> `only_a_crash_on_a_directory_that_lost_nothing_keeps_its_promises`
+> (felix-broker-service, `node::storage`): when a directory may attest.
+> `a_learner_whose_ballot_names_the_leader_promises_its_next_generation` and
+> `a_learner_without_the_leaders_ballot_still_refuses_its_next_generation`
+> (`non_voting`): the replica's side. `a_two_member_swap_waits_for_the_old_majority`
 > (felix-cluster, `failures`): the same swap between broker processes.
 
 The control plane's side of rule 10 is built too (control-plane.md,

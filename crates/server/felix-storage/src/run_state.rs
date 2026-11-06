@@ -336,6 +336,30 @@ pub fn replaced(root: &Path) -> Result<bool> {
     crate::fs::try_exists(root.join(REPLACED_FILE_NAME)).map_err(StorageError::Io)
 }
 
+/// The lost-copy marker's name under the durable root. Not a directory, so
+/// shard discovery passes over it.
+pub const LOST_COPY_FILE_NAME: &str = "lost-copy";
+
+/// Record, durably, whether this directory replaced a copy the node lost:
+/// one wiped, restored from a snapshot, or not the one the control plane
+/// last registered. Unlike [`record_replaced`], never written for a storage
+/// id a crash rotated on the same directory. Callers never write `false`
+/// over `true`, and the file is never removed.
+pub fn record_lost_copy(root: &Path, lost: bool) -> Result<()> {
+    let body: &[u8] = if lost { b"lost\n" } else { b"kept\n" };
+    write_atomically(root, LOST_COPY_FILE_NAME, body, true)
+}
+
+/// What [`record_lost_copy`] last wrote under `root`, or `None` if it never
+/// ran there. A file that says anything else reads as a lost copy.
+pub fn lost_copy(root: &Path) -> Result<Option<bool>> {
+    match crate::fs::read(root.join(LOST_COPY_FILE_NAME)) {
+        Ok(bytes) => Ok(Some(bytes != b"kept\n")),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(StorageError::Io(err)),
+    }
+}
+
 /// What the replaced-storage marker under `root` says, or `None` without one.
 pub fn read_replaced(root: &Path) -> Result<Option<ReplacedMark>> {
     let bytes = match crate::fs::read(root.join(REPLACED_FILE_NAME)) {
