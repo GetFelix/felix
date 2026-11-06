@@ -116,7 +116,7 @@ pub(super) fn router_after(generation: u64, before: Option<&[&str]>) -> Arc<Shar
         )],
         &nodes,
     )
-    .with_priors(priors.into_iter().collect());
+    .with_priors(priors);
     router.publish(table, &nodes);
     router
 }

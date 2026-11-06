@@ -13,7 +13,8 @@ pub(crate) fn next_incarnation(proposed: u64, deleted_through: Option<u64>) -> u
 /// A proposal for [`next_incarnation`]: this clock in microseconds, below
 /// 2^53 so it reads back exactly as a JSON number anywhere.
 pub(crate) fn proposed_incarnation() -> u64 {
-    let micros = std::time::SystemTime::now()
+    // The shared wall clock, so a simulated control plane stamps virtual time.
+    let micros = felix_common::clock::system_time()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|since| since.as_micros() as u64)
         .unwrap_or(1);

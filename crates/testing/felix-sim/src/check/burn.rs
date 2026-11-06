@@ -8,7 +8,7 @@
 //! elections settle (`ElectionSettles`), not how many it took, so this is a
 //! warning for a person to read, never a failure.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::{CheckContext, Checker, Finding, Point, Seen, seen_by_all};
 use crate::cluster::describe;
@@ -39,7 +39,7 @@ struct Course {
 /// cost its leader.
 #[derive(Debug, Default)]
 pub struct GenerationBurn {
-    shards: HashMap<String, Course>,
+    shards: BTreeMap<String, Course>,
 }
 
 impl GenerationBurn {

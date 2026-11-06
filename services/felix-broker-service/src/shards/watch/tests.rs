@@ -27,6 +27,7 @@ fn assignment(shard: u32, leader: &str, generation: u64) -> ShardAssignment {
         fence_storage_ids: Default::default(),
         member_storage_ids: Default::default(),
         pending_set: None,
+        previous_generation: None,
     }
 }
 
@@ -248,6 +249,7 @@ fn cache_assignment(shard: u32, leader: &str, generation: u64) -> ShardAssignmen
         fence_storage_ids: Default::default(),
         member_storage_ids: Default::default(),
         pending_set: None,
+        previous_generation: None,
     }
 }
 
@@ -443,6 +445,84 @@ fn the_set_before_is_known_only_from_the_generation_right_before() {
     assert_eq!(prior_leader(&owned), None);
 }
 
+/// **A rename past a ballot keeps the set before when the control plane names
+/// the generation it replaced** (#2024). The control plane adopted broker-a
+/// at 23, a withdrawn standing left ballot 24, and placement named broker-a
+/// again at 25. Nothing was recorded at 24, so the set before 25 is the one
+/// at 23. Without the name the jump reads as an adoption and stays unknown,
+/// and a name that is not the held generation proves nothing.
+#[test]
+fn a_rename_past_a_ballot_keeps_the_set_it_replaced() {
+    let renamed = |previous: Option<u64>| ShardAssignment {
+        previous_generation: previous,
+        ..assignment(0, "broker-b", 25)
+    };
+    for (previous, expected) in [
+        (Some(23), Some(Some("broker-a".to_string()))),
+        (None, None),
+        (Some(22), None),
+    ] {
+        let mut owned = ShardOwnership::default();
+        owned.apply(&key(0), Some(assignment(0, "broker-a", 23)));
+        owned.apply(&key(0), Some(renamed(previous)));
+        assert_eq!(prior_leader(&owned), expected, "named {previous:?}");
+
+        let mut owned = ShardOwnership::default();
+        owned.apply(&key(0), Some(assignment(0, "broker-a", 23)));
+        owned.reset(vec![renamed(previous)]);
+        assert_eq!(
+            prior_leader(&owned),
+            expected,
+            "a snapshot, named {previous:?}"
+        );
+    }
+
+    let json = serde_json::json!({
+        "tenant_id": "t1", "namespace": "ns", "stream": "orders", "shard": 0,
+        "leader": "broker-b", "generation": 25, "state": "active",
+        "previous_generation": 23,
+    });
+    let parsed: ShardAssignment = serde_json::from_value(json).expect("assignment");
+    assert_eq!(parsed.previous_generation, Some(23));
+}
+
+/// **A broker reseeded from a snapshot takes the set before from the item**
+/// (#2024). The control plane cut shard 0 over from broker-a at 1 to broker-b
+/// at 2, and broker-b restarted: its watch holds nothing, so only the
+/// snapshot can say what came before. An item without `previous`, from an
+/// older control plane or after the change left the log, leaves it unknown,
+/// and a `previous` that is not right before the item proves nothing.
+#[test]
+fn a_reseeded_watch_takes_the_set_before_from_the_snapshot() {
+    let item = |previous: Option<serde_json::Value>| {
+        let mut json = serde_json::json!({
+            "tenant_id": "t1", "namespace": "ns", "stream": "orders", "shard": 0,
+            "leader": "broker-b", "replicas": ["broker-a", "broker-c"],
+            "generation": 2, "state": "active",
+        });
+        if let Some(previous) = previous {
+            json["previous"] = previous;
+        }
+        serde_json::from_value::<super::SnapshotItem>(json).expect("item")
+    };
+    let before = |generation: u64| {
+        serde_json::json!({
+            "generation": generation, "leader": "broker-a",
+            "replicas": ["broker-b", "broker-c"],
+        })
+    };
+    for (previous, expected) in [
+        (Some(before(1)), Some(Some("broker-a".to_string()))),
+        (None, None),
+        (Some(before(0)), None),
+    ] {
+        let mut owned = ShardOwnership::default();
+        let (items, first, previous) = super::seed_of(vec![item(previous)]);
+        owned.reset_from_control_plane(items, &first, &previous);
+        assert_eq!(prior_leader(&owned), expected);
+    }
+}
+
 /// **A first assignment has nothing before it**, unless the same incarnation
 /// carries on from a deleted stream's logs.
 #[test]
@@ -474,7 +554,7 @@ fn an_incarnation_zero_assignment_is_never_first() {
 /// at an incarnation this broker already held (#1872).
 #[test]
 fn a_snapshot_marked_first_has_no_set_before() {
-    let marked = std::collections::HashSet::from([key(0)]);
+    let marked = felix_common::random::HashSet::from_iter([key(0)]);
     let mut first = assignment(0, "broker-a", 12);
     first.incarnation = 3;
 

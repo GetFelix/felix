@@ -25,8 +25,8 @@ use parking_lot::Mutex;
 
 pub(super) use file::Flags;
 pub(crate) use file::MemFile;
+pub(crate) use registry::{claim, register, tree_at, unregister};
 pub(super) use registry::{is_above_a_root, route};
-pub(crate) use registry::{register, tree_at, unregister};
 
 /// One registered root and everything below it.
 pub(crate) struct Tree {

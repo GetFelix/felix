@@ -1,5 +1,5 @@
 //! Exporting and importing the whole store, for Raft snapshots and `migrate`.
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 
 use super::{InMemoryStore, NodeState, PlacementState, ShardState};
 use crate::model::{

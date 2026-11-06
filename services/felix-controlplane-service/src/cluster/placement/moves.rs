@@ -3,7 +3,8 @@
 //! Each step is one assignment write, decided from the store and fresh
 //! reports alone, so any instance resumes a half-done move where the last
 //! pass left it.
-use std::collections::{BTreeSet, HashMap};
+use felix_common::random::HashMap;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use felix_router::RegionRouter;
@@ -237,7 +238,7 @@ impl Moves {
     ) -> Self {
         let mut moves = Self {
             in_flight: 0,
-            per_node: HashMap::new(),
+            per_node: HashMap::default(),
             policy,
             cluster_moves: true,
             stream_wanted: false,
@@ -759,6 +760,7 @@ pub(super) fn move_step<'a>(
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
+            previous_generation: None,
         };
         return Decision::Move(
             MoveStep::CutOver {
@@ -1124,6 +1126,7 @@ pub(super) fn start(
         member_storage_ids: Default::default(),
         learners: Default::default(),
         pending_set: None,
+        previous_generation: None,
     };
     if already_a_replica && moves.ready_to_fence(caught_up, &existing.key, destination) {
         // The copy is already there: straight to the fence.

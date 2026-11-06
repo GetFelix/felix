@@ -197,7 +197,8 @@ broker's data directory lives in an in-memory filesystem that keeps a second,
 durable copy of every file and directory, so it can rebuild what a power loss
 would have left, with unsynced pages lost, torn or zeroed. The simulator can
 build that state, but its nemesis does not cut the power yet: today a crash is
-a process crash, and the power-loss faults are in the
+a process crash, half of them kills that leave the run state unclean so the
+restart runs the unclean-start handling, and the power-loss faults are in the
 [history checker](#the-history-checker) and the storage suite.
 
 A run lasts 120 seconds of virtual time. Faults go in for the first 90, then
@@ -216,25 +217,29 @@ Run a batch of seeds, or replay one:
 
 ```bash
 cargo test -p felix-sim --test seeds -- --ignored --exact seeds
-FELIX_SIM_SEED=<n> cargo test -p felix-sim --test seeds replay -- --nocapture
+FELIX_SIM_SEED=<n> task sim:replay
 ```
 
 `FELIX_SIM_SEEDS` sets how many seeds the batch runs (default 4) and
 `FELIX_SIM_SEED_START` the first (default 1). `FELIX_SIM_HISTORY=<file>` writes
-a run's history, so two runs can be diffed. A failing seed prints the replay
-command. Each seed takes three to five minutes of real time, because starting
-50 to 200 shards on every broker is CPU work no virtual clock skips, so run
-them one at a time on a busy machine. A run that stops making progress ends
+a run's trace, one event per line, so two runs can be diffed. A failing seed prints the replay
+command. Each seed takes one to ten seconds of real time in a release build
+and longer in a debug one, because starting 50 to 200 shards on every broker
+is CPU work no virtual clock skips, so run them one at a time on a busy
+machine. A run that stops making progress ends
 with a `stalled` finding instead of hanging.
 
-Repeatable has a limit here. A replay injects the same faults at the same
-virtual times and sends the same client operations, but the interleaving of the
-brokers' own tasks can still differ, so a failure may take a few replays to
-show again. Building with `RUSTFLAGS="--cfg tokio_unstable"` makes tokio's
-`select!` seeded as well, which closes most of that gap. It does not close all
-of it: storage still reads the host clock in a few places. CI runs the `seeds`
-test, seeds 1 to 4, in its own job on every pull request. That job does not
-block merging until the open liveness bugs it finds are fixed.
+A replay injects the same faults at the same virtual times and sends the same
+client operations. `task sim:replay` builds with
+`RUSTFLAGS="--cfg tokio_unstable"`, which lets tokio seed `select!`, so the
+replay is the same run event for event. A plain `cargo test` build leaves
+`select!` unseeded and the brokers' interleaving can differ, so a failure may
+take a few replays to show again. CI runs `task sim:determinism` on every pull
+request: seeds 1 to 20 run twice each in one process, seed 1 is replayed in two
+separate processes, and the job fails on the first event that differs. It
+blocks merging. The `seeds` test, seeds 1 to 4, is ignored in the workspace
+tests and runs in its own job, which does not block merging until the open
+liveness bugs it finds are fixed.
 Seeds that expose a bug are pinned as ignored tests named after their issue,
 and [`docs/simulation.md`](https://github.com/GetFelix/felix/blob/main/docs/simulation.md)
 lists the ones that fail today.

@@ -277,7 +277,7 @@ impl ControlPlaneStore for PostgresStore {
     async fn stream_routings(
         &self,
         keys: &[StreamKey],
-    ) -> StoreResult<std::collections::HashMap<StreamKey, crate::model::StreamRouting>> {
+    ) -> StoreResult<felix_common::random::HashMap<StreamKey, crate::model::StreamRouting>> {
         streams::stream_routings(self, keys).await
     }
 
@@ -539,6 +539,10 @@ impl ControlPlaneStore for PostgresStore {
 
     async fn first_shard_assignments(&self) -> StoreResult<Vec<(ShardKey, u64, u64)>> {
         shards::first_shard_assignments(self).await
+    }
+
+    async fn previous_shard_assignments(&self) -> StoreResult<Vec<ShardAssignment>> {
+        shards::previous_shard_assignments(self).await
     }
 
     async fn shard_assignment_changes(

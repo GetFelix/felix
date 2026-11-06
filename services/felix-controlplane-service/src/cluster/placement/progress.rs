@@ -8,7 +8,7 @@
 //! what it saw. One without the history, after a restart or a lease change,
 //! starts the window again, which delays giving up but never gives up a copy
 //! that is moving.
-use std::collections::{HashMap, HashSet};
+use felix_common::random::{HashMap, HashSet};
 
 use super::moves::{MAX_STUCK_PER_FLEET, STUCK_RENAME_WINDOW_MILLIS};
 use super::{CaughtUp, StuckLeader, StuckReason};
@@ -85,9 +85,9 @@ impl CopyProgress {
         caught_up: &dyn CaughtUp,
     ) -> HashMap<(ShardKey, String), u64> {
         let Some(now) = caught_up.as_of_millis() else {
-            return HashMap::new();
+            return HashMap::default();
         };
-        let mut seen = HashMap::new();
+        let mut seen = HashMap::default();
         for assignment in existing {
             let Some(joining) = assignment.joining.as_deref() else {
                 continue;
@@ -145,7 +145,7 @@ impl CopyProgress {
         caught_up: &dyn CaughtUp,
     ) -> HashMap<(ShardKey, u64), u64> {
         let Some(now) = caught_up.as_of_millis() else {
-            return HashMap::new();
+            return HashMap::default();
         };
         self.fences = existing
             .iter()
@@ -195,7 +195,7 @@ impl CopyProgress {
         positions: &super::ReplicaPositions,
     ) -> HashMap<(String, String), u64> {
         let Some(now) = positions.as_of_millis() else {
-            return HashMap::new();
+            return HashMap::default();
         };
         self.suspicions = positions
             .suspicions()
@@ -216,7 +216,7 @@ impl CopyProgress {
         caught_up: &dyn CaughtUp,
     ) -> HashMap<(ShardKey, u64), u64> {
         let Some(now) = caught_up.as_of_millis() else {
-            return HashMap::new();
+            return HashMap::default();
         };
         self.pendings = existing
             .iter()
@@ -304,13 +304,13 @@ impl CopyProgress {
     ) -> HashMap<(ShardKey, u64), StuckLeader> {
         let (Some(now), Some(bound)) = (positions.as_of_millis(), bound) else {
             self.watched.clear();
-            return HashMap::new();
+            return HashMap::default();
         };
         self.stuck_renames.retain(|_, at| {
             at.retain(|at| now.saturating_sub(*at) < STUCK_RENAME_WINDOW_MILLIS);
             !at.is_empty()
         });
-        let mut reporting: HashMap<&str, u64> = HashMap::new();
+        let mut reporting: HashMap<&str, u64> = HashMap::default();
         for report in positions.all_reports() {
             if let Some(leader) = report.leader.as_deref() {
                 let at = reporting.entry(leader).or_default();
@@ -318,8 +318,8 @@ impl CopyProgress {
             }
         }
         let suspected: HashSet<(&str, &str)> = positions.suspicions().collect();
-        let mut watched = HashMap::new();
-        let mut stuck = HashMap::new();
+        let mut watched = HashMap::default();
+        let mut stuck = HashMap::default();
         for assignment in existing {
             let leader = assignment.leader.as_str();
             if assignment.replicas.is_empty()

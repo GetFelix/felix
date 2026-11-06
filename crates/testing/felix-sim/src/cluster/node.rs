@@ -4,7 +4,6 @@
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -52,15 +51,21 @@ struct DataDir {
 }
 
 impl DataDir {
-    fn new() -> Self {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "felix-sim-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed),
-        ));
-        felix_storage::sim_fs::register_root(&path);
-        Self { path }
+    /// The same path every run when no other simulation in the process
+    /// holds it, so a replay hashes and orders paths as the first run did.
+    fn new(index: usize) -> Self {
+        let base = std::env::temp_dir().join("felix-sim");
+        for attempt in 0.. {
+            let name = match attempt {
+                0 => format!("b{}", index + 1),
+                n => format!("b{}-{n}", index + 1),
+            };
+            let path = base.join(name);
+            if felix_storage::sim_fs::claim_root(&path) {
+                return Self { path };
+            }
+        }
+        unreachable!("some attempt finds a free path")
     }
 
     fn path(&self) -> &Path {
@@ -88,7 +93,7 @@ impl Node {
         Ok(Self {
             id: format!("b{}", index + 1),
             advertise: SocketAddr::from(([10, 0, 0, (index + 1) as u8], 5001)),
-            dir: DataDir::new(),
+            dir: DataDir::new(index),
             cut: Cut::new(),
             state: Mutex::new(State::Down),
             index,
@@ -206,11 +211,19 @@ impl Node {
         Ok(())
     }
 
-    /// Stop whatever is running or starting, as a crash does.
-    pub(crate) async fn crash(&self, net: &SimNet) {
+    /// Whether the running broker started with its unclean-start handling.
+    pub(crate) fn started_unclean(&self) -> Option<bool> {
+        Some(self.broker()?.started_unclean())
+    }
+
+    /// Stop whatever is running or starting, as a crash does. A `kill` leaves
+    /// the run state unclean, so the next start rotates the storage id and
+    /// runs the unclean-start handling; otherwise the stop is recorded clean.
+    /// Returns whether the run state was left unclean.
+    pub(crate) async fn crash(&self, net: &SimNet, kill: bool) -> bool {
         let prior = std::mem::replace(&mut *self.state.lock(), State::Down);
         let broker = match prior {
-            State::Down => return,
+            State::Down => return false,
             State::Starting(token) => {
                 token.cancel();
                 None
@@ -241,16 +254,24 @@ impl Node {
             }
         }
         tokio::time::sleep(CRASH_DRAIN).await;
-        // A crash of the process loses nothing the kernel accepted, so it is
-        // equivalent to a stop with everything synced. Say so in the run
-        // state: otherwise a restart takes a new storage id on a platform
-        // that cannot sync the filesystem after a crash (everything but
-        // Linux), and the broker refuses to lead what it led.
-        if let Some(id) = stopped_under
-            && let Err(err) = felix_storage::run_state::mark_clean(self.dir.path(), id)
-        {
+        let Some(id) = stopped_under else {
+            return false;
+        };
+        if kill {
+            // A kill after a failed fsync: the process left the run state
+            // running, and the next start cannot trust what it acknowledged.
+            if let Err(err) = felix_storage::run_state::forget_boot(self.dir.path()) {
+                tracing::error!(node = %self.id, error = %err, "could not record the kill as unsafe");
+                return false;
+            }
+            return true;
+        }
+        if let Err(err) = felix_storage::run_state::mark_clean(self.dir.path(), id) {
+            // A process crash loses nothing the kernel accepted, so it is
+            // equivalent to a stop with everything synced.
             tracing::error!(node = %self.id, error = %err, "could not record the crash as clean");
         }
+        false
     }
 
     /// The catalog sync's read of the control plane, behind this broker's

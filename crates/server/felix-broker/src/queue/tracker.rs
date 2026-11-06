@@ -13,7 +13,8 @@
 //!
 //! Pure logic with the clock passed in, so every rule here is testable without
 //! waiting for one.
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use felix_common::random::HashMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -94,7 +95,7 @@ impl GroupTracker {
             attempts: BTreeMap::new(),
             redriven: BTreeSet::new(),
             holders: BTreeMap::new(),
-            members: HashMap::new(),
+            members: HashMap::default(),
             skipped: BTreeMap::new(),
             max_attempts: max_attempts.max(1),
             max_in_flight: usize::MAX,

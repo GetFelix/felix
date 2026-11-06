@@ -758,6 +758,15 @@ shard's own log's ballot as they check its generation. A broker leading a
 generation takes the ballot for itself first, and refuses to lead a
 generation it already accepted from another node.
 
+This is the prepare and promise pattern of Paxos. The generation is the ballot
+number, a fence is the prepare round and needs a majority, and a replica's
+ballot on disk is its promise not to accept an older leader. The new leader
+takes the log of the answer furthest ahead, as Paxos adopts the value accepted at
+the highest ballot. Felix does not run Multi-Paxos for the log: after the fence
+the leader ships records and counts majority acks, and normally the control plane
+names leaders. See Lamport, ["The Part-Time Parliament"](https://doi.org/10.1145/279227.279229)
+(ACM TOCS, 1998) and ["Paxos Made Simple"](https://lamport.azurewebsites.net/pubs/paxos-simple.pdf) (2001).
+
 The ballot is on disk before the replica answers: `DiskLog::accept_generation`
 writes the shard's `ballot` file, fsynced and renamed into place with the
 directory synced, then raises the generation in `replica`, and only then
@@ -4571,6 +4580,22 @@ already waiting when the generation changes carries over to the new mark,
 which counts a majority of the new replica set holding the log up to it. Only
 the broker ceasing to lead the shard ends the wait early.
 
+The new mark counts the log as it is now, so it covers a write only if the
+log still holds it. That is not a given when the new generation came from a
+promotion: its catch-up can drop the leader's unacknowledged suffix and take
+a newer leader's records at the same offsets (#2048). So a wait that ends at
+a newer generation than its write's checks that the log still labels the
+write's offsets with the write's generation. One generation has one leader,
+so a record at that offset and generation is the write. Records a catch-up
+took from a replica that sent no labels have no known generation, since the
+entry from before the cut would claim them, so the check refuses those too.
+Otherwise the client is told leadership was lost, and the outcome is unknown.
+Cache puts and counter adds wait the same way. A cache put does not report
+its offset, so it checks everything between the cache log's tail read inside
+its fence before the put and the tail after. `FelixShardFigure8AckWaitByOffset` in
+`docs/formal/` finds the lost write without the check, and
+`FelixShardFigure8AckWait` shows it holds with it.
+
 The window is kept short by waking each step rather than polling for it. The
 broker long-polls the assignment feed, so the fence and the cut-over reach it
 as they are written. Its assignment watch wakes the routing feed, and the feed
@@ -4805,7 +4830,19 @@ Once it is finalized on a broker that offers `ELECTION`:
   when it names none; such a fence does not stay pending. For other changes the broker learns
   the set from the assignment its watch saw at that generation,
   from the set the leader before shipped with at it, or from what this
-  leader kept beside its own set. When none of those knows it, the fence
+  leader kept beside its own set. The watch knows that assignment only when
+  the route's generation is one above it, or when the control plane names it:
+  a rename past a ballot (`set_unknown` with a floor) lands more than one
+  generation up, records nothing in between, and stores the generation it
+  replaced on the assignment (`previous_generation`, #2024). An adoption also
+  skips generations but names none, since the set before an elected
+  generation is not the control plane's. The control plane records it under
+  Raft only at metadata level 29, so a group with an older member names
+  nothing and such a fence stays pending as below. A broker that reseeds its
+  watch from a snapshot, after a restart, holds no assignment before; each
+  snapshot item carries the set right before it (`previous`), read from the
+  control plane's retained change log, and the broker takes it as a watching
+  broker would. An item whose earlier change has left the log carries none. When none of those knows it, the fence
   does not fence the new set alone. What it does depends on what the log
   keeps, and it acts only on evidence that no earlier set can still hold
   acknowledged records:
@@ -4850,7 +4887,10 @@ Once it is finalized on a broker that offers `ELECTION`:
     fence pending.
   - Otherwise, the log keeps an older set than the one before: the leader
     skipped a generation it never opened, and a rename would leave that
-    generation's set unfenced. The fence stays pending.
+    generation's set unfenced. The fence stays pending. A leader the control
+    plane renamed past a withdrawn standing's ballot lands here only when
+    neither its watch nor its snapshot holds the assignment the rename
+    names.
   - The log keeps no set, above generation 0: this may be a failover's new leader whose watch
     started from a snapshot, while the old leader, cut off, still
     acknowledges on a majority of the old set. The fence stays pending.

@@ -204,6 +204,9 @@ impl RaftStore {
         if !assignment.learners.is_empty() && self.group_level().await < LEARNER_LEVEL {
             assignment.learners.clear();
         }
+        // Store-owned: the apply decides it, and a value copied from the
+        // assignment being replaced would only raise the entry's level.
+        assignment.previous_generation = None;
     }
 
     /// Whether the fleet has finalized `joint_fence`.
@@ -914,6 +917,9 @@ impl ControlPlaneStore for RaftStore {
                     fence,
                     seq_generation: level >= SHARD_RENEWAL_LEVEL,
                     at_least,
+                    // Only a floor can skip generations; other writes keep
+                    // the level they had.
+                    record_previous: at_least > 0 && level >= PREVIOUS_GENERATION_LEVEL,
                 },
             )
             .await?
@@ -1053,6 +1059,10 @@ impl ControlPlaneStore for RaftStore {
 
     async fn first_shard_assignments(&self) -> StoreResult<Vec<(ShardKey, u64, u64)>> {
         self.local().first_shard_assignments().await
+    }
+
+    async fn previous_shard_assignments(&self) -> StoreResult<Vec<ShardAssignment>> {
+        self.local().previous_shard_assignments().await
     }
 
     async fn shard_assignment_changes(

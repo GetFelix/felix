@@ -17,7 +17,7 @@
 //! let a fenced leader's bytes reach the disk, and records are never rewritten.
 mod election;
 
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -139,18 +139,18 @@ impl ReplicaHandler {
         Self {
             broker,
             router,
-            verified: parking_lot::Mutex::new(HashMap::new()),
-            mismatched: parking_lot::Mutex::new(HashMap::new()),
+            verified: parking_lot::Mutex::new(HashMap::default()),
+            mismatched: parking_lot::Mutex::new(HashMap::default()),
             unclean: None,
             confirmed: None,
-            heard: parking_lot::Mutex::new(HashMap::new()),
+            heard: parking_lot::Mutex::new(HashMap::default()),
             confirmed_reads: Default::default(),
             stickiness: crate::suspicion::DEFAULT_SUSPECT_AFTER,
             fleet: None,
             local_storage: None,
             replaced_storage: false,
-            fence_turns: parking_lot::Mutex::new(HashMap::new()),
-            fenced_at: parking_lot::Mutex::new(HashMap::new()),
+            fence_turns: parking_lot::Mutex::new(HashMap::default()),
+            fenced_at: parking_lot::Mutex::new(HashMap::default()),
             #[cfg(test)]
             incarnation_checked: parking_lot::Mutex::new(None),
         }

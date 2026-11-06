@@ -6,7 +6,7 @@
 //! brokers consume take `node.view:cluster:*` like the rest of the metadata
 //! they sync. Day 0, before any operator credential exists, goes through the
 //! bootstrap listener instead.
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 
 use axum::Json;
 use axum::extract::{Path, Query, State};

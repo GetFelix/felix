@@ -36,6 +36,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use crate::cluster::kills::{ShardView, Views};
 use anyhow::{Context, Result, anyhow, bail};
 use axum::Router;
 use axum::http::{Method, Request, header};
@@ -609,6 +610,26 @@ impl SimControlPlane {
             bail!("fleet features: {} {}", response.status, response.text());
         }
         response.json()
+    }
+
+    /// Each shard's leader, generation and replica set, read from the store so
+    /// a pause or outage does not hide them. Keyed like
+    /// [`crate::cluster::describe`].
+    pub(crate) async fn shard_views(&self) -> Result<Views> {
+        let snapshot = self.inner.store.shard_assignment_snapshot().await?;
+        Ok(snapshot
+            .items
+            .into_iter()
+            .map(|a| {
+                let kind = format!("{:?}", a.key.kind).to_lowercase();
+                let view = ShardView {
+                    leader: a.leader,
+                    generation: a.generation,
+                    members: a.replicas.into_iter().chain(a.joining).collect(),
+                };
+                (format!("{kind}/{}", a.key.shard), view)
+            })
+            .collect())
     }
 
     /// Every shard's assignment as the control plane has it.

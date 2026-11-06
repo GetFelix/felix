@@ -33,6 +33,12 @@ A seed fails when any check reports a problem, except a warning.
   while the run goes: `ElectionSettles`, `OneLeaderPerGeneration`,
   `AtMostOneServing`, `AckedHeldByLeader`, `AdoptedMatchesOpened` and
   `GenerationBurn`.
+- `ElectionSettles` skips a shard the broker holds on purpose: its leader was
+  killed uncleanly, and killed members that were already down then make up a
+  majority of the set with it. The broker waits for `felixctl placement
+  abandon`. Every other check still covers the shard. If its final read cannot
+  be taken, only the lost-write rule is skipped and a warning names it. The run
+  prints how many shards were exempt.
 - A run that stops making progress ends with a `stalled` finding instead of
   hanging.
 
@@ -41,7 +47,7 @@ A seed fails when any check reports a problem, except a warning.
 Run one seed, with the broker log:
 
 ```bash
-FELIX_SIM_SEED=<n> RUST_LOG=info cargo test -p felix-sim --test seeds replay -- --nocapture
+FELIX_SIM_SEED=<n> RUST_LOG=info task sim:replay
 ```
 
 Run a batch of seeds. `FELIX_SIM_SEEDS` is how many (default 4) and
@@ -61,6 +67,17 @@ liveness stalls are open. One seed takes a few seconds in a debug build and the
 default batch of four takes a few minutes, so run batches one at a time on a
 busy machine.
 
-The same seed injects the same faults at the same virtual times. The brokers'
-own interleaving can still differ, so a failure can take more than one replay
-to show again. `docs/simulation.md` covers making the interleaving repeat too.
+A replay repeats the same faults at the same virtual times and the same client
+operations. Run through `task sim:replay`, which builds with
+`RUSTFLAGS="--cfg tokio_unstable"` so tokio seeds `select!`, it is the same
+run, event for event:
+
+```bash
+FELIX_SIM_SEED=<n> FELIX_SIM_HISTORY=run1.txt task sim:replay
+```
+
+A plain `cargo test` replay leaves `select!` unseeded, so the interleaving
+under the faults can differ and a timing-sensitive failure may take a few
+replays to show again. It refuses `FELIX_SIM_HISTORY` for that reason.
+`task sim:determinism` checks that replay is exact, in one process and across
+two, and CI runs it on every pull request. `docs/simulation.md` has the details.

@@ -33,7 +33,7 @@ fn log(storage: &felix_broker::DurableStorage) -> felix_broker::StreamLog {
 fn led_with_followers(generation: u64) -> HashMap<ShardKey, ShardAssignment> {
     let mut assignment = assigned_to("broker-a", generation);
     assignment.replicas = vec!["broker-b".to_string(), "broker-c".to_string()];
-    HashMap::from([(key(0), assignment)])
+    HashMap::from_iter([(key(0), assignment)])
 }
 
 fn node(

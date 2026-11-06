@@ -1,0 +1,1 @@
+Peers that close a QUIC connection normally no longer make the broker log a stats dump and a warning per open stream. A normal close is one short info line, stream failures after a close log at debug, and real failures log with their cause.

@@ -56,6 +56,17 @@ A few terms first.
   ballots at its generation, and it serves only once a majority has given one.
   A replica that answered stops taking writes from the old leader.
 
+The election and the fence follow the prepare and promise steps of Paxos. The
+generation is the ballot number. A fence is the prepare round, and it needs a
+majority. A replica's ballot on disk is its promise never to follow an older
+leader. The new leader then catches up from the copy furthest ahead among the
+answers, ranked by the generation of its last record and then its length, the way
+Paxos adopts the value accepted at the highest ballot. Felix does not run
+Multi-Paxos for the log, though. After the fence, the leader ships records and
+counts majority acks. And normally the control plane names leaders, not an
+election. See Leslie Lamport, ["The Part-Time Parliament"](https://doi.org/10.1145/279227.279229)
+(ACM TOCS, 1998) and ["Paxos Made Simple"](https://lamport.azurewebsites.net/pubs/paxos-simple.pdf) (2001).
+
 Say a shard has three copies on brokers A, B and C, with A leading, and the
 control plane is down. A crashes.
 

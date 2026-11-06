@@ -10,7 +10,7 @@
 mod shard;
 mod shards;
 
-use std::collections::{HashMap, HashSet};
+use felix_common::random::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -511,7 +511,7 @@ pub async fn replicate_once_with<R: PeerRequester + Sync>(
     // Bounded, because each shard in flight holds a peer request and may hold
     // an HTTP report: a broker leading thousands of shards must not open
     // thousands of those at once.
-    let no_one = HashSet::new();
+    let no_one = HashSet::default();
     let passes: Vec<ShardPass> =
         futures::stream::iter(work.into_iter().map(|(key, route, entry, aux)| {
             let prior = router.prior_set(&key);
@@ -818,7 +818,7 @@ fn open_caches(broker: &Broker, keys: &[ShardKey]) -> OpenCaches {
     {
         broker.cache().open_shards().into_iter().collect()
     } else {
-        HashSet::new()
+        HashSet::default()
     }
 }
 

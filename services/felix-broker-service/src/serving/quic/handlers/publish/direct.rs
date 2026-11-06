@@ -82,7 +82,7 @@ pub async fn resolve_publish(
     };
     let shard =
         publish_shard_at(ingress, tenant_id, namespace, stream, key, named).map_err(refuse)?;
-    let mut cache = StreamHandleCache::new();
+    let mut cache = StreamHandleCache::default();
     let mut scratch = String::new();
     let route = resolve_route(
         broker,
@@ -145,6 +145,7 @@ pub async fn publish_direct(
         shard.as_ref(),
         claimed,
         fences,
+        generation,
         marks,
         ingress,
         quorum_timeout,
@@ -165,7 +166,8 @@ pub async fn publish_direct(
 /// Anything but `Quorum` answers before the fanout, so the ack does not queue
 /// behind waking every subscriber. A `Quorum` stream releases the fence once
 /// the batch is committed, then waits for a majority before it answers.
-/// `fences` is held until the batch is durable and fanned out.
+/// `fences` is held until the batch is durable and fanned out; `generation` is
+/// the one they were entered at.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn finish_claimed(
     broker: &Broker,
@@ -173,6 +175,7 @@ pub(crate) async fn finish_claimed(
     shard: Option<&ShardKey>,
     claimed: ClaimedPublish,
     fences: impl Send,
+    generation: u64,
     marks: Option<&QuorumMarks>,
     ingress: Option<&IngressRouter>,
     quorum_timeout: Duration,
@@ -200,6 +203,7 @@ pub(crate) async fn finish_claimed(
             handle,
             shard,
             &outcome,
+            generation,
             marks,
             ingress,
             quorum_timeout,

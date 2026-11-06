@@ -1,7 +1,7 @@
 //! Per-stream state: the subscriber registry, its lock-free publish snapshot,
 //! and the bounded in-memory log that backs cursor replay.
 
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 

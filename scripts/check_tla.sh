@@ -149,6 +149,8 @@ expectations=(
   "FelixShardFigure8CutOverNoStartRecord violates AckedOnMajority"
   "FelixShardFigure8FollowerAcks pass"
   "FelixShardFigure8FollowerAcksNoStartRecord violates AckedOnMajority"
+  "FelixShardFigure8AckWait pass"
+  "FelixShardFigure8AckWaitByOffset violates AckedHeldByLeader"
   "FelixShardUnfencedAck violates AckedHeldByLeader"
   "FelixShardFencedAckAnyKept pass"
   "FelixShardFencedAckAnyReplaced violates AckedHeldByLeader"
@@ -342,6 +344,7 @@ expectations=(
   "FelixShardElectRefusals pass"
   "FelixShardElectRefusalsPinsCleared violates AckedHeldByLeader"
   "FelixShardElectRenameMinorityDrop violates OneLeaderPerGeneration"
+  "FelixShardCpLiveSkippedGenerationUnknownPrior violates liveness"
   "FelixShardCpDownNoSelfSuspicion violates liveness"
   "FelixShardCpDownBrokerSuspicion violates liveness"
   "FelixShardCpDownDegraded violates liveness"
@@ -481,6 +484,9 @@ fi
 # had not finished after seven minutes and 3.9M distinct states on a laptop.
 # FelixShardCpLiveRefusals does not finish on a laptop either, and its twin
 # FelixShardCpLiveRefusalsUnknownNoBallot has found no violation yet.
+# FelixShardCpLiveSkippedGeneration, FelixShardCpLive cut down to the #2024
+# scenario, runs past it too and is checked nightly (tla-walk.yml); its
+# violating twin stays registered.
 # FelixShardElectSwap is not registered: it does not finish in one run, so
 # it is checked in pieces split at the cut-over. The eleven that take under 45
 # minutes are registered above; FelixShardElectSwapKeep0, the four
@@ -550,6 +556,7 @@ weights=(
   "FelixShardFencedPromotion 12"
   "FelixShardCancelResend 11"
   "FelixShardFigure8FollowerAcks 10"
+  "FelixShardFigure8AckWait 10"
   "FelixShardCancel 10"
   "FelixShardReportFloor 10"
   "FelixShardAckWithoutLease 6"
@@ -652,6 +659,7 @@ weights=(
   "FelixShardCpLiveRefusalsCopyExcluded 2"
   "FelixShardCpLiveRefusalsPinsForever 2"
   "FelixShardElectRefusals 3"
+  "FelixShardCpLiveSkippedGenerationUnknownPrior 20"
   "FelixShardCpDownNoSelfSuspicion 15"
 )
 

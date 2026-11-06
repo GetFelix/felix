@@ -585,7 +585,7 @@ impl DiskLog {
                     replica_state::store(&operation.dir, &state)?;
                     operation.commit_offset.store(offset, Ordering::Release);
                     operation.commit_persisted.store(offset, Ordering::Release);
-                    *persisted = (state, Some(std::time::Instant::now()));
+                    *persisted = (state, Some(tokio::time::Instant::now()));
                 }
             }
             if offset == tail {
@@ -620,6 +620,15 @@ impl DiskLog {
             epochs::store(&self.inner.dir, &epochs)?;
         }
         Ok(())
+    }
+
+    /// Whether the generation history labels every record in `first..=last`.
+    ///
+    /// False for any of them that arrived after a cut with no label, such as
+    /// records a promotion took from a replica that sent none: the entry
+    /// before the cut would otherwise claim them. Since this log was opened.
+    pub fn labels_known(&self, first: Offset, last: Offset) -> bool {
+        self.inner.epochs.lock().labelled(first, last)
     }
 
     /// Whether [`DiskLog::label_generations`] with these arguments would
@@ -1392,7 +1401,8 @@ struct LogInner {
     #[cfg(test)]
     replica_writes: AtomicU64,
     /// What `replica_state` last wrote, and when. Held only by the writer.
-    replica_persisted: Mutex<(replica_state::ReplicaState, Option<std::time::Instant>)>,
+    /// Tokio's clock, so a simulation decides when to persist on virtual time.
+    replica_persisted: Mutex<(replica_state::ReplicaState, Option<tokio::time::Instant>)>,
     /// Each idempotent producer's place in the log. Written only under the
     /// `segments` write lock, in offset order, so it always matches the tail.
     producers: Mutex<producers::ProducerState>,
@@ -1630,6 +1640,7 @@ impl LogInner {
     /// the generation history and the producer table down with them. Called
     /// holding the flush lock and the `segments` write lock.
     fn cut_suffix(&self, segments: &mut SegmentSet, offset: Offset) -> Result<()> {
+        let cuts_records = offset < segments.tail_offset();
         segments.truncate(offset)?;
         segments.active_mut().sync()?;
         self.note_rewound(segments)?;
@@ -1637,7 +1648,11 @@ impl LogInner {
         // The history cannot outlive the records it describes, or it would
         // answer with a start offset the log no longer holds.
         let mut epochs = self.epochs.lock();
-        epochs.truncate_from(offset);
+        if cuts_records {
+            epochs.cut_at(offset);
+        } else {
+            epochs.truncate_from(offset);
+        }
         epochs::store(&self.dir, &epochs)?;
         self.reset_producers(segments)
     }
@@ -1750,7 +1765,7 @@ async fn persist_replica_state(inner: Arc<LogInner>) -> Result<()> {
         inner
             .commit_persisted
             .store(state.commit_offset, Ordering::Release);
-        *persisted = (state, Some(std::time::Instant::now()));
+        *persisted = (state, Some(tokio::time::Instant::now()));
         Ok(())
     })
     .await
@@ -1827,8 +1842,9 @@ fn retry_replica_state(inner: &Arc<LogInner>) {
     });
 }
 
+/// Wall-clock microseconds for retention; virtual time under a simulator.
 fn now_micros() -> u64 {
-    std::time::SystemTime::now()
+    felix_common::clock::system_time()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_micros().min(u128::from(u64::MAX)) as u64)
         .unwrap_or(0)

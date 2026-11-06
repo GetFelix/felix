@@ -1,7 +1,7 @@
 //! Admission control: the byte budgets (global, per connection, per identity) and the
 //! subscription caps.
 
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 
@@ -80,7 +80,7 @@ impl ConnLimits {
             max_subscriptions: config.conn_subscription_ceiling(),
             identity_max_subscriptions: config.max_subscriptions_per_conn,
             identity_inflight_bytes: config.pub_conn_inflight_bytes,
-            identities: Mutex::new(HashMap::new()),
+            identities: Mutex::new(HashMap::default()),
         })
     }
 

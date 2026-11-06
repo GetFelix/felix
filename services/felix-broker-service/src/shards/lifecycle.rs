@@ -23,7 +23,7 @@ pub mod fence;
 pub mod metrics;
 pub mod promotion;
 
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::sync::Arc;
 use tokio::time::Instant;
 
@@ -165,7 +165,7 @@ pub struct ShardLifecycle {
     /// Shards the last assignment set gave this broker any role in. Leaving
     /// this set is what closes a shard's logs: until then a replica or a
     /// move's destination still needs them.
-    held: std::collections::HashSet<ShardKey>,
+    held: felix_common::random::HashSet<ShardKey>,
     /// Whether a shard this broker starts leading waits for the fence
     /// before it serves. Set when a replication driver is there to fence it.
     fence_promotions: bool,
@@ -173,7 +173,7 @@ pub struct ShardLifecycle {
     /// `joint_fence`, the generation right after one it serves is fenced too.
     joint_fence: Option<Arc<felix_common::fleet::FleetGate>>,
     /// Shards opening to be fenced, which go to `Fencing` once open.
-    promoting: std::collections::HashSet<ShardKey>,
+    promoting: felix_common::random::HashSet<ShardKey>,
     /// Opens held back until the catalog registers the shard's stream at the
     /// incarnation its assignment names. The shard stays `Opening` meanwhile.
     awaiting_registration: HashMap<ShardKey, Action>,
@@ -190,15 +190,15 @@ impl ShardLifecycle {
     pub fn new(node_id: impl Into<String>) -> Self {
         Self {
             node_id: node_id.into(),
-            shards: HashMap::new(),
+            shards: HashMap::default(),
             fence: Arc::default(),
-            incoming: HashMap::new(),
-            headed: HashMap::new(),
-            held: std::collections::HashSet::new(),
+            incoming: HashMap::default(),
+            headed: HashMap::default(),
+            held: felix_common::random::HashSet::default(),
             fence_promotions: false,
             joint_fence: None,
-            promoting: std::collections::HashSet::new(),
-            awaiting_registration: HashMap::new(),
+            promoting: felix_common::random::HashSet::default(),
+            awaiting_registration: HashMap::default(),
         }
     }
 
@@ -574,7 +574,7 @@ impl ShardLifecycle {
         &self,
         present: impl IntoIterator<Item = &'a ShardKey>,
     ) -> Vec<ShardKey> {
-        let present: std::collections::HashSet<&ShardKey> = present.into_iter().collect();
+        let present: felix_common::random::HashSet<&ShardKey> = present.into_iter().collect();
         let mut missing: Vec<ShardKey> = self
             .shards
             .iter()
@@ -688,7 +688,7 @@ impl ShardLifecycle {
 
     /// How many shards sit in each phase, for the gauge.
     pub fn counts(&self) -> HashMap<Phase, usize> {
-        let mut counts = HashMap::new();
+        let mut counts = HashMap::default();
         for shard in self.shards.values() {
             *counts.entry(shard.phase).or_default() += 1;
         }
@@ -1048,9 +1048,9 @@ impl ShardReaders {
         };
         // Lease-free shards kept serving past the lapse, and when a majority
         // last confirmed each.
-        let mut unleased: HashMap<ShardKey, (u64, tokio::time::Instant)> = HashMap::new();
+        let mut unleased: HashMap<ShardKey, (u64, tokio::time::Instant)> = HashMap::default();
         // Shards ended for silence, and the generation, until heard again.
-        let mut unheard: HashMap<ShardKey, u64> = HashMap::new();
+        let mut unheard: HashMap<ShardKey, u64> = HashMap::default();
         loop {
             let probe = (lease.usable() / 4).max(std::time::Duration::from_millis(100));
             tokio::select! {
@@ -2324,7 +2324,7 @@ pub async fn reconcile(
     store: &dyn ShardStore,
     assignments: &HashMap<ShardKey, ShardAssignment>,
 ) {
-    reconcile_renewed(lifecycle, store, assignments, &HashMap::new()).await;
+    reconcile_renewed(lifecycle, store, assignments, &HashMap::default()).await;
 }
 
 /// [`reconcile`], with the watch's renewal count for each shard; see

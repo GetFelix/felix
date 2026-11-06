@@ -5,7 +5,7 @@
 //! one transaction in Postgres and one log entry under Raft. An item that
 //! already exists with the same configuration is reported `unchanged`, so a
 //! caller that died part-way can send the same batch again.
-use std::collections::HashSet;
+use felix_common::random::HashSet;
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -78,7 +78,7 @@ pub(crate) async fn create_resources(
     }
     authorize(&state, &tenant_id, &namespace, &headers, &body).await?;
 
-    let mut names = HashSet::new();
+    let mut names = HashSet::default();
     for item in &body.streams {
         validate_stream_request(item)?;
         if !names.insert(item.stream.as_str()) {
@@ -88,7 +88,7 @@ pub(crate) async fn create_resources(
             )));
         }
     }
-    let mut names = HashSet::new();
+    let mut names = HashSet::default();
     for item in &body.caches {
         validate_identifier("cache", &item.cache).map_err(|err| api_validation_error(&err))?;
         if !names.insert(item.cache.as_str()) {

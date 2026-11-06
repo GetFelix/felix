@@ -9,7 +9,8 @@
 //! followers take its batches and send clients to it, until the control plane
 //! names that generation or a newer one.
 
-use std::collections::{BTreeMap, HashMap};
+use felix_common::random::HashMap;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -147,14 +148,14 @@ impl Elections {
     pub fn new(local_node_id: impl Into<String>, changed: Arc<Notify>) -> Self {
         Self {
             local_node_id: local_node_id.into(),
-            entries: Mutex::new(HashMap::new()),
-            recorded: Mutex::new(HashMap::new()),
-            fencing: Mutex::new(HashMap::new()),
-            opened: Mutex::new(HashMap::new()),
-            fenced_since: Mutex::new(HashMap::new()),
-            heard: Mutex::new(HashMap::new()),
-            collided: Mutex::new(HashMap::new()),
-            refused_copy: Mutex::new(HashMap::new()),
+            entries: Mutex::new(HashMap::default()),
+            recorded: Mutex::new(HashMap::default()),
+            fencing: Mutex::new(HashMap::default()),
+            opened: Mutex::new(HashMap::default()),
+            fenced_since: Mutex::new(HashMap::default()),
+            heard: Mutex::new(HashMap::default()),
+            collided: Mutex::new(HashMap::default()),
+            refused_copy: Mutex::new(HashMap::default()),
             defer_for: crate::suspicion::DEFAULT_DEFER_FOR,
             changed,
         }
@@ -392,7 +393,7 @@ impl Elections {
     }
 
     /// Drop what was heard for shards this copy no longer follows.
-    pub(crate) fn forget_heard_except(&self, followed: &std::collections::HashSet<ShardKey>) {
+    pub(crate) fn forget_heard_except(&self, followed: &felix_common::random::HashSet<ShardKey>) {
         self.heard.lock().retain(|key, _| followed.contains(key));
     }
 

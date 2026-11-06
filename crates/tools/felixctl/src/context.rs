@@ -8,7 +8,7 @@
 
 mod resolve;
 
-pub(crate) use resolve::{Settings, resolve};
+pub(crate) use resolve::{Settings, read_file_message, resolve};
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

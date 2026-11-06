@@ -19,17 +19,16 @@
 //! The seed fixes the cluster's shape, the fault schedule, every client's
 //! choices and the network's drops. Time is tokio's paused clock, so sleeps
 //! cost nothing. Blocking work runs on this runtime rather than on threads
-//! (`felix_common::blocking`). Retry jitter, hash keys and ids are drawn from
-//! the seed (`felix_common::jitter`, `felix_common::random`), wall time is
-//! virtual (`felix_common::clock::system_time`), and passes over routing
-//! tables and assignment sets walk in key order (the election walk starts at an
-//! offset drawn from the seed). Built with
-//! `--cfg tokio_unstable`, `select!` is seeded too. Replay is not exact
-//! yet. Known gaps are storage reading the host clock and the control plane's
-//! ids. There is at least one unknown gap: seed 59 diverges by about 2 ms
-//! around 10.5 s.
+//! (`felix_common::blocking`). Retry jitter, ids and the hash keys of every
+//! map the brokers and the control plane keep are drawn from the seed
+//! (`felix_common::jitter`, `felix_common::random`), wall time is virtual
+//! (`felix_common::clock::system_time`), and data directories get the same
+//! path every run. Built with `--cfg tokio_unstable`, `select!` is seeded too,
+//! and then a seed replays exactly: `each_seed_runs_the_same_twice` in
+//! `tests/seeds.rs` checks it.
 //! See `docs/simulation.md`.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -84,12 +83,49 @@ impl SimOutcome {
             .filter(|finding| finding.severity == Severity::Failure)
     }
 
-    /// The command that runs this seed again.
+    /// The run as one line per event, for comparing two runs of a seed: the
+    /// faults, every operation in completion order, the final reads, what
+    /// the checkers found and the virtual time the run took.
+    pub fn trace(&self) -> Vec<String> {
+        let history = &self.history;
+        let mut lines = Vec::new();
+        lines.extend(history.faults.iter().map(|e| format!("fault {e:?}")));
+        lines.extend(history.ops.iter().map(|op| format!("op {op:?}")));
+        lines.extend(
+            history
+                .registers
+                .iter()
+                .map(|op| format!("register {op:?}")),
+        );
+        lines.extend(
+            history
+                .commit_reads
+                .iter()
+                .map(|r| format!("commit read {r:?}")),
+        );
+        lines.extend(
+            history
+                .subscriptions
+                .iter()
+                .map(|s| format!("subscription {s:?}")),
+        );
+        lines.extend(
+            history
+                .final_reads
+                .iter()
+                .map(|r| format!("final read {r:?}")),
+        );
+        lines.extend(history.opens.iter().map(|o| format!("opened {o:?}")));
+        lines.extend(self.findings.iter().map(|f| format!("finding {f:?}")));
+        lines.push(format!("elapsed {:?}", self.elapsed));
+        lines
+    }
+
+    /// The command that runs this seed again, event for event. It goes
+    /// through `task sim:replay`, which builds with `--cfg tokio_unstable`:
+    /// a plain `cargo test` build leaves `select!` unseeded.
     pub fn replay_command(&self) -> String {
-        format!(
-            "FELIX_SIM_SEED={} cargo test -p felix-sim --test seeds replay -- --nocapture",
-            self.seed
-        )
+        format!("FELIX_SIM_SEED={} task sim:replay", self.seed)
     }
 }
 
@@ -123,6 +159,24 @@ impl std::fmt::Display for SimOutcome {
             write!(f, "{}", self.report)
         }
     }
+}
+
+/// Where two traces from [`SimOutcome::trace`] first differ, or `None` when
+/// they are the same.
+pub fn first_difference(a: &[String], b: &[String]) -> Option<String> {
+    let at = a
+        .iter()
+        .zip(b)
+        .position(|(a, b)| a != b)
+        .or((a.len() != b.len()).then(|| a.len().min(b.len())))?;
+    let missing = "<the trace ends here>".to_string();
+    Some(format!(
+        "the traces first differ at event {at} of {} and {}:\n  first:  {}\n  second: {}",
+        a.len(),
+        b.len(),
+        a.get(at).unwrap_or(&missing),
+        b.get(at).unwrap_or(&missing),
+    ))
 }
 
 /// Run `seed` with the checkers that run by default.
@@ -159,7 +213,7 @@ async fn run(seed: u64, config: SimConfig, checkers: Vec<Box<dyn Checker>>) -> S
             // Whatever the clients saw is checked as far as it can be without
             // final reads: the fault timeline and what was acknowledged.
             let mut history = recorder.history();
-            drop_unread_lists(&mut history);
+            drop_unread_lists(&mut history, &BTreeSet::new());
             let mut outcome = finished(seed, config.clone(), history, Vec::new(), begun.elapsed());
             let finding = Finding::new(
                     "stalled",
@@ -316,22 +370,40 @@ async fn drive(
     }
     finisher.get_every_key().await;
 
+    let held = cluster.held_shards().await;
     let mut history = recorder.history();
-    let unread = drop_unread_lists(&mut history);
+    let unread = drop_unread_lists(&mut history, &held);
     let ctx = context(Point::End, healed_at, history.clone());
     for checker in &checkers {
         findings.extend(checker.lock().await.check(&ctx).await);
     }
-    if !unread.is_empty() {
-        let mut finding = Finding::new(
-            "final-reads",
+    // A shard held on purpose cannot be read, so it is reported, not failed.
+    let (exempt_lists, failing): (Vec<String>, Vec<String>) = unread
+        .into_iter()
+        .partition(|list| history.unread_lists.contains(list));
+    for (lists, is_exempt) in [(&failing, false), (&exempt_lists, true)] {
+        if lists.is_empty() {
+            continue;
+        }
+        let summary = if is_exempt {
+            format!(
+                "no final read for {} exempt shards, held on purpose; their lost-write check is skipped, the rest of the history check ran: {}",
+                lists.len(),
+                lists.join(", ")
+            )
+        } else {
             format!(
                 "no final read for {} shards, left out of the history check: {}",
-                unread.len(),
-                unread.join(", ")
-            ),
-        );
-        for list in unread.iter().take(3) {
+                lists.len(),
+                lists.join(", ")
+            )
+        };
+        let mut finding = if is_exempt {
+            Finding::warning("final-reads", summary)
+        } else {
+            Finding::new("final-reads", summary)
+        };
+        for list in lists.iter().take(3) {
             let shard = list.rsplit('/').next().and_then(|n| n.parse().ok());
             if let Some(shard) = shard {
                 finding = finding.with(cluster.census(&crate::cluster::stream_key(shard)).await);
@@ -361,20 +433,32 @@ fn finished(
 }
 
 /// The checker's lost-write rule needs a final read of each list. A shard
-/// that could not be read leaves the history; its name is returned.
-fn drop_unread_lists(history: &mut History) -> Vec<String> {
+/// that could not be read leaves the history, unless it is in `held`: that one
+/// stays, marked unread, so only the rules that need the final log skip it.
+/// Returns the names of all unread lists.
+fn drop_unread_lists(history: &mut History, held: &BTreeSet<String>) -> Vec<String> {
     let unread: Vec<String> = history
         .lists
         .keys()
         .filter(|list| !history.final_reads.contains_key(*list))
         .cloned()
         .collect();
-    for list in &unread {
-        history.lists.remove(list);
+    let is_held = |list: &String| {
+        let shard = list.rsplit('/').next().and_then(|n| n.parse().ok());
+        shard.is_some_and(|shard| {
+            held.contains(&crate::cluster::describe(&crate::cluster::stream_key(
+                shard,
+            )))
+        })
+    };
+    let (kept, dropped): (Vec<&String>, Vec<&String>) = unread.iter().partition(|l| is_held(l));
+    history.unread_lists.extend(kept.into_iter().cloned());
+    for list in &dropped {
+        history.lists.remove(*list);
     }
     history
         .ops
-        .retain(|op| !unread.iter().any(|list| list == op.list()));
+        .retain(|op| !dropped.iter().any(|list| *list == op.list()));
     unread
 }
 

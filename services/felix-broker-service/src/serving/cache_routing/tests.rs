@@ -1,5 +1,5 @@
 //! Which broker a cache key resolves to, and what happens when it is not this one.
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -47,6 +47,7 @@ fn assignment(key: ShardKey, leader: &str, generation: u64) -> ShardAssignment {
         fence_storage_ids: Default::default(),
         member_storage_ids: Default::default(),
         pending_set: None,
+        previous_generation: None,
     }
 }
 
