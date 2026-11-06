@@ -1,7 +1,7 @@
 //! What a publish does once the scheduler hands it to an executor, and the
 //! publish context every connection derives its own from.
 
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 

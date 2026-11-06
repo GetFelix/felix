@@ -1,5 +1,5 @@
 //! Placement properties: determinism, coverage, skew, and order independence.
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 
 use super::*;
 

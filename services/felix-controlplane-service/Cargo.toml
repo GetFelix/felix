@@ -19,7 +19,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow = { workspace = true }
 axum = { workspace = true }
-felix-common = { path = "../../crates/server/felix-common", version = "0.7.0-preview.3", features = ["lifecycle", "openapi", "tls", "yaml"] }
+felix-common = { path = "../../crates/server/felix-common", version = "0.7.0-preview.3", features = ["hasher", "lifecycle", "openapi", "tls", "yaml"] }
 felix-router = { path = "../../crates/server/felix-router", version = "0.7.0-preview.3" }
 # The name grammar and lease templates, shared with the brokers that expand them.
 felix-authz = { path = "../../crates/server/felix-authz", version = "0.7.0-preview.3" }

@@ -414,10 +414,10 @@ async fn a_report_says_where_each_follower_is_in_the_counter_log() {
         &router,
         &QuorumMarks::new(),
         None,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
 

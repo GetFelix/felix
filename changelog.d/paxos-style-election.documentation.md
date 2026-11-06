@@ -1,0 +1,1 @@
+- The election and fence docs now say they follow the prepare and promise steps of Paxos, with sources, and the system design page no longer says no consensus runs between brokers.

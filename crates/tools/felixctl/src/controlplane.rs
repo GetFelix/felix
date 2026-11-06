@@ -12,7 +12,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::cli::{NamespaceCommand, NodeCommand, ShardCommand, StreamCommand, TenantCommand};
-use crate::context::Settings;
+use crate::context::{Settings, read_file_message};
 use crate::error::{Exit, MarkExit, fail};
 use crate::manage;
 use crate::output::{Output, cell, fields, table};
@@ -93,7 +93,10 @@ impl Api {
             .to_string();
         let mut builder = reqwest::Client::builder().connect_timeout(Duration::from_secs(10));
         if let Some(path) = &settings.controlplane_ca_file {
-            let pem = std::fs::read(path).mark(Exit::Usage, format!("read {}", path.display()))?;
+            let pem = std::fs::read(path).mark(
+                Exit::Usage,
+                read_file_message("--controlplane-ca-file", path),
+            )?;
             for cert in reqwest::Certificate::from_pem_bundle(&pem)
                 .mark(Exit::Usage, format!("parse {}", path.display()))?
             {

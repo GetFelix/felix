@@ -160,9 +160,9 @@ async fn pass(
         &QuorumMarks::new(),
         None,
         cursors,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
         &Rebuilds::disabled(),
         &MoveThrottle::unlimited(),
     )
@@ -185,7 +185,7 @@ async fn a_leader_still_fencing_reports_no_identity_from_its_fence_answers() {
     let gate = Awaiting {
         closed: AtomicBool::new(true),
     };
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
 
     // broker-b's answer does not count and broker-c is away: no majority.
     let waiting = pass(&followers, &broker, &router, &gate, &mut cursors).await;
@@ -228,7 +228,7 @@ async fn a_set_change_keeps_the_names_its_leader_reported() {
     let gate = Awaiting {
         closed: AtomicBool::new(false),
     };
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
 
     let promoted = pass(&followers, &broker, &router, &gate, &mut cursors).await;
     let report = promoted.reports.last().expect("a report");
@@ -265,7 +265,7 @@ async fn a_promotion_replaces_the_names_its_leader_reported() {
     let gate = Awaiting {
         closed: AtomicBool::new(false),
     };
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
     pass(&followers, &broker, &router, &gate, &mut cursors).await;
 
     followers.b_down.store(true, Ordering::SeqCst);
@@ -329,10 +329,10 @@ async fn a_leader_acknowledging_by_followers_names_none_before_they_answer() {
         &router(LOCAL, &["broker-b", "broker-c"], 3),
         &marks,
         None,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
 
@@ -356,10 +356,10 @@ async fn a_leader_acknowledging_by_followers_names_one_holding_what_it_inherited
         &router(LOCAL, &["broker-b"], 3),
         &by_followers(),
         None,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
 

@@ -114,7 +114,7 @@ async fn spawn_stream(
             config,
             auth,
             publish_ctx,
-            HashMap::new(),
+            HashMap::default(),
             String::new(),
             out_ack_tx,
             Arc::new(std::sync::atomic::AtomicUsize::new(0)),

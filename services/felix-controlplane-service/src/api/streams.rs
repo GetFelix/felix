@@ -7,7 +7,7 @@
 //! a token minted for the tenant in the path; the feeds require
 //! `node.view:cluster:*`. The credential is checked before existence, so an
 //! unauthenticated caller cannot learn what exists by asking.
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 
 use axum::Json;
 use axum::extract::{Path, Query, State};

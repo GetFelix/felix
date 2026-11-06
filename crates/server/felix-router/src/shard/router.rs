@@ -1,6 +1,7 @@
 //! Resolving a shard against the current table: here, elsewhere, or not at all.
 
 use std::collections::HashMap;
+use std::hash::BuildHasher;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -63,10 +64,17 @@ impl ShardRouter {
     ///
     /// Returns what was published, for a caller that pairs it with state of its
     /// own and needs both to change in one swap.
-    pub fn publish(&self, table: RoutingTable, nodes: &HashMap<String, NodeRef>) -> Arc<Routes> {
+    pub fn publish<S: BuildHasher>(
+        &self,
+        table: RoutingTable,
+        nodes: &HashMap<String, NodeRef, S>,
+    ) -> Arc<Routes> {
         let routes = Arc::new(Routes {
             table: Arc::new(table),
-            known_nodes: nodes.clone(),
+            known_nodes: nodes
+                .iter()
+                .map(|(id, node)| (id.clone(), node.clone()))
+                .collect(),
         });
         self.routes.store(Arc::clone(&routes));
         routes
