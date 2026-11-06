@@ -427,6 +427,7 @@ mod feed {
                 joint_fence: None,
                 prefetch: None,
                 elections: None,
+                nodes: HashMap::new(),
             },
             router,
         )

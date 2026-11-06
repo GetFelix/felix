@@ -474,6 +474,109 @@ Under Raft the stamp placement waits from is the leader's: a new leader counts
 a departed node as heard from when it began judging, as expiry does, because
 the log's copy of a heartbeat can trail one the previous leader answered.
 
+#### Starting while the control plane is down
+
+By default a cluster member with durable storage asks the control plane for
+its node's last registration before it opens any data, and waits until it
+answers (see "Storage identity" in `docs/durable-storage.md`). A broker that
+restarts during a control-plane outage therefore takes no part in its shards'
+elections until the control plane is back.
+
+Set `FELIX_START_WITHOUT_CONTROLPLANE=true` to let it rejoin them instead:
+
+| Env | Default | Meaning |
+| --- | --- | --- |
+| `FELIX_START_WITHOUT_CONTROLPLANE` | `false` | Start from the control-plane view in the data directory when the control plane is down at startup. |
+| `FELIX_CONTROLPLANE_STARTUP_WAIT_MS` | `10000` | How long the startup lookup asks the control plane before a broker with the switch on starts from its view. Each attempt gets at least one second. |
+
+With the switch on, the broker asks for at most the wait. If the control plane
+answers, startup is as without the switch. If every attempt found it down (no
+answer, a timeout or a 5xx), the broker starts from its view when all of these
+hold:
+
+1. The data directory has a view (`controlplane.view`, see
+   `docs/durable-storage.md`) for this node. A new or wiped directory has
+   none. A broker removes its view before it deregisters itself, and when it
+   stops because the control plane refused it or found its directory
+   replaced. A node an operator deregistered, or one expired while it was
+   down, keeps its view: elections stay safe on any past view, because
+   every decision is checked against the ballots and sets a majority holds
+   (`docs/replication-design.md`, "Rejoining without the control plane").
+2. The storage id on disk is the one the view was registered under. A new or
+   rotated id has never been registered, and must register before it acts.
+3. The directory has no `replaced-storage` marker: the control plane last
+   registered the node under another storage id, and only a registration
+   says which copies here it still holds.
+4. The view's fleet had finalized `replica_election`.
+5. This build reports every feature the view's fleet finalized. That is the
+   check the control plane makes when a broker registers: a build rolled back,
+   or started with `FELIX_INTERNAL_ELECTION` off, would be refused.
+
+Otherwise it waits for the control plane, as without the switch. A 401,
+another 4xx, or an answer that does not decode is a control plane that is
+up, so it never counts as down.
+
+```mermaid
+flowchart TD
+    A["Startup lookup, at most FELIX_CONTROLPLANE_STARTUP_WAIT_MS"] -- "answered" --> N["Start as usual"]
+    A -- "up but refusing or unreadable" --> W["Wait for the control plane"]
+    A -- "down on every attempt" --> Q{"View for this node, registered storage id,<br/>not replaced, replica_election, every feature reported?"}
+    Q -- "no" --> W
+    Q -- "yes" --> O["Open storage"]
+    O -- "the run rotated the storage id" --> W
+    O --> V["Seed gate, routes, node addresses, catalog from the view;<br/>vote and follow; no standing, no clients"]
+    V --> C["Control plane answers: restore check"]
+    C -- "directory behind the last registration" --> X["New storage id, forget the view, stop"]
+    C -- "node registered under another storage id" --> Y["Mark replaced, forget the view, stop"]
+    C -- "lookup refused (4xx)" --> Z["Forget the view, stop"]
+    C -- "current" --> R["Catalog sync, then register; stand for election, serve clients"]
+```
+
+**What it does before it registers.** It opens its storage, takes the view's
+fleet features as enabled but not yet answered by a registration, and seeds
+its routes, the node addresses those routes name and the streams and caches
+its shards open at. It then votes in its shards' elections and takes records
+from their leaders as a follower. It does not stand for election or restore a
+standing from before the restart until it has registered: until then it does
+not answer pings, so its peers would suspect it and take a shard it won
+straight back, burning a generation. A shard the view names it leader of is
+the exception: it may reopen that shard at the view's generation, as a broker
+that stayed up would, and its followers refuse it if they have since elected
+another leader. It serves no client: the QUIC, Kafka and MQTT listeners accept
+nothing, `/ready` reports not ready, and a client request another broker
+forwards to it is refused as `Unavailable`, which the forwarder retries. It
+holds no lease, so nothing that rests on one runs.
+
+**When the control plane answers.** The check a start without the switch makes
+before it opens anything runs first: if the control plane registered the node
+at an incarnation the directory never recorded, the directory is a restored
+snapshot or a copy. The broker records `replaced-storage`, gives the
+directory a new storage id, logs an error, counts
+`felix_restored_directory_total` and exits non-zero without registering.
+Its supervisor restarts it under the new id, and its copies are rebuilt by
+their leaders. If the control plane last registered the node under another
+storage id, the broker records `replaced-storage` and exits non-zero; the
+next start registers as a replaced directory. If the control plane refuses
+the lookup with a 4xx, the broker exits non-zero, as a start without the
+switch fails on a refusal. On each of these exits it first removes its view
+durably, so a restart during a later outage waits for the control plane
+rather than voting from it. Until the check passes the broker also sends no
+replica report, since a report announces this directory's storage id and
+offsets as current. Only after the check passes does the catalog sync start and
+the broker register. The routes and catalog snapshots then replace what the
+view seeded. A stream or cache from the view that the catalog snapshot does
+not list is unregistered and its logs closed, but its data is kept: a control
+plane restored from an older backup lacks streams created after the backup,
+and brokers that stayed up still hold them. Data is deleted only by a delete
+in the change feed or a tombstone. Client listeners and readiness open once
+the broker has registered.
+
+**The trade-off.** A directory restored from a snapshot without deleting
+`storage-id` is caught only when the control plane answers, after it may have
+voted on old ballots. With the switch off the check runs before anything is
+opened. A restore must delete `storage-id` or use `felix-broker restore-point`
+either way; see "Restoring to a backup point" in `docs/durable-storage.md`.
+
 ### Operator endpoints
 
 `GET /v1/nodes` and `GET /v1/nodes/{node_id}` list registered brokers and
@@ -1540,10 +1643,13 @@ candidate or one older than its ballot. That write costs the shard a
 promotion, or, when it carries a pending change, the pending timeout. If the elected leader did not open, its candidate withdraws the
 standing within 3 s and the named leader opens as usual.
 
-One gap remains: an elected leader that restarts before its first report
-reaches the control plane forgets its standing, so nothing reports the
-collision, and the shard serves nothing until the control plane writes it
-again.
+An elected leader that restarts before its first report reaches the
+control plane rebuilds its standing from its own log: its ballot names it at
+the elected generation, and its log records that it opened there. It
+fences at that generation again and reports as before, so a collision is
+resolved as above. If a replica of its set has promised a newer generation
+meanwhile, the fence is refused and the standing is withdrawn within 3 s (rule 11 of
+"Electing without the control plane" in `docs/replication-design.md`).
 
 A joining follower (a replacement in progress) elected leader is recorded
 only: the copy it replaces is not named in the assignment, so naming the
@@ -2529,6 +2635,7 @@ Broker:
 | `felix_broker_membership_live` | 1 while the cluster considers this broker placeable |
 | `felix_broker_fleet_feature_enabled{feature}` | 1 once an operator has finalized the feature and this broker has enabled it; 0 for one it reported that is not finalized yet |
 | `felix_broker_membership_registrations_total{outcome}` | `registered`, `rejected`, or `unavailable` |
+| `felix_restored_directory_total` | data directories found older than the node's last registration after a start from the control-plane view; each one stopped the broker. Any increase is a restore that kept its `storage-id` |
 | `felix_broker_principal_revocations_total` | revocations this broker learned that moved a principal's cutoff; each one ends the principal's open streams here |
 | `felix_revocation_feed_last_success_seconds` | Unix time of this broker's last successful poll of the revocation feed, or of when it started following the feed until a poll succeeds. Alert on `time() - felix_revocation_feed_last_success_seconds`. While it is stale, revocations made meanwhile are not enforced here; see [auth.md](auth.md#while-a-broker-cannot-reach-the-feed) |
 | `felix_revocation_feed_poll_errors_total` | failed polls of the revocation feed. A run of failures is also a `warn` log line, repeated every minute while it lasts |
@@ -2548,6 +2655,7 @@ network.
 | `felix_broker_heartbeat_age_seconds > expiry_timeout_ms / 1000` | the earliest point a broker knows it is about to be declared down, and it fires even when the control plane is what is unreachable |
 | `increase(felix_node_transitions_total{to="down"}[5m]) > 0` | a broker failed; `to="left"` over the same window is a deploy and is not the same alert |
 | `increase(felix_broker_membership_registrations_total{outcome="rejected"}[15m]) > 0` | a broker is misconfigured and will never join; retrying will not clear it |
+| `increase(felix_restored_directory_total[1h]) > 0` | a data directory restored without deleting `storage-id` ran from its control-plane view during an outage; the broker stopped and comes back under a new id |
 | `felix_node_expiry_failures_total` rising | liveness is not being evaluated, so the census is stale in a way the census cannot show |
 | `sum(felix_node_count{lifecycle="live"}) < expected` | the fleet is smaller than intended, whatever the cause |
 

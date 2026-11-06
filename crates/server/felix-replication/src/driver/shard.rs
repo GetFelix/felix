@@ -544,10 +544,10 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     // Placement replaces a leader on its followers' word only when this
     // says nothing it serves rests on its lease.
     let by_round = by_followers && reads_by_round;
-    // A pass made before registration answered saw an empty fleet, not the
-    // real one: it decided nothing, and group writes stay off the lease
-    // until a pass that did.
-    if serving.adopted {
+    // A pass made before registration answered, on a view missing a feature
+    // it reads, may not have seen the real fleet: it decided nothing, and
+    // group writes stay off the lease until a pass that did.
+    if serving.decided(key.kind) {
         fence.passed(mark_key, route.generation);
     }
     // Read from the cursors the last pass left: a follower halted this way

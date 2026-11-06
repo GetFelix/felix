@@ -36,7 +36,9 @@
 //!   opens, and retires a deleted one's directories.
 //! - [`storage_identity`]: the random id a data directory keeps, so peers can
 //!   tell a restarted disk from a wiped one. [`run_state`] gives it a new one
-//!   when a crash may have lost what it acknowledged.
+//!   when a crash may have lost what it acknowledged. [`controlplane_view`]
+//!   keeps what the control plane last told this broker, for a start without
+//!   it.
 //! - Ordering and reporting: `commit_order` ([`CommitSequencer`]),
 //!   [`metrics_names`], and the errors every call returns ([`StorageError`],
 //!   [`Corruption`]).
@@ -47,6 +49,7 @@
 pub mod cache;
 mod commit_order;
 mod compaction;
+pub mod controlplane_view;
 pub mod counter_log;
 pub mod disk_log;
 mod error;

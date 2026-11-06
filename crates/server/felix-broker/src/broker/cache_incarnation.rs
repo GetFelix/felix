@@ -277,6 +277,24 @@ impl Broker {
         }
     }
 
+    /// Unregister a cache and close its logs, keeping its data. Returns
+    /// whether it was registered. As [`Broker::unregister_stream`].
+    pub async fn unregister_cache(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+    ) -> Result<bool> {
+        let key = CacheKey::new(tenant_id, namespace, cache);
+        let Some(metadata) = self.drop_cache(&key).await else {
+            return Ok(false);
+        };
+        self.set_cache_incarnation(tenant_id, namespace, cache, None);
+        self.close_cache_incarnation(&key, metadata.incarnation)
+            .await?;
+        Ok(true)
+    }
+
     /// Delete the registered cache for an operator or a tool: the caller is
     /// the evidence. An incarnated cache is recorded as deleted, as a
     /// tombstone would; one at incarnation 0 is not, so the name can be
