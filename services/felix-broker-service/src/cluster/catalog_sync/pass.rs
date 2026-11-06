@@ -54,6 +54,29 @@ pub(super) async fn sync_into(
     if !state.seeded.tenants {
         match fetch_tenant_snapshot(source, bearer).await {
             Ok(snapshot) => {
+                let named: BTreeSet<&str> = snapshot
+                    .items
+                    .iter()
+                    .map(|tenant| tenant.tenant_id.as_str())
+                    .collect();
+                // Only the registration goes, as a delete in the feed does:
+                // the streams and caches under it are the snapshots' to judge.
+                let missing: Vec<String> = state
+                    .provisional
+                    .tenants
+                    .iter()
+                    .filter(|tenant_id| !named.contains(tenant_id.as_str()))
+                    .cloned()
+                    .collect();
+                for tenant_id in missing {
+                    broker.remove_tenant(&tenant_id).await?;
+                    tracing::warn!(
+                        %tenant_id,
+                        "the control plane does not list a tenant this broker registered from \
+                         its view; unregistered it"
+                    );
+                }
+                state.provisional.tenants.clear();
                 for tenant in snapshot.items {
                     broker.register_tenant(tenant.tenant_id).await?;
                 }
@@ -74,6 +97,33 @@ pub(super) async fn sync_into(
     if !state.seeded.namespaces {
         match fetch_namespace_snapshot(source, bearer).await {
             Ok(snapshot) => {
+                let named: BTreeSet<(&str, &str)> = snapshot
+                    .items
+                    .iter()
+                    .map(|namespace| (namespace.tenant_id.as_str(), namespace.namespace.as_str()))
+                    .collect();
+                let missing: Vec<(String, String)> = state
+                    .provisional
+                    .namespaces
+                    .iter()
+                    .filter(|(tenant_id, namespace)| {
+                        !named.contains(&(tenant_id.as_str(), namespace.as_str()))
+                    })
+                    .cloned()
+                    .collect();
+                for (tenant_id, namespace) in missing {
+                    match broker.remove_namespace(&tenant_id, &namespace).await {
+                        Ok(_) | Err(BrokerError::TenantNotFound(_)) => {}
+                        Err(err) => return Err(err.into()),
+                    }
+                    tracing::warn!(
+                        %tenant_id,
+                        %namespace,
+                        "the control plane does not list a namespace this broker registered \
+                         from its view; unregistered it"
+                    );
+                }
+                state.provisional.namespaces.clear();
                 for namespace in snapshot.items {
                     apply_namespace_create(broker, namespace.tenant_id, namespace.namespace)
                         .await?;

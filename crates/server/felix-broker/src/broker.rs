@@ -133,6 +133,8 @@ pub struct Broker {
     cache_registration_required: std::sync::atomic::AtomicBool,
     /// See [`Broker::request_catalog_refresh`].
     catalog_wanted: Arc<tokio::sync::Notify>,
+    /// See [`Broker::catalog_changes`].
+    catalog_changes: AtomicU64,
     /// Serves consumer groups, when this broker keeps their positions.
     group_reader: Option<Arc<GroupReader>>,
     /// Consumer-group positions, when this broker has somewhere to keep them.
@@ -243,6 +245,7 @@ impl Broker {
             registration_required: Default::default(),
             cache_registration_required: Default::default(),
             catalog_wanted: Default::default(),
+            catalog_changes: AtomicU64::new(0),
             consumer_groups: None,
             group_reader: None,
             counters: None,
