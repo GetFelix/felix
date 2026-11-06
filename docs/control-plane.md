@@ -1008,6 +1008,15 @@ otherwise, so a write is what it was before. Postgres keeps it only for the
 generation that wrote it (migration 0040), and the Raft store writes it only
 at metadata level 23, which also carries a report's `holds_start`.
 
+A placement write that lands more than one generation up, which only a rename
+past a refusal's ballot does, also carries `previous_generation`: the
+generation of the assignment it replaced. Nothing was recorded in between, so a
+broker that watched that assignment takes its set as the one the new
+generation leaves (`docs/replication-design.md`, "Planned handoff"). The store
+sets it; a caller's value is ignored. Postgres keeps it only
+for the generation that wrote it (migration 0044), and the Raft store writes it
+only at metadata level 29.
+
 ##### Re-admitting a replaced copy
 
 A broker whose disk was wiped registers again under a new storage id. The

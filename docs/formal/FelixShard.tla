@@ -3870,7 +3870,10 @@ RenameGen ==
 \* reopens it fenced (`begin_open_renewed` in lifecycle.rs), on the set the
 \* assignment names, and while a change is pending, jointly with the set
 \* being left. Each one follows a stand, a restart or a promotion, and stands
-\* stop at `Adopt`, so those bound them.
+\* stop at `Adopt`, so those bound them. A rename past a ballot skips
+\* generations, and the leader still takes `CpSet` as the set it leaves: the
+\* control plane recorded nothing in between and names the generation it
+\* replaced (`previous_generation`, #2024), which the broker's watch reads.
 CpRename(v, views) ==
     /\ RenameDue
     /\ ~v.draining
