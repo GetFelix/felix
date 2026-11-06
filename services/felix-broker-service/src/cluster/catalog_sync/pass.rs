@@ -1,6 +1,7 @@
 //! One sync pass: seed from snapshots on a cold start, then follow the change
 //! feeds.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -109,6 +110,35 @@ pub(super) async fn sync_into(
                     })
                     .collect();
                 broker.apply_cache_tombstones(&tombstones).await?;
+                let named: BTreeSet<(String, String, String)> = snapshot
+                    .items
+                    .iter()
+                    .map(|cache| {
+                        (
+                            cache.tenant_id.clone(),
+                            cache.namespace.clone(),
+                            cache.cache.clone(),
+                        )
+                    })
+                    .collect();
+                let missing: Vec<_> = state
+                    .provisional
+                    .caches
+                    .difference(&named)
+                    .cloned()
+                    .collect();
+                for entry in missing {
+                    let (tenant_id, namespace, cache) = &entry;
+                    broker.unregister_cache(tenant_id, namespace, cache).await?;
+                    state.provisional.caches.remove(&entry);
+                    tracing::warn!(
+                        %tenant_id,
+                        %namespace,
+                        %cache,
+                        "the control plane does not list a cache this broker registered from \
+                         its view; unregistered it and kept its data"
+                    );
+                }
                 for cache in snapshot.items {
                     let metadata = cache.metadata()?;
                     apply_cache_upsert(
@@ -120,6 +150,8 @@ pub(super) async fn sync_into(
                     )
                     .await?;
                 }
+                // What the snapshot named is the control plane's now.
+                state.provisional.caches.clear();
                 state.next_cache_seq = snapshot.next_seq;
                 state.seeded.caches = true;
             }
@@ -152,6 +184,37 @@ pub(super) async fn sync_into(
                     })
                     .collect();
                 broker.apply_tombstones(&tombstones).await?;
+                let named: BTreeSet<(String, String, String)> = snapshot
+                    .items
+                    .iter()
+                    .map(|stream| {
+                        (
+                            stream.tenant_id.clone(),
+                            stream.namespace.clone(),
+                            stream.stream.clone(),
+                        )
+                    })
+                    .collect();
+                let missing: Vec<_> = state
+                    .provisional
+                    .streams
+                    .difference(&named)
+                    .cloned()
+                    .collect();
+                for entry in missing {
+                    let (tenant_id, namespace, stream) = &entry;
+                    broker
+                        .unregister_stream(tenant_id, namespace, stream)
+                        .await?;
+                    state.provisional.streams.remove(&entry);
+                    tracing::warn!(
+                        %tenant_id,
+                        %namespace,
+                        %stream,
+                        "the control plane does not list a stream this broker registered from \
+                         its view; unregistered it and kept its data"
+                    );
+                }
                 for stream in snapshot.items {
                     let metadata = stream.metadata()?;
                     apply_stream_upsert(
@@ -163,6 +226,7 @@ pub(super) async fn sync_into(
                     )
                     .await?;
                 }
+                state.provisional.streams.clear();
                 state.next_stream_seq = snapshot.next_seq;
                 state.seeded.streams = true;
             }

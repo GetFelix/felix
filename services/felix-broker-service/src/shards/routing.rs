@@ -807,6 +807,9 @@ pub struct FeedState {
     /// Leaderships the replicas elected, laid over the control plane's
     /// assignments. Notifies `assignments_changed` when it changes.
     pub elections: Option<Arc<felix_replication::election::Elections>>,
+    /// Node addresses to route by until the first catalog read lands: those
+    /// a start from the control-plane view kept. Empty otherwise.
+    pub nodes: HashMap<String, felix_router::NodeRef>,
 }
 
 /// What the feed needs to read the node catalog.
@@ -851,8 +854,15 @@ pub fn spawn_feed<L: ControlPlaneLink>(
         joint_fence,
         prefetch,
         elections,
+        nodes,
     } = state;
-    let (refreshed, mut fetched) = tokio::sync::watch::channel(Arc::default());
+    // Seeded with the kept addresses, so a first read that fails still leaves
+    // the feed something to route by.
+    let (refreshed, mut fetched) =
+        tokio::sync::watch::channel(Arc::new(crate::cluster::node_catalog::NodeCatalog {
+            nodes,
+            ..Default::default()
+        }));
     let refresh_now = Arc::new(tokio::sync::Notify::new());
     let reads_catalog = catalog_source.is_some();
     if let Some(source) = catalog_source {

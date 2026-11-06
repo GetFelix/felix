@@ -42,6 +42,7 @@ Both file kinds start with a four-byte ASCII magic sharing the prefix `FLS`
 The small state files have magics of their own, listed with each file below.
 The storage id's is `0x464C4944` (`FLID`), chosen apart from `FLSI`, and the
 run state's `0x464C524E` (`FLRN`), apart from the replica state's `FLRS`.
+The control-plane view's is `0x464C4356` (`FLCV`).
 
 They are deliberately distinct from `felix-wire`'s frame magic `0x464C5831`
 (`FLX1`): storage bytes and network bytes are separate formats with separate
@@ -55,6 +56,7 @@ a segment, should be rejected on its first four bytes rather than misparsed.
   storage-id                                 ← this data directory's identity
   run-state                                  ← whether the last run stopped cleanly
   registration                               ← the node incarnation of the last registration
+  controlplane.view                          ← what the control plane last said about this node's shards
   node-id                                    ← the id offloaded keys start with, when offload is on without FELIX_NODE_ID
   acme_default_orders_0-0d3aed4b998d2798/     ← one directory per stream shard
     00000000000000000000.log                 ← segment data
@@ -1163,6 +1165,47 @@ ahead of this one. No file means no evidence either way. A file that does not
 decode reads as older than any registration. An older release neither reads
 nor writes it, so a downgrade leaves it as it was. See
 `docs/durable-storage.md`, "Storage identity".
+
+## `controlplane.view`: what the control plane last said
+
+One file at the durable root, beside `registration`. It holds the control
+plane's answers about the shards this node is in, so a later start can run
+from them while the control plane is down. The envelope:
+
+```text
+ 0   4  magic    u32  "FLCV"
+ 4   2  version  u16  1
+ 6   4  len      u32  body length
+10 len  body     JSON, below
+ ..  4  crc      u32  crc32 over every byte before it
+```
+
+The body is a JSON object. A reader ignores a field it does not know, so a
+later version can add one with a default, as on the wire.
+
+| Field | Contents |
+| --- | --- |
+| `node_id` | The node this view belongs to |
+| `storage_id` | The storage id, in hex, that the node registered with when the view was written |
+| `incarnation` | The node incarnation that registration answered |
+| `fleet` | The fleet features the control plane had finalized, by name |
+| `routes` | Every shard assignment that names this node as leader, replica, member of a pending set or successor, in the shape the assignment feed sends |
+| `nodes` | `node_id`, `advertise_addr` and `region` of each node those routes name, where the node catalog had an address |
+| `catalog` | `streams` and `caches`: the catalog entries of the streams and caches those routes belong to, in the shape the catalog feed sends |
+
+The broker writes the file only once it has registered in this process and
+taken the registration's features, a routes snapshot and a catalog snapshot.
+After that it rewrites the file when the view changes, at most once a second,
+and once more at a clean stop. Each write goes to `controlplane.tmp`, which
+is synced and renamed over `controlplane.view`, and then the directory is
+synced, like `registration`.
+
+The file reads as absent when it is missing, shorter or longer than its
+length says, fails its CRC, has another magic or version, has a body that
+does not parse, or names another node. A file that reads as absent is
+ignored with a warning. It never stops a start. `controlplane.tmp` is never
+read. An older release neither reads nor writes the file. See
+`docs/durable-storage.md`, "The control-plane view".
 
 ## Consumer-group cursor values
 

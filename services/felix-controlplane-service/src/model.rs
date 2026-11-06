@@ -31,7 +31,7 @@ pub use shard::{
     ShardAssignmentChange, ShardAssignmentChangeOp, ShardKey, ShardKind, ShardState,
     ShardValidationError,
 };
-pub(crate) use shard::{Learning, check_elected_generation, first_generation, next_generation};
+pub(crate) use shard::{Learning, check_elected_generation, first_generation, generation_at_least};
 pub(crate) use stream::default_replication_factor;
 pub(crate) use stream::deleted_stream_payload;
 pub use stream::{

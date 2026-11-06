@@ -149,7 +149,7 @@ routing, `restore.rs` is the `felix-broker restore-point` subcommand, and
 
 `services/felix-controlplane-service` is the REST control plane: `api/`,
 `store/` (memory, Postgres or Raft), `raft/`, `cluster/` (membership and
-placement), `auth/` and `admin/` (the `felix-controlplane admin` CLI).
+placement) and `auth/`. The operator commands over its API are in `felixctl`.
 
 ## Demos
 

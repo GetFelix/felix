@@ -748,6 +748,7 @@ fn refusal(generation: u64, leader: &str, reported_at_millis: u64) -> ReplicaRep
         refused: Some(felix_common::membership::RefusedGeneration {
             generation,
             promised_to: "broker-b".to_string(),
+            ballot: 0,
         }),
         ..report("orders", &[], reported_at_millis)
     }

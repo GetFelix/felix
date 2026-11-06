@@ -1,7 +1,7 @@
 //! `felix-broker restore-point`: cut a stopped broker's shard logs back to a
 //! backup point.
 //!
-//! The point comes from `felix-controlplane admin backup-point`, which read
+//! The point comes from `felixctl backup-point`, which read
 //! each shard's committed offsets from its leader. A copy of the leader's
 //! shard directories taken while it ran holds at least those records and
 //! usually more; this cuts each log back to the point, below its commit
@@ -145,7 +145,7 @@ async fn restore(
     Ok(plan.len())
 }
 
-/// A backup point as `felix-controlplane admin backup-point` writes it. Only
+/// A backup point as `felixctl backup-point` writes it. Only
 /// the fields a restore needs.
 #[derive(Debug, Deserialize)]
 pub(crate) struct Manifest {

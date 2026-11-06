@@ -28,6 +28,9 @@ struct Calls {
     heartbeat_interval_ms: Option<u64>,
     /// Each heartbeat's body, in order.
     heartbeat_bodies: Vec<serde_json::Value>,
+    /// What `GET /v1/nodes/{id}` answers: the incarnation and storage id the
+    /// node last registered with. 404 when unset.
+    lookup: Option<(u64, String)>,
 }
 
 type Shared = Arc<Mutex<Calls>>;
@@ -52,6 +55,28 @@ fn stub_control_plane(state: Shared) -> axum::Router {
                         "expiry_timeout_ms": 60,
                         "fleet_features": fleet,
                     }))
+                },
+            ),
+        )
+        .route(
+            "/v1/nodes/{node_id}",
+            axum::routing::get(
+                |State(state): State<Shared>, Path(id): Path<String>| async move {
+                    let lookup = state.lock().expect("lock").lookup.clone();
+                    match lookup {
+                        Some((incarnation, storage_id)) => Ok(Json(json!({
+                            "node": {
+                                "node_id": id,
+                                "status": {
+                                    "incarnation": incarnation,
+                                    "lifecycle": "down",
+                                    "storage_id": storage_id,
+                                },
+                            },
+                            "placement": { "eligible": false },
+                        }))),
+                        None => Err(axum::http::StatusCode::NOT_FOUND),
+                    }
                 },
             ),
         )
@@ -625,6 +650,7 @@ async fn a_broker_marked_down_registers_again_and_resumes_heartbeating() {
         tokio::sync::watch::channel(None).0,
         None,
         Some(data.path().to_path_buf()),
+        None,
     );
 
     for _ in 0..300 {
@@ -1003,6 +1029,7 @@ async fn join_with(calls: &Shared, data: &std::path::Path) -> MembershipTask {
         tokio::sync::watch::channel(None).0,
         None,
         Some(data.to_path_buf()),
+        None,
     );
     for _ in 0..300 {
         if task.fatal.is_cancelled() || !calls.lock().expect("lock").heartbeats.is_empty() {
@@ -1023,10 +1050,15 @@ async fn join_with(calls: &Shared, data: &std::path::Path) -> MembershipTask {
 async fn a_trimmed_directory_refuses_a_fleet_without_head_trim() {
     let data = tempfile::tempdir().expect("tempdir");
     felix_storage::run_state::record_head_trimmed(data.path()).expect("mark");
+    felix_storage::controlplane_view::record(data.path(), b"{}").expect("a view");
     let calls: Shared = Arc::default();
 
     let task = join_with(&calls, data.path()).await;
     assert!(task.fatal.is_cancelled(), "the broker stops");
+    assert!(
+        felix_storage::controlplane_view::read(data.path()).is_none(),
+        "a refused broker keeps no view to start from"
+    );
     let calls = calls.lock().expect("lock");
     assert!(calls.heartbeats.is_empty(), "never heartbeats as a member");
     assert_eq!(calls.deregistered, vec!["broker-a".to_string()]);
@@ -1055,6 +1087,314 @@ async fn a_trimmed_directory_joins_a_fleet_with_head_trim() {
     let task = join_with(&calls, untrimmed.path()).await;
     assert!(!task.fatal.is_cancelled());
     assert!(!calls.lock().expect("lock").heartbeats.is_empty());
+}
+
+/// Only a deregistration that never reached the control plane leaves the
+/// node's control-plane view in place, so this must not read an answer, even
+/// an error, as "never sent".
+#[tokio::test]
+async fn a_deregistration_counts_as_sent_unless_nothing_answered() {
+    let client = build_test_client().expect("client");
+    // A port nothing listens on.
+    let closed = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        listener.local_addr().expect("addr")
+    };
+    assert!(
+        !shutdown_membership(&link(&client, &format!("http://{closed}")), "node-a", "t").await,
+        "refused at connect, yet counted as sent",
+    );
+
+    let app = axum::Router::new().route(
+        "/v1/nodes/{node_id}/{action}",
+        post(|| async { axum::http::StatusCode::SERVICE_UNAVAILABLE }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let (stop, handle) = spawn_axum_with_shutdown(listener, app);
+    wait_for_listen(addr).await.expect("listen");
+    assert!(
+        shutdown_membership(&link(&client, &format!("http://{addr}")), "node-a", "t").await,
+        "a 503 may follow a deregistration the control plane applied",
+    );
+    let _ = stop.send(());
+    let _ = handle.await;
+}
+
+/// **A start from the view needs the control plane down, not refusing.** A
+/// 5xx or no answer at all is down; a 401 or another 4xx is a control plane
+/// that is up and has not accepted this node, which a start from the view
+/// must not paper over.
+#[tokio::test]
+async fn the_bounded_lookup_tells_down_from_refusing() {
+    let client = build_test_client().expect("client");
+    let credential = crate::cluster::credential::NodeCredential::new("a-node-token");
+    let wait = Duration::from_millis(400);
+    for (status, expected) in [
+        (axum::http::StatusCode::SERVICE_UNAVAILABLE, Bounded::Down),
+        (axum::http::StatusCode::INTERNAL_SERVER_ERROR, Bounded::Down),
+        (axum::http::StatusCode::UNAUTHORIZED, Bounded::Refusing),
+        (axum::http::StatusCode::FORBIDDEN, Bounded::Refusing),
+    ] {
+        let (base_url, _, stop, handle) = serve_lookup(usize::MAX, status, Some(3)).await;
+        let bounded = tokio::time::timeout(
+            Duration::from_secs(10),
+            registered_within(&link(&client, &base_url), "broker-a", &credential, wait),
+        )
+        .await
+        .expect("the wait is bounded");
+        assert_eq!(bounded, expected, "{status}");
+        let _ = stop.send(());
+        let _ = handle.await;
+    }
+
+    // Nothing listening is down.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    drop(listener);
+    let bounded = tokio::time::timeout(
+        Duration::from_secs(10),
+        registered_within(
+            &link(&client, &format!("http://{addr}")),
+            "broker-a",
+            &credential,
+            wait,
+        ),
+    )
+    .await
+    .expect("the wait is bounded");
+    assert_eq!(bounded, Bounded::Down);
+
+    // An answer within the wait, after an outage, is taken.
+    let (base_url, _, stop, handle) =
+        serve_lookup(1, axum::http::StatusCode::SERVICE_UNAVAILABLE, Some(3)).await;
+    let bounded = registered_within(
+        &link(&client, &base_url),
+        "broker-a",
+        &credential,
+        Duration::from_secs(5),
+    )
+    .await;
+    assert_eq!(
+        bounded,
+        Bounded::Answered(Some(Registered {
+            incarnation: 3,
+            storage_id: Some(LOOKUP_STORAGE_ID.to_string()),
+        }))
+    );
+    let _ = stop.send(());
+    let _ = handle.await;
+}
+
+const DIRECTORY_ID: [u8; 16] = [0xab; 16];
+
+/// A data directory under `root` that recorded registration `recorded`
+/// under [`DIRECTORY_ID`].
+fn directory(root: &std::path::Path, recorded: u64) -> StorageId {
+    let (id, _) =
+        felix_storage::storage_identity::load_or_create(root, || DIRECTORY_ID).expect("id");
+    felix_storage::run_state::record_registration(root, recorded).expect("record");
+    id
+}
+
+/// **The deferred restore check (#1334).** A control plane that registered
+/// the node at an incarnation the directory never recorded finds a restored
+/// copy: the directory is marked replaced and gets a new storage id, as a
+/// start that asked first would have done.
+#[test]
+fn a_directory_behind_the_control_plane_is_a_restore() {
+    let dir = tempfile::tempdir().expect("dir");
+    let id = directory(dir.path(), 2);
+    let registered = Registered {
+        incarnation: 5,
+        storage_id: Some(id.to_hex()),
+    };
+    let judged = judge_directory(dir.path(), id, Some(&registered)).expect("judge");
+    let Directory::Restored { rotated } = judged else {
+        panic!("not a restore: {judged:?}");
+    };
+    assert_ne!(rotated, id);
+    assert_eq!(
+        felix_storage::storage_identity::load(dir.path()).expect("load"),
+        Some(rotated)
+    );
+    assert!(felix_storage::run_state::replaced(dir.path()).expect("marker"));
+}
+
+#[test]
+fn a_directory_the_control_plane_registered_is_current() {
+    let dir = tempfile::tempdir().expect("dir");
+    let id = directory(dir.path(), 5);
+    let registered = Registered {
+        incarnation: 5,
+        storage_id: Some(id.to_hex()),
+    };
+    assert_eq!(
+        judge_directory(dir.path(), id, Some(&registered)).expect("judge"),
+        Directory::Current
+    );
+    assert_eq!(
+        felix_storage::storage_identity::load(dir.path()).expect("load"),
+        Some(id)
+    );
+    assert!(!felix_storage::run_state::replaced(dir.path()).expect("marker"));
+}
+
+#[test]
+fn a_node_registered_under_another_id_is_replaced() {
+    let dir = tempfile::tempdir().expect("dir");
+    let id = directory(dir.path(), 5);
+    let registered = Registered {
+        incarnation: 5,
+        storage_id: Some(LOOKUP_STORAGE_ID.to_string()),
+    };
+    assert_eq!(
+        judge_directory(dir.path(), id, Some(&registered)).expect("judge"),
+        Directory::Replaced
+    );
+    assert!(felix_storage::run_state::replaced(dir.path()).expect("marker"));
+}
+
+/// Spawn membership as a start from the view does, with the restore check
+/// deferred, and wait until it registers or gives up.
+async fn join_from_view(
+    calls: &Shared,
+    data: &std::path::Path,
+    id: StorageId,
+) -> (MembershipTask, CancellationToken) {
+    let (base_url, stop, handle) = serve(Arc::clone(calls)).await;
+    let serving = CancellationToken::new();
+    serving.cancel();
+    let shutdown = CancellationToken::new();
+    let checked = CancellationToken::new();
+    let task = spawn(
+        link(&build_test_client().expect("client"), &base_url),
+        config(),
+        crate::cluster::credential::NodeCredential::new("a-node-token"),
+        serving,
+        shutdown.clone(),
+        Arc::new(crate::cluster::lease::LeaseState::new(Duration::from_secs(
+            30,
+        ))),
+        Arc::new(felix_common::fleet::FleetGate::for_this_build()),
+        Arc::default(),
+        Arc::default(),
+        tokio::sync::watch::channel(None).0,
+        Some(id),
+        Some(data.to_path_buf()),
+        Some(checked.clone()),
+    );
+    for _ in 0..500 {
+        if task.fatal.is_cancelled() || !calls.lock().expect("lock").heartbeats.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    shutdown.cancel();
+    let _ = stop.send(());
+    let _ = handle.await;
+    (task, checked)
+}
+
+/// **A restored directory that started from its view stops before it
+/// registers.** It never registers under the old id, the catalog sync never
+/// starts (the check token stays uncancelled), and the next start comes back
+/// under a new id as a copy peers rebuild.
+#[tokio::test]
+async fn a_restore_found_after_a_start_from_the_view_stops_before_registering() {
+    let dir = tempfile::tempdir().expect("dir");
+    let id = directory(dir.path(), 2);
+    felix_storage::controlplane_view::record(dir.path(), b"{}").expect("a view");
+    let calls = Shared::default();
+    calls.lock().expect("lock").lookup = Some((5, id.to_hex()));
+
+    let (task, checked) = join_from_view(&calls, dir.path(), id).await;
+
+    assert!(task.fatal.is_cancelled(), "the broker stops");
+    assert!(felix_storage::controlplane_view::read(dir.path()).is_none());
+    assert!(
+        !checked.is_cancelled(),
+        "nothing waiting on the check is released"
+    );
+    assert!(
+        calls.lock().expect("lock").registrations.is_empty(),
+        "it never registers the restored directory"
+    );
+    assert_ne!(
+        felix_storage::storage_identity::load(dir.path()).expect("load"),
+        Some(id)
+    );
+    assert!(felix_storage::run_state::replaced(dir.path()).expect("marker"));
+}
+
+#[tokio::test]
+async fn a_current_directory_registers_once_the_check_passes() {
+    let dir = tempfile::tempdir().expect("dir");
+    let id = directory(dir.path(), 5);
+    let calls = Shared::default();
+    calls.lock().expect("lock").lookup = Some((5, id.to_hex()));
+
+    let (task, checked) = join_from_view(&calls, dir.path(), id).await;
+
+    assert!(!task.fatal.is_cancelled());
+    assert!(checked.is_cancelled());
+    let calls = calls.lock().expect("lock");
+    assert_eq!(calls.registrations.len(), 1);
+    assert_eq!(calls.registrations[0]["storage_id"], json!(id.to_hex()));
+}
+
+/// **A directory the control plane last registered under another id stops
+/// before registering, and keeps no view**, so a restart during a later
+/// outage waits for the control plane instead of voting from it.
+#[tokio::test]
+async fn a_replaced_directory_found_after_a_start_from_the_view_forgets_its_view() {
+    let dir = tempfile::tempdir().expect("dir");
+    let id = directory(dir.path(), 5);
+    felix_storage::controlplane_view::record(dir.path(), b"{}").expect("a view");
+    let calls = Shared::default();
+    calls.lock().expect("lock").lookup = Some((5, LOOKUP_STORAGE_ID.to_string()));
+
+    let (task, checked) = join_from_view(&calls, dir.path(), id).await;
+
+    assert!(task.fatal.is_cancelled(), "the broker stops");
+    assert!(!checked.is_cancelled());
+    assert!(calls.lock().expect("lock").registrations.is_empty());
+    assert!(felix_storage::run_state::replaced(dir.path()).expect("marker"));
+    assert!(
+        felix_storage::controlplane_view::read(dir.path()).is_none(),
+        "the view is gone"
+    );
+}
+
+/// A control plane that answers 200 with a body this build cannot read is up,
+/// so it is not down.
+#[tokio::test]
+async fn an_answer_that_does_not_decode_is_not_down() {
+    let app = axum::Router::new().route(
+        "/v1/nodes/{node_id}",
+        axum::routing::get(|| async { "not a node" }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let (stop, handle) = spawn_axum_with_shutdown(listener, app);
+    wait_for_listen(addr).await.expect("listen");
+    let bounded = registered_within(
+        &link(
+            &build_test_client().expect("client"),
+            &format!("http://{addr}"),
+        ),
+        "broker-a",
+        &crate::cluster::credential::NodeCredential::new("a-node-token"),
+        Duration::from_millis(300),
+    )
+    .await;
+    assert_eq!(bounded, Bounded::Refusing);
+    let _ = stop.send(());
+    let _ = handle.await;
 }
 
 /// **A directory that stored a record with headers does not join a fleet
@@ -1176,6 +1516,7 @@ async fn heartbeats_continue_while_every_runtime_worker_is_blocked() {
         Arc::default(),
         Arc::default(),
         tokio::sync::watch::channel(None).0,
+        None,
         None,
         None,
     );

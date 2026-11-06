@@ -302,8 +302,8 @@ conformance runner checks the frame on the wire, offered and not.
   cancel one, and can still start moves, which is how shards are moved by
   hand without placement moving others meanwhile. New shards and failovers
   are not moves and still happen.
-- **A command line.** `felix-controlplane admin moves | plan | move | cancel
-  | pause | resume`, a client of the API with plain tables or `--json`.
+- **A command line.** `felixctl shard moves|move|move cancel` and `felixctl placement
+  plan|pause|resume`, a client of the API with plain tables or `--json`.
 
 `routing::operator_moves` runs these against real brokers: an operator's
 move completes; a staged move cancelled leaves the shard where it was; a

@@ -16,6 +16,7 @@ use crate::context::Settings;
 use crate::error::{Exit, MarkExit, fail};
 use crate::manage;
 use crate::output::{Output, cell, fields, table};
+use crate::placement;
 
 /// Page size asked for when listing; the CLI follows `next_cursor` either way.
 const PAGE_LIMIT: &str = "1000";
@@ -389,6 +390,7 @@ pub(crate) async fn shard(
     let (leader, name) = match command {
         ShardCommand::Ls { leader, name } => (leader, name),
         ShardCommand::Move(args) => return manage::shard_move(&api, settings, args, out).await,
+        ShardCommand::Moves => return placement::moves(&api, out).await,
     };
     let assignments = assignments(&api, leader.as_deref()).await?;
     let assignments = assignments
