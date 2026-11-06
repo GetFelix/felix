@@ -16,7 +16,7 @@ use crate::cluster::credential::NodeCredential;
 use crate::config::BrokerConfig;
 use crate::serving::auth::BrokerAuth;
 use crate::shards::{lifecycle as shard_lifecycle, routing as shard_routing, watch as shard_watch};
-use felix_replication::peer::{self, PeerPool, tls::PeerTls};
+use felix_replication::peer::{self, PeerPool, PeerRequester, tls::PeerTls};
 use felix_replication::{self as replication, halted::HaltedReplicas, quorum::QuorumMarks};
 
 /// The router, ingress router, shard lifecycle and ownership of a cluster member.
@@ -134,6 +134,7 @@ pub(super) fn bind_peer_listener(
     incarnation: tokio::sync::watch::Receiver<Option<u64>>,
     unclean: Option<Arc<replication::unclean::UncleanStart>>,
     controlplane: Option<(&reqwest::Client, &str, &Option<NodeCredential>)>,
+    serving: Option<&CancellationToken>,
     peer_shutdown: &CancellationToken,
 ) -> Result<PeerListener> {
     Ok(
@@ -182,6 +183,10 @@ pub(super) fn bind_peer_listener(
                 }
                 .with_storage_identity(storage_id)
                 .with_node_incarnation(incarnation);
+                let server = match serving {
+                    Some(serving) => server.with_serving(serving.clone()),
+                    None => server,
+                };
                 match &peer_config.tls {
                     Some(tls) => tracing::info!(
                         addr = %server.local_addr()?,
@@ -244,15 +249,17 @@ pub(super) struct ShardTasks {
     pub(super) replication: Option<replication::driver::Replication>,
 }
 
-/// What the shard tasks read and publish to.
-pub(super) struct ShardTaskDeps<'a> {
+/// What the shard tasks read and publish to. Generic over the peer transport
+/// so a simulator can run these tasks over an in-memory network; a broker
+/// passes its [`PeerPool`].
+pub(super) struct ShardTaskDeps<'a, R> {
     pub(super) config: &'a BrokerConfig,
     pub(super) cluster: &'a Option<ShardState>,
     pub(super) durable_storage: &'a Option<DurableStorage>,
     pub(super) membership_client: &'a reqwest::Client,
     pub(super) credential: &'a Option<NodeCredential>,
     pub(super) client_endpoints: &'a Arc<ClientEndpoints>,
-    pub(super) peers: &'a Option<Arc<PeerPool>>,
+    pub(super) peers: &'a Option<Arc<R>>,
     pub(super) broker: &'a Arc<Broker>,
     pub(super) quorum_marks: &'a Arc<QuorumMarks>,
     pub(super) halted_replicas: &'a Arc<HaltedReplicas>,
@@ -275,7 +282,9 @@ pub(super) struct ShardTaskDeps<'a> {
 /// Shard ownership: follow the control plane's assignments, and keep local
 /// state and the routing table in step with them. Also starts shipping to
 /// followers for the shards this broker leads.
-pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
+pub(super) fn spawn_shard_tasks<R: PeerRequester + Send + Sync + 'static>(
+    deps: ShardTaskDeps<'_, R>,
+) -> Option<ShardTasks> {
     let ShardTaskDeps {
         config,
         cluster,
@@ -319,7 +328,7 @@ pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
                         guard.fence_promotions();
                         // A broker that checks sets fences the next
                         // generation too, once `joint_fence` is finalized.
-                        if replication::peer::PeerRequester::offers_election(pool.as_ref()) {
+                        if pool.offers_election() {
                             guard.fence_next_generations(Arc::clone(fleet));
                         }
                         Arc::new(shard_lifecycle::promotion::LifecycleGate::new(
@@ -374,7 +383,7 @@ pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
             // sets: the routing feed lays them over the control plane's.
             let elections = peers
                 .as_ref()
-                .filter(|pool| replication::peer::PeerRequester::offers_election(pool.as_ref()))
+                .filter(|pool| pool.offers_election())
                 .map(|_| {
                     let elections = Arc::new(
                         replication::election::Elections::new(
@@ -389,14 +398,17 @@ pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
                     elections
                 });
             let watch = tokio::spawn(shard_watch::run(
-                membership_client.clone(),
-                base_url.clone(),
+                felix_replication::controlplane_link::HttpControlPlaneLink::new(
+                    membership_client.clone(),
+                    base_url,
+                ),
                 // The assignment feed is cluster metadata, so it is read with
                 // the same credential the rest of membership uses.
                 credential.clone(),
                 Arc::clone(ownership),
                 Arc::clone(&assignments_changed),
                 Duration::from_millis(config.controlplane_sync_interval_ms),
+                ingress.fence().lease().cloned(),
                 sync_shutdown.clone(),
             ));
             let feed = shard_routing::spawn_feed(
@@ -413,8 +425,10 @@ pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
                     elections,
                 },
                 Some(shard_routing::CatalogSource {
-                    client: membership_client.clone(),
-                    base_url: base_url.clone(),
+                    link: felix_replication::controlplane_link::HttpControlPlaneLink::new(
+                        membership_client.clone(),
+                        base_url,
+                    ),
                     token: credential.clone(),
                 }),
                 Duration::from_millis(config.controlplane_sync_interval_ms),
@@ -444,8 +458,11 @@ pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
                     config.membership.as_ref().map(|membership| {
                         let (reporter, _task) = replication::reporter::Reporter::spawn(
                             replication::reporter::ReportTo {
-                                client: membership_client.clone(),
-                                base_url: base_url.clone(),
+                                link:
+                                    felix_replication::controlplane_link::HttpControlPlaneLink::new(
+                                        membership_client.clone(),
+                                        base_url,
+                                    ),
                                 node_id: membership.node_id.clone(),
                                 token: credential.clone().map(|credential| {
                                     Arc::new(credential)

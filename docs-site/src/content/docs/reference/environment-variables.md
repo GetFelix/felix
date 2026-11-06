@@ -1166,8 +1166,8 @@ export FELIX_PUB_STREAMS_PER_CONN="4"  # More concurrency
 
 **Description**: Most publish streams a client opens per broker for one shard
 each, beside the pooled ones (client). Each publish goes on its shard's own
-stream, so a stalled shard holds up only itself and one stream's shards
-spread over the client's connections. Shards past the cap share the pool.
+stream, so a stalled shard uses up only its own publish window and one
+stream's shards spread over the client's connections. Shards past the cap share the pool.
 `0` turns them off, which puts every publish to a stream on one pooled
 stream.
 
@@ -1175,7 +1175,11 @@ stream.
 
 **Default**: `4`. The first four shards the client publishes to on a broker
 (first come, across all streams) get their own stream; later shards use the
-pool, where a stalled shard can hold up the other pooled shards. To isolate
+pool, where a stalled shard takes slots from the pooled stream's publish
+window. When the broker also grants `FEATURE_PUBLISH_ANSWER_ON_COMPLETION`, it
+answers plain acked publishes as they complete, so the stalled shard's answers
+do not hold back the others'. An older broker that grants a window keeps
+request order, and there they do. To isolate
 every shard, set it to the total number of shards the client publishes to on a
 broker, at some throughput cost when keys spread over many shards.
 
@@ -1357,7 +1361,7 @@ export FELIX_BROKER_PUB_STREAM_RECV_WINDOW="4194304"
 
 ### `FELIX_BROKER_PUBLISH_WINDOW`
 
-**Description**: The most acknowledged publishes one stream may have unanswered when its client pipelines them (`FEATURE_PUBLISH_PIPELINE`). The broker grants this number in `AuthOk.publish_window`, answers a pipelining stream's publishes in the order it sent them, and stops reading that stream's publishes while this many are outstanding on it. Each stream has its own window, so one stuck behind a stalled shard does not stall the others on its connection. A connection's outstanding publishes therefore scale with its streams (up to QUIC's 1024) times this window; the payload bytes the broker holds for one connection stay under `FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES`. `0` turns pipelining off: no client is granted a window, and acks come back in completion order.
+**Description**: The most acknowledged publishes one stream may have unanswered when its client pipelines them (`FEATURE_PUBLISH_PIPELINE`). The broker grants this number in `AuthOk.publish_window`, answers a pipelining stream's publishes in the order it sent them (only its idempotent ones, for a client that offered `FEATURE_PUBLISH_ANSWER_ON_COMPLETION`, which the Rust client does), and stops reading that stream's publishes while this many are outstanding on it. Each stream has its own window, so one stuck behind a stalled shard does not stall the others on its connection. A connection's outstanding publishes therefore scale with its streams (up to QUIC's 1024) times this window; the payload bytes the broker holds for one connection stay under `FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES`. `0` turns pipelining off: no client is granted a window, and acks come back in completion order.
 
 **Type**: Non-negative integer
 
@@ -2349,6 +2353,7 @@ absent. They are listed in that script rather than here.
 | `FELIX_SHARD_PENDING_SET_TIMEOUT_MS` | `600000` | Under `replica_election`, a cut-over's new replica set that the leader has not reported on both sets this long after placement saw it is dropped, and the old set stays at a new generation. `0` waits forever. |
 | `FELIX_SHARD_FENCE_TIMEOUT_MS` | `120000` | A fenced leader that has not reported drained this long after placement saw the fence gets the shard back at a new generation, holding every write it accepted, and the move is given up. Without it a leader that never drains keeps its shard without writes. The shard's next move waits this long, doubling with each give-up in a row up to an hour. `0` waits forever. |
 | `FELIX_SHARD_RESTORE_AFTER_MS` | `300000` | How long a follower's broker may be down or gone, or its copy reported halted by its leader, before placement replaces the copy on another live broker, bringing the shard back to its replication factor. Keep it above the longest broker restart. `0` never replaces a lost or halted follower; a replica set left short of its factor by a failover is still topped up. |
+| `FELIX_SHARD_STUCK_LEADER_MS` | `70000` | How long the leader of a `Quorum` shard with followers may show no progress at its generation while its broker is live, before placement names it again one generation up on the same set: a new fenced term that ends whatever held the old one. Progress is a first report at the generation, a report with nothing waiting on a majority, or a majority's position moving, so an idle or slow shard is never renamed. Never shorter than two report TTLs. Renames of one shard back off and stop at four an hour. `0` never renames. |
 | `FELIX_SHARD_RESTORE_STALL_MS` | `120000` | How long the copy a restore is adding may go without its reported position moving (for a cache, in either its own log or its counter log) before the restore is dropped and its move slot goes to the next shard. The shard retries after the shards that have not had a slot. `0` waits for `FELIX_SHARD_MOVE_TIMEOUT_MS`. |
 | `FELIX_CP_URL`, `FELIX_CP_SYNC_INTERVAL_MS` | unset | Short aliases used by the demos and cluster harness. |
 
@@ -2371,6 +2376,7 @@ absent. They are listed in that script rather than here.
 | `FELIX_INTERNAL_ELECTION` | `false` | `true`, with the fence on, makes this broker offer `ELECTION` to its peers, check the replica set a fence or batch carries, and report the `joint_fence` and `replica_election` fleet features; a leader sends set fields only to followers that offered it too. Every broker needs it before either feature can be finalized, and a broker without it is refused at registration once `joint_fence` is. See [Failover without the control plane](/deployment/failover-without-control-plane/). <!-- TODO(0.7.0 release day): opt-in vs default; revisit the name and default here. --> |
 | `FELIX_LEADER_SUSPECT_AFTER_MS` | `5000` | How long a leader of a shard this broker follows may go without answering its pings before the broker names it in its heartbeat. Pinged four times per window. Once a majority of a `Quorum` stream shard's set names its leader, the fleet has finalized `generation_start`, `majority_ack` and `lease_free_reads`, and the leader's own replica report says it serves without the lease, the control plane promotes a follower without waiting for the leader to be marked down (`docs/replication-design.md`, "Failover on the followers' word"). `0` turns the pings off, and with them replica elections. |
 | `FELIX_ELECTION_DEFER_FOR_MS` | `60000` | Under `replica_election`, how long a leader elected by the replicas may go without starting its generation before its followers stop deferring to it: it stops refusing their pre-votes, and a follower that took its fence may stand over it. A fence or catch-up still running after this long may be replaced by a follower's newer generation. At least `1000`; lower values are raised to it. |
+| `FELIX_SHARD_SUSPECT_AFTER_MS` | `120000` | Under `replica_election`, how long a follower may go without a batch or fence from a shard's leader, while its copy holds a generation that has not started, before it may stand for that shard even though the leader's broker answers pings. Idle shards are not suspected unless this copy was left holding a newer ballot from a candidate that gave up. Keep it above the control plane's stuck-leader bound so the control plane renames first while it is up. `0` turns it off; other values below `1000` are raised to it. |
 | `FELIX_INTERNAL_IDLE_TIMEOUT_MS` | `60000` | Idle timeout on a peer connection. |
 | `FELIX_INTERNAL_RECONNECT_BASE_MS` | `50` | First reconnect backoff after losing a peer. |
 | `FELIX_INTERNAL_RECONNECT_MAX_MS` | `5000` | Backoff ceiling. |

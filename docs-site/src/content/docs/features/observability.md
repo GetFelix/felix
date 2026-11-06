@@ -548,6 +548,11 @@ a restart loop. `/ready` says "send this instance traffic," and goes false
 first thing during shutdown so load balancers steer away before anything
 stops working. See [Graceful shutdown](/deployment/graceful-shutdown/).
 
+A broker with durable storage and a control plane starts with `/ready` false.
+It turns true once the catalog is applied, every durable stream is recovered,
+and every listener is bound. A broker that cannot bind a port exits without
+ever reporting ready, so whatever started it sees a failed start, not a crash.
+
 ## Distributed tracing
 
 Tracing export is off unless an OTLP endpoint is set. With

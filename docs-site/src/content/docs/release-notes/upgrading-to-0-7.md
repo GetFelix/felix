@@ -61,9 +61,17 @@ carry `client_flags_ext` and `server_flags_ext` to agree on
 before. The Rust client offers it; the Python, TypeScript, C and C# clients do
 not yet. Header names starting with `felix.` are reserved.
 
+A pipelining client can also offer `FEATURE_PUBLISH_ANSWER_ON_COMPLETION`
+*(main)*. A broker that grants it a publish window then answers plain acked
+publishes as they complete and keeps request order only among idempotent
+ones, so a shard stalled during a failover no longer holds back the answers
+of every other shard on its stream. Older clients and brokers exchange the
+same frames as before. The Rust client offers it; nothing to configure.
+
 ## New settings
 
-None of these is required. Each default keeps the 0.6.2 behavior.
+None of these is required. Each default keeps the 0.6.2 behavior, except
+`FELIX_SHARD_STUCK_LEADER_MS`, which is on by default.
 
 | Setting | What it does |
 |---|---|
@@ -73,6 +81,8 @@ None of these is required. Each default keeps the 0.6.2 behavior.
 | `FELIX_LEASE_TOKEN_KEY_FILE`, `FELIX_LEASE_TOKEN_MAX_TTL_SECONDS` *(main)* | Key file and longest lifetime for lease tokens. Without the key file a broker neither mints nor accepts them. Every broker needs the same file. |
 | `FELIX_INTERNAL_ELECTION` | Broker. `true` makes the broker offer replica elections. Every broker needs it before `joint_fence` and `replica_election` can be finalized, and keeps needing it after. See [Turning on failover without the control plane](#turning-on-failover-without-the-control-plane). |
 | `FELIX_SHARD_ELECTION_HOLD_MS`, `FELIX_SHARD_PENDING_SET_TIMEOUT_MS` | Control-plane timers for `replica_election`. Nothing uses them until that feature is finalized. |
+| `FELIX_SHARD_STUCK_LEADER_MS` | Control plane, 70 s by default. A `Quorum` shard whose leader is on a live broker but shows no progress at its generation for this long is named again one generation up, on the same set. In 0.6.2 such a shard stayed stuck until something else changed its assignment. `0` turns it off. See "The control plane's backstop" in `docs/replication-design.md`. |
+| `FELIX_SHARD_SUSPECT_AFTER_MS` | Broker, 120 s by default, used only under `replica_election`. A follower whose copy holds a generation that never started, and that has heard nothing from the shard's leader for this long, may stand for that one shard though the leader's broker is up. `0` turns it off. |
 
 In a cluster, headers are refused until the fleet finalizes `record_headers`,
 whatever `FELIX_RECORD_HEADERS` says.
@@ -173,7 +183,9 @@ Later control-plane changes are on `main`:
   sends. With the usual upgrade order (control plane first) every broker gets it.
 - An elected leader is adopted on the replica set it was elected on: level
   26, with no Postgres migration. Finalizing `replica_election` needs that
-  level.
+  level. Level 27 does the same when the elected leader is the one the
+  control plane already names; below it, the same report moves the shard
+  past the election at once, and the next report is only a fallback.
 - A leader that answered another candidate's fence, when the control plane
   never adopted that candidate, reports the candidate's ballot with its refusal, and
   placement names it again one past that ballot (#1951): migration `0043`,

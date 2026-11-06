@@ -117,6 +117,11 @@ pub enum MoveStep {
     /// ballot its own copy holds for another node, which a fence one up would
     /// find promised away and wait on. 0 when there is none.
     SetUnknown { at_least: u64 },
+    /// The leader's broker is live, but the leader has shown no progress at
+    /// its generation for `MovePolicy::stuck_leader_millis`: it is named
+    /// again one generation up, on the same set, as for `SetUnknown`. A new
+    /// fenced term ends whatever held the old one, and never loses a record.
+    Stuck { reason: super::StuckReason },
     /// The shard no longer elects (its consistency changed), so a pending
     /// set can never be reported: the change is dropped.
     PendingSetDropped,
@@ -163,6 +168,7 @@ impl MoveStep {
             Self::PendingSetTimedOut => "pending_set_timed_out",
             Self::ElectionRefused => "election_refused",
             Self::SetUnknown { .. } => "set_unknown",
+            Self::Stuck { .. } => "stuck",
             Self::PendingSetDropped => "pending_set_dropped",
             Self::PendingSetCancelled => "pending_set_cancelled",
             Self::Readmit { .. } => "readmit",

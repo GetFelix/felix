@@ -237,12 +237,15 @@ impl Cluster {
         shutdown: CancellationToken,
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(shard_watch::run(
-            self.client.clone(),
-            self.base_url.clone(),
+            felix_replication::controlplane_link::HttpControlPlaneLink::new(
+                self.client.clone(),
+                &self.base_url,
+            ),
             Some(credential),
             ownership,
             Arc::default(),
             Duration::from_millis(10),
+            None,
             shutdown,
         ))
     }
@@ -256,14 +259,17 @@ impl Cluster {
         shutdown: CancellationToken,
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(shard_watch::run(
-            self.client.clone(),
-            self.base_url.clone(),
+            felix_replication::controlplane_link::HttpControlPlaneLink::new(
+                self.client.clone(),
+                &self.base_url,
+            ),
             Some(
                 felix_broker_service::cluster::credential::NodeCredential::new(self.bearer.clone()),
             ),
             ownership,
             changed,
             interval,
+            None,
             shutdown,
         ))
     }
@@ -559,12 +565,15 @@ async fn a_control_plane_without_long_poll_is_polled_on_the_interval() {
 
     let shutdown = CancellationToken::new();
     let watch = tokio::spawn(shard_watch::run(
-        Client::builder().no_proxy().build().expect("client"),
-        format!("http://{addr}"),
+        felix_replication::controlplane_link::HttpControlPlaneLink::new(
+            Client::builder().no_proxy().build().expect("client"),
+            &format!("http://{addr}"),
+        ),
         None,
         Arc::new(RwLock::new(ShardOwnership::default())),
         Arc::default(),
         Duration::from_millis(100),
+        None,
         shutdown.clone(),
     ));
 

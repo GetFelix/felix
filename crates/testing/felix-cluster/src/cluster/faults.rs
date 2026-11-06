@@ -285,6 +285,25 @@ impl Cluster {
         Ok(())
     }
 
+    /// Pause the control plane in place, as `SIGSTOP` would: it keeps its
+    /// port, takes every request and answers none, and runs no sweep or
+    /// placement. Brokers see it as hung rather than gone, so each request
+    /// waits out its own timeout. [`Self::resume_control_plane`] lets it run
+    /// again, with its expiry sweep facing heartbeat stamps as old as the pause.
+    pub fn pause_control_plane(&self) -> Result<()> {
+        self.control_plane
+            .as_ref()
+            .ok_or_else(|| anyhow!("the control plane is not running"))?
+            .pause()
+    }
+
+    /// Let a paused control plane run again.
+    pub fn resume_control_plane(&self) {
+        if let Some(control_plane) = &self.control_plane {
+            control_plane.resume();
+        }
+    }
+
     /// Whether the control plane is still running. `false` once
     /// [`Self::stop_control_plane`] has been called, after which the assignment
     /// and node endpoints are unreachable.

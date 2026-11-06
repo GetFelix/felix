@@ -326,8 +326,10 @@ impl RecordingControlPlane {
     fn reporter(&self, shutdown: CancellationToken) -> crate::reporter::Reporter {
         crate::reporter::Reporter::spawn(
             ReportTo {
-                client: reqwest::Client::new(),
-                base_url: format!("http://{}", self.addr),
+                link: crate::controlplane_link::HttpControlPlaneLink::new(
+                    reqwest::Client::new(),
+                    &format!("http://{}", self.addr),
+                ),
                 node_id: LOCAL.to_string(),
                 token: None,
                 incarnation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -426,8 +428,10 @@ async fn a_failed_replica_report_holds_the_quorum_mark_back() {
     let report_shutdown = CancellationToken::new();
     let (reporter, _reporter_task) = crate::reporter::Reporter::spawn(
         ReportTo {
-            client: reqwest::Client::new(),
-            base_url: format!("http://{addr}"),
+            link: crate::controlplane_link::HttpControlPlaneLink::new(
+                reqwest::Client::new(),
+                &format!("http://{addr}"),
+            ),
             node_id: LOCAL.to_string(),
             token: None,
             incarnation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -618,8 +622,10 @@ async fn a_slow_control_plane_does_not_stall_the_remaining_followers() {
     let report_shutdown = CancellationToken::new();
     let (reporter, _reporter_task) = crate::reporter::Reporter::spawn(
         ReportTo {
-            client: reqwest::Client::new(),
-            base_url: format!("http://{addr}"),
+            link: crate::controlplane_link::HttpControlPlaneLink::new(
+                reqwest::Client::new(),
+                &format!("http://{addr}"),
+            ),
             node_id: LOCAL.to_string(),
             token: None,
             incarnation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -723,8 +729,10 @@ async fn pass_with_a_publish_behind_the_report(
     });
     let (reporter, _reporter_task) = crate::reporter::Reporter::spawn(
         ReportTo {
-            client: reqwest::Client::new(),
-            base_url: format!("http://{addr}"),
+            link: crate::controlplane_link::HttpControlPlaneLink::new(
+                reqwest::Client::new(),
+                &format!("http://{addr}"),
+            ),
             node_id: LOCAL.to_string(),
             token: None,
             incarnation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -1651,6 +1659,65 @@ async fn refusal_after_open(
     shutdown.cancel();
     driver.stop().await;
     refused
+}
+
+/// Every report an open leader at generation 4 sends within `within`, when
+/// broker-b refuses it for a newer ballot and broker-c is down.
+async fn reports_after_open(within: Duration) -> Vec<ShardReplicaStatus> {
+    let (broker, _dir) = leader_with(3).await;
+    let (control_plane, received) = recording_control_plane().await;
+    let shutdown = CancellationToken::new();
+    let driver = spawn(
+        Arc::new(RefusedAfterOpen {
+            detail: |g| crate::replica::superseded_detail(g + 1, g),
+            c_answers: false,
+            accepting: AcceptingFollower::default(),
+        }),
+        broker,
+        router(LOCAL, &["broker-b", "broker-c"], 4),
+        Arc::new(Unfenced),
+        Arc::new(crate::promotion::NoGate),
+        published(),
+        Some(control_plane.reporter(shutdown.clone())),
+        Duration::from_millis(50),
+        Arc::default(),
+        RebuildPolicy::default(),
+        MoveThrottle::unlimited(),
+        shutdown.clone(),
+    );
+    tokio::time::sleep(within).await;
+    shutdown.cancel();
+    driver.stop().await;
+    received.lock().expect("lock").clone()
+}
+
+/// **Once reported, a refusal is on every later report at that generation.**
+/// The control plane keeps one report per shard, the last, so a pass report
+/// without the refusal would hide it from placement and the shard would
+/// never be renamed.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refusal_stays_on_every_later_report() {
+    let reports = reports_after_open(Duration::from_millis(1500)).await;
+    let first = reports
+        .iter()
+        .position(|report| report.refused.is_some())
+        .expect("no report of the refusal");
+    let dropped: Vec<_> = reports[first..]
+        .iter()
+        .filter(|report| report.generation == 4 && report.refused.is_none())
+        .collect();
+    assert!(
+        dropped.is_empty(),
+        "{} of {} reports after the refusal leave it out",
+        dropped.len(),
+        reports.len() - first
+    );
+    assert!(
+        reports[first + 1..]
+            .iter()
+            .any(|report| report.refused.is_some() && report.leader_offset.is_some()),
+        "no measured report after the refusal carries it"
+    );
 }
 
 /// **An open leader that a follower refuses for a newer ballot, with no
