@@ -196,6 +196,7 @@ impl ForwardingHandler {
                     &handle,
                     Some(&key),
                     &outcome,
+                    publish.shard.generation,
                     self.marks.as_deref(),
                     Some(self.ingress.as_ref()),
                     self.quorum_timeout,
@@ -538,6 +539,7 @@ impl ForwardingHandler {
             } else {
                 felix_replication::quorum::Access::Read
             },
+            op.shard.generation,
         )
         .await
         {
@@ -846,7 +848,7 @@ impl ForwardingHandler {
                 drop(_fenced);
                 match added {
                     Ok((sum, offset)) => self
-                        .counter_quorum(key, Some(offset + 1), "counter add")
+                        .counter_quorum(key, Some(offset + 1), op.shard.generation, "counter add")
                         .await
                         .map(|()| Some(sum))
                         .map_err(|detail| (ErrorCode::StorageFailed, detail)),
@@ -866,7 +868,7 @@ impl ForwardingHandler {
                     .map_err(|err| (ErrorCode::Unavailable, err.to_string()));
                 match sum {
                     Ok(sum) => self
-                        .counter_quorum(key, None, "read")
+                        .counter_quorum(key, None, op.shard.generation, "read")
                         .await
                         .map(|()| sum)
                         .map_err(|detail| (ErrorCode::Unavailable, detail)),
@@ -897,6 +899,7 @@ impl ForwardingHandler {
         &self,
         key: &ShardKey,
         end: Option<u64>,
+        generation: u64,
         what: &'static str,
     ) -> Result<(), String> {
         felix_replication::quorum::await_counter_quorum(
@@ -906,6 +909,7 @@ impl ForwardingHandler {
             Some(self.ingress.as_ref()),
             self.quorum_timeout,
             end,
+            generation,
             what,
         )
         .await

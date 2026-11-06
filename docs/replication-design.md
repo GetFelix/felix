@@ -4549,6 +4549,18 @@ already waiting when the generation changes carries over to the new mark,
 which counts a majority of the new replica set holding the log up to it. Only
 the broker ceasing to lead the shard ends the wait early.
 
+The new mark counts the log as it is now, so it covers a write only if the
+log still holds it. That is not a given when the new generation came from a
+promotion: its catch-up can drop the leader's unacknowledged suffix and take
+a newer leader's records at the same offsets (#2048). So a wait that ends at
+a newer generation than its write's checks that the log still labels the
+write's offsets with the write's generation. One generation has one leader,
+so a record at that offset and generation is the write. Otherwise the client
+is told leadership was lost, and the outcome is unknown. Cache puts and
+counter adds wait the same way. `FelixShardFigure8AckWaitByOffset` in
+`docs/formal/` finds the lost write without the check, and
+`FelixShardFigure8AckWait` shows it holds with it.
+
 The window is kept short by waking each step rather than polling for it. The
 broker long-polls the assignment feed, so the fence and the cut-over reach it
 as they are written. Its assignment watch wakes the routing feed, and the feed

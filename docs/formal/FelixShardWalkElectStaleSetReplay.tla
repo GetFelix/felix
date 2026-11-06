@@ -12,6 +12,7 @@ VARIABLE step
 ReplayInit ==
     /\ Init /\ step = 0
     /\ ackGen = {}
+    /\ waits = {}
     /\ acked = {}
     /\ answered = (a :> {} @@ b :> {} @@ c :> {} @@ d :> {})
     /\ ballot = (a :> {a} @@ b :> {a} @@ c :> {} @@ d :> {})

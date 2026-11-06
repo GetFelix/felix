@@ -291,6 +291,7 @@ pub(crate) async fn apply_cache_local(
                 ingress,
                 quorum_timeout,
                 felix_replication::quorum::Access::Write,
+                generation,
             )
             .await?;
             CacheAnswer::default()
@@ -314,6 +315,7 @@ pub(crate) async fn apply_cache_local(
                 ingress,
                 quorum_timeout,
                 felix_replication::quorum::Access::Read,
+                generation,
             )
             .await?;
             CacheAnswer {
@@ -337,6 +339,7 @@ pub(crate) async fn apply_cache_local(
                 ingress,
                 quorum_timeout,
                 felix_replication::quorum::Access::Write,
+                generation,
             )
             .await?;
             CacheAnswer {
@@ -371,6 +374,7 @@ pub(crate) async fn apply_cache_local(
                 ingress,
                 quorum_timeout,
                 felix_replication::quorum::Access::Write,
+                generation,
             )
             .await?;
             let lease = lease.map(|mint| match written_if {
@@ -400,6 +404,7 @@ pub(crate) async fn apply_cache_local(
                 ingress,
                 quorum_timeout,
                 felix_replication::quorum::Access::Write,
+                generation,
             )
             .await?;
             CacheAnswer {
@@ -425,6 +430,7 @@ pub(crate) async fn apply_cache_local(
                 ingress,
                 quorum_timeout,
                 felix_replication::quorum::Access::Read,
+                generation,
             )
             .await?;
             let version = found.as_ref().map(|found| found.version);
@@ -512,6 +518,7 @@ pub(crate) async fn apply_counter_op(
                         ingress,
                         quorum_timeout,
                         Some(offset + 1),
+                        generation,
                         "counter add",
                     )
                     .await?;
@@ -537,6 +544,7 @@ pub(crate) async fn apply_counter_op(
                         ingress,
                         quorum_timeout,
                         None,
+                        generation,
                         "read",
                     )
                     .await?;

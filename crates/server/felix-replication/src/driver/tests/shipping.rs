@@ -451,6 +451,7 @@ async fn a_quorum_cache_put_ships_without_waiting_for_the_tick() {
         Some(&LedCache),
         Duration::from_secs(5),
         crate::quorum::Access::Write,
+        4,
     )
     .await;
 

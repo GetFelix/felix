@@ -868,6 +868,188 @@ async fn a_dropped_suffix_leaves_the_replicas_labels() {
     assert!(!replicas.sent(Kind::ReplicateLabelledFetch).is_empty());
 }
 
+/// The quorum marks' key for the shard.
+fn mark_key() -> crate::ShardKey {
+    crate::ShardKey {
+        tenant_id: TENANT.to_string(),
+        namespace: NAMESPACE.to_string(),
+        stream: STREAM.to_string(),
+        shard: 0,
+        kind: crate::ShardKind::Stream,
+    }
+}
+
+/// Serves the shard at whatever generation the test sets, with the lease.
+struct ServingAt(Arc<std::sync::atomic::AtomicU64>);
+
+impl crate::quorum::ShardServing for ServingAt {
+    fn replicated(&self, _key: &crate::ShardKey) -> bool {
+        true
+    }
+    fn generation(&self, _key: &crate::ShardKey) -> Option<u64> {
+        Some(self.0.load(std::sync::atomic::Ordering::SeqCst))
+    }
+    fn lease_valid(&self) -> bool {
+        true
+    }
+    fn record_ack_refusal(&self) {}
+}
+
+/// A leader holding "a" at generation 3 on a `Quorum` stream, and the
+/// outcome of writing `value` after it, at offset 1.
+async fn quorum_leader_writing(
+    value: &'static str,
+) -> (
+    Arc<Broker>,
+    felix_broker::StreamHandle,
+    felix_broker::PublishOutcome,
+    TempDir,
+) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let leader = broker_on(dir.path());
+    leader.register_tenant(TENANT).await.expect("tenant");
+    leader
+        .register_namespace(TENANT, NAMESPACE)
+        .await
+        .expect("namespace");
+    leader
+        .register_stream(
+            TENANT,
+            NAMESPACE,
+            STREAM,
+            felix_broker::StreamMetadata {
+                durable: true,
+                consistency: felix_broker::ConsistencyLevel::Quorum,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("stream");
+    // Written through the stream, which keeps its own count of the log's
+    // order: a record appended under it would leave the publish waiting.
+    holding(&leader, felix_broker::LogKind::Stream, 3, &[]).await;
+    let handle = leader
+        .resolve_stream_handle(TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("handle");
+    leader
+        .publish_batch_with_outcome(&handle, &[Bytes::from_static(b"a")], None, None)
+        .await
+        .expect("publish");
+    let outcome = leader
+        .publish_batch_with_outcome(&handle, &[Bytes::from(value)], None, None)
+        .await
+        .expect("publish");
+    assert_eq!(outcome.offsets, Some((1, 1)));
+    (leader, handle, outcome, dir)
+}
+
+/// **A publish waiting across a promotion is not acknowledged once catch-up
+/// dropped it** (#2048). The leader writes "lost" at 3 with no majority, while
+/// the replicas hold generation 4's log. Promoted again, it takes their log
+/// in place of its own suffix, and the new generation's mark passes the
+/// offset "lost" had. The offset alone would acknowledge a record that is
+/// gone.
+#[tokio::test]
+async fn a_wait_across_a_promotion_does_not_acknowledge_a_dropped_write() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    let mut replicas = Replicas::new();
+    for id in ["broker-b", "broker-c"] {
+        replicas.get(id).holds(id, 3, 0, &["a"]).await;
+        replicas.get(id).holds(id, 4, 0, &["a", "y"]).await;
+        replicas.get_mut(id).capabilities = REQUIRED.union(PeerCapabilities::GENERATION_LABELS);
+    }
+    let (leader, handle, outcome, _dir) = quorum_leader_writing("lost").await;
+
+    let marks = Arc::new(crate::quorum::QuorumMarks::new());
+    marks.publish(&mark_key(), 3, 1);
+    let serving = Arc::new(AtomicU64::new(3));
+    let waiting = {
+        let (marks, serving) = (Arc::clone(&marks), Arc::clone(&serving));
+        tokio::spawn(async move {
+            crate::quorum::await_quorum(
+                &handle,
+                Some(&mark_key()),
+                &outcome,
+                3,
+                Some(&marks),
+                Some(&ServingAt(serving)),
+                std::time::Duration::from_secs(5),
+            )
+            .await
+        })
+    };
+
+    let fenced = fence_shard(&replicas, &leader, LEADER, &key(), &route(), true, None).await;
+    assert!(
+        matches!(
+            fenced,
+            Outcome::Fenced {
+                caught_up_from: Some(_)
+            }
+        ),
+        "{fenced:?}"
+    );
+    assert_eq!(held(&leader).await, vec!["a", "y"]);
+    serving.store(PROMOTED, Ordering::SeqCst);
+    marks.publish(&mark_key(), PROMOTED, 3);
+
+    let acked = waiting.await.expect("join");
+    let err = acked.expect_err("the write was dropped, so it must not be acknowledged");
+    assert!(
+        matches!(
+            err.downcast_ref::<crate::quorum::QuorumError>(),
+            Some(crate::quorum::QuorumError::LeadershipLost { .. })
+        ),
+        "{err:?}"
+    );
+}
+
+/// **A write the log still holds at its generation is acknowledged by a newer
+/// generation's mark.** A move staging its destination starts a generation
+/// under the same leader without touching the log, so the new mark covers the
+/// write.
+#[tokio::test]
+async fn a_wait_across_a_new_generation_acknowledges_a_write_the_log_kept() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    let (leader, handle, outcome, _dir) = quorum_leader_writing("kept").await;
+    let marks = Arc::new(crate::quorum::QuorumMarks::new());
+    marks.publish(&mark_key(), 3, 1);
+    let serving = Arc::new(AtomicU64::new(3));
+    let waiting = {
+        let (marks, serving) = (Arc::clone(&marks), Arc::clone(&serving));
+        tokio::spawn(async move {
+            crate::quorum::await_quorum(
+                &handle,
+                Some(&mark_key()),
+                &outcome,
+                3,
+                Some(&marks),
+                Some(&ServingAt(serving)),
+                std::time::Duration::from_secs(5),
+            )
+            .await
+        })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+    leader
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log")
+        .record_generation(4, 2)
+        .expect("generation");
+    serving.store(4, Ordering::SeqCst);
+    marks.publish(&mark_key(), 4, 2);
+
+    waiting
+        .await
+        .expect("join")
+        .expect("the log still holds the write at 3");
+}
+
 /// Delivers a leader's batches to one replica's handler, as the pool would.
 struct ShipTo<'a> {
     handler: &'a ReplicaHandler,
