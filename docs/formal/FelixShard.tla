@@ -891,6 +891,9 @@ Restarts == FALSE
 \* item is read from the retained log, #2024). Its fence then waits unless its
 \* log keeps the set at the generation before, as before #2024 (#1989).
 PriorMayBeUnknown == FALSE
+\* `Stops`: under `Restarts`, how many brokers may stop in a behaviour. The
+\* default is no bound with three brokers.
+Stops == 3
 SupersededRefused == TRUE
 OwnBallotRefused == FALSE
 AboveReported == FALSE
@@ -2764,6 +2767,7 @@ FailStop(b) ==
     /\ Cardinality(halted) < FailStops
     /\ b \notin halted
     /\ Restarts => inc[b] = 0
+    /\ Cardinality({m \in Brokers : inc[m] > 0}) < Stops
     /\ halted' = halted \cup {b}
     /\ bgen' = [bgen EXCEPT ![b] = 0]
     /\ fencing' = [fencing EXCEPT ![b] = FALSE]
