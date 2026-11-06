@@ -11,6 +11,7 @@
 use std::time::Duration;
 
 use felix_cluster::{CacheSpec, Cluster, ClusterConfig, Fault, StreamSpec};
+use felix_controlplane_service::model::ShardKind;
 use serial_test::serial;
 
 const CACHE: &str = "sessions";
@@ -52,6 +53,10 @@ pub(crate) async fn replication_settled(cluster: &Cluster, leader: &str, before:
     )
     .await
     .expect("a healthy replicated cache shard should reach its followers");
+    cluster
+        .wait_for_replica_report(ShardKind::Cache, CACHE, 0)
+        .await
+        .expect("the control plane should hear that the cache followers are caught up");
 }
 
 /// Wait until the control plane has named an owner other than `gone`.
