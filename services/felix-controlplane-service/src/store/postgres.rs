@@ -541,6 +541,10 @@ impl ControlPlaneStore for PostgresStore {
         shards::first_shard_assignments(self).await
     }
 
+    async fn previous_shard_assignments(&self) -> StoreResult<Vec<ShardAssignment>> {
+        shards::previous_shard_assignments(self).await
+    }
+
     async fn shard_assignment_changes(
         &self,
         since: u64,

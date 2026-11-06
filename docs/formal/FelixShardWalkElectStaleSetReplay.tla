@@ -12,6 +12,7 @@ VARIABLE step
 ReplayInit ==
     /\ Init /\ step = 0
     /\ ackGen = {}
+    /\ waits = {}
     /\ acked = {}
     /\ answered = (a :> {} @@ b :> {} @@ c :> {} @@ d :> {})
     /\ ballot = (a :> {a} @@ b :> {a} @@ c :> {} @@ d :> {})
@@ -73,6 +74,7 @@ ReplayInit ==
     /\ setGen = (a :> 0 @@ b :> 0 @@ c :> 0 @@ d :> 0)
     /\ sid = (a :> 0 @@ b :> 0 @@ c :> 0 @@ d :> 0)
     /\ splits = 0
+    /\ stands = 0
     /\ staged = {}
     /\ staleCommit = FALSE
     /\ stopped = (a :> FALSE @@ b :> FALSE @@ c :> FALSE @@ d :> FALSE)

@@ -694,6 +694,7 @@ fn led_by_a(generation: u64) -> ShardAssignment {
         member_storage_ids: Default::default(),
         learners: Default::default(),
         pending_set: None,
+        previous_generation: None,
     }
 }
 

@@ -399,6 +399,7 @@ impl Campaign {
             lists,
             ops,
             final_reads,
+            unread_lists: Default::default(),
             registers,
             commit_values,
             commit_reads,

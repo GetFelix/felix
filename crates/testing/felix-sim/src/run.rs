@@ -28,6 +28,7 @@
 //! `tests/seeds.rs` checks it.
 //! See `docs/simulation.md`.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -212,7 +213,7 @@ async fn run(seed: u64, config: SimConfig, checkers: Vec<Box<dyn Checker>>) -> S
             // Whatever the clients saw is checked as far as it can be without
             // final reads: the fault timeline and what was acknowledged.
             let mut history = recorder.history();
-            drop_unread_lists(&mut history);
+            drop_unread_lists(&mut history, &BTreeSet::new());
             let mut outcome = finished(seed, config.clone(), history, Vec::new(), begun.elapsed());
             let finding = Finding::new(
                     "stalled",
@@ -369,22 +370,40 @@ async fn drive(
     }
     finisher.get_every_key().await;
 
+    let held = cluster.held_shards().await;
     let mut history = recorder.history();
-    let unread = drop_unread_lists(&mut history);
+    let unread = drop_unread_lists(&mut history, &held);
     let ctx = context(Point::End, healed_at, history.clone());
     for checker in &checkers {
         findings.extend(checker.lock().await.check(&ctx).await);
     }
-    if !unread.is_empty() {
-        let mut finding = Finding::new(
-            "final-reads",
+    // A shard held on purpose cannot be read, so it is reported, not failed.
+    let (exempt_lists, failing): (Vec<String>, Vec<String>) = unread
+        .into_iter()
+        .partition(|list| history.unread_lists.contains(list));
+    for (lists, is_exempt) in [(&failing, false), (&exempt_lists, true)] {
+        if lists.is_empty() {
+            continue;
+        }
+        let summary = if is_exempt {
+            format!(
+                "no final read for {} exempt shards, held on purpose; their lost-write check is skipped, the rest of the history check ran: {}",
+                lists.len(),
+                lists.join(", ")
+            )
+        } else {
             format!(
                 "no final read for {} shards, left out of the history check: {}",
-                unread.len(),
-                unread.join(", ")
-            ),
-        );
-        for list in unread.iter().take(3) {
+                lists.len(),
+                lists.join(", ")
+            )
+        };
+        let mut finding = if is_exempt {
+            Finding::warning("final-reads", summary)
+        } else {
+            Finding::new("final-reads", summary)
+        };
+        for list in lists.iter().take(3) {
             let shard = list.rsplit('/').next().and_then(|n| n.parse().ok());
             if let Some(shard) = shard {
                 finding = finding.with(cluster.census(&crate::cluster::stream_key(shard)).await);
@@ -414,20 +433,32 @@ fn finished(
 }
 
 /// The checker's lost-write rule needs a final read of each list. A shard
-/// that could not be read leaves the history; its name is returned.
-fn drop_unread_lists(history: &mut History) -> Vec<String> {
+/// that could not be read leaves the history, unless it is in `held`: that one
+/// stays, marked unread, so only the rules that need the final log skip it.
+/// Returns the names of all unread lists.
+fn drop_unread_lists(history: &mut History, held: &BTreeSet<String>) -> Vec<String> {
     let unread: Vec<String> = history
         .lists
         .keys()
         .filter(|list| !history.final_reads.contains_key(*list))
         .cloned()
         .collect();
-    for list in &unread {
-        history.lists.remove(list);
+    let is_held = |list: &String| {
+        let shard = list.rsplit('/').next().and_then(|n| n.parse().ok());
+        shard.is_some_and(|shard| {
+            held.contains(&crate::cluster::describe(&crate::cluster::stream_key(
+                shard,
+            )))
+        })
+    };
+    let (kept, dropped): (Vec<&String>, Vec<&String>) = unread.iter().partition(|l| is_held(l));
+    history.unread_lists.extend(kept.into_iter().cloned());
+    for list in &dropped {
+        history.lists.remove(*list);
     }
     history
         .ops
-        .retain(|op| !unread.iter().any(|list| list == op.list()));
+        .retain(|op| !dropped.iter().any(|list| *list == op.list()));
     unread
 }
 

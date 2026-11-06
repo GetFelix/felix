@@ -213,7 +213,7 @@ impl Cluster for BrokerCluster {
             (Dispatch::Local { generation }, held) => {
                 let mut held = held;
                 match fence::enter_or_keep(&mut held, ingress, Some(&key), generation) {
-                    Ok(Some(guard)) => Ok(WritePermit::holding(guard)),
+                    Ok(Some(guard)) => Ok(WritePermit::holding(guard, generation)),
                     Ok(None) => Ok(WritePermit::default()),
                     Err(_) => Err(WriteError::NotLeader),
                 }
@@ -229,12 +229,14 @@ impl Cluster for BrokerCluster {
         shard: &ShardRef<'_>,
         handle: &StreamHandle,
         outcome: &PublishOutcome,
+        generation: u64,
     ) -> Result<(), WriteError> {
         let key = self.ingress.as_ref().map(|_| Self::key(shard));
         felix_replication::quorum::await_quorum(
             handle,
             key.as_ref(),
             outcome,
+            generation,
             self.marks.as_deref(),
             self.ingress.as_deref(),
             self.quorum_timeout,

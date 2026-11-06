@@ -153,7 +153,7 @@ cargo test -p felix-cluster --lib history::
    starts its shard tasks. Once every broker has registered, the run finalizes
    replica election, so brokers elect a new leader themselves when one is lost.
 2. **Faults.** For the first 90 seconds a schedule drawn from the seed crashes
-   and restarts brokers, partitions them, freezes them, drops one direction of
+   and kills brokers and restarts them, partitions them, freezes them, drops one direction of
    a link, and makes the control plane slow, paused or down. Faults may
    overlap. Eight steps in a hundred pause the control plane and, a second or
    two later, crash the broker that leads the most shards, which is the case
@@ -171,11 +171,18 @@ cargo test -p felix-cluster --lib history::
 
 A crash drops a broker's process state and reopens its data directory, so it
 also tests recovery. It is a process crash, not a power cut: the kernel keeps
-what the broker wrote, so nothing unsynced is lost. The harness records the
-stop as clean in the broker's run state for that reason. Without that, a
-restart on a platform that cannot sync the filesystem after a crash (anything
-but Linux) would give the broker a new storage id, and it would refuse to lead
-shards it led before.
+what the broker wrote, so nothing unsynced is lost.
+
+The seed draws each crash as one of two kinds, half and half. A clean crash
+records the stop as clean in the broker's run state, so the restart keeps its
+storage id. A kill leaves the run state as a kill after a failed fsync does
+(`run_state::forget_boot`): the restart cannot trust what it acknowledged, takes
+a new storage id and starts with `UncleanStart`, so it leads no shard from a
+copy it led before until a leader has shipped it. The choice comes from its own
+random stream, so a seed keeps the same faults at the same times; only what a
+crash leaves behind changed, which changes the trace after the first kill. A
+run that fsyncs on commit cannot be left that way, so a kill there is the same
+as a clean crash.
 
 A pause is approximate. The simulator cannot stop one broker's tasks on a
 runtime they share, so a frozen broker is cut off from every peer and from the
@@ -215,7 +222,7 @@ A cluster checker runs at up to three kinds of point:
 | --- | --- | --- |
 | Streams (history rules 1-19) | End | A read is not a prefix of one order of the stream, an acknowledged record is lost, a record shows up twice or was never written, or reads and writes form a cycle (G0, G1c, G-single, G2). See [history-checker.md](history-checker.md). |
 | Cache (history rule 20) | End | A cache key's puts and gets cannot be put in one order that respects real time, as one variable would. Unknown puts may or may not have happened. A key too tangled to decide within the search budget is reported as undecided and fails the seed, with the key and the number of steps tried. |
-| `ElectionSettles` | Healed | Some shard is not served by exactly one broker 60 virtual seconds after the faults heal. The report prints a census for each stuck shard: what every broker and the control plane think of it. |
+| `ElectionSettles` | Healed | Some shard is not served by exactly one broker 60 virtual seconds after the faults heal. A shard the broker holds on purpose is left out: its leader was killed uncleanly and, with the members killed uncleanly before it that were still down, makes up a majority of the set. The broker waits for `felixctl placement abandon`. The run prints how many shards that is. The report prints a census for each stuck shard: what every broker and the control plane think of it. |
 | `OneLeaderPerGeneration` | every second, Healed, End | Two brokers had the same shard open for writes in the same generation, at any time in the run. A broker that restarts and opens a generation again is one leader. |
 | `AtMostOneServing` | every second, Healed, End | Two brokers would take a write for one shard at the same instant. The brokers are read in one step, so none moves between two reads. It covers shards protected by the lease only. The model asserts it for those, and for a shard acknowledged by a majority of followers it asserts `AckedHeldByLeader` instead: a deposed leader may keep serving there until it learns of the newer generation, because it cannot collect a majority once its successor has fenced one. Each broker says which kind a shard is from its own write gate, so a shard opened before election was finalized stays checked. Once election is finalized that is every stream shard. A run does not finalize `fenced_caches`, so its cache shards stay on the lease and are the ones checked. |
 | `AckedHeldByLeader` | every second, Healed, End | A broker serving a shard does not hold, at the offset the client was told, an append that was acknowledged before the sample. A broker at the newest generation any broker knows must hold all of them. A deposed one still serving is held only to the offsets below its quorum mark at its own generation. Past that mark its log may hold records no majority took, at offsets where its successor has since acknowledged others. Below it, a hole or a different record is a lost acknowledgement. After the heal, a shard served by nobody at the newest generation is looked at again until the settle deadline, and at the end its server is held to every acknowledged append. The record is read from the broker's log whether or not a quorum has committed it. A shard with no server is left to `ElectionSettles`. |
@@ -370,8 +377,8 @@ What it leaves out:
   flight when the flush started; the observer's "adversarial capture" has no
   counterpart here because a simulated flush is instant.
 - The nemesis does not cut the power yet. Today a crash is a process crash,
-  and the harness records it as clean in the run state. `sim_fs::crash` is
-  there for a power-loss fault to call.
+  clean or a kill that leaves the run state unclean. `sim_fs::crash` is there
+  for a power-loss fault to call.
 
 ### The peer network
 

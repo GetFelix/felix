@@ -177,6 +177,7 @@ async fn fenced_in_store() -> (crate::store::memory::InMemoryStore, u64) {
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
+            previous_generation: None,
         })
         .await
         .expect("fenced");
