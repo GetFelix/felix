@@ -1207,8 +1207,9 @@ async fn a_crashed_leader_of_four_copies_refuses_the_fence() {
     );
 }
 
-/// A batch a leader ships after an unclean start vouches for the copy: a
-/// leader has compared it since the crash.
+/// A batch a leader ships after an unclean start, labelled with records of
+/// its own generation, vouches for the copy: a leader has compared it since
+/// the crash.
 #[tokio::test]
 async fn a_batch_vouches_for_the_copy_after_an_unclean_start() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1236,7 +1237,7 @@ async fn a_batch_vouches_for_the_copy_after_an_unclean_start() {
     let answer = handler
         .apply(
             SENDER,
-            batch(5, 0, &["a", "b"]),
+            labelled(5, 5, 0, &["a", "b"]),
             felix_broker::LogKind::Stream,
         )
         .await;
@@ -2014,4 +2015,55 @@ async fn a_partly_reshipped_copy_is_not_vouched_for_until_it_holds_the_leaders_g
     assert!(!start.led_before(&shard, &log, 7));
     assert!(!start.unvouched(&shard, &log, 7));
     taken(&next.fence(SENDER, fence(7)).await);
+}
+
+/// **An unlabelled batch does not vouch for a crashed leader's copy.** It
+/// labels what it carried with the sender's generation, the record the
+/// crashed leader wrote at 5 included, so the copy would look as if it held
+/// the new leader's generation while still short of what it acknowledged.
+#[tokio::test]
+async fn an_unlabelled_batch_does_not_vouch_for_a_copy_led_before_the_crash() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    led_before_a_crash(dir.path()).await;
+    let broker = broker_on(dir.path());
+    let start = unclean();
+    let leader = ReplicaHandler::new(
+        Arc::clone(&broker),
+        router_led_by("broker-c", &[LOCAL, "broker-a"], 6),
+    )
+    .with_unclean_start(Arc::clone(&start));
+    let next = ReplicaHandler::new(
+        Arc::clone(&broker),
+        router_led_by("broker-a", &[LOCAL, "broker-c"], 7),
+    )
+    .with_unclean_start(Arc::clone(&start));
+    let log = broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    let shard = crate::driver::watch_key(&key());
+
+    // Two records the crashed leader wrote at 5 come back, unlabelled.
+    for (offset, value) in [(0, "a"), (1, "b")] {
+        let answer = leader
+            .apply(
+                Some("broker-c"),
+                batch(6, offset, &[value]),
+                felix_broker::LogKind::Stream,
+            )
+            .await;
+        assert!(
+            matches!(answer, InternalMessage::ReplicateOk(_)),
+            "{answer:?}"
+        );
+    }
+    assert!(
+        log.holds_records_of(6),
+        "labelled with the sender's generation"
+    );
+    assert!(start.unvouched(&shard, &log, 7), "may not stand");
+    assert_eq!(
+        refusal(&next.fence(SENDER, fence(7)).await).code,
+        ErrorCode::Unavailable
+    );
 }

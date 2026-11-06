@@ -3643,7 +3643,8 @@ follower is behind it:
   led (its own ballot at the accepted generation, or, with no ballot, the
   generation it is named leader at), and a copy it followed at an older
   generation than the one it is named at, until a leader has shipped to it in
-  this process a record written at that leader's own generation. A leader
+  this process a record its batch labels as written at that leader's own
+  generation (an unlabelled batch never counts). A leader
   writes its generation's start record after every record it holds, so the
   copy then holds everything acknowledged before the crash. A batch that
   brings back only part of what the crash lost does not count, and the copy
