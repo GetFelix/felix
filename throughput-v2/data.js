@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793947782801,
+  "lastUpdate": 1793963300317,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -47112,6 +47112,58 @@ window.BENCHMARK_DATA = {
             "range": "8414.89",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 813150.41\nmean: 813436.44\nstdev: 8414.89\ncv: 1.03%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b1c4f774551bfc8330112f623339947647fae98d",
+          "message": "fix(sim): a read is recorded only once a round confirms its broker still leads (#419) (#1967)\n\nThe simulator records a read only once a confirmation round shows its broker still leads at the generation it resolved. A deposed leader's readers may see less (docs/replication-design.md), and the simulator's exact_tails history would otherwise count that short read as a stale read.",
+          "timestamp": "2026-11-06T03:03:45-08:00",
+          "tree_id": "9936d7160c8164ec82decc96c4e5979def2c0a17",
+          "url": "https://github.com/GetFelix/felix/commit/b1c4f774551bfc8330112f623339947647fae98d"
+        },
+        "date": 1793963299790,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 687532.22,
+            "range": "80862.19",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 687532.22\nmean: 698396.49\nstdev: 80862.19\ncv: 11.58%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 687532.22,
+            "range": "80862.19",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 687532.22\nmean: 698396.49\nstdev: 80862.19\ncv: 11.58%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 175406.54,
+            "range": "7459.40",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 175406.54\nmean: 173127.93\nstdev: 7459.40\ncv: 4.31%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1754065.41,
+            "range": "74593.98",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1754065.41\nmean: 1731279.32\nstdev: 74593.98\ncv: 4.31%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
