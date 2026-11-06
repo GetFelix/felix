@@ -405,6 +405,7 @@ expectations=(
   "FelixShardElectUncleanContinuingRetry violates RetriedContinuingNeverOpens"
   "FelixShardElectUncleanContinuingRetryBelowOnly pass"
   "FelixShardElectUncleanContinuingRetrySafe pass"
+  "FelixShardElectUncleanContinuingDoubted pass"
   "FelixGroups pass"
   "FelixGroupsNoCheck violates NoSkip"
   "FelixGroupsLengthOnly violates NoSkip"
@@ -526,6 +527,7 @@ fi
 # `--plan-heavy`: give a new heavy one its weight.
 weights=(
   "FelixShardElectUnclean 12"
+  "FelixShardElectUncleanContinuingDoubted 40"
   "FelixShardElectUncleanVouchOnShip 2"
   "FelixShardElectLiveUncleanLed 2"
   "FelixShardFencedAckMoveShort 31"
