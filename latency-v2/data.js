@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793944982602,
+  "lastUpdate": 1793947376070,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -59664,6 +59664,72 @@ window.BENCHMARK_DATA = {
             "range": "757.68",
             "unit": "us",
             "extra": "trials: 5\nmedian: 516.00\nmean: 851.00\nstdev: 757.68\ncv: 89.03%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7a2c593ef1b7fb446ca8aaa350ec19327e151e5a",
+          "message": "fix(replication): a follower stores record batches side by side (#1968) (#2009)\n\n* fix(replication): a follower stores record batches on one stream side by side (#1968)\n\n* docs: record batches are stored side by side on a peer stream (#1968)\n\n* fix(replication): a stalled record batch still gives up its stream (#1968)\n\nBatches stored side by side had no handler bound, and the pump waited for\na batch permit outside the shutdown select. Sixteen stalled batches held\nthe stream and its credit until a handler returned, and the listener\ncould not stop. A batch handler is now bounded by handler_timeout for a\nrequester that renews streams; an overrun or panic ends the stream, as it\ndoes for a request answered in turn, and the permit wait honours shutdown.\n\n* fix(replication): bound the record batches a follower stores at once across streams (#1968)\n\nEach stream may hold 16 batches, so without a broker-wide limit the batches\nin memory grew with every peer and stream. 256 across the broker bounds it to\nroughly 256 MiB.\n\n* test(replication): give the slow-handler lane test an idle window it survives under load (#1968)\n\nWith a 200 ms request timeout the QUIC idle window is 150 ms, and a test\nthread starved by the rest of the suite lost the connection while the\nhandler slept (3 of 50 lanes runs: connection lost, timed out).\n\n* fix(replication): an overrun batch keeps its broker-wide permit until its handler finishes (#1968)\n\nThe handler runs on after its stream is given up and still holds the batch,\nso the permit that bounds batches in memory goes with the handler, not with\nthe task that waits for it.\n\n* fix(replication): one peer cannot hold the broker-wide record batch limit (#1968)\n\nA peer whose stores stall took all 256 permits across its streams and\nstopped every other peer's streams reading. Each peer node, keyed by its\nHello id so reconnects share it, now holds at most 64.\n\nSpec-Unaffected: flow control on the peer transport; nothing about fences, acks or ballots.\n\n* test(replication): probe the broker-wide limit from a peer under its own cap; drop idle per-peer limits (#1968)\n\nThe broker-wide limit tests sent their probe on a peer already at its own\ncap, so they no longer reached the broker-wide permit. The probe now comes\nfrom a fifth node. The stalled-peer test takes the whole broker without the\ncap. Idle per-peer entries are swept on lookup.\n\nSpec-Unaffected: flow control on the peer transport; nothing about fences, acks or ballots.\n\n* test(replication): a peer limit held without permits survives the idle sweep\n\nSpec-Unaffected: test only, no protocol or state-machine change",
+          "timestamp": "2026-11-05T22:32:09-08:00",
+          "tree_id": "a1eff6d6fb86429c151e9c6a1a65c32a1e10df0f",
+          "url": "https://github.com/GetFelix/felix/commit/7a2c593ef1b7fb446ca8aaa350ec19327e151e5a"
+        },
+        "date": 1793947367633,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 103,
+            "range": "4.39",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 103.00\nmean: 101.60\nstdev: 4.39\ncv: 4.32%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 146,
+            "range": "6.42",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 146.00\nmean: 145.80\nstdev: 6.42\ncv: 4.40%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 170,
+            "range": "14.60",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 170.00\nmean: 176.20\nstdev: 14.60\ncv: 8.29%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 119,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 119.00\nmean: 119.20\nstdev: 0.84\ncv: 0.70%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 255,
+            "range": "4.76",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 255.00\nmean: 254.20\nstdev: 4.76\ncv: 1.87%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 393,
+            "range": "110.86",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 393.00\nmean: 449.40\nstdev: 110.86\ncv: 24.67%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
