@@ -177,6 +177,7 @@ mod correlation {
                 log_end: 1,
                 commit_offset: 1,
                 last_generation: 1,
+                kept_ballot: false,
             }),
             InternalMessage::ReplicateFetch(ReplicateFetch {
                 timed: false,

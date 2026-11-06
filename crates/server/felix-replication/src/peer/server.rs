@@ -443,8 +443,9 @@ async fn serve_connection(
     // Whether the peer replaces a stream it gets no answer on, from its
     // `Hello`. Until it says so, a stream is never dropped under it.
     let renews = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    // Whether the peer reads a learner's answer, from its `Hello`.
-    let learner_acks = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // What the peer reads in an answer (a learner's ack, a kept ballot), from
+    // its `Hello`.
+    let caller_reads = Arc::new(std::sync::atomic::AtomicU64::new(0));
     loop {
         let stream = tokio::select! {
             _ = shutdown.cancelled() => break,
@@ -467,7 +468,7 @@ async fn serve_connection(
         let identity = Arc::clone(&identity);
         let connection_batches = Arc::clone(&connection_batches);
         let renews = Arc::clone(&renews);
-        let learner_acks = Arc::clone(&learner_acks);
+        let caller_reads = Arc::clone(&caller_reads);
         connection.spawn_pump(async move {
             let connection = stream_connection;
             let (send, mut recv) = stream;
@@ -563,10 +564,8 @@ async fn serve_connection(
                                 .is_some_and(|c| c.contains(PeerCapabilities::LANE_RENEWAL)),
                             std::sync::atomic::Ordering::Relaxed,
                         );
-                        learner_acks.store(
-                            hello
-                                .capabilities
-                                .is_some_and(|c| c.contains(PeerCapabilities::LEARNER_ACKS)),
+                        caller_reads.store(
+                            hello.capabilities.unwrap_or_default().bits(),
                             std::sync::atomic::Ordering::Relaxed,
                         );
                         // A plain `Hello` is a peer that predates the bits, so
@@ -805,7 +804,7 @@ async fn serve_connection(
                         let handler = Arc::clone(&handler);
                         let peer = ballot_identity(&offered, &identity);
                         let send = Arc::clone(&send);
-                        let learner_acks = Arc::clone(&learner_acks);
+                        let caller_reads = Arc::clone(&caller_reads);
                         let given_up = given_up.clone();
                         let bound = handler_bound(&renews, &offered);
                         // The peer and broker-wide permits go with the handler,
@@ -832,7 +831,9 @@ async fn serve_connection(
                             };
                             let response = for_caller(
                                 response,
-                                learner_acks.load(std::sync::atomic::Ordering::Relaxed),
+                                PeerCapabilities::from_bits(
+                                    caller_reads.load(std::sync::atomic::Ordering::Relaxed),
+                                ),
                             );
                             match write_frame(&mut *send.lock().await, &response).await {
                                 Ok(()) => metrics::record_served(metrics::OUTCOME_OK),
@@ -853,7 +854,9 @@ async fn serve_connection(
                         match handled.and_then(|joined| joined.ok()).ok_or(()) {
                             Ok(response) => for_caller(
                                 response,
-                                learner_acks.load(std::sync::atomic::Ordering::Relaxed),
+                                PeerCapabilities::from_bits(
+                                    caller_reads.load(std::sync::atomic::Ordering::Relaxed),
+                                ),
                             ),
                             // A handler that panicked may have applied the
                             // write, so no answer here is safe to retry on.
@@ -898,14 +901,26 @@ async fn serve_connection(
     }
 }
 
-/// `response` as the caller reads it: a learner's answer to a caller that
-/// did not offer [`PeerCapabilities::LEARNER_ACKS`] goes as the original
-/// kind, which such a caller counts as it always has.
-pub fn for_caller(response: InternalMessage, learner_acks: bool) -> InternalMessage {
+/// `response` as a caller that offered `offered` reads it: a learner's
+/// answer to a caller that did not offer [`PeerCapabilities::LEARNER_ACKS`],
+/// or a kept-ballot fence answer to one that did not offer
+/// [`PeerCapabilities::KEPT_BALLOTS`], goes as the original kind, which such
+/// a caller reads as it always has.
+pub fn for_caller(response: InternalMessage, offered: PeerCapabilities) -> InternalMessage {
     match response {
-        InternalMessage::ReplicateOk(ok) if ok.learner && !learner_acks => {
+        InternalMessage::ReplicateOk(ok)
+            if ok.learner && !offered.contains(PeerCapabilities::LEARNER_ACKS) =>
+        {
             InternalMessage::ReplicateOk(felix_wire::internal::ReplicateOk {
                 learner: false,
+                ..ok
+            })
+        }
+        InternalMessage::FenceOk(ok)
+            if ok.kept_ballot && !offered.contains(PeerCapabilities::KEPT_BALLOTS) =>
+        {
+            InternalMessage::FenceOk(felix_wire::internal::FenceOk {
+                kept_ballot: false,
                 ..ok
             })
         }

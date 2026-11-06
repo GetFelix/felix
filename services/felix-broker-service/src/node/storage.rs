@@ -196,23 +196,67 @@ pub(crate) fn open_with(
 /// storage ids, held nothing under another id, so a new broker's copies vote
 /// however new its directory is.
 ///
-/// The last flag says the rotation was a crash on a directory that never lost
-/// its contents before: a restore rolls ballots back, and a directory the node
-/// already replaced another with may hold ballots taken after a wipe, so
-/// neither keeps every promise it made (#2047).
+/// The last flag says the rotation was this directory's own crash, and that
+/// the directory never replaced a lost copy ([`note_lost_copy`]). Ballots
+/// are always synced, so such a crash kept every one. A restore rolls them
+/// back, and a wiped directory's ballots may have been taken after the node
+/// lost others, so neither keeps every promise it made. Without the control
+/// plane's record of this node, or one without a storage id, nothing shows
+/// the rotation was not a lost copy, so the flag is false (#2047).
 fn start_run(
     root: &Path,
     log: &felix_storage::log::LogConfig,
     registered: Option<&Registered>,
 ) -> Result<(StorageId, bool, bool, bool)> {
-    let replaced_before = felix_storage::run_state::replaced(root)
-        .with_context(|| format!("read the replaced-storage marker under {}", root.display()))?;
+    // The id before this run rotates it: the control plane naming that one
+    // is what tells a crash of this directory from a lost copy.
+    let before = felix_storage::storage_identity::load(root)
+        .with_context(|| format!("read the storage id under {}", root.display()))?;
     let begun = begin_run(root, log, registered.map(|r| r.incarnation))?;
     let restored = begun.origin == felix_storage::storage_identity::Origin::Loaded
         && begun.recorded.behind(registered.map(|r| r.incarnation));
-    let kept_promises = begun.rotated && !restored && !replaced_before;
+    let before = before
+        .filter(|_| begun.origin == felix_storage::storage_identity::Origin::Loaded)
+        .map(|id| id.to_hex());
+    // Before `note_replaced`, which may write its marker for this crash.
+    let lost = note_lost_copy(root, before.as_deref(), restored, registered)?;
+    let own_id = registered
+        .and_then(|r| r.storage_id.as_deref())
+        .is_some_and(|prior| before.as_deref() == Some(prior));
+    let kept_promises = begun.rotated && !restored && own_id && !lost;
     let replaced = note_replaced(root, begun.id, registered)?;
     Ok((begun.id, begun.rotated, replaced, kept_promises))
+}
+
+/// Whether the directory at `root` replaced a copy the node lost, now or at
+/// any start since, recorded on disk before it returns. Now when `restored`,
+/// or when `registered` names a storage id other than `before`, the id the
+/// directory had before this start rotated it (`None` for a directory with
+/// none). A directory without the marker that has the replaced-storage one
+/// counts as lost: an older build wrote that one after a crash too, so it
+/// cannot say which it was.
+pub(crate) fn note_lost_copy(
+    root: &Path,
+    before: Option<&str>,
+    restored: bool,
+    registered: Option<&Registered>,
+) -> Result<bool> {
+    let context = || format!("read the lost-copy marker under {}", root.display());
+    let marked = felix_storage::run_state::lost_copy(root).with_context(context)?;
+    let earlier = match marked {
+        Some(lost) => lost,
+        None => felix_storage::run_state::replaced(root).with_context(context)?,
+    };
+    let now = restored
+        || registered
+            .and_then(|r| r.storage_id.as_deref())
+            .is_some_and(|prior| before != Some(prior));
+    let lost = earlier || now;
+    if marked != Some(lost) {
+        felix_storage::run_state::record_lost_copy(root, lost)
+            .with_context(|| format!("record the lost-copy marker under {}", root.display()))?;
+    }
+    Ok(lost)
 }
 
 /// Whether the node held copies under a storage id other than `id`: the

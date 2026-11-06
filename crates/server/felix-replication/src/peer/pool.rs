@@ -408,7 +408,8 @@ impl PeerPool {
                 .union(PeerCapabilities::STORAGE_IDENTITY)
                 .union(PeerCapabilities::NODE_INCARNATION)
                 .union(PeerCapabilities::LANE_RENEWAL)
-                .union(PeerCapabilities::LEARNER_ACKS),
+                .union(PeerCapabilities::LEARNER_ACKS)
+                .union(PeerCapabilities::KEPT_BALLOTS),
             self.config.streams_per_conn,
             self.config.handshake_timeout,
         )

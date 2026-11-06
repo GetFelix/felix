@@ -594,11 +594,15 @@ async fn fence_log<R: PeerRequester>(
         answered.iter().map(|(node, _, _)| node.clone()).collect()
     };
     // Each answer's node with the copy its handshake named, which a joint
-    // fence counts per set being left.
-    let mut seen: Vec<(String, Option<StorageId>)> = Vec::new();
-    let settled = |seen: &[(String, Option<StorageId>)]| match joint {
+    // fence counts per set being left, and whether a continuing leader may
+    // count it from any copy.
+    let mut seen: Vec<(String, Option<StorageId>, bool)> = Vec::new();
+    let settled = |seen: &[(String, Option<StorageId>, bool)]| match joint {
         None => seen.len() + 1 >= needed,
-        Some(joint) => joint.has_majorities(seen.iter().map(|(node, id)| (node.as_str(), *id))),
+        Some(joint) => joint.has_majorities(
+            seen.iter()
+                .map(|(node, id, kept)| (node.as_str(), *id, *kept)),
+        ),
     };
     // Answers from a copy the report did not name: they took the promise,
     // which still refuses the old leader, but count for nothing here.
@@ -697,11 +701,16 @@ async fn fence_log<R: PeerRequester>(
             Some(Refusal::Newer(why)) => return Err(Outcome::pending(why, took(&answered))),
             None => {}
         }
+        // A continuing leader holds what any copy could, so a copy whose kept
+        // ballot shows it promised this leader nothing older than the
+        // generation before counts whatever its identity. Without that, a
+        // restored copy could have promised this generation to another
+        // leader and lost the ballot.
+        let kept =
+            continuing && matches!(&answer, Ok(InternalMessage::FenceOk(ok)) if ok.kept_ballot);
         match answer {
-            // A continuing leader holds what any copy could, so a copy that
-            // promised counts whatever its identity.
             Ok(InternalMessage::FenceOk(_))
-                if !continuing
+                if !kept
                     && (!reported_copy(reported_ids, &node_id, identity)
                         || joint.is_some_and(|joint| !joint.same_copy(&node_id, identity))) =>
             {
@@ -709,7 +718,7 @@ async fn fence_log<R: PeerRequester>(
                 uncounted(key, kind, &node_id, reported_ids, identity);
             }
             Ok(InternalMessage::FenceOk(ok)) => {
-                seen.push((node_id.clone(), identity));
+                seen.push((node_id.clone(), identity, kept));
                 answered.push((node_id, addr, ok));
             }
             Err(PeerError::Unsupported { .. }) if lease_fallback => {
@@ -757,7 +766,10 @@ async fn fence_log<R: PeerRequester>(
             ),
             Some(joint) => format!(
                 "on the {kind:?} log, {}",
-                joint.shortfall(seen.iter().map(|(node, id)| (node.as_str(), *id)))
+                joint.shortfall(
+                    seen.iter()
+                        .map(|(node, id, kept)| (node.as_str(), *id, *kept))
+                )
             ),
         };
         if other_copies > 0 {

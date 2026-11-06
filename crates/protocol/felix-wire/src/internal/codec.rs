@@ -213,6 +213,7 @@ impl InternalMessage {
                 body.put_u64(m.log_end);
                 body.put_u64(m.commit_offset);
                 body.put_u64(m.last_generation);
+                // `kept_ballot` is the kind, not the body.
             }
             Self::ReplicateRecords(m)
             | Self::ReplicateCacheRecords(m)
@@ -783,12 +784,13 @@ impl InternalMessage {
                     Self::Pong(Pong { correlation_id })
                 })
             }
-            Kind::FenceOk => {
+            Kind::FenceOk | Kind::FenceKeptOk => {
                 let message = FenceOk {
                     correlation_id: take_u64(&mut body)?,
                     log_end: take_u64(&mut body)?,
                     commit_offset: take_u64(&mut body)?,
                     last_generation: take_u64(&mut body)?,
+                    kept_ballot: kind == Kind::FenceKeptOk,
                 };
                 expect_empty(&body)?;
                 Ok(Self::FenceOk(message))

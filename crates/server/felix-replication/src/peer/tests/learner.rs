@@ -1,4 +1,5 @@
-//! A learner's answer says so only to a caller that reads the flag.
+//! A learner's answer, and a fence answer's kept ballot, say so only to a
+//! caller that reads the flag.
 
 use felix_wire::internal::{PeerCapabilities, ReplicateOk};
 
@@ -61,4 +62,26 @@ async fn a_caller_that_reads_the_flag_is_told_the_copy_is_a_learner() {
             .await
             .learner
     );
+}
+
+/// **A kept-ballot fence answer travels only to a caller that offered
+/// `KEPT_BALLOTS`.** An older leader would refuse `FenceKeptOk` as unknown,
+/// and the plain answer is all it can read (#2047).
+#[test]
+fn a_kept_ballot_reaches_only_a_caller_that_reads_it() {
+    let answer = InternalMessage::FenceOk(felix_wire::internal::FenceOk {
+        correlation_id: 7,
+        log_end: 3,
+        commit_offset: 2,
+        last_generation: 4,
+        kept_ballot: true,
+    });
+    let kept = |offered| match crate::peer::server::for_caller(answer.clone(), offered) {
+        InternalMessage::FenceOk(ok) => ok.kept_ballot,
+        other => panic!("expected FenceOk, got {other:?}"),
+    };
+
+    assert!(!kept(PeerCapabilities::NONE));
+    assert!(!kept(PeerCapabilities::LEARNER_ACKS));
+    assert!(kept(PeerCapabilities::KEPT_BALLOTS));
 }

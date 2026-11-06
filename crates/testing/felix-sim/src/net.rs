@@ -15,7 +15,8 @@
 //!   offer, `Timeout` for an answer that never came.
 //! - The handler hears who asked only when the target keeps ballots.
 //! - Pings are answered without the handler, and a learner's ack reads as a
-//!   plain one to a caller that did not offer `LEARNER_ACKS`.
+//!   plain one to a caller that did not offer `LEARNER_ACKS`, a kept-ballot
+//!   fence answer as a plain one to one that did not offer `KEPT_BALLOTS`.
 //!
 //! What it leaves out: the listener's per-stream permits (`Overload`) and its
 //! one-at-a-time answering of an older peer's stream. Every request runs at
@@ -473,7 +474,7 @@ async fn deliver(
             let Some(answer) = handled else {
                 return;
             };
-            for_caller(answer, from_offer.contains(PeerCapabilities::LEARNER_ACKS))
+            for_caller(answer, from_offer)
         }
     };
     if *died.borrow() || died.has_changed().is_err() {

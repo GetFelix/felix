@@ -549,6 +549,7 @@ impl PeerRequestHandler for SlowForwards {
                     log_end: 0,
                     commit_offset: 0,
                     last_generation: 0,
+                    kept_ballot: false,
                 })
             }
             other => {
@@ -633,6 +634,7 @@ impl PeerRequestHandler for SlowPromotions {
             log_end: fence.shard.shard.into(),
             commit_offset: 0,
             last_generation: 0,
+            kept_ballot: false,
         })
     }
 }

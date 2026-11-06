@@ -1231,6 +1231,7 @@ impl ReplicaHandler {
                     log_end: 0,
                     commit_offset: 0,
                     last_generation: 0,
+                    kept_ballot: false,
                 });
             }
             // Nowhere to keep the promise, so no promise: the leader must not
@@ -1328,6 +1329,9 @@ impl ReplicaHandler {
             return refusal;
         }
         let confirming = log.accepted_generation() == generation;
+        // Read before the ballot moves to this generation: a continuing
+        // leader counts a rotated copy only on this (#2047).
+        let kept_ballot = self.continues_from(&log, generation, sender);
         if let Some(refusal) = accept_sender(&log, correlation_id, &key, generation, sender).await {
             return refusal;
         }
@@ -1369,6 +1373,7 @@ impl ReplicaHandler {
             log_end,
             commit_offset: log.commit_offset(),
             last_generation: last_generation(&log.generations(), log_end),
+            kept_ballot,
         })
     }
 
@@ -1967,7 +1972,8 @@ impl ReplicaHandler {
     /// have promised the next generation to a candidate before it lost that
     /// ballot, and a ballot it took since proves nothing. Such a copy refuses
     /// as it would. Lets a doubted copy promise, never vouch: it stays
-    /// doubted (#2047).
+    /// doubted. The fence answer says it held ([`FenceOk::kept_ballot`]), and
+    /// only that lets a continuing leader count the copy (#2047).
     fn continues_from(
         &self,
         log: &felix_broker::StreamLog,

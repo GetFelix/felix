@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use anyhow::Context as _;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -236,6 +237,12 @@ pub(super) async fn keep_view_if_opened_under(
          instead of starting from the control-plane view"
     );
     let registered = await_registered(config, link, credential).await?;
+    // The view names the id the directory had before this start rotated it.
+    // This start keeps no promise either way: it opened without the record.
+    let restored = felix_storage::run_state::read_registration(root)
+        .with_context(|| format!("read the registration record under {}", root.display()))?
+        .behind(registered.as_ref().map(|r| r.incarnation));
+    super::storage::note_lost_copy(root, Some(&view.storage_id), restored, registered.as_ref())?;
     let replaced = super::storage::note_replaced(root, storage_id, registered.as_ref())?;
     Ok((None, replaced))
 }

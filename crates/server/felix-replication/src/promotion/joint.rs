@@ -68,8 +68,10 @@ impl<'a> Joint<'a> {
 
     /// Whether the generation fenced continues one this process served
     /// itself ([`crate::promotion::PromotionGate::continuing`]). Its fence
-    /// then counts every promise, whichever copy made it: nothing it
-    /// acknowledged can be missing here.
+    /// then also counts a promise from a copy the sets do not name, when the
+    /// answer attests a kept ballot naming this broker at the generation
+    /// before: nothing it acknowledged can be missing here, and that copy
+    /// promised this generation to no one else.
     pub fn with_continuing(mut self, continuing: bool) -> Self {
         self.continuing = continuing;
         self
@@ -157,10 +159,12 @@ pub(super) struct JointSets {
     old_voters: Vec<OldVoters>,
     new_voters: BTreeSet<String>,
     local: String,
-    /// The leader continues its own generation, so an answer counts for a
-    /// set being left from any copy.
-    any_copy: bool,
 }
+
+/// A fence answer: the node, the copy its handshake named, and whether it
+/// attested a kept ballot to a continuing leader, which then counts it from
+/// any copy.
+pub(super) type Answered<'n> = (&'n str, Option<StorageId>, bool);
 
 /// The voters of one set being left, with the copy it names for each
 /// member, where it names one. An answer counts toward this set only from
@@ -185,11 +189,9 @@ impl JointSets {
     /// from a copy some set being left names. A node id given to a new,
     /// empty copy holds nothing an old set acknowledged.
     pub(super) fn same_copy(&self, node_id: &str, identity: Option<StorageId>) -> bool {
-        self.any_copy
-            || self
-                .old_voters
-                .iter()
-                .any(|old| old.counts(node_id, identity))
+        self.old_voters
+            .iter()
+            .any(|old| old.counts(node_id, identity))
     }
 
     /// The set being left as the fence to `node_id` carries it: one it
@@ -226,19 +228,17 @@ impl JointSets {
         self.old_voters.iter().any(|old| !old.copies.is_empty())
     }
 
-    /// Whether `answered`, each with the copy its handshake named, is with
-    /// this broker a majority of the voters of every set. A learner is never
-    /// a voter, so it never counts.
-    pub(super) fn has_majorities<'n>(
-        &self,
-        answered: impl Iterator<Item = (&'n str, Option<StorageId>)>,
-    ) -> bool {
+    /// Whether `answered`, each with the copy its handshake named and
+    /// whether a continuing leader counts it from any copy, is with this
+    /// broker a majority of the voters of every set. A learner is never a
+    /// voter, so it never counts.
+    pub(super) fn has_majorities<'n>(&self, answered: impl Iterator<Item = Answered<'n>>) -> bool {
         let answered: Vec<_> = answered.collect();
         self.old_voters
             .iter()
             .all(|old| self.majority(&old.voters, |v| self.answered_for(old, &answered, v)))
             && self.majority(&self.new_voters, |v| {
-                answered.iter().any(|(node, _)| *node == v)
+                answered.iter().any(|(node, _, _)| *node == v)
             })
     }
 
@@ -253,15 +253,10 @@ impl JointSets {
             .all(|voters| self.majority(voters, |v| nodes.contains(v)))
     }
 
-    fn answered_for(
-        &self,
-        old: &OldVoters,
-        answered: &[(&str, Option<StorageId>)],
-        voter: &str,
-    ) -> bool {
-        answered.iter().any(|(node, identity)| {
-            *node == voter && (self.any_copy || old.counts(node, *identity))
-        })
+    fn answered_for(&self, old: &OldVoters, answered: &[Answered<'_>], voter: &str) -> bool {
+        answered
+            .iter()
+            .any(|(node, identity, kept)| *node == voter && (*kept || old.counts(node, *identity)))
     }
 
     fn count(&self, voters: &BTreeSet<String>, answered: impl Fn(&str) -> bool) -> usize {
@@ -276,10 +271,7 @@ impl JointSets {
     }
 
     /// How far the answers got, for a fence that stays pending.
-    pub(super) fn shortfall<'n>(
-        &self,
-        answered: impl Iterator<Item = (&'n str, Option<StorageId>)>,
-    ) -> String {
+    pub(super) fn shortfall<'n>(&self, answered: impl Iterator<Item = Answered<'n>>) -> String {
         let answered: Vec<_> = answered.collect();
         let old = self
             .old_voters
@@ -295,7 +287,7 @@ impl JointSets {
              a majority of each needed",
             self.count(&self.new_voters, |v| answered
                 .iter()
-                .any(|(node, _)| *node == v)),
+                .any(|(node, _, _)| *node == v)),
             self.new_voters.len(),
         )
     }
@@ -775,7 +767,6 @@ pub(super) async fn across<R: PeerRequester>(
         old_voters,
         new_voters,
         local: local_node_id.to_string(),
-        any_copy: joint.continuing,
     };
     Fenced {
         before,
