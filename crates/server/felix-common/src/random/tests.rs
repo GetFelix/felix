@@ -61,6 +61,21 @@ mod hasher {
         assert_ne!(on_a_thread(None, map_order), on_a_thread(None, map_order));
     }
 
+    /// A map built once per process, such as a static, must not move the
+    /// jitter sequence, or only the first run in a process would differ.
+    #[test]
+    fn building_a_map_draws_no_jitter() {
+        let plain = || crate::jitter::up_to(u64::MAX);
+        let after_a_map = || {
+            let _map: HashMap<u64, ()> = HashMap::default();
+            crate::jitter::up_to(u64::MAX)
+        };
+        assert_eq!(
+            on_a_thread(Some(3), plain),
+            on_a_thread(Some(3), after_a_map)
+        );
+    }
+
     #[test]
     fn an_unseeded_thread_hashes_differently_each_time() {
         assert_ne!(on_a_thread(None, hashes), on_a_thread(None, hashes));

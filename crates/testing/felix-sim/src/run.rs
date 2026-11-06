@@ -19,8 +19,8 @@
 //! The seed fixes the cluster's shape, the fault schedule, every client's
 //! choices and the network's drops. Time is tokio's paused clock, so sleeps
 //! cost nothing. Blocking work runs on this runtime rather than on threads
-//! (`felix_common::blocking`). Retry jitter, hash keys, the maps whose order
-//! decides what runs next, and ids are drawn from the seed
+//! (`felix_common::blocking`). Retry jitter, ids and the hash keys of every
+//! map the brokers and the control plane keep are drawn from the seed
 //! (`felix_common::jitter`, `felix_common::random`), wall time is virtual
 //! (`felix_common::clock::system_time`), and data directories get the same
 //! path every run. Built with `--cfg tokio_unstable`, `select!` is seeded too,

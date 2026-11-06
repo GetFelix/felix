@@ -25,13 +25,8 @@ pub fn uuid_v4() -> Uuid {
 #[cfg(feature = "hasher")]
 pub fn hash_state() -> ahash::RandomState {
     #[cfg(any(debug_assertions, test, feature = "sim"))]
-    if crate::jitter::sim::is_seeded() {
-        return ahash::RandomState::with_seeds(
-            crate::jitter::draw(),
-            crate::jitter::draw(),
-            crate::jitter::draw(),
-            crate::jitter::draw(),
-        );
+    if let Some([k0, k1, k2, k3]) = crate::jitter::sim::hash_keys() {
+        return ahash::RandomState::with_seeds(k0, k1, k2, k3);
     }
     ahash::RandomState::new()
 }

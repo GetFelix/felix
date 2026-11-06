@@ -273,7 +273,10 @@ pub(crate) fn retire_dir(root: &Path, dir: &Path) -> Result<bool> {
 
 /// Roots whose `.deleted/` has a purge worker, each with whether something
 /// was retired there since the worker last listed it.
-static PURGE_WORKERS: LazyLock<parking_lot::Mutex<HashMap<PathBuf, bool>>> =
+///
+/// std's map, not a seeded one: a static is built once per process, so a
+/// seeded map would draw its keys from whichever simulation ran first.
+static PURGE_WORKERS: LazyLock<parking_lot::Mutex<std::collections::HashMap<PathBuf, bool>>> =
     LazyLock::new(Default::default);
 
 /// Delete whatever `root`'s `.deleted/` holds, on a thread of its own so a

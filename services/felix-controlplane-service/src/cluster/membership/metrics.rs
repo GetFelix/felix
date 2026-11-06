@@ -15,7 +15,7 @@
 //! Every label here is bounded. Lifecycle has four values and region has as
 //! many as an operator configures; neither grows with fleet size, and `node_id`
 //! appears on nothing.
-use felix_common::random::HashSet;
+use std::collections::HashSet;
 use std::sync::Mutex;
 
 use crate::model::NodeLifecycle;
@@ -86,13 +86,13 @@ pub fn record_registration(outcome: &'static str) {
 /// Takes the whole node list rather than a delta so the gauge is a statement
 /// about current state, not an accumulation that can drift from it.
 pub fn publish_census(nodes: &[crate::model::Node]) {
-    let mut regions: HashSet<String> = HashSet::default();
+    let mut regions: HashSet<String> = HashSet::new();
     for node in nodes {
         regions.insert(node.spec.region.clone());
     }
 
     let mut seen = SEEN_REGIONS.lock().unwrap_or_else(|err| err.into_inner());
-    let seen = seen.get_or_insert_with(HashSet::default);
+    let seen = seen.get_or_insert_with(HashSet::new);
     // Regions that have emptied since the last pass still need a zero written.
     let to_report: HashSet<String> = seen.union(&regions).cloned().collect();
     seen.extend(regions);

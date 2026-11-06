@@ -12,8 +12,8 @@ seed, so a failing seed can be run again.
 It lives in `crates/testing/felix-sim`. A run starts a small cluster (three
 to five brokers and a control plane), drives clients against it, injects faults
 for most of two virtual minutes, heals everything, and then checks what the
-clients saw and what the brokers ended up holding. Two virtual minutes take
-minutes of real time, not seconds (see [Running it](#running-it)).
+clients saw and what the brokers ended up holding. Two virtual minutes take a
+few seconds of real time in a release build (see [Running it](#running-it)).
 
 ## Running it
 
@@ -24,8 +24,9 @@ cargo test -p felix-sim --test seeds seeds
 ```
 
 `FELIX_SIM_SEEDS` sets how many seeds (default 4) and `FELIX_SIM_SEED_START`
-the first one. Each seed is 120 seconds of virtual time and takes three to five
-minutes of real time with faults. The clock is paused, so waiting costs
+the first one. Each seed is 120 seconds of virtual time and takes one to ten
+seconds of real time in a release build (`--release`), and longer in a debug
+one. The clock is paused, so waiting costs
 nothing, but real work does not: starting a cluster opens a durable log for
 each of 50 to 200 shards on every broker, and every crash restart opens them
 again. The data directories are in memory, so that is CPU work and no disk
@@ -77,7 +78,7 @@ assignment sets walk in key order, the election walk starts at an offset drawn
 from the seeded source each round (the OS's randomness in a plain broker) so
 followers do not all stand on the same shards first, the deadlines and
 backoffs read `tokio::time::Instant` instead of `std::time::Instant`, and the
-maps below hash with `ahash` instead of std's hasher.
+maps hash with `ahash` instead of std's SipHash (see Map order below).
 
 - **Blocking work.** Shard opens, reads, rollovers, the log's append and
   flush threads, and the membership task's checks of the data directory run
@@ -93,17 +94,17 @@ maps below hash with `ahash` instead of std's hasher.
   replication confirmed-read slots use `felix_common::random::hash_state`,
   and storage ids, node ids and lease ids use `felix_common::random::uuid_v4`.
   Both draw from the seeded generator, so map layouts and ids repeat.
-- **Map order.** Where the order a map is walked in decides what runs next,
-  the map is a `felix_common::random::Map` or `Set`, whose hash keys come from
-  the same seeded generator, even when the map is built by `collect` or
-  `Default`. A std `HashMap` takes its keys from the OS, so walking one
-  differs from run to run. Dropping entries is a walk too: `retain` drops
-  them in hash order, and a dropped quorum mark wakes its waiters and a
-  dropped cursor can free a rebuild slot. The seeded maps are the replication
-  driver's shard states, queues and cursors, the elections and the candidate
-  loop, the quorum marks, the replica's fence records, the leadership rounds,
-  the status board and the peer pool. A cache shard's compaction copies live
-  entries forward in log order rather than in its index's hash order.
+- **Map order.** A std `HashMap` takes its hash keys from the OS, so the
+  order it is walked in, and the order it drops its entries in, differs from
+  run to run. Both decide what runs next: a `retain` that drops a quorum mark
+  wakes its waiters, a crash drops a broker's maps whole, and a pass over a map
+  starts work entry by entry. So storage, the broker, the broker service,
+  replication and the control plane take `HashMap` and `HashSet` from
+  `felix_common::random`. Those are std's maps with an `ahash` hasher whose
+  keys come from the seeded generator, even when the map is built by `collect`
+  or `Default`; outside a simulator each map gets random keys, as std's do.
+  The harness's own maps are `BTreeMap`s. A cache shard's compaction copies
+  live entries forward in log order rather than in its index's order.
 - **Wall time.** Expiry stamps and deadlines read `felix_common::clock::system_time`,
   which is virtual time counted from the fixed simulated epoch. That includes
   the control plane's stream and cache incarnations, the cache's expiry
@@ -258,23 +259,24 @@ it with `#[ignore = "#<issue>"]` in `tests/seeds.rs`.
 
 ### Known failing seeds
 
-These seeds fail today. Each is pinned in `tests/seeds.rs` as an ignored test
-named after its issue, which passes when the bug is fixed; run them with
-`cargo test -p felix-sim --test seeds -- --ignored`. The default batch
-is seeds 1 to 4, so it fails until these are fixed.
+The bugs the earlier seeds found (#1941, #1943, #1948, #1949, #1955) are
+fixed, and the tests that pin them in `tests/seeds.rs` pass. Those pins check
+the one run their seed gives, so they run only with `--cfg tokio_unstable`, in
+`task sim:determinism`. A seed whose bug is still open is pinned with
+`#[ignore = "#<issue>"]`; none is pinned today.
 
-| Seed | What it finds | Issue |
+Seeds 1 to 20, built with the flag, as of the change that made replay exact:
+
+| Seeds | What fails | Issue |
 | --- | --- | --- |
-| 1 | The replication driver spins on a retry with no delay and the virtual clock stops (a `stalled` finding). | [#1941](https://github.com/GetFelix/felix/issues/1941) |
-| 1, 5 | A cache get or delete after a failover or restart misses a put that a quorum acknowledged. | [#1943](https://github.com/GetFelix/felix/issues/1943) |
-| 2, 3, 4 | The same stall as seed 1, within the first minute of faults. Seeds that stall give the cluster checkers little to look at. | [#1941](https://github.com/GetFelix/felix/issues/1941) |
-| 6 | The run can stall about 55 virtual seconds in, after the control plane pause and crash: the same driver spin as seed 1. | [#1941](https://github.com/GetFelix/felix/issues/1941) |
-| 2, 6 | With the driver spin worked around: the control plane pauses, a shard leader crashes, and after the heal the restarted leader stays in `fencing`, so `ElectionSettles` reports the shard unserved. | [#1948](https://github.com/GetFelix/felix/issues/1948) |
-| 2, 6 | With the driver spin worked around: after the heal a leader's committed mark stays below its log tail, so the shard cannot be read (`final-reads`). | [#1949](https://github.com/GetFelix/felix/issues/1949) |
-| 4 | With the driver spin worked around: a broker frozen while its cache shards moved serves them again at the old generation next to the new leader (`AtMostOneServing`). | [#1955](https://github.com/GetFelix/felix/issues/1955) |
+| 1, 3, 4, 5, 6, 13, 14, 19 | Nothing: they pass. | |
+| 7, 8, 10, 12, 15, 16, 17, 18, 20 | After the heal some shards are served by nobody (`ElectionSettles`), so they cannot be read (`final-reads`). The census shows the control plane still naming the old leader while the brokers route to an elected one. | not filed yet |
+| 2, 11 | A shard cannot be read to its tail after the heal (`final-reads`). | not filed yet |
+| 9 | The history checker finds a read that misses an append acknowledged before it began (rule 16, G-single-realtime). | not filed yet |
 
-A stalled run may not stall on another replay: the brokers' interleaving
-differs, and seed 2 ran to the end the first time and stalled the second.
+Any change to the code a run executes can move a seed from one row to
+another, because the run takes a different path from the first difference
+on. Rerun the seeds rather than trusting this table.
 
 ## What runs for real and what is simulated
 

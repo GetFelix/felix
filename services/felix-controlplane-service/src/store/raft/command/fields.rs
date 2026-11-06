@@ -14,8 +14,7 @@
 //!
 //! The table is checked against the types by `fields/tests.rs`, so a new
 //! field cannot be added without choosing its level.
-use felix_common::random::HashMap;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::OnceLock;
 
 use serde_json::Value;

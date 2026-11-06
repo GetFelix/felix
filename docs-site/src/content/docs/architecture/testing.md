@@ -221,10 +221,11 @@ FELIX_SIM_SEED=<n> cargo test -p felix-sim --test seeds replay -- --nocapture
 
 `FELIX_SIM_SEEDS` sets how many seeds the batch runs (default 4) and
 `FELIX_SIM_SEED_START` the first (default 1). `FELIX_SIM_HISTORY=<file>` writes
-a run's history, so two runs can be diffed. A failing seed prints the replay
-command. Each seed takes three to five minutes of real time, because starting
-50 to 200 shards on every broker is CPU work no virtual clock skips, so run
-them one at a time on a busy machine. A run that stops making progress ends
+a run's trace, one event per line, so two runs can be diffed. A failing seed prints the replay
+command. Each seed takes one to ten seconds of real time in a release build
+and longer in a debug one, because starting 50 to 200 shards on every broker
+is CPU work no virtual clock skips, so run them one at a time on a busy
+machine. A run that stops making progress ends
 with a `stalled` finding instead of hanging.
 
 A replay injects the same faults at the same virtual times and sends the same

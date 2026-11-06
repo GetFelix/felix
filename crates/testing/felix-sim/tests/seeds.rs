@@ -23,8 +23,13 @@
 //! operations repeat, but the interleaving under them can differ, so a
 //! failure may take more than one replay to show again.
 //!
-//! A seed that exposed a bug is pinned below with `#[ignore = "#<issue>"]`,
-//! and runs with `cargo test -p felix-sim --test seeds -- --ignored`.
+//! A seed that exposed a bug is pinned below as a test that asserts only the
+//! finding its issue is about. Some pins are skipped without `--cfg
+//! tokio_unstable`, so they check the one run the seed gives rather than
+//! whichever interleaving a build happens to take; `task sim:determinism`
+//! runs them.
+//! A seed whose bug is still open is pinned with `#[ignore = "#<issue>"]` and
+//! runs with `cargo test -p felix-sim --test seeds -- --ignored`.
 
 use felix_sim::cluster::SimConfig;
 use felix_sim::run::{SimOutcome, first_difference, run_seed};
@@ -171,7 +176,10 @@ fn seed_3_replication_driver_does_not_spin() {
 }
 
 #[test]
-#[ignore = "seed 4 still stalls after #1959; under triage"]
+#[cfg_attr(
+    not(tokio_unstable),
+    ignore = "replays this seed's run only under --cfg tokio_unstable"
+)]
 fn seed_4_replication_driver_does_not_spin() {
     log();
     let outcome = run_seed(4, SimConfig::for_seed(4));
@@ -193,7 +201,10 @@ fn found(outcome: &SimOutcome, checker: &str) -> bool {
 /// The control plane pauses and a shard leader crashes; once everything heals
 /// a restarted leader stays in `fencing` and its shard is never served.
 #[test]
-#[ignore = "#1948"]
+#[cfg_attr(
+    not(tokio_unstable),
+    ignore = "replays this seed's run only under --cfg tokio_unstable"
+)]
 fn seed_6_every_shard_is_served_after_a_paused_control_plane_and_a_leader_crash() {
     log();
     let outcome = run_seed(6, SimConfig::for_seed(6));
@@ -204,7 +215,10 @@ fn seed_6_every_shard_is_served_after_a_paused_control_plane_and_a_leader_crash(
 /// A leader's committed mark stays below its log tail after the faults heal,
 /// so the shard cannot be read to its tail.
 #[test]
-#[ignore = "#1949"]
+#[cfg_attr(
+    not(tokio_unstable),
+    ignore = "replays this seed's run only under --cfg tokio_unstable"
+)]
 fn seed_6_every_shard_can_be_read_after_the_faults_heal() {
     log();
     let outcome = run_seed(6, SimConfig::for_seed(6));
@@ -215,7 +229,10 @@ fn seed_6_every_shard_can_be_read_after_the_faults_heal() {
 /// A broker frozen while its cache shards moved serves them again at the old
 /// generation, next to the new leader, once it thaws.
 #[test]
-#[ignore = "#1955, and seed 4 still stalls after #1959"]
+#[cfg_attr(
+    not(tokio_unstable),
+    ignore = "replays this seed's run only under --cfg tokio_unstable"
+)]
 fn seed_4_a_thawed_broker_does_not_serve_shards_that_moved() {
     log();
     let outcome = run_seed(4, SimConfig::for_seed(4));
