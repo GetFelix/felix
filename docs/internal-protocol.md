@@ -242,7 +242,11 @@ queueing would stall the stream. Record batches (`ReplicateRecords`,
 `ReplicateMarkedRecords` and the records of the group, dead-letter, counter
 and cache logs) are also stored side by side and answered as each finishes,
 up to 16 at once per stream; past that the broker stops reading the stream
-until one finishes. Every other request on a stream, bootstraps and rebuilds
+until one finishes. A batch is not refused like a forward, because the leader
+would only send it again. So one stream holds at most 17 batches in memory: 16
+being stored and one read. A batch whose handler overruns the requester's
+timeout ends its stream, as an overrun request answered in turn does. Every
+other request on a stream, bootstraps and rebuilds
 included, is answered in turn. Requesters have always matched by correlation
 id alone, so this needs no capability bit.
 

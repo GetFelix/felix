@@ -50,8 +50,9 @@ const MAX_CONCURRENT_FETCHES_PER_STREAM: usize = 16;
 /// Record batches one stream may have being stored at once. Stored one at a
 /// time, a batch waited behind every other batch on its stream, so a leader's
 /// round trip grew with how many shards it was shipping while the store itself
-/// stayed fast (#1968). Past this the stream stops reading until one finishes.
-const MAX_CONCURRENT_BATCHES_PER_STREAM: usize = 16;
+/// stayed fast (#1968). Past this the stream stops reading until one finishes,
+/// so a stream holds at most this many batches plus the one it read.
+pub(super) const MAX_CONCURRENT_BATCHES_PER_STREAM: usize = 16;
 
 /// What answers a peer's request.
 ///
@@ -448,9 +449,13 @@ async fn serve_connection(
             let controls = Arc::new(Semaphore::new(MAX_CONTROLS_PER_STREAM));
             let fetches = Arc::new(Semaphore::new(MAX_CONCURRENT_FETCHES_PER_STREAM));
             let batches = Arc::new(Semaphore::new(MAX_CONCURRENT_BATCHES_PER_STREAM));
+            // Cancelled when a batch's handler overran or panicked: the
+            // stream is given up as a request answered in turn would be.
+            let given_up = CancellationToken::new();
             loop {
                 let request = tokio::select! {
                     _ = shutdown.cancelled() => break,
+                    _ = given_up.cancelled() => break,
                     frame = read_frame(&mut recv) => match frame {
                         Ok(Incoming::Message(request)) => request,
                         // A kind from a later build. The body has been read, so
@@ -731,34 +736,56 @@ async fn serve_connection(
                     }
                     // Batches for different logs have nothing to wait on each
                     // other for, so they are stored side by side and answered
-                    // as they finish. Nothing relies on the stream's order: a
-                    // leader has one batch in flight per follower and log, and
-                    // spreads its batches over streams anyway. Bootstraps and
-                    // rebuilds replace a log, so they stay in turn below.
+                    // as they finish. Stream order never kept a log's batches
+                    // in turn: a requester spreads its requests over several
+                    // streams, and a leader has one batch in flight per
+                    // follower and log. Bootstraps and rebuilds stay in turn
+                    // below, as before.
                     request @ (InternalMessage::ReplicateRecords(_)
                     | InternalMessage::ReplicateMarkedRecords(_)
                     | InternalMessage::ReplicateGroupRecords(_)
                     | InternalMessage::ReplicateDeadLetterRecords(_)
                     | InternalMessage::ReplicateCounterRecords(_)
                     | InternalMessage::ReplicateCacheRecords(_)) => {
-                        // The semaphore is never closed.
-                        let Ok(permit) = Arc::clone(&batches).acquire_owned().await else {
-                            break;
+                        let permit = tokio::select! {
+                            _ = shutdown.cancelled() => break,
+                            _ = given_up.cancelled() => break,
+                            permit = Arc::clone(&batches).acquire_owned() => {
+                                permit.expect("the batch semaphore is never closed")
+                            }
                         };
                         let handler = Arc::clone(&handler);
                         let peer = ballot_identity(&offered, &identity);
                         let send = Arc::clone(&send);
                         let learner_acks = Arc::clone(&learner_acks);
+                        let given_up = given_up.clone();
+                        let bound = handler_bound(&renews, &offered);
+                        let handling =
+                            app.spawn(async move { handler.handle_from(peer, request).await });
                         app.spawn(async move {
                             let _permit = permit;
-                            answer_out_of_order(&send, async {
-                                let response = handler.handle_from(peer, request).await;
-                                for_caller(
-                                    response,
-                                    learner_acks.load(std::sync::atomic::Ordering::Relaxed),
-                                )
-                            })
-                            .await;
+                            let handled = tokio::time::timeout(bound, handling).await;
+                            let Ok(Ok(response)) = handled else {
+                                // As for a request answered in turn: the
+                                // requester has given up, and a panicked
+                                // handler may have stored the batch. The
+                                // handler finishes on its own.
+                                tracing::warn!(
+                                    timeout = ?bound,
+                                    "replication batch handler failed or overran; dropping its stream",
+                                );
+                                metrics::record_served(metrics::OUTCOME_ERROR);
+                                given_up.cancel();
+                                return;
+                            };
+                            let response = for_caller(
+                                response,
+                                learner_acks.load(std::sync::atomic::Ordering::Relaxed),
+                            );
+                            match write_frame(&mut *send.lock().await, &response).await {
+                                Ok(()) => metrics::record_served(metrics::OUTCOME_OK),
+                                Err(_) => metrics::record_served(metrics::OUTCOME_ERROR),
+                            }
                         });
                         continue;
                     }
@@ -769,14 +796,7 @@ async fn serve_connection(
                         let peer = ballot_identity(&offered, &identity);
                         let handling =
                             app.spawn(async move { handler.handle_from(peer, request).await });
-                        // Only a requester that replaces streams may have this
-                        // one dropped under it; an older one would lose the
-                        // lane for the life of the connection, so it waits.
-                        let bound = if renews.load(std::sync::atomic::Ordering::Relaxed) {
-                            offered.handler_timeout
-                        } else {
-                            std::time::Duration::MAX
-                        };
+                        let bound = handler_bound(&renews, &offered);
                         let handled = tokio::time::timeout(bound, handling).await.ok();
                         match handled.and_then(|joined| joined.ok()).ok_or(()) {
                             Ok(response) => for_caller(
@@ -860,6 +880,18 @@ async fn answer_out_of_order(
     match write_frame(&mut send, &response).await {
         Ok(()) => metrics::record_served(metrics::OUTCOME_OK),
         Err(_) => metrics::record_served(metrics::OUTCOME_ERROR),
+    }
+}
+
+/// How long a handler answered on a stream may run before the stream is given
+/// up. Only a requester that replaces streams may have one dropped under it;
+/// an older one would lose the lane for the life of the connection, so it
+/// waits.
+fn handler_bound(renews: &std::sync::atomic::AtomicBool, offered: &Offered) -> std::time::Duration {
+    if renews.load(std::sync::atomic::Ordering::Relaxed) {
+        offered.handler_timeout
+    } else {
+        std::time::Duration::MAX
     }
 }
 

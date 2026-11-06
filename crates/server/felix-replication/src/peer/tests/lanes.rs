@@ -1,7 +1,7 @@
 //! A stream whose handler never returns must not stay wedged: the requester
-//! replaces it, and the listener gives it up once the requester has. Record
-//! batches are stored side by side, so the requests that can wedge a stream
-//! are the ones still answered in turn, such as a bootstrap.
+//! replaces it, and the listener gives it up once the requester has. That
+//! holds for a request answered in turn, such as a bootstrap, and for record
+//! batches, which are stored side by side.
 
 use felix_transport::{QuicClient, TransportConfig};
 use felix_wire::internal::{
@@ -40,16 +40,19 @@ fn bootstrap(correlation_id: u64, base_offset: u64) -> InternalMessage {
     })
 }
 
-/// Answers everything at once, except a bootstrap at [`STALL`], which it
-/// never answers.
+/// Answers everything at once, except a bootstrap or record batch at
+/// [`STALL`], which it never answers.
 struct Stalls;
 
 #[async_trait::async_trait]
 impl PeerRequestHandler for Stalls {
     async fn handle(&self, request: InternalMessage) -> InternalMessage {
-        if let InternalMessage::ReplicateBootstrap(offer) = &request
-            && offer.base_offset == STALL
-        {
+        let stalls = match &request {
+            InternalMessage::ReplicateBootstrap(offer) => offer.base_offset == STALL,
+            InternalMessage::ReplicateRecords(batch) => batch.first_offset == STALL,
+            _ => false,
+        };
+        if stalls {
             std::future::pending::<()>().await;
         }
         InternalMessage::ReplicateOk(ReplicateOk {
@@ -235,6 +238,51 @@ async fn the_listener_gives_up_a_stream_whose_handler_overran() {
     assert!(
         !matches!(ended, Ok(Incoming::Message(_))),
         "nothing is answered behind a handler that overran"
+    );
+
+    let (mut send, mut recv) = connection.open_bi().await.expect("open another");
+    write_frame(&mut send, &record(4, 1)).await.expect("record");
+    let answer = tokio::time::timeout(Duration::from_secs(2), read_frame(&mut recv))
+        .await
+        .expect("another stream is served");
+    assert!(
+        matches!(answer, Ok(Incoming::Message(InternalMessage::ReplicateOk(ref ok))) if ok.correlation_id == 4)
+    );
+
+    connection.close(0u32.into(), b"done");
+    listener.stop().await;
+}
+
+/// Record batches that never finish fill their stream's limit, and the
+/// stream then stops reading. Under a requester that replaces streams the
+/// listener still gives that stream up once the handlers overrun, rather than
+/// holding it and its stream credit until they return.
+#[tokio::test]
+async fn the_listener_gives_up_a_stream_whose_record_batches_overran() {
+    let listener = Listener::start_on(
+        PEER,
+        Arc::new(Stalls),
+        PeerTransportConfig {
+            request_timeout: Duration::from_millis(300),
+            ..config()
+        },
+    )
+    .await;
+    let connection = connect(&listener).await;
+    let (mut send, mut recv) = greet(&connection, Some(PeerCapabilities::LANE_RENEWAL)).await;
+
+    // One past the limit, so the stream is also waiting for room to read on.
+    for id in 0..=crate::peer::server::MAX_CONCURRENT_BATCHES_PER_STREAM as u64 {
+        write_frame(&mut send, &record(10 + id, STALL))
+            .await
+            .expect("stall");
+    }
+    let ended = tokio::time::timeout(Duration::from_secs(2), read_frame(&mut recv))
+        .await
+        .expect("the stream stayed held by batches nobody waits for");
+    assert!(
+        !matches!(ended, Ok(Incoming::Message(_))),
+        "nothing is answered for a batch that overran"
     );
 
     let (mut send, mut recv) = connection.open_bi().await.expect("open another");
