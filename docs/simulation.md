@@ -46,34 +46,46 @@ FELIX_SIM_SEED=<n> cargo test -p felix-sim --test seeds replay
 ```
 
 A replay runs the same cluster, the same faults at the same virtual times and
-the same client operations. For the interleaving beneath them to repeat too,
-build with tokio's seeded `select!`:
+the same client operations. Built with tokio's seeded `select!`, it is the
+same run, event for event:
 
 ```bash
 RUSTFLAGS="--cfg tokio_unstable" FELIX_SIM_SEED=<n> FELIX_SIM_HISTORY=run1.txt \
   cargo test -p felix-sim --release --test seeds replay
 ```
 
-`FELIX_SIM_HISTORY` writes the run's history (every operation, fault and final
-read) to a file, so two runs can be diffed.
+`FELIX_SIM_HISTORY` writes the run's trace (every fault, operation, final
+read, opened generation and finding, one per line) to a file, so two runs can
+be diffed. Without the flag the faults and operations still repeat, but tokio
+picks among ready `select!` branches at random, so the interleaving under them
+does not, and a timing-sensitive failure may need a few replays to show again.
+
+`task sim:determinism` checks that replay is exact. It runs each seed twice in
+one process and fails on the first event where the two traces differ. It
+builds with the flag in a target directory of its own, since the flag changes
+every crate's build. CI runs it on seeds 1 to 20 in the `Simulator
+determinism` job. A plain `cargo test` skips that test, because it cannot
+pass without the flag.
 
 Several things the brokers do would otherwise make two runs differ, and under
 the simulator each is held to the run's one thread and its seed. Only some of
 this is gated. The seeded randomness (`felix_common::random`), the retry
 jitter, the blocking-work runner and the clock hook exist only in debug builds
 or under the `felix-common/sim` feature; a plain release build does not have
-them. Three changes run in every build: passes over routing tables and
+them. Some changes run in every build: passes over routing tables and
 assignment sets walk in key order, the election walk starts at an offset drawn
 from the seeded source each round (the OS's randomness in a plain broker) so
-followers do not all stand on the same shards first, and the deadlines and
-backoffs read `tokio::time::Instant` instead of `std::time::Instant`.
+followers do not all stand on the same shards first, the deadlines and
+backoffs read `tokio::time::Instant` instead of `std::time::Instant`, and the
+maps below hash with `ahash` instead of std's hasher.
 
-- **Blocking work.** Shard opens, reads, rollovers and the log's append and
-  flush threads run on real threads in a broker, and finish in real time.
+- **Blocking work.** Shard opens, reads, rollovers, the log's append and
+  flush threads, and the membership task's checks of the data directory run
+  on real threads in a broker, and finish in real time.
   `felix_common::blocking` runs that work as a task on the simulated runtime
-  instead, once the simulator has installed its clock. Real flushes are
-  skipped too: the simulator never cuts the power, so they would only cost
-  real time.
+  instead, once the simulator has installed its clock. Flushes run too, against
+  the in-memory filesystem (see [The filesystem](#the-filesystem)),
+  where they cost no real time.
 - **Retry jitter.** Election backoff, the peer redial backoff and the
   membership report delay draw from `felix_common::jitter`, which the
   simulator seeds.
@@ -81,25 +93,32 @@ backoffs read `tokio::time::Instant` instead of `std::time::Instant`.
   replication confirmed-read slots use `felix_common::random::hash_state`,
   and storage ids, node ids and lease ids use `felix_common::random::uuid_v4`.
   Both draw from the seeded generator, so map layouts and ids repeat.
+- **Map order.** Where the order a map is walked in decides what runs next,
+  the map is a `felix_common::random::Map` or `Set`, whose hash keys come from
+  the same seeded generator, even when the map is built by `collect` or
+  `Default`. That covers the replication driver's shard states and queues, the
+  elections and candidate loop, the quorum marks (dropping a mark wakes its
+  waiters, so `retain` order is wake order), the replica's fence records, the
+  leadership rounds, the status board and the peer pool. A std `HashMap` takes
+  its keys from the OS, so walking one differs from run to run.
 - **Wall time.** Expiry stamps and deadlines read `felix_common::clock::system_time`,
-  which is virtual time counted from the fixed simulated epoch.
+  which is virtual time counted from the fixed simulated epoch. That includes
+  the control plane's stream and cache incarnations, the cache's expiry
+  stamps and versions, retention's clock, counter timestamps and the names
+  of retired shard directories.
 - **Real-time deadlines.** The peer pool's backoff, the forward budget, the
-  routing hold and the shard lifecycle's fence timers read tokio's clock, so
-  they follow the paused clock instead of the host's.
+  routing hold, the shard lifecycle's fence timers and the log's "persist the
+  commit offset at most this often" clock read tokio's clock, so they follow
+  the paused clock instead of the host's.
 - **Walk order.** A pass over a routing table, an assignment set or the shards
   a broker stands for visits them in key order, because hash order changes
   from process to process and these passes start work shard by shard.
+- **Data directories.** Each broker's directory is named after the broker
+  (`felix-sim/b1`), not after the process, so paths hash and sort the same
+  way every run. A second simulation running at the same time in the process
+  gets a suffixed name.
 - **`select!`.** Tokio picks among ready branches at random unless the runtime
-  is given a seed, which tokio allows only under `--cfg tokio_unstable`. Without
-  that flag a replay still has the same faults and operations, but a
-  timing-sensitive failure may need a few replays to show again.
-
-Replay is not exact yet. Known gaps: storage reads the host clock in a few
-places, and the control plane draws a few ids from the
-OS. There is at least one more gap nobody has found: seed 59 still diverges by
-about 2 ms around 10.5 s of virtual time, and the cause is unknown. A replay
-can differ from the original run, so a failure may need a few replays to show
-again.
+  is given a seed, which tokio allows only under `--cfg tokio_unstable`.
 
 Seeds known to fail are kept as ignored tests named after the issue that
 tracks them.

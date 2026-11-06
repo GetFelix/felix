@@ -12,15 +12,16 @@
 //! | Variable | Meaning | Default |
 //! |---|---|---|
 //! | `FELIX_SIM_SEED` | the seed `replay` runs | unset: `replay` is skipped |
-//! | `FELIX_SIM_SEEDS` | how many seeds `seeds` runs | 4 |
-//! | `FELIX_SIM_SEED_START` | the first seed `seeds` runs | 1 |
-//! | `FELIX_SIM_HISTORY` | a file `replay` writes the run's history to, for diffing two runs | unset |
+//! | `FELIX_SIM_SEEDS` | how many seeds `seeds` and `each_seed_runs_the_same_twice` run | 4 |
+//! | `FELIX_SIM_SEED_START` | the first seed they run | 1 |
+//! | `FELIX_SIM_HISTORY` | a file `replay` writes the run's trace to, for diffing two runs | unset |
 //! | `RUST_LOG` | broker and harness logs | none |
 //!
-//! A run is repeatable to the extent described in `felix_sim::run`: the same
-//! seed injects the same faults at the same virtual times, but the brokers'
-//! own interleaving can still differ (hash map order), so a failure may take
-//! more than one replay to show again.
+//! Built with `RUSTFLAGS="--cfg tokio_unstable"` a replay is the same run,
+//! event for event, and `each_seed_runs_the_same_twice` checks that (`task
+//! sim:determinism`). Without the flag `select!` is unseeded: the faults and
+//! operations repeat, but the interleaving under them can differ, so a
+//! failure may take more than one replay to show again.
 //!
 //! A seed that exposed a bug is pinned below with `#[ignore = "#<issue>"]`,
 //! and runs with `cargo test -p felix-sim --test seeds -- --ignored`.
@@ -31,8 +32,23 @@ use felix_sim::run::{SimOutcome, first_difference, run_seed};
 fn log() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_timer(VirtualTime)
         .with_test_writer()
         .try_init();
+}
+
+/// Stamps each log line with the run's virtual time, so the logs of two runs
+/// of a seed can be diffed.
+struct VirtualTime;
+
+impl tracing_subscriber::fmt::time::FormatTime for VirtualTime {
+    fn format_time(&self, w: &mut tracing_subscriber::fmt::format::Writer<'_>) -> std::fmt::Result {
+        write!(
+            w,
+            "{:>10.3}s",
+            felix_common::clock::boottime().as_secs_f64()
+        )
+    }
 }
 
 fn env_u64(name: &str) -> Option<u64> {

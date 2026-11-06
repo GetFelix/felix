@@ -227,13 +227,13 @@ command. Each seed takes three to five minutes of real time, because starting
 them one at a time on a busy machine. A run that stops making progress ends
 with a `stalled` finding instead of hanging.
 
-Repeatable has a limit here. A replay injects the same faults at the same
-virtual times and sends the same client operations, but the interleaving of the
-brokers' own tasks can still differ, so a failure may take a few replays to
-show again. Building with `RUSTFLAGS="--cfg tokio_unstable"` makes tokio's
-`select!` seeded as well, which closes most of that gap. It does not close all
-of it: storage still reads the host clock in a few places. CI runs the `seeds`
-test with the workspace tests, so seeds 1 to 4 run on every pull request.
+A replay injects the same faults at the same virtual times and sends the same
+client operations. Built with `RUSTFLAGS="--cfg tokio_unstable"`, which lets
+tokio seed `select!`, it is the same run event for event. Without the flag the
+brokers' interleaving can differ, so a failure may take a few replays to show
+again. CI runs the `seeds` test with the workspace tests, so seeds 1 to 4 run
+on every pull request, and `task sim:determinism` runs seeds 1 to 20 twice each
+with the flag and fails on the first event that differs.
 Seeds that expose a bug are pinned as ignored tests named after their issue,
 and [`docs/simulation.md`](https://github.com/GetFelix/felix/blob/main/docs/simulation.md)
 lists the ones that fail today.
