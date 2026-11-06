@@ -1044,7 +1044,8 @@ and placement treats it as one. With `joint_fence` finalized:
    assignment's generation shows the replaced member caught up under its
    new id, placement writes the same leader and replicas at the next
    generation (the `readmit` step, at most one member per shard per pass).
-   The write names the new id and puts the member in `learners`.
+   Each is a new fenced term on the leader, so a pass re-admits into at most
+   16 shards, and none while placement is paused. The write names the new id and puts the member in `learners`.
 3. **The report lets it count.** The leader's report at that generation
    lists the member in `holds_start` once the member holds the generation's
    start record. For a cache shard its counter log must hold the counter

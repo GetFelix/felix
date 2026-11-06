@@ -362,6 +362,20 @@ pub(crate) struct Learning<'a> {
 }
 
 impl ShardAssignment {
+    /// This assignment as the start of its next write: the store picks the
+    /// generation, and the write names the storage identities, fence
+    /// identities and learners again, since the previous generation's can be
+    /// stale for the next.
+    pub(crate) fn renamed(&self) -> Self {
+        Self {
+            generation: 0,
+            fence_storage_ids: Default::default(),
+            member_storage_ids: Default::default(),
+            learners: Default::default(),
+            ..self.clone()
+        }
+    }
+
     /// Names each member's registered storage identity, from `registered`
     /// (node id to storage id). A member with none registered is left out.
     pub fn name_member_storage(&mut self, registered: &BTreeMap<String, String>) {
