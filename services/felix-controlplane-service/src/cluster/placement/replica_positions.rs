@@ -152,6 +152,9 @@ pub struct ReplicaPositions {
     /// Shards this instance has seen their leader serving at the
     /// assignment's generation; see `CopyProgress::observe_opened`.
     opened: HashSet<ShardKey>,
+    /// Each assignment's stream incarnation, which a report of its leader
+    /// serving must be from.
+    incarnations_of: HashMap<ShardKey, u64>,
     /// What each assignment names its members by, for telling a replaced
     /// copy from the one it names.
     members: HashMap<ShardKey, NamedMembers>,
@@ -213,6 +216,7 @@ impl ReplicaPositions {
             nodes: HashMap::new(),
             assignments: HashMap::new(),
             opened: HashSet::new(),
+            incarnations_of: HashMap::new(),
             members: HashMap::new(),
             joint_fence: false,
         }
@@ -253,6 +257,10 @@ impl ReplicaPositions {
                     (assignment.generation, assignment.leader.clone()),
                 )
             })
+            .collect();
+        self.incarnations_of = assignments
+            .iter()
+            .map(|assignment| (assignment.key.clone(), assignment.incarnation))
             .collect();
         self.members = assignments
             .iter()
@@ -800,8 +808,12 @@ impl CaughtUp for ReplicaPositions {
         if self.opened.contains(key) && self.assignments.get(key).is_some_and(named) {
             return true;
         }
+        // A report from before a delete and recreate can name the same
+        // generation and leader, and would drop the pins too soon.
+        let incarnation = self.incarnations_of.get(key).copied().unwrap_or(0);
         self.reports.get(key).is_some_and(|report| {
-            report.generation == generation
+            report.stream_incarnation.unwrap_or(0) == incarnation
+                && report.generation == generation
                 && report.leader.as_deref() == Some(leader)
                 && report.leader_offset.is_some()
                 && report.refused.is_none()

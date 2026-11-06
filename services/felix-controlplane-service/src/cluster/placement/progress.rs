@@ -40,9 +40,9 @@ pub(super) struct CopyProgress {
     /// the window.
     stuck_renames: HashMap<ShardKey, Vec<u64>>,
     /// Shards whose leader this instance saw serving at the assignment's
-    /// generation. A later report from the same leader at that generation
+    /// generation and stream incarnation. A later report from the same leader at that generation
     /// may be a refusal after a restart, which does not undo the open.
-    opened: HashMap<ShardKey, (u64, String)>,
+    opened: HashMap<ShardKey, (u64, String, u64)>,
 }
 
 /// One leader at one generation and incarnation, as watched for progress.
@@ -170,7 +170,11 @@ impl CopyProgress {
         self.opened = existing
             .iter()
             .filter_map(|assignment| {
-                let at = (assignment.generation, assignment.leader.clone());
+                let at = (
+                    assignment.generation,
+                    assignment.leader.clone(),
+                    assignment.incarnation,
+                );
                 let seen = self.opened.get(&assignment.key) == Some(&at)
                     || caught_up.leader_opened(
                         &assignment.key,

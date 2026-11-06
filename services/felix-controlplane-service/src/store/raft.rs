@@ -1748,9 +1748,6 @@ impl AuthStore for RaftStore {
     }
 }
 
-/// The command answered with a payload its own definition rules out — a
-/// version-skew bug between proposer and applier, worth a loud error over a
-/// quiet wrong answer.
 /// The floor a rename past a refusal's ballot is written with at `level`; 0,
 /// the next generation, below the level a skip needs. Under `joint_fence` a
 /// broker that missed the generation a skip replaced has no set before the
@@ -1766,6 +1763,9 @@ fn honoured_at_least(at_least: u64, level: u16, joint_fence: bool) -> u64 {
     if level >= needed { at_least } else { 0 }
 }
 
+/// The command answered with a payload its own definition rules out — a
+/// version-skew bug between proposer and applier, worth a loud error over a
+/// quiet wrong answer.
 fn unexpected_shape(what: &'static str) -> StoreError {
     StoreError::Unexpected(anyhow::anyhow!(
         "raft response did not carry the expected {what}"

@@ -388,6 +388,33 @@ fn a_leader_seen_serving_stays_opened_after_a_refusal_at_that_generation() {
     ));
 }
 
+/// A stream deleted and created again can reuse the generation and leader.
+/// Neither the old incarnation's report nor what this instance saw of it
+/// makes the new one opened.
+#[test]
+fn a_recreated_stream_is_not_opened_by_its_old_incarnation() {
+    use super::super::progress::CopyProgress;
+    let serving = ReplicaReport {
+        leader: Some("broker-a".to_string()),
+        leader_offset: Some(10),
+        stream_incarnation: Some(1),
+        ..report("orders", &["broker-b"], 1_000)
+    };
+    let at_incarnation = |incarnation| ShardAssignment {
+        incarnation,
+        ..led_by_a(4)
+    };
+    let mut progress = CopyProgress::default();
+    let pass = |progress: &mut CopyProgress, report: ReplicaReport, assignment: ShardAssignment| {
+        let mut view = at(vec![report], 1_000).with_nodes(&[], std::slice::from_ref(&assignment));
+        let opened = progress.observe_opened(std::slice::from_ref(&assignment), &view);
+        view.set_opened(opened);
+        view.leader_opened(&key("orders"), 4, "broker-a")
+    };
+    assert!(pass(&mut progress, serving.clone(), at_incarnation(1)));
+    assert!(!pass(&mut progress, serving, at_incarnation(2)));
+}
+
 #[test]
 fn lag_is_measured_against_the_reported_tail() {
     let mut with_tail = report("orders", &["broker-b"], 1_000);
