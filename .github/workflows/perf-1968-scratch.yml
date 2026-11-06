@@ -11,7 +11,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  M_SHA: c6d7e8fd595dba0f94f42caf2209593c200062de
+  M_SHA: 78a01c1b112850038ba526f9e7acd5a82219e768
   BENCH_STEADY_SECS: "40"
 
 jobs:
@@ -36,7 +36,7 @@ jobs:
           cargo test --release -p felix-cluster --test replicated_bench --no-run --message-format=json \
             | jq -r 'select(.profile.test == true and .executable != null) | .executable' | tail -1 > /tmp/exe
           cp "$(cat /tmp/exe)" $out/replicated_bench
-          f_sha=$(git rev-parse HEAD~1)
+          f_sha=fe81b245226a00bfcf41789f29ae4287be313d5a
           for side in m f; do
             case $side in m) sha=$M_SHA;; f) sha=$f_sha;; esac
             git checkout --detach -q "$sha"
@@ -57,8 +57,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
-        payload: [1024, 65536]
+        shard: [1, 2, 3, 4, 5, 6]
+        payload: [65536]
     env:
       ROUNDS: "5"
       BENCH_PAYLOAD: ${{ matrix.payload }}
