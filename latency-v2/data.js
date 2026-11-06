@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793930745447,
+  "lastUpdate": 1793932016254,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -59202,6 +59202,72 @@ window.BENCHMARK_DATA = {
             "range": "737.23",
             "unit": "us",
             "extra": "trials: 5\nmedian: 548.00\nmean: 880.80\nstdev: 737.23\ncv: 83.70%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "93b39d71cb5823d499eeec612fd5f4406a76fa57",
+          "message": "spec: model the set-keeping fixes for an unknown set, an unopened failover and every kept set (#1872, #1880, #1881) (#1910)\n\n* spec: a failover fences the recorded set and the log's set, checked in pieces (#1806, #1860)\n\nBrings the #1806 model (67e9aeaa7, 2c2ee24b7 on spec/1806-fence-both-sets)\nto main: oldSet holds the sets being left, and a failover's fence takes a\nmajority of the promoted broker's own set and, under FenceRecordedSet, the\ncontrol plane's recorded set. FelixShardElectAdoptFailover never finished\nin six hours, so it is split at the first failover (SplitAtFailover,\nFailoverTag, PieceGens): same or apart sets, 0 or 1 writes, stood or not,\nfirst failover at generation 2, 3, or 4 and above.\n\n* spec: PieceGens defaults to Nat, so a piece can take every generation from 4 up (#1860)\n\nTLC cannot compare an infinite set with {}.\n\n* spec: a leader that lost the set it leaves is named again only past a generation it opened (#1872)\n\nForgetSet (under SetLossUpTo) drops the leader's kept leaving set, as a\nbroker that learned the shard from a snapshot or restarted after opening.\n{} in oldSet stands for the unknown set, so the fence cannot open on it,\nand RenameDue names the leader again one up only once it opened that\ngeneration. FelixShardReplacedSetUnknownAny renames on any unknown set and\nviolates AckedHeldByLeader; FelixShardReplacedSetUnknown is the fixed rule.\n\n* spec: register the empty failover pieces, run the three measured heavy ones nightly (#1860)\n\nTwelve pieces hold only the states before a first failover and now check\nNoCutOverInPiece. Same0Gen4, Apart0Gen4 and Apart1Gen4 run nightly.\nSame0StoodGen2 ran out of runner disk and needs splitting again; eight\npieces are still being measured.\n\n* spec: the #1874 rename is reachable, and a failover drops a pending old set (#1872, #1878)\n\nNeverRenameUnknownSet is a witness: TLC finds a leader due a rename after\nlosing its set in a generation it opened, at depth 6. ReplacedPendingLeft\npins #1878: a failover after one whose joint fence never opened fences\nneither set that acknowledged the write.\n\n* spec: mirror the #1874 rename predicate and model the first-assignment mark (#1872)\n\nA rename on an unknown set also needs the kept set at exactly the\ngeneration and no cut-over pending there. FirstAssignMark reads the set\nbefore as empty at the first generation; MarkAnyGeneration, the mark\ntrusted anywhere, violates AckedHeldByLeader, and the rename stays\nreachable with the mark (witness).\n\n* spec: a failover fences an unopened failover's leaving set, and one kept leaving set is not enough (#1878, #1881)\n\nKeepsUnopened mirrors #1880. OneLeavingSet keeps one leaving set per\nanswering member, as the broker does. Not registered until measured.\n\n* spec: the set-unknown cfgs keep an unopened set on failover (#1872, #1880)\n\nWithout KeepsUnopened, FelixShardReplacedSetUnknown violates\nAckedHeldByLeader through the #1878 path under leader-report placement:\nb opens at 2 on c's answer alone, its report names c caught up at 0 (as\nthe broker's does when acknowledging by followers), and c, promoted at\n3, never fences {a, b, c}. The twins and witnesses take the same\nconstant and still violate as registered.\n\n* spec: model the broker's rule for the sets a member keeps (#1881)\n\nLogDropsSets keeps the sets being left as accept_set does: a fence that\nraises the set carries what it sent and, unless the log holds a record of\nits own set's generation, the set before and the ones kept with it; a batch\nthat raises the set keeps none; a set at the same generation changes\nnothing. New cfgs ReplacedPendingLeftKeptLog and ReplacedPendingLeftTwiceAllLog,\nnot registered until measured.\n\n* spec: a batch that raises the set carries the kept sets too (#1881)\n\nLearnSetFrom now follows #1882 after review: a batch raise carries the set\nbeing replaced and the sets kept with it, like a fence, unless the log holds\na record of that set's generation. Earlier sets are kept only under\nJointFence, and a raise past KeptSetsCap + 1 distinct sets that adds one is\nrefused (unreachable with four brokers). BatchDropsSets keeps the old batch\nrule for the twin cfgs; dispatch 41786406508 measured that rule.\n\n* spec: a failover fences the recorded set before; a leader with an unknown set asks no one (#1872, #1881)\n\nUnder Promotion \"any\" the promoted broker's own set can be stale. The broker\nfences the control plane's set from the generation before (set_before) beside\nits own (logged_besides) in promotion/joint.rs, so the PendingLeft Kept and\nTwice cfgs turn on FenceRecordedSet.\n\nA leader that lost the set it leaves sends no fence: fence_shard returns when\njoint::sets cannot find the set, before fence_log. AnswerFence now requires\n~SetUnknown(b), so a member can no longer copy the unknown marker.\n\n* spec: cite the failover tests in each piece, split the stood Gen2 pieces again, record the measured pieces (#1860)\n\nThe pieces cited their parent cfg by name, which docs:evidence does not\naccept, so each now names the parent's two tests. Same0StoodGen2 ran out of\nrunner disk and Same1StoodGen2 did not finish, so both split by\nPieceStoodCounts and PieceDestStood. Same1Gen2 and Same1Gen4 passed and run\nnightly; the five that did not finish in six hours are recorded as unchecked.\n\n* spec: SetUnknown fences the recorded set before; witness the first-generation rename (#1872)\n\nThe SetUnknown configurations failed AckedHeldByLeader with no set lost:\nc never answered b's fence at 2, is promoted at 3 and fences its stale\nown set, not the control plane's set at 2. set_before fences that one\n(FenceRecordedSet), as the Kept configurations already do.\n\nNeverRenameFirstUnknownSet and its witness configuration show the\nrename at the first generation (NoSetBefore::Unknown(0)) is reached.\n\n* spec: a batch that raises the set teaches the control plane's set before (#1881)\n\nKeptLog failed AckedHeldByLeader at depth 19 (dispatch 41820690059): the\nspare d learned b's set at 2 from a batch, kept no set being left, and,\npromoted at 3 with no gen-2 record, fenced {b, c, d} but not {a, b, c},\nwhere a and b held a write acknowledged at 1. The broker does not lose it:\ncheck_batch_set (replica/election.rs) sets the leaving set from set_before\nwith the control plane's prior, so unopened_leaving fences {a, b, c}.\n\nThe model now records the control plane's set before each generation\n(cpLeft, under LogDropsSets only) and a batch carries it (BatchLeaving).\nLeftRecorded checks every generation step records it.\n\nThe Kept and Twice configurations drop time (MaxTime = 0): every promotion\nin them is on suspicion, and at MaxTime = 4 none finished in six hours.\n\n* spec: register the Kept and Twice outcomes; the unknown-set pieces cite their tests (#1881, #1872)\n\nMeasured in 41886589800: Twice violates as expected; Kept and TwiceAll\nviolate through their coarse batch rule (a batch at a known generation\ndrops the kept sets, which check_set never does); both BatchDrops twins\nviolate. TwiceAllLog violates under Promotion any: a broker that never saw\n{b, c, d} is promoted two failovers later and does not fence it. Its\nleader-report variant checks whether placement can reach that.\n\n* spec: the TwiceAllLog headers say what a batch carries\n\n* spec: the leader-report Twice configuration keeps the report floor, as the broker does since #1924 (#1922)\n\nFelixShardReplacedPendingLeftTwiceAllLogReport ran with ReportFloor off and\nviolated AckedHeldByLeader at depth 22 (run 41950965834). The trace is the\ncode path #1922 found and #1924 fixed: a follower named caught up before it\nheld the log its leader inherited. The configuration now models the broker\nafter that fix; the invariant is unchanged.\n\n* spec: pin the floor-off leader-report Twice violation (#1922)\n\nFelixShardReplacedPendingLeftTwiceAllLogReportNoFloor is the Report\nconfiguration with ReportFloor off, as driver/shard.rs was before #1924.\nIt must violate AckedHeldByLeader (depth 22, run 41950965834), so the\nfloor's protection stays checked.\n\n* spec: the floor-off Twice configuration cites the test that pins the floor\n\n* spec: record the unfinished six-hour check of the leader-report Twice configuration",
+          "timestamp": "2026-11-05T18:05:08-08:00",
+          "tree_id": "a4b42d13ec4260ecdd06b67c56dbc8cf2ba7100c",
+          "url": "https://github.com/GetFelix/felix/commit/93b39d71cb5823d499eeec612fd5f4406a76fa57"
+        },
+        "date": 1793932007163,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 124,
+            "range": "1.87",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 124.00\nmean: 124.00\nstdev: 1.87\ncv: 1.51%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 173,
+            "range": "2.05",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 173.00\nmean: 172.80\nstdev: 2.05\ncv: 1.19%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 239,
+            "range": "21.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 239.00\nmean: 244.20\nstdev: 21.84\ncv: 8.95%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 157,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 157.00\nmean: 157.40\nstdev: 1.14\ncv: 0.72%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 312,
+            "range": "6.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 312.00\nmean: 314.00\nstdev: 6.52\ncv: 2.08%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 461,
+            "range": "73.09",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 461.00\nmean: 484.40\nstdev: 73.09\ncv: 15.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
