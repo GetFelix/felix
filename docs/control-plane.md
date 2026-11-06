@@ -539,11 +539,13 @@ its shards open at. It then votes in its shards' elections and takes records
 from their leaders as a follower. It does not stand for election or restore a
 standing from before the restart until it has registered: until then it does
 not answer pings, so its peers would suspect it and take a shard it won
-straight back, burning a generation. It serves no client:
-the QUIC, Kafka and MQTT listeners accept nothing, `/ready` reports not ready,
-and a client request another broker forwards to it is refused as
-`Unavailable`, which the forwarder retries. It holds no lease, so nothing
-that rests on one runs.
+straight back, burning a generation. A shard the view names it leader of is
+the exception: it may reopen that shard at the view's generation, as a broker
+that stayed up would, and its followers refuse it if they have since elected
+another leader. It serves no client: the QUIC, Kafka and MQTT listeners accept
+nothing, `/ready` reports not ready, and a client request another broker
+forwards to it is refused as `Unavailable`, which the forwarder retries. It
+holds no lease, so nothing that rests on one runs.
 
 **When the control plane answers.** The check a start without the switch makes
 before it opens anything runs first: if the control plane registered the node

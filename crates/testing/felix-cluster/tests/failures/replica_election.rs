@@ -1256,12 +1256,7 @@ async fn a_broker_restarted_while_the_control_plane_is_down_votes() {
         missing.is_empty(),
         "{elected} lost acknowledged records: {missing:?}"
     );
-    let follower = if elected == survivor {
-        restarted.clone()
-    } else {
-        survivor.clone()
-    };
-    caught_up(&cluster, &[follower], generation).await;
+    caught_up(&cluster, &[restarted], generation).await;
     read_logged(&cluster, OPENED, &mut opened);
     assert_one_leader_per_generation(&opened, before.generation);
     cluster.shutdown().await;
