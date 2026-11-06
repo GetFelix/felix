@@ -321,6 +321,21 @@ impl Broker {
         {
             return Some(log);
         }
+        if felix_common::blocking::on_runtime() {
+            // A simulator keeps the open on its own runtime: `block_on` cannot
+            // run there, and a real thread would make the run unrepeatable.
+            return self
+                .shard_log_for(
+                    kind,
+                    tenant_id,
+                    namespace,
+                    name,
+                    shard,
+                    base_offset,
+                    incarnation,
+                )
+                .await;
+        }
         let broker = Arc::clone(self);
         let scope = (
             tenant_id.to_string(),
@@ -572,7 +587,7 @@ impl Broker {
 
 /// Where readers ended by another leader's records are sent: the leader this
 /// shard's log last accepted. A hint, like every handoff.
-fn accepted_leader(state: &crate::stream::StreamState) -> crate::ShardHandoff {
+pub(super) fn accepted_leader(state: &crate::stream::StreamState) -> crate::ShardHandoff {
     let log = state.durable.as_ref();
     crate::ShardHandoff {
         node_id: log

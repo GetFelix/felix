@@ -18,12 +18,17 @@
 //!
 //! The seed fixes the cluster's shape, the fault schedule, every client's
 //! choices and the network's drops. Time is tokio's paused clock, so sleeps
-//! cost nothing. The run is not bit-for-bit repeatable: the brokers iterate
-//! hash maps whose order varies by process, real file I/O finishes in real
-//! time, and tokio's `select!` picks among ready branches at random. A seed
-//! that fails usually fails again, and the same faults land at the same
-//! virtual times, but the interleaving beneath them differs, so a replay may
-//! pass. Run it a few times before concluding a failure was a fluke.
+//! cost nothing. Blocking work runs on this runtime rather than on threads
+//! (`felix_common::blocking`). Retry jitter, hash keys and ids are drawn from
+//! the seed (`felix_common::jitter`, `felix_common::random`), wall time is
+//! virtual (`felix_common::clock::system_time`), and passes over routing
+//! tables and assignment sets walk in key order (the election walk starts at an
+//! offset drawn from the seed). Built with
+//! `--cfg tokio_unstable`, `select!` is seeded too. Replay is not exact
+//! yet. Known gaps are storage reading the host clock and the control plane's
+//! ids. There is at least one unknown gap: seed 59 diverges by about 2 ms
+//! around 10.5 s.
+//! See `docs/simulation.md`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -128,11 +133,13 @@ pub fn run_seed(seed: u64, config: SimConfig) -> SimOutcome {
 /// Run `seed` with `checkers`, which see the cluster at the points named in
 /// [`crate::check`]. The history checker always runs.
 pub fn run_seed_with(seed: u64, config: SimConfig, checkers: Vec<Box<dyn Checker>>) -> SimOutcome {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .start_paused(true)
-        .build()
-        .expect("build the simulation runtime");
+    let mut builder = tokio::runtime::Builder::new_current_thread();
+    builder.enable_all().start_paused(true);
+    // `select!` picks among ready branches at random. Seeded, it picks the
+    // same way every run; tokio offers the seed only under `tokio_unstable`.
+    #[cfg(tokio_unstable)]
+    builder.rng_seed(tokio::runtime::RngSeed::from_bytes(&seed.to_le_bytes()));
+    let runtime = builder.build().expect("build the simulation runtime");
     runtime.block_on(run(seed, config, checkers))
 }
 

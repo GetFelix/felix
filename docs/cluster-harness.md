@@ -228,6 +228,11 @@ heartbeat stamps as old as the outage. `crash_control_plane` and
 is down. If `run_placement` was running, it runs again after either restart.
 `stop_control_plane` stops it for good.
 
+`start_node_unready` starts a stopped broker and returns at once, without
+waiting for it to be ready, and it works while the control plane is crashed.
+A broker started then waits for the control plane before it opens its
+storage. `await_node_ready` waits for it once the control plane is back.
+
 `pause_control_plane` and `resume_control_plane` freeze the control plane in
 place, the way `SIGSTOP` freezes a process. It runs in the test process, so
 the harness holds every worker thread of its runtime instead of sending a
@@ -762,6 +767,20 @@ cache reads. The campaign has
 a `Fault` type of its own (`history::Fault`): a fault with its target chosen,
 built from this crate's `Fault` values. See
 [the history checker](history-checker.md).
+
+One of its faults, `ElectWithoutControlPlane`, tests leader election among
+replicas. It needs the `replica_election` feature, so only
+`RandomNemesis::election()` picks it, and the campaign then starts brokers
+with election on. The fault waits until the chosen leader's shards have a
+caught-up replica, calls `crash_control_plane`, then `kill_node`s the
+leader. While the control plane stays down, the campaign waits up to 20s for
+another broker to log opening each of those shards at a later generation and
+take a probe. Healing may `start_node_unready` the killed broker first, then
+calls `recover_control_plane` and waits for the broker. The campaign also
+reads every broker's log for the shards each one opened, so the checker can
+fail a run where two brokers opened one shard at the same generation. The
+whole sequence is in "Elections without the control plane" in the history
+checker doc.
 
 ## The conformance suite
 

@@ -3,7 +3,7 @@
 //! Here rather than in the broker service because replication and the
 //! service's shard ownership both key on it.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// What an assignment is an assignment *of*.
 ///
@@ -11,7 +11,9 @@ use serde::Deserialize;
 /// share every other field of the key. A broker that ignored this would file a
 /// cache's shard under the stream of the same name and let one overwrite the
 /// other's ownership.
-#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq, Hash, PartialOrd, Ord,
+)]
 #[serde(rename_all = "camelCase")]
 pub enum ShardKind {
     /// Absent on the wire means this, which is what a control plane that
@@ -22,7 +24,7 @@ pub enum ShardKind {
 }
 
 /// A shard's identity, as the control plane names it in assignments.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ShardKey {
     pub tenant_id: String,
     pub namespace: String,

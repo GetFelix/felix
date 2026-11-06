@@ -11,7 +11,7 @@
 //! per-field state hashes, sets and lists keep, and a sorted on-disk index
 //! could later be built from it.
 
-use std::fs::File;
+use crate::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
@@ -145,13 +145,13 @@ pub(crate) fn write_temporary(
 /// Rename the temporary file over the snapshot. The caller flushes the
 /// directory after.
 pub(crate) fn install(dir: &Path) -> std::io::Result<()> {
-    std::fs::rename(temporary_path(dir), dir.join(FILE_NAME))
+    crate::fs::rename(temporary_path(dir), dir.join(FILE_NAME))
 }
 
 /// Remove the snapshot and any temporary one. Missing files are fine.
 pub(crate) fn remove(dir: &Path) -> std::io::Result<()> {
     for path in [dir.join(FILE_NAME), temporary_path(dir)] {
-        match std::fs::remove_file(&path) {
+        match crate::fs::remove_file(&path) {
             Err(err) if err.kind() != std::io::ErrorKind::NotFound => return Err(err),
             _ => {}
         }

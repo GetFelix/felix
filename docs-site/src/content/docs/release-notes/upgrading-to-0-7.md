@@ -82,6 +82,7 @@ None of these is required. Each default keeps the 0.6.2 behavior, except
 | `FELIX_INTERNAL_ELECTION` | Broker. `true` makes the broker offer replica elections. Every broker needs it before `joint_fence` and `replica_election` can be finalized, and keeps needing it after. See [Turning on failover without the control plane](#turning-on-failover-without-the-control-plane). |
 | `FELIX_SHARD_ELECTION_HOLD_MS`, `FELIX_SHARD_PENDING_SET_TIMEOUT_MS` | Control-plane timers for `replica_election`. Nothing uses them until that feature is finalized. |
 | `FELIX_SHARD_STUCK_LEADER_MS` | Control plane, 70 s by default. A `Quorum` shard whose leader is on a live broker but shows no progress at its generation for this long is named again one generation up, on the same set. In 0.6.2 such a shard stayed stuck until something else changed its assignment. `0` turns it off. See "The control plane's backstop" in `docs/replication-design.md`. |
+| `FELIX_SHARD_SUSPECT_AFTER_MS` | Broker, 120 s by default, used only under `replica_election`. A follower whose copy holds a generation that never started, and that has heard nothing from the shard's leader for this long, may stand for that one shard though the leader's broker is up. `0` turns it off. |
 
 In a cluster, headers are refused until the fleet finalizes `record_headers`,
 whatever `FELIX_RECORD_HEADERS` says.
@@ -101,8 +102,8 @@ stream or store record keys and headers in a cluster. To turn one on, once
 every broker runs the new build:
 
 ```bash
-felix-controlplane admin features finalize head_trim --dry-run
-felix-controlplane admin features finalize head_trim
+felixctl features finalize head_trim --dry-run
+felixctl features finalize head_trim --yes
 ```
 
 Use `record_headers` in place of `head_trim` for headers. The two do not
@@ -185,10 +186,16 @@ Later control-plane changes are on `main`:
   level. Level 27 does the same when the elected leader is the one the
   control plane already names; below it, the same report moves the shard
   past the election at once, and the next report is only a fallback.
+- A leader that answered another candidate's fence, when the control plane
+  never adopted that candidate, reports the candidate's ballot with its refusal, and
+  placement names it again one past that ballot (#1951): migration `0043`,
+  level 28. Below it the leader is named one generation up, as before, each
+  rename waits the same 10 s, and it can take several renames to get past
+  the ballot.
 
-In short, Postgres runs migrations `0037` to `0042` on start (`0039` to
-`0042` are on `main` only), and under Raft these features wait for metadata
-levels 20 to 27. Upgrade every control-plane member before the brokers.
+In short, Postgres runs migrations `0037` to `0043` on start (`0039` to
+`0043` are on `main` only), and under Raft these features wait for metadata
+levels 20 to 28. Upgrade every control-plane member before the brokers.
 
 ## Turning on failover without the control plane
 
@@ -212,8 +219,8 @@ upgrade above:
 5. Finalize `joint_fence`, dry run first:
 
    ```bash
-   felix-controlplane admin features finalize joint_fence --dry-run
-   felix-controlplane admin features finalize joint_fence
+   felixctl features finalize joint_fence --dry-run
+   felixctl features finalize joint_fence --yes
    ```
 
    From here a broker without `FELIX_INTERNAL_ELECTION=true` is refused at

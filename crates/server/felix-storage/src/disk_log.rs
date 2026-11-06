@@ -515,7 +515,7 @@ impl DiskLog {
         let fence = inner.fence_rolls().await?;
         let _flush_guard = inner.durability.lock_flushes().await;
         let operation = Arc::clone(&inner);
-        tokio::task::spawn_blocking(move || {
+        felix_common::blocking::spawn(move || {
             let _fence = fence;
             let mut manifest = operation.manifest.lock();
             let _appends = operation.append_lock.lock();
@@ -562,7 +562,7 @@ impl DiskLog {
         let fence = inner.fence_rolls().await?;
         let _flush_guard = inner.durability.lock_flushes().await;
         let operation = Arc::clone(&inner);
-        tokio::task::spawn_blocking(move || {
+        felix_common::blocking::spawn(move || {
             let _fence = fence;
             let mut manifest = operation.manifest.lock();
             let _appends = operation.append_lock.lock();
@@ -782,7 +782,7 @@ impl DiskLog {
         // a log opened after this returns. Every file change checks it under
         // the lock taken here.
         let inner = Arc::clone(&self.inner);
-        tokio::task::spawn_blocking(move || {
+        felix_common::blocking::spawn(move || {
             let _appends = inner.append_lock.lock();
             inner.segments.write().close();
         })
@@ -803,7 +803,7 @@ impl DiskLog {
         // And under the replica-state writer's lock, so a write behind that
         // found the log open lands before this returns.
         let inner = Arc::clone(&self.inner);
-        tokio::task::spawn_blocking(move || {
+        felix_common::blocking::spawn(move || {
             let _persisted = inner.replica_persisted.lock();
             inner
                 .closed
@@ -1081,7 +1081,7 @@ impl DiskLog {
                 return Err(StorageError::Closed(inner.label.clone()));
             }
             let started = std::time::Instant::now();
-            let (records, tail) = tokio::task::spawn_blocking(move || {
+            let (records, tail) = felix_common::blocking::spawn(move || {
                 loop {
                     // Planned under the lock, read without it: a cold `pread`
                     // must not hold up the appends queued on `segments`.
@@ -1221,7 +1221,7 @@ impl AppendOnlyLog for DiskLog {
             let fence = inner.fence_rolls().await?;
             let _flush_guard = inner.durability.lock_flushes().await;
             let operation = Arc::clone(&inner);
-            tokio::task::spawn_blocking(move || {
+            felix_common::blocking::spawn(move || {
                 let _fence = fence;
                 // Before the append lock: an offload pass takes it before
                 // the segment lock, and so must everything else.
@@ -1247,7 +1247,7 @@ impl AppendOnlyLog for DiskLog {
     fn seal(&self) -> BoxFuture<'_, Result<SealedSegment>> {
         let inner = Arc::clone(&self.inner);
         Box::pin(async move {
-            tokio::task::spawn_blocking(move || {
+            felix_common::blocking::spawn(move || {
                 let _appends = inner.append_lock.lock();
                 let mut segments = inner.segments.write();
                 inner.sync_pending_seal()?;
@@ -1429,7 +1429,7 @@ struct LogInner {
     /// Cleared only after a *successful* seal. A failed one leaves it in place
     /// so every later flush keeps trying to cover those records rather than
     /// quietly reporting them durable.
-    pending_seal: Mutex<Option<Arc<std::fs::File>>>,
+    pending_seal: Mutex<Option<Arc<crate::fs::File>>>,
     /// Where this log's appends run.
     appender: LogThread,
     /// Where this log's device flushes run.
@@ -1728,7 +1728,7 @@ impl LogInner {
 /// Write the replica state if memory is ahead of disk. A write is refused
 /// once the log is closed: its directory may already be another log's.
 async fn persist_replica_state(inner: Arc<LogInner>) -> Result<()> {
-    tokio::task::spawn_blocking(move || {
+    felix_common::blocking::spawn(move || {
         let mut persisted = inner.replica_persisted.lock();
         let state = replica_state::ReplicaState {
             accepted_generation: inner.accepted_generation.load(Ordering::Acquire),

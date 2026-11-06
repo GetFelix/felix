@@ -281,7 +281,7 @@ fn a_partially_written_batch_is_rewound_and_leaves_no_debris() {
         let mut handle = OpenOptions::new().write(true).open(&path).expect("open");
         handle.seek(_SeekFrom::End(0)).expect("seek");
         handle.write_all(&[0xAB; 11]).expect("write debris");
-        handle.sync_all().expect("sync");
+        crate::io::sync_all(&handle).expect("sync");
     }
     assert_eq!(
         std::fs::metadata(dir.path().join(segment_file_name(0)))

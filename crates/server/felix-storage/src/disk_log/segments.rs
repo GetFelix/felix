@@ -500,7 +500,7 @@ pub(super) fn remove_segment_files(dir: &Path, id: SegmentId) -> Result<()> {
         dir.join(segment_file_name(id)),
         dir.join(index_file_name(id)),
     ] {
-        match std::fs::remove_file(&path) {
+        match crate::fs::remove_file(&path) {
             Ok(()) => {}
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
             Err(err) => return Err(StorageError::Io(err)),
@@ -511,7 +511,7 @@ pub(super) fn remove_segment_files(dir: &Path, id: SegmentId) -> Result<()> {
 
 /// CRC-32 of an entire file, streamed in fixed chunks.
 pub(super) fn checksum_file(path: &Path) -> Result<u64> {
-    let file = std::fs::File::open(path)?;
+    let file = crate::fs::File::open(path)?;
     let mut hasher = crc32fast::Hasher::new();
     let mut buf = vec![0u8; 64 * 1024];
     let mut position = 0u64;

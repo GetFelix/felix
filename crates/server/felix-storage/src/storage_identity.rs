@@ -100,7 +100,7 @@ pub fn load_or_create(
     fresh: impl FnOnce() -> [u8; 16],
 ) -> Result<(StorageId, Origin)> {
     let path = path_in(root);
-    let origin = match std::fs::read(&path) {
+    let origin = match crate::fs::read(&path) {
         Ok(bytes) => match StorageId::decode(&bytes) {
             Some(id) => return Ok((id, Origin::Loaded)),
             None => Origin::ReplacedCorrupt,
@@ -126,6 +126,17 @@ pub fn load_or_create(
     Ok((id, origin))
 }
 
+/// The id kept under `root`, read without writing anything: `None` when
+/// there is no file or it does not decode, either of which the next
+/// [`load_or_create`] answers with a new id.
+pub fn load(root: &Path) -> Result<Option<StorageId>> {
+    match std::fs::read(path_in(root)) {
+        Ok(bytes) => Ok(StorageId::decode(&bytes)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(StorageError::Io(err)),
+    }
+}
+
 /// Write `fresh` as the id under `root`, whatever was there. For a directory
 /// whose contents are now an older copy, such as after a restore.
 pub fn replace(root: &Path, fresh: [u8; 16]) -> Result<StorageId> {
@@ -141,11 +152,11 @@ fn store(root: &Path, id: &StorageId) -> Result<()> {
     let path = path_in(root);
     let temporary = path.with_extension("tmp");
     {
-        let mut file = std::fs::File::create(&temporary).map_err(StorageError::Io)?;
+        let mut file = crate::fs::File::create(&temporary).map_err(StorageError::Io)?;
         file.write_all(&id.encode()).map_err(StorageError::Io)?;
         crate::io::sync_all(&file).map_err(StorageError::Io)?;
     }
-    std::fs::rename(&temporary, &path).map_err(StorageError::Io)?;
+    crate::fs::rename(&temporary, &path).map_err(StorageError::Io)?;
     sync_dir(root).map_err(StorageError::Io)?;
     Ok(())
 }

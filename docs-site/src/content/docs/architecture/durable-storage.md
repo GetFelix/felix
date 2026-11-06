@@ -442,9 +442,9 @@ is read rather than at boot. Set `FELIX_DURABLE_VERIFY_ALL_ON_OPEN=true` to trad
 startup time for eager detection.
 
 Recovery plans every repair before it makes any, and
-`felix-broker inspect segments` runs that plan alone: it reports what startup would
+`felixctl data inspect segments` runs that plan alone: it reports what startup would
 do with a data directory, read-only, without a broker, and
-`felix-broker inspect records` decodes the records around one offset the same
+`felixctl data inspect records` decodes the records around one offset the same
 way. See
 [Diagnosing a cluster](/deployment/diagnosing/#a-broker-will-not-start-or-will-not-open-a-shard).
 

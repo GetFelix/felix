@@ -28,7 +28,6 @@
 //! Linux-only server, and the dividend is small. See #547 and #548.
 
 use std::collections::{HashMap, VecDeque};
-use std::fs::File;
 use std::io;
 use std::os::fd::{FromRawFd, OwnedFd};
 use std::os::unix::io::AsRawFd;
@@ -37,6 +36,8 @@ use std::sync::{Arc, OnceLock};
 
 use io_uring::{IoUring, opcode, types};
 use tokio::sync::oneshot;
+
+use crate::fs::File;
 
 /// How many flushes may be outstanding in the ring at once.
 ///
@@ -202,6 +203,8 @@ pub(crate) async fn fsync(file: Arc<File>) -> Option<io::Result<()>> {
     // Checked first so a missing ring falls back before the fault hooks run:
     // the fallback runs them itself.
     ring()?;
+    // A file in memory has no descriptor to give the ring.
+    super::os_file(&file)?;
     #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
     {
         crate::fault::refresh();
@@ -213,7 +216,9 @@ pub(crate) async fn fsync(file: Arc<File>) -> Option<io::Result<()>> {
         }
     }
     #[cfg(any(test, debug_assertions, feature = "fault-injection"))]
-    super::power_loss::observe_file(&file, super::SyncKind::Uring);
+    if let Some(os) = super::os_file(&file) {
+        super::power_loss::observe_file(os, super::SyncKind::Uring);
+    }
     submit(file, Op::Fsync).await
 }
 
@@ -417,7 +422,11 @@ fn push(
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     // `DATASYNC`, matching `io::sync_data` on the blocking path: an append
     // changes data and size, not the metadata a full fsync also writes.
-    let fd = types::Fd(submission.file.as_raw_fd());
+    let fd = types::Fd(
+        super::os_file(&submission.file)
+            .expect("only files with a descriptor are submitted")
+            .as_raw_fd(),
+    );
     let entry = match submission.op {
         Op::Fsync => opcode::Fsync::new(fd)
             .flags(types::FsyncFlags::DATASYNC)

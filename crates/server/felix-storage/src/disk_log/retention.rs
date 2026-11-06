@@ -141,7 +141,7 @@ impl LogInner {
             return offloaded.map(|_| RetentionOutcome::default());
         }
         let inner = Arc::clone(&self);
-        let retained = tokio::task::spawn_blocking(move || -> Result<RetentionOutcome> {
+        let retained = felix_common::blocking::spawn(move || -> Result<RetentionOutcome> {
             let bounds = *inner.retention_bounds.lock();
             let mut outcome = if bounds.is_set() {
                 inner.retain(bounds)?
@@ -299,7 +299,7 @@ impl LogInner {
         before: crate::log::Offset,
     ) -> Result<Vec<crate::log::SegmentDescriptor>> {
         let inner = Arc::clone(&self);
-        tokio::task::spawn_blocking(move || {
+        felix_common::blocking::spawn(move || {
             let manifest = inner.manifest.lock();
             inner.delete_head_before(&manifest, before)
         })

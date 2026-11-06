@@ -212,6 +212,7 @@ async fn a_refused_replication_polls_the_catalog_at_once() -> Result<()> {
         Duration::from_secs(600),
         Some(seeded_tx),
         None,
+        Provisional::default(),
     ));
     seeded_rx.await.expect("seeded");
 
@@ -278,6 +279,7 @@ async fn asked_for_polls_back_off_while_they_bring_nothing() -> Result<()> {
         Duration::from_secs(600),
         Some(seeded_tx),
         None,
+        Provisional::default(),
     ));
     seeded_rx.await.expect("seeded");
     let seeded_at = polls.load(Ordering::SeqCst);

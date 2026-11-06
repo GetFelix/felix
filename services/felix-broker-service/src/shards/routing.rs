@@ -147,7 +147,15 @@ pub struct IngressRouter {
     /// Woken on every new view, for writes held while their shard moves.
     changed: tokio::sync::Notify,
     hold: MoveHold,
+    /// Runs inside [`IngressRouter::publish`] just before the view is stored,
+    /// so a test can land a change between the read and the store. Held while
+    /// the hook runs, so a hook must not call `publish` itself.
+    #[cfg(test)]
+    before_publish: std::sync::Mutex<Option<PublishHook>>,
 }
+
+#[cfg(test)]
+type PublishHook = Box<dyn FnMut(&IngressRouter) + Send>;
 
 /// Routes and the servable set, published as one value.
 ///
@@ -173,6 +181,8 @@ impl IngressRouter {
             fence,
             changed: tokio::sync::Notify::new(),
             hold: MoveHold::disabled(),
+            #[cfg(test)]
+            before_publish: std::sync::Mutex::new(None),
         }
     }
 
@@ -204,6 +214,10 @@ impl IngressRouter {
         servable: ServableShards,
     ) {
         let routes = self.router.publish(table, nodes);
+        #[cfg(test)]
+        if let Some(hook) = self.before_publish.lock().unwrap().as_mut() {
+            hook(self);
+        }
         self.store(View { routes, servable });
     }
 
@@ -395,10 +409,7 @@ impl IngressRouter {
                 }
             }
             let deadline = held.as_ref().map(hold::Held::deadline).expect("held");
-            if tokio::time::timeout_at(deadline.into(), changed)
-                .await
-                .is_err()
-            {
+            if tokio::time::timeout_at(deadline, changed).await.is_err() {
                 if let Some(hold) = held.take() {
                     hold.timed_out();
                 }
@@ -452,10 +463,7 @@ impl IngressRouter {
                 }
             }
             let deadline = held.as_ref().map(hold::Held::deadline).expect("held");
-            if tokio::time::timeout_at(deadline.into(), changed)
-                .await
-                .is_err()
-            {
+            if tokio::time::timeout_at(deadline, changed).await.is_err() {
                 if let Some(hold) = held.take() {
                     hold.timed_out();
                 }
@@ -793,6 +801,9 @@ pub struct FeedState {
     /// Leaderships the replicas elected, laid over the control plane's
     /// assignments. Notifies `assignments_changed` when it changes.
     pub elections: Option<Arc<felix_replication::election::Elections>>,
+    /// Node addresses to route by until the first catalog read lands: those
+    /// a start from the control-plane view kept. Empty otherwise.
+    pub nodes: HashMap<String, felix_router::NodeRef>,
 }
 
 /// What the feed needs to read the node catalog.
@@ -837,8 +848,15 @@ pub fn spawn_feed<L: ControlPlaneLink>(
         joint_fence,
         prefetch,
         elections,
+        nodes,
     } = state;
-    let (refreshed, mut fetched) = tokio::sync::watch::channel(Arc::default());
+    // Seeded with the kept addresses, so a first read that fails still leaves
+    // the feed something to route by.
+    let (refreshed, mut fetched) =
+        tokio::sync::watch::channel(Arc::new(crate::cluster::node_catalog::NodeCatalog {
+            nodes,
+            ..Default::default()
+        }));
     let refresh_now = Arc::new(tokio::sync::Notify::new());
     let reads_catalog = catalog_source.is_some();
     if let Some(source) = catalog_source {
@@ -940,13 +958,15 @@ pub fn spawn_feed<L: ControlPlaneLink>(
 
             // Read after reconcile, so an open that just finished is included:
             // publishing the routes first would advertise this node as the
-            // owner of a shard it has not opened.
-            let servable = lifecycle.lock().await.servable();
-            ingress.publish(
-                routing_table_from(&assignments, &catalog.nodes).with_priors(priors.clone()),
-                &catalog.nodes,
-                servable,
-            );
+            // owner of a shard it has not opened. Held through the publish: a
+            // fence publishes under this lock too, and one finishing between
+            // the read and the publish would be undone until the next pass.
+            let table =
+                routing_table_from(&assignments, &catalog.nodes).with_priors(priors.clone());
+            {
+                let owned = lifecycle.lock().await;
+                ingress.publish(table, &catalog.nodes, owned.servable());
+            }
             published_priors = priors;
             crate::shards::watch::metrics::set_catalog_nodes(catalog.nodes.len());
             // After the publish, so a lease held back for the routes serves
@@ -1067,7 +1087,7 @@ struct EarlyRoutes<'a> {
         HashMap<ShardKey, crate::shards::watch::ShardAssignment>,
         HashMap<felix_router::ShardKey, felix_router::PriorSet>,
     )>,
-    last: Option<std::time::Instant>,
+    last: Option<tokio::time::Instant>,
 }
 
 /// How often a pass republishes while it opens shards. Each publish rebuilds
@@ -1088,7 +1108,7 @@ impl crate::shards::lifecycle::PassProgress for EarlyRoutes<'_> {
         let Some((routes, added_priors)) = &self.assignments else {
             return;
         };
-        self.last = Some(std::time::Instant::now());
+        self.last = Some(tokio::time::Instant::now());
         // Start from what is live, not from the last end-of-pass publish: a
         // fence finishing mid-pass publishes the servable set on its own, and
         // that adds and removes shards. Add every shard now serving at the

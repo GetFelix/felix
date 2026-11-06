@@ -498,7 +498,12 @@ pub(super) async fn apply_pass(
         let mut assignment = assignment.clone();
         pass.name_members(&mut assignment);
         match store
-            .put_shard_assignment_if(assignment, pass.read.get(key).copied(), fence)
+            .put_shard_assignment_at_least(
+                assignment,
+                pass.read.get(key).copied(),
+                fence,
+                step.at_least(),
+            )
             .await
         {
             Ok(AssignmentWrite::Fenced { token }) => {
@@ -888,7 +893,8 @@ async fn load(
 /// Draining, not gone: its shards stay where they are, or move only through a
 /// handoff it takes part in. Promoting a follower sooner is two leaders, and a
 /// deregistration involves no clock at all to stop that on its own. The ids
-/// come back too: a broker that left has stopped, so it is never promoted.
+/// come back too: a broker that left has stopped, so it is never handed a
+/// shard to lead.
 fn fence_departed(
     mut nodes: Vec<Node>,
     liveness: &crate::config::NodeLivenessConfig,

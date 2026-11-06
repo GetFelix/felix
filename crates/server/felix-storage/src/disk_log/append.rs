@@ -318,7 +318,7 @@ impl LogInner {
     /// never queues behind a rollover's flushes.
     async fn roll_in_background(self: Arc<Self>) -> Result<()> {
         let inner = Arc::clone(&self);
-        tokio::task::spawn_blocking(move || {
+        felix_common::blocking::spawn(move || {
             // The plan is copied out under a read lock; the segment is built
             // with no lock at all. Creating it fsyncs its header and its parent
             // directory, so by the time anything can be appended here it is
@@ -392,7 +392,7 @@ impl LogInner {
     /// failure only means later writes allocate their own blocks, which the
     /// write path already handles down to a full disk.
     fn extend_reservation(self: Arc<Self>, extension: Extension) {
-        tokio::task::spawn_blocking(move || {
+        felix_common::blocking::spawn(move || {
             #[cfg(test)]
             {
                 let hold = self.hold_next_extension.lock().take();

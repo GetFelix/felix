@@ -56,6 +56,12 @@ pub const CREDENTIAL_ROTATIONS_TOTAL: &str = "felix_broker_credential_rotations_
 /// a missing series stays unambiguous: it means the broker is not reporting.
 pub const CREDENTIAL_EXPIRES_IN_SECONDS: &str = "felix_broker_credential_expires_in_seconds";
 
+/// Data directories found, once the control plane answered, to be older than
+/// the node's last registration after the broker had started from its
+/// control-plane view. Each is a restore that kept its `storage-id`, and the
+/// broker stopped for it. Anything above zero is worth an alert.
+pub const RESTORED_DIRECTORY_TOTAL: &str = "felix_restored_directory_total";
+
 /// Why a membership call did not succeed.
 pub const KIND_REJECTED: &str = "rejected";
 pub const KIND_UNAVAILABLE: &str = "unavailable";
@@ -86,6 +92,10 @@ pub fn record_fleet_feature(feature: &str, enabled: bool) {
     } else {
         0.0
     });
+}
+
+pub fn record_restored_directory() {
+    metrics::counter!(RESTORED_DIRECTORY_TOTAL).increment(1);
 }
 
 pub fn record_registration(outcome: &'static str) {

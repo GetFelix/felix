@@ -37,8 +37,9 @@ to run out and the control plane to name a new one, as before. So do consumer
 groups: a group on a shard with an elected leader waits until the
 control plane is back (issue #1197).
 
-A shard can elect only while a majority of its copies are running and have not
-restarted since the control plane went down. See [Limits](#limits).
+A shard can elect only while a majority of its copies are running. By
+default a copy that restarted since the control plane went down does not
+count. See [Limits](#limits).
 
 ## What happens when a leader dies
 
@@ -109,8 +110,9 @@ sequenceDiagram
 If two followers stand at once, the ballots decide: a replica gives its ballot
 for a generation to one of them only, so at most one gets a majority. The other
 backs off for 200 to 800 ms (doubling to at most 3 s) and tries again. A
-standing that has not opened within 3 s, and has no fence or catch-up still
-running, is withdrawn, and the next try is at a higher generation.
+standing that has not opened within 3 s of its route being published, and has
+no fence or catch-up still running, is withdrawn, and the next try is at a
+higher generation.
 
 The time to a new leader is the suspicion window, plus one pre-vote round, plus
 300 ms per replica ahead of the winner and a second pre-vote round if it waited,
@@ -128,7 +130,7 @@ naming a leader at the same generation, ballots let only one of them open
 there. If the elected one opened, the control plane moves the shard to it on
 its next report.
 
-Elections start only when followers cannot reach a leader's broker. A shard
+Most elections start because followers cannot reach a leader's broker. A shard
 can also get stuck on a broker that is up: a fence that never finishes, or a
 copy that stopped accepting the leader. When the control plane sees no
 progress from such a leader for `FELIX_SHARD_STUCK_LEADER_MS` (70 s), it
@@ -137,7 +139,9 @@ followers again before it serves, so no acknowledged write is lost. An idle
 shard counts as progressing, a shard that never opened gets twice as long,
 and each control-plane instance renames one shard at most four times an
 hour. When many leaders look stuck at once the fault may not be theirs, so
-they are renamed one a pass.
+they are renamed one a pass. With the control plane down, a follower stands for
+such a shard instead, after a longer bound (see
+[Turning it on](#turning-it-on)).
 
 ## What you see
 
@@ -145,9 +149,9 @@ On the brokers, at `info`:
 
 | Log message | Meaning |
 |---|---|
-| `standing for election: the leader is unreachable and a majority agreed` | This broker won its pre-vote and wrote its ballot. The line has `stream`, `shard`, `generation` and the old `leader`. |
+| `standing for election: the leader is unreachable or stuck and a majority agreed` | This broker won its pre-vote and wrote its ballot. The line has `stream`, `shard`, `generation`, the old `leader`, and `broker_suspected` (`false` when it stood on one stuck shard). |
 | `a majority took the fence; opening the shard for writes` | The shard opened at `generation`. Same line as for any failover. |
-| `the standing did not open in time; withdrawing it` | The shard had not opened 3 s after the ballot, and no fence or catch-up was still running. The broker tries again. |
+| `the standing did not open in time; withdrawing it` | The shard had not opened 3 s after the route naming this broker was published (or `FELIX_ELECTION_DEFER_FOR_MS` after the ballot, if it never was), and no fence or catch-up was still running. The broker tries again. |
 | `not standing for election` | The broker suspects the leader but will not stand. `why` says which rule held it back, for example `the pre-vote found no majority` with the answers it got. Logged once per reason. |
 
 On the control plane, `an elected leader reported; the control plane took its
@@ -168,12 +172,27 @@ Metrics:
 
 ## Limits
 
-**A broker that restarts while the control plane is down cannot vote.** It
-waits for the control plane before it opens its data, so it neither votes nor
-stands. It does not answer pings either, so if it led a shard, its followers
-treat it as down and elect one of themselves. A shard with three copies elects
-only while two of them have kept running since the outage began. Letting a
-restarted broker rejoin is issue #1196.
+**By default, a broker that restarts while the control plane is down cannot
+vote.** It waits for the control plane before it opens its data, so it
+neither votes nor stands. It does not answer pings either, so if it led a
+shard, its followers treat it as down and elect one of themselves. A shard
+with three copies then elects only while two of them have kept running since
+the outage began.
+
+Set
+[`FELIX_START_WITHOUT_CONTROLPLANE=true`](/reference/environment-variables/#felix_start_without_controlplane)
+to let it rejoin. It then starts from what the control plane last told it,
+kept in its data directory, votes, and follows its shards' leaders. Until the
+control plane is back and it registers, it serves no client and does not stand
+for election. It does not answer pings either, so followers of a shard it led
+treat it as down and elect one of themselves. It starts this way only if the
+control plane is down rather than refusing it, and only from the data
+directory the control plane last registered. The switch is off by default
+because a data directory restored from a backup is caught only once the
+control plane answers. Peers learn a broker's address only from the control
+plane, so a broker restarted while it is down votes only if it comes back at
+its registered address. See
+[Starting while the control plane is down](https://github.com/GetFelix/felix/blob/main/docs/control-plane.md#starting-while-the-control-plane-is-down).
 
 **16 generations per outage.** The control plane adopts an election only up to
 16 generations past the last one it wrote for the shard. Each election uses a
@@ -228,10 +247,10 @@ compatibility](/deployment/upgrades/#runbook-rolling-out-a-fleet-feature).
 For each feature, dry-run first:
 
 ```bash
-felix-controlplane admin features finalize joint_fence --dry-run
-felix-controlplane admin features finalize joint_fence
-felix-controlplane admin features finalize replica_election --dry-run
-felix-controlplane admin features finalize replica_election
+felixctl features finalize joint_fence --dry-run
+felixctl features finalize joint_fence --yes
+felixctl features finalize replica_election --dry-run
+felixctl features finalize replica_election --yes
 ```
 
 The dry run says either that the feature can be finalized, or what stops it:
@@ -251,6 +270,32 @@ and replaces a slow leader more often. Keep `FELIX_SHARD_ELECTION_HOLD_MS` on
 the control plane at twice that value. `FELIX_ELECTION_DEFER_FOR_MS` (60 s)
 bounds how long a newly elected leader that never opens holds its followers
 back before one of them may stand again.
+
+A shard can also get stuck on a leader whose broker is alive, for example one
+that keeps fencing after a restart while its copies have promised a newer
+generation elsewhere. Pings get answered, so no follower suspects that broker.
+A follower that has heard nothing from the leader for that shard for
+`FELIX_SHARD_SUSPECT_AFTER_MS` (120 s), and whose copy holds a generation that
+never started, may stand for that one shard. An idle shard is not suspected,
+since its generation started on every copy. The one exception: a copy left
+holding a ballot from a candidate that gave up refuses its leader's batches,
+and standing is how it gets back in, at the cost of one generation. With the control plane up, it
+renames the stuck leader before that bound runs out, so keep the value above
+the control plane's stuck-leader bound, `FELIX_SHARD_STUCK_LEADER_MS` (70 s). Set it to `0` to turn per-shard
+suspicion off.
+
+The same bound covers a leader that won an election just as the control plane
+named someone else at the same generation and then went down. The other
+broker's route names itself, so its copy refuses the elected leader. Once that
+has lasted the bound, the elected leader fences its replica set again one
+generation up, and the refused copy follows it.
+
+It also covers a leader that was elected, then restarted while the control
+plane was down. The restart forgets the election, so the broker goes back to
+the control plane's older route for that shard, and it cannot open there:
+its own copy already promised the newer generation to itself. After the
+bound, it stands for the shard again one generation up, and its followers
+vote for it.
 
 ## How it is checked
 

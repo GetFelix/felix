@@ -4,6 +4,8 @@
 //! depend on each other must agree on it exactly — a type crossing a process
 //! boundary, or a name an operator types.
 //!
+//! - [`blocking`] — tokio's blocking pool, through a seam a simulator can
+//!   keep on its own runtime. Behind the `blocking` feature.
 //! - [`clock`] — the clocks a lease and its expiry are judged on, read
 //!   through one seam so a test can skew them. The broker's lease and the
 //!   control plane's heartbeat stamps are two ends of one comparison.
@@ -21,15 +23,20 @@
 //! - [`tls`] — certificate and key files that are re-read when they change,
 //!   shared by the broker's listeners and the control plane's. Behind the
 //!   `tls` feature.
+//! - [`jitter`] — random retry waits, repeatable under a simulator.
+//! - [`random`] — random ids and hash keys, repeatable under a simulator.
 //! - [`ids`] and [`Error`] — the region id and its parse error.
 //! - [`yaml`] — the rules both services read their config files by. Behind
 //!   the `yaml` feature.
 
+#[cfg(feature = "blocking")]
+pub mod blocking;
 pub mod clock;
 pub mod env_registry;
 mod error;
 pub mod fleet;
 pub mod ids;
+pub mod jitter;
 // Feature-gated so that library consumers which never run a process
 // (felix-router) do not pull in tokio.
 #[cfg(feature = "lifecycle")]
@@ -37,6 +44,7 @@ pub mod lifecycle;
 // Not gated: they are serde types, and the two ends need them whether or not
 // either runs a process.
 pub mod membership;
+pub mod random;
 #[cfg(feature = "tls")]
 pub mod tls;
 // Also under `test`, so `cargo test -p felix-common` runs its tests without

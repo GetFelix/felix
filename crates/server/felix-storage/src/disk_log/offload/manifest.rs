@@ -236,7 +236,7 @@ impl<'a> Reader<'a> {
 /// Read a shard's manifest. Absent reads as empty: nothing was offloaded.
 pub(crate) fn load(dir: &Path) -> Result<Manifest> {
     let path = path_in(dir);
-    match std::fs::read(&path) {
+    match crate::fs::read(&path) {
         Ok(bytes) => Manifest::decode(&bytes).ok_or_else(|| {
             StorageError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -258,11 +258,11 @@ pub(crate) fn store(dir: &Path, manifest: &Manifest) -> Result<()> {
     let path = path_in(dir);
     let temporary = path.with_extension("tmp");
     {
-        let file = std::fs::File::create(&temporary).map_err(StorageError::Io)?;
+        let file = crate::fs::File::create(&temporary).map_err(StorageError::Io)?;
         crate::io::write_all(&file, &manifest.encode()).map_err(StorageError::Io)?;
         crate::io::sync_all(&file).map_err(StorageError::Io)?;
     }
-    std::fs::rename(&temporary, &path).map_err(StorageError::Io)?;
+    crate::fs::rename(&temporary, &path).map_err(StorageError::Io)?;
     sync_dir(dir).map_err(StorageError::Io)?;
     Ok(())
 }

@@ -194,18 +194,29 @@ fn start_run(
     registered: Option<&Registered>,
 ) -> Result<(StorageId, bool, bool)> {
     let begun = begin_run(root, log, registered.map(|r| r.incarnation))?;
+    let replaced = note_replaced(root, begun.id, registered)?;
+    Ok((begun.id, begun.rotated, replaced))
+}
+
+/// Whether the node held copies under a storage id other than `id`: the
+/// control plane's record `registered` names another one, now or at any
+/// earlier start on `root`. Recorded on disk before it returns.
+pub(crate) fn note_replaced(
+    root: &Path,
+    id: StorageId,
+    registered: Option<&Registered>,
+) -> Result<bool> {
     let replaced_now = registered
         .and_then(|r| r.storage_id.as_deref())
-        .is_some_and(|prior| prior != begun.id.to_hex());
+        .is_some_and(|prior| prior != id.to_hex());
     if replaced_now {
         felix_storage::run_state::record_replaced(root)
             .with_context(|| format!("record a replaced storage id under {}", root.display()))?;
     }
-    let replaced = replaced_now
+    Ok(replaced_now
         || felix_storage::run_state::replaced(root).with_context(|| {
             format!("read the replaced-storage marker under {}", root.display())
-        })?;
-    Ok((begun.id, begun.rotated, replaced))
+        })?)
 }
 
 /// The id kept under the durable root, or, without durable storage, a random
@@ -286,7 +297,7 @@ pub(crate) fn rotate_storage_id(root: &Path) -> Result<StorageId> {
 }
 
 fn fresh_storage_id() -> [u8; 16] {
-    uuid::Uuid::new_v4().into_bytes()
+    felix_common::random::uuid_v4().into_bytes()
 }
 
 /// How stream and cache logs treat a retention hold they saved.

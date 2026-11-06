@@ -258,7 +258,7 @@ export FELIX_CONTROLPLANE_URL="https://cp.example.com:8443"
 ```
 
 **Usage**:
-- Also where `felix-controlplane admin` sends its requests, unless `--url` is given (default `http://127.0.0.1:8443`)
+- Also where `felixctl` sends its control-plane commands, unless `--controlplane-url` or a context sets it
 - Include scheme (`http://` or `https://`). Over `http://`, node credentials,
   token exchange and tenant JWKS cross the network in clear text. Use
   `https://` anywhere the network is not trusted.
@@ -267,7 +267,7 @@ export FELIX_CONTROLPLANE_URL="https://cp.example.com:8443"
 
 **Description**: PEM CA bundle trusted, in addition to the system trust store, when
 `FELIX_CONTROLPLANE_URL` is `https://`. Read by brokers and by
-`felix-controlplane admin`.
+`felixctl`.
 
 **Type**: File path
 
@@ -298,6 +298,45 @@ interval.
 export FELIX_CONTROLPLANE_SYNC_INTERVAL_MS="2000"
 export FELIX_CONTROLPLANE_SYNC_INTERVAL_MS="500"   # Fast polling
 export FELIX_CONTROLPLANE_SYNC_INTERVAL_MS="10000" # Slow polling
+```
+
+### `FELIX_START_WITHOUT_CONTROLPLANE`
+
+**Description**: Lets a cluster member with durable storage start while the
+control plane is down, from the control-plane view kept in its data
+directory, so it rejoins its shards' elections during the outage. It votes
+and follows its shards' leaders, but stands for election and serves clients
+only once it registers. Used
+only when the startup lookup found the control plane down (no answer or a
+5xx, never a 401 or another 4xx) and the directory qualifies; otherwise the
+broker waits for the control plane as it does with the switch off. A data
+directory restored without deleting `storage-id` is then caught only once
+the control plane answers. See
+[Starting while the control plane is down](https://github.com/GetFelix/felix/blob/main/docs/control-plane.md#starting-while-the-control-plane-is-down).
+
+**Type**: Boolean (`true`, `1`, `yes` or `on`)
+
+**Default**: `false`
+
+**Example**:
+```bash
+export FELIX_START_WITHOUT_CONTROLPLANE="true"
+```
+
+### `FELIX_CONTROLPLANE_STARTUP_WAIT_MS`
+
+**Description**: How long the startup lookup asks the control plane before a
+broker with `FELIX_START_WITHOUT_CONTROLPLANE` on starts from its view. Each
+attempt gets at least one second. Has no effect with the switch off, where
+the broker asks until the control plane answers.
+
+**Type**: Unsigned integer (milliseconds)
+
+**Default**: `10000`
+
+**Example**:
+```bash
+export FELIX_CONTROLPLANE_STARTUP_WAIT_MS="10000"
 ```
 
 ## Lease Tokens
@@ -2376,6 +2415,7 @@ absent. They are listed in that script rather than here.
 | `FELIX_INTERNAL_ELECTION` | `false` | `true`, with the fence on, makes this broker offer `ELECTION` to its peers, check the replica set a fence or batch carries, and report the `joint_fence` and `replica_election` fleet features; a leader sends set fields only to followers that offered it too. Every broker needs it before either feature can be finalized, and a broker without it is refused at registration once `joint_fence` is. See [Failover without the control plane](/deployment/failover-without-control-plane/). <!-- TODO(0.7.0 release day): opt-in vs default; revisit the name and default here. --> |
 | `FELIX_LEADER_SUSPECT_AFTER_MS` | `5000` | How long a leader of a shard this broker follows may go without answering its pings before the broker names it in its heartbeat. Pinged four times per window. Once a majority of a `Quorum` stream shard's set names its leader, the fleet has finalized `generation_start`, `majority_ack` and `lease_free_reads`, and the leader's own replica report says it serves without the lease, the control plane promotes a follower without waiting for the leader to be marked down (`docs/replication-design.md`, "Failover on the followers' word"). `0` turns the pings off, and with them replica elections. |
 | `FELIX_ELECTION_DEFER_FOR_MS` | `60000` | Under `replica_election`, how long a leader elected by the replicas may go without starting its generation before its followers stop deferring to it: it stops refusing their pre-votes, and a follower that took its fence may stand over it. A fence or catch-up still running after this long may be replaced by a follower's newer generation. At least `1000`; lower values are raised to it. |
+| `FELIX_SHARD_SUSPECT_AFTER_MS` | `120000` | Under `replica_election`, how long a follower may go without a batch or fence from a shard's leader, while its copy holds a generation that has not started, before it may stand for that shard even though the leader's broker answers pings. Idle shards are not suspected unless this copy was left holding a newer ballot from a candidate that gave up. Keep it above the control plane's stuck-leader bound so the control plane renames first while it is up. `0` turns it off; other values below `1000` are raised to it. |
 | `FELIX_INTERNAL_IDLE_TIMEOUT_MS` | `60000` | Idle timeout on a peer connection. |
 | `FELIX_INTERNAL_RECONNECT_BASE_MS` | `50` | First reconnect backoff after losing a peer. |
 | `FELIX_INTERNAL_RECONNECT_MAX_MS` | `5000` | Backoff ceiling. |
@@ -2411,7 +2451,7 @@ absent. They are listed in that script rather than here.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `FELIX_CLIENT_CONFIG` | unset | Path to a client config file. |
-| `FELIX_AUTH_TENANT`, `FELIX_AUTH_TOKEN`, `FELIX_TOKEN` | unset | Credentials a client presents. `FELIX_TOKEN` is also the token `felix-controlplane admin` sends, unless `--token` is given. |
+| `FELIX_AUTH_TENANT`, `FELIX_AUTH_TOKEN`, `FELIX_TOKEN` | unset | Credentials a client presents. |
 | `FELIX_KEEPALIVE_MS` | `2000` | QUIC keep-alive interval. Keep it well under the idle timeout, on both client and broker, or quiet connections are dropped. |
 | `FELIX_MAX_IDLE_TIMEOUT_MS` | `6000` | QUIC idle timeout before a connection is dropped. Also how long a broker that died without closing (killed, unplugged) takes to be noticed, and so how long a publish in flight to it waits before a `Client` retries elsewhere. |
 | `FELIX_EVENT_ROUTER_MAX_PENDING` | `16384` | Events buffered by the client's router before it applies backpressure. |
@@ -2443,3 +2483,5 @@ variable, and the variable overrides the context. See
 | `FELIX_CLIENT_CERT_FILE`, `FELIX_CLIENT_KEY_FILE` | unset | Client certificate and key to present to brokers. |
 | `FELIX_CONTROLPLANE_CA` | platform trust store | PEM bundle an `https://` control plane is checked against, as for brokers. |
 | `FELIX_SERVER_NAME` | the first broker's host name, or `localhost` | TLS server name sent to brokers. |
+| `FELIX_BROKER_BIN` | `felix-broker` on `PATH` | The `felix-broker` binary that `felixctl data inspect` and `felixctl data restore-point` run. `--broker-bin` overrides it. |
+| `FELIX_CONTROLPLANE_BIN` | `felix-controlplane` on `PATH` | The `felix-controlplane` binary that `felixctl controlplane migrate` runs. `--controlplane-bin` overrides it. |

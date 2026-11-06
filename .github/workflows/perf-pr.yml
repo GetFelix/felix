@@ -17,10 +17,20 @@ name: Performance Regression Check
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-    paths-ignore:
-      - "docs/**"
-      - "docs-site/**"
-      - "**/*.md"
+    # Hot-path code only; not a required check, so no skip-and-report job.
+    paths:
+      - "crates/server/**"
+      - "crates/protocol/**"
+      - "crates/sdk/felix-client/**"
+      - "crates/testing/felix-cluster/**"
+      - "crates/testing/felix-loadgen/**"
+      - "services/felix-broker-service/**"
+      - "scripts/perf/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".cargo/config.toml"
+      - "rust-toolchain.toml"
+      - ".github/workflows/perf-pr.yml"
 
 concurrency:
   group: perf-pr-${{ github.event.pull_request.number }}

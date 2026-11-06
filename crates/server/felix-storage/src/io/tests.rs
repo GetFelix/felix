@@ -55,7 +55,14 @@ fn extending_a_reservation_adds_blocks_but_not_length() {
     let dir = tempdir().expect("dir");
     let mut file = File::create(dir.path().join("f")).expect("create");
     file.write_all(b"hi").expect("write");
-    let allocated = |file: &File| file.metadata().expect("meta").blocks() * 512;
+    let allocated = |file: &File| {
+        os_file(file)
+            .expect("on disk")
+            .metadata()
+            .expect("meta")
+            .blocks()
+            * 512
+    };
 
     preallocate(&file, 0, MIB).expect("preallocate");
     let first = allocated(&file);

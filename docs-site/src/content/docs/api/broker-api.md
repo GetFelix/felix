@@ -1165,7 +1165,7 @@ stream, with nothing on disk to back up). All but the last are worth asking
 again shortly. A broker with no cluster leads nothing and answers with empty
 lists.
 
-`felix-controlplane admin backup-point` is what reads this; see
+`felixctl backup-point` is what reads this; see
 [Backup and restore](/deployment/backup-and-restore/).
 
 ## Error Handling

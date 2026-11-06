@@ -726,7 +726,14 @@ impl ReplicaHandler {
         }
         if let Some(stamped) = batch.set_generation
             && let Some(refusal) = self
-                .check_batch_set(correlation_id, &key, &log, stamped, batch.shard.generation)
+                .check_batch_set(
+                    correlation_id,
+                    &key,
+                    &log,
+                    stamped,
+                    batch.shard.generation,
+                    sender,
+                )
                 .await
         {
             return refusal;
@@ -1278,7 +1285,7 @@ impl ReplicaHandler {
             }
         }
         if let Some(refusal) = self
-            .refuse_non_voter_fence(correlation_id, &key, log_kind, &log, &request)
+            .refuse_non_voter_fence(correlation_id, &key, log_kind, &log, &request, sender)
             .await
         {
             return refusal;
@@ -1316,7 +1323,7 @@ impl ReplicaHandler {
         // any other node it is refused below, by the ballot.
         if let Some(election) = &request.election
             && let Some(refusal) =
-                self.check_fence_set(correlation_id, &key, &log, election, generation)
+                self.check_fence_set(correlation_id, &key, &log, election, generation, sender)
         {
             return refusal;
         }
@@ -1327,7 +1334,7 @@ impl ReplicaHandler {
         // After the ballot, as the open expects, and before the answer.
         if let Some(election) = &request.election
             && let Some(refusal) = self
-                .keep_fence_set(correlation_id, &key, &log, election)
+                .keep_fence_set(correlation_id, &key, &log, election, (generation, sender))
                 .await
         {
             return refusal;
@@ -1948,8 +1955,8 @@ impl ReplicaHandler {
         self.joint_gate() == Some(true)
     }
 
-    /// Whether the fleet has `joint_fence`, or `None` while this broker has
-    /// not yet taken a registration's answer. The peer listener is bound
+    /// Whether the fleet has `joint_fence`, or `None` while it is off here and
+    /// this broker has not yet taken a registration's answer. The peer listener is bound
     /// before registration, so the gate can be unread while requests arrive.
     fn joint_gate(&self) -> Option<bool> {
         joint_gate(self.fleet.as_deref())
@@ -2011,7 +2018,7 @@ impl ReplicaHandler {
                     correlation_id,
                     ErrorCode::Unauthorized,
                     0,
-                    "this broker is not a replica of that shard".to_string(),
+                    NOT_A_REPLICA.to_string(),
                 ))
             }
         }
@@ -2163,15 +2170,38 @@ async fn accept_sender(
     sender: Option<&str>,
 ) -> Option<InternalMessage> {
     match log.accept_generation(generation, sender).await {
-        Ok(GenerationCheck::Current | GenerationCheck::Raised) => None,
-        Ok(GenerationCheck::Promised { leader }) => Some(promised_elsewhere(
+        Ok(check) => ballot_refusal(check, correlation_id, key, generation, sender),
+        Err(err) => {
+            metrics::record_replicated(metrics::OUTCOME_ERROR);
+            Some(refused(
+                correlation_id,
+                ErrorCode::StorageFailed,
+                0,
+                err.to_string(),
+            ))
+        }
+    }
+}
+
+/// The refusal a ballot's answer to `sender` at `generation` calls for, if
+/// any.
+fn ballot_refusal(
+    check: GenerationCheck,
+    correlation_id: u64,
+    key: &felix_router::ShardKey,
+    generation: u64,
+    sender: Option<&str>,
+) -> Option<InternalMessage> {
+    match check {
+        GenerationCheck::Current | GenerationCheck::Raised => None,
+        GenerationCheck::Promised { leader } => Some(promised_elsewhere(
             correlation_id,
             key,
             generation,
             &leader,
             sender,
         )),
-        Ok(GenerationCheck::Superseded { accepted }) => {
+        GenerationCheck::Superseded { accepted } => {
             tracing::warn!(
                 stream = %key.stream,
                 shard = key.shard,
@@ -2185,15 +2215,6 @@ async fn accept_sender(
                 ErrorCode::FencedEpoch,
                 0,
                 superseded_detail(accepted, generation),
-            ))
-        }
-        Err(err) => {
-            metrics::record_replicated(metrics::OUTCOME_ERROR);
-            Some(refused(
-                correlation_id,
-                ErrorCode::StorageFailed,
-                0,
-                err.to_string(),
             ))
         }
     }
@@ -2261,6 +2282,22 @@ pub(crate) fn promised_to(detail: &str, generation: u64) -> Option<&str> {
             "this broker accepted generation {generation} from "
         ))
         .filter(|leader| !leader.is_empty())
+}
+
+/// What a replica answers a batch for a shard whose route at that
+/// generation does not name it a follower; [`refuses_leader`] reads it back.
+pub(crate) const NOT_A_REPLICA: &str = "this broker is not a replica of that shard";
+
+/// Whether a follower's refusal of a leader at `generation` says its copy
+/// does not follow that leader there: its route names it outside the set,
+/// as the leader the control plane named, or its ballot holds the
+/// generation for another node.
+pub(crate) fn refuses_leader(code: ErrorCode, detail: &str, generation: u64) -> bool {
+    match code {
+        ErrorCode::Unauthorized => detail == NOT_A_REPLICA,
+        ErrorCode::FencedEpoch => promised_to(detail, generation).is_some(),
+        _ => false,
+    }
 }
 
 /// What a replica answers a sender at `generation` once its ballot holds

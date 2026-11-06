@@ -194,8 +194,10 @@ pub struct ShardReplicaStatus {
     pub elected: Option<ElectedLeadership>,
     /// Set by a leader the control plane names whose open was refused because
     /// it had already promised the generation to another node, or whose
-    /// joint fence cannot learn the set it leaves there. The shard is
-    /// not served and nothing else in the report is measured. Placement
+    /// joint fence cannot learn the set it leaves there, or that is open
+    /// and can no longer acknowledge at its generation. The first report of
+    /// it measures nothing; an open leader repeats it on its later reports
+    /// at that generation, which are measured as usual. Placement
     /// answers by naming the leader again at a generation above the refused
     /// one. Omitted otherwise, and by brokers that predate it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -217,6 +219,15 @@ pub struct RefusedGeneration {
     /// set it leaves at that generation, or because it or a replica of its
     /// set already accepted a newer generation ([`Self::set_unknown`]).
     pub promised_to: String,
+    /// A newer generation the broker's own copy accepted for another node,
+    /// or the newest ballot or routing view its followers refused it for
+    /// (which may be the generation itself, promised to another node).
+    /// Placement names the broker again above it rather than one up, since a
+    /// fence at the ballot's own generation finds that generation promised
+    /// away and waits. 0, and omitted, when there is none, and from brokers
+    /// that predate it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub ballot: u64,
 }
 
 impl RefusedGeneration {
@@ -229,6 +240,17 @@ impl RefusedGeneration {
         Self {
             generation,
             promised_to: String::new(),
+            ballot: 0,
+        }
+    }
+
+    /// [`Self::set_unknown`], lost to `ballot`, a newer generation in the
+    /// broker's own copy that names another node, or the ballot a follower
+    /// fenced this leader for.
+    pub fn above(generation: u64, ballot: u64) -> Self {
+        Self {
+            ballot,
+            ..Self::set_unknown(generation)
         }
     }
 

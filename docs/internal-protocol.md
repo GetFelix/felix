@@ -236,11 +236,35 @@ Responses are matched within the connection they arrive on and nowhere else.
 
 Responses on one stream need not come back in request order. A broker answers
 `ForwardPublish` and `ForwardCacheOp` as each finishes, up to 256 at once per
-stream and `FELIX_INTERNAL_MAX_SERVED_FORWARDS` (4096) across the broker,
-and every other request on that stream in turn. A forward past either limit
-is refused as `Overload` rather than queued, since queueing would stall the
-stream. Requesters have always matched by correlation id alone, so this needs
-no capability bit.
+stream and `FELIX_INTERNAL_MAX_SERVED_FORWARDS` (4096) across the broker.
+A forward past either limit is refused as `Overload` rather than queued, since
+queueing would stall the stream. Record batches (`ReplicateRecords`,
+`ReplicateMarkedRecords` and the records of the group, dead-letter, counter
+and cache logs) are also stored side by side and answered as each finishes,
+up to 16 at once per stream; past that the broker stops reading the stream
+until one finishes. A batch is not refused like a forward, because the leader
+would only send it again. So one stream holds at most 17 batches in memory: 16
+being stored and one read. Across every connection a broker stores at most 256
+batches at once, each about the leader's 1 MiB batch budget plus one record,
+so a follower holds roughly 256 MiB of batches however many peers and streams
+it serves. One peer node, on any of its connections, holds at most 64 of those
+256, so a peer whose stores stall cannot starve the others. A stream that
+finds either limit taken also stops reading. Raising `FELIX_INTERNAL_STREAMS_PER_CONN` or
+`FELIX_INTERNAL_CONNS_PER_PEER` past 64 batches per peer meets the per-peer
+limit. Before its `Hello` a connection has a limit of its own; peers are
+trusted, and the pool always sends `Hello` first. A batch whose handler overruns this broker's peer
+request timeout ends its stream, as an overrun request answered in turn does,
+but only for a requester that offered stream renewal; an older requester's
+stream waits for it. The overrun handler runs on and keeps its place in the
+broker-wide limit until it finishes. Every other request on a stream,
+bootstraps and rebuilds included, is answered in turn. Requesters have always matched by correlation
+id alone, so this needs no capability bit.
+
+Record batches are not answered in turn because a leader ships many shards at
+once over a few streams. Stored one at a time, a batch waited behind every
+batch ahead of it on its stream, so the leader's round trip grew with the
+number of shards it was shipping while each store stayed fast
+([#1968](https://github.com/GetFelix/felix/issues/1968)).
 
 ## Flows
 

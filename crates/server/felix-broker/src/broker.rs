@@ -222,12 +222,12 @@ impl Broker {
             .set_change_observer(Arc::clone(&hub) as Arc<dyn felix_storage::CacheObserver>)
             .then_some(hub);
         Self {
-            topics: RwLock::new(HashMap::with_hasher(RandomState::new())),
-            streams: RwLock::new(HashMap::with_hasher(RandomState::new())),
+            topics: RwLock::new(HashMap::with_hasher(felix_common::random::hash_state())),
+            streams: RwLock::new(HashMap::with_hasher(felix_common::random::hash_state())),
             mounts: Default::default(),
-            caches: RwLock::new(HashMap::with_hasher(RandomState::new())),
-            tenants: RwLock::new(HashMap::with_hasher(RandomState::new())),
-            namespaces: RwLock::new(HashMap::with_hasher(RandomState::new())),
+            caches: RwLock::new(HashMap::with_hasher(felix_common::random::hash_state())),
+            tenants: RwLock::new(HashMap::with_hasher(felix_common::random::hash_state())),
+            namespaces: RwLock::new(HashMap::with_hasher(felix_common::random::hash_state())),
             cache,
             topic_capacity: DEFAULT_TOPIC_CAPACITY,
             log_capacity: DEFAULT_LOG_CAPACITY,
@@ -255,7 +255,7 @@ impl Broker {
             headers_marked: std::sync::atomic::AtomicBool::new(false),
             headers_marking: tokio::sync::Mutex::new(()),
             trim_wait: crate::broker::trim::TRIM_WAIT,
-            producer_ids: ahash::RandomState::new(),
+            producer_ids: felix_common::random::hash_state(),
             producer_id_counter: std::sync::atomic::AtomicU64::new(0),
             record_publishers: std::sync::OnceLock::new(),
             record_headers: std::sync::OnceLock::new(),
@@ -475,7 +475,7 @@ impl Broker {
             return Ok(());
         }
         let root = storage.root().to_path_buf();
-        tokio::task::spawn_blocking(move || felix_storage::run_state::record_head_trimmed(&root))
+        felix_common::blocking::spawn(move || felix_storage::run_state::record_head_trimmed(&root))
             .await
             .map_err(|err| BrokerError::Storage(format!("record the head-trim marker: {err}")))?
             .map_err(|err| BrokerError::Storage(format!("record the head-trim marker: {err}")))?;
@@ -525,14 +525,12 @@ impl Broker {
             return Ok(());
         }
         let root = storage.root().to_path_buf();
-        tokio::task::spawn_blocking(move || felix_storage::run_state::record_headers_stored(&root))
-            .await
-            .map_err(|err| {
-                BrokerError::Storage(format!("record the record-headers marker: {err}"))
-            })?
-            .map_err(|err| {
-                BrokerError::Storage(format!("record the record-headers marker: {err}"))
-            })?;
+        felix_common::blocking::spawn(move || {
+            felix_storage::run_state::record_headers_stored(&root)
+        })
+        .await
+        .map_err(|err| BrokerError::Storage(format!("record the record-headers marker: {err}")))?
+        .map_err(|err| BrokerError::Storage(format!("record the record-headers marker: {err}")))?;
         self.headers_marked.store(true, Ordering::Release);
         Ok(())
     }

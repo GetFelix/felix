@@ -15,7 +15,7 @@ pub struct RegionId(Uuid);
 impl RegionId {
     /// A new random id.
     pub fn new() -> Self {
-        Self(Uuid::new_v4())
+        Self(crate::random::uuid_v4())
     }
 
     /// Wrap an existing UUID, e.g. one decoded from storage.

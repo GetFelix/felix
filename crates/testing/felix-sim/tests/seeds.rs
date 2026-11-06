@@ -14,12 +14,13 @@
 //! | `FELIX_SIM_SEED` | the seed `replay` runs | unset: `replay` is skipped |
 //! | `FELIX_SIM_SEEDS` | how many seeds `seeds` runs | 4 |
 //! | `FELIX_SIM_SEED_START` | the first seed `seeds` runs | 1 |
+//! | `FELIX_SIM_HISTORY` | a file `replay` writes the run's history to, for diffing two runs | unset |
 //! | `RUST_LOG` | broker and harness logs | none |
 //!
 //! A run is repeatable to the extent described in `felix_sim::run`: the same
 //! seed injects the same faults at the same virtual times, but the brokers'
-//! own interleaving can differ, so a failure may take more than one replay to
-//! show again.
+//! own interleaving can still differ (hash map order), so a failure may take
+//! more than one replay to show again.
 //!
 //! A seed that exposed a bug is pinned below with `#[ignore = "#<issue>"]`,
 //! and runs with `cargo test -p felix-sim --test seeds -- --ignored`.
@@ -47,6 +48,10 @@ fn env_u64(name: &str) -> Option<u64> {
 fn check(seed: u64) -> SimOutcome {
     log();
     let outcome = run_seed(seed, SimConfig::for_seed(seed));
+    if let Ok(path) = std::env::var("FELIX_SIM_HISTORY") {
+        std::fs::write(&path, format!("{:#?}\n", outcome.history))
+            .unwrap_or_else(|err| panic!("write the history to {path}: {err}"));
+    }
     println!("{outcome}");
     assert!(
         outcome.passed(),
