@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793996226596,
+  "lastUpdate": 1794000578246,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -47736,6 +47736,58 @@ window.BENCHMARK_DATA = {
             "range": "21984.33",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1716680.61\nmean: 1714958.20\nstdev: 21984.33\ncv: 1.28%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "fb4a0a21659a805af3b62e67f6d899168d08c40d",
+          "message": "fix(replication): ack a wait at a newer generation only if the log still holds the write (#2048) (#2051)\n\nA write is acknowledged only if the records it appended are still in the leader's log under the generation they were written at (#2048). A publish, cache or counter wait that ends in a newer generation now checks the log's generation history for its offsets and answers leadership lost if catch-up dropped or replaced them, including after a catch-up from a peer that sends no labels. Cache writes waiting for a replicated quorum read their start offset inside the fence. RF3 A/B: no regression (64 KiB burst rerun n=60, p50 +3.3% p=0.90). Spec: FelixShardFigure8AckWait passes; ...ByOffset violates AckedHeldByLeader.",
+          "timestamp": "2026-11-06T12:55:46-08:00",
+          "tree_id": "a4c43104c918b6071d9e7c4a1794119aa7f441c1",
+          "url": "https://github.com/GetFelix/felix/commit/fb4a0a21659a805af3b62e67f6d899168d08c40d"
+        },
+        "date": 1794000577672,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 424129.06,
+            "range": "15090.95",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 424129.06\nmean: 419335.99\nstdev: 15090.95\ncv: 3.60%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 424129.06,
+            "range": "15090.95",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 424129.06\nmean: 419335.99\nstdev: 15090.95\ncv: 3.60%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 97264.92,
+            "range": "5621.16",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 97264.92\nmean: 95135.60\nstdev: 5621.16\ncv: 5.91%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 972649.2,
+            "range": "56211.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 972649.20\nmean: 951355.97\nstdev: 56211.59\ncv: 5.91%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
