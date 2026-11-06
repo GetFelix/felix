@@ -140,20 +140,17 @@ async fn opening_after_a_fence_without_a_start_record_rebuilds_the_state() {
     assert_eq!(version(&broker).await, Some(1));
 }
 
-/// **A release stuck fanning out does not stall a promotion, and the shard
-/// does not serve before it ends.** Under `Block` a released batch waits on a
-/// full subscriber for as long as it stays full. The gate gives up on leading
-/// again after a short wait, keeps the shard closed, and opens it on a later
-/// pass once the fanout is through.
-#[tokio::test]
-async fn a_stuck_release_keeps_the_shard_closed_without_stalling_the_promotion() {
-    let dir = tempfile::tempdir().expect("tempdir");
+/// A `Quorum` stream under `Block` whose release took its held batches and
+/// is stuck fanning them out to `slow`, a full subscriber nobody drains.
+async fn stuck_release(
+    dir: &std::path::Path,
+) -> (Arc<felix_broker::Broker>, felix_broker::Subscription) {
     let config = LogConfig {
         fsync_mode: FsyncMode::OnCommit,
         preallocate_segments: false,
         ..LogConfig::default()
     };
-    let storage = felix_broker::DurableStorage::open(dir.path(), config).expect("storage");
+    let storage = felix_broker::DurableStorage::open(dir, config).expect("storage");
     let broker = Arc::new(
         felix_broker::Broker::new(felix_storage::EphemeralCache::new().into())
             .with_topic_capacity(1)
@@ -201,6 +198,18 @@ async fn a_stuck_release_keeps_the_shard_closed_without_stalling_the_promotion()
         0,
         "the release took the batches"
     );
+    (broker, slow)
+}
+
+/// **A release stuck fanning out does not stall a promotion, and the shard
+/// does not serve before it ends.** Under `Block` a released batch waits on a
+/// full subscriber for as long as it stays full. The gate gives up on leading
+/// again after a short wait, keeps the shard closed, and opens it on a later
+/// pass once the fanout is through.
+#[tokio::test]
+async fn a_stuck_release_keeps_the_shard_closed_without_stalling_the_promotion() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (broker, slow) = stuck_release(dir.path()).await;
 
     let mut own = lifecycle();
     own.fence_promotions();
@@ -235,4 +244,35 @@ async fn a_stuck_release_keeps_the_shard_closed_without_stalling_the_promotion()
 
     drop(slow);
     assert!(gate.open(&key(0), 3).await, "the shard stayed closed");
+}
+
+/// **Opened as leader without a fence, a stuck release leaves the shard
+/// opening, not failed.** A failed open is final for its assignment, and a
+/// slow subscriber is not a reason to give the shard up. A later pass opens
+/// it once the fanout is through.
+#[tokio::test]
+async fn a_stuck_release_leaves_an_unfenced_open_to_a_later_pass() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (broker, slow) = stuck_release(dir.path()).await;
+    let store =
+        DurableShardStore::new(Arc::new(broker.durable_storage().expect("storage").clone()))
+            .with_generation_starts(GenerationStarts {
+                broker: Arc::clone(&broker),
+                fleet: no_start_records(),
+            });
+    let own = tokio::sync::Mutex::new(lifecycle());
+    let assignments: HashMap<ShardKey, ShardAssignment> =
+        [(key(0), assigned_to("broker-a", 3))].into_iter().collect();
+
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        reconcile(&own, &store, &assignments),
+    )
+    .await
+    .expect("the pass stalled on the release");
+    assert_eq!(own.lock().await.phase(&key(0)), Phase::Opening);
+
+    drop(slow);
+    reconcile(&own, &store, &assignments).await;
+    assert_eq!(own.lock().await.phase(&key(0)), Phase::Active);
 }

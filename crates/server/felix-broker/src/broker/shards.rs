@@ -21,7 +21,7 @@ const HYDRATE_MAX_BYTES: usize = 64 * 1024 * 1024;
 
 /// How long [`Broker::lead_from_tail`] waits for a discarded hold's release
 /// task to end. Without a stuck fanout that takes one scheduling turn; the
-/// promotion that calls it retries on its next pass.
+/// callers retry on a later pass.
 const RELEASE_SETTLE_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// A record's payload and headers block, the bytes the replay ring holds for it.
