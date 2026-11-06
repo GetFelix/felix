@@ -336,6 +336,11 @@ expectations=(
   "FelixShardCpLiveNoOverlayRefused violates liveness"
   "FelixShardCpLiveNoHaltReported violates liveness"
   "FelixShardCpLiveNoAboveReported violates liveness"
+  "FelixShardCpLiveRefusalsCopyExcluded violates liveness"
+  "FelixShardCpLiveRefusalsPinsForever violates liveness"
+  "FelixShardElectRefusals pass"
+  "FelixShardElectRefusalsPinsCleared violates AckedHeldByLeader"
+  "FelixShardElectRenameMinorityDrop violates OneLeaderPerGeneration"
   "FelixShardCpDownNoSelfSuspicion violates liveness"
   "FelixShardCpDownBrokerSuspicion violates liveness"
   "FelixShardCpDownDegraded violates liveness"
@@ -469,6 +474,8 @@ fi
 # FelixShardCpLive and FelixShardCpLiveNoStandBehindBallot, which run past a
 # pull request's hour, and FelixShardElectAdoptAboveKeptSetReissued, which
 # had not finished after seven minutes and 3.9M distinct states on a laptop.
+# FelixShardCpLiveRefusals does not finish on a laptop either, and its twin
+# FelixShardCpLiveRefusalsUnknownNoBallot has found no violation yet.
 # FelixShardElectSwap is not registered: it does not finish in one run, so
 # it is checked in pieces split at the cut-over. The eleven that take under 45
 # minutes are registered above; FelixShardElectSwapKeep0, the four
@@ -636,6 +643,9 @@ weights=(
   "FelixShardCpLiveNoOverlayRefused 6"
   "FelixShardCpLiveNoHaltReported 5"
   "FelixShardCpLiveNoAboveReported 6"
+  "FelixShardCpLiveRefusalsCopyExcluded 2"
+  "FelixShardCpLiveRefusalsPinsForever 2"
+  "FelixShardElectRefusals 3"
   "FelixShardCpDownNoSelfSuspicion 15"
 )
 
