@@ -21,6 +21,14 @@ The nemesis (`src/nemesis.rs`, `Fault`) draws these from the seed:
 - `PausedThenCrash`: the control plane pauses, then a broker that leads shards
   crashes.
 
+Clock skew is a separate schedule, off by default. With
+`FELIX_SIM_CLOCKS=bounded`, each broker and the control plane gets its own
+lease clock (0.8x to 1.2x true speed) and wall clock (within 1 second), and the
+nemesis steps or re-skews one every few seconds. `unbounded` goes past those
+bounds (0.25x to 4x, 30 seconds) to show what breaks there. Skew needs the
+`tokio_unstable` build, so use it through `task sim:replay`. See "Clock skew"
+in `docs/simulation.md`.
+
 ## Checks
 
 A seed fails when any check reports a problem, except a warning.
@@ -56,6 +64,12 @@ Run a batch of seeds. `FELIX_SIM_SEEDS` is how many (default 4) and
 ```bash
 FELIX_SIM_SEED_START=100 FELIX_SIM_SEEDS=10 \
   cargo test -p felix-sim --test seeds -- --ignored --exact seeds --nocapture
+```
+
+Run one seed with skewed clocks:
+
+```bash
+FELIX_SIM_SEED=<n> FELIX_SIM_CLOCKS=bounded task sim:replay
 ```
 
 A failing seed prints the command that replays it. `FELIX_SIM_HISTORY=<file>`

@@ -6,7 +6,7 @@ use tokio::time::Instant;
 use super::*;
 
 async fn control_plane() -> SimControlPlane {
-    crate::clock::install();
+    crate::clock::install(crate::clock::Clocks::default());
     SimControlPlane::new(CpConfig::default()).await.unwrap()
 }
 

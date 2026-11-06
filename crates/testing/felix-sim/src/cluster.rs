@@ -56,7 +56,9 @@ use tokio_util::sync::CancellationToken;
 pub use self::census::{Census, NodeView};
 use self::kills::KillLog;
 use self::node::Node;
+use crate::clock::{self, Owner};
 use crate::controlplane::{CpConfig, SimControlPlane};
+use crate::nemesis::clocks::{ClockPlan, ClockSkew};
 use crate::net::{Link, SimNet};
 
 /// The tenant, namespace, stream and cache every run uses.
@@ -98,6 +100,10 @@ pub struct SimConfig {
     /// for what a restart does to the storage id under it.
     pub fsync_mode: FsyncMode,
     pub controlplane: CpConfig,
+    /// Whether each node's clocks are skewed, and how far
+    /// ([`crate::nemesis::clocks`]). Anything but `Off` needs a build with
+    /// `--cfg tokio_unstable`.
+    pub clocks: ClockSkew,
 }
 
 impl SimConfig {
@@ -118,6 +124,7 @@ impl SimConfig {
             real_time_limit: Duration::from_secs(480),
             fsync_mode: FsyncMode::None,
             controlplane: CpConfig::default(),
+            clocks: ClockSkew::Off,
         }
     }
 }
@@ -167,10 +174,15 @@ impl SimCluster {
     /// Installs the virtual lease clock for this thread, so call it on the
     /// runtime the run will use.
     pub async fn start(seed: u64, config: SimConfig) -> Result<Arc<Self>> {
-        crate::clock::install();
+        let clocks = ClockPlan::generate(seed, config.clocks, config.brokers, config.fault_window);
+        clock::install(clocks.initial);
         // Election backoff draws its jitter on this thread.
         felix_common::jitter::sim::seed(seed);
-        let cp = SimControlPlane::new(config.controlplane.clone()).await?;
+        let cp = clock::on(
+            Owner::ControlPlane,
+            SimControlPlane::new(config.controlplane.clone()),
+        )
+        .await?;
         let net = SimNet::new(PeerTransportConfig::default(), seed);
         let nodes = (0..config.brokers)
             .map(|index| Node::new(index, &config))
@@ -240,19 +252,21 @@ impl SimCluster {
     /// for one. A paused or down control plane is not stepped.
     fn spawn_controlplane_driver(&self) {
         let cp = self.cp.clone();
-        tokio::spawn(async move {
-            let config = cp.config().clone();
-            let mut sweep = tokio::time::interval(config.sweep_interval());
-            let mut reconcile = tokio::time::interval(config.reconcile_interval());
-            sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            reconcile.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            loop {
-                tokio::select! {
-                    _ = sweep.tick() => { cp.sweep().await; }
-                    _ = reconcile.tick() => { cp.reconcile().await; }
-                    () = cp.pass_requested() => { cp.reconcile().await; }
+        clock::as_owner(Owner::ControlPlane, || {
+            tokio::spawn(async move {
+                let config = cp.config().clone();
+                let mut sweep = tokio::time::interval(config.sweep_interval());
+                let mut reconcile = tokio::time::interval(config.reconcile_interval());
+                sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                reconcile.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    tokio::select! {
+                        _ = sweep.tick() => { cp.sweep().await; }
+                        _ = reconcile.tick() => { cp.reconcile().await; }
+                        () = cp.pass_requested() => { cp.reconcile().await; }
+                    }
                 }
-            }
+            })
         });
     }
 

@@ -15,6 +15,7 @@
 //! | `FELIX_SIM_SEEDS` | how many seeds `seeds` and `each_seed_runs_the_same_twice` run | 4 |
 //! | `FELIX_SIM_SEED_START` | the first seed they run | 1 |
 //! | `FELIX_SIM_HISTORY` | a file `replay` writes the run's trace to, for diffing two runs | unset |
+//! | `FELIX_SIM_CLOCKS` | clock skew for `replay`, `seeds` and `each_seed_runs_the_same_twice`: `off`, `bounded` or `unbounded`; anything but `off` needs `--cfg tokio_unstable` | `off` |
 //! | `RUST_LOG` | broker and harness logs | none |
 //!
 //! Built with `RUSTFLAGS="--cfg tokio_unstable"`, as `task sim:replay` does,
@@ -33,6 +34,7 @@
 //! runs with `cargo test -p felix-sim --test seeds -- --ignored`.
 
 use felix_sim::cluster::SimConfig;
+use felix_sim::nemesis::clocks::ClockSkew;
 use felix_sim::run::{SimOutcome, first_difference, run_seed};
 
 fn log() {
@@ -66,6 +68,20 @@ fn env_u64(name: &str) -> Option<u64> {
     )
 }
 
+/// `seed`'s config, with the clock skew `FELIX_SIM_CLOCKS` asks for.
+fn config(seed: u64) -> SimConfig {
+    let clocks = match std::env::var("FELIX_SIM_CLOCKS") {
+        Ok(value) => ClockSkew::parse(&value).unwrap_or_else(|| {
+            panic!("FELIX_SIM_CLOCKS must be off, bounded or unbounded, got {value:?}")
+        }),
+        Err(_) => ClockSkew::Off,
+    };
+    SimConfig {
+        clocks,
+        ..SimConfig::for_seed(seed)
+    }
+}
+
 /// Run `seed` and panic with its outcome and replay command if it failed.
 fn check(seed: u64) -> SimOutcome {
     let history = std::env::var("FELIX_SIM_HISTORY").ok();
@@ -80,7 +96,7 @@ fn check(seed: u64) -> SimOutcome {
         );
     }
     log();
-    let outcome = run_seed(seed, SimConfig::for_seed(seed));
+    let outcome = run_seed(seed, config(seed));
     if let Some(path) = history {
         std::fs::write(&path, outcome.trace().join("\n") + "\n")
             .unwrap_or_else(|err| panic!("write the history to {path}: {err}"));
@@ -118,8 +134,8 @@ fn each_seed_runs_the_same_twice() {
     let mut differed = Vec::new();
     for seed in start..start + count {
         log();
-        let first = run_seed(seed, SimConfig::for_seed(seed));
-        let second = run_seed(seed, SimConfig::for_seed(seed));
+        let first = run_seed(seed, config(seed));
+        let second = run_seed(seed, config(seed));
         match first_difference(&first.trace(), &second.trace()) {
             Some(difference) => differed.push(format!("seed {seed}: {difference}")),
             None => println!("seed {seed}: the same twice, passed: {}", first.passed()),
@@ -133,6 +149,30 @@ fn each_seed_runs_the_same_twice() {
     );
 }
 
+/// Skewed clocks are drawn from the seed and stepped at fixed virtual
+/// times, so a skewed seed is as repeatable as any other.
+#[test]
+#[cfg_attr(
+    not(tokio_unstable),
+    ignore = "needs RUSTFLAGS=\"--cfg tokio_unstable\" for a seeded select! and the task hooks"
+)]
+fn a_skewed_seed_runs_the_same_twice() {
+    log();
+    let skewed = || SimConfig {
+        clocks: ClockSkew::Bounded,
+        ..SimConfig::for_seed(2)
+    };
+    let first = run_seed(2, skewed());
+    let second = run_seed(2, skewed());
+    assert!(
+        first.trace().iter().any(|line| line.contains("clock:")),
+        "the trace names no clock change:\n{first}"
+    );
+    if let Some(difference) = first_difference(&first.trace(), &second.trace()) {
+        panic!("seed 2 with skewed clocks ran differently the second time: {difference}");
+    }
+}
+
 #[test]
 #[ignore = "known liveness stalls (#2024, #2032, #2033); runs in the non-blocking sim-seeds CI job"]
 fn seeds() {
@@ -141,7 +181,7 @@ fn seeds() {
     let mut failed = Vec::new();
     for seed in start..start + count {
         log();
-        let outcome = run_seed(seed, SimConfig::for_seed(seed));
+        let outcome = run_seed(seed, config(seed));
         println!("{outcome}");
         if !outcome.passed() {
             failed.push(outcome.replay_command());
