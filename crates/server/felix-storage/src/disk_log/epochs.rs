@@ -42,6 +42,10 @@ const MAX_ENTRIES: usize = 512;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct EpochMap {
     entries: Vec<Epoch>,
+    /// Offset ranges, end exclusive, whose records arrived after a cut with
+    /// no label: the entry before the cut would claim them. In memory only;
+    /// what reads it is a wait that ends with the process anyway.
+    unknown: Vec<(Offset, Offset)>,
 }
 
 impl EpochMap {
@@ -74,6 +78,8 @@ impl EpochMap {
             generation,
             start_offset,
         });
+        // Everything from here on is `generation`'s.
+        self.forget_unknown_from(start_offset);
         if self.entries.len() > MAX_ENTRIES {
             let excess = self.entries.len() - MAX_ENTRIES;
             self.entries.drain(..excess);
@@ -121,6 +127,29 @@ impl EpochMap {
     /// describes and point at offsets the log no longer has.
     pub(super) fn truncate_from(&mut self, offset: Offset) {
         self.entries.retain(|epoch| epoch.start_offset < offset);
+        self.forget_unknown_from(offset);
+    }
+
+    /// Note that records were cut from `offset`. Whatever lands there next
+    /// is unlabelled until a generation is recorded or labelled over it.
+    pub(super) fn cut_at(&mut self, offset: Offset) {
+        self.truncate_from(offset);
+        self.unknown.push((offset, Offset::MAX));
+    }
+
+    /// Whether every record in `first..=last` has a known label.
+    pub(super) fn labelled(&self, first: Offset, last: Offset) -> bool {
+        !self
+            .unknown
+            .iter()
+            .any(|&(start, end)| start <= last && end > first)
+    }
+
+    fn forget_unknown_from(&mut self, offset: Offset) {
+        for range in &mut self.unknown {
+            range.1 = range.1.min(offset);
+        }
+        self.unknown.retain(|&(start, end)| start < end);
     }
 
     pub(super) fn encode(&self) -> Vec<u8> {
@@ -162,7 +191,10 @@ impl EpochMap {
                 start_offset: u64::from_be_bytes(chunk[8..16].try_into().expect("8 bytes")),
             })
             .collect();
-        Some(Self { entries })
+        Some(Self {
+            entries,
+            unknown: Vec::new(),
+        })
     }
 }
 

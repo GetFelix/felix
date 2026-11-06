@@ -67,3 +67,20 @@ fn plans_cover_every_kind_of_fault() {
     assert_eq!(seen.len(), 9, "{seen:?}");
     assert!(!seen.contains("cp-other"));
 }
+
+#[test]
+fn plans_hold_both_kills_and_clean_crashes() {
+    let (mut kills, mut clean) = (0, 0);
+    for seed in 0..40 {
+        for step in Plan::generate(seed, 4, WINDOW).steps {
+            if let Fault::Crash { kill, .. } | Fault::PausedThenCrash { kill, .. } = step.fault {
+                if kill {
+                    kills += 1;
+                } else {
+                    clean += 1;
+                }
+            }
+        }
+    }
+    assert!(kills > 0 && clean > 0, "kills {kills}, clean {clean}");
+}
