@@ -335,6 +335,7 @@ expectations=(
   "FelixShardElectLiveUncleanOwnBallot violates liveness"
   "FelixShardElectLiveUncleanLed pass"
   "FelixShardElectUnclean pass"
+  "FelixShardElectUncleanNoStartRecord pass"
   "FelixShardElectUncleanVouchOnShip violates AckedHeldByLeader"
   "FelixShardElectUncleanForgetsLed violates AckedHeldByLeader"
   "FelixShardCpLiveMain violates liveness"
@@ -513,6 +514,7 @@ fi
 # `--plan-heavy`: give a new heavy one its weight.
 weights=(
   "FelixShardElectUnclean 12"
+  "FelixShardElectUncleanNoStartRecord 12"
   "FelixShardElectUncleanVouchOnShip 2"
   "FelixShardElectLiveUncleanLed 2"
   "FelixShardFencedAckMoveShort 31"

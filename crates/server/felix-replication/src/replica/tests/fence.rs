@@ -2126,6 +2126,27 @@ impl crate::peer::PeerRequester for FirstContact {
 /// doubted and refuse every fence.
 #[tokio::test]
 async fn a_first_contact_batch_vouches_for_the_copy_on_an_idle_shard() {
+    let (tail, vouched) = ship_to_a_crashed_leaders_copy(true).await;
+    assert_eq!(tail, 2, "shipped");
+    assert!(vouched, "vouched on first contact");
+}
+
+/// **A leader that writes no start record still vouches for the copy**, as
+/// on a fleet that has not finalized `generation_start`. It opened after
+/// fencing a majority, so a copy level with it up to where its generation
+/// starts holds every acknowledged record, whether or not a record of that
+/// generation follows.
+#[tokio::test]
+async fn a_leader_without_a_start_record_vouches_for_the_copy_on_an_idle_shard() {
+    let (tail, vouched) = ship_to_a_crashed_leaders_copy(false).await;
+    assert_eq!(tail, 1, "nothing past where generation 6 starts");
+    assert!(vouched, "vouched without a record of generation 6");
+}
+
+/// A leader at 6 ships to the copy a crashed leader at 5 kept, until there
+/// is nothing more to ship. Returns the copy's tail and whether it was
+/// vouched for.
+async fn ship_to_a_crashed_leaders_copy(start_record: bool) -> (u64, bool) {
     let follower_dir = tempfile::tempdir().expect("tempdir");
     led_before_a_crash(follower_dir.path()).await;
     let follower = broker_on(follower_dir.path());
@@ -2153,13 +2174,14 @@ async fn a_first_contact_batch_vouches_for_the_copy_on_an_idle_shard() {
         .await
         .expect("lead");
     leader_log.record_generation(6, 1).expect("record");
-    leader_log.append_generation_start(6).await.expect("start");
+    if start_record {
+        leader_log.append_generation_start(6).await.expect("start");
+    }
 
     let mut shard = batch(6, 0, &[]).shard;
     shard.generation = 6;
     let mut cursor =
         crate::follower::FollowerCursor::new(LOCAL, "10.0.0.4:7002".parse().expect("addr"), 0);
-    // One batch, accepted, then nothing more to ship.
     for _ in 0..4 {
         crate::ship::ship_once(
             &requester,
@@ -2177,9 +2199,9 @@ async fn a_first_contact_batch_vouches_for_the_copy_on_an_idle_shard() {
         .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
         .await
         .expect("log");
-    assert_eq!(log.tail_offset().await.expect("tail"), 2, "shipped");
-    assert!(
+    let tail = log.tail_offset().await.expect("tail");
+    (
+        tail,
         !start.unvouched(&crate::driver::watch_key(&key()), &log, 7),
-        "vouched on first contact"
-    );
+    )
 }

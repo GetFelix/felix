@@ -983,23 +983,23 @@ impl ReplicaHandler {
                         "stored a replicated batch but could not record its generation",
                     );
                 }
-                // Only once the copy holds a record of this leader's
-                // generation, written after everything it held (#2029). After
-                // the labels: they say which generation wrote each record.
-                // Only the batch's own labels count: an unlabelled batch
-                // labels whatever it carried, inherited records too, with
-                // the sender's generation.
-                let names_own = batch.generations.as_deref().is_some_and(|starts| {
+                // Only once the copy is level with this leader up to where
+                // its generation starts (#2029). It opened after fencing a
+                // majority, so below that offset it holds every acknowledged
+                // record, start record written or not. Only the batch's own
+                // labels say where that is: an unlabelled batch labels
+                // whatever it carried, inherited records too, with the
+                // sender's generation.
+                let reaches_own = batch.generations.as_deref().is_some_and(|starts| {
                     starts.iter().any(|start| {
                         start.generation == batch.shard.generation
-                            && start.start_offset < applied.durable_offset
+                            && start.start_offset <= applied.durable_offset
                     })
                 });
                 if let Some(unclean) = &self.unclean
                     && own_kind(log_kind).is_none()
                     && level
-                    && names_own
-                    && log.holds_records_of(batch.shard.generation)
+                    && reaches_own
                 {
                     unclean.vouch(&crate::driver::watch_key(&key));
                 }

@@ -3644,10 +3644,12 @@ follower is behind it:
   led (its own ballot at the accepted generation, or, with no ballot, the
   generation it is named leader at), and a copy it followed at an older
   generation than the one it is named at, until a leader has shipped to it in
-  this process a record its batch labels as written at that leader's own
-  generation (an unlabelled batch never counts). A leader
-  writes its generation's start record after every record it holds, so the
-  copy then holds everything acknowledged before the crash. A batch that
+  this process a batch that leaves the copy level with it up to where that
+  leader's generation starts, as the batch's own generation labels say (an
+  unlabelled batch never counts). The leader opened after fencing a
+  majority, so below that offset it holds everything acknowledged before
+  the crash, and so does the copy, whether or not the fleet has
+  `generation_start` and the leader wrote a start record. A batch that
   brings back only part of what the crash lost does not count, and the copy
   is still read as the one it led even though the batch rewrote its ballot:
   counted earlier, a crashed leader with half its lost suffix back could win
