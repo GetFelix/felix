@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793944986427,
+  "lastUpdate": 1793947379279,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -47008,6 +47008,58 @@ window.BENCHMARK_DATA = {
             "range": "58347.15",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 800138.47\nmean: 779068.06\nstdev: 58347.15\ncv: 7.49%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7a2c593ef1b7fb446ca8aaa350ec19327e151e5a",
+          "message": "fix(replication): a follower stores record batches side by side (#1968) (#2009)\n\n* fix(replication): a follower stores record batches on one stream side by side (#1968)\n\n* docs: record batches are stored side by side on a peer stream (#1968)\n\n* fix(replication): a stalled record batch still gives up its stream (#1968)\n\nBatches stored side by side had no handler bound, and the pump waited for\na batch permit outside the shutdown select. Sixteen stalled batches held\nthe stream and its credit until a handler returned, and the listener\ncould not stop. A batch handler is now bounded by handler_timeout for a\nrequester that renews streams; an overrun or panic ends the stream, as it\ndoes for a request answered in turn, and the permit wait honours shutdown.\n\n* fix(replication): bound the record batches a follower stores at once across streams (#1968)\n\nEach stream may hold 16 batches, so without a broker-wide limit the batches\nin memory grew with every peer and stream. 256 across the broker bounds it to\nroughly 256 MiB.\n\n* test(replication): give the slow-handler lane test an idle window it survives under load (#1968)\n\nWith a 200 ms request timeout the QUIC idle window is 150 ms, and a test\nthread starved by the rest of the suite lost the connection while the\nhandler slept (3 of 50 lanes runs: connection lost, timed out).\n\n* fix(replication): an overrun batch keeps its broker-wide permit until its handler finishes (#1968)\n\nThe handler runs on after its stream is given up and still holds the batch,\nso the permit that bounds batches in memory goes with the handler, not with\nthe task that waits for it.\n\n* fix(replication): one peer cannot hold the broker-wide record batch limit (#1968)\n\nA peer whose stores stall took all 256 permits across its streams and\nstopped every other peer's streams reading. Each peer node, keyed by its\nHello id so reconnects share it, now holds at most 64.\n\nSpec-Unaffected: flow control on the peer transport; nothing about fences, acks or ballots.\n\n* test(replication): probe the broker-wide limit from a peer under its own cap; drop idle per-peer limits (#1968)\n\nThe broker-wide limit tests sent their probe on a peer already at its own\ncap, so they no longer reached the broker-wide permit. The probe now comes\nfrom a fifth node. The stalled-peer test takes the whole broker without the\ncap. Idle per-peer entries are swept on lookup.\n\nSpec-Unaffected: flow control on the peer transport; nothing about fences, acks or ballots.\n\n* test(replication): a peer limit held without permits survives the idle sweep\n\nSpec-Unaffected: test only, no protocol or state-machine change",
+          "timestamp": "2026-11-05T22:32:09-08:00",
+          "tree_id": "a1eff6d6fb86429c151e9c6a1a65c32a1e10df0f",
+          "url": "https://github.com/GetFelix/felix/commit/7a2c593ef1b7fb446ca8aaa350ec19327e151e5a"
+        },
+        "date": 1793947378401,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 428787.7,
+            "range": "23850.42",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 428787.70\nmean: 433374.72\nstdev: 23850.42\ncv: 5.50%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 428787.7,
+            "range": "23850.42",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 428787.70\nmean: 433374.72\nstdev: 23850.42\ncv: 5.50%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 103014.14,
+            "range": "839.94",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 103014.14\nmean: 102884.96\nstdev: 839.94\ncv: 0.82%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1030141.38,
+            "range": "8399.40",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1030141.38\nmean: 1028849.66\nstdev: 8399.40\ncv: 0.82%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
