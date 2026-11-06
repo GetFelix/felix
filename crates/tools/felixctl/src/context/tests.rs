@@ -239,8 +239,13 @@ fn a_token_file_is_read_and_trimmed_when_needed() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("token");
     std::fs::write(&path, "abc.def\n").expect("write");
-    assert_eq!(Secret::File(path).read().expect("read"), "abc.def");
-    let err = Secret::File(dir.path().join("missing")).read().unwrap_err();
+    assert_eq!(
+        Secret::File(path).read("--token-file").expect("read"),
+        "abc.def"
+    );
+    let err = Secret::File(dir.path().join("missing"))
+        .read("--token-file")
+        .unwrap_err();
     assert_eq!(exit_for(&err), crate::error::Exit::Usage);
 }
 
@@ -478,4 +483,28 @@ fn listing_redacts_inline_tokens() {
     assert_eq!(value["token"], "<redacted>");
     assert_eq!(value["controlplane_token"], "<redacted>");
     assert_eq!(value["tenant"], "profile-tenant");
+}
+
+#[test]
+fn a_missing_token_file_names_the_flag_and_path() {
+    let path = std::env::temp_dir()
+        .join("felixctl-missing-dir")
+        .join("felix-dev.jwt");
+    let err = Secret::File(path.clone()).read("--token-file").unwrap_err();
+    assert_eq!(exit_for(&err), crate::error::Exit::Usage);
+    let message = format!("{err:#}");
+    assert!(
+        message.contains(&format!("--token-file {} does not exist", path.display())),
+        "{message}"
+    );
+    assert!(
+        message.contains("docker compose exec -T felix-broker cat /var/lib/felix/client.jwt"),
+        "{message}"
+    );
+}
+
+#[test]
+fn a_present_file_keeps_the_plain_message() {
+    let message = read_file_message("--ca-file", Path::new("."));
+    assert_eq!(message, "read --ca-file .");
 }

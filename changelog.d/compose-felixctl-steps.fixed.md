@@ -1,0 +1,1 @@
+felixctl now names the flag and the missing path when a `--token-file`, `--controlplane-token-file`, `--ca-file` or `--controlplane-ca-file` file does not exist, with a hint for the dev compose stack. The `felix-dev-ready` message and the Docker Compose page now list the installed-felixctl setup as numbered steps.
