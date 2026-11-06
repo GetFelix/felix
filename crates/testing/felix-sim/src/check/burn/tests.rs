@@ -27,6 +27,7 @@ fn crash(node: usize, at: u64) -> Step {
         fault: Fault::Crash {
             node,
             down_for: Duration::from_secs(5),
+            kill: false,
         },
     }
 }

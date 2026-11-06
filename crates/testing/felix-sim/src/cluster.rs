@@ -28,6 +28,10 @@
 //! whatever the broker had written, which is what a process crash leaves: the
 //! kernel keeps its page cache. It is not a power cut, so no unsynced bytes
 //! are lost. A restart opens the same directory as a new incarnation.
+//!
+//! [`SimCluster::crash`] records the stop as clean. [`SimCluster::kill`]
+//! leaves the run state as a kill after a failed fsync does, so the restart
+//! takes a new storage id and runs `UncleanStart`.
 
 mod census;
 mod node;
@@ -324,9 +328,24 @@ impl SimCluster {
     }
 
     /// Stop the broker at `index` as a crash does, whether it is running or
-    /// still starting. A no-op on one that is down.
+    /// still starting, and record the stop as clean. A no-op on one that is
+    /// down.
     pub async fn crash(&self, index: usize) {
-        self.nodes[index].crash(&self.net).await;
+        self.nodes[index].crash(&self.net, false).await;
+    }
+
+    /// Like [`Self::crash`], but the data directory is left as a kill does
+    /// when the run may have lost records it acknowledged: the next start
+    /// takes a new storage id and runs its unclean-start handling. Only a
+    /// run that does not fsync on commit (the default) can be left that way.
+    pub async fn kill(&self, index: usize) {
+        self.nodes[index].crash(&self.net, true).await;
+    }
+
+    /// Whether the broker at `index` is running and started after an unclean
+    /// stop.
+    pub fn started_unclean(&self, index: usize) -> Option<bool> {
+        self.nodes[index].started_unclean()
     }
 
     /// Start the broker at `index` on its data directory, as a new

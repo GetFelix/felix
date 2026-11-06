@@ -121,7 +121,7 @@ cargo test -p felix-cluster --lib history::
    starts its shard tasks. Once every broker has registered, the run finalizes
    replica election, so brokers elect a new leader themselves when one is lost.
 2. **Faults.** For the first 90 seconds a schedule drawn from the seed crashes
-   and restarts brokers, partitions them, freezes them, drops one direction of
+   and kills brokers and restarts them, partitions them, freezes them, drops one direction of
    a link, and makes the control plane slow, paused or down. Faults may
    overlap. Eight steps in a hundred pause the control plane and, a second or
    two later, crash the broker that leads the most shards, which is the case
@@ -139,11 +139,18 @@ cargo test -p felix-cluster --lib history::
 
 A crash drops a broker's process state and reopens its data directory, so it
 also tests recovery. It is a process crash, not a power cut: the kernel keeps
-what the broker wrote, so nothing unsynced is lost. The harness records the
-stop as clean in the broker's run state for that reason. Without that, a
-restart on a platform that cannot sync the filesystem after a crash (anything
-but Linux) would give the broker a new storage id, and it would refuse to lead
-shards it led before.
+what the broker wrote, so nothing unsynced is lost.
+
+The seed draws each crash as one of two kinds, half and half. A clean crash
+records the stop as clean in the broker's run state, so the restart keeps its
+storage id. A kill leaves the run state as a kill after a failed fsync does
+(`run_state::forget_boot`): the restart cannot trust what it acknowledged, takes
+a new storage id and starts with `UncleanStart`, so it leads no shard from a
+copy it led before until a leader has shipped it. The choice comes from its own
+random stream, so a seed keeps the same faults at the same times; only what a
+crash leaves behind changed, which changes the trace after the first kill. A
+run that fsyncs on commit cannot be left that way, so a kill there is the same
+as a clean crash.
 
 A pause is approximate. The simulator cannot stop one broker's tasks on a
 runtime they share, so a frozen broker is cut off from every peer and from the
@@ -334,8 +341,8 @@ What it leaves out:
   flight when the flush started; the observer's "adversarial capture" has no
   counterpart here because a simulated flush is instant.
 - The nemesis does not cut the power yet. Today a crash is a process crash,
-  and the harness records it as clean in the run state. `sim_fs::crash` is
-  there for a power-loss fault to call.
+  clean or a kill that leaves the run state unclean. `sim_fs::crash` is there
+  for a power-loss fault to call.
 
 ### The peer network
 
