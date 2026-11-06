@@ -998,3 +998,37 @@ async fn a_standing_not_yet_fencing_refuses_a_pre_vote() {
         None
     );
 }
+
+/// **A set from a fence or batch below a ballot taken since is refused**
+/// (#1970): a candidate's ballot can land between the sender's ballot and
+/// its set, and the candidate stood on the set the copy kept then.
+#[tokio::test]
+async fn a_set_from_a_sender_promised_past_is_not_kept() {
+    let (broker, _dir) = broker_with_storage().await;
+    let log = stream_log(&broker).await;
+    knows_set(&broker, 3).await;
+    // The sender's ballot, then a candidate's above it.
+    log.accept_generation(4, SENDER).await.expect("ballot");
+    log.accept_generation(6, Some(LOCAL)).await.expect("ballot");
+    let before = log.replica_set();
+
+    let member = |node: &str| Member {
+        node: node.to_string(),
+        storage: None,
+        learner: false,
+        wiped: false,
+    };
+    let set = ReplicaSet {
+        current: Membership {
+            generation: 4,
+            members: vec![member("broker-a"), member(LOCAL), member("broker-d")],
+        },
+        leaving: before.as_ref().map(|kept| kept.current.clone()),
+        earlier: Vec::new(),
+    };
+    let answer = super::super::election::keep(9, &key(), &log, set, false, (4, SENDER))
+        .await
+        .expect("refused");
+    assert_eq!(refusal(&answer).code, ErrorCode::FencedEpoch);
+    assert_eq!(log.replica_set(), before, "the set is unchanged");
+}

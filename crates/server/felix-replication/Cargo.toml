@@ -46,6 +46,7 @@ axum = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
+tracing-subscriber = { workspace = true }
 
 [lints]
 workspace = true
