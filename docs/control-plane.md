@@ -1540,10 +1540,13 @@ candidate or one older than its ballot. That write costs the shard a
 promotion, or, when it carries a pending change, the pending timeout. If the elected leader did not open, its candidate withdraws the
 standing within 3 s and the named leader opens as usual.
 
-One gap remains: an elected leader that restarts before its first report
-reaches the control plane forgets its standing, so nothing reports the
-collision, and the shard serves nothing until the control plane writes it
-again.
+An elected leader that restarts before its first report reaches the
+control plane rebuilds its standing from its own log: its ballot names it at
+the elected generation, and its log records that it opened there. It
+fences at that generation again and reports as before, so a collision is
+resolved as above. If a replica of its set has promised a newer generation
+meanwhile, the fence is refused and the standing is withdrawn within 3 s (rule 11 of
+"Electing without the control plane" in `docs/replication-design.md`).
 
 A joining follower (a replacement in progress) elected leader is recorded
 only: the copy it replaces is not named in the assignment, so naming the

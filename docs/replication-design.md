@@ -1565,8 +1565,8 @@ elected leader waits for the lease until the control plane is back (issue
     follower that took another leader's fence above its route does not
     stand against that leader while it does not suspect it, and that
     leader answers its pre-vote as one fencing or leading the shard. It
-    stands once that leader answers otherwise (it restarted and dropped
-    its standing, say), or, if no start record from that leader ever
+    stands once that leader answers otherwise (it restarted before it
+    opened and dropped its standing, say), or, if no start record from that leader ever
     reached it, once `FELIX_ELECTION_DEFER_FOR_MS` has passed. One
     follower's newer ballot or view does not end a leader's readers: only
     a follower saying the control plane assigned a newer generation does,
@@ -1579,6 +1579,30 @@ elected leader waits for the lease until the control plane is back (issue
     retries the open, and so does a
     fence that meets a replica set newer than its own: a set never goes
     back.
+11. *A restart.* A standing lives in memory, so an elected leader that
+    restarts before the control plane names it would forget it. At startup
+    the broker rebuilds it from its own log when all of these hold:
+    - the ballot names this broker at generation `g`, and was not given up;
+    - the route does not name it at `g`: its generation is below `g`, or it
+      names another leader at `g` (a collision);
+    - the log records that it opened at `g`, which a leader records only
+      after a majority took its fence there;
+    - it still votes in the set it keeps, with no change pending, and is not
+      marked wiped;
+    - the route names the incarnation the broker's catalog holds;
+    - the kept set is one a candidate could stand on: it keeps no earlier
+      sets, and a set kept beside it needs joint fences on.
+
+    It then fences its kept set at `g` again, as any leader re-fences its own
+    generation after a restart, and reports. Replicas whose ballot is
+    `(g, itself)` answer it. If a replica of its set has promised a newer
+    generation, the fence is refused. The standing is then withdrawn once
+    `FELIX_ELECTION_DEFER_FOR_MS` has passed, not after the usual 3 s,
+    because it is rebuilt only once: right after a restart its fence may
+    wait behind others. Its ballot stays, so a later election takes a later
+    generation. After a collision none may follow until the control plane
+    renames the shard: the route's leader cannot open at `g` and nobody
+    suspects it. A standing that never opened at `g` is not rebuilt.
 
 **Why it is safe.** Ballots give one leader per generation: each generation
 is fenced on one set, any two majorities of one set share a replica, and
@@ -1605,6 +1629,11 @@ lets a replica left on the old set stand and acknowledge on a majority of
 the old set the new leader never reached (`FelixShardElectSwapNoJoint.cfg`). A leader that answers a
 newer fence or batch stops, which keeps it from acknowledging against a set
 it learned from someone else (`FelixShardElectAdopt.cfg` found one doing so).
+A rebuilt standing is the state the broker had before it crashed: its
+ballot was on disk before anything named it leader, and its log records
+opening at `g` only after a majority of its set took the fence there. Ballots
+give nobody else `g`, so fencing at `g` again cannot make a second leader
+there. It is the model's leader crash without giving up the generation.
 The generation-start record covers Raft's Figure 8 as it does for
 promotions. Adoption cannot name a second leader: the control plane only
 names the leader that opened at that generation, and its own next generation
