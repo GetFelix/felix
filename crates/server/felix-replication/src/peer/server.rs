@@ -442,6 +442,8 @@ async fn serve_connection(
             let controls = Arc::new(Semaphore::new(MAX_CONTROLS_PER_STREAM));
             let fetches = Arc::new(Semaphore::new(MAX_CONCURRENT_FETCHES_PER_STREAM));
             loop {
+                let cycle_start = std::time::Instant::now();
+                let mut served: Option<(std::time::Instant, std::time::Instant)> = None;
                 let request = tokio::select! {
                     _ = shutdown.cancelled() => break,
                     frame = read_frame(&mut recv) => match frame {
@@ -725,10 +727,39 @@ async fn serve_connection(
                     // Off the pump's runtime; the pump only waits. Everything
                     // else on a stream is answered one request at a time.
                     request => {
+                        let read_at = std::time::Instant::now();
+                        let read = read_at - cycle_start;
+                        crate::peer::prof::add(crate::peer::prof::F_READ, read);
+                        crate::peer::prof::value(
+                            crate::peer::prof::F_BACKLOG,
+                            u64::from(read < std::time::Duration::from_micros(100)),
+                        );
                         let handler = Arc::clone(&handler);
                         let peer = ballot_identity(&offered, &identity);
-                        let handling =
-                            app.spawn(async move { handler.handle_from(peer, request).await });
+                        let handling = app.spawn(async move {
+                            let started = std::time::Instant::now();
+                            crate::peer::prof::add(crate::peer::prof::F_SPAWN, started - read_at);
+                            let records = matches!(
+                                request,
+                                InternalMessage::ReplicateRecords(_)
+                                    | InternalMessage::ReplicateMarkedRecords(_)
+                            );
+                            let answer = handler.handle_from(peer, request).await;
+                            crate::peer::prof::add(
+                                if records {
+                                    crate::peer::prof::F_HANDLE_REC
+                                } else {
+                                    crate::peer::prof::F_HANDLE_OTHER
+                                },
+                                started.elapsed(),
+                            );
+                            (answer, std::time::Instant::now())
+                        });
+                        let handling = async move { handling.await.map(|(answer, done)| {
+                            crate::peer::prof::add(crate::peer::prof::F_JOIN, done.elapsed());
+                            answer
+                        }) };
+                        served = Some((cycle_start, read_at));
                         // Only a requester that replaces streams may have this
                         // one dropped under it; an older one would lose the
                         // lane for the life of the connection, so it waits.
@@ -764,9 +795,15 @@ async fn serve_connection(
                     }
                 };
 
+                let writing = std::time::Instant::now();
                 if write_frame(&mut *send.lock().await, &response).await.is_err() {
                     metrics::record_served(metrics::OUTCOME_ERROR);
                     break;
+                }
+                if let Some((cycle_start, read_at)) = served {
+                    crate::peer::prof::add(crate::peer::prof::F_WRITE, writing.elapsed());
+                    crate::peer::prof::add(crate::peer::prof::F_CYCLE, read_at.elapsed());
+                    let _ = cycle_start;
                 }
                 metrics::record_served(metrics::OUTCOME_OK);
             }
