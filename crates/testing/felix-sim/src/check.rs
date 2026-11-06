@@ -248,6 +248,11 @@ impl Digest {
 /// the shard to itself, its fence is open at that generation and its lease is
 /// valid. A shard that has none, or more than one, for the whole window fails.
 /// The finding carries a census of the first few stuck shards.
+///
+/// A shard held after unclean kills is left out:
+/// the broker holds it on purpose until an operator abandons a member (see
+/// [`SimCluster::held_shards`]). Only this check skips it; the history checks
+/// and the other cluster checks still cover it.
 pub struct ElectionSettles {
     /// How many stuck shards to print a census for.
     pub show: usize,
@@ -271,8 +276,14 @@ impl Checker for ElectionSettles {
         }
         let cluster = &ctx.cluster;
         let deadline = ctx.healed_at + cluster.config.settle_within;
+        let held = cluster.held_shards().await;
+        println!(
+            "election-settles: {} of {} shards exempt, held on purpose after unclean kills",
+            held.len(),
+            cluster.shard_keys().count(),
+        );
         loop {
-            let stuck = cluster.unserved().await;
+            let stuck = without_held(cluster.unserved().await, &held);
             if stuck.is_empty() {
                 return Vec::new();
             }
@@ -305,6 +316,15 @@ impl Checker for ElectionSettles {
             tokio::time::sleep(Duration::from_secs(2)).await;
         }
     }
+}
+
+/// `stuck` without the shards the broker holds on purpose.
+fn without_held(
+    mut stuck: Vec<(ShardKey, Vec<usize>)>,
+    held: &BTreeSet<String>,
+) -> Vec<(ShardKey, Vec<usize>)> {
+    stuck.retain(|(key, _)| !held.contains(&describe(key)));
+    stuck
 }
 
 #[cfg(test)]

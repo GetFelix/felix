@@ -33,6 +33,12 @@ A seed fails when any check reports a problem, except a warning.
   while the run goes: `ElectionSettles`, `OneLeaderPerGeneration`,
   `AtMostOneServing`, `AckedHeldByLeader`, `AdoptedMatchesOpened` and
   `GenerationBurn`.
+- `ElectionSettles` skips a shard the broker holds on purpose: its leader was
+  killed uncleanly, and killed members that were already down then make up a
+  majority of the set with it. The broker waits for `felixctl placement
+  abandon`. Every other check still covers the shard. If its final read cannot
+  be taken, only the lost-write rule is skipped and a warning names it. The run
+  prints how many shards were exempt.
 - A run that stops making progress ends with a `stalled` finding instead of
   hanging.
 

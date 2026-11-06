@@ -60,3 +60,13 @@ fn a_finding_prints_its_checker_summary_and_detail() {
     let finding = Finding::new("example", "two leaders").with("table");
     assert_eq!(finding.to_string(), "[example] two leaders\ntable\n");
 }
+
+#[test]
+fn a_shard_held_for_two_unclean_kills_is_not_reported() {
+    use crate::cluster::stream_key;
+    let stuck = vec![(stream_key(0), vec![]), (stream_key(1), vec![])];
+    let held = BTreeSet::from(["stream/1".to_string()]);
+    let left = without_held(stuck, &held);
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0].0, stream_key(0));
+}

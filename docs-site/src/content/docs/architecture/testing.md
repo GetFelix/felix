@@ -197,7 +197,8 @@ broker's data directory lives in an in-memory filesystem that keeps a second,
 durable copy of every file and directory, so it can rebuild what a power loss
 would have left, with unsynced pages lost, torn or zeroed. The simulator can
 build that state, but its nemesis does not cut the power yet: today a crash is
-a process crash, and the power-loss faults are in the
+a process crash, half of them kills that leave the run state unclean so the
+restart runs the unclean-start handling, and the power-loss faults are in the
 [history checker](#the-history-checker) and the storage suite.
 
 A run lasts 120 seconds of virtual time. Faults go in for the first 90, then

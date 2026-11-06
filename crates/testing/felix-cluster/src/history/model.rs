@@ -27,6 +27,10 @@ pub struct History {
     /// What each list held once every fault was healed. Must start at the
     /// list's base offset and have no holes, or lost-write checks are unsound.
     pub final_reads: BTreeMap<String, Vec<Element>>,
+    /// Lists whose final read could not be taken. The rules that need the
+    /// whole log (lost writes, delivery against the final log) skip them; the
+    /// rules about what reads saw still run, against what the reads saw.
+    pub unread_lists: BTreeSet<String>,
     /// Puts and gets on `Quorum` cache keys, in completion order.
     pub registers: Vec<RegisterOp>,
     /// The values atomic commits wrote, each both an append and its list's

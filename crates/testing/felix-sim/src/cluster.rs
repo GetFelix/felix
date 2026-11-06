@@ -28,8 +28,13 @@
 //! whatever the broker had written, which is what a process crash leaves: the
 //! kernel keeps its page cache. It is not a power cut, so no unsynced bytes
 //! are lost. A restart opens the same directory as a new incarnation.
+//!
+//! [`SimCluster::crash`] records the stop as clean. [`SimCluster::kill`]
+//! leaves the run state as a kill after a failed fsync does, so the restart
+//! takes a new storage id and runs `UncleanStart`.
 
 mod census;
+pub(crate) mod kills;
 mod node;
 
 use std::sync::Arc;
@@ -49,6 +54,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 pub use self::census::{Census, NodeView};
+use self::kills::KillLog;
 use self::node::Node;
 use crate::controlplane::{CpConfig, SimControlPlane};
 use crate::net::{Link, SimNet};
@@ -146,6 +152,7 @@ pub struct SimCluster {
     stalled: CancellationToken,
     /// Tells the stall watch to stop when the cluster is dropped.
     done: Arc<AtomicBool>,
+    kills: parking_lot::Mutex<KillLog>,
 }
 
 impl Drop for SimCluster {
@@ -179,6 +186,7 @@ impl SimCluster {
             starts: AtomicU64::new(0),
             stalled,
             done,
+            kills: Default::default(),
         });
         cluster.reset_links();
         cluster.create_catalog().await?;
@@ -324,9 +332,37 @@ impl SimCluster {
     }
 
     /// Stop the broker at `index` as a crash does, whether it is running or
-    /// still starting. A no-op on one that is down.
+    /// still starting, and record the stop as clean. A no-op on one that is
+    /// down.
     pub async fn crash(&self, index: usize) {
-        self.nodes[index].crash(&self.net).await;
+        self.nodes[index].crash(&self.net, false).await;
+    }
+
+    /// Like [`Self::crash`], but the data directory is left as a kill does
+    /// when the run may have lost records it acknowledged: the next start
+    /// takes a new storage id and runs its unclean-start handling. Only a
+    /// run that does not fsync on commit (the default) can be left that way.
+    pub async fn kill(&self, index: usize) {
+        let at = self.elapsed();
+        // Read from the store before the stop, so the view is the one the
+        // broker died under.
+        let view = self.cp.shard_views().await.unwrap_or_default();
+        if self.nodes[index].crash(&self.net, true).await {
+            self.kills.lock().kill(&self.nodes[index].id, at, view);
+        }
+    }
+
+    /// Shards (`stream/3`) the broker holds on purpose after unclean kills,
+    /// until an operator abandons a member, so they are not expected to be
+    /// served. See `kills.rs` for the rule.
+    pub async fn held_shards(&self) -> std::collections::BTreeSet<String> {
+        self.kills.lock().held()
+    }
+
+    /// Whether the broker at `index` is running and started after an unclean
+    /// stop.
+    pub fn started_unclean(&self, index: usize) -> Option<bool> {
+        self.nodes[index].started_unclean()
     }
 
     /// Start the broker at `index` on its data directory, as a new
@@ -338,6 +374,9 @@ impl SimCluster {
         let Some(start) = self.nodes[index].begin_start() else {
             return;
         };
+        self.kills
+            .lock()
+            .restart(&self.nodes[index].id, self.elapsed());
         let cluster = Arc::clone(self);
         let run = self.starts.fetch_add(1, Ordering::SeqCst) + 1;
         tokio::spawn(async move {
