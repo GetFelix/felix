@@ -166,6 +166,23 @@ async fn follower() -> (Arc<Broker>, tempfile::TempDir) {
 
 /// As [`follower`], with generation 3 promised to `leader`.
 async fn copy_promised_to(leader: &str) -> (Arc<Broker>, tempfile::TempDir) {
+    let (broker, dir) = registered().await;
+    let log = shard_log(&broker, &key()).await.expect("log");
+    log.accept_generation(3, Some(leader))
+        .await
+        .expect("ballot");
+    log.accept_set(ReplicaSet {
+        current: set(3),
+        leaving: None,
+        earlier: Vec::new(),
+    })
+    .await
+    .expect("set");
+    (broker, dir)
+}
+
+/// A broker with a `Quorum` stream registered and no log for it on disk.
+async fn registered() -> (Arc<Broker>, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("tempdir");
     let storage = DurableStorage::open(
         dir.path(),
@@ -196,17 +213,6 @@ async fn copy_promised_to(leader: &str) -> (Arc<Broker>, tempfile::TempDir) {
         )
         .await
         .expect("stream");
-    let log = shard_log(&broker, &key()).await.expect("log");
-    log.accept_generation(3, Some(leader))
-        .await
-        .expect("ballot");
-    log.accept_set(ReplicaSet {
-        current: set(3),
-        leaving: None,
-        earlier: Vec::new(),
-    })
-    .await
-    .expect("set");
     (broker, dir)
 }
 
@@ -851,6 +857,307 @@ async fn a_standing_promised_away_is_withdrawn() {
     assert!(ctx.elections.get(&key()).is_none());
 }
 
+/// `follower()` after this broker stood at generation 4 and opened there:
+/// its ballot names it, and its log holds the start record.
+async fn elected_before_restart() -> (Arc<Broker>, tempfile::TempDir) {
+    let (broker, dir) = follower().await;
+    let log = shard_log(&broker, &key()).await.expect("log");
+    log.accept_generation(4, Some(LOCAL)).await.expect("ballot");
+    open_at(&log, 4).await;
+    (broker, dir)
+}
+
+async fn open_at(log: &StreamLog, generation: u64) {
+    let end = log.tail_offset().await.expect("end");
+    log.record_generation(generation, end).expect("stint");
+    log.append_generation_start(generation)
+        .await
+        .expect("start record");
+}
+
+fn route_of(ctx: &Ctx<Voters>) -> Route {
+    ctx.router.snapshot().get(&key()).expect("route").clone()
+}
+
+/// **An elected leader that restarts rebuilds its standing from its log**:
+/// the ballot names it at 4, the log holds 4's start record, and the route
+/// still names broker-a at 3. It is put back on the set it keeps.
+#[tokio::test(start_paused = true)]
+async fn a_standing_that_opened_is_rebuilt_from_the_log() {
+    let (broker, _dir) = elected_before_restart().await;
+    let ctx = ctx(&broker, voters(None));
+
+    let (_, elected) = restorable(&ctx, &key(), &route_of(&ctx))
+        .await
+        .expect("known")
+        .expect("restorable");
+    assert_eq!(elected.leader, LOCAL);
+    assert_eq!(elected.generation, 4);
+    assert_eq!(elected.set, set(3));
+    assert_eq!(elected.leaving, None);
+    assert_eq!(elected.incarnation, 0);
+
+    // A collision: the control plane named broker-a at 4 too.
+    let mut collided = route_of(&ctx);
+    collided.generation = 4;
+    assert!(
+        restorable(&ctx, &key(), &collided)
+            .await
+            .expect("known")
+            .is_some()
+    );
+}
+
+/// **Each condition alone keeps a standing from being rebuilt.**
+#[tokio::test(start_paused = true)]
+async fn each_condition_alone_keeps_a_standing_from_being_rebuilt() {
+    // The ballot names another candidate at 4.
+    let (broker, _dir) = follower().await;
+    let log = shard_log(&broker, &key()).await.expect("log");
+    log.accept_generation(4, Some("broker-c"))
+        .await
+        .expect("ballot");
+    open_at(&log, 4).await;
+    let c = ctx(&broker, voters(None));
+    assert!(
+        restorable(&c, &key(), &route_of(&c))
+            .await
+            .expect("known")
+            .is_none()
+    );
+
+    // The route names this broker at 4: the control plane adopted it.
+    let (broker, _dir) = elected_before_restart().await;
+    let c = ctx(&broker, voters(None));
+    let mut adopted = route_of(&c);
+    adopted.generation = 4;
+    adopted.leader = node(LOCAL, 7002);
+    adopted.replicas = vec![node("broker-a", 7001), node("broker-c", 7003)];
+    assert!(
+        restorable(&c, &key(), &adopted)
+            .await
+            .expect("known")
+            .is_none()
+    );
+
+    // The route is past 4.
+    let mut newer = route_of(&c);
+    newer.generation = 5;
+    assert!(
+        restorable(&c, &key(), &newer)
+            .await
+            .expect("known")
+            .is_none()
+    );
+
+    // No start record at 4: the standing never opened.
+    let (broker, _dir) = follower().await;
+    let log = shard_log(&broker, &key()).await.expect("log");
+    log.accept_generation(4, Some(LOCAL)).await.expect("ballot");
+    let c = ctx(&broker, voters(None));
+    assert!(
+        restorable(&c, &key(), &route_of(&c))
+            .await
+            .expect("known")
+            .is_none()
+    );
+
+    // A change pending on the kept set.
+    let (broker, _dir) = elected_before_restart().await;
+    let log = shard_log(&broker, &key()).await.expect("log");
+    let mut leaving = set(3);
+    leaving.members[2].node = "broker-d".into();
+    log.accept_set(ReplicaSet {
+        current: set(4),
+        leaving: Some(leaving),
+        earlier: Vec::new(),
+    })
+    .await
+    .expect("pending set");
+    let c = ctx(&broker, voters(None));
+    assert!(
+        restorable(&c, &key(), &route_of(&c))
+            .await
+            .expect("known")
+            .is_none()
+    );
+
+    // This copy is marked wiped in the set it keeps.
+    let (broker, _dir) = elected_before_restart().await;
+    let log = shard_log(&broker, &key()).await.expect("log");
+    let mut wiped = set(4);
+    wiped.members[1].wiped = true;
+    log.accept_set(ReplicaSet {
+        current: wiped,
+        leaving: None,
+        earlier: Vec::new(),
+    })
+    .await
+    .expect("wiped");
+    let c = ctx(&broker, voters(None));
+    assert!(
+        restorable(&c, &key(), &route_of(&c))
+            .await
+            .expect("known")
+            .is_none()
+    );
+
+    // The route names another incarnation than the catalog's: looked at
+    // again once the catalog holds it.
+    let (broker, _dir) = elected_before_restart().await;
+    let c = ctx(&broker, voters(None));
+    let mut recreated = route_of(&c);
+    recreated.incarnation = 7;
+    assert!(restorable(&c, &key(), &recreated).await.is_err());
+
+    // A standing at 4 is already in memory.
+    let (broker, _dir) = elected_before_restart().await;
+    let c = ctx(&broker, voters(None));
+    let mut known = set(3);
+    known.generation = 4;
+    assert!(c.elections.record(
+        key(),
+        Elected {
+            leader: LOCAL.into(),
+            generation: 4,
+            set: known,
+            leaving: None,
+            incarnation: 0,
+        }
+    ));
+    assert!(
+        restorable(&c, &key(), &route_of(&c))
+            .await
+            .expect("known")
+            .is_none()
+    );
+
+    // This copy is a learner in the set it keeps.
+    let (broker, _dir) = elected_before_restart().await;
+    let log = shard_log(&broker, &key()).await.expect("log");
+    let mut learner = set(4);
+    learner.members[1].learner = true;
+    log.accept_set(ReplicaSet {
+        current: learner,
+        leaving: None,
+        earlier: Vec::new(),
+    })
+    .await
+    .expect("learner");
+    let c = ctx(&broker, voters(None));
+    assert!(
+        restorable(&c, &key(), &route_of(&c))
+            .await
+            .expect("known")
+            .is_none()
+    );
+
+    // The generation was given up.
+    let (broker, _dir) = elected_before_restart().await;
+    let log = shard_log(&broker, &key()).await.expect("log");
+    log.give_up_generation().await.expect("give up");
+    let c = ctx(&broker, voters(None));
+    assert!(
+        restorable(&c, &key(), &route_of(&c))
+            .await
+            .expect("known")
+            .is_none()
+    );
+}
+
+/// **A rebuilt standing that does not open is withdrawn** when no fence at
+/// its generation is taken since the start, as when a majority moved on and
+/// refuses it, even with nothing shipping to this broker. The start record
+/// already in the log does not count as opening. Not before the defer bound
+/// though, even once its route is published: it is not put back, so a fence
+/// queued behind others after the restart gets that long. The ballot stays,
+/// and is this broker's own, so nothing holds off a later standing.
+#[tokio::test(start_paused = true)]
+async fn a_rebuilt_standing_that_does_not_open_is_withdrawn() {
+    let (broker, _dir) = elected_before_restart().await;
+    let mut ctx = ctx(&broker, voters(None));
+    let (log, elected) = restorable(&ctx, &key(), &route_of(&ctx))
+        .await
+        .expect("known")
+        .expect("restorable");
+    // The routing feed names this broker at the rebuilt generation.
+    ctx.router = router_led(LOCAL, LOCAL, 4);
+
+    let started = Instant::now();
+    assert_eq!(restore(&ctx, &key(), &log, elected).await, Round::Failed);
+    assert!(started.elapsed() >= ctx.elections.defer_for());
+    assert!(started.elapsed() <= ctx.elections.defer_for() + OPEN_POLL * 2);
+    assert!(ctx.elections.get(&key()).is_none());
+    assert_eq!(log.accepted_generation(), 4);
+    assert_eq!(log.accepted_leader().as_deref(), Some(LOCAL));
+    assert!(!ctx.named_here(&key(), 4));
+}
+
+/// **A rebuilt standing opens once a fence at its generation is taken
+/// again** since the start, as the driver records it.
+#[tokio::test(start_paused = true)]
+async fn a_rebuilt_standing_opens_on_a_fence_taken_since_the_start() {
+    let (broker, _dir) = elected_before_restart().await;
+    let ctx = ctx(&broker, voters(None));
+    let (log, elected) = restorable(&ctx, &key(), &route_of(&ctx))
+        .await
+        .expect("known")
+        .expect("restorable");
+    let driver = async {
+        while ctx.elections.get(&key()).is_none() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let _fencing = ctx.elections.fencing(&key(), 4);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        ctx.elections.opened(&key(), 4);
+    };
+    let shard = key();
+    let (round, ()) = tokio::join!(restore(&ctx, &shard, &log, elected), driver);
+    assert_eq!(round, Round::Opened);
+    assert_eq!(
+        ctx.elections.get(&key()).map(|elected| elected.generation),
+        Some(4)
+    );
+}
+
+/// **The candidate task rebuilds a standing when it starts**, before any
+/// leader is suspected, so the routes name this broker leader at 4 again.
+#[tokio::test(start_paused = true)]
+async fn the_candidate_task_rebuilds_standings_when_it_starts() {
+    let (broker, _dir) = elected_before_restart().await;
+    let ctx = ctx(&broker, voters(None));
+    ctx.suspects.publish(BTreeSet::new());
+    let ctx = Arc::new(ctx);
+    let shutdown = CancellationToken::new();
+    let task = tokio::spawn(run(Arc::clone(&ctx), shutdown.clone()));
+
+    let rebuilt = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Some(elected) = ctx.elections.get(&key()) {
+                return elected;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("rebuilt within a tick");
+    shutdown.cancel();
+    task.await.expect("candidate task");
+    assert_eq!(rebuilt.leader, LOCAL);
+    assert_eq!(rebuilt.generation, 4);
+}
+
+/// **A shard whose stream the catalog does not hold yet is looked at
+/// later**, not skipped for good.
+#[tokio::test(start_paused = true)]
+async fn a_stream_the_catalog_does_not_hold_yet_is_looked_at_later() {
+    let (broker, _dir) = elected_before_restart().await;
+    let c = ctx(&broker, voters(None));
+    let mut other = key();
+    other.stream = "not-yet".into();
+    assert!(restorable(&c, &other, &route_of(&c)).await.is_err());
+}
+
 /// **A follower that took another leader's fence above the route does not
 /// stand against it** while it does not suspect that leader and that leader
 /// still answers as fencing or leading (#1914). Its view may still name the
@@ -1054,9 +1361,10 @@ async fn a_shard_stuck_on_a_live_leader_heals_by_election() {
 
 /// **A leader whose own ballot is above its route stands for itself** with
 /// the control plane down (#1914, the model's `SelfSuspicion`). The control
-/// plane named `LOCAL` at 2; it was elected at 3 and opened, then restarted,
-/// which forgets the election. The driver's open at 2 is refused for its
-/// own ballot, and its followers took its fence and start record at 3, so
+/// plane named `LOCAL` at 2; it was elected at 3 and opened, then restarted.
+/// The standing at 3 is rebuilt first, but nothing here fences, so it never
+/// opens and is withdrawn. The driver's open at 2 is refused for its own
+/// ballot, and its followers took its fence and start record at 3, so
 /// neither suspects anything. Once the shard bound passes, `LOCAL` stands at
 /// 4 and both followers grant. Not before the bound.
 #[tokio::test(start_paused = true)]
@@ -1083,6 +1391,15 @@ async fn a_leader_refused_for_its_own_ballot_stands_for_itself() {
     let shutdown = CancellationToken::new();
     let task = tokio::spawn(run(Arc::clone(&ctx), shutdown.clone()));
     let log = shard_log(b, &key()).await.expect("log");
+
+    tokio::time::sleep(TICK * 4).await;
+    let rebuilt = ctx.elections.get(&key()).expect("rebuilt");
+    assert_eq!((rebuilt.leader.as_str(), rebuilt.generation), (LOCAL, 3));
+    tokio::time::sleep(ctx.elections.defer_for() + TICK).await;
+    assert!(
+        ctx.elections.get(&key()).is_none(),
+        "the rebuilt standing stayed"
+    );
 
     tokio::time::sleep(ctx.shard_after - SHARD_SCAN * 2).await;
     assert_eq!(log.accepted_generation(), 3, "stood before the bound");
