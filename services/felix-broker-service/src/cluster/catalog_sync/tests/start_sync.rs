@@ -116,6 +116,7 @@ async fn start_sync_retries_after_transient_parent_ordering_error() -> Result<()
             Duration::from_millis(10),
             None,
             None,
+            Provisional::default(),
         ));
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);

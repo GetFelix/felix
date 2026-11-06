@@ -58,8 +58,8 @@ pub(super) struct Running {
     pub(super) shard_tasks: Option<ShardTasks>,
     pub(super) sync_shutdown: CancellationToken,
     pub(super) controlplane_task: Option<JoinHandle<()>>,
-    /// Writes the control-plane view once more when its token is cancelled.
-    pub(super) controlplane_view: Option<(JoinHandle<()>, CancellationToken)>,
+    /// Writes the control-plane view once more when stopped.
+    pub(super) controlplane_view: Option<crate::cluster::controlplane_view::ViewWriter>,
     pub(super) storage: Storage,
     pub(super) metrics_task: JoinHandle<std::io::Result<()>>,
     pub(super) metrics_shutdown: CancellationToken,
@@ -242,6 +242,29 @@ impl Running {
             }
         }
 
+        // Before deregistering, and never after: the view's last write must
+        // not record sets the control plane may already have moved on from.
+        let view = match controlplane_view {
+            Some(writer) => {
+                let file = writer.file();
+                let mut last = None;
+                budget
+                    .drain("controlplane_view", async {
+                        last = writer.stop().await;
+                    })
+                    .await;
+                Some((file, last))
+            }
+            None => None,
+        };
+        // A broker the control plane refused, or whose directory it found
+        // replaced, must not start from this view again: the next start waits
+        // for the control plane and learns why. After the writer stopped, so
+        // its last write cannot bring the file back.
+        if membership_rejected && let Some((file, _)) = &view {
+            file.forget_now().await;
+        }
+
         // Leave the cluster before draining connections, so nothing new is placed
         // here while in-flight work finishes.
         if let (Some(membership_config), Some(base_url)) =
@@ -250,22 +273,28 @@ impl Running {
         {
             budget
                 .drain("membership_deregister", async {
-                    membership::shutdown_membership(
-                        &felix_replication::controlplane_link::HttpControlPlaneLink::new(
-                            membership_client,
-                            base_url,
-                        ),
-                        &membership_config.node_id,
-                        // The current token, not the startup one: a broker that has
-                        // been up for hours would otherwise deregister with an
-                        // expired credential and be refused, leaving the control
-                        // plane to expire it as if it had crashed.
-                        &credential
-                            .as_ref()
-                            .map(|credential| credential.bearer().to_string())
-                            .unwrap_or_default(),
-                    )
-                    .await;
+                    // The current token, not the startup one: a broker that has
+                    // been up for hours would otherwise deregister with an
+                    // expired credential and be refused, leaving the control
+                    // plane to expire it as if it had crashed.
+                    let token = credential
+                        .as_ref()
+                        .map(|credential| credential.bearer().to_string())
+                        .unwrap_or_default();
+                    let link = felix_replication::controlplane_link::HttpControlPlaneLink::new(
+                        membership_client,
+                        base_url,
+                    );
+                    let deregister =
+                        membership::shutdown_membership(&link, &membership_config.node_id, &token);
+                    match view {
+                        Some((file, last)) => {
+                            file.forget_while(last, deregister).await;
+                        }
+                        None => {
+                            deregister.await;
+                        }
+                    }
                 })
                 .await;
         }
@@ -334,19 +363,6 @@ impl Running {
             if !budget
                 .drain("controlplane_sync", async {
                     let _ = (&mut *task).await;
-                })
-                .await
-            {
-                task.abort();
-            }
-        }
-
-        // After the feeds stop, so the last write holds what they last applied.
-        if let Some((mut task, view_shutdown)) = controlplane_view {
-            view_shutdown.cancel();
-            if !budget
-                .drain("controlplane_view", async {
-                    let _ = (&mut task).await;
                 })
                 .await
             {
@@ -423,8 +439,9 @@ impl Running {
             // or address, or a fleet feature this build lacks.
             return Err(anyhow::anyhow!(
                 "control plane refused this node's registration (reason logged above); \
-                 check FELIX_NODE_ID and FELIX_NODE_ADVERTISE_ADDR, or whether this build \
-                 lacks a fleet feature an operator has enabled"
+                 check FELIX_NODE_ID and FELIX_NODE_ADVERTISE_ADDR, whether this build \
+                 lacks a fleet feature an operator has enabled, or, after a start from the \
+                 control-plane view, whether the data directory was restored from a snapshot"
             ));
         }
         tracing::info!("broker stopped");

@@ -324,6 +324,28 @@ impl Broker {
         }
     }
 
+    /// Unregister a stream and close its logs, keeping its data. Returns
+    /// whether it was registered.
+    ///
+    /// For an entry registered from somewhere other than the control plane
+    /// that its snapshot then lacks: a missing entry is no evidence of a
+    /// delete, since a control plane restored from an older backup lacks
+    /// streams created after it. Only a delete change or a tombstone deletes.
+    pub async fn unregister_stream(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+    ) -> Result<bool> {
+        let key = StreamKey::new(tenant_id, namespace, stream);
+        let Some(metadata) = self.drop_stream(&key).await else {
+            return Ok(false);
+        };
+        self.set_stream_incarnation(tenant_id, namespace, stream, None);
+        self.close_incarnation(&key, metadata.incarnation).await?;
+        Ok(true)
+    }
+
     /// Delete the registered stream for an operator or a tool: the caller is
     /// the evidence. An incarnated stream is recorded as deleted, as a
     /// tombstone would; one at incarnation 0 is not, so a broker that

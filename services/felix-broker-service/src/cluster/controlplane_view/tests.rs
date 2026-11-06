@@ -137,22 +137,25 @@ async fn fixture() -> Fixture {
         replicas: vec!["broker-b".to_owned(), ME.to_owned(), "broker-e".to_owned()],
         generation: 4,
     });
-    ownership.reset(vec![
-        assignment(key("orders", 0, ShardKind::Stream), ME, &[ME, "broker-c"]),
-        moving,
-        assignment(
-            key("sessions", 0, ShardKind::Cache),
-            "broker-d",
-            &["broker-d", ME],
-        ),
-        // Another node's shard, and one of a stream the catalog lacks.
-        assignment(
-            key("orders", 2, ShardKind::Stream),
-            "broker-x",
-            &["broker-x"],
-        ),
-        assignment(key("unknown", 0, ShardKind::Stream), ME, &[ME]),
-    ]);
+    ownership.reset_from_control_plane(
+        vec![
+            assignment(key("orders", 0, ShardKind::Stream), ME, &[ME, "broker-c"]),
+            moving,
+            assignment(
+                key("sessions", 0, ShardKind::Cache),
+                "broker-d",
+                &["broker-d", ME],
+            ),
+            // Another node's shard, and one of a stream the catalog lacks.
+            assignment(
+                key("orders", 2, ShardKind::Stream),
+                "broker-x",
+                &["broker-x"],
+            ),
+            assignment(key("unknown", 0, ShardKind::Stream), ME, &[ME]),
+        ],
+        &std::collections::HashSet::new(),
+    );
     let catalog_seeded = CancellationToken::new();
     catalog_seeded.cancel();
     fleet.restart(["generation_start"]);
@@ -252,10 +255,36 @@ async fn nothing_is_built_before_a_routes_snapshot() {
     assert_eq!(fixture.sources.build().await, None);
 }
 
+/// Routes a start took from the view are not a snapshot this process got
+/// from the control plane, so a registration alone does not let them be
+/// written back as if it had answered them.
+#[tokio::test]
+async fn routes_seeded_from_the_view_are_not_a_snapshot() {
+    let mut fixture = fixture().await;
+    let mut ownership = ShardOwnership::default();
+    ownership.reset(vec![assignment(
+        key("orders", 0, ShardKind::Stream),
+        ME,
+        &[ME],
+    )]);
+    fixture.sources.ownership = Arc::new(RwLock::new(ownership));
+    assert_eq!(fixture.sources.build().await, None);
+    fixture
+        .sources
+        .ownership
+        .write()
+        .await
+        .reset_from_control_plane(
+            vec![assignment(key("orders", 0, ShardKind::Stream), ME, &[ME])],
+            &std::collections::HashSet::new(),
+        );
+    assert!(fixture.sources.build().await.is_some());
+}
+
 #[tokio::test]
 async fn a_written_view_reads_back_for_its_node_only() {
     let dir = tempfile::tempdir().unwrap();
-    let mut writer = Writer::new(dir.path().to_path_buf());
+    let mut writer = Writer::new(ViewFile::new(dir.path().to_path_buf()));
     assert!(writer.write(Some(view(1))).await);
     assert_eq!(read(dir.path(), ME), Some(view(1)));
     assert_eq!(read(dir.path(), "broker-b"), None);
@@ -280,7 +309,7 @@ async fn a_field_a_later_build_adds_is_ignored() {
 async fn an_unchanged_view_is_not_written_again() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(felix_storage::controlplane_view::FILE_NAME);
-    let mut writer = Writer::new(dir.path().to_path_buf());
+    let mut writer = Writer::new(ViewFile::new(dir.path().to_path_buf()));
     assert!(!writer.write(None).await);
     assert!(!path.exists());
     assert!(writer.write(Some(view(1))).await);
@@ -295,7 +324,7 @@ async fn an_unchanged_view_is_not_written_again() {
 #[tokio::test]
 async fn a_failed_write_is_tried_again_with_the_next_view() {
     let dir = tempfile::tempdir().unwrap();
-    let mut writer = Writer::new(dir.path().to_path_buf());
+    let mut writer = Writer::new(ViewFile::new(dir.path().to_path_buf()));
     assert!(writer.write(Some(view(1))).await);
     let blocker = dir
         .path()
@@ -325,14 +354,97 @@ async fn writes_come_at_most_once_an_interval_and_once_more_at_a_stop() {
                 async move { Some(view(n)) }
             }
         },
-        dir.path().to_path_buf(),
+        ViewFile::new(dir.path().to_path_buf()),
         shutdown.clone(),
     ));
     tokio::time::sleep(WRITE_EVERY * 5 + WRITE_EVERY / 2).await;
     // The first tick is at once, then one per interval.
     assert_eq!(builds.load(Ordering::SeqCst), 6);
     shutdown.cancel();
-    task.await.unwrap();
+    let last = task.await.unwrap();
     assert_eq!(builds.load(Ordering::SeqCst), 7);
     assert_eq!(read(dir.path(), ME), Some(view(7)));
+    assert_eq!(last, Some(serde_json::to_vec(&view(7)).unwrap()));
+}
+
+/// The body a stopped writer hands back for `n`.
+fn body(n: u64) -> Option<Vec<u8>> {
+    Some(serde_json::to_vec(&view(n)).unwrap())
+}
+
+#[tokio::test]
+async fn a_deregistration_that_may_have_reached_the_control_plane_leaves_no_view() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut writer = Writer::new(ViewFile::new(dir.path().to_path_buf()));
+    writer.write(Some(view(1))).await;
+    let seen = Arc::new(AtomicU64::new(0));
+    let deregister = {
+        let seen = Arc::clone(&seen);
+        let root = dir.path().to_path_buf();
+        async move {
+            // Gone before the request goes out, so a crash during it
+            // cannot leave a view of sets the control plane has moved on.
+            if read(&root, ME).is_none() {
+                seen.store(1, Ordering::SeqCst);
+            }
+            true
+        }
+    };
+    assert!(
+        ViewFile::new(dir.path().to_path_buf())
+            .forget_while(body(1), deregister)
+            .await
+    );
+    assert_eq!(seen.load(Ordering::SeqCst), 1);
+    assert_eq!(read(dir.path(), ME), None);
+}
+
+#[tokio::test]
+async fn a_forgotten_view_is_not_written_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = ViewFile::new(dir.path().to_path_buf());
+    let mut writer = Writer::new(file.clone());
+    writer.write(Some(view(1))).await;
+    assert!(file.forget_while(body(1), async { true }).await);
+    // A write still on its way when the stop gave up on the writer.
+    writer.write(Some(view(2))).await;
+    assert_eq!(read(dir.path(), ME), None);
+}
+
+#[tokio::test]
+async fn a_deregistration_that_never_left_keeps_the_view() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut writer = Writer::new(ViewFile::new(dir.path().to_path_buf()));
+    writer.write(Some(view(1))).await;
+    assert!(
+        ViewFile::new(dir.path().to_path_buf())
+            .forget_while(body(1), async { false })
+            .await
+    );
+    assert_eq!(read(dir.path(), ME), Some(view(1)));
+}
+
+#[tokio::test]
+async fn a_view_that_cannot_be_removed_is_not_deregistered_over() {
+    let dir = tempfile::tempdir().unwrap();
+    // A directory in the file's place cannot be removed as a file.
+    std::fs::create_dir(dir.path().join(felix_storage::controlplane_view::FILE_NAME)).unwrap();
+    let asked = Arc::new(AtomicU64::new(0));
+    let deregister = {
+        let asked = Arc::clone(&asked);
+        async move {
+            asked.store(1, Ordering::SeqCst);
+            true
+        }
+    };
+    assert!(
+        !ViewFile::new(dir.path().to_path_buf())
+            .forget_while(body(1), deregister)
+            .await
+    );
+    assert_eq!(
+        asked.load(Ordering::SeqCst),
+        0,
+        "deregistered with a view left behind"
+    );
 }

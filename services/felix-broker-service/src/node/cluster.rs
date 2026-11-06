@@ -134,6 +134,7 @@ pub(super) fn bind_peer_listener(
     incarnation: tokio::sync::watch::Receiver<Option<u64>>,
     unclean: Option<Arc<replication::unclean::UncleanStart>>,
     controlplane: Option<(&reqwest::Client, &str, &Option<NodeCredential>)>,
+    clients: Option<CancellationToken>,
     serving: Option<&CancellationToken>,
     peer_shutdown: &CancellationToken,
 ) -> Result<PeerListener> {
@@ -157,21 +158,26 @@ pub(super) fn bind_peer_listener(
                 // A leader retries a copy that refused it on its driver tick.
                 .with_leader_retry(Duration::from_millis(config.controlplane_sync_interval_ms));
                 let prefetch = replicas.confirmed_prefetch();
+                let handler = peer_dispatch::BrokerPeerHandler::new(
+                    crate::serving::forward::ForwardingHandler::new(
+                        Arc::clone(broker),
+                        Arc::clone(ingress),
+                        Arc::clone(router),
+                        membership_config.advertise_addr.clone(),
+                        Some(Arc::clone(quorum_marks)),
+                        Duration::from_millis(config.publish_quorum_timeout_ms.max(1)),
+                        Arc::clone(auth),
+                    ),
+                    replicas,
+                );
+                let handler = match clients {
+                    Some(clients) => handler.serving_clients_after(clients),
+                    None => handler,
+                };
                 let server = peer::PeerServer::bind_with_tls(
                     membership_config.node_id.clone(),
                     peer_config,
-                    Arc::new(peer_dispatch::BrokerPeerHandler::new(
-                        crate::serving::forward::ForwardingHandler::new(
-                            Arc::clone(broker),
-                            Arc::clone(ingress),
-                            Arc::clone(router),
-                            membership_config.advertise_addr.clone(),
-                            Some(Arc::clone(quorum_marks)),
-                            Duration::from_millis(config.publish_quorum_timeout_ms.max(1)),
-                            Arc::clone(auth),
-                        ),
-                        replicas,
-                    )),
+                    Arc::new(handler),
                     peer_tls.clone(),
                 )
                 .context("bind broker-internal listener")?;
@@ -276,6 +282,15 @@ pub(super) struct ShardTaskDeps<'a, R> {
     pub(super) unclean: &'a Option<Arc<replication::unclean::UncleanStart>>,
     /// Starts a copy's confirmed read when the routes first name it.
     pub(super) prefetch: Option<replication::confirmed::Prefetch>,
+    /// Node addresses from the control-plane view, routed by until the
+    /// first node catalog read.
+    pub(super) nodes: std::collections::HashMap<String, felix_router::NodeRef>,
+    /// After a start from the view, replica reports wait for the restore
+    /// check: they announce this directory's storage id as current.
+    pub(super) reports_held: Option<CancellationToken>,
+    /// After a start from the view: this broker stands for election only once
+    /// cancelled, since peers suspect it until it has registered.
+    pub(super) leads_after: Option<CancellationToken>,
     pub(super) sync_shutdown: &'a CancellationToken,
 }
 
@@ -303,6 +318,9 @@ pub(super) fn spawn_shard_tasks<R: PeerRequester + Send + Sync + 'static>(
         storage_id,
         unclean,
         prefetch,
+        nodes,
+        reports_held,
+        leads_after,
         sync_shutdown,
     } = deps;
     match (cluster, &config.controlplane_url, durable_storage) {
@@ -423,6 +441,7 @@ pub(super) fn spawn_shard_tasks<R: PeerRequester + Send + Sync + 'static>(
                     joint_fence: Some(Arc::clone(fleet)),
                     prefetch,
                     elections,
+                    nodes,
                 },
                 Some(shard_routing::CatalogSource {
                     link: felix_replication::controlplane_link::HttpControlPlaneLink::new(
@@ -470,6 +489,7 @@ pub(super) fn spawn_shard_tasks<R: PeerRequester + Send + Sync + 'static>(
                                 }),
                                 incarnation: Arc::clone(incarnation),
                                 storage_id,
+                                held: reports_held.clone(),
                             },
                             sync_shutdown.clone(),
                         );
@@ -505,6 +525,7 @@ pub(super) fn spawn_shard_tasks<R: PeerRequester + Send + Sync + 'static>(
                     Arc::clone(quorum_marks),
                     Arc::clone(suspects),
                     replication::suspicion::SuspicionConfig::from_env(),
+                    leads_after.clone(),
                     sync_shutdown.clone(),
                 ));
             }

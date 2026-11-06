@@ -250,6 +250,7 @@ fn ctx_with<R>(broker: &Arc<Broker>, requester: R) -> Ctx<R> {
         stood: Default::default(),
         named_here: Default::default(),
         pre_vote_gate: None,
+        leads_after: None,
     }
 }
 
@@ -709,6 +710,7 @@ async fn a_slow_dial_carries_over_to_the_next_round() {
         stood: Default::default(),
         named_here: Default::default(),
         pre_vote_gate: None,
+        leads_after: None,
     };
     let log = shard_log(&ctx.broker, &key()).await.expect("log");
 
@@ -1144,6 +1146,50 @@ async fn the_candidate_task_rebuilds_standings_when_it_starts() {
     shutdown.cancel();
     task.await.expect("candidate task");
     assert_eq!(rebuilt.leader, LOCAL);
+    assert_eq!(rebuilt.generation, 4);
+}
+
+/// **A broker that may not lead yet neither restores nor stands**: after a
+/// start from the saved view its peers suspect it until it registers, so a
+/// standing it won would be taken back. Once allowed, it rebuilds the
+/// standing at 4.
+#[tokio::test(start_paused = true)]
+async fn a_broker_that_may_not_lead_yet_neither_restores_nor_stands() {
+    let (broker, _dir) = elected_before_restart().await;
+    let leads_after = CancellationToken::new();
+    let ctx = Arc::new(Ctx {
+        leads_after: Some(leads_after.clone()),
+        ..ctx(&broker, voters(None))
+    });
+    let shutdown = CancellationToken::new();
+    let task = tokio::spawn(run(Arc::clone(&ctx), shutdown.clone()));
+    let log = shard_log(&broker, &key()).await.expect("log");
+    let accepted = log.accepted_generation();
+
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    assert!(
+        ctx.elections.get(&key()).is_none(),
+        "restored before it may lead"
+    );
+    assert_eq!(
+        log.accepted_generation(),
+        accepted,
+        "stood before it may lead"
+    );
+
+    leads_after.cancel();
+    let rebuilt = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Some(elected) = ctx.elections.get(&key()) {
+                return elected;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("rebuilt once it may lead");
+    shutdown.cancel();
+    task.await.expect("candidate task");
     assert_eq!(rebuilt.generation, 4);
 }
 

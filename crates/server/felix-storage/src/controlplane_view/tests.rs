@@ -98,3 +98,13 @@ fn an_unreadable_file_reads_as_absent() {
     std::fs::create_dir(dir.path().join(FILE_NAME)).unwrap();
     assert_eq!(read(dir.path()), None);
 }
+
+#[test]
+fn a_forgotten_view_reads_as_absent() {
+    let dir = tempfile::tempdir().unwrap();
+    forget(dir.path()).unwrap();
+    record(dir.path(), BODY).unwrap();
+    forget(dir.path()).unwrap();
+    assert_eq!(read(dir.path()), None);
+    assert!(!dir.path().join(FILE_NAME).exists());
+}
