@@ -5609,7 +5609,14 @@ isolation, ephemeral cache, tenant/namespace/stream registries, RBAC and Felix
 token authorization, a control plane with a Postgres-backed store, a Rust client
 SDK, and a protocol conformance runner.
 
-[Unreleased]: https://github.com/GetFelix/felix/compare/v0.6.0-preview.7...HEAD
+[Unreleased]: https://github.com/GetFelix/felix/compare/v0.7.0-preview.2...HEAD
+[0.7.0-preview.2]: https://github.com/GetFelix/felix/compare/v0.7.0-preview.1...v0.7.0-preview.2
+[0.7.0-preview.1]: https://github.com/GetFelix/felix/compare/v0.6.2...v0.7.0-preview.1
+[0.6.2]: https://github.com/GetFelix/felix/compare/v0.6.1...v0.6.2
+[0.6.1]: https://github.com/GetFelix/felix/compare/v0.6.0...v0.6.1
+[0.6.0]: https://github.com/GetFelix/felix/compare/v0.6.0-preview.9...v0.6.0
+[0.6.0-preview.9]: https://github.com/GetFelix/felix/compare/v0.6.0-preview.8...v0.6.0-preview.9
+[0.6.0-preview.8]: https://github.com/GetFelix/felix/compare/v0.6.0-preview.7...v0.6.0-preview.8
 [0.6.0-preview.7]: https://github.com/GetFelix/felix/compare/v0.6.0-preview.6...v0.6.0-preview.7
 [0.6.0-preview.6]: https://github.com/GetFelix/felix/compare/v0.6.0-preview.5...v0.6.0-preview.6
 [0.6.0-preview.5]: https://github.com/GetFelix/felix/compare/v0.6.0-preview.4...v0.6.0-preview.5

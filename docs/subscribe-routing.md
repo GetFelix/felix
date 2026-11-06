@@ -3,7 +3,7 @@
 **Decision: a subscription for a shard this broker does not own is answered with
 a redirect to the owner. Proxying is rejected as the default.**
 
-Recorded for M4.4 (#107). The rejected alternative and the measurements that
+Recorded with the subscribe-routing design (#107). The rejected alternative and the measurements that
 informed the choice are both below, because the reasoning matters more than the
 verdict if this is ever revisited.
 
@@ -102,11 +102,11 @@ Not free, and these are the reasons to revisit it:
 - **Rebalance churn.** Every ownership change disconnects and reconnects the
   affected subscribers, at exactly the moment the cluster is already under
   stress. A proxy absorbs the move invisibly. This is the strongest argument for
-  proxying and it is unmeasured; M9 should quantify a mass reconnect at fanout
+  proxying and it is unmeasured; a mass reconnect at fanout should be measured
   before rebalancing ships.
 - **Client complexity.** The client must discover topology, follow redirects, and
-  reconnect across failover (M6: #117, #118, #119). Every future non-Rust SDK
-  inherits that.
+  reconnect across failover (#117, #118, #119). Every non-Rust SDK inherits
+  that.
 - **Deployment reach.** A client behind a load balancer or NAT that can reach
   only one endpoint cannot follow a redirect at all.
 - **Connection count.** A client subscribing across B brokers holds up to B
@@ -131,9 +131,9 @@ Not free, and these are the reasons to revisit it:
   subscribe path uses. A watch served off the owner would go quiet on writes it
   cannot see, which is the served-locally failure in a different costume.
 
-## What this requires
+## What this required
 
-**Wire.** The client protocol has no way to say "not here, go there". Adding one:
+**Wire.** The client protocol had no way to say "not here, go there". The fix:
 
 - A `NotLeader` variant on `Message`, carrying node id, advertised address, and
   generation, mirroring the internal kind of the same name.
@@ -145,7 +145,7 @@ Not free, and these are the reasons to revisit it:
 - Nothing else. No frame-layout flag, because the payload of an existing frame
   does not change; no version bump, because negotiation is the mechanism.
 
-**Client.** All of it in M6 (#117, #118, #119):
+**Client.** All of it lives in the client (#117, #118, #119):
 
 - Follow a redirect: connect to the named address, re-authenticate, re-subscribe.
 - Resume at the last offset it saw, so a redirect mid-stream is not a gap. This

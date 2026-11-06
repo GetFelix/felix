@@ -206,7 +206,7 @@ plane](/deployment/failover-without-control-plane/). To turn it on, after the
 upgrade above:
 
 1. Finish upgrading every control-plane member. Under Raft the finalizes below
-   check it (level 23 for `joint_fence`, 26 for `replica_election`). Under
+   check it (level 25 for `joint_fence`, 26 for `replica_election`). Under
    Postgres nothing checks it, so make sure no instance runs an older build.
 2. Set `FELIX_INTERNAL_ELECTION=true` on every broker and restart them one at
    a time. Nothing changes yet.

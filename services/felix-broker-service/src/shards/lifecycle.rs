@@ -618,7 +618,8 @@ impl ShardLifecycle {
     }
 
     /// Record that the driver could not open the log, and why.
-    /// Hold `open` until its stream is registered; see [`Self::ready_to_open`].
+    /// Hold `open` for a later pass, until its stream is registered; see
+    /// [`Self::ready_to_open`]. Also holds an open that must simply go again.
     pub fn await_registration(&mut self, open: Action) {
         if let Action::Open { key, .. } = &open {
             self.awaiting_registration.insert(key.clone(), open);
@@ -1948,6 +1949,29 @@ async fn apply_open(
                 ),
             }
         }
+        // A release still fanning out to a slow subscriber, which ends on its
+        // own. Failed would be final for this assignment, so the open goes
+        // again on a later pass; every step before it tolerates a repeat.
+        Err(err)
+            if matches!(
+                err.downcast_ref::<felix_broker::BrokerError>(),
+                Some(felix_broker::BrokerError::ReleaseInFlight)
+            ) =>
+        {
+            tracing::info!(
+                stream = %key.stream,
+                shard = key.shard,
+                generation,
+                "shard's held batches are still being released; opening on a later pass",
+            );
+            lifecycle.lock().await.await_registration(Action::Open {
+                key,
+                generation,
+                new_term,
+                fence,
+                incarnation,
+            });
+        }
         Err(err) => {
             mm::record_open_failure();
             let mut lifecycle = lifecycle.lock().await;
@@ -2252,7 +2276,7 @@ pub(super) async fn lead_from_tail(
     broker
         .lead_from_tail(&key.tenant_id, &key.namespace, &key.stream, key.shard)
         .await
-        .map_err(|err| anyhow::anyhow!("move the stream to its log's tail: {err}"))
+        .map_err(|err| anyhow::Error::new(err).context("move the stream to its log's tail"))
 }
 
 /// End a shard's readers once the writes already inside its fence are done,
