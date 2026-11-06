@@ -323,21 +323,42 @@ async fn drive(
         findings.extend(checker.lock().await.check(&ctx).await);
     }
     if !unread.is_empty() {
-        let mut finding = Finding::new(
-            "final-reads",
-            format!(
-                "no final read for {} shards, left out of the history check: {}",
-                unread.len(),
-                unread.join(", ")
-            ),
-        );
-        for list in unread.iter().take(3) {
+        // A shard held on purpose cannot be read, so it is reported, not failed.
+        let held = cluster.held_shards().await;
+        let exempt = |list: &String| {
             let shard = list.rsplit('/').next().and_then(|n| n.parse().ok());
-            if let Some(shard) = shard {
-                finding = finding.with(cluster.census(&crate::cluster::stream_key(shard)).await);
+            shard.is_some_and(|shard| {
+                held.contains(&crate::cluster::describe(&crate::cluster::stream_key(
+                    shard,
+                )))
+            })
+        };
+        let (exempt_lists, failing): (Vec<String>, Vec<String>) =
+            unread.into_iter().partition(|list| exempt(list));
+        for (lists, is_exempt) in [(&failing, false), (&exempt_lists, true)] {
+            if lists.is_empty() {
+                continue;
             }
+            let summary = format!(
+                "no final read for {} {}shards, left out of the history check: {}",
+                lists.len(),
+                if is_exempt { "exempt " } else { "" },
+                lists.join(", ")
+            );
+            let mut finding = if is_exempt {
+                Finding::warning("final-reads", summary)
+            } else {
+                Finding::new("final-reads", summary)
+            };
+            for list in lists.iter().take(3) {
+                let shard = list.rsplit('/').next().and_then(|n| n.parse().ok());
+                if let Some(shard) = shard {
+                    finding =
+                        finding.with(cluster.census(&crate::cluster::stream_key(shard)).await);
+                }
+            }
+            findings.push(finding);
         }
-        findings.push(finding);
     }
     finished(seed, config, history, findings, begun.elapsed())
 }

@@ -34,6 +34,7 @@
 //! takes a new storage id and runs `UncleanStart`.
 
 mod census;
+mod kills;
 mod node;
 
 use std::sync::Arc;
@@ -53,6 +54,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 pub use self::census::{Census, NodeView};
+use self::kills::KillLog;
 use self::node::Node;
 use crate::controlplane::{CpConfig, SimControlPlane};
 use crate::net::{Link, SimNet};
@@ -150,6 +152,7 @@ pub struct SimCluster {
     stalled: CancellationToken,
     /// Tells the stall watch to stop when the cluster is dropped.
     done: Arc<AtomicBool>,
+    kills: parking_lot::Mutex<KillLog>,
 }
 
 impl Drop for SimCluster {
@@ -183,6 +186,7 @@ impl SimCluster {
             starts: AtomicU64::new(0),
             stalled,
             done,
+            kills: Default::default(),
         });
         cluster.reset_links();
         cluster.create_catalog().await?;
@@ -339,7 +343,26 @@ impl SimCluster {
     /// takes a new storage id and runs its unclean-start handling. Only a
     /// run that does not fsync on commit (the default) can be left that way.
     pub async fn kill(&self, index: usize) {
-        self.nodes[index].crash(&self.net, true).await;
+        let at = self.elapsed();
+        self.sample_replica_sets().await;
+        if self.nodes[index].crash(&self.net, true).await {
+            self.kills.lock().kill(&self.nodes[index].id, at);
+        }
+    }
+
+    /// Shards (`stream/3`) with two members killed uncleanly at overlapping
+    /// times. The broker holds these on purpose until an operator abandons a
+    /// member, so they are not expected to be served. Takes one more sample
+    /// of the replica sets first.
+    pub async fn held_shards(&self) -> std::collections::BTreeSet<String> {
+        self.sample_replica_sets().await;
+        self.kills.lock().held()
+    }
+
+    async fn sample_replica_sets(&self) {
+        if let Ok(sets) = self.cp.replica_sets().await {
+            self.kills.lock().sample(self.elapsed(), sets);
+        }
     }
 
     /// Whether the broker at `index` is running and started after an unclean
@@ -357,6 +380,14 @@ impl SimCluster {
         let Some(start) = self.nodes[index].begin_start() else {
             return;
         };
+        if self
+            .kills
+            .lock()
+            .restart(&self.nodes[index].id, self.elapsed())
+        {
+            let cluster = Arc::clone(self);
+            tokio::spawn(async move { cluster.sample_replica_sets().await });
+        }
         let cluster = Arc::clone(self);
         let run = self.starts.fetch_add(1, Ordering::SeqCst) + 1;
         tokio::spawn(async move {

@@ -213,10 +213,11 @@ impl Node {
     /// Stop whatever is running or starting, as a crash does. A `kill` leaves
     /// the run state unclean, so the next start rotates the storage id and
     /// runs the unclean-start handling; otherwise the stop is recorded clean.
-    pub(crate) async fn crash(&self, net: &SimNet, kill: bool) {
+    /// Returns whether the run state was left unclean.
+    pub(crate) async fn crash(&self, net: &SimNet, kill: bool) -> bool {
         let prior = std::mem::replace(&mut *self.state.lock(), State::Down);
         let broker = match prior {
-            State::Down => return,
+            State::Down => return false,
             State::Starting(token) => {
                 token.cancel();
                 None
@@ -247,18 +248,24 @@ impl Node {
             }
         }
         tokio::time::sleep(CRASH_DRAIN).await;
-        let Some(id) = stopped_under else { return };
+        let Some(id) = stopped_under else {
+            return false;
+        };
         if kill {
             // A kill after a failed fsync: the process left the run state
             // running, and the next start cannot trust what it acknowledged.
             if let Err(err) = felix_storage::run_state::forget_boot(self.dir.path()) {
                 tracing::error!(node = %self.id, error = %err, "could not record the kill as unsafe");
+                return false;
             }
-        } else if let Err(err) = felix_storage::run_state::mark_clean(self.dir.path(), id) {
+            return true;
+        }
+        if let Err(err) = felix_storage::run_state::mark_clean(self.dir.path(), id) {
             // A process crash loses nothing the kernel accepted, so it is
             // equivalent to a stop with everything synced.
             tracing::error!(node = %self.id, error = %err, "could not record the crash as clean");
         }
+        false
     }
 
     /// The catalog sync's read of the control plane, behind this broker's
