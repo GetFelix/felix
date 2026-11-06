@@ -446,8 +446,9 @@ async fn run<R: PeerRequester + Send + Sync + 'static>(
         // Shards of a suspected broker first: a real outage is not held up
         // behind shards suspected alone, which get a smaller share.
         let mut order: Vec<_> = snapshot.iter().collect();
-        rotate_by_node(&mut order, local);
-        order.sort_by_key(|(_, route)| !names.contains(&route.leader.node_id));
+        walk_order(&mut order, local, |(_, route)| {
+            names.contains(&route.leader.node_id)
+        });
         for (key, route) in order {
             if in_flight.len() >= STANDING_AT_ONCE {
                 break;
@@ -477,21 +478,33 @@ async fn run<R: PeerRequester + Send + Sync + 'static>(
     }
 }
 
-/// Start a key-ordered walk at an offset taken from `node_id`, wrapping
-/// around. Every broker sees the same order, and only `STANDING_AT_ONCE`
-/// shards stand per tick, so without this the followers of a dead leader all
-/// fill their slots with the same lowest-keyed shards. FNV-1a, not a seeded
-/// hasher, so the offset is the same on every run of the simulator.
-fn rotate_by_node<T>(order: &mut [T], node_id: &str) {
-    if order.is_empty() {
-        return;
-    }
-    let hash = node_id
+/// Put the suspected shards first, then start each group's key-ordered walk
+/// at an offset taken from `node_id`, wrapping around. Every broker sees the
+/// same order and only `STANDING_AT_ONCE` shards stand per tick, so without
+/// this the followers of a dead leader all fill their slots with the same
+/// lowest-keyed shards. Rotating each group, not the whole table, keeps the
+/// offsets apart when a dead leader's shards sort together. The hash is
+/// FNV-1a with a final mix (consecutive ids otherwise land close together),
+/// not a seeded hasher, so it is the same on every run of the simulator.
+fn walk_order<T>(order: &mut [T], node_id: &str, suspected: impl Fn(&T) -> bool) {
+    order.sort_by_key(|item| !suspected(item));
+    let split = order.partition_point(|item| suspected(item));
+    let mut hash = node_id
         .bytes()
         .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
             (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
         });
-    order.rotate_left((hash % order.len() as u64) as usize);
+    hash ^= hash >> 33;
+    hash = hash.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    hash ^= hash >> 33;
+    hash = hash.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
+    hash ^= hash >> 33;
+    let (suspected, shard_only) = order.split_at_mut(split);
+    for group in [suspected, shard_only] {
+        if !group.is_empty() {
+            group.rotate_left((hash % group.len() as u64) as usize);
+        }
+    }
 }
 
 /// Whether this broker holds a copy of `route`'s shard: a follower, or the

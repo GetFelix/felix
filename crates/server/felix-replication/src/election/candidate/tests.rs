@@ -1678,22 +1678,48 @@ async fn a_set_kept_in_the_second_pre_vote_stops_the_standing() {
     set_changes_during_the_round(ChangesIn::SecondPreVote, false).await;
 }
 
-/// **The walk starts at a per-broker offset**: two brokers do not begin on
-/// the same shard, and a full walk still visits every shard once.
+/// **Survivors of one dead leader cover different shards first**: its 200
+/// shards sort together, and two followers must not fill their
+/// `STANDING_AT_ONCE` slots with the same ones. The offsets come from a fixed
+/// hash, so the bound is exact for these ids: broker-1 and broker-a start 123
+/// apart in a run of 200, so their first windows do not meet; the bound of
+/// half a window leaves room for a hash change, and the old whole-table rotation
+/// overlapped all 64.
 #[test]
-fn the_walk_starts_at_a_different_shard_on_each_broker() {
-    let table: Vec<u32> = (0..200).collect();
-    let walk = |node: &str| {
+fn survivors_of_a_dead_leader_stand_on_different_shards_first() {
+    // 600 shards in key order; broker-3 led the first 200.
+    let table: Vec<(u32, &str)> = (0..600)
+        .map(|shard| {
+            (
+                shard,
+                ["broker-3", "broker-1", "broker-a"][(shard / 200) as usize],
+            )
+        })
+        .collect();
+    let first = |node: &str| {
         let mut order = table.clone();
-        rotate_by_node(&mut order, node);
+        walk_order(&mut order, node, |(_, leader)| *leader == "broker-3");
+        let all: BTreeSet<u32> = order.iter().map(|(shard, _)| *shard).collect();
+        assert_eq!(
+            all.len(),
+            table.len(),
+            "a shard was skipped or visited twice"
+        );
         order
+            .into_iter()
+            .take(STANDING_AT_ONCE)
+            .map(|(shard, _)| shard)
+            .collect::<BTreeSet<_>>()
     };
-    let (a, b) = (walk("broker-a"), walk("broker-b"));
-    assert_ne!(a[0], b[0], "both brokers start on the same shard");
-    assert_eq!(a, walk("broker-a"), "the offset is not stable");
-    for order in [a, b] {
-        let mut visited = order.clone();
-        visited.sort();
-        assert_eq!(visited, table, "a shard was skipped or visited twice");
-    }
+    let (one, two) = (first("broker-1"), first("broker-a"));
+    assert!(
+        one.iter().all(|shard| *shard < 200),
+        "suspected shards go first"
+    );
+    assert_eq!(one, first("broker-1"), "the offset is not stable");
+    let overlap = one.intersection(&two).count();
+    assert!(
+        overlap < STANDING_AT_ONCE / 2,
+        "first windows overlap on {overlap}"
+    );
 }
