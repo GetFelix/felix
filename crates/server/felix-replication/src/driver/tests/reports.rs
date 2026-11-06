@@ -2367,9 +2367,12 @@ async fn a_ship_refusal_below_the_own_copys_other_ballot_reports_the_own() {
 /// took `broker-b`'s fence at 5 and the elected route laid over the control
 /// plane's released the shard here. `named` is the leader the control plane
 /// names; `started` writes `broker-b`'s start record at 5 into this copy.
+/// `adopted` has the control plane then adopt `broker-b` at 5, which drops
+/// the elected route as the routing feed does.
 async fn released_refusal(
     named: &str,
     started: bool,
+    adopted: bool,
     within: Duration,
 ) -> Option<ShardReplicaStatus> {
     let (broker, _dir) = leader_with(3).await;
@@ -2418,6 +2421,16 @@ async fn released_refusal(
             ..Default::default()
         },
     );
+    if adopted {
+        let laid = elections.overlay(|_| {
+            Some(crate::election::Named {
+                generation: 5,
+                incarnation: 0,
+                leader: "broker-b".to_string(),
+            })
+        });
+        assert!(laid.is_empty(), "the adoption keeps the elected route");
+    }
     published.marks.set_elections(elections);
     let (control_plane, received) = recording_control_plane().await;
     let shutdown = CancellationToken::new();
@@ -2467,13 +2480,23 @@ async fn released_refusal(
 #[tokio::test(flavor = "multi_thread")]
 async fn a_leader_released_to_a_candidate_that_never_opened_reports_the_refusal() {
     let early = BALLOT_ELSEWHERE_FOR - Duration::from_millis(500);
-    assert_eq!(released_refusal(LOCAL, false, early).await, None);
-    let report = released_refusal(LOCAL, false, BALLOT_ELSEWHERE_FOR * 2)
+    assert_eq!(released_refusal(LOCAL, false, false, early).await, None);
+    let report = released_refusal(LOCAL, false, false, BALLOT_ELSEWHERE_FOR * 2)
         .await
         .expect("no report of the generation a released leader promised away");
     assert_eq!(report.generation, 4);
     assert_eq!(report.refused, Some(RefusedGeneration::above(4, 5)));
     let late = BALLOT_ELSEWHERE_FOR + Duration::from_secs(2);
-    assert_eq!(released_refusal(LOCAL, true, late).await, None);
-    assert_eq!(released_refusal("broker-c", false, late).await, None);
+    assert_eq!(released_refusal(LOCAL, true, false, late).await, None);
+    assert_eq!(released_refusal("broker-c", false, false, late).await, None);
+}
+
+/// **Nor once the control plane adopted the candidate.** Its report moves
+/// the control plane's route to the candidate's generation, which drops the
+/// elected route laid over it, and this broker no longer has a generation
+/// below the ballot to report, even with no start record here.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_leader_released_to_an_adopted_candidate_reports_nothing() {
+    let late = BALLOT_ELSEWHERE_FOR + Duration::from_secs(2);
+    assert_eq!(released_refusal(LOCAL, false, true, late).await, None);
 }
