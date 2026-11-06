@@ -417,8 +417,8 @@ impl ShardOwnership {
         first: &HashSet<ShardKey>,
         previous: &HashMap<ShardKey, ShardAssignment>,
     ) {
-        self.reset_seeded(items, first, previous);
         self.seeded = true;
+        self.reset_seeded(items, first, previous);
     }
 
     /// Whether the control plane's snapshot has been taken. See
