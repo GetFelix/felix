@@ -71,6 +71,7 @@ fn replay() {
 }
 
 #[test]
+#[ignore = "known liveness stalls (#2024, #2032, #2033); runs in the non-blocking sim-seeds CI job"]
 fn seeds() {
     let count = env_u64("FELIX_SIM_SEEDS").unwrap_or(4);
     let start = env_u64("FELIX_SIM_SEED_START").unwrap_or(1);
