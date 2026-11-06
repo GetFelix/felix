@@ -588,7 +588,7 @@ impl<T> Default for ShardTasks<T> {
     fn default() -> Self {
         Self {
             set: JoinSet::new(),
-            keys: HashMap::new(),
+            keys: HashMap::default(),
         }
     }
 }
