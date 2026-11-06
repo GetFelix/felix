@@ -249,7 +249,7 @@ impl Digest {
 /// valid. A shard that has none, or more than one, for the whole window fails.
 /// The finding carries a census of the first few stuck shards.
 ///
-/// A shard with two members killed uncleanly at overlapping times is left out:
+/// A shard held after unclean kills is left out:
 /// the broker holds it on purpose until an operator abandons a member (see
 /// [`SimCluster::held_shards`]). Only this check skips it; the history checks
 /// and the other cluster checks still cover it.
@@ -278,7 +278,7 @@ impl Checker for ElectionSettles {
         let deadline = ctx.healed_at + cluster.config.settle_within;
         let held = cluster.held_shards().await;
         println!(
-            "election-settles: {} of {} shards exempt, two members killed uncleanly with overlapping down windows",
+            "election-settles: {} of {} shards exempt, held on purpose after unclean kills",
             held.len(),
             cluster.shard_keys().count(),
         );

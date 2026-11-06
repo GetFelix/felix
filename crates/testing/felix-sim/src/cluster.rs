@@ -34,7 +34,7 @@
 //! takes a new storage id and runs `UncleanStart`.
 
 mod census;
-mod kills;
+pub(crate) mod kills;
 mod node;
 
 use std::sync::Arc;
@@ -344,25 +344,19 @@ impl SimCluster {
     /// run that does not fsync on commit (the default) can be left that way.
     pub async fn kill(&self, index: usize) {
         let at = self.elapsed();
-        self.sample_replica_sets().await;
+        // Read from the store before the stop, so the view is the one the
+        // broker died under.
+        let view = self.cp.shard_views().await.unwrap_or_default();
         if self.nodes[index].crash(&self.net, true).await {
-            self.kills.lock().kill(&self.nodes[index].id, at);
+            self.kills.lock().kill(&self.nodes[index].id, at, view);
         }
     }
 
-    /// Shards (`stream/3`) with two members killed uncleanly at overlapping
-    /// times. The broker holds these on purpose until an operator abandons a
-    /// member, so they are not expected to be served. Takes one more sample
-    /// of the replica sets first.
+    /// Shards (`stream/3`) the broker holds on purpose after unclean kills,
+    /// until an operator abandons a member, so they are not expected to be
+    /// served. See `kills.rs` for the rule.
     pub async fn held_shards(&self) -> std::collections::BTreeSet<String> {
-        self.sample_replica_sets().await;
         self.kills.lock().held()
-    }
-
-    async fn sample_replica_sets(&self) {
-        if let Ok(sets) = self.cp.replica_sets().await {
-            self.kills.lock().sample(self.elapsed(), sets);
-        }
     }
 
     /// Whether the broker at `index` is running and started after an unclean
@@ -380,14 +374,9 @@ impl SimCluster {
         let Some(start) = self.nodes[index].begin_start() else {
             return;
         };
-        if self
-            .kills
+        self.kills
             .lock()
-            .restart(&self.nodes[index].id, self.elapsed())
-        {
-            let cluster = Arc::clone(self);
-            tokio::spawn(async move { cluster.sample_replica_sets().await });
-        }
+            .restart(&self.nodes[index].id, self.elapsed());
         let cluster = Arc::clone(self);
         let run = self.starts.fetch_add(1, Ordering::SeqCst) + 1;
         tokio::spawn(async move {

@@ -54,27 +54,60 @@ async fn a_killed_broker_restarts_unclean_and_a_crashed_one_does_not() {
     assert_eq!(cluster.started_unclean(0), Some(true), "a kill");
 }
 
+/// The first stream shard with a leader and a follower, and which brokers.
+async fn a_shard_and_its_two_brokers(cluster: &SimCluster) -> (String, usize, usize) {
+    let views = cluster.cp().shard_views().await.unwrap();
+    let (shard, view) = views
+        .iter()
+        .find(|(shard, view)| shard.starts_with("stream/") && view.members.len() == 2)
+        .expect("a stream shard with two members");
+    let follower = view.members.iter().find(|m| **m != view.leader).unwrap();
+    let index = |id: &str| cluster.index_of(id).unwrap();
+    (shard.clone(), index(follower), index(&view.leader))
+}
+
 #[tokio::test(start_paused = true)]
-async fn only_overlapping_kills_hold_shards() {
+async fn a_clean_stop_beside_a_kill_holds_nothing() {
     log();
     let cluster = Arc::new(SimCluster::start(1, small()).await.unwrap());
-    // A clean stop beside a kill does not count.
-    cluster.kill(0).await;
-    cluster.crash(1).await;
+    let (_, follower, leader) = a_shard_and_its_two_brokers(&cluster).await;
+    cluster.crash(follower).await;
+    cluster.kill(leader).await;
     assert!(cluster.held_shards().await.is_empty());
-    restarted(&cluster, 1).await;
-    // Two kills at once do, for the shards that have both b1 and b2.
-    cluster.kill(1).await;
+}
+
+/// A follower killed, then the leader: the shard is held, a shard led by the
+/// other broker is not, and after both restart the shard stays unserved.
+#[tokio::test(start_paused = true)]
+async fn a_held_shard_stays_unserved_after_both_copies_return() {
+    log();
+    let cluster = Arc::new(SimCluster::start(1, small()).await.unwrap());
+    let before = cluster.cp().shard_views().await.unwrap();
+    let (shard, follower, leader) = a_shard_and_its_two_brokers(&cluster).await;
+    cluster.kill(follower).await;
+    cluster.kill(leader).await;
     let held = cluster.held_shards().await;
-    let both: std::collections::BTreeSet<String> = cluster
-        .cp()
-        .replica_sets()
+    assert!(held.contains(&shard), "{held:?}");
+    let leader_id = cluster.node_id(leader);
+    for other in &held {
+        assert_eq!(
+            before[other].leader,
+            leader_id,
+            "{other} was not led by b{}",
+            leader + 1
+        );
+    }
+    restarted(&cluster, follower).await;
+    restarted(&cluster, leader).await;
+    tokio::time::sleep(Duration::from_secs(120)).await;
+    let unserved: Vec<_> = cluster
+        .unserved()
         .await
-        .unwrap()
         .into_iter()
-        .filter(|(_, members)| members.contains("b1") && members.contains("b2"))
-        .map(|(shard, _)| shard)
+        .map(|(key, _)| describe(&key))
         .collect();
-    assert!(!both.is_empty());
-    assert_eq!(held, both);
+    assert!(
+        unserved.contains(&shard),
+        "{shard} was served again: {unserved:?}"
+    );
 }

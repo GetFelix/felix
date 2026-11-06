@@ -75,6 +75,7 @@ fn history(ops: Vec<Op>, final_a: &[(u64, u64)]) -> History {
         lists,
         ops,
         final_reads,
+        unread_lists: Default::default(),
         registers: Vec::new(),
         commit_values: Default::default(),
         commit_reads: Vec::new(),
@@ -550,4 +551,43 @@ fn linearizable(seed: u64, appends: u64) -> History {
         ops.push(read(rng.below(8) as usize, invoke, complete, "a", &seen));
     }
     history(ops, &log)
+}
+
+// --- a list whose final read could not be taken ---------------------------------------
+
+/// A history with list `a` unread: the final read is gone, the list is marked.
+fn unread(ops: Vec<Op>) -> History {
+    let mut h = history(ops, &[]);
+    h.final_reads.clear();
+    h.unread_lists.insert("a".to_string());
+    h
+}
+
+#[test]
+fn an_unread_list_skips_the_lost_write_rule_only() {
+    let h = unread(vec![
+        append(0, 0, 1, "a", 0, OK),
+        append(0, 2, 3, "a", 1, OK),
+        read(1, 4, 5, "a", &[(0, 0)]),
+    ]);
+    let report = check(&h);
+    assert!(!report.has(Rule::LostWrite), "{report}");
+    assert!(!report.has(Rule::MalformedHistory), "{report}");
+}
+
+#[test]
+fn an_unread_list_still_catches_what_reads_saw() {
+    let h = unread(vec![
+        append(0, 0, 1, "a", 0, OK),
+        read(1, 2, 3, "a", &[(0, 0)]),
+        read(1, 4, 5, "a", &[(0, 0), (1, 0)]),
+    ]);
+    assert!(check(&h).has(Rule::Duplicate));
+    let h = unread(vec![
+        append(0, 0, 1, "a", 0, OK),
+        append(0, 2, 3, "a", 1, OK),
+        read(1, 4, 5, "a", &[(0, 0)]),
+        read(1, 6, 7, "a", &[(0, 1)]),
+    ]);
+    assert!(check(&h).has(Rule::NotAPrefix));
 }
