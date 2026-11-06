@@ -31,6 +31,25 @@ pub fn hash_state() -> ahash::RandomState {
     ahash::RandomState::new()
 }
 
+/// A hasher state of its own, for deriving ids rather than laying out a map.
+/// Random in a real process; under a simulator drawn from the seeded jitter
+/// sequence, so each caller (each broker's producer ids) gets different keys
+/// that still repeat run to run. [`hash_state`] gives every map in a run the
+/// same keys, which would give two brokers the same ids.
+#[cfg(feature = "hasher")]
+pub fn id_state() -> ahash::RandomState {
+    #[cfg(any(debug_assertions, test, feature = "sim"))]
+    if crate::jitter::sim::is_seeded() {
+        return ahash::RandomState::with_seeds(
+            crate::jitter::draw(),
+            crate::jitter::draw(),
+            crate::jitter::draw(),
+            crate::jitter::draw(),
+        );
+    }
+    ahash::RandomState::new()
+}
+
 /// A [`std::hash::BuildHasher`] that takes its keys from [`hash_state`] when
 /// it is created, including through `Default`, so a map built by `collect`
 /// or `or_default` is seeded too.
