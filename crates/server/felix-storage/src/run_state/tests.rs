@@ -593,3 +593,24 @@ fn the_head_trim_marker_is_kept_once_recorded() {
     assert!(head_trimmed(dir.path()).expect("read"));
     assert!(!dir.path().join("head-trimmed.tmp").exists());
 }
+
+#[test]
+fn the_replaced_marker_names_the_id_and_incarnation_it_was_written_for() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(read_replaced(dir.path()).unwrap(), None);
+    record_replaced(dir.path(), StorageId::from_bytes([7; 16]), 41).unwrap();
+    assert!(replaced(dir.path()).unwrap());
+    assert_eq!(
+        read_replaced(dir.path()).unwrap(),
+        Some(ReplacedMark::Under {
+            storage_id: "07".repeat(16),
+            after: 41,
+        })
+    );
+    // What an older build wrote says nothing about when.
+    std::fs::write(dir.path().join(REPLACED_FILE_NAME), b"replaced\n").unwrap();
+    assert_eq!(
+        read_replaced(dir.path()).unwrap(),
+        Some(ReplacedMark::Unknown)
+    );
+}

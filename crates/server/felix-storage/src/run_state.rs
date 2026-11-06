@@ -311,17 +311,69 @@ pub fn has_record_headers(root: &Path) -> Result<bool> {
 pub const REPLACED_FILE_NAME: &str = "replaced-storage";
 
 /// Record, durably, that the control plane last registered this node under
-/// another storage id. Call before the node registers the new one, after
-/// which the registration no longer says so. Never removed,
-/// since a copy with no replica set on this directory may be one the node
-/// held under the old id, however many restarts later.
-pub fn record_replaced(root: &Path) -> Result<()> {
-    write_atomically(root, REPLACED_FILE_NAME, b"replaced\n", true)
+/// another storage id, when its record of the node was at incarnation
+/// `after` and the directory now runs under `storage_id`. Call before the
+/// node registers `storage_id`, after which the registration no longer says
+/// so. Never removed, since a copy with no replica set on this directory may
+/// be one the node held under the old id, however many restarts later. A
+/// later replacement overwrites the incarnation and id.
+pub fn record_replaced(root: &Path, storage_id: StorageId, after: u64) -> Result<()> {
+    let body = format!(
+        "replaced\nstorage_id={}\nafter={after}\n",
+        storage_id.to_hex()
+    );
+    write_atomically(root, REPLACED_FILE_NAME, body.as_bytes(), true)
 }
 
 /// Whether [`record_replaced`] ran on `root`.
 pub fn replaced(root: &Path) -> Result<bool> {
     crate::fs::try_exists(root.join(REPLACED_FILE_NAME)).map_err(StorageError::Io)
+}
+
+/// What the replaced-storage marker under `root` says, or `None` without one.
+pub fn read_replaced(root: &Path) -> Result<Option<ReplacedMark>> {
+    let bytes = match crate::fs::read(root.join(REPLACED_FILE_NAME)) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(StorageError::Io(err)),
+    };
+    Ok(Some(decode_replaced(&bytes)))
+}
+
+/// The replaced-storage marker's contents.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReplacedMark {
+    /// Written by an older build, or unreadable: when it was written is
+    /// unknown.
+    Unknown,
+    /// Written for `storage_id` when the control plane's record of the node
+    /// was at incarnation `after`. A registration under `storage_id` since
+    /// then has a higher incarnation.
+    Under { storage_id: String, after: u64 },
+}
+
+pub(crate) fn decode_replaced(bytes: &[u8]) -> ReplacedMark {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return ReplacedMark::Unknown;
+    };
+    let mut lines = text.lines();
+    if lines.next() != Some("replaced") {
+        return ReplacedMark::Unknown;
+    }
+    let storage_id = lines
+        .next()
+        .and_then(|line| line.strip_prefix("storage_id="));
+    let after = lines
+        .next()
+        .and_then(|line| line.strip_prefix("after="))
+        .and_then(|after| after.parse().ok());
+    match (storage_id, after) {
+        (Some(storage_id), Some(after)) => ReplacedMark::Under {
+            storage_id: storage_id.to_owned(),
+            after,
+        },
+        _ => ReplacedMark::Unknown,
+    }
 }
 
 /// The node incarnation recorded under `root`.

@@ -687,7 +687,8 @@ pub fn spawn(
         incarnation,
         registered,
         storage_id,
-        record_in,
+        record_in.clone(),
+        record_in.map(crate::cluster::controlplane_view::ViewFile::new),
         restore_check,
         true,
     )
@@ -710,6 +711,7 @@ pub(crate) fn spawn_with(
     registered: tokio::sync::watch::Sender<Option<u64>>,
     storage_id: Option<StorageId>,
     record_in: Option<std::path::PathBuf>,
+    view: Option<crate::cluster::controlplane_view::ViewFile>,
     restore_check: Option<CancellationToken>,
     own_thread: bool,
 ) -> MembershipTask {
@@ -741,7 +743,7 @@ pub(crate) fn spawn_with(
                     Some(true) => checked.cancel(),
                     Some(false) => {
                         mm::record_membership_live(false);
-                        forget_view(record_in.as_deref()).await;
+                        forget_view(view.as_ref()).await;
                         fatal.cancel();
                         return;
                     }
@@ -766,7 +768,7 @@ pub(crate) fn spawn_with(
                                 error = %message,
                                 "the control plane refused this identity; the broker is not a cluster member",
                             );
-                            forget_view(record_in.as_deref()).await;
+                            forget_view(view.as_ref()).await;
                             fatal.cancel();
                             return;
                         }
@@ -805,7 +807,7 @@ pub(crate) fn spawn_with(
                     {
                         tracing::warn!(error = %err, "could not deregister after refusing to join");
                     }
-                    forget_view(record_in.as_deref()).await;
+                    forget_view(view.as_ref()).await;
                     fatal.cancel();
                     return;
                 }
@@ -855,20 +857,13 @@ pub(crate) fn spawn_with(
     }
 }
 
-/// Remove the control-plane view under `root` durably, before a broker stops
-/// because the control plane refused it or found its directory replaced, so a
-/// restart during an outage does not vote from it. The drain removes it again
-/// once the view's writer has stopped.
-async fn forget_view(root: Option<&std::path::Path>) {
-    let Some(root) = root.map(std::path::Path::to_path_buf) else {
-        return;
-    };
-    let forgotten = tokio::task::spawn_blocking(move || {
-        felix_storage::controlplane_view::forget(&root).map_err(|err| err.to_string())
-    })
-    .await;
-    if !matches!(forgotten, Ok(Ok(()))) {
-        tracing::error!(outcome = ?forgotten, "could not remove the control-plane view");
+/// Remove the control-plane view durably, before a broker stops because the
+/// control plane refused it or found its directory replaced, so a restart
+/// during an outage does not vote from it. Through the writer's own file, so
+/// the writer does not put it back before the stop.
+async fn forget_view(view: Option<&crate::cluster::controlplane_view::ViewFile>) {
+    if let Some(view) = view {
+        view.forget_now().await;
     }
 }
 
@@ -896,20 +891,23 @@ pub(crate) fn judge_directory(
 ) -> Result<Directory> {
     let recorded = felix_storage::run_state::read_registration(root)
         .with_context(|| format!("read the registration record under {}", root.display()))?;
-    let replaced = || {
-        felix_storage::run_state::record_replaced(root)
+    // The marker names the id the directory will register next and the
+    // control plane's incarnation now, so only a view from a registration
+    // after this one starts this directory again.
+    let after = registered.map_or(0, |registered| registered.incarnation);
+    let replaced = |under: StorageId| {
+        felix_storage::run_state::record_replaced(root, under, after)
             .with_context(|| format!("record a replaced storage id under {}", root.display()))
     };
     if recorded.behind(registered.map(|registered| registered.incarnation)) {
-        replaced()?;
-        let rotated = crate::node::storage::rotate_storage_id(root)?;
+        let rotated = crate::node::storage::rotate_storage_id_after(root, replaced)?;
         return Ok(Directory::Restored { rotated });
     }
     if registered
         .and_then(|registered| registered.storage_id.as_deref())
         .is_some_and(|prior| prior != id.to_hex())
     {
-        replaced()?;
+        replaced(id)?;
         return Ok(Directory::Replaced);
     }
     Ok(Directory::Current)
@@ -930,23 +928,31 @@ async fn deferred_restore_check(
     let answer = loop {
         let asked = tokio::select! {
             _ = shutdown.cancelled() => return None,
-            asked = registered(link, node_id, credential) => asked,
+            asked = lookup(link, node_id, credential) => asked,
         };
         match asked {
             Ok(answer) => break answer,
-            Err(MembershipError::Rejected(message)) => {
+            Err(LookupFailure::Rejected(message)) => {
                 tracing::error!(node_id, error = %message, "the control plane refused to look up this node");
                 return Some(false);
             }
-            Err(MembershipError::Unavailable(err)) => {
-                attempt += 1;
-                tracing::debug!(node_id, attempt, error = %err, "the control plane is still down");
-                let delay = backoff(Duration::from_millis(500), attempt).min(STARTUP_RETRY_CAP);
-                tokio::select! {
-                    _ = shutdown.cancelled() => return None,
-                    _ = tokio::time::sleep(jittered(delay)) => {}
-                }
+            // Up but refusing is not an outage an operator can wait out
+            // unseen: a credential or version problem needs fixing.
+            Err(LookupFailure::Unauthorized(err)) => {
+                tracing::warn!(node_id, error = %err, "the control plane did not accept this node's credential for the restore check; retrying");
             }
+            Err(LookupFailure::Undecodable(err)) => {
+                tracing::warn!(node_id, error = %err, "the control plane's answer to the restore check does not decode; retrying");
+            }
+            Err(LookupFailure::Down(err)) => {
+                tracing::debug!(node_id, error = %err, "the control plane is still down");
+            }
+        }
+        attempt += 1;
+        let delay = backoff(Duration::from_millis(500), attempt).min(STARTUP_RETRY_CAP);
+        tokio::select! {
+            _ = shutdown.cancelled() => return None,
+            _ = tokio::time::sleep(jittered(delay)) => {}
         }
     };
     let (Some(root), Some(id)) = (root, storage_id) else {

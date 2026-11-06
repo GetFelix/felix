@@ -211,7 +211,39 @@ fn the_views_nodes_are_routable_at_once() {
 /// during an outage must not vote from the view either.
 #[test]
 fn a_directory_marked_replaced_waits() {
+    let (dir, id) = qualifying();
+    // Marked when the control plane's record was at the view's incarnation:
+    // the view is from before the replacement.
+    felix_storage::run_state::record_replaced(dir.path(), id, 4).expect("mark");
+    assert_eq!(qualify(dir.path(), ME, &reported()), Err(Refusal::Replaced));
+}
+
+/// Once the replaced directory registered its current id, the view written
+/// from that registration says which copies it holds, so later outages may
+/// start from it.
+#[test]
+fn a_view_registered_after_the_replacement_starts() {
+    let (dir, id) = qualifying();
+    felix_storage::run_state::record_replaced(dir.path(), id, 3).expect("mark");
+    assert_eq!(
+        qualify(dir.path(), ME, &reported()),
+        Ok(view(id, election_fleet()))
+    );
+}
+
+/// A marker written for another id, or by an older build that did not say
+/// when, does not vouch for the view.
+#[test]
+fn a_marker_that_does_not_date_the_view_waits() {
     let (dir, _) = qualifying();
-    felix_storage::run_state::record_replaced(dir.path()).expect("mark");
+    felix_storage::run_state::record_replaced(dir.path(), StorageId::from_bytes([9; 16]), 1)
+        .expect("mark");
+    assert_eq!(qualify(dir.path(), ME, &reported()), Err(Refusal::Replaced));
+    std::fs::write(
+        dir.path()
+            .join(felix_storage::run_state::REPLACED_FILE_NAME),
+        b"replaced\n",
+    )
+    .expect("an older build's marker");
     assert_eq!(qualify(dir.path(), ME, &reported()), Err(Refusal::Replaced));
 }

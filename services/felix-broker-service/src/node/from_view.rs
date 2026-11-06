@@ -28,10 +28,10 @@ pub(super) enum Refusal {
         on_disk: Option<String>,
         registered: String,
     },
-    /// The directory carries the replaced-storage marker: the control plane
-    /// last registered the node under another storage id, so its copies here
-    /// may be ones the node no longer holds, and only a registration says
-    /// which.
+    /// The directory carries a replaced-storage marker newer than the view:
+    /// the control plane last registered the node under another storage id,
+    /// so its copies here may be ones the node no longer holds, and only a
+    /// registration under the current id says which.
     Replaced,
     /// The fleet had not finalized `replica_election`, so nothing could
     /// elect without the control plane anyway.
@@ -69,7 +69,7 @@ impl std::fmt::Display for Refusal {
 
 /// The view under `root` for `node_id`, if this directory may start from it:
 /// it is present and this node's, the storage id on disk is the one it was
-/// registered under, it carries no replaced-storage marker, its fleet
+/// registered under, it was written after any replaced-storage marker, its fleet
 /// finalized `replica_election`, and `reported`
 /// has every feature its fleet finalized. Reads only; call before the run
 /// begins, since beginning one may rotate the id.
@@ -90,8 +90,7 @@ pub(super) fn qualify(
             registered: view.storage_id,
         });
     }
-    // Unreadable reads as replaced: a start that cannot tell waits.
-    if felix_storage::run_state::replaced(root).unwrap_or(true) {
+    if !registered_since_replaced(root, &view) {
         return Err(Refusal::Replaced);
     }
     let election = felix_common::fleet::REPLICA_ELECTION.name();
@@ -108,6 +107,22 @@ pub(super) fn qualify(
         return Err(Refusal::Unreported(missing));
     }
     Ok(view)
+}
+
+/// Whether `view` came from a registration made after the directory was last
+/// marked replaced, or there is no marker. Such a registration was of the id
+/// the marker names, so the control plane's routes since already account for
+/// the copies this directory lost. Unreadable, or a marker that does not say
+/// when it was written, reads as replaced: a start that cannot tell waits.
+fn registered_since_replaced(root: &Path, view: &View) -> bool {
+    use felix_storage::run_state::ReplacedMark;
+    match felix_storage::run_state::read_replaced(root) {
+        Ok(None) => true,
+        Ok(Some(ReplacedMark::Under { storage_id, after })) => {
+            storage_id == view.storage_id && view.incarnation > after
+        }
+        Ok(Some(ReplacedMark::Unknown)) | Err(_) => false,
+    }
 }
 
 /// Whether the run that began on the directory is still under the storage id
