@@ -161,8 +161,10 @@ pub struct PeerTransportConfig {
     pub fence: bool,
     /// `FELIX_INTERNAL_ELECTION`: whether this broker offers `ELECTION` and
     /// checks the replica set on fences and batches that carry one. Off by
-    /// default, and only takes effect with `fence`. A test switch until the
-    /// `replica_election` fleet feature ships.
+    /// default, and only takes effect with `fence`. On, the broker reports
+    /// `peer_election`, `joint_fence` and `replica_election`, so it is the
+    /// operator's opt-in to replica election: turn it on on every broker
+    /// before finalizing `joint_fence` and `replica_election`.
     pub election: bool,
 }
 

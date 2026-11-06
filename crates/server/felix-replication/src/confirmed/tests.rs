@@ -246,3 +246,67 @@ async fn a_copy_named_again_reads_again() {
         "the second naming started no read"
     );
 }
+
+/// Answers after `latency`, one shard or many per request, as a control
+/// plane a round trip away does.
+struct Slow {
+    latency: Duration,
+}
+
+#[async_trait::async_trait]
+impl ConfirmedRoutes for Slow {
+    async fn confirmed(&self, _key: &ShardKey) -> Confirmed {
+        tokio::time::sleep(self.latency).await;
+        Confirmed::Assigned {
+            generation: 1,
+            leader: "broker-a".to_string(),
+        }
+    }
+
+    async fn confirmed_many(&self, keys: &[ShardKey]) -> Option<Vec<Confirmed>> {
+        tokio::time::sleep(self.latency).await;
+        Some(
+            keys.iter()
+                .map(|_| Confirmed::Assigned {
+                    generation: 1,
+                    leader: "broker-a".to_string(),
+                })
+                .collect(),
+        )
+    }
+}
+
+/// **Many learner copies stay fresh under elections behind a slow control
+/// plane.** 400 shards each need an answer under 500 ms old, and a read takes
+/// 100 ms. Sixteen single-shard requests at a time make 160 reads a second,
+/// far short of what 400 shards need, so most batches would be refused
+/// `StaleRoute` for good. Reads batched per request keep every one fresh.
+#[tokio::test(start_paused = true)]
+async fn many_learner_copies_stay_fresh_behind_a_slow_control_plane() {
+    let routes: Arc<dyn ConfirmedRoutes> = Arc::new(Slow {
+        latency: Duration::from_millis(100),
+    });
+    let reads = Arc::new(ConfirmedReads::default());
+    let shards: Vec<ShardKey> = (0..400).map(shard).collect();
+    let ask = |reads: &Arc<ConfirmedReads>| {
+        shards
+            .iter()
+            .filter(|key| {
+                reads
+                    .decide(&routes, key, 0, FRESH_UNDER_ELECTIONS, |_| ())
+                    .is_none()
+            })
+            .count()
+    };
+    // Warm up: every shard's first request starts its read.
+    for _ in 0..30 {
+        ask(&reads);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let mut refused = 0;
+    for _ in 0..100 {
+        refused += ask(&reads);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(refused, 0, "requests refused for want of a fresh answer");
+}
