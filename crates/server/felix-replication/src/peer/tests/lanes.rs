@@ -181,10 +181,13 @@ async fn an_older_requester_keeps_its_stream_through_a_slow_handler() {
     let listener = Listener::start_on(
         PEER,
         Arc::new(Slow {
-            delay: Duration::from_millis(600),
+            delay: Duration::from_millis(2500),
         }),
+        // The QUIC idle window is three quarters of this. Much shorter, and a
+        // test thread starved by the rest of the suite loses the connection
+        // while the handler sleeps.
         PeerTransportConfig {
-            request_timeout: Duration::from_millis(200),
+            request_timeout: Duration::from_secs(1),
             ..config()
         },
     )
@@ -197,7 +200,7 @@ async fn an_older_requester_keeps_its_stream_through_a_slow_handler() {
         .expect("slow");
     write_frame(&mut send, &record(3, 1)).await.expect("record");
     for expected in [2, 3] {
-        let answer = tokio::time::timeout(Duration::from_secs(2), read_frame(&mut recv))
+        let answer = tokio::time::timeout(Duration::from_secs(10), read_frame(&mut recv))
             .await
             .expect("an answer");
         assert!(
