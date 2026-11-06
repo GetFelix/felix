@@ -479,6 +479,21 @@ impl Broker {
             .map(|metadata| metadata.consistency)
     }
 
+    /// What a registered cache was created with, or `None` if it is not
+    /// registered here.
+    pub async fn cache_metadata(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+    ) -> Option<CacheMetadata> {
+        self.caches
+            .read()
+            .await
+            .get(&CacheKeyRef::new(tenant_id, namespace, cache))
+            .cloned()
+    }
+
     /// Every stream registered for a tenant, as `(namespace, stream, metadata)`,
     /// sorted by namespace then stream.
     pub async fn tenant_streams(&self, tenant_id: &str) -> Vec<(String, String, StreamMetadata)> {

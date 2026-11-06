@@ -135,6 +135,7 @@ pub(super) fn bind_peer_listener(
     incarnation: tokio::sync::watch::Receiver<Option<u64>>,
     unclean: Option<Arc<replication::unclean::UncleanStart>>,
     controlplane: Option<(&reqwest::Client, &str, &Option<NodeCredential>)>,
+    clients: Option<CancellationToken>,
     serving: Option<&CancellationToken>,
     peer_shutdown: &CancellationToken,
 ) -> Result<PeerListener> {
@@ -158,10 +159,14 @@ pub(super) fn bind_peer_listener(
                         )
                     }),
                 );
+                let handler = match clients {
+                    Some(clients) => handler.serving_clients_after(clients),
+                    None => handler,
+                };
                 let server = peer::PeerServer::bind_with_tls(
                     membership_config.node_id.clone(),
                     peer_config,
-                    handler,
+                    Arc::new(handler),
                     peer_tls.clone(),
                 )
                 .context("bind broker-internal listener")?;
@@ -220,7 +225,7 @@ pub(super) fn peer_handler(
     unclean: Option<Arc<replication::unclean::UncleanStart>>,
     confirmed: Option<crate::shards::ControlPlaneRoutes>,
 ) -> (
-    Arc<peer_dispatch::BrokerPeerHandler>,
+    peer_dispatch::BrokerPeerHandler,
     Option<replication::confirmed::Prefetch>,
 ) {
     let replicas = replica_handler(broker, router, quorum_marks, storage_id, unclean, confirmed)
@@ -232,7 +237,7 @@ pub(super) fn peer_handler(
         .as_ref()
         .map(|membership| membership.advertise_addr.clone())
         .unwrap_or_default();
-    let handler = Arc::new(peer_dispatch::BrokerPeerHandler::new(
+    let handler = peer_dispatch::BrokerPeerHandler::new(
         crate::serving::forward::ForwardingHandler::new(
             Arc::clone(broker),
             Arc::clone(ingress),
@@ -243,7 +248,7 @@ pub(super) fn peer_handler(
             Arc::clone(auth),
         ),
         replicas,
-    ));
+    );
     (handler, prefetch)
 }
 
@@ -309,6 +314,15 @@ pub(super) struct ShardTaskDeps<'a, R, L> {
     pub(super) unclean: &'a Option<Arc<replication::unclean::UncleanStart>>,
     /// Starts a copy's confirmed read when the routes first name it.
     pub(super) prefetch: Option<replication::confirmed::Prefetch>,
+    /// Node addresses from the control-plane view, routed by until the
+    /// first node catalog read.
+    pub(super) nodes: std::collections::HashMap<String, felix_router::NodeRef>,
+    /// After a start from the view, replica reports wait for the restore
+    /// check: they announce this directory's storage id as current.
+    pub(super) reports_held: Option<CancellationToken>,
+    /// After a start from the view: this broker stands for election only once
+    /// cancelled, since peers suspect it until it has registered.
+    pub(super) leads_after: Option<CancellationToken>,
     pub(super) sync_shutdown: &'a CancellationToken,
 }
 
@@ -338,6 +352,9 @@ where
         storage_id,
         unclean,
         prefetch,
+        nodes,
+        reports_held,
+        leads_after,
         sync_shutdown,
     } = deps;
     match (cluster, link, durable_storage) {
@@ -455,6 +472,7 @@ where
                     joint_fence: Some(Arc::clone(fleet)),
                     prefetch,
                     elections,
+                    nodes,
                 },
                 Some(shard_routing::CatalogSource {
                     link: link.clone(),
@@ -495,6 +513,7 @@ where
                                 }),
                                 incarnation: Arc::clone(incarnation),
                                 storage_id,
+                                held: reports_held.clone(),
                             },
                             sync_shutdown.clone(),
                         );
@@ -530,6 +549,7 @@ where
                     Arc::clone(quorum_marks),
                     Arc::clone(suspects),
                     replication::suspicion::SuspicionConfig::from_env(),
+                    leads_after.clone(),
                     sync_shutdown.clone(),
                 ));
             }

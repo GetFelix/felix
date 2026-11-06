@@ -96,13 +96,28 @@ impl std::fmt::Debug for ReadRounds {
 /// the lease, as of one read of the fleet.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct Serving {
-    /// The fleet set came from this process's registration. Before that it
-    /// is empty for want of an answer, and a pass cannot say how the shard
-    /// serves.
-    pub(crate) adopted: bool,
+    /// The fleet set came from this process's registration, or holds every
+    /// prerequisite of `replica_election`, which covers every feature a
+    /// stream shard's pass needs on (the rest fail closed when read as off).
+    /// Otherwise a feature it reads as off may be on, and a pass cannot say
+    /// how the shard serves.
+    streams_decided: bool,
+    /// [`Self::streams_decided`] for a cache shard, which also reads
+    /// `fenced_caches`.
+    caches_decided: bool,
     pub(crate) streams_by_followers: bool,
     pub(crate) caches_by_followers: bool,
     pub(crate) reads_by_round: bool,
+}
+
+impl Serving {
+    /// Whether a pass over a shard of `kind` may decide how it serves.
+    pub(crate) fn decided(&self, kind: felix_router::ShardKind) -> bool {
+        match kind {
+            felix_router::ShardKind::Stream => self.streams_decided,
+            felix_router::ShardKind::Cache => self.caches_decided,
+        }
+    }
 }
 
 /// What a quorum wait is for: a write is released on the lease, or on its
@@ -145,20 +160,17 @@ impl QuorumMarks {
             .is_some_and(|fleet| fleet.supports(feature))
     }
 
-    /// Whether the fleet has enabled `feature`, or `None` while this broker
-    /// has not yet taken a registration's answer, when a feature it reports
-    /// may still be enabled. False without a fleet, and for a feature this
-    /// broker does not report: registration refuses a broker without an
-    /// enabled feature, so it never runs with one on.
+    /// Whether the fleet has enabled `feature`, or `None` when it is off here
+    /// and this broker has not yet taken a registration's answer, so it may
+    /// still be enabled ([`felix_common::fleet::FleetView::decides`]). False
+    /// without a fleet, and for a feature this broker does not report:
+    /// registration refuses a broker without an enabled feature, so it never
+    /// runs with one on.
     pub(crate) fn fleet_decides(&self, feature: felix_common::fleet::FleetFeature) -> Option<bool> {
         let Some(fleet) = &self.fleet else {
             return Some(false);
         };
-        let view = fleet.view();
-        if !view.reports(feature) {
-            return Some(false);
-        }
-        view.adopted().then(|| view.supports(feature))
+        fleet.view().decides(feature)
     }
 
     /// Let `Quorum` reads confirm leadership with `check` once the fleet has
@@ -182,18 +194,32 @@ impl QuorumMarks {
     pub(crate) fn serving(&self) -> Serving {
         let Some(fleet) = self.fleet.as_ref() else {
             return Serving {
-                adopted: true,
+                streams_decided: true,
+                caches_decided: true,
                 ..Serving::default()
             };
         };
         let view = fleet.view();
         let streams = view.supports(felix_common::fleet::GENERATION_START)
             && view.supports(felix_common::fleet::MAJORITY_ACK);
+        let caches = streams && view.supports(felix_common::fleet::FENCED_CACHES);
         let by_lease = self.reads.get().is_none_or(|reads| reads.by_lease);
+        // Before registration answers, a pass decides only on a gate seeded
+        // with everything it reads: a feature missing from it may be on.
+        // `replica_election` itself counts, since the pass re-fences kept
+        // sets by it.
+        let election = felix_common::fleet::REPLICA_ELECTION;
+        let election_ready = view.supports(election)
+            && felix_common::fleet::prerequisites(election.name())
+                .iter()
+                .all(|feature| view.supports(*feature));
+        let streams_decided = view.adopted() || election_ready;
         Serving {
-            adopted: view.adopted(),
+            streams_decided,
+            caches_decided: view.adopted()
+                || (election_ready && view.supports(felix_common::fleet::FENCED_CACHES)),
             streams_by_followers: streams,
-            caches_by_followers: streams && view.supports(felix_common::fleet::FENCED_CACHES),
+            caches_by_followers: caches,
             reads_by_round: streams
                 && !by_lease
                 && view.supports(felix_common::fleet::LEASE_FREE_READS),

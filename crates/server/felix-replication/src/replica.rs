@@ -1955,8 +1955,8 @@ impl ReplicaHandler {
         self.joint_gate() == Some(true)
     }
 
-    /// Whether the fleet has `joint_fence`, or `None` while this broker has
-    /// not yet taken a registration's answer. The peer listener is bound
+    /// Whether the fleet has `joint_fence`, or `None` while it is off here and
+    /// this broker has not yet taken a registration's answer. The peer listener is bound
     /// before registration, so the gate can be unread while requests arrive.
     fn joint_gate(&self) -> Option<bool> {
         joint_gate(self.fleet.as_deref())

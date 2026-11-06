@@ -300,6 +300,45 @@ export FELIX_CONTROLPLANE_SYNC_INTERVAL_MS="500"   # Fast polling
 export FELIX_CONTROLPLANE_SYNC_INTERVAL_MS="10000" # Slow polling
 ```
 
+### `FELIX_START_WITHOUT_CONTROLPLANE`
+
+**Description**: Lets a cluster member with durable storage start while the
+control plane is down, from the control-plane view kept in its data
+directory, so it rejoins its shards' elections during the outage. It votes
+and follows its shards' leaders, but stands for election and serves clients
+only once it registers. Used
+only when the startup lookup found the control plane down (no answer or a
+5xx, never a 401 or another 4xx) and the directory qualifies; otherwise the
+broker waits for the control plane as it does with the switch off. A data
+directory restored without deleting `storage-id` is then caught only once
+the control plane answers. See
+[Starting while the control plane is down](https://github.com/GetFelix/felix/blob/main/docs/control-plane.md#starting-while-the-control-plane-is-down).
+
+**Type**: Boolean (`true`, `1`, `yes` or `on`)
+
+**Default**: `false`
+
+**Example**:
+```bash
+export FELIX_START_WITHOUT_CONTROLPLANE="true"
+```
+
+### `FELIX_CONTROLPLANE_STARTUP_WAIT_MS`
+
+**Description**: How long the startup lookup asks the control plane before a
+broker with `FELIX_START_WITHOUT_CONTROLPLANE` on starts from its view. Each
+attempt gets at least one second. Has no effect with the switch off, where
+the broker asks until the control plane answers.
+
+**Type**: Unsigned integer (milliseconds)
+
+**Default**: `10000`
+
+**Example**:
+```bash
+export FELIX_CONTROLPLANE_STARTUP_WAIT_MS="10000"
+```
+
 ## Lease Tokens
 
 Brokers mint lease tokens for lease holders; see

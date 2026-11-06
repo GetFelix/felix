@@ -396,6 +396,76 @@ fn cache_follower_acks_need_fenced_caches_too() {
     assert!(!marks.caches_ack_by_followers());
 }
 
+/// **A pass decides on a seeded gate only when it holds every feature the
+/// pass reads.** Before registration answers, a feature missing from the
+/// gate may be on: a stream pass reads `replica_election` and its
+/// prerequisites (`joint_fence` among them), a cache pass also `fenced_caches`.
+#[test]
+fn a_seeded_gate_decides_a_pass_only_with_every_feature_it_reads() {
+    use felix_common::fleet::{
+        FENCED_CACHES, FleetGate, JOINT_FENCE, REPLICA_ELECTION, prerequisites,
+    };
+    let election: Vec<&str> = prerequisites(REPLICA_ELECTION.name())
+        .iter()
+        .map(|feature| feature.name())
+        .chain([REPLICA_ELECTION.name()])
+        .collect();
+    let reported: Vec<&str> = election
+        .iter()
+        .copied()
+        .chain([FENCED_CACHES.name()])
+        .collect();
+    let serving = |persisted: &[&str]| {
+        QuorumMarks::with_fleet(Arc::new(FleetGate::seeded(
+            reported.iter().copied(),
+            persisted,
+        )))
+        .serving()
+    };
+
+    let all = serving(&reported);
+    assert!(all.decided(felix_router::ShardKind::Stream));
+    assert!(all.decided(felix_router::ShardKind::Cache));
+
+    let streams_only = serving(&election);
+    assert!(streams_only.decided(felix_router::ShardKind::Stream));
+    assert!(!streams_only.decided(felix_router::ShardKind::Cache));
+
+    // Follower acks are on, but `joint_fence` might be too.
+    let without_joint: Vec<&str> = reported
+        .iter()
+        .copied()
+        .filter(|name| *name != JOINT_FENCE.name())
+        .collect();
+    let partial = serving(&without_joint);
+    assert!(partial.streams_by_followers);
+    assert!(!partial.decided(felix_router::ShardKind::Stream));
+    assert!(!partial.decided(felix_router::ShardKind::Cache));
+
+    // Every prerequisite, but `replica_election` itself might be on too.
+    let without_election: Vec<&str> = reported
+        .iter()
+        .copied()
+        .filter(|name| *name != REPLICA_ELECTION.name())
+        .collect();
+    assert!(!serving(&without_election).decided(felix_router::ShardKind::Stream));
+
+    // Adopted, every pass decides, whatever is enabled.
+    let fleet = Arc::new(FleetGate::new(reported.iter().copied()));
+    let marks = QuorumMarks::with_fleet(Arc::clone(&fleet));
+    assert!(!marks.serving().decided(felix_router::ShardKind::Stream));
+    fleet.restart(std::iter::empty());
+    assert!(marks.serving().decided(felix_router::ShardKind::Stream));
+    assert!(marks.serving().decided(felix_router::ShardKind::Cache));
+
+    // No fleet at all (no control plane) decides too.
+    assert!(
+        QuorumMarks::new()
+            .serving()
+            .decided(felix_router::ShardKind::Cache)
+    );
+}
+
 struct AlwaysConfirms;
 
 #[async_trait::async_trait]

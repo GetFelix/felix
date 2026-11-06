@@ -107,6 +107,11 @@ pub struct ReportTo<L = crate::controlplane_link::HttpControlPlaneLink> {
     /// placement can tell when the leader's data directory is no longer the
     /// one it reported from. `None` without durable storage.
     pub storage_id: Option<StorageId>,
+    /// Until cancelled, every report is refused unsent. Set on a broker that
+    /// started from its control-plane view: until the control plane has
+    /// confirmed the data directory is not a restored copy, nothing may
+    /// announce its storage id or offsets as current.
+    pub held: Option<CancellationToken>,
 }
 
 /// The token a report is sent with.
@@ -430,6 +435,9 @@ async fn send_reports<L: ControlPlaneLink>(
         return Vec::new();
     }
     let refused = || vec![false; reports.len()];
+    if to.held.as_ref().is_some_and(|held| !held.is_cancelled()) {
+        return refused();
+    }
     // The shared type, not a `json!` literal: the control plane parses this
     // same definition, so a field renamed on one side stops compiling instead
     // of quietly arriving as a missing one.

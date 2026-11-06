@@ -90,6 +90,15 @@ pub struct BrokerConfig {
     pub controlplane_token: String,
     /// Poll interval for control-plane changes.
     pub controlplane_sync_interval_ms: u64,
+    /// `FELIX_START_WITHOUT_CONTROLPLANE`: a cluster member with durable
+    /// storage may start from the control-plane view in its data directory
+    /// when the control plane does not answer at startup. Off by default.
+    /// See docs/control-plane.md, "Starting while the control plane is down".
+    pub start_without_controlplane: bool,
+    /// `FELIX_CONTROLPLANE_STARTUP_WAIT_MS`: how long the startup lookup asks
+    /// the control plane before a broker with the switch on starts from its
+    /// view.
+    pub controlplane_startup_wait_ms: u64,
     /// Extra CA bundle trusted for an `https://` control plane.
     pub controlplane_ca: Option<String>,
     /// The certificate the client-facing listeners present.
@@ -502,6 +511,8 @@ impl Default for BrokerConfig {
             node_refresh_token_file: None,
             node_token_file: None,
             controlplane_sync_interval_ms: 2000,
+            start_without_controlplane: false,
+            controlplane_startup_wait_ms: DEFAULT_CONTROLPLANE_STARTUP_WAIT_MS,
             controlplane_ca: None,
             client_tls: ClientTlsConfig::default(),
             membership: None,
