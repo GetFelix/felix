@@ -863,7 +863,7 @@ async fn forget_view(root: Option<&std::path::Path>) {
     let Some(root) = root.map(std::path::Path::to_path_buf) else {
         return;
     };
-    let forgotten = tokio::task::spawn_blocking(move || {
+    let forgotten = felix_common::blocking::spawn(move || {
         felix_storage::controlplane_view::forget(&root).map_err(|err| err.to_string())
     })
     .await;
@@ -953,7 +953,7 @@ async fn deferred_restore_check(
         return Some(true);
     };
     let root = root.to_path_buf();
-    let judged = tokio::task::spawn_blocking(move || judge_directory(&root, id, answer.as_ref()))
+    let judged = felix_common::blocking::spawn(move || judge_directory(&root, id, answer.as_ref()))
         .await
         .map_err(anyhow::Error::from)
         .and_then(|judged| judged);

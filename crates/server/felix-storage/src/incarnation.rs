@@ -255,7 +255,7 @@ pub(crate) fn retire_dir(root: &Path, dir: &Path) -> Result<bool> {
     // Unique even when the same name is retired twice before the first copy
     // is gone.
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    let stamp = std::time::SystemTime::now()
+    let stamp = felix_common::clock::system_time()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|since| since.as_nanos())
         .unwrap_or(0);

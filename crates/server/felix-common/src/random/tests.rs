@@ -47,6 +47,20 @@ mod hasher {
         assert_ne!(on_a_thread(Some(3), hashes), on_a_thread(Some(4), hashes));
     }
 
+    fn map_order() -> Vec<u64> {
+        let map: Map<u64, ()> = (0..64).map(|key| (key, ())).collect();
+        map.into_keys().collect()
+    }
+
+    #[test]
+    fn a_collected_map_iterates_the_same_way_on_a_seeded_thread() {
+        assert_eq!(
+            on_a_thread(Some(3), map_order),
+            on_a_thread(Some(3), map_order)
+        );
+        assert_ne!(on_a_thread(None, map_order), on_a_thread(None, map_order));
+    }
+
     #[test]
     fn an_unseeded_thread_hashes_differently_each_time() {
         assert_ne!(on_a_thread(None, hashes), on_a_thread(None, hashes));

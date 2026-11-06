@@ -84,6 +84,44 @@ impl SimOutcome {
             .filter(|finding| finding.severity == Severity::Failure)
     }
 
+    /// The run as one line per event, for comparing two runs of a seed: the
+    /// faults, every operation in completion order, the final reads, what
+    /// the checkers found and the virtual time the run took.
+    pub fn trace(&self) -> Vec<String> {
+        let history = &self.history;
+        let mut lines = Vec::new();
+        lines.extend(history.faults.iter().map(|e| format!("fault {e:?}")));
+        lines.extend(history.ops.iter().map(|op| format!("op {op:?}")));
+        lines.extend(
+            history
+                .registers
+                .iter()
+                .map(|op| format!("register {op:?}")),
+        );
+        lines.extend(
+            history
+                .commit_reads
+                .iter()
+                .map(|r| format!("commit read {r:?}")),
+        );
+        lines.extend(
+            history
+                .subscriptions
+                .iter()
+                .map(|s| format!("subscription {s:?}")),
+        );
+        lines.extend(
+            history
+                .final_reads
+                .iter()
+                .map(|r| format!("final read {r:?}")),
+        );
+        lines.extend(history.opens.iter().map(|o| format!("opened {o:?}")));
+        lines.extend(self.findings.iter().map(|f| format!("finding {f:?}")));
+        lines.push(format!("elapsed {:?}", self.elapsed));
+        lines
+    }
+
     /// The command that runs this seed again.
     pub fn replay_command(&self) -> String {
         format!(
@@ -123,6 +161,24 @@ impl std::fmt::Display for SimOutcome {
             write!(f, "{}", self.report)
         }
     }
+}
+
+/// Where two traces from [`SimOutcome::trace`] first differ, or `None` when
+/// they are the same.
+pub fn first_difference(a: &[String], b: &[String]) -> Option<String> {
+    let at = a
+        .iter()
+        .zip(b)
+        .position(|(a, b)| a != b)
+        .or((a.len() != b.len()).then(|| a.len().min(b.len())))?;
+    let missing = "<the trace ends here>".to_string();
+    Some(format!(
+        "the traces first differ at event {at} of {} and {}:\n  first:  {}\n  second: {}",
+        a.len(),
+        b.len(),
+        a.get(at).unwrap_or(&missing),
+        b.get(at).unwrap_or(&missing),
+    ))
 }
 
 /// Run `seed` with the checkers that run by default.

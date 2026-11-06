@@ -26,7 +26,7 @@
 //! and runs with `cargo test -p felix-sim --test seeds -- --ignored`.
 
 use felix_sim::cluster::SimConfig;
-use felix_sim::run::{SimOutcome, run_seed};
+use felix_sim::run::{SimOutcome, first_difference, run_seed};
 
 fn log() {
     let _ = tracing_subscriber::fmt()
@@ -49,7 +49,7 @@ fn check(seed: u64) -> SimOutcome {
     log();
     let outcome = run_seed(seed, SimConfig::for_seed(seed));
     if let Ok(path) = std::env::var("FELIX_SIM_HISTORY") {
-        std::fs::write(&path, format!("{:#?}\n", outcome.history))
+        std::fs::write(&path, outcome.trace().join("\n") + "\n")
             .unwrap_or_else(|err| panic!("write the history to {path}: {err}"));
     }
     println!("{outcome}");
@@ -68,6 +68,36 @@ fn replay() {
         return;
     };
     check(seed);
+}
+
+/// Each seed `seeds` would run, run twice in one process, must be the same
+/// run event for event. Tokio seeds `select!` only under `--cfg
+/// tokio_unstable`, so without it this is skipped; `task sim:determinism`
+/// runs it with the flag, and CI runs that.
+#[test]
+#[cfg_attr(
+    not(tokio_unstable),
+    ignore = "needs RUSTFLAGS=\"--cfg tokio_unstable\" for a seeded select!"
+)]
+fn each_seed_runs_the_same_twice() {
+    let count = env_u64("FELIX_SIM_SEEDS").unwrap_or(4);
+    let start = env_u64("FELIX_SIM_SEED_START").unwrap_or(1);
+    let mut differed = Vec::new();
+    for seed in start..start + count {
+        log();
+        let first = run_seed(seed, SimConfig::for_seed(seed));
+        let second = run_seed(seed, SimConfig::for_seed(seed));
+        match first_difference(&first.trace(), &second.trace()) {
+            Some(difference) => differed.push(format!("seed {seed}: {difference}")),
+            None => println!("seed {seed}: the same twice, passed: {}", first.passed()),
+        }
+    }
+    assert!(
+        differed.is_empty(),
+        "{} of {count} seeds ran differently the second time:\n{}",
+        differed.len(),
+        differed.join("\n")
+    );
 }
 
 #[test]

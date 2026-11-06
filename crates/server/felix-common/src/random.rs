@@ -36,5 +36,39 @@ pub fn hash_state() -> ahash::RandomState {
     ahash::RandomState::new()
 }
 
+/// A [`std::hash::BuildHasher`] that takes its keys from [`hash_state`] when
+/// it is created, including through `Default`, so a map built by `collect`
+/// or `or_default` is seeded too.
+#[cfg(feature = "hasher")]
+#[derive(Clone, Debug)]
+pub struct HashState(ahash::RandomState);
+
+#[cfg(feature = "hasher")]
+impl Default for HashState {
+    fn default() -> Self {
+        Self(hash_state())
+    }
+}
+
+#[cfg(feature = "hasher")]
+impl std::hash::BuildHasher for HashState {
+    type Hasher = ahash::AHasher;
+
+    #[inline]
+    fn build_hasher(&self) -> Self::Hasher {
+        self.0.build_hasher()
+    }
+}
+
+/// A `HashMap` that iterates in the same order every run of a simulation
+/// seed. For maps whose iteration order decides what happens next; build one
+/// with `Map::default()`.
+#[cfg(feature = "hasher")]
+pub type Map<K, V> = std::collections::HashMap<K, V, HashState>;
+
+/// The `HashSet` counterpart of [`Map`].
+#[cfg(feature = "hasher")]
+pub type Set<T> = std::collections::HashSet<T, HashState>;
+
 #[cfg(test)]
 mod tests;

@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -96,7 +96,7 @@ impl EphemeralCache {
 /// a write per microsecond or the clock went back between runs. Microseconds
 /// keep versions under 2^53, exact as a JSON number in any client.
 fn incarnation_base() -> u64 {
-    SystemTime::now()
+    felix_common::clock::system_time()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |since| {
             u64::try_from(since.as_micros()).unwrap_or(u64::MAX / 2)

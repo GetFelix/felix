@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 use bytes::Bytes;
 use tokio::sync::Mutex;
@@ -618,7 +618,7 @@ pub fn decode_sum(bytes: &[u8]) -> Result<i64> {
 }
 
 fn now_micros() -> u64 {
-    SystemTime::now()
+    felix_common::clock::system_time()
         .duration_since(UNIX_EPOCH)
         .map(|since| since.as_micros() as u64)
         .unwrap_or(0)
