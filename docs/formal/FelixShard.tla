@@ -790,6 +790,22 @@ FenceIdsSetOnly == FALSE
 \* every fence.
 FlipNewGeneration == FALSE
 NamedFenceSkipsBallot == FALSE
+\* A continuing open: the leader that served `g - 1`, in the same process and
+\* not draining, fences `g` (`RegenerateSet`, `Readmit`). It holds every
+\* acknowledged record, so it neither checks a copy's identity before
+\* counting its answer nor takes an answer's log.
+\* `ContinuingTrustsBallot`: a copy the short-copy or non-voter refusal would
+\* stop answers such a fence when its durable ballot names that leader at
+\* `g - 1`. It promises; it stays doubted.
+\* `ContinuingTrustsAnyCopy`: it answers whatever its ballot, which counts a
+\* promise a wipe may have broken (FelixShardElectUncleanContinuingAnyCopy.cfg).
+\* `ContinuingKeptBallot`: with `ContinuingTrustsBallot`, only a copy that
+\* never lost its promises (`forgot`) is trusted. A ballot taken after a wipe,
+\* from a batch, is not the promise the wipe lost
+\* (FelixShardElectUncleanContinuingBatchBallot.cfg).
+ContinuingTrustsBallot == FALSE
+ContinuingTrustsAnyCopy == FALSE
+ContinuingKeptBallot == FALSE
 \* Liveness of elections (`ElectionSettles`, checked under `LiveSpec`).
 \* `CpDown`: the control plane takes no step. `FailStops`: how many brokers
 \* may stop for good, as `halted` ones. `PreVoteAsked`: the pre-vote counts
@@ -1123,6 +1139,8 @@ VARIABLES
     cpLearner,  \* under `WipedNonVoter`, the copies placement holds as learners
     cpRefused,  \* under `ReportStore`, the refusal the control plane's stored report carries: {} or {<<generation, leader>>}
     refusedAt,  \* under `ReportStore`, the generation each broker last reported refused: 0 for none
+    contAt,     \* per broker, <<generation, incarnation>> of its last continuing open, <<0, 0>> for none
+    forgot,     \* the brokers that ever lost their promises (`Wipe`, `Forget`)
     cpGone      \* under `CpStops`, whether the control plane has stopped, for good
 
 \* The counter log's state, which only a cache shard's actions change.
@@ -1140,11 +1158,13 @@ idVars == << sid, seen, seenInc, wipes, checked, registered, inc, restarting, ex
 \* The refusal the control plane last stored, and what each broker's reporter
 \* repeats.
 refusalVars == << cpRefused, refusedAt >>
-\* A wiped replica's guard, and a re-admission the control plane has pending.
-wipeVars == << wipedAt, readmit, learner, marked, cpLearner >>
+\* A wiped replica's guard, a re-admission the control plane has pending, and
+\* the continuing opens, which a re-admission also starts.
+wipeVars == << wipedAt, readmit, learner, marked, cpLearner, contAt, forgot >>
 \* All of them but `expect`, `inherited` and the promoted leader's `seen`
 \* and `seenInc`, which a promotion sets.
-decideIdVars == << sid, wipes, checked, registered, inc, restarting, leftDirty, gaveUp, wipeVars >>
+decideIdVars == << sid, wipes, checked, registered, inc, restarting, leftDirty, gaveUp,
+                   wipedAt, readmit, learner, marked, cpLearner, forgot >>
 
 vars == << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
            hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit,
@@ -1509,6 +1529,8 @@ IdInit ==
     /\ learner = [b \in Brokers |-> FALSE]
     /\ marked = [b \in Brokers |-> FALSE]
     /\ cpLearner = {}
+    /\ contAt = [b \in Brokers |-> <<0, 0>>]
+    /\ forgot = {}
 
 Init ==
     /\ now = 0
@@ -2399,6 +2421,22 @@ AckedByTwo(b, f) ==
 
 ShortCopyRefuses(b, f) == RefuseShortCopy /\ ShortCopy(f) /\ ~AckedByTwo(b, f)
 
+\* Whether `b`'s fence is a continuing open that has not restarted since.
+\* A crash or restart bumps `inc`.
+Continuing(b) == contAt[b] = <<bgen[b], inc[b]>> /\ bgen[b] > 0
+ContinuingCounts(b) == (ContinuingTrustsBallot \/ ContinuingTrustsAnyCopy) /\ Continuing(b)
+\* Whether `f` answers `b`'s continuing fence past the short-copy and
+\* non-voter refusals: its ballot names `b` at the generation `b` served.
+ContinuingTrusts(b, f) ==
+    /\ Continuing(b)
+    /\ \/ ContinuingTrustsAnyCopy
+       \/ /\ ContinuingTrustsBallot
+          /\ promised[f] = bgen[b] - 1 /\ ballot[f] = {b}
+          /\ ContinuingKeptBallot => f \notin forgot
+\* What `b` records when it fences `g` as a continuing open.
+ContinuesAt(b, g) ==
+    contAt' = IF ~draining THEN [contAt EXCEPT ![b] = <<g, inc[b]>>] ELSE contAt
+
 \* Whether `b` fences as a leader the control plane named at its generation,
 \* on a set written at it, with no change pending: the flip's leader
 \* (`CpFlipNamed`), and a promotion that keeps the set, which the flip
@@ -2436,7 +2474,7 @@ AnswerFence(b, f) ==
        THEN \/ MayPromise(f, b, bgen[b])
             \/ NamedFenceSkipsBallot /\ FlipFence(b) /\ promised[f] <= bgen[b]
        ELSE promised[f] < bgen[b]
-    /\ ~ShortCopyRefuses(b, f)
+    /\ ~ShortCopyRefuses(b, f) \/ ContinuingTrusts(b, f)
     \* Stickiness: a replica that still hears its leader refuses a candidate.
     /\ PreVote /\ Candidate(b) => ~Hears(f)
     /\ WipeWaits(f) => ~Candidate(b) /\ WipedTakesNamed
@@ -2444,12 +2482,14 @@ AnswerFence(b, f) ==
     \* A non-voter answers no fence, its re-admission's included, as
     \* `refuse_non_voter_fence` does. `ReadmitCountsWiped` lets it answer
     \* that one.
-    /\ ~Votes(f, b) => ReadmitCountsWiped /\ readmit = {<<f, bgen[b], b>>}
+    /\ ~Votes(f, b) => (ReadmitCountsWiped /\ readmit = {<<f, bgen[b], b>>}) \/ ContinuingTrusts(b, f)
     /\ Promise(f, b, bgen[b])
     /\ SetCurrent(f, b)
     /\ LearnSet(f, b)
-    /\ answered' = IF FenceCounts(b, f) THEN [answered EXCEPT ![b] = @ \cup {f}] ELSE answered
-    /\ log' = IF FenceCounts(b, f) /\ Ahead(f, b) THEN [log EXCEPT ![b] = log[f]] ELSE log
+    \* A continuing leader counts the answer whatever the identity, and
+    \* takes no log: it already holds every acknowledged record.
+    /\ answered' = IF FenceCounts(b, f) \/ ContinuingCounts(b) THEN [answered EXCEPT ![b] = @ \cup {f}] ELSE answered
+    /\ log' = IF FenceCounts(b, f) /\ ~ContinuingCounts(b) /\ Ahead(f, b) THEN [log EXCEPT ![b] = log[f]] ELSE log
     /\ IF SetCheck /\ bgen[f] > 0
        THEN /\ bgen' = [bgen EXCEPT ![f] = 0]
             /\ fencing' = [fencing EXCEPT ![f] = FALSE]
@@ -3110,6 +3150,7 @@ RegenerateSet(v, views, set) ==
     /\ confirmed' = [confirmed EXCEPT ![leader] = [m \in Brokers |-> 0]]
     /\ report' = NoReport
     /\ mine' = [mine EXCEPT ![leader] = set]
+    /\ ContinuesAt(leader, gen + 1)
     /\ IF SetCheck
        THEN /\ setGen' = [setGen EXCEPT ![leader] = gen + 1]
             /\ fencing' = [fencing EXCEPT ![leader] = TRUE]
@@ -3913,16 +3954,18 @@ CpRename(v, views) ==
 \* A placement write, from a read taken in the same step or from one a
 \* planner has held since.
 Decide(v, f, views) ==
-    \/ Promote(v, f, views)
-    \/ /\ \/ Fence(v, f, views) \/ CutOver(v, f, views) \/ Retake(v, f, views)
+    \/ Promote(v, f, views) /\ UNCHANGED contAt
+    \/ /\ \/ /\ \/ Fence(v, f, views) \/ CutOver(v, f, views) \/ Retake(v, f, views)
+                \/ SeatFence(v, f, views) \/ TrimFence(v, views) \/ UndoFence(v, f, views)
+                \/ CpAdopt(v, f, views) \/ Reclaim(v, views) \/ CpRename(v, views)
+                \/ CpReissue(v, f, views)
+             /\ UNCHANGED contAt
+          \* These move the serving leader on through `RegenerateSet`.
           \/ Reseat(v, f, views) \/ GrowSet(v, f, views) \/ Seat(v, f, views)
-          \/ SeatFence(v, f, views) \/ TrimFence(v, views) \/ TrimSet(v, f, views)
-          \/ UndoFence(v, f, views) \/ Undo(v, f, views)
-          \/ CpAdopt(v, f, views) \/ Reclaim(v, views) \/ CpRename(v, views)
-          \/ CpReissue(v, f, views)
+          \/ TrimSet(v, f, views) \/ Undo(v, f, views)
        /\ UNCHANGED << counterVars, expect, inherited, seen, seenInc, fenceIds >>
     \/ /\ Swap(v, f, views)
-       /\ UNCHANGED << clog, chwm, cacked, expect, inherited, seen, seenInc, fenceIds >>
+       /\ UNCHANGED << clog, chwm, cacked, expect, inherited, seen, seenInc, fenceIds, contAt >>
 
 -----------------------------------------------------------------------------
 (* Wipes. A follower loses its data directory and comes back empty, under *)
@@ -3948,8 +3991,11 @@ Wipe(f) ==
             /\ UNCHANGED restarting
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, halted, queued, pending, acked, writes, staleCommit >>
+    \* The directory, and any ballot on it, is gone, though the model keeps
+    \* `promised` (see above).
+    /\ forgot' = forgot \cup {f}
     /\ UNCHANGED << handoffVars, fenceVars, seen, seenInc, checked, expect, inherited, leftDirty,
-                    gaveUp, fenceIds, wipeVars >>
+                    gaveUp, fenceIds, wipedAt, readmit, learner, marked, cpLearner, contAt >>
 
 \* A follower crashes under `FsyncMode::Periodic` or `None` and restarts
 \* without a suffix it had not synced, which it may already have answered
@@ -4156,6 +4202,7 @@ Readmit(w) ==
     /\ cpExpiry' = now + L
     /\ report' = NoReport
     /\ readmit' = {<<w, gen + 1, leader>>}
+    /\ ContinuesAt(leader, gen + 1)
     /\ bgen' = [bgen EXCEPT ![leader] = gen + 1]
     /\ bexpiry' = [bexpiry EXCEPT ![leader] = clock[leader] + L]
     /\ Promise(leader, leader, gen + 1)
@@ -4382,7 +4429,7 @@ Steps ==
             \/ LearnHwm(b, f) /\ UNCHANGED quietVars
             \/ AnswerFence(b, f) /\ UNCHANGED quietVars
             \/ RefuseStaleSet(b, f) /\ UNCHANGED quietVars
-            \/ WipedLearnSet(b, f) /\ UNCHANGED << counterVars, heard, idVars, named, refusalVars, wipedAt, readmit, cpLearner >>
+            \/ WipedLearnSet(b, f) /\ UNCHANGED << counterVars, heard, idVars, named, refusalVars, wipedAt, readmit, cpLearner, contAt, forgot >>
             \/ AnswerSetlessFence(b, f) /\ UNCHANGED quietVars
             \/ CatchUp(b, f) /\ UNCHANGED quietVars
             \/ CatchUpCounters(b, f) /\ UNCHANGED << chwm, canswered, cacked, heard, idVars, named, refusalVars, wipeVars >>
@@ -4391,12 +4438,13 @@ Steps ==
             \/ Probe(b, f) /\ UNCHANGED << counterVars, heard, named, refusalVars >>
             \/ Answer(b, f) /\ UNCHANGED << counterVars, heard, named, refusalVars >>
         \/ Wipe(b) /\ UNCHANGED << counterVars, heard, named, refusalVars >>
-        \/ Forget(b) /\ UNCHANGED << cconfirmed, canswered, cacked, heard, named, refusalVars, readmit >>
-        \/ Readmit(b) /\ UNCHANGED << counterVars, heard, idVars, named, refusalVars, wipedAt, learner, marked, cpLearner >>
-        \/ Readmitted(b) /\ UNCHANGED << counterVars, heard, idVars, named, refusalVars, cpLearner >>
-        \/ CpAdmit(b) /\ UNCHANGED << counterVars, heard, idVars, named, refusalVars, wipedAt, readmit, learner, marked >>
-        \/ GroupsCaughtUp(b) /\ UNCHANGED << counterVars, heard, idVars, named, refusalVars, wipedAt, readmit, learner, cpLearner >>
-        \/ KeepOwnSet(b) /\ UNCHANGED << counterVars, heard, idVars, named, refusalVars, wipedAt, readmit, learner, cpLearner >>
+        \/ Forget(b) /\ forgot' = forgot \cup {b}
+           /\ UNCHANGED << cconfirmed, canswered, cacked, heard, named, refusalVars, readmit, contAt >>
+        \/ Readmit(b) /\ UNCHANGED << counterVars, heard, idVars, named, refusalVars, wipedAt, learner, marked, cpLearner, forgot >>
+        \/ Readmitted(b) /\ UNCHANGED << counterVars, heard, idVars, named, refusalVars, cpLearner, contAt, forgot >>
+        \/ CpAdmit(b) /\ UNCHANGED << counterVars, heard, idVars, named, refusalVars, wipedAt, readmit, learner, marked, contAt, forgot >>
+        \/ GroupsCaughtUp(b) /\ UNCHANGED << counterVars, heard, idVars, named, refusalVars, wipedAt, readmit, learner, cpLearner, contAt, forgot >>
+        \/ KeepOwnSet(b) /\ UNCHANGED << counterVars, heard, idVars, named, refusalVars, wipedAt, readmit, learner, cpLearner, contAt, forgot >>
         \* The reporter's refusals live in the broker's memory.
         \/ Crash(b) /\ refusedAt' = [refusedAt EXCEPT ![b] = 0]
            /\ UNCHANGED << counterVars, named, cpRefused >>
@@ -4408,7 +4456,7 @@ Steps ==
            /\ Decide(Now, b, cpView)
            /\ cpLearner' = {}
            /\ UNCHANGED << heard, sid, wipes, checked, registered, inc, restarting, leftDirty, gaveUp,
-                          wipedAt, readmit, learner, marked, named, refusalVars >>
+                          wipedAt, readmit, learner, marked, contAt, forgot, named, refusalVars >>
         \/ /\ CpUp
            /\ \E p \in Planners : \E v \in cpView[p] : Decide(v, b, [cpView EXCEPT ![p] = {}])
            /\ UNCHANGED << heard, decideIdVars, named, refusalVars >>
@@ -4459,7 +4507,7 @@ LiveSpec == Spec /\ Fairness
 CpFairness ==
     /\ \A b \in Brokers :
         /\ WF_vars(Promote(Now, b, cpView)
-                   /\ UNCHANGED << counterVars, heard, decideIdVars, named, refusalVars, cpGone >>)
+                   /\ UNCHANGED << counterVars, heard, decideIdVars, contAt, named, refusalVars, cpGone >>)
         /\ WF_vars(Withdraw(b) /\ UNCHANGED << quietVars, cpGone >>)
         /\ WF_vars(Depose(b) /\ UNCHANGED << quietVars, cpGone >>)
         /\ WF_vars(Restart(b) /\ refusedAt' = [refusedAt EXCEPT ![b] = 0]
@@ -4467,7 +4515,7 @@ CpFairness ==
         /\ WF_vars(AckQuorum(b) /\ UNCHANGED << quietVars, cpGone >>)
     /\ WF_vars(CpRename(Now, cpView)
                /\ UNCHANGED << counterVars, expect, inherited, seen, seenInc, fenceIds,
-                               heard, decideIdVars, named, refusalVars, cpGone >>)
+                               heard, decideIdVars, contAt, named, refusalVars, cpGone >>)
 
 \* With the control plane stopped for good at some point and every stopped
 \* broker back, elections alone get a leader serving: a candidate's stand
@@ -4542,10 +4590,10 @@ ReportFairness ==
     \A b \in Brokers :
         /\ WF_vars(CpAdopt(Now, b, cpView)
                    /\ UNCHANGED << counterVars, expect, inherited, seen, seenInc, fenceIds,
-                                   heard, decideIdVars, named, refusalVars, cpGone >>)
+                                   heard, decideIdVars, contAt, named, refusalVars, cpGone >>)
         /\ WF_vars(CpReissue(Now, b, cpView)
                    /\ UNCHANGED << counterVars, expect, inherited, seen, seenInc, fenceIds,
-                                   heard, decideIdVars, named, refusalVars, cpGone >>)
+                                   heard, decideIdVars, contAt, named, refusalVars, cpGone >>)
 
 ReissueSpec == Spec /\ Fairness /\ ReportFairness
 
@@ -4559,7 +4607,7 @@ CpLiveSpec == Spec /\ Fairness /\ ReportFairness /\ CpFairness
 RenameFairness ==
     /\ WF_vars(CpRename(Now, cpView)
                /\ UNCHANGED << counterVars, expect, inherited, seen, seenInc, fenceIds,
-                               heard, decideIdVars, named, refusalVars, cpGone >>)
+                               heard, decideIdVars, contAt, named, refusalVars, cpGone >>)
     \* Under `ReportStore`, a refusal the leader still has is reported again
     \* (`report_refusal` in crates/server/felix-replication/src/driver/shards.rs).
     /\ \A b \in Brokers : WF_vars(CpUp /\ SendRefusal(b) /\ UNCHANGED notRefusalVars)
@@ -4752,6 +4800,16 @@ NoFailoverBesideNonVoter ==
     (\E w \in Brokers : NonVoter(w)) =>
         ~(fencing[leader] /\ bgen[leader] = gen /\ \A r \in readmit : r[2] /= gen)
 
+\* No continuing open completes having counted a copy that was already a
+\* non-voter when the fence began (wiped below the fence's generation), other
+\* than the one it re-admits. Under `ContinuingKeptBallot` this holds: every
+\* non-voter in the model lost its promises, so none is trusted
+\* (FelixShardElectUncleanContinuing.cfg). Under `ContinuingTrustsBallot`
+\* alone TLC finds one.
+NeverContinuingCountsNonVoter ==
+    \A b \in Brokers : (bgen[b] > 0 /\ ~fencing[b] /\ <<bgen[b], b>> \in opened /\ Continuing(b)) =>
+        \A f \in answered[b] : ~(NonVoter(f) /\ wipedAt[f] < bgen[b] /\ \A r \in readmit : r[1] /= f)
+
 \* No log holds one write twice: a re-send of a write the shard already has
 \* is answered, not appended. Start records are no one's write.
 NoDuplicate ==
@@ -4881,5 +4939,7 @@ TypeOK ==
     /\ marked \in [Brokers -> BOOLEAN]
     /\ \A r \in readmit : r[1] \in Brokers /\ r[2] \in Nat /\ r[3] \in Brokers
     /\ wipes \in 0..(IF LosePromises THEN Forgets ELSE Wipes)
+    /\ contAt \in [Brokers -> Nat \X Nat]
+    /\ forgot \subseteq Brokers
 
 =============================================================================
