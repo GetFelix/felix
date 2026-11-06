@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::leadership::{Leadership, Owner, Shares};
-use super::moves::{DEFAULT_RESTORE_AFTER_MILLIS, MovePolicy, Moves, move_step};
+use super::moves::{DEFAULT_RESTORE_AFTER_MILLIS, MovePolicy, Moves, keep_copy_pins, move_step};
 use super::rendezvous::{choose, choose_replicas, promote};
 use super::restore::{self, replication};
 use super::zones;
@@ -460,6 +460,7 @@ fn plan_once(
         {
             if let Some(decision) = readmit(existing, joint_fence, &is_live, caught_up, &mut moves)
             {
+                let decision = with_copy_pins(existing, decision, caught_up);
                 shards.push(ShardPlan { key, decision });
                 continue;
             }
@@ -480,6 +481,7 @@ fn plan_once(
                 &is_lost,
                 elects,
             );
+            let decision = with_copy_pins(existing, decision, caught_up);
             shards.push(ShardPlan { key, decision });
             note_spread(&mut unspread, shards.last(), &current, &eligible);
             continue;
@@ -730,6 +732,23 @@ fn readmit(
         MoveStep::Readmit { node },
         existing.renamed(),
     ))
+}
+
+/// `decision` with the copy pins its rename keeps; see [`keep_copy_pins`].
+fn with_copy_pins(
+    existing: &ShardAssignment,
+    decision: Decision,
+    caught_up: &dyn CaughtUp,
+) -> Decision {
+    let Decision::Move(step, mut next) = decision else {
+        return decision;
+    };
+    let readmitted = match &step {
+        MoveStep::Readmit { node } => Some(node.as_str()),
+        _ => None,
+    };
+    keep_copy_pins(existing, &mut next, caught_up, readmitted);
+    Decision::Move(step, next)
 }
 
 /// Who leads `assignment` once the move in flight completes: a live staged

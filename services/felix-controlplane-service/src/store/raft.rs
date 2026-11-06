@@ -114,6 +114,10 @@ const OWN_LEADER_SET_LEVEL: u16 = 27;
 /// carries and name it past that ballot (#1951).
 const REFUSED_BALLOT_LEVEL: u16 = 28;
 
+/// The metadata level whose members record the generation a write past the
+/// next one replaced (#2024).
+const PREVIOUS_GENERATION_LEVEL: u16 = 29;
+
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
     MetaCommand, MetaError, MetaResponse, decode_result, encode_command,
@@ -200,6 +204,24 @@ impl RaftStore {
         if !assignment.learners.is_empty() && self.group_level().await < LEARNER_LEVEL {
             assignment.learners.clear();
         }
+    }
+
+    /// The level a write may skip generations at; below it every member takes
+    /// the next one, as before. Under `joint_fence` a broker that missed the
+    /// generation a skip replaced has no set before the new one, and its
+    /// joint fence waits forever, so the skip waits for members that record
+    /// that generation. The constant is #2027's, which brings that level.
+    async fn skip_level(&self) -> StoreResult<u16> {
+        let joint_fence = self
+            .local()
+            .enabled_fleet_features()
+            .await?
+            .contains(felix_common::fleet::JOINT_FENCE.name());
+        Ok(if joint_fence {
+            PREVIOUS_GENERATION_LEVEL
+        } else {
+            REFUSED_BALLOT_LEVEL
+        })
     }
 
     /// Whether a delete takes the deleted resources' shard assignments and
@@ -890,6 +912,11 @@ impl ControlPlaneStore for RaftStore {
         // below 21 instead.
         self.drop_unstorable_fence_ids(&mut assignment).await;
         let level = self.group_level().await;
+        let at_least = if at_least > 0 && level >= self.skip_level().await? {
+            at_least
+        } else {
+            0
+        };
         match self
             .propose_at(
                 level,
@@ -898,13 +925,7 @@ impl ControlPlaneStore for RaftStore {
                     expected_generation,
                     fence,
                     seq_generation: level >= SHARD_RENEWAL_LEVEL,
-                    // Below its level every member takes the next
-                    // generation, as before.
-                    at_least: if level >= REFUSED_BALLOT_LEVEL {
-                        at_least
-                    } else {
-                        0
-                    },
+                    at_least,
                 },
             )
             .await?

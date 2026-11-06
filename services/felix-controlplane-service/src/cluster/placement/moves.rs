@@ -1021,6 +1021,44 @@ fn above_ballot(generation: u64, ballot: u64) -> u64 {
     }
 }
 
+/// Carry the copy pins a failover wrote (`fence_storage_ids`) from
+/// `existing` into `next`, a rename that keeps its leader.
+///
+/// The promoted leader's fence counts a copy only from the one the failover's
+/// report named. A rename before that fence settles must keep the pins, or
+/// the next fence counts any copy's answer, a wiped one's included, and the
+/// broker cannot report a promise-short fence (#2046). They go once the
+/// leader has reported serving at `existing`'s generation: from then on it
+/// holds what any copy could. A member's pin goes once it is admitted under
+/// its new storage, `readmitted` or a learner shown holding the start record,
+/// since the pin names the copy it replaced. A new leader gets none.
+pub(super) fn keep_copy_pins(
+    existing: &ShardAssignment,
+    next: &mut ShardAssignment,
+    caught_up: &dyn CaughtUp,
+    readmitted: Option<&str>,
+) {
+    let key = &existing.key;
+    let leader = existing.leader.as_str();
+    if existing.fence_storage_ids.is_empty()
+        || next.leader != existing.leader
+        || caught_up.leader_opened(key, existing.generation, leader)
+    {
+        return;
+    }
+    let admitted = |node: &str| {
+        readmitted == Some(node)
+            || (existing.learners.contains(node)
+                && caught_up.holds_start(key, existing.generation, leader, node))
+    };
+    next.fence_storage_ids = existing
+        .fence_storage_ids
+        .iter()
+        .filter(|(node, _)| !admitted(node))
+        .map(|(node, id)| (node.clone(), id.clone()))
+        .collect();
+}
+
 /// The step that drops a destination that stopped being live, or halted.
 fn given_up(successor: &str, halted: Option<String>) -> MoveStep {
     match halted {
@@ -2005,6 +2043,10 @@ impl CaughtUp for AtGeneration<'_> {
         leader: &str,
     ) -> Option<RefusedGeneration> {
         self.inner.leader_refusal(key, generation, leader)
+    }
+
+    fn leader_opened(&self, key: &ShardKey, generation: u64, leader: &str) -> bool {
+        self.inner.leader_opened(key, generation, leader)
     }
 
     fn lag_records(&self, key: &ShardKey, node_id: &str) -> Option<u64> {

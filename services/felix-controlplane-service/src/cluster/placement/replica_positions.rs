@@ -786,6 +786,16 @@ impl CaughtUp for ReplicaPositions {
         self.start_held(key, generation, leader, node)
     }
 
+    fn leader_opened(&self, key: &ShardKey, generation: u64, leader: &str) -> bool {
+        self.reports.get(key).is_some_and(|report| {
+            report.generation == generation
+                && report.leader.as_deref() == Some(leader)
+                && report.leader_offset.is_some()
+                && report.refused.is_none()
+                && !report.given_up
+        })
+    }
+
     fn readmittable(&self, key: &ShardKey, generation: u64, leader: &str) -> Option<String> {
         let view = self.members.get(key)?;
         if !self.joint_fence || view.generation != generation || view.leader != leader {

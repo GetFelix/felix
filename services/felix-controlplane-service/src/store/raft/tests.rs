@@ -1270,6 +1270,109 @@ async fn a_refused_ballot_waits_for_every_member() {
     assert_eq!(rename(one_up).await, one_up + 4);
 }
 
+/// Under `joint_fence` a rename past a refusal's ballot skips generations, and
+/// a broker that missed the one before has no set to fence against. Until the
+/// group records the generation a skip replaced, such a write takes the next
+/// generation; without `joint_fence` the level-28 rule stands.
+#[tokio::test]
+async fn under_joint_fence_a_ballot_rename_waits_for_the_skipped_generation_level() {
+    use crate::model::{ShardAssignment, ShardKey, ShardKind, ShardState};
+    let joint = felix_common::fleet::JOINT_FENCE.name();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = single_node_store(dir.path()).await;
+    assert!(store.group_level().await >= REFUSED_BALLOT_LEVEL);
+    assert!(store.group_level().await < PREVIOUS_GENERATION_LEVEL);
+    store
+        .create_tenant(crate::model::Tenant {
+            tenant_id: "t1".to_string(),
+            display_name: "One".to_string(),
+        })
+        .await
+        .expect("tenant");
+    store
+        .create_namespace(crate::model::Namespace {
+            tenant_id: "t1".to_string(),
+            namespace: "ns".to_string(),
+            display_name: "Ns".to_string(),
+        })
+        .await
+        .expect("namespace");
+    store
+        .create_stream(routed_stream("orders", Default::default()))
+        .await
+        .expect("stream");
+    for (id, port) in [("broker-x", 7101), ("broker-y", 7102)] {
+        store
+            .register_node(crate::store::contract::nodes::with_features(
+                crate::store::contract::nodes::node(id, port),
+                &[joint],
+            ))
+            .await
+            .expect("register");
+    }
+    let assignment = ShardAssignment {
+        key: ShardKey {
+            tenant_id: "t1".to_string(),
+            namespace: "ns".to_string(),
+            stream: "orders".to_string(),
+            shard: 0,
+            kind: ShardKind::Stream,
+        },
+        leader: "broker-x".to_string(),
+        replicas: vec!["broker-y".to_string()],
+        generation: 0,
+        state: ShardState::Active,
+        successor: None,
+        joining: None,
+        move_started_at_millis: None,
+        move_reason: None,
+        incarnation: 0,
+        fence_storage_ids: Default::default(),
+        member_storage_ids: Default::default(),
+        learners: Default::default(),
+        pending_set: None,
+    };
+    let assigned = store
+        .put_shard_assignment(assignment.clone())
+        .await
+        .expect("assign");
+    let rename = |expected: u64| {
+        let store = Arc::clone(&store);
+        let assignment = assignment.clone();
+        async move {
+            let fence = store.placement_token().await.expect("token");
+            match store
+                .put_shard_assignment_at_least(assignment, Some(expected), fence, expected + 4)
+                .await
+                .expect("rename")
+            {
+                AssignmentWrite::Written(written) => written.generation,
+                other => panic!("{other:?}"),
+            }
+        }
+    };
+
+    let skipped = rename(assigned.generation).await;
+    assert_eq!(
+        skipped,
+        assigned.generation + 4,
+        "past the ballot without joint_fence"
+    );
+
+    assert!(
+        store
+            .finalize_fleet_feature(joint)
+            .await
+            .expect("finalize")
+            .contains(joint)
+    );
+    assert_eq!(
+        rename(skipped).await,
+        skipped + 1,
+        "named one up under joint_fence below level {PREVIOUS_GENERATION_LEVEL}"
+    );
+}
+
 /// A member before the fence identities would drop them from an assignment it
 /// applies and diverge from the others. So until every member has the level
 /// the assignment is written without them; once it does, they are kept.

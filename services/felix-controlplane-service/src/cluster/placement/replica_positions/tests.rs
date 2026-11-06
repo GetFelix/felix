@@ -297,6 +297,52 @@ fn a_drained_report_is_believed_at_its_generation_while_fresh() {
     assert!(!not_drained.is_drained(&key("orders"), drained.generation));
 }
 
+/// A leader opened its generation when its own report there carries its tail
+/// and neither a refusal nor a give-up; a refusal or another node's report
+/// does not count, and a stale one still does.
+#[test]
+fn a_leader_opened_where_its_report_carries_its_tail() {
+    let serving = ReplicaReport {
+        leader: Some("broker-a".to_string()),
+        leader_offset: Some(10),
+        ..report("orders", &["broker-b"], 1_000)
+    };
+    let opened = |report: ReplicaReport, now: u64| {
+        at(vec![report], now).leader_opened(&key("orders"), 4, "broker-a")
+    };
+    assert!(opened(serving.clone(), 1_000));
+    assert!(opened(
+        serving.clone(),
+        1_000 + 10 * report_ttl_millis(&liveness())
+    ));
+    assert!(!at(vec![serving.clone()], 1_000).leader_opened(&key("orders"), 5, "broker-a"));
+    assert!(!at(vec![serving.clone()], 1_000).leader_opened(&key("orders"), 4, "broker-b"));
+    for not_open in [
+        ReplicaReport {
+            leader_offset: None,
+            ..serving.clone()
+        },
+        ReplicaReport {
+            refused: Some(felix_common::membership::RefusedGeneration {
+                generation: 4,
+                promised_to: "broker-d".to_string(),
+                ballot: 0,
+            }),
+            ..serving.clone()
+        },
+        ReplicaReport {
+            given_up: true,
+            ..serving.clone()
+        },
+        ReplicaReport {
+            leader: None,
+            ..serving.clone()
+        },
+    ] {
+        assert!(!opened(not_open.clone(), 1_000), "{not_open:?}");
+    }
+}
+
 /// How far behind a follower is, measured against the tail the leader
 /// reported beside it; nothing without that tail or once the report is
 /// stale.
