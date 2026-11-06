@@ -47,6 +47,30 @@ pub(super) const MAX_CONTROLS_PER_STREAM: usize = 1024;
 /// of records until it is written; the rest wait their turn off the stream.
 const MAX_CONCURRENT_FETCHES_PER_STREAM: usize = 16;
 
+/// Record batches one stream may have being stored at once. Stored one at a
+/// time, a batch waited behind every other batch on its stream, so a leader's
+/// round trip grew with how many shards it was shipping while the store itself
+/// stayed fast (#1968). Past this the stream stops reading until one finishes,
+/// so a stream holds at most this many batches plus the one it read.
+pub(super) const MAX_CONCURRENT_BATCHES_PER_STREAM: usize = 16;
+
+/// Record batches being stored at once across every connection. Without it
+/// the batches a follower holds grow with peers and streams; with it, at most
+/// this many, each about the leader's 1 MiB batch budget plus one record.
+pub(super) const MAX_SERVED_BATCHES: usize = 256;
+
+/// Record batches one peer node may have being stored at once, on any of its
+/// connections. A peer whose stores stall would otherwise take every
+/// broker-wide permit and stop all other peers' streams reading. 64 is four
+/// streams at their own limit, and about three times the depth a leader
+/// reached on one lane at failover scale (mean 16 to 23).
+pub(super) const MAX_SERVED_BATCHES_PER_PEER: usize = 64;
+
+/// Per-peer batch limits by the peer's node id, so a reconnect does not
+/// reset one. One entry per node that ever greeted this broker.
+pub(super) type PeerBatches =
+    Arc<parking_lot::Mutex<std::collections::HashMap<Arc<str>, Arc<Semaphore>>>>;
+
 /// What answers a peer's request.
 ///
 /// The broker implements it with `BrokerPeerHandler` (#106). A listener built
@@ -168,6 +192,8 @@ pub struct PeerServer {
     max_inbound_per_source: usize,
     handler_timeout: std::time::Duration,
     served_forwards: Arc<Semaphore>,
+    served_batches: Arc<Semaphore>,
+    peer_batches: PeerBatches,
     /// `Some` when peers must present a certificate, and the name a peer
     /// claims in `Hello` is held to it.
     tls: Option<Arc<tls::PeerTls>>,
@@ -225,6 +251,8 @@ impl PeerServer {
             max_inbound_per_source: config.max_inbound_per_source,
             handler_timeout: config.request_timeout,
             served_forwards: Arc::new(Semaphore::new(config.max_served_forwards.max(1))),
+            served_batches: Arc::new(Semaphore::new(MAX_SERVED_BATCHES)),
+            peer_batches: PeerBatches::default(),
             tls,
             app,
             capabilities: config.capabilities(),
@@ -362,6 +390,8 @@ impl PeerServer {
                 serving: self.serving.clone(),
                 handler_timeout: self.handler_timeout,
                 served_forwards: Arc::clone(&self.served_forwards),
+                served_batches: Arc::clone(&self.served_batches),
+                peer_batches: Arc::clone(&self.peer_batches),
             };
             connection.spawn_pump(async move {
                 // The guard lives as long as the connection is served, and
@@ -387,6 +417,10 @@ struct Offered {
     handler_timeout: std::time::Duration,
     /// Forwards being served across every connection.
     served_forwards: Arc<Semaphore>,
+    /// Record batches being stored across every connection.
+    served_batches: Arc<Semaphore>,
+    /// Record batches being stored, by the node that sent them.
+    peer_batches: PeerBatches,
 }
 
 /// Serve every stream a peer opens on one connection.
@@ -405,6 +439,7 @@ async fn serve_connection(
     // The pool waits for `HelloOk` before it sends anything else, so no
     // request on this connection arrives before this is set.
     let identity: Arc<parking_lot::Mutex<Option<Arc<str>>>> = Arc::default();
+    let connection_batches = Arc::new(Semaphore::new(MAX_SERVED_BATCHES_PER_PEER));
     // Whether the peer replaces a stream it gets no answer on, from its
     // `Hello`. Until it says so, a stream is never dropped under it.
     let renews = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -430,6 +465,7 @@ async fn serve_connection(
         let app = app.clone();
         let offered = offered.clone();
         let identity = Arc::clone(&identity);
+        let connection_batches = Arc::clone(&connection_batches);
         let renews = Arc::clone(&renews);
         let learner_acks = Arc::clone(&learner_acks);
         connection.spawn_pump(async move {
@@ -441,9 +477,14 @@ async fn serve_connection(
             let forwards = Arc::new(Semaphore::new(MAX_CONCURRENT_FORWARDS_PER_STREAM));
             let controls = Arc::new(Semaphore::new(MAX_CONTROLS_PER_STREAM));
             let fetches = Arc::new(Semaphore::new(MAX_CONCURRENT_FETCHES_PER_STREAM));
+            let batches = Arc::new(Semaphore::new(MAX_CONCURRENT_BATCHES_PER_STREAM));
+            // Cancelled when a batch's handler overran or panicked: the
+            // stream is given up as a request answered in turn would be.
+            let given_up = CancellationToken::new();
             loop {
                 let request = tokio::select! {
                     _ = shutdown.cancelled() => break,
+                    _ = given_up.cancelled() => break,
                     frame = read_frame(&mut recv) => match frame {
                         Ok(Incoming::Message(request)) => request,
                         // A kind from a later build. The body has been read, so
@@ -722,6 +763,84 @@ async fn serve_connection(
                         });
                         continue;
                     }
+                    // Batches for different logs have nothing to wait on each
+                    // other for, so they are stored side by side and answered
+                    // as they finish. Stream order never kept a log's batches
+                    // in turn: a requester spreads its requests over several
+                    // streams, and a leader has one batch in flight per
+                    // follower and log. Bootstraps and rebuilds stay in turn
+                    // below, as before.
+                    request @ (InternalMessage::ReplicateRecords(_)
+                    | InternalMessage::ReplicateMarkedRecords(_)
+                    | InternalMessage::ReplicateGroupRecords(_)
+                    | InternalMessage::ReplicateDeadLetterRecords(_)
+                    | InternalMessage::ReplicateCounterRecords(_)
+                    | InternalMessage::ReplicateCacheRecords(_)) => {
+                        // The stream's permit first, so no stream takes more
+                        // of the broker-wide limit than its own.
+                        let permit = tokio::select! {
+                            _ = shutdown.cancelled() => break,
+                            _ = given_up.cancelled() => break,
+                            permit = Arc::clone(&batches).acquire_owned() => {
+                                permit.expect("the batch semaphore is never closed")
+                            }
+                        };
+                        // Then the peer's, so a peer past its share waits here
+                        // without holding a broker-wide permit.
+                        let of_peer = peer_batch_limit(&offered, &identity, &connection_batches);
+                        let of_peer = tokio::select! {
+                            _ = shutdown.cancelled() => break,
+                            _ = given_up.cancelled() => break,
+                            permit = of_peer.acquire_owned() => {
+                                permit.expect("the batch semaphore is never closed")
+                            }
+                        };
+                        let served = tokio::select! {
+                            _ = shutdown.cancelled() => break,
+                            _ = given_up.cancelled() => break,
+                            permit = Arc::clone(&offered.served_batches).acquire_owned() => {
+                                permit.expect("the batch semaphore is never closed")
+                            }
+                        };
+                        let handler = Arc::clone(&handler);
+                        let peer = ballot_identity(&offered, &identity);
+                        let send = Arc::clone(&send);
+                        let learner_acks = Arc::clone(&learner_acks);
+                        let given_up = given_up.clone();
+                        let bound = handler_bound(&renews, &offered);
+                        // The peer and broker-wide permits go with the handler,
+                        // which runs on after an overrun and still holds its batch.
+                        let handling = app.spawn(async move {
+                            let _served = (of_peer, served);
+                            handler.handle_from(peer, request).await
+                        });
+                        app.spawn(async move {
+                            let _permit = permit;
+                            let handled = tokio::time::timeout(bound, handling).await;
+                            let Ok(Ok(response)) = handled else {
+                                // As for a request answered in turn: the
+                                // requester has given up, and a panicked
+                                // handler may have stored the batch. The
+                                // handler finishes on its own.
+                                tracing::warn!(
+                                    timeout = ?bound,
+                                    "replication batch handler failed or overran; dropping its stream",
+                                );
+                                metrics::record_served(metrics::OUTCOME_ERROR);
+                                given_up.cancel();
+                                return;
+                            };
+                            let response = for_caller(
+                                response,
+                                learner_acks.load(std::sync::atomic::Ordering::Relaxed),
+                            );
+                            match write_frame(&mut *send.lock().await, &response).await {
+                                Ok(()) => metrics::record_served(metrics::OUTCOME_OK),
+                                Err(_) => metrics::record_served(metrics::OUTCOME_ERROR),
+                            }
+                        });
+                        continue;
+                    }
                     // Off the pump's runtime; the pump only waits. Everything
                     // else on a stream is answered one request at a time.
                     request => {
@@ -729,14 +848,7 @@ async fn serve_connection(
                         let peer = ballot_identity(&offered, &identity);
                         let handling =
                             app.spawn(async move { handler.handle_from(peer, request).await });
-                        // Only a requester that replaces streams may have this
-                        // one dropped under it; an older one would lose the
-                        // lane for the life of the connection, so it waits.
-                        let bound = if renews.load(std::sync::atomic::Ordering::Relaxed) {
-                            offered.handler_timeout
-                        } else {
-                            std::time::Duration::MAX
-                        };
+                        let bound = handler_bound(&renews, &offered);
                         let handled = tokio::time::timeout(bound, handling).await.ok();
                         match handled.and_then(|joined| joined.ok()).ok_or(()) {
                             Ok(response) => for_caller(
@@ -777,6 +889,7 @@ async fn serve_connection(
                     tokio::join!(
                         forwards.acquire_many(MAX_CONCURRENT_FORWARDS_PER_STREAM as u32),
                         controls.acquire_many(MAX_CONTROLS_PER_STREAM as u32),
+                        batches.acquire_many(MAX_CONCURRENT_BATCHES_PER_STREAM as u32),
                     )
                 } => {}
             }
@@ -822,6 +935,18 @@ async fn answer_out_of_order(
     }
 }
 
+/// How long a handler answered on a stream may run before the stream is given
+/// up. Only a requester that replaces streams may have one dropped under it;
+/// an older one would lose the lane for the life of the connection, so it
+/// waits.
+fn handler_bound(renews: &std::sync::atomic::AtomicBool, offered: &Offered) -> std::time::Duration {
+    if renews.load(std::sync::atomic::Ordering::Relaxed) {
+        offered.handler_timeout
+    } else {
+        std::time::Duration::MAX
+    }
+}
+
 /// A forward refused at a limit, in the shape of the request.
 fn overloaded(request: &InternalMessage) -> InternalMessage {
     let correlation_id = request.correlation_id();
@@ -840,6 +965,33 @@ fn overloaded(request: &InternalMessage) -> InternalMessage {
             detail,
         }),
     }
+}
+
+/// The limit for the peer a stream belongs to. A stream that has not said
+/// hello has no node id yet, so its connection gets a limit of its own.
+fn peer_batch_limit(
+    offered: &Offered,
+    identity: &parking_lot::Mutex<Option<Arc<str>>>,
+    connection_limit: &Arc<Semaphore>,
+) -> Arc<Semaphore> {
+    let Some(node) = identity.lock().clone() else {
+        return Arc::clone(connection_limit);
+    };
+    peer_limit(&offered.peer_batches, node)
+}
+
+/// The node's limit, made on first use. Entries nothing holds and that have
+/// every permit back are dropped here, so changing node ids do not grow the map.
+pub(super) fn peer_limit(peers: &PeerBatches, node: Arc<str>) -> Arc<Semaphore> {
+    let mut peers = peers.lock();
+    peers.retain(|_, limit| {
+        Arc::strong_count(limit) > 1 || limit.available_permits() < MAX_SERVED_BATCHES_PER_PEER
+    });
+    Arc::clone(
+        peers
+            .entry(node)
+            .or_insert_with(|| Arc::new(Semaphore::new(MAX_SERVED_BATCHES_PER_PEER))),
+    )
 }
 
 /// Who the peer said it is, for a handler that keeps ballots. Ballots name a
