@@ -293,7 +293,9 @@ question for config.
 confirms leadership with the owner's lease, which trusts clocks. After an
 operator finalizes the `lease_free_reads` fleet feature it uses a round of
 confirmations from a majority instead. Failover is decided by the control plane,
-so with it down a dead leader is not replaced until it returns.
+so with it down a dead leader is not replaced until it returns, unless the fleet has
+finalized `replica_election` and the shard is a `Quorum` one: then its replicas elect
+a new leader. See [Failover without the control plane](/deployment/failover-without-control-plane/).
 
 **A cache keeps the latest value, not a history.** It discards superseded values
 when it compacts. Use a durable stream when you need every edit. An in-memory
