@@ -392,6 +392,7 @@ expectations=(
   "FelixShardElectUncleanContinuing pass"
   "FelixShardElectUncleanContinuingBatchBallot violates OneLeaderPerGeneration"
   "FelixShardElectUncleanContinuingAnyCopy violates OneLeaderPerGeneration"
+  "FelixShardElectUncleanContinuingCountsForgotten violates OneLeaderPerGeneration"
   "FelixGroups pass"
   "FelixGroupsNoCheck violates NoSkip"
   "FelixGroupsLengthOnly violates NoSkip"

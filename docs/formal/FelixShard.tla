@@ -803,9 +803,20 @@ NamedFenceSkipsBallot == FALSE
 \* never lost its promises (`forgot`) is trusted. A ballot taken after a wipe,
 \* from a batch, is not the promise the wipe lost
 \* (FelixShardElectUncleanContinuingBatchBallot.cfg).
+\* The leader counts an answer from the copy it expects, or one that attests
+\* the trusted ballot (`FenceKeptOk`). A copy that lost its promises is
+\* never the copy it expects: in the code its storage id rotated.
+\* `ContinuingForgottenAnswers`: a copy that lost its promises answers a
+\* continuing fence past the non-voter refusal, as a restored directory that
+\* nothing marks does. Its answer must not count.
+\* `ContinuingCountsForgotten`: the leader counts that answer as from the copy
+\* it expects, which TLC finds unsafe
+\* (FelixShardElectUncleanContinuingCountsForgotten.cfg).
 ContinuingTrustsBallot == FALSE
 ContinuingTrustsAnyCopy == FALSE
 ContinuingKeptBallot == FALSE
+ContinuingForgottenAnswers == FALSE
+ContinuingCountsForgotten == FALSE
 \* Liveness of elections (`ElectionSettles`, checked under `LiveSpec`).
 \* `CpDown`: the control plane takes no step. `FailStops`: how many brokers
 \* may stop for good, as `halted` ones. `PreVoteAsked`: the pre-vote counts
@@ -2424,15 +2435,24 @@ ShortCopyRefuses(b, f) == RefuseShortCopy /\ ShortCopy(f) /\ ~AckedByTwo(b, f)
 \* Whether `b`'s fence is a continuing open that has not restarted since.
 \* A crash or restart bumps `inc`.
 Continuing(b) == contAt[b] = <<bgen[b], inc[b]>> /\ bgen[b] > 0
-ContinuingCounts(b) == (ContinuingTrustsBallot \/ ContinuingTrustsAnyCopy) /\ Continuing(b)
+ContinuingFence(b) == (ContinuingTrustsBallot \/ ContinuingTrustsAnyCopy) /\ Continuing(b)
+\* Whether `f`'s ballot, before it answers, names `b` at the generation `b`
+\* served: what `continues_from` checks and `FenceKeptOk` attests.
+ContinuingBallot(b, f) ==
+    /\ ContinuingTrustsBallot
+    /\ promised[f] = bgen[b] - 1 /\ ballot[f] = {b}
+    /\ ContinuingKeptBallot => f \notin forgot
 \* Whether `f` answers `b`'s continuing fence past the short-copy and
-\* non-voter refusals: its ballot names `b` at the generation `b` served.
+\* non-voter refusals.
 ContinuingTrusts(b, f) ==
     /\ Continuing(b)
-    /\ \/ ContinuingTrustsAnyCopy
-       \/ /\ ContinuingTrustsBallot
-          /\ promised[f] = bgen[b] - 1 /\ ballot[f] = {b}
-          /\ ContinuingKeptBallot => f \notin forgot
+    /\ ContinuingTrustsAnyCopy \/ ContinuingBallot(b, f)
+\* Whether `b`'s continuing fence counts `f`'s answer: from the copy it
+\* expects, or attesting the ballot.
+ContinuingCounts(b, f) ==
+    \/ FenceCounts(b, f) /\ (ContinuingCountsForgotten \/ f \notin forgot)
+    \/ ContinuingTrustsAnyCopy
+    \/ ContinuingBallot(b, f)
 \* What `b` records when it fences `g` as a continuing open.
 ContinuesAt(b, g) ==
     contAt' = IF ~draining THEN [contAt EXCEPT ![b] = <<g, inc[b]>>] ELSE contAt
@@ -2482,14 +2502,19 @@ AnswerFence(b, f) ==
     \* A non-voter answers no fence, its re-admission's included, as
     \* `refuse_non_voter_fence` does. `ReadmitCountsWiped` lets it answer
     \* that one.
-    /\ ~Votes(f, b) => (ReadmitCountsWiped /\ readmit = {<<f, bgen[b], b>>}) \/ ContinuingTrusts(b, f)
+    /\ ~Votes(f, b) =>
+          \/ ReadmitCountsWiped /\ readmit = {<<f, bgen[b], b>>}
+          \/ ContinuingTrusts(b, f)
+          \/ ContinuingForgottenAnswers /\ Continuing(b) /\ f \in forgot
     /\ Promise(f, b, bgen[b])
     /\ SetCurrent(f, b)
     /\ LearnSet(f, b)
-    \* A continuing leader counts the answer whatever the identity, and
-    \* takes no log: it already holds every acknowledged record.
-    /\ answered' = IF FenceCounts(b, f) \/ ContinuingCounts(b) THEN [answered EXCEPT ![b] = @ \cup {f}] ELSE answered
-    /\ log' = IF FenceCounts(b, f) /\ ~ContinuingCounts(b) /\ Ahead(f, b) THEN [log EXCEPT ![b] = log[f]] ELSE log
+    \* A continuing leader takes no log: it already holds every acknowledged
+    \* record.
+    /\ answered' = IF \/ ContinuingFence(b) /\ ContinuingCounts(b, f)
+                      \/ ~ContinuingFence(b) /\ FenceCounts(b, f)
+                   THEN [answered EXCEPT ![b] = @ \cup {f}] ELSE answered
+    /\ log' = IF FenceCounts(b, f) /\ ~ContinuingFence(b) /\ Ahead(f, b) THEN [log EXCEPT ![b] = log[f]] ELSE log
     /\ IF SetCheck /\ bgen[f] > 0
        THEN /\ bgen' = [bgen EXCEPT ![f] = 0]
             /\ fencing' = [fencing EXCEPT ![f] = FALSE]

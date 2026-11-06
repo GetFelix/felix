@@ -119,6 +119,7 @@ never have dialled the one that shipped to it.
 | `1 << 16` | `KEPT_SETS` | keeps every set an election fence names and every set its log kept from generations that never opened, and reads `ElectionKeptFence`. A joint fence counts only replicas that offer it (see "Electing without the control plane") |
 | `1 << 17` | `RECORD_HEADERS` | reads `ReplicateHeaderedRecords` and stores each record's key-and-headers block with it, answers `ReplicateHeaderedFetch`, and reads `HeaderedForwardPublish`. A peer that offers it also offers `GENERATION_LABELS` and `RECORD_TIMES`. A batch or forward holding a block goes only to a peer that offered it |
 | `1 << 18` | `SEQUENCED_FORWARDS` | reads `SequencedForwardPublish` and applies it as the named producer's idempotent batch, answering a batch its log already holds with that batch's offsets (see "A forward that names its producer"). It goes only to a peer that offered both this and `RECORD_HEADERS` |
+| `1 << 19` | `KEPT_BALLOTS` | offered by a caller: it reads `FenceKeptOk`, so a replica whose fence answer attests a kept ballot answers it with that kind (see "Fencing a promotion") |
 
 #### Storage identity
 
@@ -851,6 +852,15 @@ its last record, its commit offset, and the generation its last record was
 written at. See `docs/replication-design.md`, "Fencing a promotion", for what
 the leader does with it.
 
+`FenceKeptOk` (kind 53) is the same answer with the same body, plus an
+attestation the kind carries: before this fence, the replica's ballot named
+the sender at the generation right before the fence's, and its data directory
+kept every ballot it took (an unclean crash of that directory, never a wipe or
+a restore). A leader moving on to the next generation of a shard it serves
+counts an answer from a copy it does not expect only with this attestation.
+Only a caller that offered `KEPT_BALLOTS` gets kind 53. To any other the
+replica sends `FenceOk`, byte for byte as before.
+
 | The replica | Answer |
 | --- | --- |
 | has accepted this generation or an older one, and its routing view is not past it | persists it, `FenceOk` |
@@ -1078,8 +1088,8 @@ Typed, because they need different responses:
 `SetStamped` 42, `PreVote` 43, `PreVoteAnswer` 44, `LeaseForwardCacheOp` 45,
 `LeaseForwardCacheOk` 46, `ReplicateLearnerOk` 47,
 `ElectionKeptFence` 48, `ReplicateHeaderedRecords` 49,
-`ReplicateHeaderedFetch` 50, `HeaderedForwardPublish` 51 and
-`SequencedForwardPublish` 52. A peer
+`ReplicateHeaderedFetch` 50, `HeaderedForwardPublish` 51,
+`SequencedForwardPublish` 52 and `FenceKeptOk` 53. A peer
 that predates any of them rejects the
 kind rather than misreading the body, which is why
 each is a new kind rather than a field on `ReplicateRecords`: this protocol
