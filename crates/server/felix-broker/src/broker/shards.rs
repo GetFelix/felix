@@ -111,6 +111,9 @@ impl Broker {
         let Some(log) = &state.durable else {
             return Ok(());
         };
+        // A hold just discarded reads as busy until its release task runs,
+        // and `lead_from` skips a busy hold.
+        state.held.settled().await;
         let tail = log.tail_offset().await?;
         if tail <= state.tail_seq() {
             return Ok(());
@@ -357,6 +360,9 @@ impl Broker {
         let Some(log) = &state.durable else {
             return Ok(());
         };
+        // A hold just discarded reads as busy until its release task runs,
+        // and `lead_from` skips a busy hold.
+        state.held.settled().await;
         let tail = log.tail_offset().await?;
         let capacity = self.log_capacity;
         // A `Quorum` ring holds only committed records, and a tail past the

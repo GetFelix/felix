@@ -1,0 +1,1 @@
+A broker leading a shard again right after dropping its held batches ends the shard's old readers and rebuilds its state with the dropped commit. Before, if the hold's release task had not run yet, leading again was skipped: a reader stayed open on the old log and a state read could miss the dropped commit.
