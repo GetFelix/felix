@@ -27,13 +27,13 @@ authentication, so it carries counts and listings and nothing that changes
 anything. Keep it on an internal network.
 
 The control plane says what placement intends: `felixctl shard ls` for the
-stored assignments, and `felix-controlplane admin plan` for what the next
+stored assignments, and `felixctl placement plan` for what the next
 placement pass would do with each shard and why it is waiting.
 
-`felix-broker inspect segments` reads a broker's data directory from disk,
+`felixctl data inspect segments` reads a broker's data directory from disk,
 without starting a broker: every shard's segments, whether their records and indexes
 verify, and what startup would do with each shard. It is the tool for a broker
-that will not start. `felix-broker inspect records` then decodes the records
+that will not start. `felixctl data inspect records` then decodes the records
 around one offset of one shard, so you can see what sits at the position
 `inspect segments` named. Both are read-only.
 
@@ -86,7 +86,7 @@ means it takes writes; anything else gives the reason:
 | `opening` | The broker is recovering the shard's log before it serves. Clients get `not_ready`. | Wait. A large active segment takes a while to scan. If it does not finish, read the broker's log for the shard. |
 | `fencing` | A promoted leader is waiting for a majority of its replicas to take its generation. Clients get `not_ready`. | See [Stuck fencing](#stuck-fencing) below. |
 | `failed` | The log could not be opened. The detail is the error. The shard is not retried until the assignment changes. | See [A broker will not start](#a-broker-will-not-start-or-will-not-open-a-shard): the same storage errors apply. |
-| `draining` | The leader stopped serving for a move. Writes are held for the cut-over and then forwarded. | Look at the move with `felix-controlplane admin plan`. A move that does not finish is waiting for its destination to catch up. |
+| `draining` | The leader stopped serving for a move. Writes are held for the cut-over and then forwarded. | Look at the move with `felixctl placement plan`. A move that does not finish is waiting for its destination to catch up. |
 | `lease_lapsed` | The broker could not renew its lease with the control plane, so it may no longer lead. Clients get `fenced`. | Check that the broker reaches the control plane (`FELIX_CONTROLPLANE_URL`) and that its node credential is accepted. Writes resume once the lease is renewed. |
 | `behind_generation` | The broker still serves an older generation than the assignment it holds. | Usually passes within a pass of the assignment feed. If it persists, the broker is not applying assignments: read its log. |
 | `not_assigned_here` | This broker does not lead the shard. | The detail names the leader. Inspect that broker. |
@@ -136,7 +136,7 @@ The control plane's `felix_shards_unplaceable` gauge is above zero.
 **What to run.**
 
 ```bash
-felix-controlplane admin plan
+felixctl placement plan
 felixctl inspect shard orders --shard 2
 ```
 
@@ -452,7 +452,7 @@ For example:
 corruption detected: record checksum mismatch (expected 0x1c2b9e04, found 0x9d0e71aa) (shard=acme/default/orders/3, segment=1, position=50331712)
 ```
 
-**What to run.** `felix-broker inspect segments` on the data directory,
+**What to run.** `felixctl data inspect segments` on the data directory,
 wherever it is mounted. It is a subcommand of the broker binary that does not
 start a broker: it binds nothing, reads no configuration, and only reads the
 directory, so it is safe on the live volume. The verdict depends on three broker
@@ -524,7 +524,7 @@ SELinux host needs one to be readable: use `:ro,z`. `z` relabels the files
 label them for this one container and lock the broker out of its own data.
 
 On any machine, a copy works as well as the volume: a backup, or a snapshot's
-files copied off the node. Run `felix-broker inspect segments ./copy` with the
+files copied off the node. Run `felixctl data inspect segments ./copy` with the
 Linux `felix-broker` binary attached to each release (see
 [Installation](/getting-started/installation/)), or the image as above with
 the copy mounted. This is the safest of all, and the copy is what you keep for
@@ -587,7 +587,7 @@ The header verified, so the record is complete and may have been acknowledged.
 That setting is defensible with `FsyncMode::None` and not with `OnCommit`.
 
 **Looking at the records around the damage.** `inspect segments` says where a
-segment stops verifying, as a segment and a byte. `felix-broker inspect records`
+segment stops verifying, as a segment and a byte. `felixctl data inspect records`
 decodes the records near an offset of one shard, so you can see which records
 are readable, what they hold, and where the first bad one sits. Reach the data
 directory the same ways as above, and give it the directory, the shard as
@@ -596,7 +596,7 @@ which reads the shard from its start and centres the window on the first record
 that fails:
 
 ```bash
-felix-broker inspect records /var/lib/felix/data acme/default/orders/3 --damage --around 3
+felixctl data inspect records /var/lib/felix/data acme/default/orders/3 --damage --around 3
 ```
 
 ```

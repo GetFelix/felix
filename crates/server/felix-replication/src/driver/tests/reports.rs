@@ -334,6 +334,7 @@ impl RecordingControlPlane {
                 token: None,
                 incarnation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 storage_id: None,
+                held: None,
             },
             shutdown,
         )
@@ -436,6 +437,7 @@ async fn a_failed_replica_report_holds_the_quorum_mark_back() {
             token: None,
             incarnation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             storage_id: None,
+            held: None,
         },
         report_shutdown.clone(),
     );
@@ -630,6 +632,7 @@ async fn a_slow_control_plane_does_not_stall_the_remaining_followers() {
             token: None,
             incarnation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             storage_id: None,
+            held: None,
         },
         report_shutdown.clone(),
     );
@@ -737,6 +740,7 @@ async fn pass_with_a_publish_behind_the_report(
             token: None,
             incarnation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             storage_id: None,
+            held: None,
         },
         CancellationToken::new(),
     );

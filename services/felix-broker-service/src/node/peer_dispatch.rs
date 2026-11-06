@@ -9,7 +9,8 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use felix_wire::internal::{ErrorCode, ForwardPublishError, InternalMessage};
+use felix_wire::internal::{ErrorCode, ForwardCacheError, ForwardPublishError, InternalMessage};
+use tokio_util::sync::CancellationToken;
 
 use crate::serving::forward::owner::ForwardingHandler;
 use felix_replication::peer::server::PeerRequestHandler;
@@ -19,6 +20,11 @@ use felix_replication::replica::ReplicaHandler;
 pub(crate) struct BrokerPeerHandler {
     forwarding: ForwardingHandler,
     replica: ReplicaHandler,
+    /// Until cancelled, a forwarded client request is refused as
+    /// `Unavailable`, which the forwarder retries. Set only on a broker that
+    /// started from its control-plane view: it serves no client until it has
+    /// registered, as its own listeners do not.
+    clients: Option<CancellationToken>,
 }
 
 impl BrokerPeerHandler {
@@ -26,9 +32,26 @@ impl BrokerPeerHandler {
         Self {
             forwarding,
             replica,
+            clients: None,
         }
     }
+
+    /// Refuse forwarded client requests until `clients` is cancelled.
+    pub(crate) fn serving_clients_after(mut self, clients: CancellationToken) -> Self {
+        self.clients = Some(clients);
+        self
+    }
+
+    /// Whether a forwarded client request must wait for registration.
+    fn refusing_clients(&self) -> bool {
+        self.clients
+            .as_ref()
+            .is_some_and(|clients| !clients.is_cancelled())
+    }
 }
+
+/// Why a forwarded client request is refused before registration.
+const NOT_REGISTERED: &str = "this broker has not registered with the control plane yet";
 
 #[async_trait]
 impl PeerRequestHandler for BrokerPeerHandler {
@@ -45,6 +68,22 @@ impl PeerRequestHandler for BrokerPeerHandler {
         // care who asked.
         let sender = peer.as_deref();
         match request {
+            InternalMessage::ForwardPublish(publish) if self.refusing_clients() => {
+                InternalMessage::ForwardPublishError(ForwardPublishError {
+                    correlation_id: publish.correlation_id,
+                    code: ErrorCode::Unavailable,
+                    detail: NOT_REGISTERED.to_string(),
+                })
+            }
+            InternalMessage::ForwardCacheOp(op) | InternalMessage::LeaseForwardCacheOp(op)
+                if self.refusing_clients() =>
+            {
+                InternalMessage::ForwardCacheError(ForwardCacheError {
+                    correlation_id: op.correlation_id,
+                    code: ErrorCode::Unavailable,
+                    detail: NOT_REGISTERED.to_string(),
+                })
+            }
             InternalMessage::ForwardPublish(publish) => self.forwarding.apply(publish).await,
             InternalMessage::ForwardCacheOp(op) => self.forwarding.apply_cache_op(op).await,
             InternalMessage::LeaseForwardCacheOp(op) => {
@@ -117,3 +156,6 @@ impl PeerRequestHandler for BrokerPeerHandler {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -323,6 +323,7 @@ async fn heartbeats_keep_a_broker_live_past_its_expiry_window() {
         tokio::sync::watch::channel(None).0,
         None,
         None,
+        None,
     );
 
     // Wait for registration to land.

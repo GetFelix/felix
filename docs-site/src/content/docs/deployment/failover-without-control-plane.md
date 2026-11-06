@@ -37,8 +37,9 @@ to run out and the control plane to name a new one, as before. So do consumer
 groups: a group on a shard with an elected leader waits until the
 control plane is back (issue #1197).
 
-A shard can elect only while a majority of its copies are running and have not
-restarted since the control plane went down. See [Limits](#limits).
+A shard can elect only while a majority of its copies are running. By
+default a copy that restarted since the control plane went down does not
+count. See [Limits](#limits).
 
 ## What happens when a leader dies
 
@@ -171,12 +172,25 @@ Metrics:
 
 ## Limits
 
-**A broker that restarts while the control plane is down cannot vote.** It
-waits for the control plane before it opens its data, so it neither votes nor
-stands. It does not answer pings either, so if it led a shard, its followers
-treat it as down and elect one of themselves. A shard with three copies elects
-only while two of them have kept running since the outage began. Letting a
-restarted broker rejoin is issue #1196.
+**By default, a broker that restarts while the control plane is down cannot
+vote.** It waits for the control plane before it opens its data, so it
+neither votes nor stands. It does not answer pings either, so if it led a
+shard, its followers treat it as down and elect one of themselves. A shard
+with three copies then elects only while two of them have kept running since
+the outage began.
+
+Set
+[`FELIX_START_WITHOUT_CONTROLPLANE=true`](/reference/environment-variables/#felix_start_without_controlplane)
+to let it rejoin. It then starts from what the control plane last told it,
+kept in its data directory, votes, and follows its shards' leaders. Until the
+control plane is back and it registers, it serves no client and does not stand
+for election. It does not answer pings either, so followers of a shard it led
+treat it as down and elect one of themselves. It starts this way only if the
+control plane is down rather than refusing it, and only from the data
+directory the control plane last registered. The switch is off by default
+because a data directory restored from a backup is caught only once the
+control plane answers. See
+[Starting while the control plane is down](https://github.com/GetFelix/felix/blob/main/docs/control-plane.md#starting-while-the-control-plane-is-down).
 
 **16 generations per outage.** The control plane adopts an election only up to
 16 generations past the last one it wrote for the shard. Each election uses a
@@ -231,10 +245,10 @@ compatibility](/deployment/upgrades/#runbook-rolling-out-a-fleet-feature).
 For each feature, dry-run first:
 
 ```bash
-felix-controlplane admin features finalize joint_fence --dry-run
-felix-controlplane admin features finalize joint_fence
-felix-controlplane admin features finalize replica_election --dry-run
-felix-controlplane admin features finalize replica_election
+felixctl features finalize joint_fence --dry-run
+felixctl features finalize joint_fence --yes
+felixctl features finalize replica_election --dry-run
+felixctl features finalize replica_election --yes
 ```
 
 The dry run says either that the feature can be finalized, or what stops it:

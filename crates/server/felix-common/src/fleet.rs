@@ -58,6 +58,14 @@ pub const JUMP_HASH_ROUTING: FleetFeature = FleetFeature::new("jump_hash_routing
 ///
 /// Add a feature here in the same change that makes the broker honour it,
 /// never before: the report is a promise that this build behaves that way.
+///
+/// A gate that was [seeded](FleetGate::seeded) but not yet adopted reads a
+/// feature it was not seeded with as off, though the fleet may have finalized
+/// it since. That is safe only while every feature is one of: a prerequisite
+/// of [`REPLICA_ELECTION`] (seeded along with it), one whose "off" fails
+/// closed (refuses, or keeps a format every broker reads), one checked per
+/// shard, or one no broker reads. `every_feature_is_safe_to_read_as_off_before_registration` holds
+/// the list, so a new feature has to be placed in it.
 pub const IMPLEMENTED: &[FleetFeature] = &[
     GENERATION_START,
     MAJORITY_ACK,
@@ -192,6 +200,11 @@ pub const PEER_ELECTION: FleetFeature = FleetFeature::new("peer_election");
 /// adds it to its report.
 pub const START_HOLDERS: FleetFeature = FleetFeature::new("start_holders");
 
+/// What a broker offering the `ELECTION` peer capability adds to its report:
+/// that it offers it, that it fences set changes jointly once [`JOINT_FENCE`]
+/// is finalized, and that it stands for election once [`REPLICA_ELECTION`]
+/// is.
+pub const ELECTION_REPORTED: &[FleetFeature] = &[PEER_ELECTION, JOINT_FENCE, REPLICA_ELECTION];
 /// Not a feature: how a broker reports that, under [`JOINT_FENCE`], it marks
 /// a wiped copy of its own a learner and its leaders leave a learner's
 /// answers out of their marks. A build that does not would let a wiped copy
@@ -316,6 +329,21 @@ impl FleetView<'_> {
     pub fn adopted(&self) -> bool {
         self.adopted
     }
+
+    /// Whether `feature` is enabled, or `None` when this view cannot say: it
+    /// is off here but no registration has answered, so the fleet may have
+    /// finalized it since. An enabled feature is always known, as finalizing
+    /// is one-way, and so is one this broker does not report, which the
+    /// fleet never enables here.
+    pub fn decides(&self, feature: FleetFeature) -> Option<bool> {
+        if self.supports(feature) {
+            Some(true)
+        } else if !self.reports(feature) {
+            Some(false)
+        } else {
+            self.adopted.then_some(false)
+        }
+    }
 }
 
 impl FleetGate {
@@ -331,6 +359,28 @@ impl FleetGate {
             enabled: AtomicU64::new(0),
             adopted: AtomicBool::new(false),
         }
+    }
+
+    /// A gate for a broker reporting `reported` that starts with `persisted`
+    /// enabled: features an earlier registration of this broker answered
+    /// with. It is not adopted, so a feature missing from `persisted` stays
+    /// undecided ([`FleetView::decides`]) until a registration answers and
+    /// [`Self::restart`] replaces the set. A persisted name this broker does
+    /// not report is left off.
+    pub fn seeded<I, S, P>(reported: I, persisted: P) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+        P: IntoIterator,
+        P::Item: AsRef<str>,
+    {
+        let gate = Self::new(reported);
+        let bits = persisted
+            .into_iter()
+            .filter_map(|name| gate.bit(name.as_ref()))
+            .fold(0, |bits, bit| bits | (1 << bit));
+        gate.enabled.store(bits, Ordering::Release);
+        gate
     }
 
     /// A gate for exactly what this build implements.
@@ -405,8 +455,12 @@ impl FleetGate {
     {
         fleet
             .into_iter()
-            .filter_map(|name| self.reported.iter().position(|reported| reported == name))
+            .filter_map(|name| self.bit(name))
             .fold(0, |bits, bit| bits | (1 << bit))
+    }
+
+    fn bit(&self, name: &str) -> Option<usize> {
+        self.reported.iter().position(|reported| reported == name)
     }
 
     fn names(&self, bits: u64) -> Vec<&str> {

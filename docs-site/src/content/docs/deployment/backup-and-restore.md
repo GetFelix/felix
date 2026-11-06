@@ -66,8 +66,8 @@ any log. See
 
    ```bash
    export FELIX_CONTROLPLANE_URL=http://felix-controlplane:8443
-   export FELIX_TOKEN=<a Felix token>
-   felix-controlplane admin backup-point nightly-2026-09-27
+   export FELIX_CONTROLPLANE_TOKEN=<a Felix token>
+   felixctl backup-point nightly-2026-09-27
    ```
 
    ```text
@@ -130,10 +130,13 @@ any log. See
 3. **Put each leader's copies back** under that broker's
    `FELIX_DURABLE_STORAGE_DIR`, at the same paths.
 4. **Cut them back to the point**, on each of those brokers, with its normal
-   configuration and the broker still stopped:
+   configuration and the broker still stopped. `felixctl data restore-point`
+   runs the `felix-broker restore-point` installed on that host; on a host or
+   image without `felixctl`, `felix-broker restore-point` takes the same
+   arguments.
 
    ```bash
-   felix-broker restore-point --point nightly-2026-09-27.backup-point.json --node broker-1
+   felixctl data restore-point --point nightly-2026-09-27.backup-point.json --node broker-1
    ```
 
    ```text
@@ -191,6 +194,17 @@ is still required in every other case:
 Deleting the file is always safe. It costs one full copy of each shard the
 broker follows. When in doubt, delete it.
 
+With `FELIX_START_WITHOUT_CONTROLPLANE` on, the check against the control
+plane can come late. A broker that starts while the control plane is down
+runs from the control-plane view in its data directory, and a restored copy
+that kept its `storage-id` votes on its old ballots until the control plane
+answers. It then gets a new id and stops before it registers, and
+`felix_restored_directory_total` counts it, but it may already have voted.
+Delete `storage-id`, or use `felix-broker restore-point`, before you start a
+restored broker; with this switch on that is the only check that comes in
+time. See [Starting while the control plane is down](https://github.com/GetFelix/felix/blob/main/docs/control-plane.md#starting-while-the-control-plane-is-down) for what a start
+from the view does.
+
 Stopping every broker is also what makes generations safe across a restore.
 The restored control plane hands out change sequence numbers, and so first
 generations of new incarnated streams, it had already used before the
@@ -205,5 +219,5 @@ it still serves on its lease.
 - [Durable storage](https://github.com/GetFelix/felix/blob/main/docs/durable-storage.md#restoring-to-a-backup-point)
   for why a live copy is safe to take and what `restore_to` does to a log.
 - [Moving shards by hand](/deployment/moving-shards/) for
-  `felix-controlplane admin pause`, which keeps placement quiet while a point
+  `felixctl placement pause`, which keeps placement quiet while a point
   is taken.

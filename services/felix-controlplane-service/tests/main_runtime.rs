@@ -384,3 +384,22 @@ fn a_second_signal_cuts_the_hold_off_short() {
         started.elapsed(),
     );
 }
+
+/// The old `admin` subcommand must exit, not fall through and start a server.
+#[test]
+fn the_removed_admin_subcommand_is_refused() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_felix-controlplane"))
+        .args(["admin", "features", "ls"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn felix-controlplane admin");
+    let status = wait_for_exit(&mut child, Duration::from_secs(10));
+    let stderr = child_stderr(&mut child);
+    assert!(
+        !status.success(),
+        "`admin` must fail, got {status}; stderr: {stderr}"
+    );
+    assert!(stderr.contains("moved to `felixctl`"), "stderr: {stderr}");
+}

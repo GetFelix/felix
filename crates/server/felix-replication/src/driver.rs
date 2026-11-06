@@ -589,10 +589,10 @@ async fn fence_one<'a, R: PeerRequester>(
     route: felix_router::Route,
     marks: &'a QuorumMarks,
 ) -> Fenced<'a> {
-    // Before registration answers, the fleet view is empty for want of an
-    // answer and every feature reads as off, so the lease would stand in for
-    // a fence the fleet may already require.
-    if !marks.serving().adopted {
+    // Before registration answers, a feature missing from the fleet view may
+    // still be on, so the lease would stand in for a fence the fleet may
+    // already require. A view seeded with every feature this reads decides.
+    if !marks.serving().decided(key.kind) {
         let why = "this broker has not yet learned which fleet features are enabled";
         return (
             key,
