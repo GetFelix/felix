@@ -236,11 +236,21 @@ Responses are matched within the connection they arrive on and nowhere else.
 
 Responses on one stream need not come back in request order. A broker answers
 `ForwardPublish` and `ForwardCacheOp` as each finishes, up to 256 at once per
-stream and `FELIX_INTERNAL_MAX_SERVED_FORWARDS` (4096) across the broker,
-and every other request on that stream in turn. A forward past either limit
-is refused as `Overload` rather than queued, since queueing would stall the
-stream. Requesters have always matched by correlation id alone, so this needs
-no capability bit.
+stream and `FELIX_INTERNAL_MAX_SERVED_FORWARDS` (4096) across the broker.
+A forward past either limit is refused as `Overload` rather than queued, since
+queueing would stall the stream. Record batches (`ReplicateRecords`,
+`ReplicateMarkedRecords` and the records of the group, dead-letter, counter
+and cache logs) are also stored side by side and answered as each finishes,
+up to 16 at once per stream; past that the broker stops reading the stream
+until one finishes. Every other request on a stream, bootstraps and rebuilds
+included, is answered in turn. Requesters have always matched by correlation
+id alone, so this needs no capability bit.
+
+Record batches are not answered in turn because a leader ships many shards at
+once over a few streams. Stored one at a time, a batch waited behind every
+batch ahead of it on its stream, so the leader's round trip grew with the
+number of shards it was shipping while each store stayed fast
+([#1968](https://github.com/GetFelix/felix/issues/1968)).
 
 ## Flows
 

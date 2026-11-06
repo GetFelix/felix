@@ -2353,11 +2353,20 @@ requester, so one stalled request cannot leave replication on a connection
 timing out for as long as it lives. Per-shard order is the driver's,
 not the stream's: it has at most one exchange outstanding per follower and log.
 
+**A batch does not wait behind other shards' batches.** A follower stores the
+record batches on one stream side by side, up to 16 at once, and answers each
+as it finishes. Stored in turn, a leader shipping many shards over four
+streams saw each round trip grow with the batches queued ahead of it on the
+stream, while the store itself stayed fast (#1968). Bootstraps and rebuilds
+replace a log, so they are still answered in turn.
+
 > `brokers_forwarding_to_each_other_still_replicate`,
 > `a_record_behind_a_waiting_forward_on_one_stream_is_served`,
 > `forwards_at_their_limit_do_not_shed_replication`,
 > `a_stalled_handler_does_not_wedge_replication_on_its_connection`,
-> `the_listener_gives_up_a_stream_whose_handler_overran`, and in the cluster suite
+> `the_listener_gives_up_a_stream_whose_handler_overran`,
+> `record_batches_on_one_stream_are_stored_side_by_side`,
+> `a_round_trip_does_not_wait_behind_other_shards_batches`, and in the cluster suite
 > `forwarded_quorum_publishes_from_every_broker_do_not_time_out`.
 
 **A slow fence does not hold up a read round or a ping.** Fences, tail
