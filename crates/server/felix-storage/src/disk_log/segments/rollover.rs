@@ -199,7 +199,7 @@ impl SegmentSet {
             let index = self.dir.join(index_file_name(retired.id()));
             drop(retired);
             for path in [path, index] {
-                match std::fs::remove_file(&path) {
+                match crate::fs::remove_file(&path) {
                     Ok(()) => {}
                     Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
                     Err(err) => return Err(StorageError::Io(err)),

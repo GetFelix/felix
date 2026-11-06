@@ -302,7 +302,7 @@ impl<'a> Cursor<'a> {
 /// The saved entries, or `None` when there is no usable file. Unreadable is
 /// the same as absent: the log has the answer.
 fn load(dir: &Path) -> Option<(Offset, Vec<HeadEntry>)> {
-    let bytes = std::fs::read(path_in(dir)).ok()?;
+    let bytes = crate::fs::read(path_in(dir)).ok()?;
     let decoded = decode(&bytes);
     if decoded.is_none() {
         tracing::warn!(
@@ -322,14 +322,14 @@ fn load(dir: &Path) -> Option<(Offset, Vec<HeadEntry>)> {
 pub(super) fn store(dir: &Path, as_of: Offset, entries: &[HeadEntry]) -> std::io::Result<()> {
     let path = path_in(dir);
     let temporary = path.with_extension("tmp");
-    std::fs::write(&temporary, encode(as_of, entries))?;
-    std::fs::rename(&temporary, &path)
+    crate::fs::write(&temporary, encode(as_of, entries))?;
+    crate::fs::rename(&temporary, &path)
 }
 
 /// Remove the file, when the records it describes are no longer the log's.
 /// The caller syncs the directory.
 pub(super) fn discard(dir: &Path) -> std::io::Result<()> {
-    match std::fs::remove_file(path_in(dir)) {
+    match crate::fs::remove_file(path_in(dir)) {
         Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(err),
         _ => Ok(()),
     }

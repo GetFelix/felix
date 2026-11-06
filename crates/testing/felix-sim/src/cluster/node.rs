@@ -2,7 +2,9 @@
 //! control plane, and whichever incarnation is running.
 
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -41,10 +43,41 @@ struct Running {
     broker: Arc<SimBroker>,
 }
 
+/// A broker's data directory. It lives in memory, so a run creates, renames
+/// and syncs files at no cost, and `felix_storage::sim_fs::crash` can say
+/// what a power loss would have left. The path is only a name: nothing is
+/// created on disk.
+struct DataDir {
+    path: PathBuf,
+}
+
+impl DataDir {
+    fn new() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "felix-sim-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed),
+        ));
+        felix_storage::sim_fs::register_root(&path);
+        Self { path }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for DataDir {
+    fn drop(&mut self) {
+        felix_storage::sim_fs::unregister_root(&self.path);
+    }
+}
+
 pub(crate) struct Node {
     pub(crate) id: String,
     advertise: SocketAddr,
-    dir: tempfile::TempDir,
+    dir: DataDir,
     pub(crate) cut: Cut,
     state: Mutex<State>,
     index: usize,
@@ -55,7 +88,7 @@ impl Node {
         Ok(Self {
             id: format!("b{}", index + 1),
             advertise: SocketAddr::from(([10, 0, 0, (index + 1) as u8], 5001)),
-            dir: tempfile::tempdir().context("create a broker data directory")?,
+            dir: DataDir::new(),
             cut: Cut::new(),
             state: Mutex::new(State::Down),
             index,

@@ -96,7 +96,7 @@ pub struct ShardDir {
 /// Every shard directory under a broker's data directory, by store and then
 /// name.
 pub fn find_shards(data_dir: &Path) -> Result<Vec<ShardDir>> {
-    if !data_dir.is_dir() {
+    if !crate::fs::is_dir(data_dir) {
         return Err(StorageError::Io(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             format!("{} is not a directory", data_dir.display()),
@@ -105,7 +105,7 @@ pub fn find_shards(data_dir: &Path) -> Result<Vec<ShardDir>> {
     let mut shards = Vec::new();
     for store in Store::ALL {
         let root = store.root(data_dir);
-        let entries = match std::fs::read_dir(&root) {
+        let entries = match crate::fs::read_dir(&root) {
             Ok(entries) => entries,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
             Err(err) => return Err(StorageError::Io(err)),
@@ -251,7 +251,7 @@ pub fn inspect_shard(dir: &Path, config: &LogConfig) -> Result<ShardReport> {
     let (startup, actions) = verdict(&plan);
 
     let mut segments = Vec::new();
-    if dir.exists() {
+    if crate::fs::exists(&dir) {
         for id in recovery::discover_segment_ids(dir)? {
             segments.push(inspect_segment(dir, &label, config, id)?);
         }
@@ -384,7 +384,7 @@ fn inspect_segment(
     id: SegmentId,
 ) -> Result<SegmentReport> {
     let path = dir.join(segment_file_name(id));
-    let size_bytes = std::fs::metadata(&path)?.len();
+    let size_bytes = crate::fs::metadata(&path)?.len();
     let header = read_segment_header(&path, id, label);
     let mut report = SegmentReport {
         id,

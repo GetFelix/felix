@@ -580,7 +580,7 @@ pub(super) fn reconcile(
     // A shard that never kept a set pays one stat, not a directory scan. A
     // temporary from a crash during the very first write waits for the next
     // open after a set exists; `load` ignores it meanwhile.
-    if path_in(dir).exists() {
+    if crate::fs::exists(path_in(dir)) {
         discard_leftovers(dir)?;
     }
     let set = load(dir)?;
@@ -708,7 +708,7 @@ fn take<'a>(rest: &mut &'a [u8], n: usize) -> Option<&'a [u8]> {
 /// a set.
 pub(super) fn load(dir: &Path) -> Result<Option<Kept>> {
     let path = path_in(dir);
-    match std::fs::read(&path) {
+    match crate::fs::read(&path) {
         Ok(bytes) => ReplicaSet::decode(&bytes).map(Some).ok_or_else(|| {
             StorageError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -742,11 +742,11 @@ pub(super) fn store(dir: &Path, set: &ReplicaSet, wiped: Option<&WipedMark>) -> 
     let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let temporary = dir.join(format!("{TEMPORARY_PREFIX}.{}.{n}", std::process::id()));
     {
-        let mut file = std::fs::File::create(&temporary).map_err(StorageError::Io)?;
+        let mut file = crate::fs::File::create(&temporary).map_err(StorageError::Io)?;
         file.write_all(&bytes).map_err(StorageError::Io)?;
         crate::io::sync_all(&file).map_err(StorageError::Io)?;
     }
-    std::fs::rename(&temporary, &path).map_err(StorageError::Io)?;
+    crate::fs::rename(&temporary, &path).map_err(StorageError::Io)?;
     sync_dir(dir).map_err(StorageError::Io)?;
     Ok(())
 }
@@ -755,14 +755,14 @@ pub(super) fn store(dir: &Path, set: &ReplicaSet, wiped: Option<&WipedMark>) -> 
 /// runs: a sweep during a write would delete that write's temporary. `load`
 /// ignores them either way.
 pub(super) fn discard_leftovers(dir: &Path) -> Result<()> {
-    for entry in std::fs::read_dir(dir).map_err(StorageError::Io)? {
+    for entry in crate::fs::read_dir(dir).map_err(StorageError::Io)? {
         let entry = entry.map_err(StorageError::Io)?;
         if entry
             .file_name()
             .to_string_lossy()
             .starts_with(TEMPORARY_PREFIX)
         {
-            std::fs::remove_file(entry.path()).map_err(StorageError::Io)?;
+            crate::fs::remove_file(entry.path()).map_err(StorageError::Io)?;
         }
     }
     Ok(())

@@ -17,7 +17,7 @@
 //! as long as the shard stays idle. See `docs/storage-format.md`,
 //! "`durable.mark`".
 
-use std::fs::File;
+use crate::fs::File;
 use std::path::Path;
 
 use parking_lot::Mutex;
@@ -107,7 +107,7 @@ impl DurableMark {
 /// written before the mark existed has none, and recovery then treats damage
 /// exactly as it always has.
 pub(crate) fn load(dir: &Path) -> Option<DurableMark> {
-    let bytes = std::fs::read(dir.join(mark_file_name())).ok()?;
+    let bytes = crate::fs::read(dir.join(mark_file_name())).ok()?;
     DurableMark::decode(&bytes)
 }
 
@@ -139,7 +139,7 @@ impl MarkFile {
     /// `dir` is synced, which the caller does before relying on it: the repair
     /// rule rests on the mark existing after a power loss.
     pub(super) fn open(dir: &Path) -> std::io::Result<Self> {
-        let file = std::fs::OpenOptions::new()
+        let file = crate::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)

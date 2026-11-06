@@ -258,7 +258,7 @@ impl Offloader {
         // Any object already at this key is not recorded (only unrecorded
         // segments are copied), so replacing it loses nothing. It is a copy
         // a crash interrupted, or one of a segment a truncation since cut.
-        let file = Arc::new(std::fs::File::open(locator.path())?);
+        let file = Arc::new(crate::fs::File::open(locator.path())?);
         let upload = store.put_multipart(&location).await.map_err(object_error)?;
         let mut writer = WriteMultipart::new_with_chunk_size(upload, CHUNK_BYTES);
         let mut hasher = crc32fast::Hasher::new();
@@ -333,7 +333,7 @@ impl Offloader {
         let path = store.path_to_filesystem(location).map_err(object_error)?;
         let root = self.root.clone();
         blocking(move || {
-            crate::io::sync_all(&std::fs::File::open(&path)?)?;
+            crate::io::sync_all(&crate::fs::File::open(&path)?)?;
             let mut dir = path.parent();
             while let Some(current) = dir {
                 crate::io::sync_dir(current)?;
@@ -557,7 +557,7 @@ pub(crate) fn remove_copies(target: &OffloadTarget, shard_dir: &Path) -> Result<
         let Some(path) = key_path(root, &entry.key) else {
             continue;
         };
-        match std::fs::remove_file(&path) {
+        match crate::fs::remove_file(&path) {
             Ok(()) => {
                 if let Some(parent) = path.parent() {
                     crate::io::sync_dir(parent).map_err(StorageError::Io)?;
@@ -568,7 +568,7 @@ pub(crate) fn remove_copies(target: &OffloadTarget, shard_dir: &Path) -> Result<
         }
     }
     let node_dir = root.join(node);
-    match std::fs::remove_dir_all(node_dir.join(shard)) {
+    match crate::fs::remove_dir_all(node_dir.join(shard)) {
         Ok(()) => crate::io::sync_dir(&node_dir).map_err(StorageError::Io)?,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
         Err(err) => return Err(StorageError::Io(err)),
@@ -667,10 +667,10 @@ pub(super) mod test_hooks {
 
         pub(crate) fn after_upload(&self, object: &Path) -> Result<()> {
             if std::mem::take(&mut *self.corrupt_next.lock()) {
-                let mut bytes = std::fs::read(object)?;
+                let mut bytes = crate::fs::read(object)?;
                 let last = bytes.len() - 1;
                 bytes[last] ^= 0xff;
-                std::fs::write(object, bytes)?;
+                crate::fs::write(object, bytes)?;
             }
             Ok(())
         }

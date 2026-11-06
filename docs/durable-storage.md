@@ -657,6 +657,15 @@ with `FELIX_POWER_LOSS_SEED=<seed> FELIX_POWER_LOSS_SEEDS=1`.
 > `no_fsync_keeps_what_explicit_syncs_covered` in
 > `crates/server/felix-storage/src/disk_log/tests/power_loss.rs` (Linux only).
 
+The simulator's in-memory filesystem models the same crash, so the contract is
+also checked on any platform and without touching the disk. See
+[the simulated filesystem](simulation.md#the-filesystem).
+
+> `on_commit_acknowledged_records_survive_every_crash` and
+> `an_unsynced_tail_is_repaired_and_the_synced_prefix_survives` in
+> `crates/server/felix-storage/src/disk_log/tests/simulated_fs.rs` (`sim`
+> feature).
+
 Idempotent producers' state is derived the same way, before the log takes its
 first append: each producer's place comes from the marks its records carry,
 replayed from the `producers` snapshot saved at the last rollover. The marks

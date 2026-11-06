@@ -19,6 +19,14 @@ pub fn shard_dir(root: &Path, shard: &ShardKey) -> PathBuf {
     root.join(shard_dir_name(shard))
 }
 
+/// Whether the segment directory [`shard_dir`] names exists.
+///
+/// Callers outside this crate use this rather than `Path::is_dir`, which a
+/// simulated data directory (see `docs/simulation.md`) does not answer.
+pub fn shard_dir_exists(root: &Path, shard: &ShardKey) -> bool {
+    crate::fs::is_dir(shard_dir(root, shard))
+}
+
 /// Full path to the segment directory of one incarnation of a shard.
 pub fn incarnation_dir(root: &Path, shard: &ShardKey, incarnation: u64) -> PathBuf {
     root.join(incarnation_dir_name(shard, incarnation))

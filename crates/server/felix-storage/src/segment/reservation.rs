@@ -9,7 +9,7 @@
 //! here changes what recovery sees. An extension is best effort and runs off
 //! the append path; one that fails only means later writes allocate as they go.
 
-use std::fs::File;
+use crate::fs::File;
 use std::sync::Arc;
 
 use parking_lot::Mutex;

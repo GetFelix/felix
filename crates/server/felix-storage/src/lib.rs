@@ -37,6 +37,9 @@
 //! - [`storage_identity`]: the random id a data directory keeps, so peers can
 //!   tell a restarted disk from a wiped one. [`run_state`] gives it a new one
 //!   when a crash may have lost what it acknowledged.
+//! - `fs`: where every file and directory call goes, so a simulation can keep
+//!   a broker's data directory in memory. `sim_fs`, behind the `sim` feature,
+//!   registers those directories and cuts their power.
 //! - Ordering and reporting: `commit_order` ([`CommitSequencer`]),
 //!   [`metrics_names`], and the errors every call returns ([`StorageError`],
 //!   [`Corruption`]).
@@ -52,6 +55,7 @@ pub mod disk_log;
 mod error;
 #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
 pub mod fault;
+pub(crate) mod fs;
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
 pub mod fuzzing;
@@ -64,6 +68,8 @@ pub mod metrics_names;
 pub mod run_state;
 pub mod segment;
 mod shard_slots;
+#[cfg(feature = "sim")]
+pub mod sim_fs;
 pub mod storage_identity;
 mod task;
 pub mod tiered;

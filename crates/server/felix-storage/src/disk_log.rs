@@ -1429,7 +1429,7 @@ struct LogInner {
     /// Cleared only after a *successful* seal. A failed one leaves it in place
     /// so every later flush keeps trying to cover those records rather than
     /// quietly reporting them durable.
-    pending_seal: Mutex<Option<Arc<std::fs::File>>>,
+    pending_seal: Mutex<Option<Arc<crate::fs::File>>>,
     /// Where this log's appends run.
     appender: LogThread,
     /// Where this log's device flushes run.

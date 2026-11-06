@@ -121,7 +121,7 @@ pub(crate) fn plan_recovery(
 ) -> Result<RecoveryPlan> {
     // A shard that is not here yet is a fresh log; startup creates the
     // directory.
-    let mut ids = if dir.exists() {
+    let mut ids = if crate::fs::exists(dir) {
         discover_segment_ids(dir)?
     } else {
         Vec::new()
@@ -228,7 +228,7 @@ impl<'a> View<'a> {
     }
 
     fn len(&self, id: SegmentId) -> Result<u64> {
-        let on_disk = std::fs::metadata(self.path(id))?.len();
+        let on_disk = crate::fs::metadata(self.path(id))?.len();
         Ok(self.cut.get(&id).map_or(on_disk, |cut| (*cut).min(on_disk)))
     }
 
@@ -697,7 +697,7 @@ impl<'a> View<'a> {
 /// of its own, and every flush that would cover it syncs the retired segment
 /// first, so nothing in such a segment was ever reported durable.
 fn header_never_written(path: &Path) -> Result<bool> {
-    let file = std::fs::File::open(path)?;
+    let file = crate::fs::File::open(path)?;
     if file.metadata()?.len() < SEGMENT_HEADER_LEN {
         return Ok(true);
     }

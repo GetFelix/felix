@@ -28,8 +28,9 @@ the first one. Each seed is 120 seconds of virtual time and takes three to five
 minutes of real time with faults. The clock is paused, so waiting costs
 nothing, but real work does not: starting a cluster opens a durable log for
 each of 50 to 200 shards on every broker, and every crash restart opens them
-again. That disk work, and the broker tasks that run between timers, take real
-time that no virtual clock skips. Run seeds one at a time on a busy machine.
+again. The data directories are in memory, so that is CPU work and no disk
+work, but the broker tasks that run between timers still take real time that
+no virtual clock skips. Run seeds one at a time on a busy machine.
 
 A run that makes no progress ends instead of hanging. A thread of its own
 watches the virtual clock, and if it has not moved for four minutes of real
@@ -239,8 +240,59 @@ nothing:
 | Peer network | `PeerPool`, QUIC with mTLS | `SimNet`, in memory |
 | Timers and deadlines | tokio time | tokio time, paused and advanced by the test |
 | Lease and wall clocks | `felix_common::clock` | the same functions, reading virtual time |
+| Data directory | files on disk | `felix_storage::sim_fs`, in memory |
 | Control plane | its own process, over HTTP | its real router, called in-process through `ControlPlaneLink`, with faults |
 | Clients | QUIC connections | direct calls into the same publish and cache functions the handlers use |
+
+### The filesystem
+
+Each simulated broker's data directory lives in memory. Storage reaches the
+disk through one module (`crates/server/felix-storage/src/fs.rs`), and with
+felix-storage's `sim` feature a path under a directory the simulator
+registered goes to an in-memory tree instead of the OS. Every other path stays
+on disk, so tests that share a build with the simulator still use real files.
+A release broker is built without the feature and calls `std::fs` directly.
+
+Nothing in memory costs real time or holds a file descriptor, so starting 200
+shards and restarting them after a crash no longer waits on the disk.
+
+The tree keeps two copies of everything, because that is what a power loss
+needs:
+
+- **Files** hold their current bytes (the page cache) and their durable bytes,
+  as of the last `sync_data` or `sync_all` of that file. Preallocation
+  reserves space and leaves the length alone, as `fallocate` does.
+- **Directories** hold their current entries and their durable entries, as of
+  the last flush of that directory. A create, rename or unlink is only
+  durable once its parent is synced, so the missing `sync_dir` after a rename
+  is something the model can catch.
+
+`felix_storage::sim_fs::crash(root, seed)` replaces the tree with what a power
+loss at that moment would leave. It follows the rules of the Linux power-loss
+observer used by the storage tests (`io/power_loss.rs`):
+
+- Each file keeps its durable bytes. Each unsynced 4 KiB page then arrives
+  whole, arrives torn on a 512 B sector, or does not arrive.
+- A length change can reach the disk without the data it covers, which then
+  reads back as zeros.
+- A directory change that was not synced may or may not stick, per name.
+- A tree where everything was synced comes back unchanged.
+
+The same seed gives the same result: listings are in name order and the model
+uses no clock and no OS randomness. Handles opened before a crash are cut off
+from the new tree, as they would be from a rebooted disk.
+
+What it leaves out:
+
+- Only files, directories, and the flushes above are modelled. There are no
+  permissions, timestamps, links, symlinks or file locks.
+- A file on disk and a file in memory cannot be renamed into each other.
+- Flushes are exact. Real storage can also complete a write that was in
+  flight when the flush started; the observer's "adversarial capture" has no
+  counterpart here because a simulated flush is instant.
+- The nemesis does not cut the power yet. Today a crash is a process crash,
+  and the harness records it as clean in the run state. `sim_fs::crash` is
+  there for a power-loss fault to call.
 
 ### The peer network
 
