@@ -193,13 +193,17 @@ an `OnCommit` broker never says it acknowledged unsynced records.
 
 A cut at a random instant would almost never find an append in flight, because
 a simulated sync takes no time. So the cut is armed and lands inside the next
-append to one of the broker's logs whose earlier bytes were all synced, or
-after two virtual seconds with no append in flight. In the same instant:
+append to one of the broker's log segments, or after two virtual seconds with
+no append in flight. Earlier batches in that segment may still be unsynced, as
+under group commit, and the segment may be new, with its header unsynced. In
+the same instant:
 
 1. The device keeps what a power loss would leave
-   ([The filesystem](#the-filesystem)). The append in flight comes back torn:
-   its length reached the disk, its data only up to a 512 B sector boundary
-   inside it, or none of it, and the rest reads as zeros.
+   ([The filesystem](#the-filesystem)), and the append in flight never comes
+   back whole. Its size reached the disk in full or only in part, and each
+   512 B sector of its data arrived or did not, at least one not. A missing
+   sector can sit before one that arrived, which is where recovery has to
+   tell a torn tail from corruption inside the log.
 2. The broker stops. Clients waiting on it get no answer, and peers lose it.
    Anything it writes after the cut is lost.
 3. The data directory becomes what the device held, and the broker restarts
@@ -212,10 +216,13 @@ copy is trusted, so the power loss does not count towards the shards
 `ElectionSettles` exempts after unclean kills. If a restart after a power
 loss did run `UncleanStart`, the copy would count like a killed one.
 
-Recovery must then repair the torn append. The storage counts each torn tail
-it repairs under a simulated directory, and the `TornTailRepaired` checker
-fails the seed when a cut during an append is not followed by a repair on
-that broker. The faults list says, for each cut, whether it landed in an
+Recovery must then repair the torn append. The storage records each segment
+whose torn tail it repairs under a simulated directory, and the
+`TornTailRepaired` checker fails the seed when the segment a cut tore is not
+repaired on that broker before its next power loss or the end of the run.
+Under a simulator every sync runs on the run's own runtime, so what the
+device holds at the cut does not depend on thread timing and a seed replays
+exactly. The faults list says, for each cut, whether it landed in an
 append.
 
 A pause is approximate. The simulator cannot stop one broker's tasks on a
@@ -261,7 +268,7 @@ A cluster checker runs at up to three kinds of point:
 | `AtMostOneServing` | every second, Healed, End | Two brokers would take a write for one shard at the same instant. The brokers are read in one step, so none moves between two reads. It covers shards protected by the lease only. The model asserts it for those, and for a shard acknowledged by a majority of followers it asserts `AckedHeldByLeader` instead: a deposed leader may keep serving there until it learns of the newer generation, because it cannot collect a majority once its successor has fenced one. Each broker says which kind a shard is from its own write gate, so a shard opened before election was finalized stays checked. Once election is finalized that is every stream shard. A run does not finalize `fenced_caches`, so its cache shards stay on the lease and are the ones checked. |
 | `AckedHeldByLeader` | every second, Healed, End | A broker serving a shard does not hold, at the offset the client was told, an append that was acknowledged before the sample. A broker at the newest generation any broker knows must hold all of them. A deposed one still serving is held only to the offsets below its quorum mark at its own generation. Past that mark its log may hold records no majority took, at offsets where its successor has since acknowledged others. Below it, a hole or a different record is a lost acknowledgement. After the heal, a shard served by nobody at the newest generation is looked at again until the settle deadline, and at the end its server is held to every acknowledged append. The record is read from the broker's log whether or not a quorum has committed it. A shard with no server is left to `ElectionSettles`. |
 | `AdoptedMatchesOpened` | every second, Healed, End | A broker that serves a shard at generation `g` does not route the shard to itself at `g`, or its lifecycle did not open `g`. The model's version of this also compares the replica set with the control plane's; the simulator does not read the set. |
-| `TornTailRepaired` | End | A power cut landed inside an append, and the broker's recovery repaired no torn tail before its next power loss or the end of the run. |
+| `TornTailRepaired` | End | A power cut landed inside an append, and the broker's recovery did not repair that segment's torn tail before its next power loss or the end of the run. |
 | `GenerationBurn` | End | A warning, never a failure. A shard went through more generations than `2 * faults + 2`, counting the faults in the plan that could have cost its leader: a crash, freeze or isolation of a broker that has led it, a split with a former leader in the minority, a dropped link to one, a paused or downed control plane, or the pause-then-crash fault. Many elections for few faults often means candidates deposing each other. |
 
 A violation that lasts is reported once, with a census of the shard. After three
@@ -405,12 +412,12 @@ observer used by the storage tests (`io/power_loss.rs`):
 - A tree where everything was synced comes back unchanged.
 
 `sim_fs::arm_power_cut(root, seed, on_cut)` is the version the nemesis uses.
-It waits for the next append to a log segment that starts where the segment's
-synced bytes end, tears that append as described under
-[Power loss](#power-loss), and fixes what the device holds at that moment.
-`on_cut` runs inside the write, to stop the broker. `sim_fs::reboot(root)`
-then puts the device's contents in place. `sim_fs::cut_power` cuts at once
-instead, and `sim_fs::torn_tails_repaired` reads the repair count.
+It waits for the next append to a log segment, tears that append as described
+under [Power loss](#power-loss), and fixes what the device holds at that
+moment. `on_cut` runs inside the write, to stop the broker, and is told which
+segment it tore. `sim_fs::reboot(root)` then puts the device's contents in
+place. `sim_fs::cut_power` cuts at once instead, and
+`sim_fs::torn_tails_repaired` lists the segments recovery repaired.
 
 The same seed gives the same result: listings are in name order and the model
 uses no clock and no OS randomness. Handles opened before a crash are cut off

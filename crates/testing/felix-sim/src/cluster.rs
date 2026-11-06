@@ -404,15 +404,17 @@ impl SimCluster {
         let view = self.cp.shard_views().await.unwrap_or_default();
         let node = &self.nodes[index];
         let seed = self.seed ^ self.power.lock().next_seed();
-        let repaired_before = node.torn_tails_repaired();
+        let repaired_before = node.torn_tails_repaired().len();
         let cut = CancellationToken::new();
+        let torn_slot = Arc::new(parking_lot::Mutex::new(None));
         node.arm_power_cut(seed, {
-            let (cluster, cut) = (Arc::downgrade(self), cut.clone());
-            move || {
+            let (cluster, cut, slot) = (Arc::downgrade(self), cut.clone(), Arc::clone(&torn_slot));
+            move |segment: &std::path::Path| {
                 // Inside the broker's write: stop it before it runs on.
                 if let Some(cluster) = cluster.upgrade() {
                     cluster.nodes[index].power_off(&cluster.net);
                 }
+                *slot.lock() = Some(segment.to_path_buf());
                 cut.cancel();
             }
         });
@@ -421,6 +423,7 @@ impl SimCluster {
             () = cut.cancelled() => true,
             () = tokio::time::sleep(power::APPEND_WITHIN) => false,
         };
+        let torn = torn_slot.lock().take();
         if !mid_append {
             node.cut_power(seed);
             node.power_off(&self.net);
@@ -430,7 +433,7 @@ impl SimCluster {
         self.power.lock().record(PowerLoss {
             node: index,
             at,
-            mid_append,
+            torn,
             repaired_before,
             view,
             restarted_at: None,
@@ -443,9 +446,9 @@ impl SimCluster {
         self.power.lock().losses().to_vec()
     }
 
-    /// Torn tails recovery has repaired on the broker at `index`, over the
-    /// whole run.
-    pub fn torn_tails_repaired(&self, index: usize) -> u64 {
+    /// The segments, below the data directory, whose torn tails recovery
+    /// repaired on the broker at `index`, in order over the whole run.
+    pub fn torn_tails_repaired(&self, index: usize) -> Vec<std::path::PathBuf> {
         self.nodes[index].torn_tails_repaired()
     }
 

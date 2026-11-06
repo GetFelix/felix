@@ -236,25 +236,27 @@ async fn a_power_cut_during_an_append_is_repaired_on_the_restart() {
     let client = tokio::spawn(client.run(stop.clone()));
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    let before = cluster.torn_tails_repaired(0);
+    let before = cluster.torn_tails_repaired(0).len();
     assert!(cluster.power_loss(0).await, "no append to cut");
     assert!(cluster.is_down(0));
+    let torn = cluster.power_losses()[0]
+        .torn
+        .clone()
+        .expect("a torn segment");
     restarted(&cluster, 0).await;
     assert_eq!(cluster.started_unclean(0), Some(false));
+    let repaired = || cluster.torn_tails_repaired(0)[before..].contains(&torn);
     for _ in 0..300 {
-        if cluster.torn_tails_repaired(0) > before {
+        if repaired() {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    assert!(
-        cluster.torn_tails_repaired(0) > before,
-        "no torn tail repaired"
-    );
+    assert!(repaired(), "{} was not repaired", torn.display());
     stop.cancel();
     let _ = client.await;
     assert!(cluster.held_shards().await.is_empty());
     let losses = cluster.power_losses();
     assert_eq!(losses.len(), 1);
-    assert!(losses[0].mid_append && losses[0].restarted_at.is_some());
+    assert!(losses[0].restarted_at.is_some());
 }

@@ -46,15 +46,15 @@ pub fn crash(root: &Path, seed: u64) -> io::Result<()> {
     Ok(())
 }
 
-/// Cut the power under `root` during the next append to a log segment that
-/// starts where the segment's synced bytes end, then call `on_cut`.
+/// Cut the power under `root` during the next append to a log segment, then
+/// call `on_cut` with that segment's path below `root`.
 ///
-/// The append comes back torn, as a power loss may leave it: its length
-/// reached the disk but its data only up to a sector boundary inside it, or
-/// not at all, and the rest reads as zeros. Recovery has to repair that tail.
-/// Every other file and directory keeps what [`crash`] with `seed` would
-/// leave. The device's contents are fixed at the cut; whatever the process
-/// writes after it is lost at [`reboot`].
+/// Every file and directory keeps what [`crash`] with `seed` would leave,
+/// and the append in flight is then forced to come back short or torn: its
+/// size reached the disk in full or in part, and each sector of its data
+/// arrived or did not, at least one not. Recovery has to repair that tail.
+/// The device's contents are fixed at the cut; whatever the process writes
+/// after it is lost at [`reboot`].
 ///
 /// `on_cut` runs on the writing thread, inside the write, so it must not
 /// touch the filesystem. It is the moment to stop the process.
@@ -64,7 +64,7 @@ pub fn crash(root: &Path, seed: u64) -> io::Result<()> {
 pub fn arm_power_cut(
     root: &Path,
     seed: u64,
-    on_cut: impl FnOnce() + Send + 'static,
+    on_cut: impl FnOnce(&Path) + Send + 'static,
 ) -> io::Result<()> {
     tree(root)?.arm(seed, Box::new(on_cut));
     Ok(())
@@ -90,12 +90,12 @@ pub fn reboot(root: &Path) -> io::Result<bool> {
     Ok(tree(root)?.reboot())
 }
 
-/// How many torn tails recovery has repaired in logs under `root`, counted
-/// across reboots.
+/// The segments, as paths below `root`, whose torn tails recovery has
+/// repaired, in order and across reboots.
 ///
 /// # Errors
 /// `NotFound` when `root` was not registered.
-pub fn torn_tails_repaired(root: &Path) -> io::Result<u64> {
+pub fn torn_tails_repaired(root: &Path) -> io::Result<Vec<std::path::PathBuf>> {
     Ok(tree(root)?.torn_tails())
 }
 

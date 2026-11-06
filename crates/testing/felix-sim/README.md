@@ -49,8 +49,9 @@ A seed fails when any check reports a problem, except a warning.
 ## Power loss
 
 A power cut lands inside an append to one of the broker's logs. That append
-comes back torn, every other byte that was not synced may be lost or torn, and
-the broker stops in the same instant. It restarts on what the device held.
+never comes back whole: its size and its sectors reach the disk only in part.
+Every other byte that was not synced may be lost or torn, and the broker stops
+in the same instant. It restarts on what the device held.
 Brokers in these seeds sync every record before acknowledging it, so the
 acknowledged-record and history checks must still hold. `docs/simulation.md`
 has the details.

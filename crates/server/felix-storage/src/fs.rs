@@ -47,11 +47,12 @@ pub(crate) fn from_os(file: std::fs::File) -> File {
     }
 }
 
-/// Count a torn tail recovery repaired under `dir`, so a simulation can see
-/// that a power cut it injected was repaired. Nothing without the `sim` feature.
+/// Record that recovery repaired the torn tail of `segment`, so a simulation
+/// can see that a power cut it injected was repaired. Nothing without the
+/// `sim` feature.
 #[cfg(not(feature = "sim"))]
 #[inline]
-pub(crate) fn note_torn_tail(_dir: &Path) {}
+pub(crate) fn note_torn_tail(_segment: &Path) {}
 
 /// Whether `path` exists. Any error counts as no, as with `Path::exists`.
 pub(crate) fn exists(path: impl AsRef<Path>) -> bool {

@@ -229,7 +229,11 @@ impl Node {
         net.crash(&self.id);
     }
 
-    pub(crate) fn arm_power_cut(&self, seed: u64, on_cut: impl FnOnce() + Send + 'static) {
+    pub(crate) fn arm_power_cut(
+        &self,
+        seed: u64,
+        on_cut: impl FnOnce(&std::path::Path) + Send + 'static,
+    ) {
         felix_storage::sim_fs::arm_power_cut(self.dir.path(), seed, on_cut)
             .expect("the data directory is simulated");
     }
@@ -244,7 +248,7 @@ impl Node {
         felix_storage::sim_fs::reboot(self.dir.path()).expect("the data directory is simulated");
     }
 
-    pub(crate) fn torn_tails_repaired(&self) -> u64 {
+    pub(crate) fn torn_tails_repaired(&self) -> Vec<std::path::PathBuf> {
         felix_storage::sim_fs::torn_tails_repaired(self.dir.path())
             .expect("the data directory is simulated")
     }

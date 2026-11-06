@@ -1,6 +1,7 @@
 //! The sim's record of power losses, kept for the checker that asks whether
 //! recovery repaired each torn append, and for the double-crash exemption.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use super::kills::Views;
@@ -16,10 +17,11 @@ pub struct PowerLoss {
     pub node: usize,
     /// When the cut was asked for, on the cluster's clock.
     pub at: Duration,
-    /// The cut landed inside an append, which then came back torn.
-    pub mid_append: bool,
-    /// Torn tails the broker's recovery had repaired before the cut.
-    pub repaired_before: u64,
+    /// The segment, below the data directory, whose append the cut landed
+    /// in and tore. `None` when no append was in flight.
+    pub torn: Option<PathBuf>,
+    /// How many torn tails the broker's recovery had repaired before the cut.
+    pub repaired_before: usize,
     /// The shards as the control plane held them just before.
     pub(crate) view: Views,
     /// When the broker was started again.

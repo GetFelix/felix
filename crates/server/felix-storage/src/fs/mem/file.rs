@@ -1,6 +1,7 @@
 //! An open file in the in-memory tree.
 
 use std::io::{self, SeekFrom};
+use std::path::Path;
 use std::sync::{Arc, Weak};
 
 use parking_lot::Mutex;
@@ -33,9 +34,9 @@ pub(crate) struct MemFile {
     cursor: Arc<Mutex<u64>>,
     access: Access,
     tree: Weak<Tree>,
-    /// The file is a log segment, so an append to it can take an armed
-    /// power cut.
-    segment: bool,
+    /// The path below the root, when the file is a log segment: an append
+    /// to one can take an armed power cut.
+    segment: Option<Arc<Path>>,
 }
 
 impl std::fmt::Debug for MemFile {
@@ -45,7 +46,12 @@ impl std::fmt::Debug for MemFile {
 }
 
 impl MemFile {
-    pub(super) fn new(node: Arc<FileNode>, flags: Flags, tree: Weak<Tree>, segment: bool) -> Self {
+    pub(super) fn new(
+        node: Arc<FileNode>,
+        flags: Flags,
+        tree: Weak<Tree>,
+        segment: Option<Arc<Path>>,
+    ) -> Self {
         Self {
             node,
             cursor: Arc::new(Mutex::new(0)),
@@ -74,7 +80,7 @@ impl MemFile {
             cursor: Arc::clone(&self.cursor),
             access: self.access,
             tree: self.tree.clone(),
-            segment: self.segment,
+            segment: self.segment.clone(),
         }
     }
 
@@ -88,13 +94,13 @@ impl MemFile {
     pub(crate) fn write_at(&self, buf: &[u8], at: u64) -> io::Result<()> {
         self.writable()?;
         let at = position(at)?;
-        let clean = {
+        let append = {
             let mut data = self.node.data.lock();
-            let clean = data.clean_end_at(at);
+            let append = data.appends_at(at);
             data.write_at(at, buf);
-            clean
+            append
         };
-        self.appended(clean, at, buf.len());
+        self.appended(append, at, buf.len());
         Ok(())
     }
 
@@ -114,25 +120,25 @@ impl MemFile {
             *cursor = data.current.len() as u64;
         }
         let at = position(*cursor)?;
-        let clean = data.clean_end_at(at);
+        let append = data.appends_at(at);
         data.write_at(at, buf);
         *cursor += buf.len() as u64;
         drop((data, cursor));
-        self.appended(clean, at, buf.len());
+        self.appended(append, at, buf.len());
         Ok(buf.len())
     }
 
-    /// Give an armed power cut its chance at an append to a segment that
-    /// starts where the synced bytes end. A segment's header is written at
-    /// its start, so `at > 0` leaves header writes alone.
-    fn appended(&self, clean: bool, at: usize, len: usize) {
-        if clean
-            && self.segment
+    /// Give an armed power cut its chance at an append to a segment. A
+    /// segment's header is written at its start, so `at > 0` leaves header
+    /// writes alone.
+    fn appended(&self, append: bool, at: usize, len: usize) {
+        if append
             && at > 0
             && len > 0
+            && let Some(path) = &self.segment
             && let Some(tree) = self.tree.upgrade()
         {
-            tree.appended(&self.node, at, at + len);
+            tree.appended(&self.node, path, at, at + len);
         }
     }
 
