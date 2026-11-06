@@ -5002,7 +5002,13 @@ finalized such a fence could never open, so the broker does not stand.
 A broker whose set file keeps earlier sets does not stand either. Those sets
 are kept only while a fence leaving them never opened, so a majority of one
 may hold an acknowledged write that no later set has. A candidate's fence
-leaves at most one set, so the control plane handles that shard.
+leaves at most one set, so the control plane handles that shard. The
+exception is a log that holds a record of the kept set's own generation: that
+fence opened, and the log holds everything its leader inherited, so the
+candidate stands and fences the kept set alone. A failover reads the same
+record the same way. The set file only drops earlier sets when it is next
+raised, and a control plane move leaves them behind on every follower, so
+without this a moved shard could never elect while the control plane is down.
 
 These checks read the kept set once, and the round's pre-votes take time.
 Meanwhile the copy can take a newer set: another leader's fence below the
