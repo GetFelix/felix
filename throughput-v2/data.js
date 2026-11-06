@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793932019281,
+  "lastUpdate": 1793933117948,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -46696,6 +46696,58 @@ window.BENCHMARK_DATA = {
             "range": "20076.58",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 851472.18\nmean: 847621.69\nstdev: 20076.58\ncv: 2.37%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c6d7e8fd595dba0f94f42caf2209593c200062de",
+          "message": "spec: report floor on in the shard model, report store in the model (#1972, #1996) (#2004)\n\n* wip: report floor on, report store in the shard model\n\n* wip: README\n\n* wip: route-lag store configs keep their twins' floor",
+          "timestamp": "2026-11-05T18:32:25-08:00",
+          "tree_id": "ac6ed8b240b321c1459d2681ed59aedaefc58267",
+          "url": "https://github.com/GetFelix/felix/commit/c6d7e8fd595dba0f94f42caf2209593c200062de"
+        },
+        "date": 1793933117238,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 529197.67,
+            "range": "24810.54",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 529197.67\nmean: 537391.71\nstdev: 24810.54\ncv: 4.62%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 529197.67,
+            "range": "24810.54",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 529197.67\nmean: 537391.71\nstdev: 24810.54\ncv: 4.62%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 122209.8,
+            "range": "2205.63",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 122209.80\nmean: 121182.98\nstdev: 2205.63\ncv: 1.82%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1222098,
+            "range": "22056.27",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1222098.00\nmean: 1211829.80\nstdev: 22056.27\ncv: 1.82%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
