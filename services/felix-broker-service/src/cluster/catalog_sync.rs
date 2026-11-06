@@ -28,7 +28,7 @@
 mod apply;
 mod fetch;
 mod pass;
-mod wire;
+pub(crate) mod wire;
 
 use std::sync::Arc;
 use std::time::Duration;

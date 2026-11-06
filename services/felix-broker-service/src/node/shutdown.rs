@@ -58,6 +58,8 @@ pub(super) struct Running {
     pub(super) shard_tasks: Option<ShardTasks>,
     pub(super) sync_shutdown: CancellationToken,
     pub(super) controlplane_task: Option<JoinHandle<()>>,
+    /// Writes the control-plane view once more when its token is cancelled.
+    pub(super) controlplane_view: Option<(JoinHandle<()>, CancellationToken)>,
     pub(super) storage: Storage,
     pub(super) metrics_task: JoinHandle<std::io::Result<()>>,
     pub(super) metrics_shutdown: CancellationToken,
@@ -109,6 +111,7 @@ impl Running {
             shard_tasks,
             sync_shutdown,
             controlplane_task,
+            controlplane_view,
             storage,
             metrics_task,
             metrics_shutdown,
@@ -338,6 +341,19 @@ impl Running {
             }
         }
 
+        // After the feeds stop, so the last write holds what they last applied.
+        if let Some((mut task, view_shutdown)) = controlplane_view {
+            view_shutdown.cancel();
+            if !budget
+                .drain("controlplane_view", async {
+                    let _ = (&mut task).await;
+                })
+                .await
+            {
+                task.abort();
+            }
+        }
+
         // Step 3b: flush every store while the drain deadline still applies.
         // Publishes have stopped by now, so this is the last chance to push
         // page-cache bytes to the device — under `Periodic` it is the difference
@@ -418,10 +434,12 @@ impl Running {
 
 /// Drain steps that never write to a store, so one cut short (say, by a
 /// control plane that is down) does not cost the next start its storage id.
-const NO_STORE_WRITES: [&str; 3] = [
+const NO_STORE_WRITES: [&str; 4] = [
     "membership_deregister",
     "membership_heartbeat",
     "credential_refresh",
+    // The view is replaced whole by a rename, and holds no record.
+    "controlplane_view",
 ];
 
 /// Whether a stop may be recorded as clean: every store flushed, no drain

@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use felix_replication::controlplane_link::ControlPlaneLink;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{Notify, RwLock};
 use tokio_util::sync::CancellationToken;
 
@@ -42,7 +42,7 @@ const LONG_POLL_WAIT: Duration = Duration::from_secs(20);
 /// Without a bound, a connection that died silently would stop the watch.
 const LONG_POLL_SLACK: Duration = Duration::from_secs(10);
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct ShardAssignment {
     #[serde(flatten)]
     pub key: ShardKey,
@@ -83,7 +83,7 @@ pub struct ShardAssignment {
 }
 
 /// The set a cut-over is moving a shard to, and the generation that wrote it.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct PendingSet {
     pub replicas: Vec<String>,
     pub generation: u64,
@@ -153,6 +153,9 @@ pub struct ShardOwnership {
     /// The set each shard had right before its current assignment, where this
     /// broker saw that step. A joint fence takes the set it leaves from here.
     priors: HashMap<ShardKey, felix_router::PriorSet>,
+    /// A whole snapshot has been taken, so `assignments` is every shard and
+    /// not just the changes seen so far.
+    seeded: bool,
     /// When the request behind the newest answer applied here started.
     as_of: Option<tokio::time::Instant>,
     /// The feed seq the newest answer applied here brought this view to.
@@ -300,6 +303,7 @@ impl ShardOwnership {
             }
         }
         self.priors = priors;
+        self.seeded = true;
         self.assignments = items
             .into_iter()
             .map(|assignment| (assignment.key.clone(), assignment))
@@ -321,6 +325,11 @@ impl ShardOwnership {
     /// can tell a renewed shard from an old generation delivered late.
     pub(crate) fn renewals(&self) -> &HashMap<ShardKey, u64> {
         &self.renewals
+    }
+
+    /// Whether a snapshot has been taken. See [`Self::reset`].
+    pub(crate) fn is_seeded(&self) -> bool {
+        self.seeded
     }
 
     /// Everything this broker currently believes about ownership.
