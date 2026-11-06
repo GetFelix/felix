@@ -120,12 +120,11 @@ impl SimOutcome {
         lines
     }
 
-    /// The command that runs this seed again.
+    /// The command that runs this seed again, event for event. It goes
+    /// through `task sim:replay`, which builds with `--cfg tokio_unstable`:
+    /// a plain `cargo test` build leaves `select!` unseeded.
     pub fn replay_command(&self) -> String {
-        format!(
-            "FELIX_SIM_SEED={} cargo test -p felix-sim --test seeds replay -- --nocapture",
-            self.seed
-        )
+        format!("FELIX_SIM_SEED={} task sim:replay", self.seed)
     }
 }
 

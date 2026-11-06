@@ -6,7 +6,7 @@
 //! one seed again, with the log the failure printed:
 //!
 //! ```text
-//! FELIX_SIM_SEED=<n> cargo test -p felix-sim --test seeds replay -- --nocapture
+//! FELIX_SIM_SEED=<n> task sim:replay
 //! ```
 //!
 //! | Variable | Meaning | Default |
@@ -17,11 +17,12 @@
 //! | `FELIX_SIM_HISTORY` | a file `replay` writes the run's trace to, for diffing two runs | unset |
 //! | `RUST_LOG` | broker and harness logs | none |
 //!
-//! Built with `RUSTFLAGS="--cfg tokio_unstable"` a replay is the same run,
-//! event for event, and `each_seed_runs_the_same_twice` checks that (`task
-//! sim:determinism`). Without the flag `select!` is unseeded: the faults and
-//! operations repeat, but the interleaving under them can differ, so a
-//! failure may take more than one replay to show again.
+//! Built with `RUSTFLAGS="--cfg tokio_unstable"`, as `task sim:replay` does,
+//! a replay is the same run, event for event; `task sim:determinism` checks
+//! that within one process and across two. Without the flag `select!` is
+//! unseeded: the faults and operations repeat, but the interleaving under
+//! them can differ, so `replay` refuses to write `FELIX_SIM_HISTORY` from
+//! such a build.
 //!
 //! A seed that exposed a bug is pinned below as a test that asserts only the
 //! finding its issue is about. Some pins are skipped without `--cfg
@@ -67,9 +68,20 @@ fn env_u64(name: &str) -> Option<u64> {
 
 /// Run `seed` and panic with its outcome and replay command if it failed.
 fn check(seed: u64) -> SimOutcome {
+    let history = std::env::var("FELIX_SIM_HISTORY").ok();
+    // Two histories from an unseeded build differ wherever two ready
+    // `select!` branches raced, which reads as a determinism bug.
+    if let Some(path) = &history
+        && !cfg!(tokio_unstable)
+    {
+        panic!(
+            "FELIX_SIM_HISTORY needs a build with --cfg tokio_unstable to repeat; \
+             run FELIX_SIM_SEED={seed} FELIX_SIM_HISTORY={path} task sim:replay"
+        );
+    }
     log();
     let outcome = run_seed(seed, SimConfig::for_seed(seed));
-    if let Ok(path) = std::env::var("FELIX_SIM_HISTORY") {
+    if let Some(path) = history {
         std::fs::write(&path, outcome.trace().join("\n") + "\n")
             .unwrap_or_else(|err| panic!("write the history to {path}: {err}"));
     }

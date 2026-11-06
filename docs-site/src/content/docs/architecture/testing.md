@@ -216,7 +216,7 @@ Run a batch of seeds, or replay one:
 
 ```bash
 cargo test -p felix-sim --test seeds -- --ignored --exact seeds
-FELIX_SIM_SEED=<n> cargo test -p felix-sim --test seeds replay -- --nocapture
+FELIX_SIM_SEED=<n> task sim:replay
 ```
 
 `FELIX_SIM_SEEDS` sets how many seeds the batch runs (default 4) and
@@ -229,11 +229,13 @@ machine. A run that stops making progress ends
 with a `stalled` finding instead of hanging.
 
 A replay injects the same faults at the same virtual times and sends the same
-client operations. Built with `RUSTFLAGS="--cfg tokio_unstable"`, which lets
-tokio seed `select!`, it is the same run event for event. Without the flag the
-brokers' interleaving can differ, so a failure may take a few replays to show
-again. CI runs `task sim:determinism` on every pull request: seeds 1 to 20 run
-twice each with the flag, and the job fails on the first event that differs. It
+client operations. `task sim:replay` builds with
+`RUSTFLAGS="--cfg tokio_unstable"`, which lets tokio seed `select!`, so the
+replay is the same run event for event. A plain `cargo test` build leaves
+`select!` unseeded and the brokers' interleaving can differ, so a failure may
+take a few replays to show again. CI runs `task sim:determinism` on every pull
+request: seeds 1 to 20 run twice each in one process, seed 1 is replayed in two
+separate processes, and the job fails on the first event that differs. It
 blocks merging. The `seeds` test, seeds 1 to 4, is ignored in the workspace
 tests and runs in its own job, which does not block merging until the open
 liveness bugs it finds are fixed.
