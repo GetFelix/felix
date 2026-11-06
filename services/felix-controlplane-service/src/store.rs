@@ -67,8 +67,8 @@ pub trait ControlPlaneStore: Send + Sync {
     async fn stream_routings(
         &self,
         keys: &[StreamKey],
-    ) -> StoreResult<std::collections::HashMap<StreamKey, crate::model::StreamRouting>> {
-        let mut routings = std::collections::HashMap::new();
+    ) -> StoreResult<felix_common::random::HashMap<StreamKey, crate::model::StreamRouting>> {
+        let mut routings = felix_common::random::HashMap::default();
         for key in keys {
             match self.get_stream(key).await {
                 Ok(stream) if !stream.routing.is_modulo() => {

@@ -219,7 +219,7 @@ impl Owner {
         self.ingress.publish_servable(if servable {
             [(shard_key(), generation)].into_iter().collect()
         } else {
-            HashMap::new()
+            Default::default()
         });
     }
 

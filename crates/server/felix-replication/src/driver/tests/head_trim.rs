@@ -158,10 +158,10 @@ async fn passes(
     until: impl AsyncFn() -> bool,
 ) {
     let (mut cursors, mut group, mut dead, mut counters) = (
-        HashMap::new(),
-        HashMap::new(),
-        HashMap::new(),
-        HashMap::new(),
+        HashMap::default(),
+        HashMap::default(),
+        HashMap::default(),
+        HashMap::default(),
     );
     for _ in 0..8 {
         replicate_once_with(

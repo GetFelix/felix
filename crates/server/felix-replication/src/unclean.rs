@@ -7,7 +7,7 @@
 //! vote, and the records only the lost tail held can be overwritten. See
 //! "A leader's own crash" in `docs/replication-design.md` (#1295).
 
-use std::collections::{HashMap, HashSet};
+use felix_common::random::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::ShardKey;
@@ -31,8 +31,8 @@ impl UncleanStart {
     pub fn new(node_id: impl Into<Arc<str>>) -> Self {
         Self {
             node_id: node_id.into(),
-            led: parking_lot::Mutex::new(HashMap::new()),
-            vouched: parking_lot::Mutex::new(HashSet::new()),
+            led: parking_lot::Mutex::new(HashMap::default()),
+            vouched: parking_lot::Mutex::new(HashSet::default()),
             kept_promises: false,
         }
     }

@@ -46,7 +46,7 @@ mod tenants;
 
 pub(crate) use nodes::FleetRule;
 
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -105,9 +105,9 @@ pub struct InMemoryStore {
     cache_tombstones: Arc<RwLock<HashMap<CacheKey, u64>>>,
     /// Every stream name deleted, so one is not created again before the
     /// fleet finalized `stream_incarnations` (#1447).
-    deleted_stream_names: Arc<RwLock<std::collections::HashSet<StreamKey>>>,
+    deleted_stream_names: Arc<RwLock<felix_common::random::HashSet<StreamKey>>>,
     /// As `deleted_stream_names`, for caches and `cache_incarnations`.
-    deleted_cache_names: Arc<RwLock<std::collections::HashSet<CacheKey>>>,
+    deleted_cache_names: Arc<RwLock<felix_common::random::HashSet<CacheKey>>>,
     /// Broker membership keyed by `node_id`, with its change log.
     ///
     /// One lock over both, unlike the entities above: a snapshot has to read
@@ -311,37 +311,37 @@ impl InMemoryStore {
             config,
             #[cfg(test)]
             faults: Faults::default(),
-            tenants: Arc::new(RwLock::new(HashMap::new())),
-            namespaces: Arc::new(RwLock::new(HashMap::new())),
-            streams: Arc::new(RwLock::new(HashMap::new())),
-            stream_tombstones: Arc::new(RwLock::new(HashMap::new())),
-            caches: Arc::new(RwLock::new(HashMap::new())),
-            cache_tombstones: Arc::new(RwLock::new(HashMap::new())),
+            tenants: Arc::new(RwLock::new(HashMap::default())),
+            namespaces: Arc::new(RwLock::new(HashMap::default())),
+            streams: Arc::new(RwLock::new(HashMap::default())),
+            stream_tombstones: Arc::new(RwLock::new(HashMap::default())),
+            caches: Arc::new(RwLock::new(HashMap::default())),
+            cache_tombstones: Arc::new(RwLock::new(HashMap::default())),
             deleted_stream_names: Default::default(),
             deleted_cache_names: Default::default(),
             nodes: Arc::new(RwLock::new(NodeState {
-                records: HashMap::new(),
+                records: HashMap::default(),
                 changes: ChangeLog::new(capacity),
                 fleet_enabled: Default::default(),
             })),
             shards: Arc::new(RwLock::new(ShardState {
-                records: HashMap::new(),
+                records: HashMap::default(),
                 changes: ChangeLog::new(capacity),
                 placement: PlacementState::default(),
             })),
-            replica_reports: Arc::new(RwLock::new(HashMap::new())),
-            suspicions: Arc::new(RwLock::new(HashMap::new())),
+            replica_reports: Arc::new(RwLock::new(HashMap::default())),
+            suspicions: Arc::new(RwLock::new(HashMap::default())),
             tenant_changes: Arc::new(RwLock::new(ChangeLog::new(capacity))),
             namespace_changes: Arc::new(RwLock::new(ChangeLog::new(capacity))),
             stream_changes: Arc::new(RwLock::new(ChangeLog::new(capacity))),
             cache_changes: Arc::new(RwLock::new(ChangeLog::new(capacity))),
-            idp_issuers: Arc::new(RwLock::new(HashMap::new())),
-            tenant_signing_keys: Arc::new(RwLock::new(HashMap::new())),
-            rbac_policies: Arc::new(RwLock::new(HashMap::new())),
-            rbac_groupings: Arc::new(RwLock::new(HashMap::new())),
-            auth_bootstrapped: Arc::new(RwLock::new(HashMap::new())),
+            idp_issuers: Arc::new(RwLock::new(HashMap::default())),
+            tenant_signing_keys: Arc::new(RwLock::new(HashMap::default())),
+            rbac_policies: Arc::new(RwLock::new(HashMap::default())),
+            rbac_groupings: Arc::new(RwLock::new(HashMap::default())),
+            auth_bootstrapped: Arc::new(RwLock::new(HashMap::default())),
             bootstrap_serial: Arc::new(tokio::sync::Mutex::new(())),
-            refresh_tokens: Arc::new(RwLock::new(HashMap::new())),
+            refresh_tokens: Arc::new(RwLock::new(HashMap::default())),
             moves_paused: Arc::new(RwLock::new(false)),
             revocations: Arc::new(RwLock::new(Default::default())),
         }

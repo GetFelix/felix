@@ -706,7 +706,7 @@ const LOG_LIMIT_KEYS: usize = 1024;
 /// follower does not hide another. Remembers at most `LOG_LIMIT_KEYS` keys.
 pub(crate) struct LogLimit {
     every: std::time::Duration,
-    last: std::sync::Mutex<Option<std::collections::HashMap<String, std::time::Instant>>>,
+    last: std::sync::Mutex<Option<felix_common::random::HashMap<String, std::time::Instant>>>,
 }
 
 impl LogLimit {

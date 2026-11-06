@@ -65,7 +65,8 @@
 //! report would otherwise still look caught up.
 //!
 //! [`ControlPlaneStore`]: crate::store::ControlPlaneStore
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use felix_common::random::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 use felix_common::membership::RefusedGeneration;
 
@@ -204,20 +205,20 @@ impl ReplicaPositions {
                 .collect(),
             ttl_millis: report_ttl_millis(liveness),
             now_millis,
-            suspicions: HashMap::new(),
-            incarnations: HashMap::new(),
+            suspicions: HashMap::default(),
+            incarnations: HashMap::default(),
             followers_decide: false,
-            progressed: HashMap::new(),
-            fenced: HashMap::new(),
-            pending: HashMap::new(),
-            suspected_since: HashMap::new(),
-            give_ups: HashMap::new(),
-            stuck: HashMap::new(),
-            nodes: HashMap::new(),
-            assignments: HashMap::new(),
-            opened: HashSet::new(),
-            incarnations_of: HashMap::new(),
-            members: HashMap::new(),
+            progressed: HashMap::default(),
+            fenced: HashMap::default(),
+            pending: HashMap::default(),
+            suspected_since: HashMap::default(),
+            give_ups: HashMap::default(),
+            stuck: HashMap::default(),
+            nodes: HashMap::default(),
+            assignments: HashMap::default(),
+            opened: HashSet::default(),
+            incarnations_of: HashMap::default(),
+            members: HashMap::default(),
             joint_fence: false,
         }
     }

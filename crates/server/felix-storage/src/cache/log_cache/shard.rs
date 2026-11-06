@@ -5,11 +5,11 @@
 //! (from a checked snapshot when compaction left one) and caught up whenever
 //! records reach the log by another route.
 
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 use bytes::Bytes;
 use parking_lot::Mutex as SyncMutex;
@@ -370,8 +370,9 @@ pub(super) struct Index {
     pub(super) restored_through: Option<u64>,
 }
 
+/// Wall-clock milliseconds for expiry stamps; virtual time under a simulator.
 pub(super) fn now_millis() -> u64 {
-    SystemTime::now()
+    felix_common::clock::system_time()
         .duration_since(UNIX_EPOCH)
         .map(|since| since.as_millis() as u64)
         .unwrap_or(0)

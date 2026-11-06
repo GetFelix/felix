@@ -6,7 +6,7 @@
 //! fenced may never have dialled the one that just lost the shard, but that
 //! one has been shipping to it.
 
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::sync::Arc;
 
 use felix_wire::internal::PeerCapabilities;

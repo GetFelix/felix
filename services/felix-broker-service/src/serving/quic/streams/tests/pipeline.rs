@@ -106,7 +106,7 @@ fn spawn_pipelining_stream(
             BrokerConfig::default(),
             auth,
             publish_ctx,
-            HashMap::new(),
+            HashMap::default(),
             String::new(),
             out_ack_tx,
             Arc::new(std::sync::atomic::AtomicUsize::new(0)),

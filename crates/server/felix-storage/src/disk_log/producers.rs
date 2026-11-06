@@ -19,7 +19,8 @@
 //! computed from the records as they are observed, so a leader can tell a
 //! re-send from a different batch reusing the sequence.
 
-use std::collections::{HashMap, VecDeque};
+use felix_common::random::HashMap;
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
 use super::segments::SegmentSet;
@@ -372,7 +373,8 @@ pub(super) fn decode(bytes: &[u8]) -> Option<(ProducerState, Offset)> {
         }),
         _ => return None,
     };
-    let mut producers = HashMap::with_capacity(count.min(MAX_PRODUCERS));
+    let mut producers =
+        HashMap::with_capacity_and_hasher(count.min(MAX_PRODUCERS), Default::default());
     for _ in 0..count {
         let id = reader.u64()?;
         let last_sequence = reader.u64()?;

@@ -3,7 +3,7 @@
 //! The question: is this broker serving what the cluster thinks it serves? A
 //! shard stuck in `opening` is one the control plane believes is live; a shard
 //! in `failed` is one nobody is serving.
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 
 use crate::shards::lifecycle::Phase;
 

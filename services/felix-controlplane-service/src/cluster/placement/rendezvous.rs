@@ -2,7 +2,8 @@
 //!
 //! Every choice here is a deterministic function of the shard key and the
 //! node ids, which is what lets two instances plan the same cluster alike.
-use std::collections::{BTreeSet, HashMap};
+use felix_common::random::HashMap;
+use std::collections::BTreeSet;
 
 use super::CaughtUp;
 use super::leadership::{Leadership, Shares};

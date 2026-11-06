@@ -37,3 +37,28 @@ fn an_undecided_cache_key_fails_the_seed() {
     assert!(!outcome.passed());
     assert!(outcome.to_string().contains("cache key k"), "{outcome}");
 }
+
+#[test]
+fn first_difference_names_the_first_event_that_differs() {
+    let lines = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let a = lines(&["fault x", "op 1", "op 2"]);
+    assert_eq!(first_difference(&a, &a), None);
+    let found = first_difference(&a, &lines(&["fault x", "op 1", "op 3"])).unwrap();
+    assert!(
+        found.contains("event 2") && found.contains("op 3"),
+        "{found}"
+    );
+    let found = first_difference(&a, &lines(&["fault x"])).unwrap();
+    assert!(
+        found.contains("event 1") && found.contains("ends here"),
+        "{found}"
+    );
+}
+
+/// A replay must build with the seeded `select!`; without it the run under
+/// the same faults can differ.
+#[test]
+fn the_replay_command_builds_with_a_seeded_select() {
+    let outcome = failed_start(7, small(), String::new(), Duration::ZERO);
+    assert_eq!(outcome.replay_command(), "FELIX_SIM_SEED=7 task sim:replay");
+}

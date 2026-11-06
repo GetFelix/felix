@@ -118,6 +118,45 @@ tasks:
   test:stress:
     cmds:
       - "scripts/stress_test.sh felix-storage cache::log_cache::tests::concurrency::a_cancelled_put_is_still_applied 200"
+  # Replays the seed in FELIX_SIM_SEED exactly. Tokio seeds `select!` only
+  # under `--cfg tokio_unstable`, which changes every crate's build, so this
+  # keeps its own target directory. A plain `cargo test` replay repeats the
+  # faults but not the interleaving under them.
+  sim:replay:
+    env:
+      RUSTFLAGS: "--cfg tokio_unstable"
+    cmds:
+      - |
+        CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}/tokio-unstable" \
+          cargo test -p felix-sim --release --test seeds replay -- --nocapture
+  # Runs each simulator seed twice in one process and fails on the first
+  # event that differs, then the seeds pinned to an issue (`seed_*`).
+  # FELIX_SIM_SEEDS and FELIX_SIM_SEED_START pick the seeds the first test
+  # runs. Then replays one seed (FELIX_SIM_REPLAY_SEED, default 1) in two
+  # processes through `sim:replay`, the command a failing seed prints, and
+  # compares the histories: two runs in one process share per-process state,
+  # so only this catches a replay that differs from process to process.
+  sim:determinism:
+    env:
+      RUSTFLAGS: "--cfg tokio_unstable"
+    cmds:
+      - |
+        CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}/tokio-unstable" \
+          cargo test -p felix-sim --release --test seeds seed_ -- --nocapture
+      - |
+        dir="$(mktemp -d)"
+        for run in a b; do
+          FELIX_SIM_SEED="${FELIX_SIM_REPLAY_SEED:-1}" FELIX_SIM_HISTORY="$dir/$run.txt" \
+            task sim:replay > "$dir/$run.log" 2>&1 || true
+          # A seed may fail its checks; only a missing history is an error here.
+          [ -s "$dir/$run.txt" ] || { cat "$dir/$run.log"; exit 1; }
+        done
+        if ! cmp -s "$dir/a.txt" "$dir/b.txt"; then
+          echo "seed ${FELIX_SIM_REPLAY_SEED:-1} replayed differently in two processes:"
+          diff "$dir/a.txt" "$dir/b.txt" | head -20
+          exit 1
+        fi
+        echo "seed ${FELIX_SIM_REPLAY_SEED:-1}: two replays, the same history"
 
   pg:up:
     cmds:

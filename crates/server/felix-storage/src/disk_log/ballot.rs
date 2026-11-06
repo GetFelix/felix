@@ -180,7 +180,7 @@ impl DiskLog {
                 inner
                     .commit_persisted
                     .store(state.commit_offset, Ordering::Release);
-                *persisted = (state, Some(std::time::Instant::now()));
+                *persisted = (state, Some(tokio::time::Instant::now()));
             }
             *inner.ballot.write() = (generation, leader);
             inner

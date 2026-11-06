@@ -7,7 +7,8 @@
 //! past its own repairs (an unsealed retired segment is cut, then the chain is
 //! checked again) and still reach the verdict startup reaches.
 
-use std::collections::{BTreeSet, HashMap};
+use felix_common::random::HashMap;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use super::discover_segment_ids;
@@ -217,8 +218,8 @@ impl<'a> View<'a> {
             config,
             mark,
             removed: BTreeSet::new(),
-            cut: HashMap::new(),
-            indexes: HashMap::new(),
+            cut: HashMap::default(),
+            indexes: HashMap::default(),
             steps: Vec::new(),
         }
     }

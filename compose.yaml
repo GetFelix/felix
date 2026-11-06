@@ -168,14 +168,17 @@ services:
           docker compose run --rm felixctl sub orders
           docker compose run --rm felixctl pub orders 'hello'
 
-        With felixctl installed on this machine:
-          docker compose exec -T felix-broker cat /var/lib/felix/client.jwt > felix-dev.jwt
-          docker compose exec -T felix-broker cat /var/lib/felix/controlplane.jwt > felix-dev-cp.jwt
-          docker compose exec -T felix-broker cat /var/lib/felix/broker-cert.pem > felix-dev.pem
-          felixctl context add felix-dev --brokers 127.0.0.1:5000 --tenant dev \
-            --token-file felix-dev.jwt --ca-file felix-dev.pem \
-            --controlplane-url http://127.0.0.1:8443 --controlplane-token-file felix-dev-cp.jwt --use
-          felixctl sub orders
+        With felixctl installed on this machine, do these in order:
+          1. Copy the development credentials out of the broker:
+            docker compose exec -T felix-broker cat /var/lib/felix/client.jwt > felix-dev.jwt
+            docker compose exec -T felix-broker cat /var/lib/felix/controlplane.jwt > felix-dev-cp.jwt
+            docker compose exec -T felix-broker cat /var/lib/felix/broker-cert.pem > felix-dev.pem
+          2. Add a context that uses them:
+            felixctl context add felix-dev --brokers 127.0.0.1:5000 --tenant dev \
+              --token-file felix-dev.jwt --ca-file felix-dev.pem \
+              --controlplane-url http://127.0.0.1:8443 --controlplane-token-file felix-dev-cp.jwt --use
+          3. Subscribe:
+            felixctl sub orders
         EOF
 
   # `docker compose run --rm felixctl <args>` runs felixctl inside the stack.

@@ -716,8 +716,8 @@ impl Membership {
             return Err(invalid("a replica set past the size the file allows"));
         }
         // Counting a member twice would count a majority that isn't one.
-        let mut nodes = std::collections::HashSet::new();
-        let mut storage = std::collections::HashSet::new();
+        let mut nodes = felix_common::random::HashSet::default();
+        let mut storage = felix_common::random::HashSet::default();
         for member in &self.members {
             if !nodes.insert(member.node.as_str()) {
                 return Err(invalid("a node listed twice in a replica set"));

@@ -7,7 +7,8 @@
 //! votes, stands, leads and replicates, but serves no client. See
 //! docs/control-plane.md, "Starting while the control plane is down".
 
-use std::collections::{BTreeSet, HashMap};
+use felix_common::random::HashMap;
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use felix_router::NodeRef;
