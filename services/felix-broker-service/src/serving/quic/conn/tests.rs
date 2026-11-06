@@ -252,3 +252,18 @@ async fn a_held_stream_does_not_outlast_the_drain_deadline() -> Result<()> {
     assert!(read.is_err(), "expected a closed connection, got {read:?}");
     Ok(())
 }
+
+#[test]
+fn close_severity_by_variant() {
+    use quinn::ConnectionError as E;
+    let app = E::ApplicationClosed(quinn::ApplicationClose {
+        error_code: 1u32.into(),
+        reason: Default::default(),
+    });
+    assert_eq!(close_severity(&app), CloseSeverity::Info);
+    assert_eq!(close_severity(&E::LocallyClosed), CloseSeverity::Info);
+    assert_eq!(close_severity(&E::TimedOut), CloseSeverity::Info);
+    assert_eq!(close_severity(&E::Reset), CloseSeverity::Warn);
+    assert_eq!(close_severity(&E::VersionMismatch), CloseSeverity::Warn);
+    assert_eq!(close_severity(&E::CidsExhausted), CloseSeverity::Warn);
+}

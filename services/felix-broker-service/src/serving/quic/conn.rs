@@ -187,6 +187,53 @@ pub struct ClusterContext {
     pub shard_status: Option<Arc<felix_replication::status::ShardStatusBoard>>,
 }
 
+/// How loudly to report a connection ending with `err`.
+#[derive(Debug, PartialEq, Eq)]
+enum CloseSeverity {
+    Info,
+    Warn,
+}
+
+/// A close either side asked for, or an idle timeout, is routine. Anything the
+/// transport had to report (protocol error, reset, version mismatch) is not.
+fn close_severity(err: &quinn::ConnectionError) -> CloseSeverity {
+    use quinn::ConnectionError::*;
+    match err {
+        ApplicationClosed(_) | LocallyClosed | TimedOut => CloseSeverity::Info,
+        _ => CloseSeverity::Warn,
+    }
+}
+
+fn log_connection_closed(connection: &QuicConnection, err: &anyhow::Error) {
+    let info = connection.info();
+    let reason = connection
+        .close_reason()
+        .or_else(|| err.chain().find_map(|e| e.downcast_ref().cloned()));
+    let Some(reason) = reason else {
+        tracing::warn!(conn = info.id.0, peer = %info.peer_addr, error = %format!("{err:#}"), "quic connection closed");
+        return;
+    };
+    match close_severity(&reason) {
+        CloseSeverity::Info => {
+            tracing::info!(conn = info.id.0, peer = %info.peer_addr, reason = %reason, "quic connection closed");
+        }
+        CloseSeverity::Warn => {
+            tracing::warn!(conn = info.id.0, peer = %info.peer_addr, reason = %reason, "quic connection closed abnormally");
+        }
+    }
+    tracing::debug!(conn = info.id.0, stats = ?connection.stats(), "quic connection stats at close");
+}
+
+/// A stream failing on a connection that has already closed is a consequence of
+/// the close, not a separate fault.
+fn log_stream_failure(connection: &QuicConnection, what: &str, err: &anyhow::Error) {
+    if connection.close_reason().is_some() {
+        tracing::debug!(error = %format!("{err:#}"), "{what} after connection close");
+    } else {
+        tracing::warn!(error = %format!("{err:#}"), "{what}");
+    }
+}
+
 /// Handle one QUIC connection, winding down when `shutdown` is cancelled.
 ///
 /// The shutdown token exists because a connection task otherwise ends only
@@ -311,12 +358,13 @@ pub(crate) async fn handle_connection_with_shutdown(
                 let (send, recv) = match result {
                     Ok(streams) => streams,
                     Err(err) => {
-                        tracing::info!(error = %err, stats = ?connection.stats(), "quic connection closed");
+                        log_connection_closed(&connection, &err);
                         break;
                     }
                 };
                 let broker = Arc::clone(&broker);
                 let connection = connection.clone();
+                let log_conn = connection.clone();
                 let config = config.clone();
                 let auth = Arc::clone(&auth);
                 let publish_ctx = publish_ctx.clone();
@@ -333,7 +381,7 @@ pub(crate) async fn handle_connection_with_shutdown(
                     )
                     .await
                     {
-                        tracing::warn!(error = %err, "quic stream handler failed");
+                        log_stream_failure(&log_conn, "quic stream handler failed", &err);
                     }
                 });
             }
@@ -341,7 +389,7 @@ pub(crate) async fn handle_connection_with_shutdown(
                 let recv = match result {
                     Ok(recv) => recv,
                     Err(err) => {
-                        tracing::info!(error = %err, stats = ?connection.stats(), "quic connection closed");
+                        log_connection_closed(&connection, &err);
                         break;
                     }
                 };
@@ -350,6 +398,7 @@ pub(crate) async fn handle_connection_with_shutdown(
                 let auth = Arc::clone(&auth);
                 let publish_ctx = publish_ctx.clone();
                 let peer_certs = connection.peer_certificates();
+                let connection = connection.clone();
                 streams.spawn(async move {
                     // Dispatch the unidirectional publish stream handler.
                     if let Err(err) = handle_uni_stream(
@@ -362,7 +411,7 @@ pub(crate) async fn handle_connection_with_shutdown(
                     )
                     .await
                     {
-                        tracing::warn!(error = %err, "quic uni stream handler failed");
+                        log_stream_failure(&connection, "quic uni stream handler failed", &err);
                     }
                 });
             }
