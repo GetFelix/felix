@@ -395,7 +395,12 @@ of each on their real cadence. Placement keeps what it has seen between
 rounds (when a fence started, how long a suspicion or a pending replica set
 has stood, whether a restore moves), as the real loop does, so timeouts that
 depend on it fire. A control plane that goes down forgets it, as a restarted
-process does; a pause keeps it. A fault applies to every call:
+process does; a pause keeps it. The confirmed assignment read that a copy with
+no promise makes before it takes a leader (see "A directory that lost its
+ballots" in [replication-design.md](replication-design.md)) goes through the
+same link. So a copy whose routing view missed its leader's first fence joins
+once the control plane answers, as it does in a real broker. A fault applies
+to every call:
 
 | Fault | What a broker sees |
 | --- | --- |

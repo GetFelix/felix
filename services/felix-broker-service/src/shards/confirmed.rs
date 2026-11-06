@@ -3,11 +3,12 @@
 use std::time::Duration;
 
 use felix_replication::confirmed::{Confirmed, ConfirmedRoutes};
+use felix_replication::controlplane_link::{ControlPlaneLink, LinkResponse};
 use serde::Deserialize;
 
 use crate::cluster::credential::NodeCredential;
 use crate::shards::watch::ShardAssignment;
-use felix_router::{ShardKey, ShardKind};
+use felix_router::ShardKey;
 
 /// How long a fence waits on the control plane. The leader retries a
 /// refusal, so a slow read costs a round, not the shard.
@@ -17,10 +18,9 @@ const READ_TIMEOUT: Duration = Duration::from_secs(2);
 /// confirmed read.
 const NOT_SERVED_WARN_EVERY: Duration = Duration::from_secs(60);
 
-/// Asks the control plane over its REST API.
-pub(crate) struct ControlPlaneRoutes {
-    client: reqwest::Client,
-    base_url: String,
+/// Asks the control plane over `link`.
+pub(crate) struct ControlPlaneRoutes<L> {
+    link: L,
     bearer: Option<NodeCredential>,
     /// When the last not-served warning was logged.
     warned: parking_lot::Mutex<Option<tokio::time::Instant>>,
@@ -31,15 +31,10 @@ struct Response {
     assignment: Option<ShardAssignment>,
 }
 
-impl ControlPlaneRoutes {
-    pub(crate) fn new(
-        client: reqwest::Client,
-        base_url: &str,
-        bearer: Option<NodeCredential>,
-    ) -> Self {
+impl<L: ControlPlaneLink> ControlPlaneRoutes<L> {
+    pub(crate) fn new(link: L, bearer: Option<NodeCredential>) -> Self {
         Self {
-            client,
-            base_url: base_url.trim_end_matches('/').to_string(),
+            link,
             bearer,
             warned: parking_lot::Mutex::new(None),
         }
@@ -74,29 +69,15 @@ impl ControlPlaneRoutes {
 }
 
 #[async_trait::async_trait]
-impl ConfirmedRoutes for ControlPlaneRoutes {
+impl<L: ControlPlaneLink> ConfirmedRoutes for ControlPlaneRoutes<L> {
     async fn confirmed(&self, key: &ShardKey) -> Confirmed {
-        let kind = match key.kind {
-            ShardKind::Stream => "stream",
-            ShardKind::Cache => "cache",
-        };
-        let shard = key.shard.to_string();
-        let mut request = self
-            .client
-            .get(format!("{}/v1/shard-assignments/confirmed", self.base_url))
-            .query(&[
-                ("tenant_id", key.tenant_id.as_str()),
-                ("namespace", key.namespace.as_str()),
-                ("stream", key.stream.as_str()),
-                ("shard", shard.as_str()),
-                ("kind", kind),
-            ])
-            .timeout(READ_TIMEOUT);
-        if let Some(bearer) = &self.bearer {
-            request = request.bearer_auth(bearer.bearer().as_str());
-        }
-        let confirmed = match request.send().await {
-            Ok(response) => answer(response.status(), response.json::<Response>().await.ok()),
+        let bearer = self.bearer.as_ref().map(NodeCredential::bearer);
+        let confirmed = match self
+            .link
+            .confirmed_assignment(bearer.as_deref().map(String::as_str), key, READ_TIMEOUT)
+            .await
+        {
+            Ok(response) => answer(&response),
             Err(err) => {
                 tracing::debug!(error = %err, "confirmed shard assignment read failed");
                 Confirmed::Unavailable
@@ -110,20 +91,20 @@ impl ConfirmedRoutes for ControlPlaneRoutes {
 /// Only a control plane that says it has no such read leaves the view to
 /// answer alone: 404 from a build without the route, 501 from a Raft leader
 /// that predates it. Anything else unreadable is unavailable.
-fn answer(status: reqwest::StatusCode, body: Option<Response>) -> Confirmed {
-    match status {
+fn answer(response: &LinkResponse) -> Confirmed {
+    match response.status {
         reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::NOT_IMPLEMENTED => {
             Confirmed::NotServed
         }
-        status if status.is_success() => match body {
-            Some(Response {
+        status if status.is_success() => match response.json::<Response>() {
+            Ok(Response {
                 assignment: Some(assignment),
             }) => Confirmed::Assigned {
                 generation: assignment.generation,
                 leader: assignment.leader,
             },
-            Some(Response { assignment: None }) => Confirmed::Unassigned,
-            None => Confirmed::Unavailable,
+            Ok(Response { assignment: None }) => Confirmed::Unassigned,
+            Err(_) => Confirmed::Unavailable,
         },
         _ => Confirmed::Unavailable,
     }

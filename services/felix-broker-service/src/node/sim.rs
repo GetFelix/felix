@@ -258,6 +258,11 @@ impl SimBroker {
         }
         let quorum_marks = Arc::new(QuorumMarks::with_fleet(Arc::clone(&fleet)));
         let credential = Some(NodeCredential::new("sim"));
+        // A copy with no promise on disk takes a leader only once the control
+        // plane confirms it, as in a real broker.
+        let confirmed: Arc<dyn felix_replication::confirmed::ConfirmedRoutes> = Arc::new(
+            crate::shards::ControlPlaneRoutes::new(link.clone(), credential.clone()),
+        );
         let link = Some(link);
         let registered = membership::await_registered(&broker_config, &link, &credential).await?;
         let startup::Opened {
@@ -288,7 +293,7 @@ impl SimBroker {
             &auth,
             storage_id,
             unclean.clone(),
-            None,
+            Some(confirmed),
         );
         let handler = Arc::new(handler);
         let (registered, registered_watch) = tokio::sync::watch::channel(None);

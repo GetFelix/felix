@@ -1,6 +1,8 @@
 use axum::http::StatusCode;
 use axum::{Json, Router, routing::get};
 
+use felix_replication::controlplane_link::HttpControlPlaneLink;
+
 use super::*;
 
 fn key() -> ShardKey {
@@ -24,9 +26,16 @@ async fn serve(router: Router) -> (String, tokio::task::JoinHandle<()>) {
     (format!("http://{addr}"), server)
 }
 
+fn http_routes(base_url: &str) -> ControlPlaneRoutes<HttpControlPlaneLink> {
+    ControlPlaneRoutes::new(
+        HttpControlPlaneLink::new(reqwest::Client::new(), base_url),
+        None,
+    )
+}
+
 async fn read(router: Router) -> Confirmed {
     let (base_url, server) = serve(router).await;
-    let routes = ControlPlaneRoutes::new(reqwest::Client::new(), &base_url, None);
+    let routes = http_routes(&base_url);
     let confirmed = routes.confirmed(&key()).await;
     server.abort();
     confirmed
@@ -96,6 +105,6 @@ async fn a_failed_read_is_unavailable() {
         get(|| async { "not json" }),
     );
     assert_eq!(read(router).await, Confirmed::Unavailable);
-    let routes = ControlPlaneRoutes::new(reqwest::Client::new(), "http://127.0.0.1:1", None);
+    let routes = http_routes("http://127.0.0.1:1");
     assert_eq!(routes.confirmed(&key()).await, Confirmed::Unavailable);
 }
