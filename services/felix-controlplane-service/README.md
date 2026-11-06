@@ -3,9 +3,9 @@
 Executable entrypoint for the Felix control plane.
 
 Responsibilities:
-- Hosts management APIs (future)
+- Serves the REST API for tenants, streams, caches, membership and shard assignments
 - Coordinates metadata and placement
-- Runs as a small, stateful control cluster
+- Runs as one instance or several, over Postgres or an embedded Raft group
 
 Local dev:
 - `cargo run -p felix-controlplane-service`
@@ -14,6 +14,7 @@ Local dev:
 ## Storage backends
 
 - **Memory (default):** No external dependencies; state lives in-process. Suitable for local development and CI.
+- **Raft:** The instances form a Raft group and hold the metadata themselves, with no external database. Select it with `FELIX_CONTROLPLANE_STORAGE_BACKEND=raft`; see [docs/metadata-raft-design.md](../../docs/metadata-raft-design.md).
 - **Postgres:** Durable metadata with monotonic change sequences. Enable by setting `storage.backend: postgres` or providing `FELIX_CONTROLPLANE_POSTGRES_URL` / `DATABASE_URL`.
 
 Example YAML override (`FELIX_CONTROLPLANE_CONFIG`):
@@ -36,7 +37,7 @@ Environment variables (take precedence over YAML):
 - `FELIX_CONTROLPLANE_POSTGRES_MAX_CONNECTIONS`
 - `FELIX_CONTROLPLANE_POSTGRES_CONNECT_TIMEOUT_MS`
 - `FELIX_CONTROLPLANE_POSTGRES_ACQUIRE_TIMEOUT_MS`
-- `FELIX_CONTROLPLANE_STORAGE_BACKEND` (`memory`|`postgres`)
+- `FELIX_CONTROLPLANE_STORAGE_BACKEND` (`memory`|`postgres`|`raft`)
 - `FELIX_CONTROLPLANE_CHANGES_LIMIT`
 - `FELIX_CONTROLPLANE_CHANGE_RETENTION_MAX_ROWS`
 - `FELIX_CONTROLPLANE_OIDC_ALLOWED_ALGORITHMS` (comma-separated; default: `ES256,RS256`)

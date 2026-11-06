@@ -139,8 +139,8 @@ the test behind every claim, [`docs/projections.md`](docs/projections.md).
 
 ## Current Focus
 
-- Finishing 0.6.0: moving shards between brokers without downtime, backed by
-  cluster-scale numbers for replicated `Quorum` streams and durable storage
+- Finishing 0.7.0: replica-set changes and leader election that keeps working
+  with the control plane down, and an MQTT listener for devices
 - Bounded memory: subscriber queues, QUIC receive windows and the cache key
   index held to a byte budget instead of growing with load
 - Many users over shared connections: gateways that act for their users, with
@@ -213,10 +213,6 @@ early to keep p99/p999 predictable.
 
 ## What does not exist yet
 
-- Per-stream retention: a policy is recorded on the stream and nothing reads it.
-  Retention itself works, but it is configured per broker
-  (`FELIX_DURABLE_RETENTION_BYTES` / `_SECONDS`) and is off unless set, so by
-  default a log grows until the disk does
 - Tiered storage, cross-region bridges, encryption at rest, and audit logging
 - Go and mobile clients. Python, TypeScript and the C ABI wrap the Rust
   client, and the C# SDK binds the C ABI, so none reimplements it. The next
