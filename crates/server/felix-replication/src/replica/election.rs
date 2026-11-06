@@ -404,7 +404,7 @@ impl ReplicaHandler {
             Some(kind) => {
                 opened = self
                     .broker
-                    .shard_log_for(
+                    .shard_log_off_runtime(
                         kind,
                         &key.tenant_id,
                         &key.namespace,
@@ -503,7 +503,15 @@ impl ReplicaHandler {
             Some(kind) => {
                 opened = self
                     .broker
-                    .shard_log(kind, &key.tenant_id, &key.namespace, &key.stream, key.shard)
+                    .shard_log_off_runtime(
+                        kind,
+                        &key.tenant_id,
+                        &key.namespace,
+                        &key.stream,
+                        key.shard,
+                        None,
+                        None,
+                    )
                     .await;
                 // Unread, the copy may be a learner, and a learner counted as
                 // a voter is the unsafe mistake.
@@ -567,12 +575,14 @@ impl ReplicaHandler {
         }
         match self
             .broker
-            .shard_log(
+            .shard_log_off_runtime(
                 felix_broker::LogKind::Counters,
                 &key.tenant_id,
                 &key.namespace,
                 &key.stream,
                 key.shard,
+                None,
+                None,
             )
             .await
         {
@@ -593,7 +603,15 @@ impl ReplicaHandler {
         ] {
             let Some(group) = self
                 .broker
-                .shard_log(kind, &key.tenant_id, &key.namespace, &key.stream, key.shard)
+                .shard_log_off_runtime(
+                    kind,
+                    &key.tenant_id,
+                    &key.namespace,
+                    &key.stream,
+                    key.shard,
+                    None,
+                    None,
+                )
                 .await
             else {
                 return false;
@@ -619,7 +637,7 @@ impl ReplicaHandler {
         };
         let Some(log) = self
             .broker
-            .shard_log_for(
+            .shard_log_off_runtime(
                 log_kind,
                 &key.tenant_id,
                 &key.namespace,

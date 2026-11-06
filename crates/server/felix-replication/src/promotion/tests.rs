@@ -332,6 +332,7 @@ impl PeerRequester for Replicas {
                     code: replica.refuses_with,
                     expected_offset: 0,
                     detail: detail.to_string(),
+                    reason: None,
                 },
             ));
         }

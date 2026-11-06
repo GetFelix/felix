@@ -276,7 +276,7 @@ impl RideAlong {
         ]
         .map(|cursor| {
             cursor.map(|cursor| {
-                let voter = cursor.halted.is_none() && !cursor.stalled && !cursor.learner;
+                let voter = cursor.counts() && !cursor.stalled;
                 (cursor.shipped_bytes, voter)
             })
         })
@@ -579,12 +579,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         let answering = entry
             .followers
             .iter()
-            .filter(|cursor| {
-                cursor.halted.is_none()
-                    && !cursor.stalled
-                    && !cursor.learner
-                    && !cursor.refuses_leader
-            })
+            .filter(|cursor| cursor.counts() && !cursor.stalled && !cursor.refuses_leader)
             .count();
         // Learners neither answer for the set nor count in its majority.
         let voters = entry
@@ -987,11 +982,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         .into_iter()
         .flatten()
         .any(|cursor| {
-            cursor.node_id == node
-                && cursor.halted.is_none()
-                && !cursor.stalled
-                && !cursor.learner
-                && cursor.confirmed > 0
+            cursor.node_id == node && cursor.counts() && !cursor.stalled && cursor.confirmed > 0
         })
     };
     let would_raise = |node: &str,

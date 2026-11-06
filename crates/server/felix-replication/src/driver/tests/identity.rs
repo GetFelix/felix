@@ -59,6 +59,7 @@ impl PeerRequester for IdentifiedFollower {
                     code: felix_wire::internal::ErrorCode::Unavailable,
                     expected_offset: 0,
                     detail: "still opening".to_string(),
+                    reason: None,
                 },
             ));
         }

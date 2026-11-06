@@ -437,6 +437,7 @@ impl PeerRequester for BehindFollower {
                     code: felix_wire::internal::ErrorCode::StaleRoute,
                     expected_offset: 0,
                     detail: "behind".to_string(),
+                    reason: None,
                 },
             ));
         }

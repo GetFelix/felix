@@ -152,11 +152,14 @@ pub(super) fn bind_peer_listener(
                     storage_id,
                     unclean,
                     controlplane.map(|(client, base_url, credential)| {
-                        crate::shards::ControlPlaneRoutes::new(
-                            client.clone(),
-                            base_url,
+                        Arc::new(crate::shards::ControlPlaneRoutes::new(
+                            replication::controlplane_link::HttpControlPlaneLink::new(
+                                client.clone(),
+                                base_url,
+                            ),
                             credential.clone(),
-                        )
+                        ))
+                            as Arc<dyn replication::confirmed::ConfirmedRoutes>
                     }),
                 );
                 let handler = match clients {
@@ -223,7 +226,7 @@ pub(super) fn peer_handler(
     auth: &Arc<BrokerAuth>,
     storage_id: felix_storage::StorageId,
     unclean: Option<Arc<replication::unclean::UncleanStart>>,
-    confirmed: Option<crate::shards::ControlPlaneRoutes>,
+    confirmed: Option<Arc<dyn replication::confirmed::ConfirmedRoutes>>,
 ) -> (
     peer_dispatch::BrokerPeerHandler,
     Option<replication::confirmed::Prefetch>,
@@ -259,7 +262,7 @@ fn replica_handler(
     quorum_marks: &Arc<QuorumMarks>,
     storage_id: felix_storage::StorageId,
     unclean: Option<Arc<replication::unclean::UncleanStart>>,
-    confirmed: Option<crate::shards::ControlPlaneRoutes>,
+    confirmed: Option<Arc<dyn replication::confirmed::ConfirmedRoutes>>,
 ) -> replication::ReplicaHandler {
     // A replica refuses a candidate for as long as it would take to suspect
     // its leader, so the two windows agree.
@@ -273,7 +276,7 @@ fn replica_handler(
         None => handler,
     };
     match confirmed {
-        Some(confirmed) => handler.with_confirmed_routes(Arc::new(confirmed)),
+        Some(confirmed) => handler.with_confirmed_routes(confirmed),
         None => handler,
     }
 }
