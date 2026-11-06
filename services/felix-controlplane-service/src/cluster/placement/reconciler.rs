@@ -498,7 +498,12 @@ pub(super) async fn apply_pass(
         let mut assignment = assignment.clone();
         pass.name_members(&mut assignment);
         match store
-            .put_shard_assignment_if(assignment, pass.read.get(key).copied(), fence)
+            .put_shard_assignment_at_least(
+                assignment,
+                pass.read.get(key).copied(),
+                fence,
+                step.at_least(),
+            )
             .await
         {
             Ok(AssignmentWrite::Fenced { token }) => {

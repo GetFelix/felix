@@ -704,7 +704,7 @@ Startup then makes the writes in order and opens the log. A refusal still
 makes the writes planned before the damage was found, as recovery always has.
 
 `felix_storage::inspect` runs only the plan, which is what lets
-`felix-broker inspect segments` report startup's verdict on a data directory
+`felixctl data inspect segments` report startup's verdict on a data directory
 without changing it. The plan never writes, and the `segment_recovery` fuzz
 target checks that the plan and the recovery that follows agree.
 
@@ -1043,7 +1043,7 @@ Once registration is required:
   so a fleet waiting on a slow or absent control plane does not hammer it; one
   that brings something resets the gap.
 
-**Restoring to a backup point.** `felix-broker restore-point` rewrites each
+**Restoring to a backup point.** `felixctl data restore-point` rewrites each
 stream's marker to the incarnation the point names, with no deletion floor,
 because the operator's restore is the evidence. The broker then takes the
 point's incarnation even if it registered, or saw deleted, a later one after
@@ -1180,7 +1180,7 @@ that loss is not detected; to give a broker an empty shard, empty its whole
 data directory. An upgrade from a build
 without storage ids looks the same, so the first start on this release gives
 every broker a new id even though its shards are intact. A file that does not
-decode is replaced with a new id. `felix-broker restore-point` also writes a
+decode is replaced with a new id. `felixctl data restore-point` also writes a
 new one, because restored logs are an older copy of what peers last saw here.
 
 A machine crash under `Periodic` or `None` (a power loss, a kernel panic, a
@@ -1221,7 +1221,7 @@ still written back. So on Linux the id stays. `<root>/run-state` (format in
   running may write after the flush; deregistering and heartbeats do not
   count), and no log was poisoned during the run: a failed fsync may already
   have dropped pages that run acknowledged. A
-  `felix-broker restore-point` that finishes records a clean stop under the
+  `felixctl data restore-point` that finishes records a clean stop under the
   id it wrote.
 - **Anything else is a crash**: `SIGKILL`, an OOM kill, a power loss, a panic
   that ends the process, or a drain that ran out of time. A panic inside a
@@ -1463,7 +1463,7 @@ A backup point (see
 `docs-site/src/content/docs/deployment/backup-and-restore.md`) records one
 committed offset per shard log. The shard's directories are copied while its
 broker keeps writing, so the copy usually holds more than the point, and
-`felix-broker restore-point` cuts it back with `DiskLog::restore_to`.
+`felixctl data restore-point` cuts it back with `DiskLog::restore_to`.
 
 Copying a live shard is safe because **records are never rewritten**. Once a
 record below the point is in a segment, those bytes are final: later appends
@@ -1496,9 +1496,9 @@ one. A broker the restore skipped starts with an empty data directory.
 
 ## Tools
 
-`felix-broker inspect segments <data-dir>` reports, read-only, without starting a broker, every shard's
+`felixctl data inspect segments <data-dir>` reports, read-only, without starting a broker, every shard's
 segments, whether their records and indexes verify, and what startup would do
-with each one. `felix-broker inspect records <data-dir> <tenant/namespace/name/shard> --offset N`
+with each one. `felixctl data inspect records <data-dir> <tenant/namespace/name/shard> --offset N`
 decodes the records around one offset: read-only, seeking with the sparse index (checked, not
 trusted), and stopping at the first record that does not verify. It runs the same recovery plan
 to tell a torn tail from damage and to leave out a rollover's leftover segments. See "A broker

@@ -225,6 +225,7 @@ fn a_refusal_is_appended_and_absent_reads_as_none() {
         refused: Some(RefusedGeneration {
             generation: 4,
             promised_to: "broker-b".into(),
+            ballot: 0,
         }),
         ..status
     };
@@ -253,6 +254,7 @@ fn a_set_unknown_refusal_names_no_node() {
     let promised = RefusedGeneration {
         generation: 7,
         promised_to: "broker-b".into(),
+        ballot: 0,
     };
     assert!(promised.is_promise());
 }

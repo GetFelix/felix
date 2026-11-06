@@ -113,7 +113,7 @@ The brokers left are busy opening the dead broker's shards during a failover,
 and a leader fenced then can take minutes to hand over, refusing writes the
 whole time. That is worst for a cache, which every client waits on. Holding
 balance until the cluster is whole avoids it. `GET /v1/placement/plan` and
-`admin plan` show the held shards as waiting for the recovery. A broker that
+`placement plan` show the held shards as waiting for the recovery. A broker that
 never comes back holds balancing for at most that window.
 
 ## Adding a broker
@@ -371,6 +371,6 @@ interval.
 | A drain never finishes; no successor is ever staged | No live broker under its share has capacity (`max_shards`), or `FELIX_SHARD_MOVES_MAX_CONCURRENT` is `0`. |
 | Shards moved, then moved back | The drained broker was put back to `live`, or restarted (which registers it `live`), while under its share. Drain it again. |
 | A removed broker is still listed in a shard's `replicas` | It was stopped before the drain reseated that follower. Placement replaces it once `FELIX_SHARD_RESTORE_AFTER_MS` has passed; to do it sooner, start it again, drain it, and wait for the check above to reach 0. |
-| `felix_shards_under_replicated` stays above 0 | A broker is down but not yet past the restore delay, no live broker outside the set has room (`max_shards`, region), placement is paused, or the restore is waiting for a move slot. `felix-controlplane admin replication` shows each short shard and any copy being added. |
+| `felix_shards_under_replicated` stays above 0 | A broker is down but not yet past the restore delay, no live broker outside the set has room (`max_shards`, region), placement is paused, or the restore is waiting for a move slot. `felixctl placement replication` shows each short shard and any copy being added. |
 | `POST /v1/nodes/{id}/drain` returns 409 | The broker is `down` or `left`, so there is nothing to drain. |
 | `DELETE /v1/nodes/{id}` returns 409 | The broker is still running, or a shard still names it. The message says which. |

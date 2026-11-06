@@ -4,8 +4,10 @@ The command-line tool for [Felix](https://github.com/GetFelix/felix). It
 publishes to and reads from streams, reads, writes and watches cache keys,
 shows which broker owns each shard, works consumer groups and counters,
 creates, changes and deletes what the control plane manages, manages RBAC
-policies and role assignments, moves shards and drains brokers, and runs load
-tests.
+policies and role assignments, moves shards, steers placement and drains
+brokers, finalizes fleet features, records backup points, and runs load tests.
+It is the one operator command line: the broker's data-directory tools and the
+control plane's migration tool run through it too.
 
 ```bash
 brew install getfelix/tap/felixctl          # macOS or Linux, releases after 0.6.0-preview.2
@@ -20,6 +22,9 @@ felixctl group poll orders billing
 felixctl topology orders
 felixctl stream create orders --shards 4 --replication 3
 felixctl stream ls
+felixctl placement plan
+felixctl backup-point nightly
+felixctl data inspect segments /var/lib/felix/data
 felixctl bench latency orders
 ```
 
@@ -57,6 +62,13 @@ use only `felix-client`'s public API, which makes this crate a check that the
 API is enough to build tools on. The control-plane commands use the REST API.
 `bench` links `felix-loadgen` and runs its scenarios in process, so its
 numbers measure what the perf suite measures.
+
+`data inspect`, `data restore-point` and `controlplane migrate` need the
+data directory or the control plane's database, which only the server
+programs can read, and felixctl does not link them. It runs `felix-broker` or
+`felix-controlplane` (found with `--broker-bin` or `--controlplane-bin`, then
+`FELIX_BROKER_BIN` or `FELIX_CONTROLPLANE_BIN`, then `PATH`), passes the
+arguments through and exits with the program's status.
 
 Unit tests cover argument parsing, every command's help text, context
 resolution and output formatting (`cargo test -p felixctl --bins`).

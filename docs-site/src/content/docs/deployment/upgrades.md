@@ -205,8 +205,8 @@ directories) with the setting on every broker from the start.
    missing it:
 
    ```bash
-   felix-controlplane admin features
-   felix-controlplane admin features finalize jump_hash_routing --dry-run
+   felixctl features ls
+   felixctl features finalize jump_hash_routing --dry-run
    ```
 
    The dry run names any live or draining broker that lacks the feature. A
@@ -215,7 +215,7 @@ directories) with the setting on every broker from the start.
 3. **Finalize.** This is the point of no return for the feature:
 
    ```bash
-   felix-controlplane admin features finalize jump_hash_routing
+   felixctl features finalize jump_hash_routing --yes
    ```
 
    Every broker turns it on within a heartbeat. Watch

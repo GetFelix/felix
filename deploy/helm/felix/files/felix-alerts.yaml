@@ -186,7 +186,7 @@ groups:
           severity: warning
         annotations:
           summary: "{{ $value }} shards have fewer copies than their replication factor"
-          description: "Run felix-controlplane admin replication to see which shards and where copies are going."
+          description: "Run felixctl placement replication to see which shards and where copies are going."
           runbook_url: "https://docs.getfelix.dev/features/observability/#under-replicated-shards"
       - alert: FelixShardReplicasHalted
         expr: felix_shard_replicas_halted > 0

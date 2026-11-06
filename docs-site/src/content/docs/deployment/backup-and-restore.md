@@ -66,8 +66,8 @@ any log. See
 
    ```bash
    export FELIX_CONTROLPLANE_URL=http://felix-controlplane:8443
-   export FELIX_TOKEN=<a Felix token>
-   felix-controlplane admin backup-point nightly-2026-09-27
+   export FELIX_CONTROLPLANE_TOKEN=<a Felix token>
+   felixctl backup-point nightly-2026-09-27
    ```
 
    ```text
@@ -130,10 +130,13 @@ any log. See
 3. **Put each leader's copies back** under that broker's
    `FELIX_DURABLE_STORAGE_DIR`, at the same paths.
 4. **Cut them back to the point**, on each of those brokers, with its normal
-   configuration and the broker still stopped:
+   configuration and the broker still stopped. `felixctl data restore-point`
+   runs the `felix-broker restore-point` installed on that host; on a host or
+   image without `felixctl`, `felix-broker restore-point` takes the same
+   arguments.
 
    ```bash
-   felix-broker restore-point --point nightly-2026-09-27.backup-point.json --node broker-1
+   felixctl data restore-point --point nightly-2026-09-27.backup-point.json --node broker-1
    ```
 
    ```text
@@ -216,5 +219,5 @@ it still serves on its lease.
 - [Durable storage](https://github.com/GetFelix/felix/blob/main/docs/durable-storage.md#restoring-to-a-backup-point)
   for why a live copy is safe to take and what `restore_to` does to a log.
 - [Moving shards by hand](/deployment/moving-shards/) for
-  `felix-controlplane admin pause`, which keeps placement quiet while a point
+  `felixctl placement pause`, which keeps placement quiet while a point
   is taken.

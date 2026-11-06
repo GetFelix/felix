@@ -527,7 +527,9 @@ pub(super) fn move_step<'a>(
             if refused.is_promise() {
                 MoveStep::ElectionRefused
             } else {
-                MoveStep::SetUnknown
+                MoveStep::SetUnknown {
+                    at_least: above_ballot(existing.generation, refused.ballot),
+                }
             },
             renamed,
         );
@@ -1020,6 +1022,19 @@ pub(super) fn move_step<'a>(
             load,
             moves,
         ),
+    }
+}
+
+/// The generation a leader refused for another node's newer `ballot` in its
+/// own copy is named at, at least: one past the ballot, since its fence finds
+/// the ballot's generation promised away and waits there. 0, the next
+/// generation as usual, when the ballot is not above `generation` or is past
+/// the window a candidate may stand in, which only a corrupt report shows.
+fn above_ballot(generation: u64, ballot: u64) -> u64 {
+    if ballot > generation && crate::model::check_elected_generation(generation, ballot).is_ok() {
+        ballot + 1
+    } else {
+        0
     }
 }
 

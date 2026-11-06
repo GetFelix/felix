@@ -442,6 +442,7 @@ fn only_this_leaders_own_reports_are_progress() {
         refused: Some(felix_common::membership::RefusedGeneration {
             generation: 3,
             promised_to: String::new(),
+            ballot: 0,
         }),
         ..report(0, 3, later, 5, 5, 5)
     };

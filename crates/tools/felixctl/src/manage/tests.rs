@@ -359,3 +359,22 @@ fn only_yes_at_the_prompt_confirms() {
         assert_eq!(exit_for(&err), Exit::Failure, "{answer:?}");
     }
 }
+
+#[test]
+fn a_move_that_narrows_the_zone_spread_says_so() {
+    let body = json!({
+        "step": "stage", "dry_run": true, "zones_before": 3, "zones_after": 2,
+        "assignment": {
+            "kind": "stream", "stream": "orders", "shard": 0, "leader": "broker-a",
+            "replicas": ["broker-a"], "generation": 4,
+        },
+    });
+    let text = move_text(&body);
+    assert!(
+        text.contains("zones 3 -> 2 (the shard's copies will span fewer zones)"),
+        "{text}"
+    );
+    assert!(text.ends_with("(dry run: nothing was written)"), "{text}");
+    let same = json!({ "zones_before": 2, "zones_after": 2, "assignment": {} });
+    assert!(!move_text(&same).contains("fewer zones"));
+}

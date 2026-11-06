@@ -1686,6 +1686,11 @@ impl ShardStore for DurableShardStore {
         if begins_here && let Some(starts) = starts {
             start_generation(&starts.broker, &log, key, generation).await?;
         }
+        // With or without a start record: a hold dropped when this broker
+        // last gave the shard up left records the stream never took in.
+        if begins_here && let Some(starts) = &self.generation_starts {
+            lead_from_tail(&starts.broker, key).await?;
+        }
         self.open_group_logs(key, generation, incarnation, begins_here)
             .await
     }
@@ -2231,6 +2236,18 @@ async fn start_generation(
         return Ok(());
     }
     write_generation_start(broker, log, key, generation).await
+}
+
+/// Move a stream shard up to its log's tail before this broker leads it. See
+/// [`felix_broker::Broker::lead_from_tail`].
+pub(super) async fn lead_from_tail(
+    broker: &felix_broker::Broker,
+    key: &ShardKey,
+) -> anyhow::Result<()> {
+    broker
+        .lead_from_tail(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+        .await
+        .map_err(|err| anyhow::anyhow!("move the stream to its log's tail: {err}"))
 }
 
 /// End a shard's readers once the writes already inside its fence are done,
