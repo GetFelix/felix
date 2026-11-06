@@ -24,6 +24,14 @@
 //! the broker that serves it, which is what a subscriber replays from; since a
 //! read stops only at the log's tail, it cannot drop its newest records, and
 //! the history sets `exact_tails`.
+//!
+//! A leader that was replaced without knowing it still serves its readers up
+//! to its own committed mark, which by design stops short of what its
+//! successor has acknowledged ("Readers and group sessions without the
+//! lease" in `docs/replication-design.md`). Such a read is not the log's tail,
+//! so a read is recorded only once a round after it (or the lease, where the
+//! fleet reads by lease) confirms the broker still leads the shard at the
+//! generation it read at, as a state read is.
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -414,9 +422,10 @@ impl SimClient {
     }
 
     /// Read every committed record of `shard` from the broker that serves it.
-    /// `None` if no broker would, or the read did not finish.
+    /// `None` if no broker would, the read did not finish, or the broker could
+    /// not confirm afterwards that it still led the shard.
     pub async fn read_shard(&mut self, shard: u32) -> Option<Vec<Element>> {
-        let (handles, _) = self
+        let (handles, generation) = self
             .find(self.hints.get(&shard).copied(), |h| async move {
                 match resolve_publish(
                     &h.broker,
@@ -433,10 +442,10 @@ impl SimClient {
                     // Only the broker is wanted; the fence entry is released.
                     // A subscription is also refused by a broker that has
                     // seen a newer generation, so ask that too.
-                    Ok(Resolution::Local(_)) => {
+                    Ok(Resolution::Local(target)) => {
                         let key = crate::cluster::stream_key(shard);
                         match check_readable(Some(&h.ingress), &key) {
-                            Ok(()) => Step::Local(()),
+                            Ok(()) => Step::Local(target.generation),
                             Err(_) => Step::Refused,
                         }
                     }
@@ -448,7 +457,12 @@ impl SimClient {
         self.hints.insert(shard, handles.index);
         let task = spawn_on(&handles.crashed, {
             let handles = handles.clone();
-            async move { read_all(&handles, shard).await }
+            async move {
+                let elements = read_all(&handles, shard).await?;
+                confirm_leader(&handles, shard, generation)
+                    .await
+                    .then_some(elements)
+            }
         });
         let result = tokio::time::timeout(READ_WITHIN, task).await;
         if tracing::enabled!(tracing::Level::DEBUG) {
@@ -539,6 +553,32 @@ fn spawn_on<T: Send + 'static>(
 /// subscriber does: stopping at the committed mark.
 async fn read_all(handles: &NodeHandles, shard: u32) -> Option<Vec<Element>> {
     read_pages(handles, shard, true).await
+}
+
+/// Whether this broker still leads `shard` at `generation`, confirmed by a
+/// round (or the lease, where the fleet reads by lease) after a read took its
+/// value. See the module docs for why.
+async fn confirm_leader(handles: &NodeHandles, shard: u32, generation: u64) -> bool {
+    let key = crate::cluster::stream_key(shard);
+    let confirmed = felix_replication::quorum::confirm_state_read(
+        &key,
+        Some(&handles.marks),
+        Some(&*handles.ingress),
+    )
+    .await;
+    let now = handles.ingress.generation(&key);
+    let led = confirmed.is_ok() && now == Some(generation);
+    if !led {
+        // A dropped read leaves no trace in the history, so say so here.
+        tracing::debug!(
+            shard,
+            generation,
+            ?now,
+            ?confirmed,
+            "read dropped: leadership not confirmed"
+        );
+    }
+    led
 }
 
 /// Every client record in this broker's copy of `shard`, committed or not, or
