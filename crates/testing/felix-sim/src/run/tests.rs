@@ -62,3 +62,13 @@ fn the_replay_command_builds_with_a_seeded_select() {
     let outcome = failed_start(7, small(), String::new(), Duration::ZERO);
     assert_eq!(outcome.replay_command(), "FELIX_SIM_SEED=7 task sim:replay");
 }
+
+#[test]
+fn the_replay_command_keeps_placement_faults_on() {
+    let config = small().with_placement_faults();
+    let outcome = failed_start(7, config, String::new(), Duration::ZERO);
+    assert_eq!(
+        outcome.replay_command(),
+        "FELIX_SIM_PLACEMENT=1 FELIX_SIM_SEED=7 task sim:replay"
+    );
+}
