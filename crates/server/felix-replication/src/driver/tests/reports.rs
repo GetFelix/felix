@@ -1758,6 +1758,31 @@ async fn a_ship_refusal_is_held_while_its_ballot_may_open() {
     assert_eq!(refused, None);
 }
 
+/// **A follower that gets a batch through does not restart the ship
+/// refusal's wait.** Passes with no refusal, longer apart than any gap, keep
+/// the ballot and its clock; a new ballot or generation restarts it. The
+/// report alone cannot show this, since the follower-ballot path carries the
+/// same ballot.
+#[test]
+fn a_pass_without_a_refusal_keeps_the_ship_ballots_clock() {
+    use super::shards::ShipBallot;
+    let start = tokio::time::Instant::now();
+    let at = |secs| start + Duration::from_secs(secs);
+    let mut kept = None;
+
+    ShipBallot::note(&mut kept, Some((4, 5)), at(0));
+    ShipBallot::note(&mut kept, None, at(2));
+    ShipBallot::note(&mut kept, None, at(6));
+    ShipBallot::note(&mut kept, Some((4, 5)), at(8));
+    assert_eq!(kept.as_ref().map(ShipBallot::since), Some(at(0)));
+
+    ShipBallot::note(&mut kept, Some((4, 6)), at(9));
+    assert_eq!(kept.as_ref().map(ShipBallot::since), Some(at(9)));
+
+    ShipBallot::note(&mut kept, Some((5, 6)), at(10));
+    assert_eq!(kept.as_ref().map(ShipBallot::since), Some(at(10)));
+}
+
 /// The same, when the follower answers from a routing view laid over by a
 /// candidate's fence rather than from its ballot.
 #[tokio::test(flavor = "multi_thread")]

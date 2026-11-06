@@ -301,13 +301,38 @@ struct ShardState {
 
 /// A ballot the followers refused an open leader for, while no majority is
 /// left without them.
-struct ShipBallot {
+pub(super) struct ShipBallot {
     /// The generation led and the ballot.
     at: (u64, u64),
     /// First seen. Kept while the generation and ballot stay the same.
     since: tokio::time::Instant,
     /// The refusal was logged.
     warned: bool,
+}
+
+impl ShipBallot {
+    /// Notes one pass's ship refusal, as `(generation, ballot)`. A pass with
+    /// none leaves the kept ballot alone, so a follower that gets one batch
+    /// through does not restart the wait; a new generation or ballot does.
+    pub(super) fn note(
+        kept: &mut Option<Self>,
+        refused: Option<(u64, u64)>,
+        now: tokio::time::Instant,
+    ) {
+        let Some(at) = refused else { return };
+        if kept.as_ref().is_none_or(|kept| kept.at != at) {
+            *kept = Some(Self {
+                at,
+                since: now,
+                warned: false,
+            });
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn since(&self) -> tokio::time::Instant {
+        self.since
+    }
 }
 
 impl ShardState {
@@ -1404,16 +1429,11 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         }
         state.owed = owed;
         let now = tokio::time::Instant::now();
-        if let Some(ballot) = ship_refused {
-            let at = (generation, ballot);
-            if state.ship_ballot.as_ref().is_none_or(|kept| kept.at != at) {
-                state.ship_ballot = Some(ShipBallot {
-                    at,
-                    since: now,
-                    warned: false,
-                });
-            }
-        }
+        ShipBallot::note(
+            &mut state.ship_ballot,
+            ship_refused.map(|ballot| (generation, ballot)),
+            now,
+        );
         // A ballot past the generation is held back whole: a candidate
         // standing there may still hold a majority and open, and any rename
         // of this broker would depose it. Without a majority this leader
