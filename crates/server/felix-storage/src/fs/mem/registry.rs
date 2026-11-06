@@ -29,9 +29,7 @@ pub(in crate::fs) struct Routed {
 /// Put `root` and everything below it in memory, empty. Replaces any earlier
 /// registration of the same path.
 pub(crate) fn register(root: &Path) {
-    ROOTS
-        .write()
-        .insert(root.to_path_buf(), Arc::new(Tree::new()));
+    ROOTS.write().insert(root.to_path_buf(), Tree::new());
     ANY.store(true, Ordering::Release);
 }
 
@@ -42,7 +40,7 @@ pub(crate) fn claim(root: &Path) -> bool {
     if roots.contains_key(root) {
         return false;
     }
-    roots.insert(root.to_path_buf(), Arc::new(Tree::new()));
+    roots.insert(root.to_path_buf(), Tree::new());
     ANY.store(true, Ordering::Release);
     true
 }

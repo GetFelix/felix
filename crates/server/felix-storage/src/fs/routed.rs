@@ -381,3 +381,10 @@ pub(crate) fn sync_simulated_filesystem(root: &Path) -> Option<io::Result<()>> {
     routed.tree.sync_all();
     Some(Ok(()))
 }
+
+/// Count a torn tail repaired under `dir`, if it is simulated.
+pub(crate) fn note_torn_tail(dir: &Path) {
+    if let Some(routed) = mem::route(dir) {
+        routed.tree.note_torn_tail();
+    }
+}

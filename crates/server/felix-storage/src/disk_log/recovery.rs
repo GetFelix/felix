@@ -193,6 +193,7 @@ fn apply_step(dir: &Path, label: &str, step: Step) -> Result<()> {
                 kept_next_segment = drop_next.is_none(),
                 "repairing the torn tail of a segment whose seal never finished",
             );
+            crate::fs::note_torn_tail(dir);
             if let Some(next) = drop_next {
                 remove_segment_files(dir, next)?;
                 sync_dir(dir)?;
@@ -228,6 +229,7 @@ fn resume_active(dir: &Path, label: &str, config: &LogConfig, resume: Resume) ->
             cause = %tail.cause,
             "repaired a torn tail in the active segment"
         );
+        crate::fs::note_torn_tail(dir);
     }
 
     let active_marks = std::mem::take(&mut outcome.marks);

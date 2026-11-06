@@ -271,7 +271,7 @@ async fn drive(
     let run_start = Instant::now();
     let nemesis = Nemesis::new(cluster.clone(), recorder.clone());
     let plan = if config.faults {
-        Plan::generate(seed, config.brokers, config.fault_window)
+        Plan::generate(seed, config.brokers, config.fault_window, config.power_loss)
     } else {
         Plan::default()
     };

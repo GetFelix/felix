@@ -7,6 +7,8 @@ fn small() -> SimConfig {
         cache_shards: 2,
         clients: 2,
         cache_keys: 4,
+        fsync_mode: FsyncMode::None,
+        power_loss: false,
         ..SimConfig::for_seed(1)
     }
 }
@@ -188,4 +190,71 @@ async fn a_copy_that_missed_the_first_fence_takes_its_leader_once_confirmed() {
         );
     }
     assert!(followed > 0, "the cut broker leads every shard");
+}
+
+#[test]
+fn power_loss_seeds_fsync_on_commit() {
+    let mut power = 0;
+    for seed in 0..60 {
+        let config = SimConfig::for_seed(seed);
+        assert_eq!(
+            config.power_loss,
+            config.fsync_mode == FsyncMode::OnCommit,
+            "seed {seed}"
+        );
+        power += usize::from(config.power_loss);
+    }
+    assert!((10..=35).contains(&power), "{power} of 60 seeds");
+}
+
+#[tokio::test(start_paused = true)]
+async fn power_loss_needs_fsync_on_commit() {
+    let config = SimConfig {
+        power_loss: true,
+        fsync_mode: FsyncMode::None,
+        ..small()
+    };
+    assert!(SimCluster::start(1, config).await.is_err());
+}
+
+/// A cut inside an append leaves a torn tail; the restart repairs it, keeps
+/// its storage id and starts clean, since every acknowledged record was
+/// synced, so nothing is held.
+#[tokio::test(start_paused = true)]
+async fn a_power_cut_during_an_append_is_repaired_on_the_restart() {
+    use crate::client::{Recorder, SimClient};
+    log();
+    let config = SimConfig {
+        fsync_mode: FsyncMode::OnCommit,
+        power_loss: true,
+        ..small()
+    };
+    let cluster = SimCluster::start(1, config).await.unwrap();
+    let recorder = Recorder::new(cluster.config.shards);
+    let stop = CancellationToken::new();
+    let client = SimClient::new(0, cluster.clone(), recorder, Rng::new(1));
+    let client = tokio::spawn(client.run(stop.clone()));
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let before = cluster.torn_tails_repaired(0);
+    assert!(cluster.power_loss(0).await, "no append to cut");
+    assert!(cluster.is_down(0));
+    restarted(&cluster, 0).await;
+    assert_eq!(cluster.started_unclean(0), Some(false));
+    for _ in 0..300 {
+        if cluster.torn_tails_repaired(0) > before {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        cluster.torn_tails_repaired(0) > before,
+        "no torn tail repaired"
+    );
+    stop.cancel();
+    let _ = client.await;
+    assert!(cluster.held_shards().await.is_empty());
+    let losses = cluster.power_losses();
+    assert_eq!(losses.len(), 1);
+    assert!(losses[0].mid_append && losses[0].restarted_at.is_some());
 }

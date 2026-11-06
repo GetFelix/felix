@@ -19,6 +19,7 @@ use super::census::NodeView;
 use super::{NodeHandles, SimConfig};
 use crate::controlplane::SimControlPlane;
 use crate::link::{Cut, NodeLink, REQUEST_TIMEOUT};
+use crate::nemesis::Stop;
 use crate::net::{SimNet, SimNode};
 
 /// How long a crash waits for the dead incarnation's tasks to notice, so a
@@ -216,11 +217,44 @@ impl Node {
         Some(self.broker()?.started_unclean())
     }
 
-    /// Stop whatever is running or starting, as a crash does. A `kill` leaves
+    /// Stop the running broker in this instant, as a power cut does: clients
+    /// and peers lose it and its tasks are cancelled, but it stays in place
+    /// for [`Self::crash`] to take down. Touches no file, since a power cut
+    /// calls it from inside a write.
+    pub(crate) fn power_off(&self, net: &SimNet) {
+        if let State::Up(running) = &*self.state.lock() {
+            running.handles.crashed.cancel();
+            running.broker.halt();
+        }
+        net.crash(&self.id);
+    }
+
+    pub(crate) fn arm_power_cut(&self, seed: u64, on_cut: impl FnOnce() + Send + 'static) {
+        felix_storage::sim_fs::arm_power_cut(self.dir.path(), seed, on_cut)
+            .expect("the data directory is simulated");
+    }
+
+    pub(crate) fn cut_power(&self, seed: u64) {
+        felix_storage::sim_fs::cut_power(self.dir.path(), seed)
+            .expect("the data directory is simulated");
+    }
+
+    /// Put what the device held at the cut in place of the directory.
+    pub(crate) fn reboot(&self) {
+        felix_storage::sim_fs::reboot(self.dir.path()).expect("the data directory is simulated");
+    }
+
+    pub(crate) fn torn_tails_repaired(&self) -> u64 {
+        felix_storage::sim_fs::torn_tails_repaired(self.dir.path())
+            .expect("the data directory is simulated")
+    }
+
+    /// Stop whatever is running or starting, as a crash does. A kill leaves
     /// the run state unclean, so the next start rotates the storage id and
-    /// runs the unclean-start handling; otherwise the stop is recorded clean.
-    /// Returns whether the run state was left unclean.
-    pub(crate) async fn crash(&self, net: &SimNet, kill: bool) -> bool {
+    /// runs the unclean-start handling. A power loss leaves it as the broker
+    /// had it; the caller cut the power first. A clean stop is recorded
+    /// clean. Returns whether the run state was left unclean by a kill.
+    pub(crate) async fn crash(&self, net: &SimNet, stop: Stop) -> bool {
         let prior = std::mem::replace(&mut *self.state.lock(), State::Down);
         let broker = match prior {
             State::Down => return false,
@@ -257,7 +291,10 @@ impl Node {
         let Some(id) = stopped_under else {
             return false;
         };
-        if kill {
+        if stop == Stop::PowerLoss {
+            return false;
+        }
+        if stop == Stop::Kill {
             // A kill after a failed fsync: the process left the run state
             // running, and the next start cannot trust what it acknowledged.
             if let Err(err) = felix_storage::run_state::forget_boot(self.dir.path()) {

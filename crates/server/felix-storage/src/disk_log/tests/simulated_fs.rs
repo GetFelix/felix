@@ -159,3 +159,32 @@ async fn an_unsynced_tail_is_repaired_and_the_synced_prefix_survives() {
     assert!(short > 0, "no crash ever lost the unsynced tail");
     let _ = whole;
 }
+
+/// A power cut inside an append under `OnCommit` leaves that append torn;
+/// recovery cuts it off, counts the repair, and keeps everything acknowledged.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_power_cut_during_an_append_is_repaired() {
+    for seed in 0..16 {
+        let sim = Sim::new(2_000 + seed);
+        let log = DiskLog::open(sim.log_dir(), KEY, config(FsyncMode::OnCommit)).expect("open");
+        append(&log, 0, 20).await;
+        let acknowledged = log.durable_offset();
+        sim_fs::arm_power_cut(&sim.0, seed, || {}).expect("arm");
+        // The process outlives the cut here, so this append may even say it
+        // was synced; the device kept what it held at the cut.
+        let _ = log.append(&[record(20)]).await;
+        assert!(
+            sim_fs::reboot(&sim.0).expect("reboot"),
+            "seed {seed}: no cut"
+        );
+        let before = sim_fs::torn_tails_repaired(&sim.0).expect("count");
+        let kept = recover(&sim.log_dir(), FsyncMode::OnCommit, acknowledged, 20).await;
+        assert_eq!(kept, 20, "seed {seed}");
+        assert_eq!(
+            sim_fs::torn_tails_repaired(&sim.0).expect("count"),
+            before + 1,
+            "seed {seed}: the torn append was not repaired"
+        );
+        log.shutdown().await.expect("shutdown the cut-off log");
+    }
+}

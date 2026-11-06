@@ -9,6 +9,11 @@
 //! until an operator runs `felixctl placement abandon`
 //! (`docs/replication-design.md`, "A leader's own crash").
 //! [`ElectionSettles`](crate::check::ElectionSettles) leaves such shards out.
+//!
+//! A power loss under `FsyncMode::OnCommit` is not a kill: every record the
+//! broker acknowledged was synced, so it keeps its storage id and starts
+//! clean, and its copy is trusted. Should a restart after one run
+//! `UncleanStart` anyway, [`KillLog::doubted`] counts it like a kill.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
@@ -47,6 +52,18 @@ impl KillLog {
             node: node.to_string(),
             from: at,
             until: None,
+            view,
+        });
+    }
+
+    /// A stop the broker came back doubting, though it was not a kill: a
+    /// power loss whose restart ran `UncleanStart`. It counts as a kill from
+    /// `from` until the restart at `until`.
+    pub(crate) fn doubted(&mut self, node: &str, from: Duration, until: Duration, view: Views) {
+        self.windows.push(Window {
+            node: node.to_string(),
+            from,
+            until: Some(until),
             view,
         });
     }

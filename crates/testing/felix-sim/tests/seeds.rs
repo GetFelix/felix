@@ -283,3 +283,28 @@ fn seed_1_cache_keeps_acknowledged_puts_across_a_restart() {
 fn seed_5_cache_keeps_acknowledged_puts_across_a_failover() {
     assert_cache_is_linearizable(5);
 }
+
+/// A seed that cuts the power during an append replays the same run, and
+/// recovery repaired the torn append it left.
+#[test]
+#[cfg_attr(
+    not(tokio_unstable),
+    ignore = "replays this seed's run only under --cfg tokio_unstable"
+)]
+fn seed_1_power_cuts_replay_the_same_and_are_repaired() {
+    log();
+    let config = SimConfig::for_seed(1);
+    assert!(config.power_loss, "seed 1 no longer cuts the power");
+    let first = run_seed(1, config.clone());
+    let second = run_seed(1, config);
+    if let Some(difference) = first_difference(&first.trace(), &second.trace()) {
+        panic!("seed 1 ran differently the second time: {difference}");
+    }
+    let cut_in_append = first
+        .history
+        .faults
+        .iter()
+        .any(|fault| fault.what.contains("lost power during an append"));
+    assert!(cut_in_append, "no cut landed in an append:\n{first}");
+    assert!(!found(&first, "torn-tail-repaired"), "{first}");
+}

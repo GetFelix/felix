@@ -91,3 +91,18 @@ fn a_broker_outside_the_set_does_not_count() {
     log.kill("b1", secs(15), view("b1", 1, &THREE));
     assert!(held(&log).is_empty());
 }
+
+#[test]
+fn a_power_loss_the_restart_doubted_counts_like_a_kill() {
+    let mut log = KillLog::default();
+    log.kill("b2", secs(10), view("b1", 1, &THREE));
+    log.doubted("b1", secs(15), secs(20), view("b1", 1, &THREE));
+    assert_eq!(held(&log), ["stream/0"]);
+
+    // Doubted only after b2 was back: the windows do not overlap.
+    let mut log = KillLog::default();
+    log.kill("b2", secs(10), view("b1", 1, &THREE));
+    log.restart("b2", secs(12));
+    log.doubted("b1", secs(15), secs(20), view("b1", 1, &THREE));
+    assert!(held(&log).is_empty());
+}

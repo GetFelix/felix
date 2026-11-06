@@ -681,3 +681,102 @@ fn in_order_writeback_never_leaves_a_hole() {
         }
     }
 }
+
+const SEGMENT: &str = "00000000000000000000.log";
+
+/// A flag an armed cut sets when it goes off.
+fn armed(sim: &Sim, seed: u64) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+    let fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = std::sync::Arc::clone(&fired);
+    sim_fs::arm_power_cut(&sim.root, seed, move || {
+        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+    })
+    .expect("arm");
+    fired
+}
+
+#[test]
+fn an_armed_cut_lands_in_the_next_clean_append_to_a_segment() {
+    let mut cut_at = std::collections::BTreeSet::new();
+    for seed in 0..64 {
+        let sim = Sim::new("cut");
+        let segment = sim.path(SEGMENT);
+        let other = sim.path("index");
+        durable_file(&segment, &bytes(100, 1));
+        durable_file(&other, &bytes(100, 1));
+        let fired = armed(&sim, seed);
+        let fired = || fired.load(std::sync::atomic::Ordering::SeqCst);
+
+        // Not a segment, and not at the end of what is synced.
+        let file = OpenOptions::new().write(true).open(&other).expect("open");
+        io::write_at(&file, &bytes(50, 2), 100).expect("write");
+        let seg = OpenOptions::new().write(true).open(&segment).expect("open");
+        io::write_at(&seg, &bytes(10, 3), 0).expect("write");
+        io::sync_data(&seg).expect("sync");
+        assert!(!fired(), "seed {seed}: a write that is not a clean append");
+
+        io::write_at(&seg, &bytes(1500, 4), 100).expect("append");
+        assert!(fired(), "seed {seed}: the append did not cut");
+        // The dying process keeps writing and syncing; none of it lands.
+        io::write_at(&seg, &bytes(100, 5), 1600).expect("write after the cut");
+        io::sync_data(&seg).expect("sync after the cut");
+        durable_file(&sim.path("late"), b"late");
+
+        assert!(sim_fs::reboot(&sim.root).expect("reboot"));
+        let after = fs::read(&segment).expect("read");
+        assert_eq!(
+            after.len(),
+            1600,
+            "seed {seed}: the length reached the disk"
+        );
+        assert_eq!(&after[..10], &bytes(10, 3)[..], "seed {seed}");
+        assert_eq!(&after[10..100], &bytes(90, 1)[..], "seed {seed}");
+        let zeros_from = after[100..]
+            .iter()
+            .position(|byte| *byte == 0)
+            .map_or(1600, |at| 100 + at);
+        assert!(
+            zeros_from == 100 || zeros_from % 512 == 0,
+            "seed {seed}: torn at {zeros_from}"
+        );
+        assert!(zeros_from < 1600, "seed {seed}: the append came back whole");
+        assert!(after[100..zeros_from].iter().all(|byte| *byte == 4));
+        assert!(after[zeros_from..].iter().all(|byte| *byte == 0));
+        assert!(!names(&sim.root).contains(&"late".to_string()));
+        cut_at.insert(zeros_from);
+    }
+    assert!(
+        cut_at.contains(&100) && cut_at.contains(&512) && cut_at.contains(&1024),
+        "{cut_at:?}"
+    );
+}
+
+#[test]
+fn an_append_after_unsynced_bytes_does_not_take_the_cut() {
+    let sim = Sim::new("dirty");
+    let segment = sim.path(SEGMENT);
+    durable_file(&segment, &bytes(100, 1));
+    let fired = armed(&sim, 1);
+    let seg = OpenOptions::new().write(true).open(&segment).expect("open");
+    io::write_at(&seg, &bytes(10, 2), 50).expect("overwrite");
+    io::write_at(&seg, &bytes(10, 2), 100).expect("append");
+    assert!(!fired.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(!sim_fs::reboot(&sim.root).expect("reboot"), "no cut");
+    io::sync_data(&seg).expect("sync");
+    io::write_at(&seg, &bytes(10, 2), 110).expect("append");
+    assert!(fired.load(std::sync::atomic::Ordering::SeqCst));
+}
+
+#[test]
+fn a_cut_with_no_append_keeps_what_was_synced() {
+    let sim = Sim::new("now");
+    let path = sim.path("file");
+    durable_file(&path, b"synced");
+    sim_fs::cut_power(&sim.root, 3).expect("cut");
+    let file = OpenOptions::new().write(true).open(&path).expect("open");
+    io::write_at(&file, b"!", 6).expect("write after the cut");
+    io::sync_data(&file).expect("sync after the cut");
+    assert!(sim_fs::reboot(&sim.root).expect("reboot"));
+    assert_eq!(fs::read(&path).expect("read"), b"synced");
+    assert!(!sim_fs::reboot(&sim.root).expect("reboot"), "only once");
+}

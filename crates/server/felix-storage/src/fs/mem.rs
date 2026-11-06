@@ -13,13 +13,15 @@
 
 mod crash;
 mod file;
+mod power;
 mod registry;
 
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::io;
 use std::path::{Component, Path};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Weak};
 
 use parking_lot::Mutex;
 
@@ -32,6 +34,12 @@ pub(super) use registry::{is_above_a_root, route};
 pub(crate) struct Tree {
     /// Held for the length of every structural operation.
     structure: Mutex<Structure>,
+    /// This tree, for the handles it opens: an append through one can cut
+    /// the power.
+    me: Weak<Tree>,
+    power: Mutex<power::Power>,
+    /// Torn tails recovery repaired under this root, across reboots.
+    torn_tails: AtomicU64,
 }
 
 struct Structure {
@@ -102,14 +110,17 @@ pub(crate) struct Stat {
 }
 
 impl Tree {
-    pub(super) fn new() -> Self {
-        Self {
+    pub(super) fn new() -> Arc<Self> {
+        Arc::new_cyclic(|me| Self {
             structure: Mutex::new(Structure {
                 root: Arc::new(DirNode::default()),
                 pending: Vec::new(),
                 warned: false,
             }),
-        }
+            me: me.clone(),
+            power: Mutex::new(power::Power::On),
+            torn_tails: AtomicU64::new(0),
+        })
     }
 
     pub(super) fn stat(&self, path: &Path) -> io::Result<Stat> {
@@ -170,7 +181,11 @@ impl Tree {
             }
             None => return Err(not_found()),
         };
-        Ok(MemFile::new(node, flags))
+        let segment = name
+            .to_str()
+            .and_then(crate::segment::parse_segment_file_name)
+            .is_some();
+        Ok(MemFile::new(node, flags, self.me.clone(), segment))
     }
 
     pub(super) fn create_dir_all(&self, path: &Path) -> io::Result<()> {
@@ -343,13 +358,107 @@ impl Tree {
     }
 
     /// Replace the tree with what a power loss now would leave. Handles opened
-    /// before it keep the old files, which nothing reaches any more.
+    /// before it keep the old files, which nothing reaches any more. Drops
+    /// any cut that is armed or waiting for [`Self::reboot`].
     pub(crate) fn crash(&self, seed: u64, writeback: crate::io::writeback::Writeback) {
+        *self.power.lock() = power::Power::On;
         let mut state = self.structure.lock();
         let mut rng = crate::io::writeback::SplitMix64::new(seed);
         let plan = crash::Plan::new(&state.pending, &mut rng);
-        state.root = crash::dir(&state.root, &plan, &mut rng, writeback);
+        state.root = crash::dir(&state.root, &plan, &mut rng, writeback, None);
         state.pending.clear();
+    }
+
+    /// Cut the power during the next clean append to a log segment: see
+    /// `sim_fs::arm_power_cut`. Replaces a cut that was armed and not taken.
+    pub(crate) fn arm(&self, seed: u64, on_cut: Box<dyn FnOnce() + Send>) {
+        let mut power = self.power.lock();
+        if !matches!(*power, power::Power::Out(_)) {
+            *power = power::Power::Armed { seed, on_cut };
+        }
+    }
+
+    /// Cut the power now, unless an append already did. What the device
+    /// holds waits for [`Self::reboot`].
+    pub(crate) fn cut(&self, seed: u64) {
+        let mut power = self.power.lock();
+        if matches!(*power, power::Power::Out(_)) {
+            return;
+        }
+        let mut rng = crate::io::writeback::SplitMix64::new(seed);
+        *power = power::Power::Out(self.rebooted(&mut rng, None));
+    }
+
+    /// Put what the device held at the cut in place of the tree. Returns
+    /// whether the power was out.
+    pub(crate) fn reboot(&self) -> bool {
+        let rebooted = {
+            let mut power = self.power.lock();
+            let power::Power::Out(rebooted) = &*power else {
+                return false;
+            };
+            let rebooted = Arc::clone(rebooted);
+            *power = power::Power::On;
+            rebooted
+        };
+        let mut state = self.structure.lock();
+        state.root = rebooted;
+        state.pending.clear();
+        true
+    }
+
+    /// Called after an append of `end - from` bytes at `from` to a segment
+    /// whose bytes were all synced before it. Cuts the power if it is armed,
+    /// tearing that append, and then tells whoever armed it.
+    fn appended(&self, file: &Arc<FileNode>, from: usize, end: usize) {
+        let (seed, on_cut) = {
+            let mut power = self.power.lock();
+            match std::mem::replace(&mut *power, power::Power::On) {
+                power::Power::Armed { seed, on_cut } => (seed, on_cut),
+                other => {
+                    *power = other;
+                    return;
+                }
+            }
+        };
+        let mut rng = crate::io::writeback::SplitMix64::new(seed);
+        let torn = {
+            let data = file.data.lock();
+            power::torn_append(&data.current, from, end, &mut rng)
+        };
+        let rebooted = self.rebooted(&mut rng, Some((file, torn)));
+        *self.power.lock() = power::Power::Out(rebooted);
+        on_cut();
+    }
+
+    /// What a power loss now leaves, without touching the live tree, which
+    /// the dying process keeps using until the reboot. `torn` overrides what
+    /// one file reads back as.
+    fn rebooted(
+        &self,
+        rng: &mut crate::io::writeback::SplitMix64,
+        torn: Option<(&Arc<FileNode>, Vec<u8>)>,
+    ) -> Arc<DirNode> {
+        let state = self.structure.lock();
+        let plan = crash::Plan::new(&state.pending, rng);
+        let torn = torn
+            .as_ref()
+            .map(|(file, bytes)| (file.as_ref(), bytes.as_slice()));
+        crash::dir(
+            &state.root,
+            &plan,
+            rng,
+            crate::io::writeback::Writeback::AnySubset,
+            torn,
+        )
+    }
+
+    pub(super) fn note_torn_tail(&self) {
+        self.torn_tails.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn torn_tails(&self) -> u64 {
+        self.torn_tails.load(Ordering::Relaxed)
     }
 }
 
@@ -414,6 +523,12 @@ impl FileData {
         }
         self.current[at..end].copy_from_slice(buf);
         self.dirty_from = self.dirty_from.min(at.min(old));
+    }
+
+    /// Whether every byte is synced and the file ends at `at`, so a write
+    /// there is an append past what the device holds.
+    fn clean_end_at(&self, at: usize) -> bool {
+        self.dirty_from == usize::MAX && self.durable.len() == at && self.current.len() == at
     }
 
     fn set_len(&mut self, len: usize) {

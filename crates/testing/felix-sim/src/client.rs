@@ -542,9 +542,13 @@ fn spawn_on<T: Send + 'static>(
 ) -> JoinHandle<Option<T>> {
     let crashed = crashed.clone();
     tokio::spawn(async move {
+        // A crash wins over an answer ready in the same poll: a power cut
+        // stops the broker inside a write, and what it would answer after
+        // that never reached a client.
         tokio::select! {
-            out = work => Some(out),
+            biased;
             () = crashed.cancelled() => None,
+            out = work => Some(out),
         }
     })
 }
