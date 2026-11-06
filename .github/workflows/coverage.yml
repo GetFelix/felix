@@ -124,9 +124,17 @@ jobs:
       # points between runs of the same tree, hence 0.3. No baseline yet passes.
       - name: Gate on main's line coverage
         if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
           set -euo pipefail
-          if git fetch --quiet --depth=1 origin badges &&
+          # The badges baseline is published from main, so it only describes
+          # PRs that target main. A release-branch PR would be measured
+          # against a different tree.
+          if [ "$BASE_REF" != "main" ]; then
+            echo "::notice::PR targets $BASE_REF, not main; the badges baseline is main's, so the gate is skipped"
+            python3 scripts/ci/coverage_gate.py percent lcov.info
+          elif git fetch --quiet --depth=1 origin badges &&
             git show FETCH_HEAD:coverage-lines.txt > "$RUNNER_TEMP/baseline.txt"; then
             # The per-file summary is newer than the badge; absent, the gate
             # just skips the breakdown.
