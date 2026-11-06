@@ -395,6 +395,7 @@ expectations=(
   "FelixShardElectUncleanContinuingCountsForgotten violates OneLeaderPerGeneration"
   "FelixShardElectUncleanContinuingRetry violates RetriedContinuingNeverOpens"
   "FelixShardElectUncleanContinuingRetryBelowOnly pass"
+  "FelixShardElectUncleanContinuingRetrySafe pass"
   "FelixGroups pass"
   "FelixGroupsNoCheck violates NoSkip"
   "FelixGroupsLengthOnly violates NoSkip"
