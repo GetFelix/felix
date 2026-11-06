@@ -440,8 +440,8 @@ impl ControlPlane {
     /// What the store still lacks before it counts every replica of a shard
     /// as caught up, or `None` once it does.
     ///
-    /// Reads the same report placement reads: it has to be at the
-    /// assignment's current generation and name every replica.
+    /// Reads the stored report placement reads, and checks its generation and
+    /// caught-up set. It does not apply placement's freshness test.
     pub async fn missing_replica_report(
         &self,
         kind: felix_controlplane_service::model::ShardKind,
