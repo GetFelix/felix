@@ -418,7 +418,7 @@ fn a_directory_made_again_is_not_overwritten_by_a_late_rename_commit() {
         fs::create_dir_all(sim.path("y")).expect("dir");
         fs::rename(sim.path("x/f"), sim.path("y/f")).expect("rename");
         fs::remove_file(sim.path("y/f")).expect("unlink");
-        fs::remove_dir(sim.path("y")).expect("rmdir");
+        fs::remove_dir_all(sim.path("y")).expect("rmdir");
         fs::create_dir_all(sim.path("y")).expect("dir");
         io::sync_dir(&sim.root).expect("sync");
         io::sync_dir(&sim.path("x")).expect("sync");
