@@ -65,7 +65,7 @@
 //! report would otherwise still look caught up.
 //!
 //! [`ControlPlaneStore`]: crate::store::ControlPlaneStore
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use felix_common::membership::RefusedGeneration;
 
@@ -149,6 +149,9 @@ pub struct ReplicaPositions {
     nodes: HashMap<String, NodeView>,
     /// Each shard's assignment: its generation and leader.
     assignments: HashMap<ShardKey, (u64, String)>,
+    /// Shards this instance has seen their leader serving at the
+    /// assignment's generation; see `CopyProgress::observe_opened`.
+    opened: HashSet<ShardKey>,
     /// What each assignment names its members by, for telling a replaced
     /// copy from the one it names.
     members: HashMap<ShardKey, NamedMembers>,
@@ -209,6 +212,7 @@ impl ReplicaPositions {
             stuck: HashMap::new(),
             nodes: HashMap::new(),
             assignments: HashMap::new(),
+            opened: HashSet::new(),
             members: HashMap::new(),
             joint_fence: false,
         }
@@ -305,6 +309,11 @@ impl ReplicaPositions {
     /// With when this instance last saw each restore's new copy move.
     pub(super) fn set_progress(&mut self, progressed: HashMap<(ShardKey, String), u64>) {
         self.progressed = progressed;
+    }
+
+    /// The shards this instance has seen serving at their generation.
+    pub(super) fn set_opened(&mut self, opened: HashSet<ShardKey>) {
+        self.opened = opened;
     }
 
     /// Note when this instance first saw each shard fenced.
@@ -787,6 +796,10 @@ impl CaughtUp for ReplicaPositions {
     }
 
     fn leader_opened(&self, key: &ShardKey, generation: u64, leader: &str) -> bool {
+        let named = |at: &(u64, String)| at.0 == generation && at.1 == leader;
+        if self.opened.contains(key) && self.assignments.get(key).is_some_and(named) {
+            return true;
+        }
         self.reports.get(key).is_some_and(|report| {
             report.generation == generation
                 && report.leader.as_deref() == Some(leader)

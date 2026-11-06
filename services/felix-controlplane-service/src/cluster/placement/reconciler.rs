@@ -368,6 +368,8 @@ pub(super) async fn plan_pass(
     read.positions.set_progress(progressed);
     let fenced = progress.observe_fences(&read.existing, &read.positions);
     read.positions.set_fences(fenced);
+    let opened = progress.observe_opened(&read.existing, &read.positions);
+    read.positions.set_opened(opened);
     let pending = progress.observe_pending(&read.existing, &read.positions);
     read.positions.set_pending(pending);
     let suspected = progress.observe_suspicions(&read.positions);

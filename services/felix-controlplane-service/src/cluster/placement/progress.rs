@@ -39,6 +39,10 @@ pub(super) struct CopyProgress {
     /// When this instance named each shard again for being stuck, within
     /// the window.
     stuck_renames: HashMap<ShardKey, Vec<u64>>,
+    /// Shards whose leader this instance saw serving at the assignment's
+    /// generation. A later report from the same leader at that generation
+    /// may be a refusal after a restart, which does not undo the open.
+    opened: HashMap<ShardKey, (u64, String)>,
 }
 
 /// One leader at one generation and incarnation, as watched for progress.
@@ -153,6 +157,30 @@ impl CopyProgress {
             })
             .collect();
         self.fences.clone()
+    }
+
+    /// Note every shard in `existing` whose leader `caught_up` shows serving
+    /// at its generation, and answer every one this instance has seen so,
+    /// as long as the assignment still names that leader there.
+    pub(super) fn observe_opened(
+        &mut self,
+        existing: &[ShardAssignment],
+        caught_up: &dyn CaughtUp,
+    ) -> HashSet<ShardKey> {
+        self.opened = existing
+            .iter()
+            .filter_map(|assignment| {
+                let at = (assignment.generation, assignment.leader.clone());
+                let seen = self.opened.get(&assignment.key) == Some(&at)
+                    || caught_up.leader_opened(
+                        &assignment.key,
+                        assignment.generation,
+                        &assignment.leader,
+                    );
+                seen.then(|| (assignment.key.clone(), at))
+            })
+            .collect();
+        self.opened.keys().cloned().collect()
     }
 
     /// Note every fresh suspicion in `positions`, and answer since when this
