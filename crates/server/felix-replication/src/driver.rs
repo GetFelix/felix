@@ -728,11 +728,12 @@ async fn open_fenced(
             );
             false
         }
-        Outcome::SetUnknown { why } => {
+        Outcome::SetUnknown { why, ballot } => {
             tracing::warn!(
                 stream = %key.stream,
                 shard = key.shard,
                 generation,
+                ballot,
                 why = %why,
                 "the set this generation leaves is not known here; reporting it refused",
             );

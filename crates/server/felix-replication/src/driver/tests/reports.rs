@@ -1018,6 +1018,16 @@ impl PeerRequester for PromisedAwayFollowers {
                     detail: crate::replica::promised_detail(fence.shard.generation, "broker-d"),
                 },
             )),
+            // As a replica whose ballot holds the generation for broker-d
+            // answers a fetch: with the promise, and no ballot past it.
+            InternalMessage::ReplicateFetch(fetch) => Ok(InternalMessage::ReplicateError(
+                felix_wire::internal::ReplicateError {
+                    correlation_id: fetch.correlation_id,
+                    code: felix_wire::internal::ErrorCode::FencedEpoch,
+                    expected_offset: 0,
+                    detail: crate::replica::promised_detail(fetch.shard.generation, "broker-d"),
+                },
+            )),
             other => panic!("unexpected {:?}", other.kind()),
         }
     }
@@ -1151,7 +1161,9 @@ impl PeerRequester for SupersededFollowers {
 /// assignment named reports the generation refused** (#1914). Elections
 /// that withdrew their standings leave such ballots; the control plane
 /// never hears of them, so without the report it names this broker at a
-/// generation that can never be fenced and waits on silence for good.
+/// generation that can never be fenced and waits on silence for good. The
+/// ballot goes with it once it outlasts [`BALLOT_ELSEWHERE_FOR`], so
+/// placement names this broker above it (#2046).
 #[tokio::test(flavor = "multi_thread")]
 async fn a_fence_met_by_a_newer_ballot_reports_the_refusal() {
     let (broker, _dir) = leader_with(3).await;
@@ -1172,15 +1184,15 @@ async fn a_fence_met_by_a_newer_ballot_reports_the_refusal() {
         shutdown.clone(),
     );
 
-    let report = first_report(&received, Duration::from_secs(5)).await;
+    let report = first_report(&received, BALLOT_ELSEWHERE_FOR * 2).await;
     shutdown.cancel();
     driver.stop().await;
     let report = report.expect("no report of the refused fence");
     assert_eq!(report.generation, 4);
     assert_eq!(
         report.refused,
-        Some(RefusedGeneration::set_unknown(4)),
-        "refused naming no node, so placement names it again one up"
+        Some(RefusedGeneration::above(4, 7)),
+        "refused naming no node, with the ballot placement names it above"
     );
 }
 
@@ -1851,11 +1863,11 @@ async fn a_fence_met_by_a_newer_routing_view_reports_the_refusal() {
         shutdown.clone(),
     );
 
-    let report = first_report(&received, Duration::from_secs(5)).await;
+    let report = first_report(&received, BALLOT_ELSEWHERE_FOR * 2).await;
     shutdown.cancel();
     driver.stop().await;
     let report = report.expect("no report of the refused fence");
-    assert_eq!(report.refused, Some(RefusedGeneration::set_unknown(4)));
+    assert_eq!(report.refused, Some(RefusedGeneration::above(4, 7)));
 }
 
 /// A fence that records each generation the driver deposes.

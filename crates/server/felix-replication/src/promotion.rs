@@ -122,7 +122,14 @@ pub enum Outcome {
     /// control plane names it again one up, where the set before is the one
     /// it is named on now (#1872). With no kept set the fence stays
     /// [`Self::Pending`] instead.
-    SetUnknown { why: String },
+    SetUnknown {
+        why: String,
+        /// The newest generation past this one that a replica of the set
+        /// accepted, which placement names this broker above; 0 when none
+        /// did. One up could be a ballot a withdrawn standing left, which
+        /// this broker's fence would then find promised away (#2046).
+        ballot: u64,
+    },
     /// Not yet: no majority answered, or the catch-up did not finish. The
     /// shard stays closed and the next pass tries again.
     Pending {
@@ -330,6 +337,16 @@ pub(crate) async fn fence_shard_as<R: PeerRequester>(
                         Err(why @ joint::NoSetBefore::Unknown(_)) => {
                             return Err(Outcome::SetUnknown {
                                 why: why.to_string(),
+                                ballot: newest_ballot(
+                                    requester,
+                                    &log,
+                                    local_node_id,
+                                    route,
+                                    &shard,
+                                    kind,
+                                    joint,
+                                )
+                                .await,
                             });
                         }
                         // A newer set here never goes back; the others need
@@ -463,6 +480,64 @@ pub(crate) async fn fence_shard_as<R: PeerRequester>(
         },
         Err(outcome) => outcome,
     }
+}
+
+/// The newest generation past `shard`'s that a replica of `route`, or a
+/// member of a set `log` keeps, accepted; 0 when none answers with one.
+/// Asked with a fetch at the generation, which a replica refuses with its
+/// ballot and which takes no ballot itself, so asking promises nothing.
+#[allow(clippy::too_many_arguments)]
+async fn newest_ballot<R: PeerRequester>(
+    requester: &R,
+    log: &felix_broker::StreamLog,
+    local_node_id: &str,
+    route: &Route,
+    shard: &ShardRef,
+    kind: LogKind,
+    joint: &Joint<'_>,
+) -> u64 {
+    let mut members: Vec<(String, std::net::SocketAddr)> = route
+        .replicas
+        .iter()
+        .map(|replica| (replica.node_id.clone(), replica.advertise_addr))
+        .collect();
+    if let Some(kept) = log.replica_set() {
+        let sets = std::iter::once(&kept.current)
+            .chain(&kept.leaving)
+            .chain(&kept.earlier);
+        for member in sets.flat_map(|set| &set.members) {
+            if !members.iter().any(|(node, _)| *node == member.node)
+                && let Some(addr) = joint.addr_of(&member.node)
+            {
+                members.push((member.node.clone(), addr));
+            }
+        }
+    }
+    members.retain(|(node, _)| node != local_node_id);
+    let asks = members.into_iter().map(|(node_id, addr)| {
+        let request = InternalMessage::ReplicateFetch(ReplicateFetch {
+            correlation_id: 0,
+            shard: shard.clone(),
+            log: crate::ship::replica_log(kind),
+            from_offset: 0,
+            max_bytes: 1,
+            labelled: false,
+            timed: false,
+            headers: false,
+        });
+        async move { requester.request(&node_id, addr, request).await }
+    });
+    futures::future::join_all(asks)
+        .await
+        .into_iter()
+        .filter_map(|answer| match answer {
+            Ok(InternalMessage::ReplicateError(err)) if err.code == ErrorCode::FencedEpoch => {
+                crate::replica::superseded_by(&err.detail, shard.generation)
+            }
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 /// Send an elected leader's fence again to one follower that missed it.
@@ -603,6 +678,12 @@ async fn fence_log<R: PeerRequester>(
     // Answers from a copy the report did not name: they took the promise,
     // which still refuses the old leader, but count for nothing here.
     let mut other_copies = 0;
+    // The replicas among them that the route's copy pins rule out. Placement
+    // keeps the pins across renames until this shard's first fenced open, so
+    // they count no more one generation up than here, and a promise short of
+    // a majority without them is refused like one short on its own (#2046).
+    // Without pins on the route a rename may count them, so they wait.
+    let mut pinned_out: Vec<String> = Vec::new();
     // Replicas that answered no in some way other than a promise away or
     // silence, which a refusal below may not blame on the promise.
     let mut declined = 0;
@@ -613,11 +694,12 @@ async fn fence_log<R: PeerRequester>(
     // that node holds, so once a majority can no longer be made without
     // them, no answer still to come opens the shard.
     let mut promised_away: Vec<(String, String)> = Vec::new();
-    let reachable = |promised_away: &[(String, String)]| {
+    let reachable = |promised_away: &[(String, String)], pinned_out: &[String]| {
         let left = replicas
             .iter()
             .map(|replica| replica.node_id.as_str())
-            .filter(|node| !promised_away.iter().any(|(away, _)| away == node));
+            .filter(|node| !promised_away.iter().any(|(away, _)| away == node))
+            .filter(|node| !pinned_out.iter().any(|out| out == node));
         match joint {
             None => left.count() + 1 >= needed,
             Some(joint) => joint.can_reach(left),
@@ -676,7 +758,7 @@ async fn fence_log<R: PeerRequester>(
             Some(Refusal::PromisedTo { leader, why }) => {
                 refusals.push(why);
                 promised_away.push((node_id, leader));
-                if !reachable(&promised_away) {
+                if !reachable(&promised_away, &pinned_out) {
                     return Err(promised_away_refused(
                         &promised_away,
                         &refusals,
@@ -686,15 +768,14 @@ async fn fence_log<R: PeerRequester>(
                 }
                 continue;
             }
-            Some(Refusal::Final(why)) => {
+            Some(Refusal::Final { why, ballot }) => {
                 return Err(Outcome::Refused {
-                    ballot: 0,
+                    ballot,
                     promised_to: String::new(),
                     why,
                     took: took(&answered),
                 });
             }
-            Some(Refusal::Newer(why)) => return Err(Outcome::pending(why, took(&answered))),
             None => {}
         }
         match answer {
@@ -707,6 +788,17 @@ async fn fence_log<R: PeerRequester>(
             {
                 other_copies += 1;
                 uncounted(key, kind, &node_id, reported_ids, identity);
+                if reported_ids.is_some() && !reported_copy(reported_ids, &node_id, identity) {
+                    pinned_out.push(node_id);
+                    if !promised_away.is_empty() && !reachable(&promised_away, &pinned_out) {
+                        return Err(promised_away_refused(
+                            &promised_away,
+                            &refusals,
+                            shard.generation,
+                            took(&answered),
+                        ));
+                    }
+                }
             }
             Ok(InternalMessage::FenceOk(ok)) => {
                 seen.push((node_id.clone(), identity));
@@ -771,10 +863,10 @@ async fn fence_log<R: PeerRequester>(
         }
         // A promise away never comes back, so with the rest only silent a
         // retry here can wait forever on a replica that is gone; the refusal
-        // moves the shard up. Not when an answer from another copy or a
-        // joint set's count kept the majority out: a rename resets the
-        // copies the next fence checks, so that case waits instead.
-        let explained = joint.is_none() && other_copies == 0 && declined == 0;
+        // moves the shard up. Not when a joint set's count kept the majority
+        // out, nor an answer from another copy that no route pin rules out:
+        // a rename could count it, so that case waits instead.
+        let explained = joint.is_none() && other_copies == pinned_out.len() && declined == 0;
         if let Some((_, promised_to)) = promised_away.first().filter(|_| explained) {
             return Err(Outcome::Refused {
                 promised_to: promised_to.clone(),
@@ -928,6 +1020,21 @@ async fn fence_groups<R: PeerRequester>(
     let mut promised_away: Vec<(String, String)> = Vec::new();
     let mut refusals: Vec<String> = Vec::new();
     let mut declined = 0;
+    // Replicas that answered from another copy than the route pins, which
+    // count no more after a rename, as on the records' fence.
+    let mut pinned_out: Vec<String> = Vec::new();
+    let short = |promised_away: &[(String, String)], pinned_out: &[String]| {
+        let left = replicas
+            .iter()
+            .filter(|replica| {
+                !promised_away
+                    .iter()
+                    .any(|(away, _)| *away == replica.node_id)
+                    && !pinned_out.contains(&replica.node_id)
+            })
+            .count();
+        left < needed
+    };
     while answered.len() < needed {
         let Some((node_id, addr, dead, cursor, copy, other_copy)) = asks.next().await else {
             break;
@@ -936,32 +1043,22 @@ async fn fence_groups<R: PeerRequester>(
             .into_iter()
             .filter_map(|answer| refusal(&node_id, answer, shard.generation))
             .min_by_key(|refused| match refused {
-                Refusal::Final(_) => 0,
-                Refusal::Newer(_) => 1,
-                Refusal::PromisedTo { .. } => 2,
+                Refusal::Final { .. } => 0,
+                Refusal::PromisedTo { .. } => 1,
             });
         match refused {
-            Some(Refusal::Final(why)) => {
+            Some(Refusal::Final { why, ballot }) => {
                 return Err(Outcome::Refused {
-                    ballot: 0,
+                    ballot,
                     promised_to: String::new(),
                     why,
                     took: took(&answered),
                 });
             }
-            Some(Refusal::Newer(why)) => return Err(Outcome::pending(why, took(&answered))),
             Some(Refusal::PromisedTo { leader, why }) => {
                 refusals.push(why);
                 promised_away.push((node_id, leader));
-                let left = replicas
-                    .iter()
-                    .filter(|replica| {
-                        !promised_away
-                            .iter()
-                            .any(|(away, _)| *away == replica.node_id)
-                    })
-                    .count();
-                if left < needed {
+                if short(&promised_away, &pinned_out) {
                     return Err(promised_away_refused(
                         &promised_away,
                         &refusals,
@@ -975,9 +1072,7 @@ async fn fence_groups<R: PeerRequester>(
         }
         match (dead, cursor) {
             (Ok(InternalMessage::FenceOk(_)), Ok(InternalMessage::FenceOk(_))) if !copy => {
-                // As an answer from another copy on the records' fence: a
-                // refusal below may not blame the shortfall on the promise.
-                declined += 1;
+                pinned_out.push(node_id.clone());
                 tracing::info!(
                     node_id = %node_id,
                     stream = %key.stream,
@@ -1001,7 +1096,9 @@ async fn fence_groups<R: PeerRequester>(
                                 | PeerError::ShuttingDown)
                     )
                 };
-                if other_copy || !(silent(&dead) && silent(&cursor)) {
+                if other_copy {
+                    pinned_out.push(node_id.clone());
+                } else if !(silent(&dead) && silent(&cursor)) {
                     declined += 1;
                 }
                 tracing::debug!(
@@ -1015,12 +1112,21 @@ async fn fence_groups<R: PeerRequester>(
             }
         }
     }
-    // A promise away never comes back: with the rest only silent, the
-    // refusal moves the shard up. A replica that answered otherwise, or from
-    // another copy, keeps it pending, as on the records' fence, and so does
-    // a joint fence, where a rename could leave a set unfenced. Serving this
-    // broker's own pair instead would leave a replica that refuses it.
+    // A promise away never comes back: with the rest only silent, or
+    // answering from a copy the route pins rule out, the refusal moves the
+    // shard up. A replica that answered otherwise keeps it pending, as on the
+    // records' fence, and so does a joint fence, where a rename could leave a
+    // set unfenced. Serving this broker's own pair instead would leave a
+    // replica that refuses it.
     if answered.len() < needed && !promised_away.is_empty() {
+        if short(&promised_away, &pinned_out) {
+            return Err(promised_away_refused(
+                &promised_away,
+                &refusals,
+                shard.generation,
+                took(&answered),
+            ));
+        }
         if declined == 0 && !joint {
             return Err(promised_away_refused(
                 &promised_away,
@@ -1075,15 +1181,16 @@ enum Refusal {
     /// The replica promised the generation to `leader`, a vote that node
     /// holds; `why` is the refusal for the shard's status.
     PromisedTo { leader: String, why: String },
-    /// No retry opens the fence, so the refusal is reported. A ballot above
-    /// the generation that no assignment this broker has seen names, as an
-    /// election that never opened leaves: if the control plane had named it,
-    /// it has also named someone above this broker and ignores the report; if
-    /// not, nothing else ever moves the shard past it (#1914). Or a newer
-    /// replica set, which never goes back.
-    Final(String),
-    /// The replica took a newer leader: this promotion is over.
-    Newer(String),
+    /// No retry opens the fence, so the refusal is reported, with `ballot`,
+    /// the newer generation the replica named, or 0 when it named none. A
+    /// ballot above the generation that no assignment this broker has seen
+    /// names, as an election that never opened leaves: if the control plane
+    /// had named it, it has also named someone above this broker and ignores
+    /// the report; if not, nothing else ever moves the shard past it (#1914).
+    /// The same for a newer assignment the replica saw. Or a newer replica
+    /// set, which never goes back. Placement names this broker above the
+    /// ballot, so never into a generation a withdrawn standing holds (#2046).
+    Final { why: String, ballot: u64 },
 }
 
 /// How `node_id`'s fence answer refuses `generation`, or `None` for an
@@ -1104,19 +1211,19 @@ fn refusal(
                     leader: leader.to_string(),
                     why: format!("{node_id} refused: {detail}"),
                 }
-            } else if crate::replica::superseded_by(detail, generation).is_some() {
-                Refusal::Final(format!(
-                    "{node_id} has accepted a newer generation: {detail}"
-                ))
             } else {
-                Refusal::Newer(format!(
-                    "{node_id} has accepted a newer generation: {detail}"
-                ))
+                Refusal::Final {
+                    why: format!("{node_id} has accepted a newer generation: {detail}"),
+                    ballot: crate::replica::superseded_by(detail, generation)
+                        .or_else(|| crate::replica::assigned_by(detail, generation))
+                        .unwrap_or(0),
+                }
             },
         ),
-        ErrorCode::StaleSet => Some(Refusal::Final(format!(
-            "{node_id} counts a newer replica set: {detail}"
-        ))),
+        ErrorCode::StaleSet => Some(Refusal::Final {
+            why: format!("{node_id} counts a newer replica set: {detail}"),
+            ballot: 0,
+        }),
         _ => None,
     }
 }

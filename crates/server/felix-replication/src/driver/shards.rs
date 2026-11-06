@@ -932,7 +932,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                     Outcome::Pending { why, took } | Outcome::Refused { why, took, .. } => {
                         (Some(took.clone()), Some(why.clone()))
                     }
-                    Outcome::SetUnknown { why } => (Some(Vec::new()), Some(why.clone())),
+                    Outcome::SetUnknown { why, .. } => (Some(Vec::new()), Some(why.clone())),
                     Outcome::Fenced { .. } | Outcome::Lease { .. } => (None, None),
                 };
                 let refused = match &outcome {
@@ -945,7 +945,9 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                         promised_to: promised_to.clone(),
                         ballot: *ballot,
                     }),
-                    Outcome::SetUnknown { .. } => Some(RefusedGeneration::set_unknown(generation)),
+                    Outcome::SetUnknown { ballot, .. } => {
+                        Some(RefusedGeneration::above(generation, *ballot))
+                    }
                     _ => None,
                 };
                 let opened = open_fenced(cx.gate, &key, generation, outcome).await;

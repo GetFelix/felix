@@ -79,6 +79,11 @@ impl<'a> Joint<'a> {
         self.continuing
     }
 
+    /// Where to reach `node_id`, which the route may not name.
+    pub(super) fn addr_of(&self, node_id: &str) -> Option<SocketAddr> {
+        (self.addr_of)(node_id)
+    }
+
     /// This broker's storage identity, so a promotion can tell a copy a set
     /// named another id for (a wipe) from one staged as a learner.
     pub fn with_local_storage(mut self, storage: Option<StorageId>) -> Self {
