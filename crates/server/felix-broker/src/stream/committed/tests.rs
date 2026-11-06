@@ -38,6 +38,15 @@ impl ReadBounds for Bounds {
 }
 
 async fn broker_with(dir: &std::path::Path, bound: ReadBound) -> (Broker, Arc<Bounds>) {
+    let bounds = Arc::new(Bounds {
+        bound: Mutex::new(bound),
+        asked: AtomicUsize::new(0),
+    });
+    let broker = broker_bounded_by(dir, Arc::clone(&bounds) as Arc<dyn ReadBounds>).await;
+    (broker, bounds)
+}
+
+async fn broker_bounded_by(dir: &std::path::Path, bounds: Arc<dyn ReadBounds>) -> Broker {
     let config = LogConfig {
         fsync_mode: FsyncMode::OnCommit,
         preallocate_segments: false,
@@ -45,11 +54,7 @@ async fn broker_with(dir: &std::path::Path, bound: ReadBound) -> (Broker, Arc<Bo
     };
     let broker = Broker::new(EphemeralCache::new().into())
         .with_durable_storage(DurableStorage::open(dir, config).expect("storage"));
-    let bounds = Arc::new(Bounds {
-        bound: Mutex::new(bound),
-        asked: AtomicUsize::new(0),
-    });
-    broker.set_read_bounds(Arc::clone(&bounds) as Arc<dyn ReadBounds>);
+    broker.set_read_bounds(bounds);
     broker.register_tenant("t1").await.expect("tenant");
     broker
         .register_namespace("t1", "ns")
@@ -73,7 +78,7 @@ async fn broker_with(dir: &std::path::Path, bound: ReadBound) -> (Broker, Arc<Bo
             .await
             .expect("stream");
     }
-    (broker, bounds)
+    broker
 }
 
 async fn publish(broker: &Broker, stream: &str, payload: &'static [u8]) -> crate::PublishOutcome {
@@ -750,6 +755,75 @@ async fn a_dropped_commit_is_in_the_state_when_led_again_without_a_start_record(
     let read = state(&broker, "state").await;
     assert_eq!(read.value, Some(Bytes::from_static(b"held")));
     assert_eq!(read.version, Some(1));
+}
+
+/// [`Bounds`] that, once armed, stall the next read from any thread but the
+/// test's own until opened: a release task that has not run yet.
+#[derive(Debug)]
+struct StalledRelease {
+    bounds: Bounds,
+    test_thread: std::thread::ThreadId,
+    armed: std::sync::atomic::AtomicBool,
+    open: (std::sync::Mutex<bool>, std::sync::Condvar),
+}
+
+impl StalledRelease {
+    fn open(&self) {
+        *self.open.0.lock().unwrap() = true;
+        self.open.1.notify_all();
+    }
+}
+
+impl ReadBounds for StalledRelease {
+    fn stream_bound(&self, tenant: &str, ns: &str, stream: &str, shard: u32) -> ReadBound {
+        if std::thread::current().id() != self.test_thread
+            && self.armed.swap(false, Ordering::SeqCst)
+        {
+            let open = self.open.0.lock().unwrap();
+            let _open = self.open.1.wait_while(open, |open| !*open).unwrap();
+        }
+        self.bounds.stream_bound(tenant, ns, stream, shard)
+    }
+}
+
+/// **Leading again right after a discard ends the old readers, even before
+/// the release task has seen the discard.** The hold reads as busy until that
+/// task runs, and `lead_from` skips a busy hold. Skipped, a reader of the
+/// shard stayed open on the old log and the state view missed the dropped
+/// commit. Under load this is a scheduling delay, not a rare interleaving.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn leading_again_waits_for_a_discarded_hold_to_go_idle() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let bounds = Arc::new(StalledRelease {
+        bounds: Bounds {
+            bound: Mutex::new(ReadBound::Unbounded),
+            asked: AtomicUsize::new(0),
+        },
+        test_thread: std::thread::current().id(),
+        armed: std::sync::atomic::AtomicBool::new(false),
+        open: Default::default(),
+    });
+    let broker = broker_bounded_by(dir.path(), Arc::clone(&bounds) as Arc<dyn ReadBounds>).await;
+    commit(&broker, "state", b"first").await;
+
+    bounds.bounds.set(ReadBound::Committed(1));
+    bounds.armed.store(true, Ordering::SeqCst);
+    commit(&broker, "state", b"held").await;
+    assert_eq!(broker.discard_uncommitted("t1", "ns", "quorum", 0).await, 1);
+    let mut live = broker
+        .subscribe("t1", "ns", "quorum", 0)
+        .await
+        .expect("subscribe");
+
+    let lead = broker.lead_from_tail("t1", "ns", "quorum", 0);
+    tokio::pin!(lead);
+    let early = tokio::time::timeout(Duration::from_millis(200), &mut lead).await;
+    bounds.open();
+    match early {
+        Ok(led) => led.expect("lead from tail"),
+        Err(_) => lead.await.expect("lead from tail"),
+    }
+    assert_eq!(resumes_at(&mut live).await, Some(1));
 }
 
 /// **A hold carried across a generation start keeps the state view.** The

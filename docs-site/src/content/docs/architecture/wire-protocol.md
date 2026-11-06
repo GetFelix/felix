@@ -133,7 +133,8 @@ Bit 15 is the last flag bit, so it opens a second word rather than selecting
 one more layout. The word's first bit puts a block holding a record's key and
 headers in front of each record of a publish or event batch. It is negotiated
 with `client_flags_ext` on `auth` and `server_flags_ext` on `auth_ok`. A single
-broker serves it today; a clustered broker does not yet. The block layout and the rules are in
+broker serves it, and a cluster does once its fleet finalizes `record_headers`
+(see [Upgrades and compatibility](/deployment/upgrades/#record_headers)). The block layout and the rules are in
 `docs/protocol.md`, under "Extended frames and record headers".
 
 **length (u32, big-endian)**

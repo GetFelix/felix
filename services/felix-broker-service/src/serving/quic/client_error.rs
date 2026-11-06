@@ -270,6 +270,8 @@ impl ClientError {
             }
             E::MalformedCommit(_) => Self::internal(message),
             E::StateViewBusy => Self::overloaded(message),
+            // Only from leading a shard again, never a client request.
+            E::ReleaseInFlight => Self::internal(message),
             // A broker configured without the storage the stream needs will
             // answer the same way until someone changes its configuration.
             E::DurableStorageNotConfigured { .. } => {
