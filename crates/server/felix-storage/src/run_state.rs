@@ -317,7 +317,13 @@ pub const REPLACED_FILE_NAME: &str = "replaced-storage";
 /// so. Never removed, since a copy with no replica set on this directory may
 /// be one the node held under the old id, however many restarts later. A
 /// later replacement overwrites the incarnation and id.
+///
+/// Removes the control-plane view first, durably: a view on disk predates the
+/// replacement, and `after` alone cannot date it, since the control plane's
+/// incarnations restart when a node is deleted or the control plane is
+/// restored. So any view beside a marker was written after it.
 pub fn record_replaced(root: &Path, storage_id: StorageId, after: u64) -> Result<()> {
+    crate::controlplane_view::forget(root)?;
     let body = format!(
         "replaced\nstorage_id={}\nafter={after}\n",
         storage_id.to_hex()

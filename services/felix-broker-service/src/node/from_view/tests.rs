@@ -212,10 +212,23 @@ fn the_views_nodes_are_routable_at_once() {
 #[test]
 fn a_directory_marked_replaced_waits() {
     let (dir, id) = qualifying();
-    // Marked when the control plane's record was at the view's incarnation:
-    // the view is from before the replacement.
+    // Marked when the control plane's record was at the view's incarnation.
+    // Marking removes the view; one written since at that incarnation is
+    // still not from a registration after the replacement.
     felix_storage::run_state::record_replaced(dir.path(), id, 4).expect("mark");
+    record(dir.path(), &view(id, election_fleet()));
     assert_eq!(qualify(dir.path(), ME, &reported()), Err(Refusal::Replaced));
+}
+
+/// The node was deleted, registered from another disk at incarnations 0 and
+/// 1, and this disk came back: the marker says `after = 1`, below the view's
+/// 4, though the view predates the replacement. Marking removes it, so the
+/// start waits.
+#[test]
+fn a_view_from_before_a_replacement_waits_whatever_its_incarnation() {
+    let (dir, id) = qualifying();
+    felix_storage::run_state::record_replaced(dir.path(), id, 1).expect("mark");
+    assert_eq!(qualify(dir.path(), ME, &reported()), Err(Refusal::NoView));
 }
 
 /// Once the replaced directory registered its current id, the view written
@@ -225,6 +238,8 @@ fn a_directory_marked_replaced_waits() {
 fn a_view_registered_after_the_replacement_starts() {
     let (dir, id) = qualifying();
     felix_storage::run_state::record_replaced(dir.path(), id, 3).expect("mark");
+    // Written by the registration that followed.
+    record(dir.path(), &view(id, election_fleet()));
     assert_eq!(
         qualify(dir.path(), ME, &reported()),
         Ok(view(id, election_fleet()))
@@ -235,9 +250,10 @@ fn a_view_registered_after_the_replacement_starts() {
 /// when, does not vouch for the view.
 #[test]
 fn a_marker_that_does_not_date_the_view_waits() {
-    let (dir, _) = qualifying();
+    let (dir, id) = qualifying();
     felix_storage::run_state::record_replaced(dir.path(), StorageId::from_bytes([9; 16]), 1)
         .expect("mark");
+    record(dir.path(), &view(id, election_fleet()));
     assert_eq!(qualify(dir.path(), ME, &reported()), Err(Refusal::Replaced));
     std::fs::write(
         dir.path()

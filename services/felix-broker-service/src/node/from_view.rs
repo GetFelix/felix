@@ -110,10 +110,12 @@ pub(super) fn qualify(
 }
 
 /// Whether `view` came from a registration made after the directory was last
-/// marked replaced, or there is no marker. Such a registration was of the id
-/// the marker names, so the control plane's routes since already account for
-/// the copies this directory lost. Unreadable, or a marker that does not say
-/// when it was written, reads as replaced: a start that cannot tell waits.
+/// marked replaced, or there is no marker. Marking removes the view, so one
+/// beside a marker was written since; the id and incarnation are a second
+/// check. Such a registration was of the id the marker names, so the control
+/// plane's routes since already account for the copies this directory lost.
+/// Unreadable, or a marker that does not say when it was written, reads as
+/// replaced: a start that cannot tell waits.
 fn registered_since_replaced(root: &Path, view: &View) -> bool {
     use felix_storage::run_state::ReplacedMark;
     match felix_storage::run_state::read_replaced(root) {

@@ -1222,11 +1222,14 @@ after=<incarnation>
 
 `storage_id` is the id the directory runs under from then on, and `after` the
 node incarnation the control plane held when the broker found the
-replacement. A later replacement rewrites both. The file's presence is what
-the replica code reads. A start without the control plane also reads the
-fields: it may use a `controlplane.view` only if the view names that storage
-id and an incarnation above `after`, so it came from a registration made
-after the replacement. A file holding only `replaced`, as older releases
+replacement. A later replacement rewrites both. Before writing it the broker
+removes `controlplane.view` durably, so a view beside the marker was written
+after it. The incarnation alone could not tell: the control plane counts a
+deleted node's incarnations from 0 again, and a restored control plane
+rewinds them. The file's presence is what the replica code reads. A start
+without the control plane also checks the fields: it may use a
+`controlplane.view` only if the view names that storage id and an
+incarnation above `after`. A file holding only `replaced`, as older releases
 write it, or one that does not parse, refuses every view.
 
 ## Consumer-group cursor values

@@ -508,10 +508,11 @@ hold:
 3. The view was registered after any `replaced-storage` marker on the
    directory. The marker says the control plane once registered the node
    under another storage id, and only a registration under the current id
-   says which copies here the node still holds. The marker names that id and
-   the incarnation the control plane held when the broker found the
-   replacement, so a view from a later registration of the same id qualifies
-   and an older one does not. A marker written by an older release names
+   says which copies here the node still holds. Writing the marker removes
+   the view, so only a view from a later registration of the current id
+   qualifies. The marker also names that id and the incarnation the control
+   plane held when the broker found the replacement, and the view must match
+   both. A marker written by an older release names
    neither, and refuses every view.
 4. The view's fleet had finalized `replica_election`.
 5. This build reports every feature the view's fleet finalized. That is the

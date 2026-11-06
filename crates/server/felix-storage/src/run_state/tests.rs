@@ -614,3 +614,14 @@ fn the_replaced_marker_names_the_id_and_incarnation_it_was_written_for() {
         Some(ReplacedMark::Unknown)
     );
 }
+
+/// A view written before the replacement goes with it, whatever its
+/// incarnation: one above `after` may come from before a node delete reset
+/// the control plane's count.
+#[test]
+fn recording_a_replacement_removes_the_view_written_before_it() {
+    let dir = tempfile::tempdir().unwrap();
+    crate::controlplane_view::record(dir.path(), b"{\"incarnation\":9}").unwrap();
+    record_replaced(dir.path(), StorageId::from_bytes([7; 16]), 1).unwrap();
+    assert_eq!(crate::controlplane_view::read(dir.path()), None);
+}
