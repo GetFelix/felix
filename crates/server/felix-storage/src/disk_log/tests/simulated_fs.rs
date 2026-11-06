@@ -172,7 +172,7 @@ async fn a_power_cut_during_an_append_is_repaired() {
         let acknowledged = log.durable_offset();
         let torn = std::sync::Arc::new(std::sync::Mutex::new(None));
         let slot = std::sync::Arc::clone(&torn);
-        sim_fs::arm_power_cut(&sim.0, seed, move |path| {
+        sim_fs::arm_power_cut(&sim.0, seed, move |path, _| {
             *slot.lock().unwrap() = Some(path.to_path_buf());
         })
         .expect("arm");
@@ -195,4 +195,26 @@ async fn a_power_cut_during_an_append_is_repaired() {
         );
         log.shutdown().await.expect("shutdown the cut-off log");
     }
+}
+
+/// A segment recovery removes as unfinished counts as dealt with, as a
+/// repaired one does: a power cut can leave the segment it tore that way.
+#[tokio::test]
+async fn a_segment_recovery_removes_is_recorded() {
+    let sim = Sim::new(3_000);
+    let dir = sim.log_dir();
+    crate::fs::create_dir_all(&dir).expect("dir");
+    let blank = dir.join(crate::segment::segment_file_name(0));
+    crate::fs::write(
+        &blank,
+        vec![0u8; crate::segment::SEGMENT_HEADER_LEN as usize],
+    )
+    .expect("blank segment");
+    let log = DiskLog::open(&dir, KEY, config(FsyncMode::OnCommit)).expect("open");
+    let repaired = sim_fs::torn_tails_repaired(&sim.0).expect("repairs");
+    assert_eq!(
+        repaired,
+        [PathBuf::from("log").join(crate::segment::segment_file_name(0))]
+    );
+    log.shutdown().await.expect("shutdown");
 }

@@ -232,7 +232,7 @@ impl Node {
     pub(crate) fn arm_power_cut(
         &self,
         seed: u64,
-        on_cut: impl FnOnce(&std::path::Path) + Send + 'static,
+        on_cut: impl FnOnce(&std::path::Path, u64) + Send + 'static,
     ) {
         felix_storage::sim_fs::arm_power_cut(self.dir.path(), seed, on_cut)
             .expect("the data directory is simulated");
@@ -246,6 +246,12 @@ impl Node {
     /// Put what the device held at the cut in place of the directory.
     pub(crate) fn reboot(&self) {
         felix_storage::sim_fs::reboot(self.dir.path()).expect("the data directory is simulated");
+    }
+
+    /// The length of the file at `path` below the data directory, if any.
+    pub(crate) fn file_len(&self, path: &Path) -> Option<u64> {
+        felix_storage::sim_fs::file_len(self.dir.path(), path)
+            .expect("the data directory is simulated")
     }
 
     pub(crate) fn torn_tails_repaired(&self) -> Vec<std::path::PathBuf> {

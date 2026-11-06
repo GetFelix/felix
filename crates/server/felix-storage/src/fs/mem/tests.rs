@@ -688,7 +688,7 @@ const SEGMENT: &str = "00000000000000000000.log";
 fn armed(sim: &Sim, seed: u64) -> std::sync::Arc<std::sync::Mutex<Option<PathBuf>>> {
     let torn = std::sync::Arc::new(std::sync::Mutex::new(None));
     let slot = std::sync::Arc::clone(&torn);
-    sim_fs::arm_power_cut(&sim.root, seed, move |path| {
+    sim_fs::arm_power_cut(&sim.root, seed, move |path, _| {
         *slot.lock().unwrap() = Some(path.to_path_buf());
     })
     .expect("arm");
@@ -732,7 +732,10 @@ fn the_append_in_flight_never_comes_back_whole() {
 
         assert!(sim_fs::reboot(&sim.root).expect("reboot"));
         let after = fs::read(&segment).expect("read");
-        assert!(after.len() >= 800 && after.len() <= 2300, "seed {seed}");
+        assert!(
+            after.len() > 800 && after.len() <= 2300,
+            "seed {seed}: none of the append"
+        );
         assert_eq!(&after[..100], &bytes(100, 1)[..], "seed {seed}: synced");
         assert!(
             after[100..800].iter().all(|b| *b == 2 || *b == 0),

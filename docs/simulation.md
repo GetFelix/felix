@@ -200,8 +200,9 @@ the same instant:
 
 1. The device keeps what a power loss would leave
    ([The filesystem](#the-filesystem)), and the append in flight never comes
-   back whole. Its size reached the disk in full or only in part, and each
-   512 B sector of its data arrived or did not, at least one not. A missing
+   back whole. Its size reached the disk in full or only in part, but at
+   least one byte past where it began, and each 512 B sector of its data
+   arrived or did not, at least one not when the size is whole. A missing
    sector can sit before one that arrived, which is where recovery has to
    tell a torn tail from corruption inside the log.
 2. The broker stops. Clients waiting on it get no answer, and peers lose it.
@@ -217,9 +218,16 @@ copy is trusted, so the power loss does not count towards the shards
 loss did run `UncleanStart`, the copy would count like a killed one.
 
 Recovery must then repair the torn append. The storage records each segment
-whose torn tail it repairs under a simulated directory, and the
-`TornTailRepaired` checker fails the seed when the segment a cut tore is not
-repaired on that broker before its next power loss or the end of the run.
+whose torn tail it repairs, or that it removes as unfinished, under a
+simulated directory. The `TornTailRepaired` checker fails the seed when the
+segment a cut tore is not among them on that broker before its next power
+loss or the end of the run. A segment that came back without its name, or
+with nothing past where the append began, has nothing to repair and is not
+held to it.
+
+Clients in these seeds pad each record to between 1 and 4 KiB, so an append
+spans several sectors. A read checks the padding, so a record with damaged
+bytes shows up in the history as one nobody wrote.
 Under a simulator every sync runs on the run's own runtime, so what the
 device holds at the cut does not depend on thread timing and a seed replays
 exactly. The faults list says, for each cut, whether it landed in an

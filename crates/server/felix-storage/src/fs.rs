@@ -47,9 +47,9 @@ pub(crate) fn from_os(file: std::fs::File) -> File {
     }
 }
 
-/// Record that recovery repaired the torn tail of `segment`, so a simulation
-/// can see that a power cut it injected was repaired. Nothing without the
-/// `sim` feature.
+/// Record that recovery repaired the torn tail of `segment` or removed it,
+/// so a simulation can see that a power cut it injected was dealt with.
+/// Nothing without the `sim` feature.
 #[cfg(not(feature = "sim"))]
 #[inline]
 pub(crate) fn note_torn_tail(_segment: &Path) {}

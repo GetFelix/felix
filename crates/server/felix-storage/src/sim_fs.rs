@@ -47,7 +47,8 @@ pub fn crash(root: &Path, seed: u64) -> io::Result<()> {
 }
 
 /// Cut the power under `root` during the next append to a log segment, then
-/// call `on_cut` with that segment's path below `root`.
+/// call `on_cut` with that segment's path below `root` and the offset the
+/// append started at.
 ///
 /// Every file and directory keeps what [`crash`] with `seed` would leave,
 /// and the append in flight is then forced to come back short or torn: its
@@ -64,7 +65,7 @@ pub fn crash(root: &Path, seed: u64) -> io::Result<()> {
 pub fn arm_power_cut(
     root: &Path,
     seed: u64,
-    on_cut: impl FnOnce(&Path) + Send + 'static,
+    on_cut: impl FnOnce(&Path, u64) + Send + 'static,
 ) -> io::Result<()> {
     tree(root)?.arm(seed, Box::new(on_cut));
     Ok(())
@@ -91,7 +92,7 @@ pub fn reboot(root: &Path) -> io::Result<bool> {
 }
 
 /// The segments, as paths below `root`, whose torn tails recovery has
-/// repaired, in order and across reboots.
+/// repaired or which it removed as unfinished, in order and across reboots.
 ///
 /// # Errors
 /// `NotFound` when `root` was not registered.
@@ -106,4 +107,18 @@ fn tree(root: &Path) -> io::Result<std::sync::Arc<crate::fs::Tree>> {
             "no simulated filesystem at this root",
         )
     })
+}
+
+/// The length of the file at `path` below `root`, or `None` when there is
+/// none.
+///
+/// # Errors
+/// `NotFound` when `root` was not registered.
+pub fn file_len(root: &Path, path: &Path) -> io::Result<Option<u64>> {
+    let tree = tree(root)?;
+    match tree.len_of(path) {
+        Ok(len) => Ok(Some(len)),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err),
+    }
 }

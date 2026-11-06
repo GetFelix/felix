@@ -409,12 +409,12 @@ impl SimCluster {
         let torn_slot = Arc::new(parking_lot::Mutex::new(None));
         node.arm_power_cut(seed, {
             let (cluster, cut, slot) = (Arc::downgrade(self), cut.clone(), Arc::clone(&torn_slot));
-            move |segment: &std::path::Path| {
+            move |segment: &std::path::Path, from: u64| {
                 // Inside the broker's write: stop it before it runs on.
                 if let Some(cluster) = cluster.upgrade() {
                     cluster.nodes[index].power_off(&cluster.net);
                 }
-                *slot.lock() = Some(segment.to_path_buf());
+                *slot.lock() = Some((segment.to_path_buf(), from));
                 cut.cancel();
             }
         });
@@ -430,6 +430,11 @@ impl SimCluster {
         }
         node.crash(&self.net, Stop::PowerLoss).await;
         node.reboot();
+        // A segment whose name did not survive, or that holds nothing past
+        // where the append began, leaves recovery nothing to repair.
+        let torn =
+            torn.filter(|(segment, from)| power::needs_repair(node.file_len(segment), *from));
+        let torn = torn.map(|(segment, _)| segment);
         self.power.lock().record(PowerLoss {
             node: index,
             at,

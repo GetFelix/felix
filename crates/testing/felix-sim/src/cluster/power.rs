@@ -18,7 +18,8 @@ pub struct PowerLoss {
     /// When the cut was asked for, on the cluster's clock.
     pub at: Duration,
     /// The segment, below the data directory, whose append the cut landed
-    /// in and tore. `None` when no append was in flight.
+    /// in and tore. `None` when no append was in flight, or the segment came
+    /// back without any of it.
     pub torn: Option<PathBuf>,
     /// How many torn tails the broker's recovery had repaired before the cut.
     pub repaired_before: usize,
@@ -26,6 +27,12 @@ pub struct PowerLoss {
     pub(crate) view: Views,
     /// When the broker was started again.
     pub restarted_at: Option<Duration>,
+}
+
+/// Whether a segment the cut tore leaves recovery a tail to repair: it came
+/// back, at `len`, with bytes past `from`, where the torn append began.
+pub(crate) fn needs_repair(len: Option<u64>, from: u64) -> bool {
+    len.is_some_and(|len| len > from)
 }
 
 #[derive(Debug, Default)]
@@ -62,3 +69,6 @@ impl PowerLog {
         Some(loss.clone())
     }
 }
+
+#[cfg(test)]
+mod tests;

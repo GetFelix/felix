@@ -371,7 +371,7 @@ impl Tree {
 
     /// Cut the power during the next append to a log segment: see
     /// `sim_fs::arm_power_cut`. Replaces a cut that was armed and not taken.
-    pub(crate) fn arm(&self, seed: u64, on_cut: Box<dyn FnOnce(&Path) + Send>) {
+    pub(crate) fn arm(&self, seed: u64, on_cut: Box<dyn FnOnce(&Path, u64) + Send>) {
         let mut power = self.power.lock();
         if !matches!(*power, power::Power::Out(_)) {
             *power = power::Power::Armed { seed, on_cut };
@@ -428,7 +428,7 @@ impl Tree {
         };
         let rebooted = self.rebooted(&mut rng, Some((file, torn)));
         *self.power.lock() = power::Power::Out(rebooted);
-        on_cut(path);
+        on_cut(path, from as u64);
     }
 
     /// What a power loss now leaves, without touching the live tree, which
@@ -456,6 +456,15 @@ impl Tree {
             crate::io::writeback::Writeback::AnySubset,
             torn,
         )
+    }
+
+    /// The length of the file at `path` below the root.
+    pub(crate) fn len_of(&self, path: &Path) -> io::Result<u64> {
+        let stat = self.stat(path)?;
+        if stat.is_dir {
+            return Err(kind(io::ErrorKind::IsADirectory, "is a directory"));
+        }
+        Ok(stat.len)
     }
 
     pub(super) fn note_torn_tail(&self, segment: &Path) {

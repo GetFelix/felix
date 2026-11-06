@@ -6,8 +6,8 @@
 //! that one included, keeps what the crash model allows
 //! (`io::writeback::crash_contents`), and the append in flight is then
 //! forced to come back short or torn: its size reached the disk in full or
-//! in part, and each 512 B sector of its data arrived or did not, with at
-//! least one missing. A missing sector followed by one that arrived is
+//! in part (at least one byte of it), and each 512 B sector of its data
+//! arrived or did not, with at least one missing when the size is whole. A missing sector followed by one that arrived is
 //! where recovery has to tell a torn tail from interior corruption.
 
 use std::path::Path;
@@ -19,10 +19,10 @@ use crate::io::writeback::{SECTOR, SplitMix64, Writeback, crash_contents};
 pub(super) enum Power {
     On,
     /// The next append to a segment cuts the power. `on_cut` is told the
-    /// segment, below the root.
+    /// segment, below the root, and where the append started.
     Armed {
         seed: u64,
-        on_cut: Box<dyn FnOnce(&Path) + Send>,
+        on_cut: Box<dyn FnOnce(&Path, u64) + Send>,
     },
     /// The power is out. This is what the device held at the cut, which the
     /// reboot puts in place of the tree the dying process still writes to.
@@ -44,11 +44,8 @@ pub(super) fn torn_append(
     // A size that covers the append covers everything before it; bytes the
     // model lost there read as zeros.
     out.resize(from, 0);
-    let len = if rng.coin() {
-        end
-    } else {
-        from + rng.below((end - from) as u64) as usize
-    };
+    // At least one byte past `from`, so there is always a tail to repair.
+    let len = from + 1 + rng.below((end - from) as u64) as usize;
     let old = |at: usize| durable.get(at).copied().unwrap_or(0);
     let mut sectors = Vec::new();
     let mut at = from;
@@ -61,6 +58,20 @@ pub(super) fn torn_append(
         let lost = rng.below(sectors.len() as u64) as usize;
         sectors[lost].2 = false;
     }
+    let gap_then_data = sectors
+        .iter()
+        .skip_while(|(_, _, arrived)| *arrived)
+        .any(|(_, _, arrived)| *arrived);
+    tracing::info!(
+        target: "felix_storage::sim_fs",
+        from,
+        appended = end - from,
+        size_kept = len - from,
+        sectors = sectors.len(),
+        lost = sectors.iter().filter(|(_, _, arrived)| !*arrived).count(),
+        gap_then_data,
+        "power cut tore an append"
+    );
     for (start, stop, arrived) in sectors {
         if arrived {
             out.extend_from_slice(&current[start..stop]);
