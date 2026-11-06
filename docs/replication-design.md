@@ -3105,9 +3105,9 @@ id, nobody matches the report, and the
 shard is `NoCaughtUpReplica`. It resolves if the old leader returns, unless
 it crashed that way too ([A leader's own crash](#a-leaders-own-crash)). If it
 cannot, an operator either gives up the log with `felixctl placement abandon
-<stream> <shard> --yes` (`felix-controlplane admin abandon`; records only the
+<stream> <shard> --yes` (records only the
 old copies held are lost) or restores the shard from a backup point with
-`felix-broker restore-point` (see `deployment/backup-and-restore.md` in the
+`felixctl data restore-point` (see `deployment/backup-and-restore.md` in the
 docs site). Under `OnCommit` an acknowledged record is on disk, so a crash
 keeps the id. A crash of an older release, or one the first start on this
 release finds no torn tail for, is not detected (see
@@ -4189,7 +4189,7 @@ keep, so it takes the offered base. It used to refuse, like a log holding
 records, and the copy then waited for a rebuild slot, or for ever with
 `FELIX_REPLICATION_REBUILD_MAX_CONCURRENT=0`.
 
-`GET /v1/placement/replication` (and `felix-controlplane admin replication`)
+`GET /v1/placement/replication` (and `felixctl placement replication`)
 lists each shard's halted copies with the reason, the generation and the time
 the halt began, and `felix_shard_replicas_halted` counts them.
 `a_halted_follower_is_shown_and_replaced` in the cluster suite leaves a

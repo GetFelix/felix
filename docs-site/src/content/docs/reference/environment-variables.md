@@ -258,7 +258,7 @@ export FELIX_CONTROLPLANE_URL="https://cp.example.com:8443"
 ```
 
 **Usage**:
-- Also where `felix-controlplane admin` sends its requests, unless `--url` is given (default `http://127.0.0.1:8443`)
+- Also where `felixctl` sends its control-plane commands, unless `--controlplane-url` or a context sets it
 - Include scheme (`http://` or `https://`). Over `http://`, node credentials,
   token exchange and tenant JWKS cross the network in clear text. Use
   `https://` anywhere the network is not trusted.
@@ -267,7 +267,7 @@ export FELIX_CONTROLPLANE_URL="https://cp.example.com:8443"
 
 **Description**: PEM CA bundle trusted, in addition to the system trust store, when
 `FELIX_CONTROLPLANE_URL` is `https://`. Read by brokers and by
-`felix-controlplane admin`.
+`felixctl`.
 
 **Type**: File path
 
@@ -2412,7 +2412,7 @@ absent. They are listed in that script rather than here.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `FELIX_CLIENT_CONFIG` | unset | Path to a client config file. |
-| `FELIX_AUTH_TENANT`, `FELIX_AUTH_TOKEN`, `FELIX_TOKEN` | unset | Credentials a client presents. `FELIX_TOKEN` is also the token `felix-controlplane admin` sends, unless `--token` is given. |
+| `FELIX_AUTH_TENANT`, `FELIX_AUTH_TOKEN`, `FELIX_TOKEN` | unset | Credentials a client presents. |
 | `FELIX_KEEPALIVE_MS` | `2000` | QUIC keep-alive interval. Keep it well under the idle timeout, on both client and broker, or quiet connections are dropped. |
 | `FELIX_MAX_IDLE_TIMEOUT_MS` | `6000` | QUIC idle timeout before a connection is dropped. Also how long a broker that died without closing (killed, unplugged) takes to be noticed, and so how long a publish in flight to it waits before a `Client` retries elsewhere. |
 | `FELIX_EVENT_ROUTER_MAX_PENDING` | `16384` | Events buffered by the client's router before it applies backpressure. |
@@ -2444,3 +2444,5 @@ variable, and the variable overrides the context. See
 | `FELIX_CLIENT_CERT_FILE`, `FELIX_CLIENT_KEY_FILE` | unset | Client certificate and key to present to brokers. |
 | `FELIX_CONTROLPLANE_CA` | platform trust store | PEM bundle an `https://` control plane is checked against, as for brokers. |
 | `FELIX_SERVER_NAME` | the first broker's host name, or `localhost` | TLS server name sent to brokers. |
+| `FELIX_BROKER_BIN` | `felix-broker` on `PATH` | The `felix-broker` binary that `felixctl data inspect` and `felixctl data restore-point` run. `--broker-bin` overrides it. |
+| `FELIX_CONTROLPLANE_BIN` | `felix-controlplane` on `PATH` | The `felix-controlplane` binary that `felixctl controlplane migrate` runs. `--controlplane-bin` overrides it. |

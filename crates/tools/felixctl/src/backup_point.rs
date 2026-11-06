@@ -1,4 +1,4 @@
-//! `felix-controlplane admin backup-point`: one committed offset per shard
+//! `felixctl backup-point`: one committed offset per shard
 //! log, across every broker, written to a manifest a restore cuts back to.
 //!
 //! The order is the argument. The barrier instant is taken first; every
@@ -20,13 +20,14 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use super::{Admin, table};
+use crate::cli::BackupPointArgs;
+use crate::context::Settings;
+use crate::controlplane::Api;
+use crate::error::{Exit, MarkExit};
+use crate::output::{Output, table};
 
 /// The manifest layout this writes. A restore refuses any other.
-pub const FORMAT_VERSION: u32 = 1;
-
-/// The broker's default metrics listener port, where `/backup/offsets` is.
-pub const DEFAULT_METRICS_PORT: u16 = 8080;
+pub(crate) const FORMAT_VERSION: u32 = 1;
 
 /// How many times the whole collection is started over because a leader or
 /// generation changed under it.
@@ -37,44 +38,30 @@ const COLLECTION_ATTEMPTS: usize = 5;
 const BROKER_ATTEMPTS: u32 = 5;
 const BROKER_BACKOFF: Duration = Duration::from_millis(200);
 
-const USAGE: &str = "\
-usage: felix-controlplane admin backup-point <name> [--out FILE]
-         [--broker NODE=URL]... [--metrics-port PORT]
-
---out defaults to <name>.backup-point.json. Each broker's committed offsets
-are read from http://<its client or internal host>:<metrics port>/backup/offsets
-unless --broker names the URL for it. --metrics-port defaults to 8080.";
-
 /// What to take a backup point of, and how to reach the brokers.
-#[derive(Debug, Clone)]
-pub struct BackupPoint {
-    pub control_plane_url: String,
-    pub token: Option<String>,
-    pub name: String,
+struct BackupPoint<'a> {
+    api: &'a Api,
+    name: &'a str,
     /// Base URL of a broker's metrics listener, by node id, where the address
     /// the control plane has for it is not the one to use.
-    pub brokers: HashMap<String, String>,
-    pub metrics_port: u16,
+    brokers: HashMap<String, String>,
+    metrics_port: u16,
 }
 
-impl BackupPoint {
+impl BackupPoint<'_> {
     /// Collect the point. Fails rather than returning a partial one: a
     /// point missing a shard would restore that shard to nothing.
-    pub async fn take(&self) -> Result<Manifest> {
+    async fn take(&self) -> Result<Manifest> {
         // First, before any read: the barrier every offset is read after.
         let taken_at_millis = now_millis();
-        let admin = Admin {
-            http: super::http_client()?,
-            url: self.control_plane_url.trim_end_matches('/').to_string(),
-            token: self.token.clone(),
-        };
+        let admin = self.api;
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
             .build()
             .context("build the HTTP client")?;
         for _ in 0..COLLECTION_ATTEMPTS {
-            let snapshot = assignment_snapshot(&admin).await?;
-            let nodes = node_addresses(&admin).await?;
+            let snapshot = assignment_snapshot(admin).await?;
+            let nodes = node_addresses(admin).await?;
             let mut shards = Vec::new();
             let mut leaders: BTreeMap<&str, Vec<&Assignment>> = BTreeMap::new();
             for assignment in &snapshot.items {
@@ -87,14 +74,14 @@ impl BackupPoint {
                 let url = broker_url(leader, &nodes, &self.brokers, self.metrics_port)?;
                 shards.extend(collect_from(&http, leader, &url, &assigned).await?);
             }
-            let after = assignment_snapshot(&admin).await?;
+            let after = assignment_snapshot(admin).await?;
             if leadership_changed(&snapshot.items, &after.items) {
                 continue;
             }
             shards.sort_by(|a, b| a.sort_key().cmp(&b.sort_key()));
             return Ok(Manifest {
                 format_version: FORMAT_VERSION,
-                name: self.name.clone(),
+                name: self.name.to_string(),
                 taken_at_millis,
                 metadata_version: snapshot.next_seq,
                 shards,
@@ -109,35 +96,35 @@ impl BackupPoint {
 
 /// A backup point: per shard, the committed offset of each of its logs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Manifest {
-    pub format_version: u32,
-    pub name: String,
+pub(crate) struct Manifest {
+    pub(crate) format_version: u32,
+    pub(crate) name: String,
     /// The barrier, in UTC milliseconds. Everything acknowledged before it is
     /// in the point.
-    pub taken_at_millis: u64,
+    pub(crate) taken_at_millis: u64,
     /// The assignment change sequence the point was read against. Restore
     /// control-plane metadata from a copy taken at or after it.
-    pub metadata_version: u64,
-    pub shards: Vec<PointShard>,
+    pub(crate) metadata_version: u64,
+    pub(crate) shards: Vec<PointShard>,
 }
 
 /// One shard in a backup point.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PointShard {
-    pub tenant_id: String,
-    pub namespace: String,
-    pub name: String,
-    pub shard: u32,
+pub(crate) struct PointShard {
+    pub(crate) tenant_id: String,
+    pub(crate) namespace: String,
+    pub(crate) name: String,
+    pub(crate) shard: u32,
     /// `stream` or `cache`.
-    pub kind: String,
+    pub(crate) kind: String,
     /// The broker whose copy of the shard the point describes.
-    pub leader: String,
-    pub generation: u64,
+    pub(crate) leader: String,
+    pub(crate) generation: u64,
     /// Which incarnation of the stream the leader's logs belong to, as it
     /// answered. Left out when 0, a stream from before incarnations.
     #[serde(default, skip_serializing_if = "is_zero")]
-    pub incarnation: u64,
-    pub logs: PointLogs,
+    pub(crate) incarnation: u64,
+    pub(crate) logs: PointLogs,
 }
 
 fn is_zero(value: &u64) -> bool {
@@ -170,66 +157,44 @@ impl PointShard {
 
 /// One past the last committed record of each of a shard's logs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PointLogs {
-    pub records: u64,
+pub(crate) struct PointLogs {
+    pub(crate) records: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub group_cursors: Option<u64>,
+    pub(crate) group_cursors: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub group_dead_letters: Option<u64>,
+    pub(crate) group_dead_letters: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub counters: Option<u64>,
+    pub(crate) counters: Option<u64>,
 }
 
-/// Run `backup-point`; `args` starts after the word `backup-point`.
-pub(super) async fn run(admin: &Admin, args: Vec<String>) -> Result<()> {
-    let mut name = None;
-    let mut out = None;
-    let mut brokers = HashMap::new();
-    let mut metrics_port = DEFAULT_METRICS_PORT;
-    let mut args = args.into_iter();
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--out" => out = Some(PathBuf::from(args.next().context("--out needs a file")?)),
-            "--broker" => {
-                let value = args.next().context("--broker needs NODE=URL")?;
-                let Some((node, url)) = value.split_once('=') else {
-                    bail!("--broker takes NODE=URL, not {value:?}");
-                };
-                brokers.insert(node.to_string(), url.trim_end_matches('/').to_string());
-            }
-            "--metrics-port" => {
-                metrics_port = args
-                    .next()
-                    .context("--metrics-port needs a port")?
-                    .parse()
-                    .context("--metrics-port")?;
-            }
-            "-h" | "--help" => {
-                println!("{USAGE}");
-                return Ok(());
-            }
-            flag if flag.starts_with("--") => bail!("unknown option {flag}\n\n{USAGE}"),
-            _ if name.is_none() => name = Some(arg),
-            _ => bail!("{USAGE}"),
-        }
-    }
-    let Some(name) = name else {
-        bail!("{USAGE}");
-    };
+/// Run `backup-point`: collect the point and write the manifest.
+pub(crate) async fn run(
+    args: &BackupPointArgs,
+    settings: &Settings,
+    out: &Output,
+) -> anyhow::Result<()> {
+    let api = Api::new(settings)?;
     let point = BackupPoint {
-        control_plane_url: admin.url.clone(),
-        token: admin.token.clone(),
-        name: name.clone(),
-        brokers,
-        metrics_port,
+        api: &api,
+        name: &args.name,
+        brokers: args.broker.iter().cloned().collect(),
+        metrics_port: args.metrics_port,
     };
     let manifest = point.take().await?;
-    let out = out.unwrap_or_else(|| PathBuf::from(format!("{name}.backup-point.json")));
-    std::fs::write(&out, serde_json::to_string_pretty(&manifest)?)
-        .with_context(|| format!("write {}", out.display()))?;
-    print!("{}", render_summary(&manifest));
-    println!("wrote {}", out.display());
-    Ok(())
+    let file = args
+        .out
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(format!("{}.backup-point.json", args.name)));
+    std::fs::write(&file, serde_json::to_string_pretty(&manifest)?)
+        .mark(Exit::Failure, format!("write {}", file.display()))?;
+    if out.json {
+        return out.json_value(&serde_json::json!({
+            "manifest": manifest,
+            "written": file.display().to_string(),
+        }));
+    }
+    out.text(&render_summary(&manifest))?;
+    out.text(&format!("wrote {}", file.display()))
 }
 
 /// An assignment as the snapshot lists it; only what a point needs.
@@ -267,8 +232,8 @@ struct AssignmentSnapshot {
     next_seq: u64,
 }
 
-async fn assignment_snapshot(admin: &Admin) -> Result<AssignmentSnapshot> {
-    serde_json::from_value(admin.get("/v1/shard-assignments/snapshot").await?)
+async fn assignment_snapshot(admin: &Api) -> Result<AssignmentSnapshot> {
+    serde_json::from_value(admin.get("/v1/shard-assignments/snapshot", &[]).await?)
         .context("read the shard assignment snapshot")
 }
 
@@ -280,13 +245,7 @@ struct NodeAddress {
     advertise_addr: String,
 }
 
-async fn node_addresses(admin: &Admin) -> Result<Vec<NodeAddress>> {
-    #[derive(Deserialize)]
-    struct Page {
-        items: Vec<Item>,
-        #[serde(default)]
-        next_cursor: Option<String>,
-    }
+async fn node_addresses(admin: &Api) -> Result<Vec<NodeAddress>> {
     #[derive(Deserialize)]
     struct Item {
         node: Node,
@@ -302,21 +261,18 @@ async fn node_addresses(admin: &Admin) -> Result<Vec<NodeAddress>> {
         #[serde(default)]
         client_addr: Option<String>,
     }
-    let mut nodes = Vec::new();
-    let mut path = "/v1/nodes".to_string();
-    loop {
-        let page: Page =
-            serde_json::from_value(admin.get(&path).await?).context("read the node list")?;
-        nodes.extend(page.items.into_iter().map(|item| NodeAddress {
-            node_id: item.node.node_id,
-            client_addr: item.node.spec.client_addr,
-            advertise_addr: item.node.spec.advertise_addr,
-        }));
-        match page.next_cursor {
-            Some(cursor) => path = format!("/v1/nodes?cursor={cursor}"),
-            None => return Ok(nodes),
-        }
-    }
+    let items = admin.list("/v1/nodes", &[]).await?;
+    items
+        .into_iter()
+        .map(|item| {
+            let item: Item = serde_json::from_value(item).context("read the node list")?;
+            Ok(NodeAddress {
+                node_id: item.node.node_id,
+                client_addr: item.node.spec.client_addr,
+                advertise_addr: item.node.spec.advertise_addr,
+            })
+        })
+        .collect()
 }
 
 /// The base URL of `node`'s metrics listener.

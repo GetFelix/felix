@@ -4,10 +4,10 @@
 //! streams, caches, the node catalog, and which broker leads each shard.
 //! Brokers read it and act; it never reaches into a broker.
 //!
-//! There are three entry points, all reached from the `felix-controlplane`
-//! binary: [`server::run`] serves the API and runs the background loops,
-//! [`migrate::run`] moves metadata between backends, and [`admin::run`] is
-//! the operator's shard move controls, a client of the API.
+//! There are two entry points, both reached from the `felix-controlplane`
+//! binary: [`server::run`] serves the API and runs the background loops, and
+//! [`migrate::run`] moves metadata between backends. The operator's commands
+//! over the API are in `felixctl`.
 //!
 //! # Vocabulary
 //!
@@ -42,8 +42,7 @@
 //!
 //! [`config`] reads the environment and YAML, [`server`] wires everything
 //! together and drains it in order, [`migrate`] is the backend migration tool,
-//! [`admin`] the operator's command line, and [`clock`] is the wall clock the
-//! stored timestamps use.
+//! and [`clock`] is the wall clock the stored timestamps use.
 //!
 //! Each module keeps its unit tests at `<module>/tests.rs`.
 
@@ -57,7 +56,6 @@ pub mod store;
 
 pub mod cluster;
 
-pub mod admin;
 pub mod clock;
 pub mod config;
 pub mod migrate;

@@ -240,3 +240,105 @@ fn completions_take_a_shell() {
     assert!(parse(&["completions", "zsh"]).is_ok());
     assert!(parse(&["completions", "cmd.exe"]).is_err());
 }
+
+#[test]
+fn backup_point_takes_a_name_brokers_and_a_port() {
+    let cli = parse(&[
+        "backup-point",
+        "nightly",
+        "--out",
+        "p.json",
+        "--broker",
+        "a=http://10.0.0.1:9090/",
+        "--broker",
+        "b=http://10.0.0.2:9090",
+        "--metrics-port",
+        "9090",
+    ])
+    .expect("parse");
+    let Some(Command::BackupPoint(args)) = cli.command else {
+        panic!("not backup-point");
+    };
+    assert_eq!(args.name, "nightly");
+    assert_eq!(args.metrics_port, 9090);
+    assert_eq!(
+        args.broker,
+        vec![
+            ("a".to_string(), "http://10.0.0.1:9090".to_string()),
+            ("b".to_string(), "http://10.0.0.2:9090".to_string())
+        ]
+    );
+    let plain = parse(&["backup-point", "n"]).expect("parse");
+    let Some(Command::BackupPoint(args)) = plain.command else {
+        panic!("not backup-point");
+    };
+    assert_eq!(args.metrics_port, 8080);
+    assert!(parse(&["backup-point", "n", "--broker", "no-equals"]).is_err());
+    assert!(parse(&["backup-point"]).is_err());
+}
+
+#[test]
+fn the_server_tools_take_everything_after_their_name_verbatim() {
+    let cli = parse(&[
+        "data",
+        "inspect",
+        "--broker-bin",
+        "/opt/felix-broker",
+        "records",
+        "/data",
+        "t/ns/orders/3",
+        "--offset",
+        "5",
+        "--json",
+    ])
+    .expect("parse");
+    let Some(Command::Data(DataCommand::Inspect(tool))) = cli.command else {
+        panic!("not data inspect");
+    };
+    assert_eq!(tool.broker_bin, Some(PathBuf::from("/opt/felix-broker")));
+    assert_eq!(
+        tool.args,
+        [
+            "records",
+            "/data",
+            "t/ns/orders/3",
+            "--offset",
+            "5",
+            "--json"
+        ]
+    );
+
+    let cli =
+        parse(&["controlplane", "migrate", "import", "s.json", "--overwrite"]).expect("parse");
+    let Some(Command::Controlplane(ControlplaneCommand::Migrate(tool))) = cli.command else {
+        panic!("not controlplane migrate");
+    };
+    assert_eq!(tool.controlplane_bin, None);
+    assert_eq!(tool.args, ["import", "s.json", "--overwrite"]);
+
+    let cli = parse(&["data", "restore-point", "--point", "p.json"]).expect("parse");
+    let Some(Command::Data(DataCommand::RestorePoint(tool))) = cli.command else {
+        panic!("not data restore-point");
+    };
+    assert_eq!(tool.args, ["--point", "p.json"]);
+}
+
+#[test]
+fn features_and_placement_views_parse() {
+    let cli = parse(&["features", "finalize", "x", "--dry-run"]).expect("parse");
+    let Some(Command::Features(FeaturesCommand::Finalize {
+        feature, dry_run, ..
+    })) = cli.command
+    else {
+        panic!("not features finalize");
+    };
+    assert_eq!((feature.as_str(), dry_run), ("x", true));
+    for words in [
+        &["features", "ls"][..],
+        &["placement", "plan"],
+        &["placement", "replication"],
+        &["shard", "moves"],
+    ] {
+        parse(words).expect("parse");
+    }
+}

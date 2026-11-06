@@ -436,6 +436,9 @@ felixctl shard move orders 2 --to broker-3 --dry-run
 felixctl shard move orders 2 --to broker-3
 felixctl shard move sessions 0 --to broker-1 --cache
 felixctl shard move cancel orders 2
+felixctl shard moves
+felixctl placement plan
+felixctl placement replication
 felixctl placement pause
 felixctl placement resume
 felixctl placement abandon orders 2 --yes
@@ -460,7 +463,52 @@ out of reach and places it afresh. Records only the old leader held are lost,
 acknowledged ones included. The control plane refuses it while the leader is
 serving or a replica can take over without loss.
 
-These need `node.manage` on the cluster.
+`shard moves` lists the moves in progress with their step and how far the
+destination's copy lags. `placement plan` shows what the next placement pass
+would do, and why a shard is waiting, without doing it. `placement
+replication` lists the shards with fewer copies than their replication factor,
+and the copies that are unavailable, halted or being added. See
+[Moving shards by hand](/deployment/moving-shards/) for how to read them.
+
+Reading needs `node.view` on the cluster; moving, pausing, resuming and
+abandoning need `node.manage`. A shard is named by its stream (or cache, with
+`--cache`) and shard number, in the context's tenant and namespace.
+
+### Fleet features
+
+```bash
+felixctl features ls
+felixctl features finalize jump_hash_routing --dry-run
+felixctl features finalize jump_hash_routing --yes
+```
+
+A fleet feature is a behaviour every serving broker must support before it is
+switched on. `features ls` shows how many brokers are serving, the features
+they all support, and the ones that are on. `features finalize` switches one
+on. It is one-way: brokers without the feature are refused from then on, so
+run it with `--dry-run` first. The dry run says whether the control plane
+would accept it and, if not, which brokers lack the feature or which feature
+has to be finalized first. Without `--dry-run`, `features finalize` asks
+first, or needs `--yes` off a terminal. It needs `node.manage` on the cluster;
+`features ls` needs `node.view`. See
+[Upgrades and compatibility](/deployment/upgrades/).
+
+### Backup points
+
+```bash
+felixctl backup-point nightly-2026-11-05
+felixctl backup-point nightly --out /backups/nightly.json --broker broker-1=http://10.0.0.5:9090
+```
+
+`backup-point` records one committed offset for every shard log, across every
+broker, and writes them to `NAME.backup-point.json` (or `--out`). It asks the
+control plane for the shard leaders and then reads each leader's
+`/backup/offsets` on its metrics port (`--metrics-port`, 8080 by default), so
+run it somewhere that can reach those. `--broker NODE=URL` names the URL for a
+broker whose registered address is not the one to use. It fails rather than
+write a partial point. A restore cuts a broker back to the point with
+`felixctl data restore-point`. See [Backup and restore](/deployment/backup-and-restore/).
+It needs `node.view` on the cluster.
 
 ### Trimming a shard's head
 
@@ -491,7 +539,8 @@ with `stream_has_commits`.
 `node deregister` ask before acting when stdin is a terminal, and go ahead
 only on `y` or `yes`. Anywhere else, a script or a pipe, they need `--yes`
 (`-y`) and stop with status 2 without it. `placement abandon` never asks and
-always needs `--yes`.
+always needs `--yes`. `features finalize` asks the same way unless it is a
+`--dry-run`.
 
 ## RBAC
 
@@ -615,9 +664,9 @@ with `behind` added when it has a position) and `next_cursor`, or `node_id` and
 `error` for a broker that did not answer.
 
 A broker that will not start cannot answer these. Its data directory is read
-offline by the broker binary itself: `felix-broker inspect segments` for the
-segments and what startup would do, and `felix-broker inspect records` for the
-records around an offset. See
+offline with `felixctl data inspect segments` for the segments and what
+startup would do, and `felixctl data inspect records` for the records around
+an offset. See
 [Diagnosing a cluster](/deployment/diagnosing/#a-broker-will-not-start-or-will-not-open-a-shard).
 
 ### Permissions
@@ -627,6 +676,30 @@ Every `inspect` command needs a broker token allowed `node.view` on
 does not answer it, and felixctl says `broker ADDR does not support inspect`
 rather than guessing. [Diagnosing a cluster](/deployment/diagnosing/) goes
 through what to look for, symptom by symptom.
+
+## Tools that run on the server host
+
+```bash
+felixctl data inspect segments /var/lib/felix/data
+felixctl data restore-point --point nightly.backup-point.json --node broker-1
+felixctl controlplane migrate export-postgres state.json
+```
+
+Some tools have to read a broker's data directory or the control plane's
+database, which only the server programs know how to do. `felixctl` runs them
+for you so there is one command line to learn: `data inspect` and `data
+restore-point` run `felix-broker inspect` and `felix-broker restore-point`, and
+`controlplane migrate` runs `felix-controlplane migrate`. Everything after the
+subcommand name is passed through unchanged, the program's output is yours, and
+`felixctl` exits with its status.
+
+They run on the machine that holds the data, so `felix-broker` or
+`felix-controlplane` has to be installed there. `felixctl` looks for the
+program at `--broker-bin` or `--controlplane-bin` (before the other
+arguments), then `FELIX_BROKER_BIN` or `FELIX_CONTROLPLANE_BIN`, then on
+`PATH`. An image that does not carry `felixctl` can run the program directly:
+`felix-broker inspect segments /var/lib/felix/data` does the same thing. They
+read no context and need no token.
 
 ## Benchmarks
 
