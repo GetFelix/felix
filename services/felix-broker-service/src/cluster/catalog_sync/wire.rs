@@ -172,43 +172,43 @@ pub(super) struct Namespace {
 
 /// Represents a stream as registered in the broker registry.
 /// Maps to the broker's stream registry.
-#[derive(Debug, Deserialize, Serialize)]
-pub(super) struct Stream {
-    pub(super) tenant_id: String,
-    pub(super) namespace: String,
-    pub(super) stream: String,
-    pub(super) shards: u32,
-    pub(super) durable: bool,
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub(crate) struct Stream {
+    pub(crate) tenant_id: String,
+    pub(crate) namespace: String,
+    pub(crate) stream: String,
+    pub(crate) shards: u32,
+    pub(crate) durable: bool,
     /// Absent from a control plane that predates replication, which reads as
     /// `Leader` -- the behaviour every stream had before this existed.
     #[serde(default)]
-    pub(super) consistency: Option<String>,
+    pub(crate) consistency: Option<String>,
     /// Absent from a control plane that predates per-stream retention, which
     /// reads as the broker's own bounds.
     #[serde(default)]
-    pub(super) retention: Option<Retention>,
+    pub(crate) retention: Option<Retention>,
     /// Which creation of this name the stream is. Absent from a control
     /// plane that predates incarnations, which reads as 0.
     #[serde(default)]
-    pub(super) incarnation: u64,
+    pub(crate) incarnation: u64,
     /// The MQTT topic prefix the stream is mounted at. Absent from a control
     /// plane that predates mounts, and from a stream that has none.
     #[serde(default)]
-    pub(super) mount: Option<String>,
+    pub(crate) mount: Option<String>,
 }
 
 /// A stream's retention as the control plane stores it.
-#[derive(Debug, Default, Deserialize, Serialize)]
-pub(super) struct Retention {
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub(crate) struct Retention {
     #[serde(default)]
-    pub(super) max_age_seconds: Option<u64>,
+    pub(crate) max_age_seconds: Option<u64>,
     #[serde(default)]
-    pub(super) max_size_bytes: Option<u64>,
+    pub(crate) max_size_bytes: Option<u64>,
 }
 
 impl Stream {
     /// What the broker registers this stream with.
-    pub(super) fn metadata(&self) -> anyhow::Result<felix_broker::StreamMetadata> {
+    pub(crate) fn metadata(&self) -> anyhow::Result<felix_broker::StreamMetadata> {
         let retention = self.retention.as_ref();
         // Zero is no bound. The control plane refuses it, and one stored
         // before it did must not fail the whole sync.
@@ -226,32 +226,81 @@ impl Stream {
             mount: self.mount.clone(),
         })
     }
+
+    /// The entry a stream registered with `metadata` came from, so
+    /// [`Self::metadata`] gives `metadata` back.
+    pub(crate) fn of(
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        metadata: &felix_broker::StreamMetadata,
+    ) -> Self {
+        let retention = &metadata.retention;
+        Self {
+            tenant_id: tenant_id.to_owned(),
+            namespace: namespace.to_owned(),
+            stream: stream.to_owned(),
+            shards: metadata.shards,
+            durable: metadata.durable,
+            consistency: Some(consistency_name(metadata.consistency).to_owned()),
+            retention: (retention.bytes.is_some() || retention.age.is_some()).then(|| Retention {
+                max_age_seconds: retention.age.map(|age| age.as_secs()),
+                max_size_bytes: retention.bytes,
+            }),
+            incarnation: metadata.incarnation,
+            mount: metadata.mount.clone(),
+        }
+    }
+}
+
+/// The name [`super::apply::read_consistency`] reads back as `level`.
+fn consistency_name(level: felix_broker::ConsistencyLevel) -> &'static str {
+    match level {
+        felix_broker::ConsistencyLevel::Leader => "Leader",
+        felix_broker::ConsistencyLevel::Quorum => "Quorum",
+    }
 }
 
 /// Represents a cache as registered in the broker registry.
 /// Maps to the broker's cache registry.
-#[derive(Debug, Deserialize, Serialize)]
-pub(super) struct Cache {
-    pub(super) tenant_id: String,
-    pub(super) namespace: String,
-    pub(super) cache: String,
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub(crate) struct Cache {
+    pub(crate) tenant_id: String,
+    pub(crate) namespace: String,
+    pub(crate) cache: String,
     /// Absent from a control plane that predates cache consistency, which reads
     /// as `Leader`, the only guarantee a cache had before.
     #[serde(default)]
-    pub(super) consistency: Option<String>,
+    pub(crate) consistency: Option<String>,
     /// Which creation of this name the cache is. Absent from a control plane
     /// that predates cache incarnations, which reads as 0.
     #[serde(default)]
-    pub(super) incarnation: u64,
+    pub(crate) incarnation: u64,
 }
 
 impl Cache {
     /// What the broker registers this cache with.
-    pub(super) fn metadata(&self) -> anyhow::Result<felix_broker::CacheMetadata> {
+    pub(crate) fn metadata(&self) -> anyhow::Result<felix_broker::CacheMetadata> {
         Ok(felix_broker::CacheMetadata {
             consistency: super::apply::read_consistency(self.consistency.as_deref())?,
             incarnation: self.incarnation,
         })
+    }
+
+    /// The entry a cache registered with `metadata` came from.
+    pub(crate) fn of(
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        metadata: &felix_broker::CacheMetadata,
+    ) -> Self {
+        Self {
+            tenant_id: tenant_id.to_owned(),
+            namespace: namespace.to_owned(),
+            cache: cache.to_owned(),
+            consistency: Some(consistency_name(metadata.consistency).to_owned()),
+            incarnation: metadata.incarnation,
+        }
     }
 }
 

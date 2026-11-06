@@ -126,6 +126,17 @@ pub fn load_or_create(
     Ok((id, origin))
 }
 
+/// The id kept under `root`, read without writing anything: `None` when
+/// there is no file or it does not decode, either of which the next
+/// [`load_or_create`] answers with a new id.
+pub fn load(root: &Path) -> Result<Option<StorageId>> {
+    match std::fs::read(path_in(root)) {
+        Ok(bytes) => Ok(StorageId::decode(&bytes)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(StorageError::Io(err)),
+    }
+}
+
 /// Write `fresh` as the id under `root`, whatever was there. For a directory
 /// whose contents are now an older copy, such as after a restore.
 pub fn replace(root: &Path, fresh: [u8; 16]) -> Result<StorageId> {

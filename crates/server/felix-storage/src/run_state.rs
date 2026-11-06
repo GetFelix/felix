@@ -537,7 +537,7 @@ fn write(root: &Path, record: &[u8], durable: bool) -> Result<()> {
 
 /// A crash leaves the old record or the new one, never a mix. With `durable`
 /// the record and the rename are synced.
-fn write_atomically(root: &Path, name: &str, bytes: &[u8], durable: bool) -> Result<()> {
+pub(crate) fn write_atomically(root: &Path, name: &str, bytes: &[u8], durable: bool) -> Result<()> {
     use std::io::Write;
 
     let path = root.join(name);

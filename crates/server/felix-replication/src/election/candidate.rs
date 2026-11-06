@@ -69,6 +69,18 @@ const SHARD_AT_ONCE: usize = 16;
 /// standing this process no longer remembers, so it is not held off forever.
 const NAMED_HERE_FOR: Duration = Duration::from_secs(30);
 
+/// How many shards are looked at for a standing from before the start, or
+/// are putting one back, at once. Kept below [`STANDING_AT_ONCE`] so shards
+/// of a broker that really died still stand meanwhile.
+const LOOKING_AT_ONCE: usize = 16;
+
+/// A shard [`restorable`] cannot look at yet.
+#[derive(Debug)]
+struct NotYet;
+
+/// What [`restorable`] found for one shard.
+type Found = Result<Option<(StreamLog, Elected)>, NotYet>;
+
 /// What one round of standing came to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Round {
@@ -112,6 +124,10 @@ struct Ctx<R> {
     /// Test-only: while this file exists, a pre-vote waits before it asks,
     /// so a test can release two candidates' rounds together.
     pre_vote_gate: Option<std::path::PathBuf>,
+    /// Until cancelled this broker votes but neither stands nor restores a
+    /// standing. Peers suspect a broker that cannot serve clients yet, so a
+    /// standing it won would be taken from it a few seconds later.
+    leads_after: Option<CancellationToken>,
 }
 
 /// What a shard's quiet clock started on. Any change restarts it: a new
@@ -322,6 +338,10 @@ impl<R> Ctx<R> {
 /// Stand for every shard whose leader this broker suspects, until
 /// `shutdown`. `None` when the broker does not check sets, has no
 /// registry of elections, or the config turns the detector off.
+///
+/// With `leads_after`, it stands and restores standings only once that is
+/// cancelled; until then it only votes.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn<R: PeerRequester + Send + Sync + 'static>(
     requester: Arc<R>,
     broker: Arc<Broker>,
@@ -329,6 +349,7 @@ pub fn spawn<R: PeerRequester + Send + Sync + 'static>(
     marks: Arc<QuorumMarks>,
     suspects: Arc<Suspects>,
     config: SuspicionConfig,
+    leads_after: Option<CancellationToken>,
     shutdown: CancellationToken,
 ) -> Option<tokio::task::JoinHandle<()>> {
     if config.suspect_after.is_zero() || !requester.offers_election() {
@@ -354,6 +375,7 @@ pub fn spawn<R: PeerRequester + Send + Sync + 'static>(
         stood: Default::default(),
         named_here: Default::default(),
         pre_vote_gate: pre_vote_gate(),
+        leads_after,
     });
     Some(tokio::spawn(run(ctx, shutdown)))
 }
@@ -369,6 +391,11 @@ async fn run<R: PeerRequester + Send + Sync + 'static>(
     // By whether the round stands on the shard's suspicion alone.
     let mut in_flight: HashMap<ShardKey, bool> = HashMap::new();
     let mut backoff: HashMap<ShardKey, Backoff> = HashMap::new();
+    // Shards whose standing from before this broker started was looked for.
+    let mut looked_at: HashSet<ShardKey> = HashSet::new();
+    let mut lookups: JoinSet<(ShardKey, Found)> = JoinSet::new();
+    // Shards looked at or being put back.
+    let mut restoring: HashSet<ShardKey> = HashSet::new();
     let mut scanned: Option<Instant> = None;
     // The generation each shard was last fenced again from, so it is once.
     let mut restood: HashMap<ShardKey, u64> = HashMap::new();
@@ -379,6 +406,7 @@ async fn run<R: PeerRequester + Send + Sync + 'static>(
             _ = ticker.tick() => {}
             Some(done) = rounds.join_next() => {
                 if let Ok((key, round)) = done {
+                    restoring.remove(&key);
                     let shard_only = in_flight.remove(&key).unwrap_or(false);
                     match round {
                         Round::Opened => {
@@ -400,6 +428,30 @@ async fn run<R: PeerRequester + Send + Sync + 'static>(
                 }
                 continue;
             }
+            Some(done) = lookups.join_next() => {
+                if let Ok((key, found)) = done {
+                    match found {
+                        Ok(Some((log, elected))) => {
+                            // Still in flight: the restore round has it now.
+                            let ctx = Arc::clone(&ctx);
+                            rounds.spawn(async move {
+                                let round = restore(&ctx, &key, &log, elected).await;
+                                (key, round)
+                            });
+                        }
+                        Ok(None) => {
+                            restoring.remove(&key);
+                            in_flight.remove(&key);
+                        }
+                        Err(NotYet) => {
+                            restoring.remove(&key);
+                            in_flight.remove(&key);
+                            looked_at.remove(&key);
+                        }
+                    }
+                }
+                continue;
+            }
         }
         step_down_promised_away(&ctx).await;
         if !ctx
@@ -407,6 +459,32 @@ async fn run<R: PeerRequester + Send + Sync + 'static>(
             .fleet_supports(felix_common::fleet::REPLICA_ELECTION)
         {
             continue;
+        }
+        if ctx
+            .leads_after
+            .as_ref()
+            .is_some_and(|leads| !leads.is_cancelled())
+        {
+            continue;
+        }
+        // Looked at off this loop: each opens the shard's log, and a broker
+        // with thousands of shards would hold up standing and shutdown.
+        for (key, route) in ctx.router.snapshot().iter() {
+            if restoring.len() >= LOOKING_AT_ONCE {
+                break;
+            }
+            if looked_at.contains(key) || in_flight.contains_key(key) {
+                continue;
+            }
+            looked_at.insert(key.clone());
+            restoring.insert(key.clone());
+            in_flight.insert(key.clone(), false);
+            let ctx = Arc::clone(&ctx);
+            let (key, route) = (key.clone(), route.clone());
+            lookups.spawn(async move {
+                let found = restorable(&ctx, &key, &route).await;
+                (key, found)
+            });
         }
         let names = ctx.suspects.current();
         let now = Instant::now();
@@ -481,6 +559,9 @@ async fn run<R: PeerRequester + Send + Sync + 'static>(
                 continue;
             }
             in_flight.insert(key.clone(), !broker_suspected);
+            // A standing from now on is in memory; one found on disk later
+            // would be this one.
+            looked_at.insert(key.clone());
             let ctx = Arc::clone(&ctx);
             let key = key.clone();
             let route = route.clone();
@@ -702,7 +783,10 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
             incarnation: crate::incarnation::of(&ctx.broker, key),
         },
     );
-    open_or_withdraw(ctx, key, &log, generation, OPEN_WITHIN).await
+    open_or_withdraw(ctx, key, &log, generation, OPEN_WITHIN, || {
+        opened(&log, generation)
+    })
+    .await
 }
 
 /// Fence `key` one generation up as the leader this broker already is by
@@ -771,7 +855,10 @@ async fn restand<R>(ctx: &Ctx<R>, key: &ShardKey, generation: u64) -> Round {
     // now past the generation it was serving, so the shard has no leader
     // until another bound passes. A fence that stalls for a moment, a copy
     // briefly unreachable, is waited out for the defer bound instead.
-    open_or_withdraw(ctx, key, &log, next, ctx.elections.defer_for()).await
+    open_or_withdraw(ctx, key, &log, next, ctx.elections.defer_for(), || {
+        opened(&log, next)
+    })
+    .await
 }
 
 /// What a standing for `key` fences: the set its copy keeps, the set kept
@@ -792,58 +879,13 @@ fn standing_on<R>(
     route: &Route,
     log: &StreamLog,
 ) -> Result<Standing, Round> {
-    let local = ctx.router.local_node_id();
     let Some(kept) = log.replica_set() else {
         return Err(ctx.ineligible(key, "this copy keeps no replica set"));
     };
-    // A change pending on the kept set is left to the control plane: an
-    // elected route names one set, so the followers' would not know which
-    // set to leave. Costs availability only. A set being left with the same
-    // copies is the one a move's cut-over leaves, its successor flagged a
-    // learner; that is stood on, and fenced jointly.
-    if kept
-        .leaving
-        .as_ref()
-        .is_some_and(|leaving| !same_copies(&kept.current, leaving))
-    {
-        return Err(ctx.ineligible(key, "the kept replica set has a change pending"));
-    }
-    // Earlier sets are kept only while a fence leaving them never opened, so a
-    // majority of one may hold an acknowledged write no later set does. The
-    // candidate's fence leaves one set, so it is left to the control plane.
-    if !kept.earlier.is_empty() {
-        return Err(ctx.ineligible(key, "the kept replica set keeps earlier sets"));
-    }
-    // A start record at the kept set's generation is written only by the
-    // leader that kept the set being left, once its joint fence took a
-    // majority of it. Fencing that set again would need its dead members too.
-    // A later start proves less: a leader the control plane named may have
-    // fenced the kept set alone.
-    let leaving = kept.leaving.clone().filter(|_| {
-        !log.generations()
-            .iter()
-            .any(|epoch| epoch.generation == kept.current.generation)
-    });
-    // Its fence would stay pending, after the ballot took a generation.
-    if leaving.is_some() && !ctx.marks.fleet_supports(felix_common::fleet::JOINT_FENCE) {
-        return Err(ctx.ineligible(
-            key,
-            "a set is kept beside this one and joint fences are off",
-        ));
-    }
-    if kept.current.generation == 0 {
-        return Err(ctx.ineligible(key, "this copy keeps no replica set"));
-    }
-    // Only a voter of the set it keeps stands (`Elect`: f \in mine[f],
-    // ~NonVoter(f)).
-    let votes = kept
-        .current
-        .members
-        .iter()
-        .any(|member| member.node == local && !member.learner);
-    if !votes || log.member_is_wiped(local) {
-        return Err(ctx.ineligible(key, "this copy does not vote in its kept set"));
-    }
+    let leaving = match standing_sets(ctx, log, &kept) {
+        Ok(leaving) => leaving,
+        Err(why) => return Err(ctx.ineligible(key, why)),
+    };
     // A candidate fences the set it keeps and the one kept beside it. If the
     // control plane records another set, a majority of that one could hold
     // what this fence never reaches, so it does not stand at all (#1806).
@@ -881,15 +923,123 @@ fn standing_on<R>(
         generation,
     })
 }
-/// Wait for this broker's standing for `key` at `generation` to open, and
-/// withdraw it if it does not within `open_within` of its route's
-/// publication.
+
+/// This broker's standing for `key` from before it started, rebuilt from its
+/// own log, with the log. Standings live in memory, so an elected leader that
+/// restarts before the control plane names it would forget one the replicas
+/// still answer to, and after a collision the shard would serve nothing.
+///
+/// Only a standing that opened is rebuilt: the ballot names this broker at
+/// `g`, its log records opening at `g`, which it does only once a majority
+/// took its fence there, and the route does not name it at `g`. The set is
+/// the one it keeps, as when it stood, so the fence at `g` again covers the
+/// same majority.
+///
+/// [`NotYet`] while the catalog does not yet hold the stream at the route's
+/// incarnation, so the shard is looked at again later.
+async fn restorable<R>(ctx: &Ctx<R>, key: &ShardKey, route: &Route) -> Found {
+    if !holds_copy(route, ctx.router.local_node_id()) {
+        return Ok(None);
+    }
+    // Until the catalog names the route's incarnation, the log this broker
+    // would open is another one.
+    if crate::incarnation::of(&ctx.broker, key) != route.incarnation {
+        return Err(NotYet);
+    }
+    if !followers_decide(ctx, key).await {
+        return match catalog_knows(&ctx.broker, key).await {
+            true => Ok(None),
+            false => Err(NotYet),
+        };
+    }
+    Ok(shard_log(&ctx.broker, key)
+        .await
+        .and_then(|log| standing_in(ctx, key, route, log)))
+}
+
+/// Whether the catalog holds `key`'s stream or cache, so its consistency is
+/// known.
+async fn catalog_knows(broker: &Broker, key: &ShardKey) -> bool {
+    let (tenant, namespace, stream) = (&key.tenant_id, &key.namespace, &key.stream);
+    match key.kind {
+        ShardKind::Stream => broker.stream_consistency(tenant, namespace, stream).await,
+        ShardKind::Cache => broker.cache_consistency(tenant, namespace, stream).await,
+    }
+    .is_some()
+}
+
+/// The opened standing `log` holds for this broker, if [`restorable`] may
+/// rebuild it.
+fn standing_in<R>(
+    ctx: &Ctx<R>,
+    key: &ShardKey,
+    route: &Route,
+    log: StreamLog,
+) -> Option<(StreamLog, Elected)> {
+    let local = ctx.router.local_node_id();
+    let generation = log.accepted_generation();
+    let named = route.generation > generation
+        || (route.generation == generation && route.leader.node_id == local);
+    if named
+        || log.gave_up()
+        || log.accepted_leader().as_deref() != Some(local)
+        || !opened(&log, generation)
+        || ctx
+            .elections
+            .get(key)
+            .is_some_and(|elected| elected.generation >= generation)
+    {
+        return None;
+    }
+    let kept = log.replica_set()?;
+    let leaving = standing_sets(ctx, &log, &kept).ok()?;
+    let elected = Elected {
+        leader: local.to_string(),
+        generation,
+        set: kept.current,
+        leaving,
+        incarnation: route.incarnation,
+    };
+    Some((log, elected))
+}
+
+/// Put back `elected`, a standing [`restorable`] found, and wait for the
+/// shard to open on it here. Its start record is already in the log, so only
+/// a fence taken since this broker started counts as opening.
+async fn restore<R>(ctx: &Ctx<R>, key: &ShardKey, log: &StreamLog, elected: Elected) -> Round {
+    let (generation, incarnation) = (elected.generation, elected.incarnation);
+    if !ctx.elections.record(key.clone(), elected) {
+        return Round::Ineligible;
+    }
+    tracing::info!(
+        stream = %key.stream,
+        shard = key.shard,
+        generation,
+        "leading again at the generation this broker was elected to before it restarted",
+    );
+    ctx.stood
+        .lock()
+        .expect("stood lock")
+        .insert(key.clone(), generation);
+    // Withdrawn, it is not put back, and in a collision nobody else stands:
+    // the defer bound, as for `restand`, lets a fence queued behind others
+    // after the restart finish.
+    open_or_withdraw(ctx, key, log, generation, ctx.elections.defer_for(), || {
+        ctx.elections.opened_elected(key, generation, incarnation)
+    })
+    .await
+}
+
+/// Wait for this broker's standing for `key` at `generation` to open, as
+/// `opened` says, and withdraw it if it does not within `open_within` of its
+/// route's publication.
 async fn open_or_withdraw<R>(
     ctx: &Ctx<R>,
     key: &ShardKey,
     log: &StreamLog,
     generation: u64,
     open_within: Duration,
+    opened: impl Fn() -> bool,
 ) -> Round {
     let local = ctx.router.local_node_id();
     // The open bound runs from when the route naming this standing is
@@ -900,7 +1050,7 @@ async fn open_or_withdraw<R>(
     let recorded_at = Instant::now();
     let mut published_at: Option<Instant> = None;
     loop {
-        if opened(log, generation) {
+        if opened() {
             return Round::Opened;
         }
         let ours = ctx
@@ -939,6 +1089,62 @@ async fn open_or_withdraw<R>(
     }
 }
 
+/// The set kept beside `kept`, which a standing on it fences jointly, or why
+/// this copy may not stand on it at all.
+fn standing_sets<R>(
+    ctx: &Ctx<R>,
+    log: &StreamLog,
+    kept: &ReplicaSet,
+) -> Result<Option<Membership>, &'static str> {
+    let local = ctx.router.local_node_id();
+    // A change pending on the kept set is left to the control plane: an
+    // elected route names one set, so the followers' would not know which
+    // set to leave. Costs availability only. A set being left with the same
+    // copies is the one a move's cut-over leaves, its successor flagged a
+    // learner; that is stood on, and fenced jointly.
+    if kept
+        .leaving
+        .as_ref()
+        .is_some_and(|leaving| !same_copies(&kept.current, leaving))
+    {
+        return Err("the kept replica set has a change pending");
+    }
+    // Earlier sets are kept only while a fence leaving them never opened, so a
+    // majority of one may hold an acknowledged write no later set does. The
+    // candidate's fence leaves one set, so it is left to the control plane.
+    if !kept.earlier.is_empty() {
+        return Err("the kept replica set keeps earlier sets");
+    }
+    // A start record at the kept set's generation is written only by the
+    // leader that kept the set being left, once its joint fence took a
+    // majority of it. Fencing that set again would need its dead members too.
+    // A later start proves less: a leader the control plane named may have
+    // fenced the kept set alone.
+    let leaving = kept.leaving.clone().filter(|_| {
+        !log.generations()
+            .iter()
+            .any(|epoch| epoch.generation == kept.current.generation)
+    });
+    // Its fence would stay pending, after the ballot took a generation.
+    if leaving.is_some() && !ctx.marks.fleet_supports(felix_common::fleet::JOINT_FENCE) {
+        return Err("a set is kept beside this one and joint fences are off");
+    }
+    if kept.current.generation == 0 {
+        return Err("this copy keeps no replica set");
+    }
+    // Only a voter of the set it keeps stands (`Elect`: f \in mine[f],
+    // ~NonVoter(f)).
+    let votes = kept
+        .current
+        .members
+        .iter()
+        .any(|member| member.node == local && !member.learner);
+    if !votes || log.member_is_wiped(local) {
+        return Err("this copy does not vote in its kept set");
+    }
+    Ok(leaving)
+}
+
 /// Whether `leaving` names the same members on the same copies as `current`,
 /// so the two differ in learner flags at most.
 fn same_copies(current: &Membership, leaving: &Membership) -> bool {
@@ -954,6 +1160,15 @@ fn same_copies(current: &Membership, leaving: &Membership) -> bool {
 /// The shard's own log, if the shard may elect: acknowledged at quorum, by
 /// the followers' answers rather than a lease.
 async fn eligible_log<R>(ctx: &Ctx<R>, key: &ShardKey) -> Option<StreamLog> {
+    if !followers_decide(ctx, key).await {
+        return None;
+    }
+    shard_log(&ctx.broker, key).await
+}
+
+/// Whether `key`'s followers decide its acknowledgements, which an elected
+/// leader needs: it has no lease to fall back on.
+async fn followers_decide<R>(ctx: &Ctx<R>, key: &ShardKey) -> bool {
     let by_followers = match key.kind {
         ShardKind::Stream => {
             ctx.marks.acks_by_followers()
@@ -963,10 +1178,7 @@ async fn eligible_log<R>(ctx: &Ctx<R>, key: &ShardKey) -> Option<StreamLog> {
         }
         ShardKind::Cache => ctx.marks.caches_ack_by_followers(),
     };
-    if !by_followers || !crate::quorum::acknowledges_at_quorum(&ctx.broker, key).await {
-        return None;
-    }
-    shard_log(&ctx.broker, key).await
+    by_followers && crate::quorum::acknowledges_at_quorum(&ctx.broker, key).await
 }
 
 async fn shard_log(broker: &Broker, key: &ShardKey) -> Option<StreamLog> {

@@ -28,7 +28,7 @@ pub struct Routes {
     /// Node ids this router has been told about, so an assignment naming one
     /// it has never seen is reported as unknown rather than not live, with
     /// where each is reached.
-    known_nodes: HashMap<String, SocketAddr>,
+    known_nodes: HashMap<String, NodeRef>,
 }
 
 impl Routes {
@@ -66,10 +66,7 @@ impl ShardRouter {
     pub fn publish(&self, table: RoutingTable, nodes: &HashMap<String, NodeRef>) -> Arc<Routes> {
         let routes = Arc::new(Routes {
             table: Arc::new(table),
-            known_nodes: nodes
-                .iter()
-                .map(|(id, node)| (id.clone(), node.advertise_addr))
-                .collect(),
+            known_nodes: nodes.clone(),
         });
         self.routes.store(Arc::clone(&routes));
         routes
@@ -85,7 +82,17 @@ impl ShardRouter {
     /// any route names it: a set being left can name a broker that no longer
     /// holds anything.
     pub fn node_addr(&self, node_id: &str) -> Option<SocketAddr> {
-        self.routes.load().known_nodes.get(node_id).copied()
+        self.routes
+            .load()
+            .known_nodes
+            .get(node_id)
+            .map(|node| node.advertise_addr)
+    }
+
+    /// What the last publish knew about `node_id`, as [`Self::node_addr`]
+    /// but with its region and liveness.
+    pub fn node(&self, node_id: &str) -> Option<NodeRef> {
+        self.routes.load().known_nodes.get(node_id).cloned()
     }
 
     /// The control plane's set right before `key`'s current route, if this

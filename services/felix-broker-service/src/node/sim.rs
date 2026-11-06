@@ -259,7 +259,7 @@ impl SimBroker {
         let quorum_marks = Arc::new(QuorumMarks::with_fleet(Arc::clone(&fleet)));
         let credential = Some(NodeCredential::new("sim"));
         let link = Some(link);
-        let registered = membership::registered(&broker_config, true, &link, &credential).await?;
+        let registered = membership::await_registered(&broker_config, &link, &credential).await?;
         let startup::Opened {
             broker,
             durable_storage,
@@ -290,6 +290,7 @@ impl SimBroker {
             unclean.clone(),
             None,
         );
+        let handler = Arc::new(handler);
         let (registered, registered_watch) = tokio::sync::watch::channel(None);
         Ok(OpenedBroker {
             capabilities: peer.capabilities(),
@@ -390,7 +391,7 @@ impl<L: ControlPlaneLink + Clone> OpenedBroker<L> {
                 let source = FetcherSource(catalog);
                 tokio::select! {
                     () = shutdown.cancelled() => {}
-                    result = catalog_sync::sync_loop(broker, &source, interval, Some(applied_tx), None) => {
+                    result = catalog_sync::sync_loop(broker, &source, interval, Some(applied_tx), None, Default::default()) => {
                         if let Err(err) = result {
                             tracing::warn!(error = %err, "catalog sync exited");
                         }
@@ -429,6 +430,7 @@ impl<L: ControlPlaneLink + Clone> OpenedBroker<L> {
             registered,
             storage_id,
             durable_storage.as_ref().map(DurableStorage::root),
+            None,
             &shutdown,
         );
         let shard_tasks = cluster::spawn_shard_tasks(cluster::ShardTaskDeps {
@@ -450,6 +452,9 @@ impl<L: ControlPlaneLink + Clone> OpenedBroker<L> {
             unclean: &unclean,
             prefetch,
             sync_shutdown: &shutdown,
+            nodes: Default::default(),
+            reports_held: None,
+            leads_after: None,
         });
         if let Some(shard_tasks) = shard_tasks {
             tasks.push(shard_tasks.watch);
