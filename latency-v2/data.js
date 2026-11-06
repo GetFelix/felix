@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793926521045,
+  "lastUpdate": 1793930745447,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -59136,6 +59136,72 @@ window.BENCHMARK_DATA = {
             "range": "23.23",
             "unit": "us",
             "extra": "trials: 5\nmedian: 262.00\nmean: 258.60\nstdev: 23.23\ncv: 8.98%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0d088a9ed299ff1b8c45dd7a89e113ed747778d3",
+          "message": "fix(replication): a candidate takes its ballot only on the set it checked (#1970) (#1980)\n\n* fix(controlplane): name a leader elected on an older set on the recorded set (#1970)\n\nWhen an elected leader's set generation is below the assignment's\ngeneration, the control plane wrote its own set after the elected one, so\nthe elected set was a change it abandoned before it settled and the leader\nstill fences and acknowledges on the recorded set beside it. Reissuing\nthen names the leader one generation up on the recorded set with nothing\npending, instead of recording the elected set with the recorded one\npending, which dropped the set another candidate may already have opened\nand acknowledged on.\n\nThe adoption applies under Raft, so it waits for metadata level 29 on\nevery member; below it every member keeps the older form. The collision\nreissue computes its write before proposing it and needs no level.\n\nThe model's CpAdopt and CpReissue follow the same rule.\n\n* test(controlplane): the store contract covers adopting a leader elected on an older set; unknown-member test takes its own branch\n\n* fix(controlplane): name an elected leader on the recorded set only when its fence covered it (#1970)\n\nThe rule keyed on the elected set's generation being below the record's\nalso fired when the record was written after the elected set by a change\nthe leader never saw (#1929's stale route), naming the leader on a set it\nnever fenced. Brokers now report the set their fence kept beside their own\n(`elected.leaving`), and the control plane names the leader on the\nrecorded set only when that is it. Gated at metadata level 28; the field\nis cleared below it.\n\nSpec: CpAdopt and CpReissue keep the recorded set only on FencedBeside.\n\n* test(controlplane): restore the elected set generations the first rule moved; level comment\n\n* revert(controlplane): drop the reissue rules for #1970\n\nReverts e1aa732b6, 1c6377d18, b3d7580c1 and f918adcb1. The control-plane\nbranch they added is unreachable: a broker does not stand while a change\nto its kept set is pending (election/candidate.rs), so the #1970 trace\nneeds a model Elect the code does not have. The model gets that guard\ninstead.\n\n* spec(shard): Elect does not stand while a change to the kept set is pending (#1970)\n\nWIP: not pushed. The code's guard reads the kept set once, before an async\npre-vote; see the lane file for the window this leaves.\n\n* fix(replication): a candidate takes its ballot only on the set it checked (#1970)\n\nstand() read the kept set once, before its pre-votes. A fence or batch below\nthe candidate's generation, or a fence a replaced copy learns from, could give\nthe copy a set with a change pending while the round ran, and the candidate\nthen stood on a set it no longer kept. The ballot is now taken under the set\nwriter's lock only while the set is unchanged (accept_generation_on_set), and\na set from a sender the copy has promised past is refused under that lock\n(accept_set_from), so the two never interleave. The model's Elect gets the\ncode's pending-change guard, which is now atomic with the promise as Elect is.\n\n* fix(replication): every set a candidate's copy can take mid-round checks the ballot (#1970)\n\nReview follow-ups: the leader's own set pass in driver/shard.rs uses\naccept_set_from too, keep_own_set's refusal says why in words, keep() is\ncovered by a test that lands the ballot before the set, the docs claim is\nnarrowed to the writers that check, and the now unused replica_set::accept\nis removed.\n\n* fix(replication): a leader keeps its set only while the ballot is at its generation (#1970)\n\n* test(replication): a leader outbid by another node keeps no set, one at its own ballot keeps it (#1970)\n\n* test(tla): the rename-due witnesses stand on a pending set with the refusal switched off (#1970)\n\nSpec: the passing configs keep the refusal, which makes NeverRenameDue and NeverRenameWhileFencing unreachable there; the witnesses switch it off (StandsOnPendingSet) to pin what it protects.\n\n* fix(replication): a fence-again round that finds its set moved may run again (#1970)\n\nIts generation stays open for another restand instead of waiting on the\ncontrol plane. The spec comment says which of stand's set refusals the\nguard models.",
+          "timestamp": "2026-11-05T17:49:21-08:00",
+          "tree_id": "9278254031ef5417ccb2b6818665de611d3ed1c0",
+          "url": "https://github.com/GetFelix/felix/commit/0d088a9ed299ff1b8c45dd7a89e113ed747778d3"
+        },
+        "date": 1793930737782,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 151,
+            "range": "1.67",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 151.00\nmean: 150.60\nstdev: 1.67\ncv: 1.11%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 218,
+            "range": "2.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 218.00\nmean: 217.60\nstdev: 2.07\ncv: 0.95%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 259,
+            "range": "29.04",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 259.00\nmean: 270.80\nstdev: 29.04\ncv: 10.72%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 200,
+            "range": "11.69",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 200.00\nmean: 204.20\nstdev: 11.69\ncv: 5.73%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 398,
+            "range": "205.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 398.00\nmean: 485.60\nstdev: 205.52\ncv: 42.32%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 548,
+            "range": "737.23",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 548.00\nmean: 880.80\nstdev: 737.23\ncv: 83.70%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
