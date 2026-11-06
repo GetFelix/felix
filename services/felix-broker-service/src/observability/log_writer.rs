@@ -12,7 +12,7 @@
 
 use std::io::Write;
 use std::sync::OnceLock;
-use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::thread::ThreadId;
 use std::time::Duration;
 
@@ -41,7 +41,11 @@ pub(crate) struct LogWriter {
 impl LogWriter {
     /// Start a writer thread draining into `sink`.
     pub(crate) fn spawn(sink: impl Write + Send + 'static) -> std::io::Result<Self> {
-        let (queue, lines) = sync_channel(QUEUED_LINES);
+        Self::spawn_queuing(sink, QUEUED_LINES)
+    }
+
+    fn spawn_queuing(sink: impl Write + Send + 'static, lines: usize) -> std::io::Result<Self> {
+        let (queue, lines) = sync_channel(lines);
         let thread = std::thread::Builder::new()
             .name("felix-log-writer".into())
             .spawn(move || drain(lines, sink))?
@@ -58,13 +62,29 @@ impl LogWriter {
             return false;
         }
         let (done, flushed) = sync_channel(1);
-        if self.queue.send(Message::Flush(done)).is_err() {
-            return false;
+        let Some(limit) = limit else {
+            return self.queue.send(Message::Flush(done)).is_ok() && flushed.recv().is_ok();
+        };
+        // The limit covers queueing too: behind a stuck sink the queue stays
+        // full, and a blocking send would never return.
+        let deadline = std::time::Instant::now() + limit;
+        let mut request = Message::Flush(done);
+        loop {
+            match self.queue.try_send(request) {
+                Ok(()) => break,
+                Err(TrySendError::Disconnected(_)) => return false,
+                Err(TrySendError::Full(back)) => {
+                    if std::time::Instant::now() >= deadline {
+                        return false;
+                    }
+                    request = back;
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
         }
-        match limit {
-            Some(limit) => flushed.recv_timeout(limit).is_ok(),
-            None => flushed.recv().is_ok(),
-        }
+        flushed
+            .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+            .is_ok()
     }
 }
 

@@ -497,17 +497,24 @@ hold:
 
 1. The data directory has a view (`controlplane.view`, see
    `docs/durable-storage.md`) for this node. A new or wiped directory has
-   none. A broker removes its view before it deregisters itself, and when it
-   stops because the control plane refused it or found its directory
-   replaced. A node an operator deregistered, or one expired while it was
+   none. A broker removes its view before it deregisters itself, and puts
+   it back if the deregistration never reached the control plane, including
+   a view an earlier start wrote. It also removes it when it stops because
+   the control plane refused it or found its directory replaced. A node an operator deregistered, or one expired while it was
    down, keeps its view: elections stay safe on any past view, because
    every decision is checked against the ballots and sets a majority holds
    (`docs/replication-design.md`, "Rejoining without the control plane").
 2. The storage id on disk is the one the view was registered under. A new or
    rotated id has never been registered, and must register before it acts.
-3. The directory has no `replaced-storage` marker: the control plane last
-   registered the node under another storage id, and only a registration
-   says which copies here it still holds.
+3. The view was registered after any `replaced-storage` marker on the
+   directory. The marker says the control plane once registered the node
+   under another storage id, and only a registration under the current id
+   says which copies here the node still holds. Writing the marker removes
+   the view, so only a view from a later registration of the current id
+   qualifies. The marker also names that id and the incarnation the control
+   plane held when the broker found the replacement, and the view must match
+   both. A marker written by an older release names
+   neither, and refuses every view.
 4. The view's fleet had finalized `replica_election`.
 5. This build reports every feature the view's fleet finalized. That is the
    check the control plane makes when a broker registers: a build rolled back,
@@ -524,7 +531,7 @@ started this way votes only if it comes back at its registered address.
 flowchart TD
     A["Startup lookup, at most FELIX_CONTROLPLANE_STARTUP_WAIT_MS"] -- "answered" --> N["Start as usual"]
     A -- "up but refusing or unreadable" --> W["Wait for the control plane"]
-    A -- "down on every attempt" --> Q{"View for this node, registered storage id,<br/>not replaced, replica_election, every feature reported?"}
+    A -- "down on every attempt" --> Q{"View for this node, registered storage id,<br/>registered since any replacement, replica_election, every feature reported?"}
     Q -- "no" --> W
     Q -- "yes" --> O["Open storage"]
     O -- "the run rotated the storage id" --> W

@@ -275,8 +275,35 @@ impl SyncState {
 /// deletes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Provisional {
+    /// Tenants and namespaces the entries below created on their way in.
+    pub(crate) tenants: BTreeSet<String>,
+    pub(crate) namespaces: BTreeSet<(String, String)>,
     pub(crate) streams: BTreeSet<(String, String, String)>,
     pub(crate) caches: BTreeSet<(String, String, String)>,
+}
+
+impl Provisional {
+    /// Note the parents of an entry registered from the view, if seeding it
+    /// created them: `had` says whether the tenant and namespace were there
+    /// before.
+    fn note_parents(&mut self, tenant_id: &str, namespace: &str, had: (bool, bool)) {
+        let (had_tenant, had_namespace) = had;
+        if !had_tenant {
+            self.tenants.insert(tenant_id.to_owned());
+        }
+        if !had_namespace {
+            self.namespaces
+                .insert((tenant_id.to_owned(), namespace.to_owned()));
+        }
+    }
+}
+
+/// Whether `tenant_id` and its `namespace` are registered on `broker` yet.
+async fn parents(broker: &Broker, tenant_id: &str, namespace: &str) -> (bool, bool) {
+    (
+        broker.tenant_exists(tenant_id).await,
+        broker.namespace_exists(tenant_id, namespace).await,
+    )
 }
 
 /// Register `catalog`'s streams and caches as [`Provisional`] entries, so
@@ -288,6 +315,7 @@ pub(crate) async fn seed_provisional(
 ) -> Provisional {
     let mut provisional = Provisional::default();
     for cache in &catalog.caches {
+        let had = parents(broker, &cache.tenant_id, &cache.namespace).await;
         let applied = match cache.metadata() {
             Ok(metadata) => {
                 apply::apply_cache_upsert(
@@ -303,6 +331,7 @@ pub(crate) async fn seed_provisional(
         };
         match applied {
             Ok(()) => {
+                provisional.note_parents(&cache.tenant_id, &cache.namespace, had);
                 provisional.caches.insert((
                     cache.tenant_id.clone(),
                     cache.namespace.clone(),
@@ -320,6 +349,7 @@ pub(crate) async fn seed_provisional(
         }
     }
     for stream in &catalog.streams {
+        let had = parents(broker, &stream.tenant_id, &stream.namespace).await;
         let applied = match stream.metadata() {
             Ok(metadata) => {
                 apply::apply_stream_upsert(
@@ -335,6 +365,7 @@ pub(crate) async fn seed_provisional(
         };
         match applied {
             Ok(()) => {
+                provisional.note_parents(&stream.tenant_id, &stream.namespace, had);
                 provisional.streams.insert((
                     stream.tenant_id.clone(),
                     stream.namespace.clone(),
