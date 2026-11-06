@@ -172,7 +172,7 @@ impl DurableStorage {
         T: Send + 'static,
     {
         let provider = Arc::clone(&self.provider);
-        match tokio::task::spawn_blocking(move || work(&provider)).await {
+        match felix_common::blocking::spawn(move || work(&provider)).await {
             Ok(answer) => answer.map_err(BrokerError::from),
             Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
             Err(_) => Err(BrokerError::Storage("the runtime is shutting down".into())),
@@ -274,7 +274,7 @@ impl DurableStorage {
             namespace.to_string(),
             stream.to_string(),
         );
-        let opened = tokio::task::spawn_blocking(move || {
+        let opened = felix_common::blocking::spawn(move || {
             let (tenant, namespace, stream) = &scope;
             storage.open_stream(tenant, namespace, stream, shard)
         })
@@ -804,7 +804,7 @@ impl StreamLog {
             return self.record_generation(generation, start_offset);
         }
         let log = self.clone();
-        match tokio::task::spawn_blocking(move || log.record_generation(generation, start_offset))
+        match felix_common::blocking::spawn(move || log.record_generation(generation, start_offset))
             .await
         {
             Ok(recorded) => recorded,
@@ -836,7 +836,8 @@ impl StreamLog {
             return self.label_generations(from, &generations);
         }
         let log = self.clone();
-        match tokio::task::spawn_blocking(move || log.label_generations(from, &generations)).await {
+        match felix_common::blocking::spawn(move || log.label_generations(from, &generations)).await
+        {
             Ok(labelled) => labelled,
             Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
             Err(_) => Err(BrokerError::Storage("the runtime is shutting down".into())),
@@ -1115,7 +1116,7 @@ fn records(
 /// The time an append made now stores: microseconds since the Unix epoch on
 /// this broker's clock.
 pub fn append_time_now() -> u64 {
-    std::time::SystemTime::now()
+    felix_common::clock::system_time()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_micros() as u64)
         .unwrap_or(0)

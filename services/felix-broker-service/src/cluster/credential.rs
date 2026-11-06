@@ -127,7 +127,7 @@ pub fn refresh_delay(now_secs: i64, exp_secs: i64) -> Duration {
 /// `exp` against now, and two readings of the clock that could disagree would
 /// be worse than one that is occasionally coarse.
 pub(crate) fn now_secs() -> i64 {
-    std::time::SystemTime::now()
+    felix_common::clock::system_time()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|since| since.as_secs() as i64)
         .unwrap_or(0)

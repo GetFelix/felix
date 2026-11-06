@@ -380,8 +380,7 @@ async fn a_replayed_create_of_an_older_incarnation_keeps_the_live_stream() -> Re
     .await?;
     sync_into(
         &broker,
-        &client,
-        &format!("http://{addr}"),
+        &HttpSource::new(client.clone(), format!("http://{addr}")),
         None,
         &mut state,
     )
@@ -399,8 +398,7 @@ async fn a_replayed_create_of_an_older_incarnation_keeps_the_live_stream() -> Re
     let (addr, shutdown_tx, handle) = serve_router(router_with(live, lagging_member)).await?;
     sync_into(
         &broker,
-        &client,
-        &format!("http://{addr}"),
+        &HttpSource::new(client.clone(), format!("http://{addr}")),
         None,
         &mut state,
     )
@@ -477,8 +475,7 @@ async fn a_snapshot_tombstone_deletes_a_stream_missed_while_down() -> Result<()>
     let mut state = SyncState::new();
     sync_into(
         &broker,
-        &reqwest::Client::new(),
-        &format!("http://{addr}"),
+        &HttpSource::new(reqwest::Client::new().clone(), format!("http://{addr}")),
         None,
         &mut state,
     )

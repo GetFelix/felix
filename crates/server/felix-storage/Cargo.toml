@@ -17,11 +17,15 @@ publish = false
 # Test-only faults at the I/O seam (see `src/fault.rs`). Debug builds have them
 # regardless; this puts them in an optimised build for a fault-testing run.
 fault-injection = []
+# An in-memory filesystem for paths a simulation registers (`src/fs.rs`).
+# Other paths stay on disk, so turning it on changes nothing for them.
+sim = []
 # Entry points for the libFuzzer targets in `fuzz/`; not an API.
 fuzzing = []
 
 [dependencies]
 bytes = { workspace = true }
+felix-common = { path = "../felix-common", version = "0.7.0-preview.3", features = ["blocking"] }
 tokio = { workspace = true }
 tracing = { workspace = true }
 async-trait = "0.1.89"

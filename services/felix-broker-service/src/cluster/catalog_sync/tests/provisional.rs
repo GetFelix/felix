@@ -110,8 +110,7 @@ async fn a_snapshot_unregisters_what_it_lacks_and_deletes_nothing() -> Result<()
     state.provisional = provisional;
     let state = sync_once(
         &broker,
-        &build_test_client()?,
-        &format!("http://{addr}"),
+        &HttpSource::new(build_test_client()?, format!("http://{addr}")),
         None,
         state,
     )
@@ -163,8 +162,7 @@ async fn without_provisional_entries_a_snapshot_only_upserts() -> Result<()> {
     let (addr, stop, handle) = serve_router(restored_control_plane()).await?;
     sync_once(
         &broker,
-        &build_test_client()?,
-        &format!("http://{addr}"),
+        &HttpSource::new(build_test_client()?, format!("http://{addr}")),
         None,
         SyncState::new(),
     )

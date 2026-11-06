@@ -153,7 +153,13 @@ async fn pass(
 ) -> Result<SyncState> {
     let (addr, shutdown_tx, handle) = serve_router(control_plane(snapshot, feed)).await?;
     let client = build_test_client()?;
-    let state = sync_once(broker, &client, &format!("http://{addr}"), None, state).await?;
+    let state = sync_once(
+        broker,
+        &HttpSource::new(client, format!("http://{addr}")),
+        None,
+        state,
+    )
+    .await?;
     let _ = shutdown_tx.send(());
     let _ = handle.await;
     Ok(state)

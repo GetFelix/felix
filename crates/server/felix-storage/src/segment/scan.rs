@@ -4,7 +4,7 @@
 //! repairable torn tail or committed data that has rotted. It also rebuilds
 //! the segment's sparse index from the records it walks.
 
-use std::fs::File;
+use crate::fs::File;
 use std::path::Path;
 
 use crate::io::read_at;

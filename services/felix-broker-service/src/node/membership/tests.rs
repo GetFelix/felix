@@ -95,6 +95,17 @@ fn down() -> String {
     format!("http://{addr}")
 }
 
+fn link_to(
+    config: &BrokerConfig,
+) -> Option<felix_replication::controlplane_link::HttpControlPlaneLink> {
+    config.controlplane_url.as_deref().map(|base_url| {
+        felix_replication::controlplane_link::HttpControlPlaneLink::new(
+            reqwest::Client::new(),
+            base_url,
+        )
+    })
+}
+
 #[tokio::test]
 async fn with_the_switch_on_a_down_control_plane_starts_from_the_view() {
     let dir = qualifying_directory();
@@ -104,7 +115,7 @@ async fn with_the_switch_on_a_down_control_plane_starts_from_the_view() {
         start(
             &config,
             Some(dir.path()),
-            &reqwest::Client::new(),
+            &link_to(&config),
             &Some(NodeCredential::new("a-node-token".to_string())),
         ),
     )
@@ -126,7 +137,7 @@ async fn with_the_switch_off_a_down_control_plane_is_waited_for() {
         start(
             &config,
             Some(dir.path()),
-            &reqwest::Client::new(),
+            &link_to(&config),
             &Some(NodeCredential::new("a-node-token".to_string())),
         ),
     )
@@ -160,7 +171,7 @@ async fn a_control_plane_refusing_the_credential_is_waited_for() {
         start(
             &config,
             Some(dir.path()),
-            &reqwest::Client::new(),
+            &link_to(&config),
             &Some(NodeCredential::new("a-node-token".to_string())),
         ),
     )
@@ -221,7 +232,12 @@ async fn a_start_whose_run_rotated_the_id_waits_and_notes_a_replacement() {
         .expect("listen");
     let config = member(&format!("http://{addr}"), true);
     let credential = Some(NodeCredential::new("a-node-token".to_string()));
-    let client = reqwest::Client::new();
+    let link = Some(
+        felix_replication::controlplane_link::HttpControlPlaneLink::new(
+            reqwest::Client::new(),
+            &format!("http://{addr}"),
+        ),
+    );
 
     // Still under the registered id: the view is kept and nothing is asked.
     let (kept, replaced) = keep_view_if_opened_under(
@@ -229,7 +245,7 @@ async fn a_start_whose_run_rotated_the_id_waits_and_notes_a_replacement() {
         dir.path(),
         felix_storage::StorageId::from_bytes([7; 16]),
         &config,
-        &client,
+        &link,
         &credential,
     )
     .await
@@ -237,7 +253,7 @@ async fn a_start_whose_run_rotated_the_id_waits_and_notes_a_replacement() {
     assert!(kept.is_some() && !replaced);
 
     let (kept, replaced) =
-        keep_view_if_opened_under(view, dir.path(), rotated, &config, &client, &credential)
+        keep_view_if_opened_under(view, dir.path(), rotated, &config, &link, &credential)
             .await
             .expect("waited");
     assert!(kept.is_none(), "a rotated id does not go on from the view");

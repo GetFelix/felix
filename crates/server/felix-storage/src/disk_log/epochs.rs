@@ -174,7 +174,7 @@ impl EpochMap {
 /// record, and refusing to start a broker over it would trade an outage for a
 /// convenience.
 pub(super) fn load(dir: &Path) -> EpochMap {
-    match std::fs::read(path_in(dir)) {
+    match crate::fs::read(path_in(dir)) {
         Ok(bytes) => EpochMap::decode(&bytes).unwrap_or_else(|| {
             tracing::warn!(
                 dir = %dir.display(),
@@ -207,11 +207,11 @@ pub(super) fn store(dir: &Path, map: &EpochMap) -> Result<()> {
     let path = path_in(dir);
     let temporary = path.with_extension("tmp");
     {
-        let mut file = std::fs::File::create(&temporary).map_err(StorageError::Io)?;
+        let mut file = crate::fs::File::create(&temporary).map_err(StorageError::Io)?;
         file.write_all(&map.encode()).map_err(StorageError::Io)?;
         crate::io::sync_all(&file).map_err(StorageError::Io)?;
     }
-    std::fs::rename(&temporary, &path).map_err(StorageError::Io)?;
+    crate::fs::rename(&temporary, &path).map_err(StorageError::Io)?;
     sync_dir(dir).map_err(StorageError::Io)?;
     Ok(())
 }

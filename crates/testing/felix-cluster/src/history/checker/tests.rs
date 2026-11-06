@@ -81,6 +81,7 @@ fn history(ops: Vec<Op>, final_a: &[(u64, u64)]) -> History {
         faults: Vec::new(),
         subscriptions: Vec::new(),
         opens: Default::default(),
+        exact_tails: false,
     }
 }
 

@@ -1,4 +1,4 @@
-//! Rule 12, one leader per generation: no two brokers open one shard for
+//! Rule 21, one leader per generation: no two brokers open one shard for
 //! writes at the same generation. This is the model's `OneLeaderPerGeneration`.
 //!
 //! What a broker opens is not visible to a client, so this rule reads the

@@ -30,7 +30,16 @@ pub(crate) fn open(
     config: &BrokerConfig,
     registered: Option<&Registered>,
 ) -> Result<(Broker, Option<DurableStorage>, StorageId, bool, bool)> {
-    let durable_config = DurableStorageConfig::from_env()?;
+    open_with(config, DurableStorageConfig::from_env()?, registered)
+}
+
+/// [`open`] with the durable settings given rather than read from the
+/// environment.
+pub(crate) fn open_with(
+    config: &BrokerConfig,
+    durable_config: Option<DurableStorageConfig>,
+    registered: Option<&Registered>,
+) -> Result<(Broker, Option<DurableStorage>, StorageId, bool, bool)> {
     // Test-only: the cluster harness's power loss. Armed before any store
     // opens, since the model takes what is already on disk as durable.
     #[cfg(debug_assertions)]
@@ -288,7 +297,7 @@ pub(crate) fn rotate_storage_id(root: &Path) -> Result<StorageId> {
 }
 
 fn fresh_storage_id() -> [u8; 16] {
-    uuid::Uuid::new_v4().into_bytes()
+    felix_common::random::uuid_v4().into_bytes()
 }
 
 /// How stream and cache logs treat a retention hold they saved.

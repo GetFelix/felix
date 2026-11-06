@@ -209,6 +209,7 @@ pub(crate) struct Authority<'a> {
 /// A broker with no cluster behind it has one shard, so every key lands on 0 —
 /// which is also what a stream placed with one shard does, and is why adding a
 /// key to a single-shard stream changes nothing.
+#[inline]
 pub(crate) fn resolve_shard(
     publish_ctx: &PublishContext,
     tenant_id: &str,
@@ -216,7 +217,24 @@ pub(crate) fn resolve_shard(
     stream: &str,
     key: Option<&[u8]>,
 ) -> u32 {
-    publish_ctx.ingress.as_ref().map_or(0, |ingress| {
+    shard_at(
+        publish_ctx.ingress.as_deref(),
+        tenant_id,
+        namespace,
+        stream,
+        key,
+    )
+}
+
+/// [`resolve_shard`] against a router, for callers with no publish context.
+pub(crate) fn shard_at(
+    ingress: Option<&IngressRouter>,
+    tenant_id: &str,
+    namespace: &str,
+    stream: &str,
+    key: Option<&[u8]>,
+) -> u32 {
+    ingress.map_or(0, |ingress| {
         ingress.shard_for_key(
             crate::shards::ShardKind::Stream,
             tenant_id,
@@ -231,6 +249,7 @@ pub(crate) fn resolve_shard(
 ///
 /// A named shard is used as given, never hashed, so it must be one the stream
 /// has: anything else is refused rather than wrapped onto some other shard.
+#[inline]
 pub(crate) fn resolve_publish_shard(
     publish_ctx: &PublishContext,
     tenant_id: &str,
@@ -239,15 +258,29 @@ pub(crate) fn resolve_publish_shard(
     key: Option<&[u8]>,
     named: Option<u32>,
 ) -> Result<u32, ClientError> {
+    publish_shard_at(
+        publish_ctx.ingress.as_deref(),
+        tenant_id,
+        namespace,
+        stream,
+        key,
+        named,
+    )
+}
+
+/// [`resolve_publish_shard`] against a router, for callers with no publish
+/// context.
+pub(crate) fn publish_shard_at(
+    ingress: Option<&IngressRouter>,
+    tenant_id: &str,
+    namespace: &str,
+    stream: &str,
+    key: Option<&[u8]>,
+    named: Option<u32>,
+) -> Result<u32, ClientError> {
     match named {
-        Some(shard) => named_shard(publish_ctx, tenant_id, namespace, stream, shard),
-        None => Ok(resolve_shard(
-            publish_ctx,
-            tenant_id,
-            namespace,
-            stream,
-            key,
-        )),
+        Some(shard) => named_shard_at(ingress, tenant_id, namespace, stream, shard),
+        None => Ok(shard_at(ingress, tenant_id, namespace, stream, key)),
     }
 }
 
@@ -259,6 +292,7 @@ pub(crate) fn resolve_publish_shard(
 /// a shard past 0 with a retryable `shard_unavailable` rather than
 /// `invalid_request`: it cannot tell a shard out of range from one it has not
 /// heard of.
+#[inline]
 pub(crate) fn named_shard(
     publish_ctx: &PublishContext,
     tenant_id: &str,
@@ -266,7 +300,23 @@ pub(crate) fn named_shard(
     stream: &str,
     shard: u32,
 ) -> Result<u32, ClientError> {
-    let shards = match publish_ctx.ingress.as_ref() {
+    named_shard_at(
+        publish_ctx.ingress.as_deref(),
+        tenant_id,
+        namespace,
+        stream,
+        shard,
+    )
+}
+
+fn named_shard_at(
+    ingress: Option<&IngressRouter>,
+    tenant_id: &str,
+    namespace: &str,
+    stream: &str,
+    shard: u32,
+) -> Result<u32, ClientError> {
+    let shards = match ingress {
         None => 1,
         Some(ingress) => match ingress.placement_for(
             crate::shards::ShardKind::Stream,
@@ -482,6 +532,7 @@ pub(crate) fn needs_quorum(target: &Option<PublishTarget>) -> bool {
 /// a cluster. Built the same way `resolve_route` built the key it dispatched
 /// on, so the shard a publish waits for is the shard it landed on. `None` on a
 /// single-node broker, which has no replica set and so nothing to wait for.
+#[inline]
 pub(crate) fn local_shard_key(
     publish_ctx: &PublishContext,
     tenant_id: &str,
@@ -489,7 +540,24 @@ pub(crate) fn local_shard_key(
     stream: &str,
     shard: u32,
 ) -> Option<ShardKey> {
-    publish_ctx.ingress.as_ref().map(|_| ShardKey {
+    shard_key_at(
+        publish_ctx.ingress.as_deref(),
+        tenant_id,
+        namespace,
+        stream,
+        shard,
+    )
+}
+
+/// [`local_shard_key`] against a router, for callers with no publish context.
+pub(crate) fn shard_key_at(
+    ingress: Option<&IngressRouter>,
+    tenant_id: &str,
+    namespace: &str,
+    stream: &str,
+    shard: u32,
+) -> Option<ShardKey> {
+    ingress.map(|_| ShardKey {
         tenant_id: tenant_id.to_string(),
         namespace: namespace.to_string(),
         stream: stream.to_string(),

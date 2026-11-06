@@ -169,6 +169,16 @@ fn reported_features() -> std::collections::BTreeSet<String> {
                 .as_deref(),
             Some("1" | "true" | "yes")
         );
+    cluster_features(fences, reads_by_lease, election)
+}
+
+/// The features a broker reports with the fence, lease reads and election as
+/// given.
+pub(crate) fn cluster_features(
+    fences: bool,
+    reads_by_lease: bool,
+    election: bool,
+) -> std::collections::BTreeSet<String> {
     let mut features = features_for(fences, reads_by_lease);
     if election {
         features.extend(election_features());

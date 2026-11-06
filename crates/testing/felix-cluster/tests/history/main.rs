@@ -268,7 +268,7 @@ const ELECTION_DURATION: Duration = Duration::from_secs(90);
 /// probe. Half the time the killed broker is started again before the control
 /// plane returns; nothing waits for it to rejoin then. Afterwards no
 /// acknowledged write is lost, delivery is in order, and no two brokers
-/// opened one shard at the same generation (rule 12, from the broker logs).
+/// opened one shard at the same generation (rule 21, from the broker logs).
 #[serial]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn replicas_elect_a_leader_while_the_control_plane_is_down() {
@@ -315,7 +315,7 @@ async fn replicas_elect_a_leader_while_the_control_plane_is_down() {
     );
     assert!(
         !history.opens.is_empty(),
-        "seed {seed}: no open was read from the broker logs, so rule 12 checked nothing"
+        "seed {seed}: no open was read from the broker logs, so rule 21 checked nothing"
     );
     println!("{healed} election fault(s) healed, {skipped} skipped, {elected} shard(s) elected");
 }
@@ -389,7 +389,9 @@ async fn run_checked(campaign: &Campaign, nemesis: &mut impl Nemesis) -> History
             RegisterAction::Put {
                 acknowledged: true, ..
             } => (puts + 1, gets),
-            RegisterAction::Put { .. } => (puts, gets),
+            RegisterAction::Put { .. }
+            | RegisterAction::Delete { .. }
+            | RegisterAction::PutIf { .. } => (puts, gets),
             RegisterAction::Get { .. } => (puts, gets + 1),
         });
     if puts < 10 || gets < 10 {

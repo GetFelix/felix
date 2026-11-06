@@ -160,7 +160,7 @@ impl ConfirmedReads {
     /// time (#1791).
     pub(crate) fn new(retry: Duration) -> Self {
         Self {
-            slots: ArcSwap::from_pointee(HashMap::default()),
+            slots: ArcSwap::from_pointee(HashMap::with_hasher(felix_common::random::hash_state())),
             permits: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_READS)),
             epoch: Instant::now(),
             owed_for: nanos(WANTED_FOR.max(retry.saturating_mul(2))),

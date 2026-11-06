@@ -13,7 +13,7 @@ async fn fetch_cache_snapshot_rejects_non_200() -> Result<()> {
         let base_url = format!("http://{}", addr);
         let client = build_test_client()?;
 
-        let result = fetch_cache_snapshot(&client, &base_url, None).await;
+        let result = fetch_cache_snapshot(&HttpSource::new(client.clone(), &base_url), None).await;
         assert!(result.is_err());
 
         let _ = shutdown_tx.send(());
@@ -37,7 +37,7 @@ async fn fetch_stream_changes_rejects_invalid_json() -> Result<()> {
         let base_url = format!("http://{}", addr);
         let client = build_test_client()?;
 
-        let result = fetch_changes(&client, &base_url, None, 0).await;
+        let result = fetch_changes(&HttpSource::new(client.clone(), &base_url), None, 0).await;
         assert!(result.is_err());
 
         let _ = shutdown_tx.send(());

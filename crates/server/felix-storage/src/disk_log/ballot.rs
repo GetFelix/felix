@@ -145,7 +145,7 @@ impl DiskLog {
         }
         let inner = Arc::clone(&self.inner);
         let leader: Option<Arc<str>> = leader.map(Arc::from);
-        tokio::task::spawn_blocking(move || {
+        felix_common::blocking::spawn(move || {
             let mut persisted = inner.replica_persisted.lock();
             if let Some(kept) = &kept
                 && inner.replica_set.read().as_ref() != Some(kept)
@@ -206,7 +206,7 @@ impl DiskLog {
     /// to lead the generation too.
     pub async fn give_up_generation(&self) -> Result<u64> {
         let inner = Arc::clone(&self.inner);
-        tokio::task::spawn_blocking(move || {
+        felix_common::blocking::spawn(move || {
             // The writer's lock, so a raise cannot land between the read and
             // the write and be given up unseen.
             let _persisted = inner.replica_persisted.lock();
@@ -274,7 +274,7 @@ pub(super) fn reconcile(dir: &Path, replica: &ReplicaState) -> Result<(u64, Opti
 /// Read a shard's ballot, or `None` if it has never kept one.
 pub(super) fn load(dir: &Path) -> Result<Option<Ballot>> {
     let path = path_in(dir);
-    match std::fs::read(&path) {
+    match crate::fs::read(&path) {
         Ok(bytes) => Ballot::decode(&bytes).map(Some).ok_or_else(|| {
             StorageError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -304,11 +304,11 @@ pub(super) fn store(dir: &Path, ballot: &Ballot) -> Result<()> {
     let path = path_in(dir);
     let temporary = path.with_extension("tmp");
     {
-        let mut file = std::fs::File::create(&temporary).map_err(StorageError::Io)?;
+        let mut file = crate::fs::File::create(&temporary).map_err(StorageError::Io)?;
         file.write_all(&ballot.encode()).map_err(StorageError::Io)?;
         crate::io::sync_all(&file).map_err(StorageError::Io)?;
     }
-    std::fs::rename(&temporary, &path).map_err(StorageError::Io)?;
+    crate::fs::rename(&temporary, &path).map_err(StorageError::Io)?;
     sync_dir(dir).map_err(StorageError::Io)?;
     Ok(())
 }

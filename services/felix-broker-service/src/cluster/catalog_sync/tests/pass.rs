@@ -10,7 +10,13 @@ async fn sync_once_logs_and_skips_on_errors() -> Result<()> {
         let base_url = format!("http://{}", addr);
         let client = build_test_client()?;
 
-        let state = sync_once(&broker, &client, &base_url, None, SyncState::new()).await?;
+        let state = sync_once(
+            &broker,
+            &HttpSource::new(client.clone(), &base_url),
+            None,
+            SyncState::new(),
+        )
+        .await?;
         assert_eq!(state.next_tenant_seq, 0);
         assert_eq!(state.next_namespace_seq, 0);
         assert_eq!(state.next_cache_seq, 0);
@@ -119,7 +125,13 @@ async fn sync_once_handles_tenant_deletion() -> Result<()> {
         let base_url = format!("http://{}", addr);
         let client = build_test_client()?;
 
-        let state = sync_once(&broker, &client, &base_url, None, SyncState::new()).await?;
+        let state = sync_once(
+            &broker,
+            &HttpSource::new(client.clone(), &base_url),
+            None,
+            SyncState::new(),
+        )
+        .await?;
         assert_eq!(state.next_tenant_seq, 2);
         let err = broker.register_namespace("t1", "ns").await;
         assert!(err.is_err());
@@ -230,7 +242,13 @@ async fn sync_once_handles_namespace_deletion() -> Result<()> {
         let base_url = format!("http://{}", addr);
         let client = build_test_client()?;
 
-        let state = sync_once(&broker, &client, &base_url, None, SyncState::new()).await?;
+        let state = sync_once(
+            &broker,
+            &HttpSource::new(client.clone(), &base_url),
+            None,
+            SyncState::new(),
+        )
+        .await?;
         assert_eq!(state.next_namespace_seq, 2);
         assert!(!broker.namespace_exists("t1", "ns").await);
 
@@ -381,7 +399,13 @@ async fn sync_once_registers_created_and_updated_changes() -> Result<()> {
         let base_url = format!("http://{}", addr);
         let client = build_test_client()?;
 
-        let state = sync_once(&broker, &client, &base_url, None, SyncState::new()).await?;
+        let state = sync_once(
+            &broker,
+            &HttpSource::new(client.clone(), &base_url),
+            None,
+            SyncState::new(),
+        )
+        .await?;
         assert_eq!(state.next_tenant_seq, 2);
         assert_eq!(state.next_namespace_seq, 2);
         assert_eq!(state.next_cache_seq, 2);
@@ -511,7 +535,13 @@ async fn sync_once_follows_a_feed_across_pages() -> Result<()> {
         let base_url = format!("http://{}", addr);
         let client = build_test_client()?;
 
-        let state = sync_once(&broker, &client, &base_url, None, SyncState::new()).await?;
+        let state = sync_once(
+            &broker,
+            &HttpSource::new(client.clone(), &base_url),
+            None,
+            SyncState::new(),
+        )
+        .await?;
         for tenant_id in tenants {
             assert!(
                 broker.tenant_exists(tenant_id).await,
@@ -596,7 +626,13 @@ async fn sync_once_ignores_a_page_from_behind_the_cursor() -> Result<()> {
         state.next_cache_seq = 5;
         state.next_stream_seq = 5;
 
-        let state = sync_once(&broker, &client, &base_url, None, state).await?;
+        let state = sync_once(
+            &broker,
+            &HttpSource::new(client.clone(), &base_url),
+            None,
+            state,
+        )
+        .await?;
         assert!(
             broker.tenant_exists("t1").await,
             "a delete from behind the cursor was applied",
@@ -700,8 +736,20 @@ async fn a_feed_reset_is_followed_by_a_new_snapshot() -> Result<()> {
             .expect("clock far enough along");
         state.behind.tenants = BehindCursor::behind_since(behind_since);
 
-        let state = sync_once(&broker, &client, &base_url, None, state).await?;
-        let state = sync_once(&broker, &client, &base_url, None, state).await?;
+        let state = sync_once(
+            &broker,
+            &HttpSource::new(client.clone(), &base_url),
+            None,
+            state,
+        )
+        .await?;
+        let state = sync_once(
+            &broker,
+            &HttpSource::new(client.clone(), &base_url),
+            None,
+            state,
+        )
+        .await?;
         assert!(
             broker.tenant_exists("t2").await,
             "the reset feed's history before its next_seq was never applied",

@@ -2117,3 +2117,51 @@ async fn a_set_kept_in_the_place_delay_stops_the_standing() {
 async fn a_set_kept_in_the_second_pre_vote_stops_the_standing() {
     set_changes_during_the_round(ChangesIn::SecondPreVote, false).await;
 }
+
+/// The first `STANDING_AT_ONCE` shards a survivor stands on when broker-3,
+/// which led the first 200 of 600 shards, dies, with offsets from `seed`.
+fn first_window(seed: u64) -> (Vec<u32>, BTreeSet<u32>) {
+    felix_common::jitter::sim::seed(seed);
+    let offsets = [
+        felix_common::jitter::up_to(u64::MAX),
+        felix_common::jitter::up_to(u64::MAX),
+    ];
+    let mut order: Vec<(u32, bool)> = (0..600).map(|shard| (shard, shard < 200)).collect();
+    walk_order(&mut order, offsets, |(_, dead)| *dead);
+    let all: Vec<u32> = order.iter().map(|(shard, _)| *shard).collect();
+    let window = all.iter().take(STANDING_AT_ONCE).copied().collect();
+    (all, window)
+}
+
+/// **Survivors of one dead leader cover different shards first**: its 200
+/// shards sort together, and two followers must not fill their
+/// `STANDING_AT_ONCE` slots with the same ones. Uniform offsets in a run of 200
+/// overlap on about 64 * 64 / 200 = 20 shards; the old whole-table rotation
+/// sent two thirds of the offsets to the run's first shard and overlapped on
+/// about 40. A single pair can still land close, so the bound is on the mean.
+#[test]
+fn survivors_of_a_dead_leader_stand_on_different_shards_first() {
+    const ROUNDS: u64 = 1000;
+    let total: usize = (0..ROUNDS)
+        .map(|round| {
+            let (_, one) = first_window(2 * round);
+            let (_, two) = first_window(2 * round + 1);
+            one.intersection(&two).count()
+        })
+        .sum();
+    let mean = total as f64 / ROUNDS as f64;
+    assert!(mean < 32.0, "mean first-window overlap is {mean}");
+}
+
+/// **A seed picks one order**: every shard is visited once, suspected shards
+/// first, and the same seed gives the same order.
+#[test]
+fn the_same_seed_gives_the_same_walk() {
+    let (order, window) = first_window(7);
+    let (again, _) = first_window(7);
+    assert_eq!(order, again);
+    assert!(window.iter().all(|shard| *shard < 200));
+    let mut sorted = order;
+    sorted.sort();
+    assert_eq!(sorted, (0..600).collect::<Vec<_>>());
+}

@@ -1076,6 +1076,7 @@ dependencies = [
  "ahash",
  "arc-swap",
  "bytes",
+ "felix-common",
  "felix-storage",
  "felix-wire",
  "hashbrown 0.17.1",
@@ -1226,6 +1227,7 @@ dependencies = [
 name = "felix-common"
 version = "0.7.0-preview.3"
 dependencies = [
+ "ahash",
  "arc-swap",
  "libc",
  "metrics",
@@ -1432,11 +1434,27 @@ dependencies = [
 name = "felix-sim"
 version = "0.7.0-preview.3"
 dependencies = [
+ "anyhow",
  "async-trait",
+ "axum",
+ "bytes",
+ "felix-broker",
+ "felix-broker-service",
+ "felix-cluster",
+ "felix-common",
+ "felix-controlplane-service",
  "felix-replication",
+ "felix-router",
+ "felix-storage",
  "felix-wire",
  "parking_lot 0.13.0",
+ "serde",
+ "serde_json",
  "tokio",
+ "tokio-util",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -1447,6 +1465,7 @@ dependencies = [
  "bytes",
  "crc",
  "crc32fast",
+ "felix-common",
  "io-uring",
  "libc",
  "metrics",

@@ -12,7 +12,7 @@
 //! a running broker a stop at the active segment's tail is often an append in
 //! flight.
 
-use std::fs::File;
+use crate::fs::File;
 use std::path::Path;
 
 use super::super::{offload, recovery};
@@ -169,7 +169,7 @@ pub fn first_damage(dir: &Path, config: &LogConfig) -> Result<Option<Stop>> {
 fn retrying<T>(dir: &Path, read: impl Fn() -> Result<T>) -> Result<T> {
     match read() {
         Err(StorageError::Io(err))
-            if err.kind() == std::io::ErrorKind::NotFound && dir.is_dir() =>
+            if err.kind() == std::io::ErrorKind::NotFound && crate::fs::is_dir(dir) =>
         {
             read()
         }

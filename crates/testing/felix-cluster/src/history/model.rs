@@ -38,6 +38,15 @@ pub struct History {
     pub faults: Vec<FaultEvent>,
     /// What each list's live subscriber was delivered over the whole run.
     pub subscriptions: Vec<Subscription>,
+    /// Whether a read's last record is the end of what the log held when the
+    /// read ran. A subscriber may drop its newest records, so a recorder
+    /// whose reads can do that leaves this off, and the checker then cannot
+    /// call a short read stale. A recorder whose reads cannot (the
+    /// simulator's) turns it on to get the anti-dependency edges. It also
+    /// means an empty read saw an empty list, so reads must start at the
+    /// list's base.
+    pub exact_tails: bool,
+
     /// Every time a broker opened a shard for writes, read from the broker
     /// logs. Only collected when the brokers elect leaders among themselves.
     pub opens: BTreeSet<Opened>,
@@ -198,7 +207,13 @@ impl History {
                 RegisterAction::Put {
                     acknowledged: true, ..
                 } => puts.push(took),
-                RegisterAction::Put { .. } => unknown_puts += 1,
+                RegisterAction::PutIf {
+                    applied: Some(_), ..
+                }
+                | RegisterAction::Delete { removed: Some(_) } => puts.push(took),
+                RegisterAction::Put { .. }
+                | RegisterAction::PutIf { .. }
+                | RegisterAction::Delete { .. } => unknown_puts += 1,
                 RegisterAction::Get { .. } => gets.push(took),
             }
         }

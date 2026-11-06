@@ -10,6 +10,7 @@ use crate::cluster::credential::{self, NodeCredential};
 use crate::cluster::lease::LeaseState;
 use crate::cluster::membership::{self, MembershipTask};
 use crate::config::BrokerConfig;
+use felix_replication::controlplane_link::ControlPlaneLink;
 
 /// Keep the node credential current for as long as the broker runs, cluster
 /// member or not: refresh it when there is a refresh token to rotate, and
@@ -64,8 +65,10 @@ pub(super) fn keep_credential_current(
 /// `serving`, because advertising a node placement can route to before it can
 /// answer is worse than advertising it a moment late.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn spawn(
+pub(super) fn spawn<L: ControlPlaneLink + Clone>(
     config: &BrokerConfig,
+    link: Option<L>,
+    own_thread: bool,
     gate_readiness_on_sync: bool,
     seeded: &CancellationToken,
     lease: &Option<Arc<LeaseState>>,
@@ -79,8 +82,8 @@ pub(super) fn spawn(
     restore_check: Option<CancellationToken>,
     sync_shutdown: &CancellationToken,
 ) -> Option<MembershipTask> {
-    match (&config.membership, &config.controlplane_url) {
-        (Some(membership_config), Some(base_url)) => {
+    match (&config.membership, link) {
+        (Some(membership_config), Some(link)) => {
             let serving = if gate_readiness_on_sync {
                 seeded.clone()
             } else {
@@ -98,12 +101,8 @@ pub(super) fn spawn(
             let node_credential = credential
                 .clone()
                 .expect("a cluster member has a credential");
-            // Its own client: the heartbeat runs on a runtime of its own, and a
-            // pooled connection belongs to the runtime that opened it.
-            let client = crate::cluster::controlplane_client::build()
-                .expect("the control-plane client built once already");
-            Some(membership::spawn(
-                felix_replication::controlplane_link::HttpControlPlaneLink::new(client, base_url),
+            Some(membership::spawn_with(
+                link,
                 membership_config.clone(),
                 node_credential,
                 serving,
@@ -116,6 +115,7 @@ pub(super) fn spawn(
                 Some(storage_id),
                 data_dir.map(std::path::Path::to_path_buf),
                 restore_check,
+                own_thread,
             ))
         }
         _ => {
@@ -153,22 +153,17 @@ pub(super) enum Start {
 pub(super) async fn start(
     config: &BrokerConfig,
     durable_root: Option<&std::path::Path>,
-    client: &reqwest::Client,
+    link: &Option<impl ControlPlaneLink>,
     credential: &Option<NodeCredential>,
 ) -> anyhow::Result<Start> {
-    let (Some(root), Some(membership), Some(base_url), Some(credential)) = (
-        durable_root,
-        &config.membership,
-        &config.controlplane_url,
-        credential,
-    ) else {
+    let (Some(root), Some(membership), Some(link), Some(credential)) =
+        (durable_root, &config.membership, link, credential)
+    else {
         return Ok(Start::Asked(None));
     };
-    let link =
-        felix_replication::controlplane_link::HttpControlPlaneLink::new(client.clone(), base_url);
     if config.start_without_controlplane {
         let wait = std::time::Duration::from_millis(config.controlplane_startup_wait_ms);
-        match membership::registered_within(&link, &membership.node_id, credential, wait).await {
+        match membership::registered_within(link, &membership.node_id, credential, wait).await {
             membership::Bounded::Answered(registered) => return Ok(Start::Asked(registered)),
             membership::Bounded::Refusing => tracing::warn!(
                 "the control plane is up and refusing this node's lookup; waiting for it \
@@ -196,7 +191,7 @@ pub(super) async fn start(
             }
         }
     }
-    membership::await_registered(&link, &membership.node_id, credential)
+    membership::await_registered(link, &membership.node_id, credential)
         .await
         .map(Start::Asked)
 }
@@ -206,17 +201,14 @@ pub(super) async fn start(
 /// id, which must wait as any start does.
 pub(super) async fn await_registered(
     config: &BrokerConfig,
-    client: &reqwest::Client,
+    link: &Option<impl ControlPlaneLink>,
     credential: &Option<NodeCredential>,
 ) -> anyhow::Result<Option<membership::Registered>> {
-    let (Some(membership), Some(base_url), Some(credential)) =
-        (&config.membership, &config.controlplane_url, credential)
+    let (Some(membership), Some(link), Some(credential)) = (&config.membership, link, credential)
     else {
         return Ok(None);
     };
-    let link =
-        felix_replication::controlplane_link::HttpControlPlaneLink::new(client.clone(), base_url);
-    membership::await_registered(&link, &membership.node_id, credential).await
+    membership::await_registered(link, &membership.node_id, credential).await
 }
 
 /// Go on from `view` only if the run that began on `root` is still under the
@@ -229,7 +221,7 @@ pub(super) async fn keep_view_if_opened_under(
     root: &std::path::Path,
     storage_id: felix_storage::StorageId,
     config: &BrokerConfig,
-    client: &reqwest::Client,
+    link: &Option<impl ControlPlaneLink>,
     credential: &Option<NodeCredential>,
 ) -> anyhow::Result<(Option<crate::cluster::controlplane_view::View>, bool)> {
     if super::from_view::opened_under(&view, storage_id) {
@@ -241,7 +233,7 @@ pub(super) async fn keep_view_if_opened_under(
         "this start gave the data directory a new storage id; waiting for the control plane \
          instead of starting from the control-plane view"
     );
-    let registered = await_registered(config, client, credential).await?;
+    let registered = await_registered(config, link, credential).await?;
     let replaced = super::storage::note_replaced(root, storage_id, registered.as_ref())?;
     Ok((None, replaced))
 }

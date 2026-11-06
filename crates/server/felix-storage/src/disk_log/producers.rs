@@ -512,7 +512,7 @@ const REBUILD_READ_BYTES: usize = 1024 * 1024;
 /// The saved state and the offset it is as of, or `None` when there is no
 /// usable snapshot. Unreadable is the same as absent: the log has the answer.
 pub(super) fn load(dir: &Path) -> Option<(ProducerState, Offset)> {
-    let bytes = std::fs::read(path_in(dir)).ok()?;
+    let bytes = crate::fs::read(path_in(dir)).ok()?;
     let decoded = decode(&bytes);
     if decoded.is_none() {
         tracing::warn!(
@@ -531,13 +531,13 @@ pub(super) fn load(dir: &Path) -> Option<(ProducerState, Offset)> {
 pub(super) fn store(dir: &Path, state: &ProducerState, as_of: Offset) -> std::io::Result<()> {
     let path = path_in(dir);
     let temporary = path.with_extension("tmp");
-    std::fs::write(&temporary, encode(state, as_of))?;
-    std::fs::rename(&temporary, &path)
+    crate::fs::write(&temporary, encode(state, as_of))?;
+    crate::fs::rename(&temporary, &path)
 }
 
 /// Remove the snapshot, when the records it describes are no longer the log's.
 pub(super) fn discard(dir: &Path) -> std::io::Result<()> {
-    match std::fs::remove_file(path_in(dir)) {
+    match crate::fs::remove_file(path_in(dir)) {
         Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(err),
         _ => Ok(()),
     }

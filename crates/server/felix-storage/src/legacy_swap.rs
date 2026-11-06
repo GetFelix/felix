@@ -27,20 +27,20 @@ pub(crate) fn recover_legacy_swap(dir: &Path) -> Result<()> {
     let retired = dir.with_extension("retired");
     let staging = dir.with_extension("compacting");
     let mut changed = false;
-    if !dir.exists() && retired.exists() {
+    if !crate::fs::exists(dir) && crate::fs::exists(&retired) {
         tracing::warn!(
             dir = %dir.display(),
             "an older build was interrupted mid-compaction; restoring the shard from its retired copy",
         );
-        std::fs::rename(&retired, dir).map_err(StorageError::Io)?;
+        crate::fs::rename(&retired, dir).map_err(StorageError::Io)?;
         changed = true;
     }
     // Only with the shard in place: without it, `.compacting` alone is all
     // that is left, and deleting it could not be undone.
-    if dir.exists() {
+    if crate::fs::exists(dir) {
         for stale in [&retired, &staging] {
-            if stale.exists() {
-                std::fs::remove_dir_all(stale).map_err(StorageError::Io)?;
+            if crate::fs::exists(stale) {
+                crate::fs::remove_dir_all(stale).map_err(StorageError::Io)?;
                 changed = true;
             }
         }

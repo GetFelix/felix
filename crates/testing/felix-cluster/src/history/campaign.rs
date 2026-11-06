@@ -405,6 +405,7 @@ impl Campaign {
             faults,
             subscriptions,
             opens,
+            exact_tails: false,
         })
     }
 

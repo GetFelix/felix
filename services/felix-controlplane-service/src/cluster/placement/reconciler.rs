@@ -184,19 +184,53 @@ pub async fn reconcile_once(
     liveness: &crate::config::NodeLivenessConfig,
     policy: MovePolicy,
 ) -> ReconcileOutcome {
+    reconcile_once_waking(store, liveness, policy, &PlacementWakes::default()).await
+}
+
+/// [`reconcile_once`] that wakes `wakes`' assignment long-polls for each
+/// write, as the running loop does.
+pub async fn reconcile_once_waking(
+    store: &dyn crate::store::ControlPlaneStore,
+    liveness: &crate::config::NodeLivenessConfig,
+    policy: MovePolicy,
+    wakes: &PlacementWakes,
+) -> ReconcileOutcome {
     // One pass watches nothing move, so it gives no restore up as stalled.
     match plan_pass(store, liveness, policy, &mut CopyProgress::default()).await {
-        Some(pass) => {
-            apply_pass(
-                store,
-                &pass,
-                &mut MoveClock::default(),
-                &PlacementWakes::default(),
-            )
-            .await
-        }
+        Some(pass) => apply_pass(store, &pass, &mut MoveClock::default(), wakes).await,
         None => ReconcileOutcome::default(),
     }
+}
+
+/// What placement remembers between passes: when it saw each move start,
+/// each fence and each suspicion. A process keeps it in memory, so a new
+/// process starts with none.
+#[derive(Default)]
+pub struct PlacementMemory {
+    clock: MoveClock,
+    progress: CopyProgress,
+    /// Shards short of their replication factor at the last pass, so the
+    /// change is logged once.
+    under_replicated: usize,
+}
+
+/// One pass of the running loop ([`spawn_reconciler`]): [`reconcile_once_waking`]
+/// that keeps what it saw in `memory`, so time based decisions (fence
+/// timeouts, ageing suspicions and pending sets, stalled restores) fire
+/// across passes.
+pub async fn reconcile_remembering(
+    store: &dyn crate::store::ControlPlaneStore,
+    liveness: &crate::config::NodeLivenessConfig,
+    policy: MovePolicy,
+    wakes: &PlacementWakes,
+    memory: &mut PlacementMemory,
+) -> ReconcileOutcome {
+    let Some(pass) = plan_pass(store, liveness, policy, &mut memory.progress).await else {
+        return ReconcileOutcome::default();
+    };
+    let outcome = apply_pass(store, &pass, &mut memory.clock, wakes).await;
+    memory.under_replicated = log_replication(memory.under_replicated, &pass.plan);
+    outcome
 }
 
 /// Everything placement decides from, read once.
@@ -755,10 +789,8 @@ pub fn spawn_reconciler(
         let mut ticker = tokio::time::interval(interval);
         // A pass that overruns must not then run back-to-back catching up.
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        let mut clock = MoveClock::default();
-        let mut progress = CopyProgress::default();
+        let mut memory = PlacementMemory::default();
         let mut held = false;
-        let mut under_replicated = 0;
         loop {
             let woken = tokio::select! {
                 _ = shutdown.cancelled() => break,
@@ -789,12 +821,14 @@ pub fn spawn_reconciler(
             if !held && !woken {
                 continue;
             }
-            if let Some(pass) =
-                plan_pass(store.as_ref(), &liveness, policy.clone(), &mut progress).await
-            {
-                apply_pass(store.as_ref(), &pass, &mut clock, &wakes).await;
-                under_replicated = log_replication(under_replicated, &pass.plan);
-            }
+            reconcile_remembering(
+                store.as_ref(),
+                &liveness,
+                policy.clone(),
+                &wakes,
+                &mut memory,
+            )
+            .await;
         }
         if held {
             // Hand over now rather than when the lease runs out.
