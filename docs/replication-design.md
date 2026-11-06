@@ -738,6 +738,15 @@ shard's own log's ballot as they check its generation. A broker leading a
 generation takes the ballot for itself first, and refuses to lead a
 generation it already accepted from another node.
 
+This is the prepare and promise pattern of Paxos. The generation is the ballot
+number, a fence is the prepare round and needs a majority, and a replica's
+ballot on disk is its promise not to accept an older leader. The new leader
+takes the log of the answer furthest ahead, as Paxos adopts the value accepted at
+the highest ballot. Felix does not run Multi-Paxos for the log: after the fence
+the leader ships records and counts majority acks, and normally the control plane
+names leaders. See Lamport, ["The Part-Time Parliament"](https://doi.org/10.1145/279227.279229)
+(ACM TOCS, 1998) and ["Paxos Made Simple"](https://lamport.azurewebsites.net/pubs/paxos-simple.pdf) (2001).
+
 The ballot is on disk before the replica answers: `DiskLog::accept_generation`
 writes the shard's `ballot` file, fsynced and renamed into place with the
 directory synced, then raises the generation in `replica`, and only then
