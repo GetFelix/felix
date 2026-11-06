@@ -35,6 +35,18 @@ pub(crate) fn register(root: &Path) {
     ANY.store(true, Ordering::Release);
 }
 
+/// Register `root` as [`register`] does, unless it is registered already.
+/// Returns whether it was free.
+pub(crate) fn claim(root: &Path) -> bool {
+    let mut roots = ROOTS.write();
+    if roots.contains_key(root) {
+        return false;
+    }
+    roots.insert(root.to_path_buf(), Arc::new(Tree::new()));
+    ANY.store(true, Ordering::Release);
+    true
+}
+
 /// Forget `root` and drop its files.
 pub(crate) fn unregister(root: &Path) {
     let mut roots = ROOTS.write();

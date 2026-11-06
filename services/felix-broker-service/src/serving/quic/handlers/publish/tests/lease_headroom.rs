@@ -96,7 +96,7 @@ async fn publish_one(h: &Harness, io: &Io) {
     handle_publish_message(
         &h.leader.broker,
         &h.queued,
-        &mut HashMap::new(),
+        &mut HashMap::default(),
         &mut String::new(),
         false,
         // Acked on enqueue: the default.
@@ -130,7 +130,7 @@ async fn publish_batch(h: &Harness, io: &Io) {
         &h.leader.broker,
         &h.queued,
         None,
-        &mut HashMap::new(),
+        &mut HashMap::default(),
         &mut String::new(),
         false,
         false,

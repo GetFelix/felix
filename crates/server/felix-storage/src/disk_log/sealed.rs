@@ -13,7 +13,8 @@
 //! look up again. It cannot put a stale index where a later segment with the
 //! same id would find it.
 
-use std::collections::{BTreeMap, HashMap};
+use felix_common::random::HashMap;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};

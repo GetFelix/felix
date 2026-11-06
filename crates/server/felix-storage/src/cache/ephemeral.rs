@@ -1,8 +1,8 @@
 //! The in-memory cache a broker uses when it has no durable storage.
 
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -51,7 +51,7 @@ impl EphemeralCache {
 
     pub fn with_capacity(max_entries: usize) -> Self {
         Self {
-            inner: RwLock::new(HashMap::new()),
+            inner: RwLock::new(HashMap::default()),
             max_entries: Some(max_entries),
             next_version: AtomicU64::new(incarnation_base()),
         }
@@ -96,7 +96,7 @@ impl EphemeralCache {
 /// a write per microsecond or the clock went back between runs. Microseconds
 /// keep versions under 2^53, exact as a JSON number in any client.
 fn incarnation_base() -> u64 {
-    SystemTime::now()
+    felix_common::clock::system_time()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |since| {
             u64::try_from(since.as_micros()).unwrap_or(u64::MAX / 2)
@@ -112,7 +112,7 @@ fn live<'a>(map: &'a HashMap<CacheKey, CacheEntry>, key: &CacheKey) -> Option<&'
 impl Default for EphemeralCache {
     fn default() -> Self {
         Self {
-            inner: RwLock::new(HashMap::new()),
+            inner: RwLock::new(HashMap::default()),
             max_entries: None,
             next_version: AtomicU64::new(incarnation_base()),
         }

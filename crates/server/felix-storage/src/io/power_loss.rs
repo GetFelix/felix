@@ -28,7 +28,8 @@
 
 pub(crate) mod trigger;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use felix_common::random::HashMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fs::File;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};

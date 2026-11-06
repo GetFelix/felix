@@ -101,7 +101,7 @@ pub(super) async fn get_stream(store: &PostgresStore, key: &StreamKey) -> StoreR
 pub(super) async fn stream_routings(
     store: &PostgresStore,
     keys: &[StreamKey],
-) -> StoreResult<std::collections::HashMap<StreamKey, StreamRouting>> {
+) -> StoreResult<felix_common::random::HashMap<StreamKey, StreamRouting>> {
     if keys.is_empty() {
         return Ok(Default::default());
     }
@@ -120,7 +120,7 @@ pub(super) async fn stream_routings(
     .bind(&names)
     .fetch_all(&store.pool)
     .await?;
-    let mut routings = std::collections::HashMap::new();
+    let mut routings = felix_common::random::HashMap::default();
     for (tenant_id, namespace, stream, routing) in rows {
         let routing = parse_routing(Some(&routing))?;
         if !routing.is_modulo() {

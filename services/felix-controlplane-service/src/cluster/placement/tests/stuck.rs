@@ -5,7 +5,7 @@
 use super::super::progress::CopyProgress;
 use super::*;
 use crate::config::NodeLivenessConfig;
-use std::collections::{HashMap, HashSet};
+use felix_common::random::{HashMap, HashSet};
 
 use crate::model::{ConsistencyLevel, HaltedCopy, ReplicaReport};
 
@@ -346,7 +346,7 @@ fn a_slow_but_moving_majority_is_progress_and_a_stopped_one_is_not() {
         );
     }
     let start = NOW + 1_000 * SECOND;
-    let mut stuck = HashMap::new();
+    let mut stuck = HashMap::default();
     for pass in 0..20u64 {
         let now = start + pass * 5 * SECOND;
         let reports = vec![report(0, 3, now, 1_000, 7, 0)];

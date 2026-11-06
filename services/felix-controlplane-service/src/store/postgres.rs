@@ -277,7 +277,7 @@ impl ControlPlaneStore for PostgresStore {
     async fn stream_routings(
         &self,
         keys: &[StreamKey],
-    ) -> StoreResult<std::collections::HashMap<StreamKey, crate::model::StreamRouting>> {
+    ) -> StoreResult<felix_common::random::HashMap<StreamKey, crate::model::StreamRouting>> {
         streams::stream_routings(self, keys).await
     }
 

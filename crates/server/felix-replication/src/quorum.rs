@@ -17,7 +17,7 @@
 //! one: the replica set may be different, and the design note is explicit that
 //! an acknowledgement from a replica at an older generation does not count
 //! toward a newer generation's quorum. Resetting is what enforces that here.
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 

@@ -226,7 +226,7 @@ pub fn spawn_expiry_sweep(
 /// waits a full window before expiring anything.
 #[derive(Debug, Default)]
 pub struct SilenceWatch {
-    seen: std::collections::HashMap<String, (u64, u64, tokio::time::Instant)>,
+    seen: felix_common::random::HashMap<String, (u64, u64, tokio::time::Instant)>,
 }
 
 impl SilenceWatch {

@@ -11,7 +11,8 @@
 //!
 //! Being wrong costs availability, never safety: a leader suspected by
 //! mistake is replaced by a leader that fenced a majority first.
-use std::collections::{BTreeSet, HashMap, HashSet};
+use felix_common::random::{HashMap, HashSet};
+use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -163,7 +164,7 @@ impl Silence {
     pub(crate) fn new(suspect_after: Duration) -> Self {
         Self {
             suspect_after,
-            heard: HashMap::new(),
+            heard: HashMap::default(),
         }
     }
 
@@ -237,7 +238,7 @@ pub(crate) async fn ping<R: PeerRequester>(
 /// nothing about whether it is up, so it must not make it a suspect.
 pub(crate) fn leaders_followed(router: &ShardRouter) -> Vec<(String, SocketAddr)> {
     let local = router.local_node_id();
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::default();
     let mut leaders = Vec::new();
     for (_, route) in router.snapshot().iter() {
         if route.leader.node_id == local

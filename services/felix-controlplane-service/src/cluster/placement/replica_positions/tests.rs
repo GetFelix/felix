@@ -330,7 +330,7 @@ fn suspicion(node_id: &str, leader: &str, reported_at_millis: u64) -> crate::mod
 
 /// The leader, `broker-a`, at the incarnation its reports came from.
 fn incarnations() -> HashMap<String, u64> {
-    HashMap::from([("broker-a".to_string(), 1)])
+    HashMap::from_iter([("broker-a".to_string(), 1)])
 }
 
 fn features(names: &[&str]) -> BTreeSet<String> {
@@ -489,8 +489,8 @@ fn a_suspicion_does_not_count_on_a_report_from_before_a_restart() {
             .suspects(&key("orders"), 4, "broker-b", "broker-a")
     };
     assert!(suspects(incarnations()));
-    assert!(!suspects(HashMap::from([("broker-a".to_string(), 2)])));
-    assert!(!suspects(HashMap::new()));
+    assert!(!suspects(HashMap::from_iter([("broker-a".to_string(), 2)])));
+    assert!(!suspects(HashMap::default()));
     // Nor one that says `by_round` without naming the incarnation.
     let unnamed = ReplicaReport {
         leader_incarnation: None,

@@ -15,7 +15,7 @@
 //! permissions. Scope checks happen server-side before store writes, and the
 //! credential is checked before the tenant's existence, so an unauthenticated
 //! caller cannot probe for tenants.
-use std::collections::HashSet;
+use felix_common::random::HashSet;
 
 use axum::Json;
 use axum::extract::{Path, Query, State};

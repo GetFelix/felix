@@ -474,7 +474,7 @@ fn an_incarnation_zero_assignment_is_never_first() {
 /// at an incarnation this broker already held (#1872).
 #[test]
 fn a_snapshot_marked_first_has_no_set_before() {
-    let marked = std::collections::HashSet::from([key(0)]);
+    let marked = felix_common::random::HashSet::from_iter([key(0)]);
     let mut first = assignment(0, "broker-a", 12);
     first.incarnation = 3;
 

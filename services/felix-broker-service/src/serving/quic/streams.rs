@@ -17,7 +17,7 @@ mod hooks;
 mod uni;
 mod writer;
 
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::time::{Duration, Instant};
@@ -71,7 +71,7 @@ pub(crate) async fn handle_stream(
     let out_ack_depth = Arc::new(AtomicUsize::new(0));
 
     // Per-connection stream-handle cache for the publish hot path.
-    let stream_cache = HashMap::new();
+    let stream_cache = HashMap::default();
     let stream_cache_key = String::new();
 
     let (cancel_tx, cancel_rx) = watch::channel(false);
@@ -237,7 +237,7 @@ pub(crate) async fn handle_uni_stream(
             config,
             auth,
             publish_ctx,
-            stream_cache: HashMap::new(),
+            stream_cache: HashMap::default(),
             stream_cache_key: String::new(),
             peer_certs,
         },

@@ -15,7 +15,7 @@
 //! reads of a shard share rounds: a read waits for one that started after it
 //! arrived, so at most one round per shard is in flight and one more queued.
 
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -80,7 +80,7 @@ impl<R: PeerRequester + Send + Sync + 'static> ReadIndex<R> {
                 broker,
                 router,
                 timeout,
-                rounds: Mutex::new(HashMap::new()),
+                rounds: Mutex::new(HashMap::default()),
             }),
         }
     }

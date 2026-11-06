@@ -19,7 +19,7 @@
 //!
 //! The design is in `docs/metadata-raft-design.md` ("Liveness is leader
 //! soft state").
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
@@ -639,9 +639,9 @@ fn view_for(slot: &mut Option<View>, term: u64) -> &mut View {
             term,
             since: now,
             since_millis: crate::clock::now_millis(),
-            beats: HashMap::new(),
-            suspicions: HashMap::new(),
-            registered: HashMap::new(),
+            beats: HashMap::default(),
+            suspicions: HashMap::default(),
+            registered: HashMap::default(),
             lease: None,
             last_checkpoint: now,
         });
