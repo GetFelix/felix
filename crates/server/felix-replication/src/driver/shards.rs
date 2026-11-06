@@ -282,6 +282,9 @@ struct ShardState {
     /// and no majority is left without it
     /// ([`crate::follower::refused_without_majority`]). Reported each tick.
     ship_refused: Option<RefusedGeneration>,
+    /// The generation and ballot behind `ship_refused`, and since when. The
+    /// ballot is carried only once it outlasts [`super::BALLOT_ELSEWHERE_FOR`].
+    ship_ballot_since: Option<((u64, u64), tokio::time::Instant)>,
     /// The last pass found this broker's own copy, or a follower that fenced
     /// it, holding a ballot past the generation it leads. Reported each
     /// tick, as a refused open is.
@@ -293,6 +296,17 @@ struct ShardState {
     ballot_above_since: Option<((u64, bool), tokio::time::Instant)>,
     /// What its last pass left.
     last: Option<LastPass>,
+}
+
+impl ShardState {
+    /// A refusal an open leader reports from its followers or its own copy.
+    /// The higher ballot wins, so one rename gets past both.
+    fn standing_refusal(&self) -> Option<RefusedGeneration> {
+        match (self.ship_refused.clone(), self.ballot_refused.clone()) {
+            (Some(ship), Some(ballot)) if ballot.ballot > ship.ballot => Some(ballot),
+            (ship, ballot) => ship.or(ballot),
+        }
+    }
 }
 
 /// What a shard's last pass left, for the driver's summary.
@@ -447,8 +461,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             state
                 .fence_refused
                 .clone()
-                .or_else(|| state.ship_refused.clone())
-                .or_else(|| state.ballot_refused.clone())
+                .or_else(|| state.standing_refusal())
                 .filter(|refused| {
                     refused.generation == route.generation
                         && route.leader.node_id == self.cx.router.local_node_id()
@@ -1379,6 +1392,12 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         }
         state.owed = owed;
         let report = ship_refused.is_some() && state.ship_refused.is_none();
+        let now = tokio::time::Instant::now();
+        state.ship_ballot_since = ship_refused.map(|ballot| match state.ship_ballot_since {
+            Some((seen, since)) if seen == (generation, ballot) => (seen, since),
+            _ => ((generation, ballot), now),
+        });
+        let ship_since = state.ship_ballot_since.map(|(_, since)| since);
         state.ship_refused = ship_refused.map(|ballot| {
             if report {
                 tracing::warn!(
@@ -1391,14 +1410,17 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                 );
             }
             // Past the ballot, since a rename to the ballot's own generation
-            // finds it promised away and waits.
-            if ballot > generation {
+            // finds it promised away and waits. Only once the ballot has
+            // stayed: a candidate standing there may still hold a majority and
+            // open, and naming this broker past it would depose it.
+            let held = ship_since
+                .is_some_and(|since| now.duration_since(since) >= super::BALLOT_ELSEWHERE_FOR);
+            if ballot > generation && held {
                 RefusedGeneration::above(generation, ballot)
             } else {
                 RefusedGeneration::set_unknown(generation)
             }
         });
-        let now = tokio::time::Instant::now();
         // A follower's ballot is another node's, so it waits as long as one
         // this broker answered; the higher of two such ballots wins, so one
         // rename gets past both.
@@ -1495,7 +1517,12 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         if again {
             self.enqueue(&key, Queue::of(appended, urgent));
         }
-        if let Some(refused) = self.states.get(&key).and_then(|s| s.ship_refused.clone()) {
+        if let Some(refused) = self
+            .states
+            .get(&key)
+            .filter(|s| s.ship_refused.is_some())
+            .and_then(ShardState::standing_refusal)
+        {
             self.report_refusal(key, refused);
         }
         self.fill();

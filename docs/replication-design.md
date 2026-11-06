@@ -1558,9 +1558,13 @@ elected leader waits for the lease until the control plane is back (issue
     another candidate's fence, once the leader has opened. That follower
     then refuses every batch. If the leader has no majority left without
     it, no write can be acknowledged at that generation again, so the
-    leader reports the generation refused at once. That report carries the
-    newest ballot its followers named, so the control plane names it past
-    that ballot in one step (issue #1949). A follower whose
+    leader reports the generation refused at once, naming no ballot. Once
+    the newest ballot its followers named has stayed for 10 s, the report
+    carries it, so the control plane names the leader past that ballot in
+    one step. Not sooner: a candidate standing there may still hold a
+    majority and open. When the leader's own copy holds a higher ballot,
+    the report carries that one instead, so one rename gets past both
+    (issue #1949). A follower whose
     last batch did not get through does not count toward that majority,
     and only a refusal that names a newer generation counts, because a
     replica's generation never goes back. A
@@ -4981,9 +4985,12 @@ Five rules keep an election from getting stuck:
   candidate withdrew, nothing renames the shard, so that copy never
   rejoins. The leader therefore also reports its generation refused after
   10 s, carrying the follower's ballot. Placement names the same leader past
-  that ballot and the follower takes batches again (issue #1949). A
-  refusal at once, when the followers' newer ballots leave no majority,
-  carries the ballot the same way.
+  that ballot and the follower takes batches again (issue #1949). When the
+  followers' newer ballots leave no majority, the leader reports at once
+  but carries their ballot only after the same 10 s, so a candidate that
+  can still open is not deposed. Until then it names no ballot and is
+  named one up. If its own copy holds a higher ballot, the report carries
+  that one, so a single rename gets past both.
 
 Elections need `joint_fence` finalized first, which the control plane allows
 once every serving broker offers `ELECTION`, names start holders and keeps a
