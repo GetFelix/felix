@@ -885,6 +885,12 @@ StandBehindBounded == FALSE
 CatchAllRename == FALSE
 Withdraws == FALSE
 Restarts == FALSE
+\* `PriorMayBeUnknown`: under `Restarts`, a restarted leader may find no set
+\* before its generation in the snapshot it reseeds from: the control plane's
+\* change log no longer holds the change before it (`previous` on a snapshot
+\* item is read from the retained log, #2024). Its fence then waits unless its
+\* log keeps the set at the generation before, as before #2024 (#1989).
+PriorMayBeUnknown == FALSE
 SupersededRefused == TRUE
 OwnBallotRefused == FALSE
 AboveReported == FALSE
@@ -2825,13 +2831,15 @@ Restart(b) ==
             \* snapshot its watch reseeds from, which carries the control
             \* plane's assignment before the current one (`previous` on a
             \* snapshot item, #2024), so an older kept set no longer leaves
-            \* the fence pending (#1989). A set kept at the generation is
-            \* reported unknown.
-            /\ IF SetCheck /\ setGen[b] < gen
-               THEN /\ mine' = [mine EXCEPT ![b] = IF cpNext = {} THEN CpSet ELSE cpNext]
-                    /\ setGen' = [setGen EXCEPT ![b] = gen]
-                    /\ oldSet' = [oldSet EXCEPT ![b] = IF cpNext = {} THEN {} ELSE {CpSet}]
-               ELSE UNCHANGED << mine, setGen, oldSet >>
+            \* the fence pending (#1989). Under `PriorMayBeUnknown` the
+            \* snapshot may lack it, and then only a log keeping the set right
+            \* before will do. A set kept at the generation is reported unknown.
+            /\ \E known \in IF PriorMayBeUnknown THEN {TRUE, FALSE} ELSE {TRUE} :
+                 IF SetCheck /\ setGen[b] < gen /\ (JointFence /\ ~known => setGen[b] = gen - 1)
+                 THEN /\ mine' = [mine EXCEPT ![b] = IF cpNext = {} THEN CpSet ELSE cpNext]
+                      /\ setGen' = [setGen EXCEPT ![b] = gen]
+                      /\ oldSet' = [oldSet EXCEPT ![b] = IF cpNext = {} THEN {} ELSE {CpSet}]
+                 ELSE UNCHANGED << mine, setGen, oldSet >>
        ELSE UNCHANGED << bgen, bexpiry, fencing, answered, confirmed, promised, ballot,
                          mine, setGen, oldSet >>
     /\ stopped' = [stopped EXCEPT ![b] = FALSE]
