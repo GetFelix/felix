@@ -1389,6 +1389,7 @@ async fn keep_own_set(
         Ok(Ok(_)) => Ok(()),
         Ok(Err(felix_storage::disk_log::GenerationCheck::Promised { leader })) => {
             Err(Outcome::Refused {
+                ballot: 0,
                 why: format!(
                     "this broker cannot lead generation {}: it promised it to {leader}",
                     route.generation
@@ -1398,6 +1399,7 @@ async fn keep_own_set(
             })
         }
         Ok(Err(ballot)) => Err(Outcome::Refused {
+            ballot: 0,
             promised_to: String::new(),
             why: format!(
                 "this broker cannot lead generation {}: its own ballot holds {}",
