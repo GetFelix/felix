@@ -138,3 +138,36 @@ fn flushing_from_the_writer_thread_returns() {
     assert!(writer.flush(Some(Duration::from_secs(5))), "flush finished");
     assert_eq!(*result.lock().expect("result"), Some(false));
 }
+
+/// **A panic flush gives up on time behind a stuck sink**, even when the
+/// queue is full and the flush request itself cannot be queued.
+#[test]
+fn a_bounded_flush_returns_when_the_queue_is_full_behind_a_stuck_sink() {
+    let (release, stuck) = std::sync::mpsc::channel::<()>();
+    struct StuckSink(Mutex<std::sync::mpsc::Receiver<()>>);
+    impl Write for StuckSink {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            let _ = self.0.lock().expect("stuck").recv();
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut writer = LogWriter::spawn_queuing(StuckSink(Mutex::new(stuck)), 1).expect("writer");
+    // A line past the sink's buffer reaches the stuck write; the next fills
+    // the queue.
+    writer.write_all(&[b'x'; 64 * 1024]).expect("write");
+    writer.write_all(line(1).as_bytes()).expect("write");
+    let (finished, returned) = std::sync::mpsc::channel();
+    std::thread::spawn({
+        let writer = writer.clone();
+        move || {
+            let _ = finished.send(writer.flush(Some(Duration::from_millis(100))));
+        }
+    });
+    let flushed = returned.recv_timeout(Duration::from_secs(5));
+    // Unstick the sink either way, so the writer thread can finish.
+    drop(release);
+    assert_eq!(flushed, Ok(false), "the flush waited past its limit");
+}

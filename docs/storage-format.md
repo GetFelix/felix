@@ -57,6 +57,7 @@ a segment, should be rejected on its first four bytes rather than misparsed.
   run-state                                  ← whether the last run stopped cleanly
   registration                               ← the node incarnation of the last registration
   controlplane.view                          ← what the control plane last said about this node's shards
+  replaced-storage                           ← the node was once registered under another storage id
   node-id                                    ← the id offloaded keys start with, when offload is on without FELIX_NODE_ID
   acme_default_orders_0-0d3aed4b998d2798/     ← one directory per stream shard
     00000000000000000000.log                 ← segment data
@@ -1206,6 +1207,30 @@ does not parse, or names another node. A file that reads as absent is
 ignored with a warning. It never stops a start. `controlplane.tmp` is never
 read. An older release neither reads nor writes the file. See
 `docs/durable-storage.md`, "The control-plane view".
+
+## `replaced-storage`: the node was registered under another id
+
+One text file at the durable root, written when the control plane last
+registered the node under a storage id other than this directory's, and never
+removed:
+
+```text
+replaced
+storage_id=<hex>
+after=<incarnation>
+```
+
+`storage_id` is the id the directory runs under from then on, and `after` the
+node incarnation the control plane held when the broker found the
+replacement. A later replacement rewrites both. Before writing it the broker
+removes `controlplane.view` durably, so a view beside the marker was written
+after it. The incarnation alone could not tell: the control plane counts a
+deleted node's incarnations from 0 again, and a restored control plane
+rewinds them. The file's presence is what the replica code reads. A start
+without the control plane also checks the fields: it may use a
+`controlplane.view` only if the view names that storage id and an
+incarnation above `after`. A file holding only `replaced`, as older releases
+write it, or one that does not parse, refuses every view.
 
 ## Consumer-group cursor values
 
