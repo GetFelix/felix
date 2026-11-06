@@ -875,6 +875,92 @@ async fn the_running_driver_keeps_a_standing_until_its_shard_opens() {
     driver.stop().await;
 }
 
+/// Collects the text of every event logged on this thread while it lives.
+struct Logs(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for Logs {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().expect("lock").extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// A fence that records each generation the driver deposes.
+#[derive(Default)]
+struct Deposed(Mutex<Vec<u64>>);
+
+impl WriteFence for Deposed {
+    fn quiesced(&self, _key: &crate::ShardKey) -> bool {
+        true
+    }
+
+    fn deposed(&self, _key: &crate::ShardKey, generation: u64) {
+        self.0.lock().expect("lock").push(generation);
+    }
+}
+
+/// Runs one pass for a leader at 4 whose copy's set is at 3 and whose ballot
+/// is at `ballot` for `ballot_leader`. Returns the set's generation after
+/// the pass, the generations deposed, the offset held and the log text.
+async fn pass_with_ballot(ballot: u64, ballot_leader: &str) -> (u64, Vec<u64>, u64, String) {
+    let (broker, _dir) = quorum_leader(3, 4).await;
+    let log = stream_log(&broker).await;
+    log.accept_generation(3, Some(LOCAL)).await.expect("ballot");
+    log.accept_set(set_of_three(3)).await.expect("the set of 3");
+    log.accept_generation(ballot, Some(ballot_leader))
+        .await
+        .expect("the ballot");
+    let followers = Followers::new(true, &["broker-b", "broker-c"]);
+    let marks = follower_ack_marks();
+    let fence = Deposed::default();
+    let text = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&text);
+    let guard = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .with_writer(move || Logs(Arc::clone(&sink)))
+            .with_ansi(false)
+            .finish(),
+    );
+
+    pass_with(&followers, &broker, &marks, &fence).await;
+
+    drop(guard);
+    let logged = String::from_utf8(text.lock().expect("lock").clone()).expect("utf8");
+    (
+        stream_log(&broker).await.set_generation(),
+        fence.0.lock().expect("lock").clone(),
+        marks.offset(&watch_key(&key()), 4).unwrap_or(0),
+        logged,
+    )
+}
+
+/// **A leader whose ballot another node raised past its generation keeps no
+/// set and deposes itself.** Keeping the set at 4 would be refused by that
+/// ballot, so the pass leaves the set alone without trying, and holds
+/// nothing.
+#[tokio::test]
+async fn a_leader_outbid_by_another_node_keeps_no_set_and_is_deposed() {
+    let (set, deposed, held, logged) = pass_with_ballot(5, "broker-c").await;
+
+    assert_eq!(set, 3);
+    assert!(!logged.contains("could not keep this leader's replica set"));
+    assert!(deposed.contains(&4), "deposed: {deposed:?}");
+    assert_eq!(held, 0);
+}
+
+/// **A leader whose ballot is still at its generation keeps the set at it.**
+#[tokio::test]
+async fn a_leader_at_its_own_ballot_keeps_the_set() {
+    let (set, _deposed, _held, logged) = pass_with_ballot(4, LOCAL).await;
+
+    assert_eq!(set, 4);
+    assert!(!logged.contains("could not keep this leader's replica set"));
+}
+
 /// **An elected leader notes a copy that refuses to follow it** while the
 /// rest of the set answers: the evidence the candidate fences again on when
 /// the control plane collided with the election. A leader the control
