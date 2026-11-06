@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793995137436,
+  "lastUpdate": 1793996223542,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -60522,6 +60522,72 @@ window.BENCHMARK_DATA = {
             "range": "591.44",
             "unit": "us",
             "extra": "trials: 5\nmedian: 367.00\nmean: 626.40\nstdev: 591.44\ncv: 94.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c787ece449a58912adbf355a46f30f18453ea949",
+          "message": "fix(sim): replay a seed exactly from the command a failure prints (#2055)\n\nSeed replays are exact again: the command a failing seed prints is task sim:replay, which builds with --cfg tokio_unstable so select! is seeded. A plain cargo test build refuses FELIX_SIM_HISTORY, and sim:determinism also compares one seed replayed in two separate processes (#419).",
+          "timestamp": "2026-11-06T20:10:45Z",
+          "tree_id": "01c848456e46c8aac5e0def4ca388d3ca17cc5de",
+          "url": "https://github.com/GetFelix/felix/commit/c787ece449a58912adbf355a46f30f18453ea949"
+        },
+        "date": 1793996217527,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 62,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 62.00\nmean: 62.20\nstdev: 0.45\ncv: 0.72%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 83,
+            "range": "1.48",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 83.00\nmean: 83.20\nstdev: 1.48\ncv: 1.78%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 107,
+            "range": "24.68",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 107.00\nmean: 116.20\nstdev: 24.68\ncv: 21.24%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 78,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 78.00\nmean: 78.20\nstdev: 0.45\ncv: 0.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 174,
+            "range": "17.02",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 174.00\nmean: 177.20\nstdev: 17.02\ncv: 9.61%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 257,
+            "range": "62.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 257.00\nmean: 285.40\nstdev: 62.55\ncv: 21.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
