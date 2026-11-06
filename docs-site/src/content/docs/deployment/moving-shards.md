@@ -240,8 +240,8 @@ shard.
 
 It is refused with `not_stranded` when the leader is serving or a replica can
 take over without loss, and with `unplaceable` when no node can take the
-shard. It needs `node.manage:cluster:*`. `felixctl` never asks first and
-refuses to run without `--yes`.
+shard. It needs `node.manage:cluster:*`. `placement abandon` never prompts;
+it refuses to run without `--yes`.
 
 ## A worked example
 

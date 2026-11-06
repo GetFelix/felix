@@ -17,6 +17,10 @@ async fn main() -> anyhow::Result<()> {
         args.remove(0);
         return migrate::run(args).await;
     }
+    // The old operator commands: refuse rather than start a second server.
+    if args.first().map(String::as_str) == Some("admin") {
+        anyhow::bail!("`felix-controlplane admin` moved to `felixctl`; see `felixctl --help`");
+    }
 
     let config = config::ControlPlaneConfig::from_env_or_yaml().expect("control plane config");
     // SIGTERM is what Kubernetes, systemd, and `docker stop` send; SIGINT only
