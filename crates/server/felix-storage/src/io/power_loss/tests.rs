@@ -4,6 +4,12 @@
 use super::*;
 use crate::io::writeback::*;
 
+/// Flush a file the test opened with `std::fs`.
+fn sync_os(file: &File) {
+    let file = crate::fs::from_os(file.try_clone().expect("clone"));
+    crate::io::sync_data(&file).expect("sync");
+}
+
 fn bytes(len: usize, fill: u8) -> Vec<u8> {
     vec![fill; len]
 }
@@ -18,7 +24,7 @@ fn directory_entries_and_contents_follow_their_flushes() {
     let flushed = root.path().join("flushed");
     let file = File::create(&flushed).expect("create");
     std::io::Write::write_all(&mut &file, b"durable").expect("write");
-    crate::io::sync_data(&file).expect("sync");
+    sync_os(&file);
     crate::io::sync_dir(root.path()).expect("sync dir");
     std::io::Write::write_all(&mut &file, b" and not").expect("write more");
 
@@ -46,6 +52,34 @@ fn directory_entries_and_contents_follow_their_flushes() {
         }
     }
     assert!(saw_missing, "an unflushed create never went missing");
+}
+
+/// An unflushed rename is one change: the crash image has the file under
+/// its old name or its new one, never both and never neither.
+#[test]
+fn an_unflushed_rename_comes_back_under_one_name() {
+    let (mut old, mut new) = (0, 0);
+    for seed in 0..64 {
+        let root = tempfile::tempdir().expect("dir");
+        let observer = PowerLoss::install(root.path()).expect("install");
+        let file = File::create(root.path().join("state.tmp")).expect("create");
+        std::io::Write::write_all(&mut &file, b"durable").expect("write");
+        sync_os(&file);
+        crate::io::sync_dir(root.path()).expect("sync dir");
+        std::fs::rename(root.path().join("state.tmp"), root.path().join("state")).expect("rename");
+
+        let image = tempfile::tempdir().expect("image");
+        observer
+            .crash(seed, Writeback::AnySubset, image.path())
+            .expect("crash");
+        let has = |name: &str| image.path().join(name).exists();
+        match (has("state.tmp"), has("state")) {
+            (true, false) => old += 1,
+            (false, true) => new += 1,
+            other => panic!("seed {seed}: {other:?}"),
+        }
+    }
+    assert!(old > 0 && new > 0, "{old} {new}");
 }
 
 /// A large file is read from the page its last capture ended in, so a change
@@ -83,26 +117,26 @@ fn a_growing_large_file_is_captured_from_where_the_last_capture_ended() {
         .expect("create");
     let first = bytes(WHOLE_FILE_UP_TO as usize + 100, 1);
     std::io::Write::write_all(&mut &large, &first).expect("write");
-    crate::io::sync_data(&large).expect("sync");
+    sync_os(&large);
     assert_eq!(captured(&large), first);
 
     rewrite_first_byte("segment", 9);
     std::io::Write::write_all(&mut &large, &bytes(PAGE, 2)).expect("append");
-    crate::io::sync_data(&large).expect("sync");
+    sync_os(&large);
     let after = captured(&large);
     assert_eq!(after.len(), first.len() + PAGE);
     assert_eq!(after[0], 1, "the page before the last capture was re-read");
     assert_eq!(&after[first.len()..], &bytes(PAGE, 2)[..]);
 
     large.set_len(10).expect("shrink");
-    crate::io::sync_data(&large).expect("sync");
+    sync_os(&large);
     assert_eq!(captured(&large), [9, 1, 1, 1, 1, 1, 1, 1, 1, 1]);
 
     let small = File::create(root.path().join("index")).expect("create");
     std::io::Write::write_all(&mut &small, &bytes(PAGE, 1)).expect("write");
-    crate::io::sync_data(&small).expect("sync");
+    sync_os(&small);
     rewrite_first_byte("index", 9);
-    crate::io::sync_data(&small).expect("sync");
+    sync_os(&small);
     assert_eq!(captured(&small)[0], 9);
 }
 
@@ -123,7 +157,7 @@ fn a_reused_inode_number_is_a_new_file() {
         return;
     }
     std::io::Write::write_all(&mut &old, &old_bytes).expect("write");
-    crate::io::sync_data(&old).expect("sync");
+    sync_os(&old);
     crate::io::sync_dir(root.path()).expect("sync dir");
     let old_key = Inode::of(&old.metadata().expect("stat"), &old);
     drop(old);
@@ -145,7 +179,7 @@ fn a_reused_inode_number_is_a_new_file() {
     }
     let new_bytes = bytes(WHOLE_FILE_UP_TO as usize + 3 * PAGE, 2);
     std::io::Write::write_all(&mut &new, &new_bytes).expect("write");
-    crate::io::sync_data(&new).expect("sync");
+    sync_os(&new);
 
     let captured = observer
         .state
@@ -194,7 +228,7 @@ fn a_key_differing_only_in_generation_is_a_new_file() {
 
     let new_bytes = bytes(WHOLE_FILE_UP_TO as usize + 3 * PAGE, 2);
     std::io::Write::write_all(&mut &new, &new_bytes).expect("write");
-    crate::io::sync_data(&new).expect("sync");
+    sync_os(&new);
 
     let captured = observer
         .state

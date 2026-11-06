@@ -155,7 +155,7 @@ fn generation(file: &File) -> Option<u32> {
     (rc == 0).then_some(value as u32)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Entry {
     File(Inode),
     Dir(Inode),
@@ -453,13 +453,41 @@ fn crash_dir(
     let current = list(dir).unwrap_or_default();
     let names: BTreeSet<&OsString> = synced.keys().chain(current.keys()).collect();
 
+    // A rename is one change, so its two names come back together. One seen
+    // within a directory is a name that now holds what another name held at
+    // the last flush; a chain of renames shows up as its two ends.
+    let left: HashMap<Entry, &OsString> = synced
+        .iter()
+        .filter(|(name, entry)| current.get(*name) != Some(*entry))
+        .map(|(name, entry)| (*entry, name))
+        .collect();
+    let mut renamed: BTreeMap<&OsString, bool> = BTreeMap::new();
+    for (to, now) in &current {
+        if synced.get(to) == Some(now) {
+            continue;
+        }
+        let Some(from) = left.get(now).copied() else {
+            continue;
+        };
+        if from == to || renamed.contains_key(to) || renamed.contains_key(from) {
+            continue;
+        }
+        let applied = rng.coin();
+        renamed.insert(to, applied);
+        renamed.insert(from, applied);
+    }
+
     for name in names {
-        let chosen = match (current.get(name), synced.get(name)) {
-            (Some(now), Some(then)) if now == then => Some(*now),
-            (Some(now), Some(then)) => Some(if rng.coin() { *now } else { *then }),
-            (Some(now), None) => rng.coin().then_some(*now),
-            (None, Some(then)) => rng.coin().then_some(*then),
-            (None, None) => None,
+        let chosen = match renamed.get(name) {
+            Some(true) => current.get(name).copied(),
+            Some(false) => synced.get(name).copied(),
+            None => match (current.get(name), synced.get(name)) {
+                (Some(now), Some(then)) if now == then => Some(*now),
+                (Some(now), Some(then)) => Some(if rng.coin() { *now } else { *then }),
+                (Some(now), None) => rng.coin().then_some(*now),
+                (None, Some(then)) => rng.coin().then_some(*then),
+                (None, None) => None,
+            },
         };
         let from = dir.join(name);
         let to = into.join(name);

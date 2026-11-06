@@ -27,6 +27,12 @@ pub fn shard_dir_exists(root: &Path, shard: &ShardKey) -> bool {
     crate::fs::is_dir(shard_dir(root, shard))
 }
 
+/// Whether anything exists at the path [`shard_dir`] names, as `Path::exists`
+/// answers it.
+pub fn shard_path_exists(root: &Path, shard: &ShardKey) -> bool {
+    crate::fs::exists(shard_dir(root, shard))
+}
+
 /// Full path to the segment directory of one incarnation of a shard.
 pub fn incarnation_dir(root: &Path, shard: &ShardKey, incarnation: u64) -> PathBuf {
     root.join(incarnation_dir_name(shard, incarnation))

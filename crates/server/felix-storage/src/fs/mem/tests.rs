@@ -245,23 +245,100 @@ fn the_length_can_reach_the_disk_without_the_data() {
 }
 
 #[test]
-fn a_rename_without_a_directory_sync_can_revert() {
+fn an_unsynced_rename_comes_back_whole_or_not_at_all() {
     let (mut reverted, mut stuck) = (0, 0);
     for seed in 0..128 {
         let sim = Sim::new("rename");
         durable_file(&sim.path("state.tmp"), b"new");
         fs::rename(sim.path("state.tmp"), sim.path("state")).expect("rename");
         sim.crash(seed);
-        let after = names(&sim.root);
-        if after.iter().any(|name| name == "state.tmp") {
-            reverted += 1;
-        }
-        if after.iter().any(|name| name == "state") {
-            stuck += 1;
-            assert_eq!(fs::read(sim.path("state")).expect("read"), b"new");
+        // One name, never both and never neither.
+        match names(&sim.root).as_slice() {
+            [only] if only == "state.tmp" => reverted += 1,
+            [only] if only == "state" => {
+                stuck += 1;
+                assert_eq!(fs::read(sim.path("state")).expect("read"), b"new");
+            }
+            other => panic!("seed {seed}: {other:?}"),
         }
     }
     assert!(reverted > 0 && stuck > 0, "{reverted} {stuck}");
+}
+
+#[test]
+fn a_rename_between_directories_is_still_one_change() {
+    let (mut moved, mut stayed) = (0, 0);
+    for seed in 0..128 {
+        let sim = Sim::new("rename-dirs");
+        fs::create_dir_all(sim.path("old")).expect("dir");
+        fs::create_dir_all(sim.path("new")).expect("dir");
+        durable_file(&sim.path("old/f"), b"x");
+        io::sync_dir(&sim.root).expect("sync");
+        io::sync_dir(&sim.path("new")).expect("sync");
+        fs::rename(sim.path("old/f"), sim.path("new/f")).expect("rename");
+        sim.crash(seed);
+        match (names(&sim.path("old")).len(), names(&sim.path("new")).len()) {
+            (1, 0) => stayed += 1,
+            (0, 1) => moved += 1,
+            other => panic!("seed {seed}: {other:?}"),
+        }
+    }
+    assert!(moved > 0 && stayed > 0, "{moved} {stayed}");
+}
+
+#[test]
+fn chained_renames_come_back_as_a_prefix() {
+    let mut seen = std::collections::BTreeSet::new();
+    for seed in 0..128 {
+        let sim = Sim::new("rename-chain");
+        durable_file(&sim.path("a"), b"x");
+        fs::rename(sim.path("a"), sim.path("b")).expect("rename");
+        fs::rename(sim.path("b"), sim.path("c")).expect("rename");
+        sim.crash(seed);
+        let mut after = names(&sim.root);
+        assert_eq!(after.len(), 1, "seed {seed}: {after:?}");
+        seen.insert(after.remove(0));
+    }
+    assert_eq!(seen.len(), 3, "{seen:?}");
+}
+
+#[test]
+fn a_rename_over_a_file_leaves_the_old_or_the_new_one() {
+    let (mut old, mut new) = (0, 0);
+    for seed in 0..128 {
+        let sim = Sim::new("rename-over");
+        durable_file(&sim.path("state"), b"old");
+        durable_file(&sim.path("state.tmp"), b"new");
+        fs::rename(sim.path("state.tmp"), sim.path("state")).expect("rename");
+        sim.crash(seed);
+        match fs::read(sim.path("state"))
+            .expect("state is never missing")
+            .as_slice()
+        {
+            b"old" => {
+                old += 1;
+                assert_eq!(names(&sim.root), ["state", "state.tmp"], "seed {seed}");
+            }
+            b"new" => {
+                new += 1;
+                assert_eq!(names(&sim.root), ["state"], "seed {seed}");
+            }
+            other => panic!("seed {seed}: {other:?}"),
+        }
+    }
+    assert!(old > 0 && new > 0, "{old} {new}");
+}
+
+#[test]
+fn a_path_cannot_climb_out_of_a_registered_root() {
+    let sim = Sim::new("dotdot");
+    fs::create_dir_all(sim.path("a")).expect("dir");
+    fs::write(sim.path("a/../f"), b"inside").expect("resolves inside the root");
+    assert_eq!(fs::read(sim.path("f")).expect("read"), b"inside");
+    for escape in ["../outside", "a/../../outside"] {
+        let err = fs::write(sim.path(escape), b"x").expect_err("escapes");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput, "{escape}");
+    }
 }
 
 #[test]

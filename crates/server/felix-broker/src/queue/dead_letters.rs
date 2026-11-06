@@ -590,7 +590,7 @@ impl DeadLetters {
             stream: legacy_scope(key),
             shard: key.shard,
         };
-        felix_storage::disk_log::layout::shard_dir_exists(&self.legacy_root, &shard_key)
+        felix_storage::disk_log::layout::shard_path_exists(&self.legacy_root, &shard_key)
             .then_some(&self.entries)
     }
 }

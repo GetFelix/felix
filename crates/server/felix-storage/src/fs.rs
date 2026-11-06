@@ -34,6 +34,19 @@ pub(crate) use routed::{
 
 use std::path::Path;
 
+/// A file the test opened with `std::fs`, as the seam's type.
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) fn from_os(file: std::fs::File) -> File {
+    #[cfg(feature = "sim")]
+    {
+        File::Real(file)
+    }
+    #[cfg(not(feature = "sim"))]
+    {
+        file
+    }
+}
+
 /// Whether `path` exists. Any error counts as no, as with `Path::exists`.
 pub(crate) fn exists(path: impl AsRef<Path>) -> bool {
     metadata(path).is_ok()

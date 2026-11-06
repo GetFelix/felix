@@ -475,7 +475,7 @@ thread_local! {
 fn before_sync_dir(path: &std::path::Path) -> io::Result<()> {
     #[cfg(test)]
     DIR_SYNCS.with(|syncs| {
-        let mut names: Vec<String> = std::fs::read_dir(path)
+        let mut names: Vec<String> = crate::fs::read_dir(path)
             .into_iter()
             .flatten()
             .flatten()

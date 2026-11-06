@@ -276,6 +276,11 @@ observer used by the storage tests (`io/power_loss.rs`):
 - A length change can reach the disk without the data it covers, which then
   reads back as zeros.
 - A directory change that was not synced may or may not stick, per name.
+- A rename is one change: its two names, even in different directories, come
+  back together, either as before the rename or as after it, and unsynced
+  renames are kept oldest first. Syncing either directory commits it, as a
+  filesystem journal does. A file replaced by a rename comes back with the
+  bytes of its last flush.
 - A tree where everything was synced comes back unchanged.
 
 The same seed gives the same result: listings are in name order and the model

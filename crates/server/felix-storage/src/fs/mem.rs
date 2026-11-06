@@ -30,9 +30,21 @@ pub(crate) use registry::{register, tree_at, unregister};
 
 /// One registered root and everything below it.
 pub(crate) struct Tree {
-    /// The root directory. Held for the length of every structural operation.
-    structure: Mutex<Arc<DirNode>>,
+    /// Held for the length of every structural operation.
+    structure: Mutex<Structure>,
 }
+
+struct Structure {
+    root: Arc<DirNode>,
+    /// Renames no flush has covered yet, oldest first. A rename is one change
+    /// to the device, so a crash keeps all of it or none of it.
+    pending: Vec<crash::Rename>,
+}
+
+/// How many unflushed renames are remembered. Past it the oldest is taken as
+/// flushed, which keeps a tree nobody syncs from holding on to every file it
+/// ever replaced.
+const MAX_PENDING_RENAMES: usize = 1024;
 
 /// Something with a name in a directory.
 #[derive(Clone)]
@@ -78,13 +90,16 @@ pub(crate) struct Stat {
 impl Tree {
     pub(super) fn new() -> Self {
         Self {
-            structure: Mutex::new(Arc::new(DirNode::default())),
+            structure: Mutex::new(Structure {
+                root: Arc::new(DirNode::default()),
+                pending: Vec::new(),
+            }),
         }
     }
 
     pub(super) fn stat(&self, path: &Path) -> io::Result<Stat> {
-        let root = self.structure.lock();
-        Ok(match walk(&root, &names(path)?)? {
+        let state = self.structure.lock();
+        Ok(match walk(&state.root, &names(path)?)? {
             Node::File(file) => Stat {
                 len: file.data.lock().current.len() as u64,
                 is_dir: false,
@@ -98,8 +113,8 @@ impl Tree {
 
     /// The names in a directory, in name order, with whether each is a directory.
     pub(super) fn list(&self, path: &Path) -> io::Result<Vec<(OsString, bool)>> {
-        let root = self.structure.lock();
-        let Node::Dir(dir) = walk(&root, &names(path)?)? else {
+        let state = self.structure.lock();
+        let Node::Dir(dir) = walk(&state.root, &names(path)?)? else {
             return Err(kind(io::ErrorKind::NotADirectory, "not a directory"));
         };
         let data = dir.data.lock();
@@ -114,9 +129,9 @@ impl Tree {
         if (flags.create || flags.create_new || flags.truncate) && !(flags.write || flags.append) {
             return Err(kind(io::ErrorKind::InvalidInput, "invalid open flags"));
         }
-        let root = self.structure.lock();
+        let state = self.structure.lock();
         let names = names(path)?;
-        let (parent, name) = parent_of(&root, &names)?;
+        let (parent, name) = parent_of(&state.root, &names)?;
         let mut entries = parent.data.lock();
         let node = match entries.current.get(name) {
             Some(Node::File(file)) => {
@@ -144,8 +159,8 @@ impl Tree {
     }
 
     pub(super) fn create_dir_all(&self, path: &Path) -> io::Result<()> {
-        let root = self.structure.lock();
-        let mut dir = Arc::clone(&root);
+        let state = self.structure.lock();
+        let mut dir = Arc::clone(&state.root);
         for name in names(path)? {
             let next = {
                 let mut entries = dir.data.lock();
@@ -169,9 +184,9 @@ impl Tree {
     }
 
     pub(super) fn remove_file(&self, path: &Path) -> io::Result<()> {
-        let root = self.structure.lock();
+        let state = self.structure.lock();
         let names = names(path)?;
-        let (parent, name) = parent_of(&root, &names)?;
+        let (parent, name) = parent_of(&state.root, &names)?;
         let mut entries = parent.data.lock();
         match entries.current.get(name) {
             Some(Node::File(_)) => {
@@ -187,9 +202,9 @@ impl Tree {
     /// itself. Each unlink is its own directory change, so a crash can keep
     /// any subset of them.
     pub(super) fn remove_dir_all(&self, path: &Path) -> io::Result<()> {
-        let root = self.structure.lock();
+        let state = self.structure.lock();
         let names = names(path)?;
-        let (parent, name) = parent_of(&root, &names)?;
+        let (parent, name) = parent_of(&state.root, &names)?;
         let mut entries = parent.data.lock();
         match entries.current.get(name) {
             Some(Node::Dir(dir)) => unlink_all(dir),
@@ -203,10 +218,10 @@ impl Tree {
     }
 
     pub(super) fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
-        let root = self.structure.lock();
+        let mut state = self.structure.lock();
         let (from_names, to_names) = (names(from)?, names(to)?);
         if from_names == to_names {
-            walk(&root, &from_names)?;
+            walk(&state.root, &from_names)?;
             return Ok(());
         }
         if to_names.starts_with(&from_names) {
@@ -215,8 +230,8 @@ impl Tree {
                 "a directory cannot move into itself",
             ));
         }
-        let (from_parent, from_name) = parent_of(&root, &from_names)?;
-        let (to_parent, to_name) = parent_of(&root, &to_names)?;
+        let (from_parent, from_name) = parent_of(&state.root, &from_names)?;
+        let (to_parent, to_name) = parent_of(&state.root, &to_names)?;
         let same = Arc::ptr_eq(&from_parent, &to_parent);
         let mut source = from_parent.data.lock();
         let mut other = (!same).then(|| to_parent.data.lock());
@@ -245,17 +260,39 @@ impl Tree {
         }
         source.current.remove(from_name);
         let destination = other.as_deref_mut().unwrap_or(&mut source);
-        destination.current.insert(to_name.to_owned(), moving);
+        destination
+            .current
+            .insert(to_name.to_owned(), moving.clone());
+        drop((source, other));
+        state.pending.push(crash::Rename {
+            from_dir: from_parent,
+            from_name: from_name.to_owned(),
+            to_dir: to_parent,
+            to_name: to_name.to_owned(),
+            node: moving,
+        });
+        if state.pending.len() > MAX_PENDING_RENAMES {
+            crash::commit(&mut state.pending, 1);
+        }
         Ok(())
     }
 
     /// Make the entries of the directory at `path` durable, as `fsync` on the
     /// directory does.
     pub(super) fn sync_dir(&self, path: &Path) -> io::Result<()> {
-        let root = self.structure.lock();
-        let Node::Dir(dir) = walk(&root, &names(path)?)? else {
+        let mut state = self.structure.lock();
+        let Node::Dir(dir) = walk(&state.root, &names(path)?)? else {
             return Err(kind(io::ErrorKind::NotADirectory, "not a directory"));
         };
+        // A flush of either directory commits the rename, and every change
+        // before it, as a journal does.
+        if let Some(last) = state
+            .pending
+            .iter()
+            .rposition(|rename| rename.touches(&dir))
+        {
+            crash::commit(&mut state.pending, last + 1);
+        }
         let mut data = dir.data.lock();
         data.durable = data.current.clone();
         Ok(())
@@ -263,19 +300,19 @@ impl Tree {
 
     /// Make everything durable, as `syncfs` does for a filesystem.
     pub(super) fn sync_all(&self) {
-        let root = self.structure.lock();
-        sync_tree(&root);
+        let mut state = self.structure.lock();
+        state.pending.clear();
+        sync_tree(&state.root);
     }
 
     /// Replace the tree with what a power loss now would leave. Handles opened
     /// before it keep the old files, which nothing reaches any more.
     pub(crate) fn crash(&self, seed: u64, writeback: crate::io::writeback::Writeback) {
-        let mut root = self.structure.lock();
-        *root = crash::dir(
-            &root,
-            &mut crate::io::writeback::SplitMix64::new(seed),
-            writeback,
-        );
+        let mut state = self.structure.lock();
+        let mut rng = crate::io::writeback::SplitMix64::new(seed);
+        let plan = crash::Plan::new(&state.pending, &mut rng);
+        state.root = crash::dir(&state.root, &plan, &mut rng, writeback);
+        state.pending.clear();
     }
 }
 
@@ -376,7 +413,12 @@ fn names(path: &Path) -> io::Result<Vec<&OsStr>> {
             Component::Normal(name) => out.push(name),
             Component::CurDir | Component::RootDir => {}
             Component::ParentDir => {
-                out.pop();
+                if out.pop().is_none() {
+                    return Err(kind(
+                        io::ErrorKind::InvalidInput,
+                        "path climbs out of the simulated root",
+                    ));
+                }
             }
             Component::Prefix(_) => {
                 return Err(kind(io::ErrorKind::InvalidInput, "unsupported path"));
