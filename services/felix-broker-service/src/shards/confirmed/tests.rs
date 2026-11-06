@@ -2,6 +2,7 @@ use axum::http::StatusCode;
 use axum::{Json, Router, routing::get};
 
 use felix_replication::controlplane_link::HttpControlPlaneLink;
+use felix_router::ShardKind;
 
 use super::*;
 
