@@ -17,10 +17,11 @@
 //! one: the replica set may be different, and the design note is explicit that
 //! an acknowledgement from a replica at an older generation does not count
 //! toward a newer generation's quorum. Resetting is what enforces that here.
-use std::collections::HashMap;
+
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+use felix_common::random::Map;
 use parking_lot::Mutex;
 use tokio::sync::watch;
 
@@ -53,7 +54,7 @@ pub struct QuorumMarks {
     /// Leaderships the replicas elected, set where this broker may stand.
     elections: std::sync::OnceLock<Arc<crate::election::Elections>>,
     /// When each shard's timeout was last logged.
-    timeout_logged: Mutex<HashMap<ShardKey, tokio::time::Instant>>,
+    timeout_logged: Mutex<Map<ShardKey, tokio::time::Instant>>,
 }
 
 /// A shard's timed-out publishes are logged at most this often: under a stall
@@ -497,7 +498,9 @@ impl QuorumMarks {
 /// One high-water mark per shard, for one of the logs a shard has.
 #[derive(Debug, Default)]
 pub struct MarkTable {
-    shards: Mutex<HashMap<ShardKey, ShardMark>>,
+    /// Seeded, so a `retain` drops marks, and wakes their waiters, in the
+    /// same order every run of a simulation.
+    shards: Mutex<Map<ShardKey, ShardMark>>,
     /// Bumped whenever a shard gets a mark at a new generation, so a wait for
     /// one that does not exist yet wakes when it does.
     started: watch::Sender<u64>,

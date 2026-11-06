@@ -414,6 +414,44 @@ jobs:
       - name: Cancelled put under load
         run: task test:stress
 
+  # Each simulator seed run twice must give the same run (Taskfile.yml,
+  # sim:determinism). Its own job: the check needs `--cfg tokio_unstable`, which
+  # changes every crate's build, so it cannot share the test job's target.
+  sim:
+    name: Simulator determinism
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: always
+      FELIX_SIM_SEEDS: "20"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.99.1"
+
+      - name: Rust Cache
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: sim-tokio-unstable
+
+      - name: Install Task
+        uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
+        with:
+          # Pinned: a new tag can be published before its binaries are.
+          version: 3.53.1
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Same seed, same run
+        run: task sim:determinism
+
   # felix-cluster's suites, the three longest each on a runner of its own
   # (Taskfile.yml, test:cluster). One cluster per runner, as before: they are
   # load-sensitive, and sharing a runner would make them flaky.
@@ -1273,7 +1311,7 @@ jobs:
   ci-ok:
     name: CI ok
     if: always()
-    needs: [changes, images, compose, test, cluster, checks, docs-evidence, docs-site, chart, python, typescript, dotnet, spec-pairing, formal, formal-heavy-plan, formal-heavy, formal-walk, fuzz]
+    needs: [changes, images, compose, test, sim, cluster, checks, docs-evidence, docs-site, chart, python, typescript, dotnet, spec-pairing, formal, formal-heavy-plan, formal-heavy, formal-walk, fuzz]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

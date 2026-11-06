@@ -118,6 +118,17 @@ tasks:
   test:stress:
     cmds:
       - "scripts/stress_test.sh felix-storage cache::log_cache::tests::concurrency::a_cancelled_put_is_still_applied 200"
+  # Runs each simulator seed twice in one process and fails on the first
+  # event that differs. Tokio seeds `select!` only under `--cfg
+  # tokio_unstable`, which changes every crate's build, so this keeps its own
+  # target directory. FELIX_SIM_SEEDS and FELIX_SIM_SEED_START pick the seeds.
+  sim:determinism:
+    env:
+      RUSTFLAGS: "--cfg tokio_unstable"
+    cmds:
+      - |
+        CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}/tokio-unstable" \
+          cargo test -p felix-sim --release --test seeds each_seed_runs_the_same_twice -- --nocapture
 
   pg:up:
     cmds:
