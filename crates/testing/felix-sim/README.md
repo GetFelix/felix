@@ -57,8 +57,9 @@ writes the run's history to a file so two runs can be diffed.
 
 `seeds` is `#[ignore]`, so `cargo test --workspace` skips it. It runs in the
 non-blocking `sim-seeds` job in CI, which does not gate merges while its known
-liveness stalls are open. A run takes minutes of real time, so run seeds one at
-a time on a busy machine.
+liveness stalls are open. One seed takes a few seconds in a debug build and the
+default batch of four takes a few minutes, so run batches one at a time on a
+busy machine.
 
 The same seed injects the same faults at the same virtual times. The brokers'
 own interleaving can still differ, so a failure can take more than one replay
