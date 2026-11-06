@@ -19,6 +19,7 @@ pub mod metrics;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
@@ -161,9 +162,23 @@ pub struct ShardOwnership {
     as_of: Option<tokio::time::Instant>,
     /// The feed seq the newest answer applied here brought this view to.
     checkpoint: Option<u64>,
+    /// Bumped after every change to `assignments` or `seeded`, so a reader
+    /// can tell nothing moved without taking the lock.
+    changes: Arc<AtomicU64>,
 }
 
 impl ShardOwnership {
+    /// A count that moves after every change to the assignments or to
+    /// [`Self::is_seeded`]. Read before reading the assignments: a change
+    /// made after the read then shows on the next one.
+    pub(crate) fn changes(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.changes)
+    }
+
+    fn changed(&self) {
+        self.changes.fetch_add(1, Ordering::Release);
+    }
+
     /// When the request behind the newest answer applied here started: every
     /// change the control plane committed before then is in this view.
     pub(crate) fn as_of(&self) -> Option<tokio::time::Instant> {
@@ -203,11 +218,16 @@ impl ShardOwnership {
                 let prior = prior_of(self.assignments.get(key), &next);
                 self.set_prior(key, prior);
                 self.assignments.insert(key.clone(), next);
+                self.changed();
                 true
             }
             None => {
                 self.priors.remove(key);
-                self.assignments.remove(key).is_some()
+                let removed = self.assignments.remove(key).is_some();
+                if removed {
+                    self.changed();
+                }
+                removed
             }
         }
     }
@@ -246,6 +266,7 @@ impl ShardOwnership {
         });
         self.set_prior(key, prior);
         self.assignments.insert(key.clone(), next);
+        self.changed();
         true
     }
 
@@ -308,6 +329,7 @@ impl ShardOwnership {
             .into_iter()
             .map(|assignment| (assignment.key.clone(), assignment))
             .collect();
+        self.changed();
     }
 
     /// The set each shard had right before its current assignment, where this
@@ -335,8 +357,8 @@ impl ShardOwnership {
         items: Vec<ShardAssignment>,
         first: &HashSet<ShardKey>,
     ) {
-        self.reset_marked(items, first);
         self.seeded = true;
+        self.reset_marked(items, first);
     }
 
     /// Whether the control plane's snapshot has been taken. See
