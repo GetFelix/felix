@@ -219,11 +219,12 @@ a broker opens a new stream's or cache's shard only once it knows the
 assignment is the shard's first, and it can tell that only from an
 incarnation above 0. Without the incarnations, no stream or quorum cache
 created after the finalize would open
-(`joint_fence_is_refused_until_incarnations_are_finalized`). No build reports
-either feature yet, so a finalize of either is refused
+(`joint_fence_is_refused_until_incarnations_are_finalized`). A broker reports
+both only with `FELIX_INTERNAL_ELECTION=true`, which is off by default, so a
+fleet that has not turned it on everywhere has a finalize of either refused
 (`the_election_features_cannot_be_finalized_yet`), and a new cluster does not
 start with them. A broker that offers the `ELECTION`
-peer capability reports it as `peer_election`, which no build does yet.
+peer capability reports it as `peer_election`, also only with that switch on.
 Every broker from #1737 on also reports `start_holders`: its leaders name, in
 each replica report, the followers holding the generation's start record
 (`holds_start`). Current brokers report `non_voting` too:
@@ -1053,8 +1054,8 @@ checks the first four itself.
    without `non_voting` would let a wiped copy vote and count its answers,
    so the check, not the order brokers and control planes are upgraded in,
    keeps a mixed fleet safe.
-2. Every serving broker reports `joint_fence` and `peer_election`. No release
-   does yet: they join a broker's report with the election driver.
+2. Every serving broker reports `joint_fence` and `peer_election`. A broker
+   reports them only with `FELIX_INTERNAL_ELECTION=true`, off by default.
 3. `generation_start`, `stream_incarnations` and `cache_incarnations` are
    finalized. A cluster created on 0.7 has all three; an upgraded one
    finalizes the incarnations first, or no stream or quorum cache created
