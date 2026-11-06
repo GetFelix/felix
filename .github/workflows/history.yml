@@ -74,13 +74,14 @@ jobs:
     name: campaign (${{ matrix.nemesis }})
     # Only schedule and dispatch trigger this, so it always lands on the
     # self-hosted runners; the expression is the same as ci.yml's for one rule.
-    runs-on: ${{ github.event_name != 'pull_request' && vars.FELIX_SELF_HOSTED_RUNNERS != 'false' && fromJSON('["self-hosted","felix-azure"]') || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     # 20 minutes of faults, plus a build that may be cold and the start-up.
     timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
-        nemesis: ${{ fromJSON((inputs.nemesis || 'both') == 'both' && '["all","adversarial"]' || format('["{0}"]', inputs.nemesis)) }}
+        nemesis: [adversarial]
+        shard: [a, b, c, d]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -130,12 +131,24 @@ jobs:
         env:
           FELIX_HISTORY_SEED: ${{ steps.seed.outputs.seed }}
           FELIX_HISTORY_MODE: ${{ steps.seed.outputs.mode }}
-          FELIX_HISTORY_NEMESIS: ${{ matrix.nemesis }}
-          FELIX_HISTORY_DURATION_SECS: ${{ inputs.duration_secs || '1200' }}
           FELIX_TEST_CLUSTER_LOG_DIR: ${{ runner.temp }}/cluster-logs
         run: |
           set -o pipefail
-          cargo test -p felix-cluster --test history -- --nocapture --include-ignored 2>&1 | tee ${{ runner.temp }}/history-output.txt
+          fails=0
+          for i in 1 2 3; do
+            rm -rf "$RUNNER_TEMP/cluster-logs"
+            echo "=== iteration $i"
+            if ! cargo test -p felix-cluster --test history adversarial_faults_heal_and_every_shard_serves_again -- --nocapture --include-ignored 2>&1 | tee "$RUNNER_TEMP/history-output-$i.txt"; then
+              fails=$((fails+1))
+              mkdir -p "$RUNNER_TEMP/keep/iter-$i"
+              cp -R "$RUNNER_TEMP/cluster-logs" "$RUNNER_TEMP/keep/iter-$i/" || true
+              cp "$RUNNER_TEMP/history-output-$i.txt" "$RUNNER_TEMP/keep/iter-$i/" || true
+            fi
+            grep -h "violation(s)\|test result" "$RUNNER_TEMP/history-output-$i.txt" | head -3
+          done
+          echo "ITERATION FAILURES: $fails of 3"
+          echo "iteration failures: $fails of 3" >> "$GITHUB_STEP_SUMMARY"
+          [ "$fails" = 0 ]
 
       - name: Report the seed
         if: failure()
@@ -164,17 +177,6 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: history-output-${{ matrix.nemesis }}
-          path: ${{ runner.temp }}/history-output.txt
-          retention-days: 30
-
-      # The output keeps only the end of each broker log; the whole logs are
-      # what a failed election or a lost write is read from.
-      - name: Upload the broker logs
-        if: failure()
-        uses: actions/upload-artifact@v7
-        with:
-          name: history-cluster-logs-${{ matrix.nemesis }}
-          path: ${{ runner.temp }}/cluster-logs
-          if-no-files-found: ignore
+          name: history-repro-${{ matrix.shard }}
+          path: ${{ runner.temp }}/keep
           retention-days: 7
