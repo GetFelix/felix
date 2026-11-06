@@ -1,8 +1,8 @@
-//! The `felix-controlplane` binary: `migrate` and `admin` as subcommands,
+//! The `felix-controlplane` binary: `migrate` as a subcommand,
 //! otherwise the server, configured from the environment and an optional
 //! YAML file.
 use felix_common::lifecycle;
-use felix_controlplane_service::{admin, config, migrate, server};
+use felix_controlplane_service::{config, migrate, server};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -17,9 +17,9 @@ async fn main() -> anyhow::Result<()> {
         args.remove(0);
         return migrate::run(args).await;
     }
+    // The old operator commands: refuse rather than start a second server.
     if args.first().map(String::as_str) == Some("admin") {
-        args.remove(0);
-        return admin::run(args).await;
+        anyhow::bail!("`felix-controlplane admin` moved to `felixctl`; see `felixctl --help`");
     }
 
     let config = config::ControlPlaneConfig::from_env_or_yaml().expect("control plane config");

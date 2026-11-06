@@ -2,6 +2,7 @@
 use super::*;
 
 mod cache_incarnation;
+mod dropped_hold;
 mod every_change;
 mod off_runtime;
 mod promotion;

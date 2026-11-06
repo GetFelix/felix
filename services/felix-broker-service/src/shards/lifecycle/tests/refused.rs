@@ -69,6 +69,7 @@ async fn a_promised_generation_is_recorded_as_refused() {
         Some(RefusedGeneration {
             generation: 4,
             promised_to: "broker-b".to_string(),
+            ballot: 0,
         }),
     );
     drop(held);

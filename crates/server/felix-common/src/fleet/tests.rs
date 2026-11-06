@@ -186,3 +186,95 @@ fn election_features_are_declared_and_not_implemented() {
         ]
     );
 }
+
+#[test]
+fn a_seeded_gate_knows_what_it_was_seeded_with_and_nothing_else() {
+    let reported = [
+        GENERATION_START.name(),
+        MAJORITY_ACK.name(),
+        HEAD_TRIM.name(),
+    ];
+    // `fenced_caches` is persisted but not reported: a gate only enables what
+    // this broker reports.
+    let gate = FleetGate::seeded(reported, [GENERATION_START.name(), FENCED_CACHES.name()]);
+    let view = gate.view();
+    assert!(!view.adopted(), "a seed is not a registration");
+    assert_eq!(view.decides(GENERATION_START), Some(true));
+    // Not persisted: it may have been finalized since, so it is undecided,
+    // though a plain `supports` reads it as off.
+    assert_eq!(view.decides(MAJORITY_ACK), None);
+    assert!(!view.supports(MAJORITY_ACK));
+    // Not reported: the fleet never enables it here.
+    assert_eq!(view.decides(FENCED_CACHES), Some(false));
+    assert_eq!(gate.enabled(), vec![GENERATION_START.name()]);
+
+    // A registration's answer is exact and decides everything.
+    gate.restart([MAJORITY_ACK.name()]);
+    let view = gate.view();
+    assert!(view.adopted());
+    assert_eq!(view.decides(MAJORITY_ACK), Some(true));
+    assert_eq!(view.decides(GENERATION_START), Some(false));
+    assert_eq!(view.decides(HEAD_TRIM), Some(false));
+}
+
+#[test]
+fn an_unseeded_gate_decides_only_once_adopted() {
+    let gate = FleetGate::new([MAJORITY_ACK.name()]);
+    assert_eq!(gate.view().decides(MAJORITY_ACK), None);
+    gate.restart(std::iter::empty());
+    assert_eq!(gate.view().decides(MAJORITY_ACK), Some(false));
+}
+
+/// How a broker that seeded its gate but has not registered may read each
+/// feature it was not seeded with as off (see [`IMPLEMENTED`]). A feature
+/// added without a place here fails this test.
+#[test]
+fn every_feature_is_safe_to_read_as_off_before_registration() {
+    enum Off {
+        /// Seeded whenever `replica_election` is, which a pass needs before
+        /// it decides on a seeded gate (`Serving::decided`).
+        ElectionPrerequisite,
+        /// Off refuses, or keeps a format every broker still reads.
+        FailsClosed,
+        /// Read per shard: `Serving::decided` for `fenced_caches`.
+        CheckedPerShard,
+        /// Read by the control plane only, or a report marker no gate reads.
+        NotRead,
+    }
+    let class = |feature: FleetFeature| match feature.name() {
+        "generation_start"
+        | "majority_ack"
+        | "lease_free_reads"
+        | "joint_fence"
+        | "stream_incarnations"
+        | "cache_incarnations" => Off::ElectionPrerequisite,
+        "head_trim"
+        | "atomic_commit"
+        | "publisher_principal"
+        | "group_cursor_dependencies"
+        // Off, a clustered broker refuses records with headers.
+        | "record_headers"
+        // Off, a broker does not stand or re-send kept sets.
+        | "replica_election" => Off::FailsClosed,
+        "jump_hash_routing" | "peer_election" | "start_holders" | "non_voting" => Off::NotRead,
+        "fenced_caches" => Off::CheckedPerShard,
+        other => panic!("classify `{other}` before a broker can read it as off unregistered"),
+    };
+    // Everything a broker reports, so everything a gate can enable.
+    for feature in IMPLEMENTED
+        .iter()
+        .chain(ELECTION_REPORTED)
+        .chain([&START_HOLDERS, &NON_VOTING])
+        .copied()
+    {
+        if matches!(class(feature), Off::ElectionPrerequisite) {
+            assert!(
+                prerequisites(REPLICA_ELECTION.name()).contains(&feature),
+                "{feature} is not a prerequisite of replica_election",
+            );
+        }
+    }
+    for feature in prerequisites(REPLICA_ELECTION.name()) {
+        assert!(matches!(class(*feature), Off::ElectionPrerequisite));
+    }
+}

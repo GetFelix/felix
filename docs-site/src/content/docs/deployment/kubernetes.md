@@ -464,7 +464,7 @@ serving fine.
 The control plane's metadata lives in the database (back it up whole, restore
 it whole) or, under Raft, in the members' volumes: snapshot those at the
 storage layer, and keep the state file the group was seeded from, since
-`felix-controlplane migrate import --overwrite` onto a fresh group is the
+`felixctl controlplane migrate import --overwrite` onto a fresh group is the
 recovery beyond quorum loss (see [Metadata Raft](/architecture/metadata-raft/)).
 That state file holds every tenant's signing-key seeds in plaintext, so keep it
 as secret as the keys, and an export taken while metadata is being written is not
@@ -472,7 +472,7 @@ a consistent point.
 Broker volumes hold the streams themselves. Volume snapshots are not a
 consistent backup: nothing coordinates them with each other or with the
 metadata, and a leader's copy can hold records no majority acknowledged. Take a
-backup point with `felix-controlplane admin backup-point`, copy each leader's
+backup point with `felixctl backup-point`, copy each leader's
 shard directories against it, and cut them back with `felix-broker
 restore-point` on restore. See [Backup and restore](/deployment/backup-and-restore/).
 

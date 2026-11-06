@@ -331,8 +331,8 @@ lack the feature as `lacking` and features to finalize first as `requires`:
 ```
 
 Finalizing is one-way: after it, a broker that registers without the feature
-is refused with 409 naming it. `felix-controlplane admin features` and
-`admin features finalize <feature> [--dry-run]` drive the same routes. See
+is refused with 409 naming it. `felixctl features ls` and
+`felixctl features finalize <feature> [--dry-run]` drive the same routes. See
 [Upgrades and compatibility](/deployment/upgrades/).
 
 `cluster:*` sits outside the tenant hierarchy and no tenant scope contains it,
@@ -371,7 +371,7 @@ cover.
 
 What an operator uses to steer shard moves; the walk-through is
 [Moving shards by hand](/deployment/moving-shards/), and
-`felix-controlplane admin` is a command-line client of these endpoints. Reads
+`felixctl` (`shard moves`, `shard move`, `placement ...`) is a command-line client of these endpoints. Reads
 take `node.view:cluster:*`; the rest take `node.manage:cluster:*`.
 
 | Endpoint | What it does |
@@ -717,7 +717,7 @@ graph TB
     end
     Store[("Postgres, or the Raft group<br/>the instances form")]
     Brokers["Brokers"]
-    Operators["Operators<br/>(felix-controlplane admin, curl)"]
+    Operators["Operators<br/>(felixctl, curl)"]
 
     CP1 --> Store
     CP2 --> Store

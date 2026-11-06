@@ -1,5 +1,5 @@
 //! `GET /backup/offsets`: the committed offset of every log of every shard
-//! this broker leads, for `felix-controlplane admin backup-point`.
+//! this broker leads, for `felixctl backup-point`.
 //!
 //! Read-only, like `/replication/halted` beside it, because this listener has
 //! no authentication. It says how far each shard is committed and nothing

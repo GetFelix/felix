@@ -319,9 +319,14 @@ pub(super) struct ShardPass<'a> {
     pub(super) drain_pending: bool,
     /// No follower that could still catch up holds all of the log.
     pub(super) behind: bool,
-    /// This broker's own ballot holds this newer generation, so it cannot
-    /// count a mark at the pass's generation.
-    pub(super) ballot_above: Option<u64>,
+    /// This broker's own copy holds this newer generation, so it cannot
+    /// count a mark at the pass's generation, and whether its ballot names
+    /// this broker.
+    pub(super) ballot_above: Option<(u64, bool)>,
+    /// The newest ballot a follower named when it fenced this leader, at or
+    /// past the pass's generation. That follower refuses every batch until
+    /// the route moves past the ballot, so the set runs a copy short.
+    pub(super) follower_ballot: Option<u64>,
 }
 
 impl ShardPass<'_> {
@@ -346,6 +351,7 @@ impl ShardPass<'_> {
             drain_pending: false,
             behind: false,
             ballot_above: None,
+            follower_ballot: None,
         }
     }
 }
@@ -544,10 +550,10 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     // Placement replaces a leader on its followers' word only when this
     // says nothing it serves rests on its lease.
     let by_round = by_followers && reads_by_round;
-    // A pass made before registration answered saw an empty fleet, not the
-    // real one: it decided nothing, and group writes stay off the lease
-    // until a pass that did.
-    if serving.adopted {
+    // A pass made before registration answered, on a view missing a feature
+    // it reads, may not have seen the real fleet: it decided nothing, and
+    // group writes stay off the lease until a pass that did.
+    if serving.decided(key.kind) {
         fence.passed(mark_key, route.generation);
     }
     // Read from the cursors the last pass left: a follower halted this way
@@ -693,18 +699,36 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     // In the second case the leader stops counting its own copy, so its marks
     // stall while its followers confirm; the driver reports the generation
     // refused if it lasts, to be named again one up (#1933). Not while a
-    // standing is under way at that ballot: it may yet open there.
+    // standing is under way at that ballot: it may yet open there. A ballot
+    // naming another node means this leader answered that node's fence and
+    // stepped down; if that node withdraws, nothing else reports the shard,
+    // so it is reported too, after a longer wait (#1951).
     let ballot_above = {
         let accepted = log.accepted_generation();
+        let own = log
+            .accepted_leader()
+            .is_some_and(|leader| *leader == *route.leader.node_id);
         (accepted > route.generation
-            && log
-                .accepted_leader()
-                .is_some_and(|leader| *leader == *route.leader.node_id)
             && marks
                 .elections()
                 .is_none_or(|elections| elections.candidacy(key, accepted).is_none()))
-        .then_some(accepted)
+        .then_some((accepted, own))
     };
+    // A follower fenced for a candidate's ballot refuses this leader for the
+    // rest of the generation. If the candidate withdrew, nothing moves the
+    // route on, so it is reported refused like a ballot in its own copy (#1949).
+    let follower_ballot = entry
+        .followers
+        .iter()
+        .filter(|cursor| cursor.halted == Some(crate::Halt::Fenced))
+        .filter_map(|cursor| cursor.fenced_by)
+        .filter(|&ballot| ballot >= route.generation)
+        .max()
+        .filter(|&ballot| {
+            marks
+                .elections()
+                .is_none_or(|elections| elections.candidacy(key, ballot).is_none())
+        });
     // A set change the control plane has not taken yet: a record is held
     // only when a majority of the set being left holds it too (rule 8).
     let pending = route
@@ -1880,6 +1904,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         drain_pending: route.draining && !drained,
         behind,
         ballot_above,
+        follower_ballot,
     }
 }
 
@@ -2771,6 +2796,7 @@ pub(super) fn follow_storage(
     let fenced = cursor.halted.filter(|halt| *halt == crate::Halt::Fenced);
     *cursor = FollowerCursor {
         halted: fenced,
+        fenced_by: fenced.and(cursor.fenced_by),
         storage_id: seen.storage,
         incarnation: seen.incarnation,
         ..FollowerCursor::new(cursor.node_id.clone(), cursor.addr, base)

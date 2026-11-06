@@ -61,6 +61,7 @@ impl CaughtUp for Fenced {
         (self.refused && generation == 3).then(|| RefusedGeneration {
             generation: 3,
             promised_to: "broker-d".to_string(),
+            ballot: 0,
         })
     }
 }

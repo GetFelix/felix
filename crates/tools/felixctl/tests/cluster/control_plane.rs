@@ -379,6 +379,177 @@ async fn moving_shards_draining_nodes_and_pausing_placement() {
     assert_eq!(run.code, 5, "{}", run.stderr);
 }
 
+#[tokio::test]
+#[serial]
+async fn placement_views_and_fleet_features() {
+    let cluster = Cluster::start(ClusterConfig {
+        nodes: 1,
+        streams: vec![StreamSpec::new("orders", 1)],
+        ..Default::default()
+    })
+    .await
+    .expect("start cluster");
+    let env = Env::new(&cluster);
+
+    let run = as_operator(&env, &cluster, vec!["shard", "moves"])
+        .await
+        .ok();
+    assert_eq!(run.stdout.trim(), "no moves in progress");
+    let run = as_operator(&env, &cluster, vec!["placement", "plan", "--json"])
+        .await
+        .ok();
+    assert!(run.json()["items"].is_array(), "{}", run.stdout);
+    let run = as_operator(&env, &cluster, vec!["placement", "plan"])
+        .await
+        .ok();
+    assert!(!run.stdout.trim().is_empty());
+    let run = as_operator(&env, &cluster, vec!["placement", "replication"])
+        .await
+        .ok();
+    assert_eq!(run.stdout.trim(), "every shard has its replication factor");
+
+    let run = as_operator(&env, &cluster, vec!["features", "ls"])
+        .await
+        .ok();
+    assert!(run.stdout.contains("serving brokers: 1"), "{}", run.stdout);
+    let run = as_operator(&env, &cluster, vec!["features", "ls", "--json"])
+        .await
+        .ok();
+    assert!(run.json()["supported"].is_array(), "{}", run.stdout);
+
+    // A dry run answers whether or not the feature can be finalized.
+    let run = as_operator(
+        &env,
+        &cluster,
+        vec!["features", "finalize", "no_such_feature", "--dry-run"],
+    )
+    .await
+    .ok();
+    assert!(
+        run.stdout
+            .contains("dry run: no_such_feature cannot be finalized"),
+        "{}",
+        run.stdout
+    );
+    // One-way, so never without --yes off a terminal.
+    let run = as_operator(
+        &env,
+        &cluster,
+        vec!["features", "finalize", "no_such_feature"],
+    )
+    .await;
+    assert_eq!(run.code, 2, "{}", run.stderr);
+    let run = as_operator(
+        &env,
+        &cluster,
+        vec!["features", "finalize", "no_such_feature", "--yes"],
+    )
+    .await;
+    assert_eq!(run.code, 4, "{}", run.stderr);
+}
+
+/// A broker's `/backup/offsets` answered from a fixed body, on a port of its own.
+async fn serve_offsets(body: String) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let url = format!("http://{}", listener.local_addr().expect("addr"));
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            let body = body.clone();
+            tokio::spawn(async move {
+                let mut request = [0u8; 2048];
+                let _ = socket.read(&mut request).await;
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+                     content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(reply.as_bytes()).await;
+            });
+        }
+    });
+    url
+}
+
+#[tokio::test]
+#[serial]
+async fn a_backup_point_records_each_shards_committed_offset() {
+    let cluster = Cluster::start(ClusterConfig {
+        nodes: 1,
+        streams: vec![StreamSpec::new("orders", 1)],
+        ..Default::default()
+    })
+    .await
+    .expect("start cluster");
+    let env = Env::new(&cluster);
+    let run = as_operator(
+        &env,
+        &cluster,
+        vec!["shard", "ls", "--name", "orders", "--json"],
+    )
+    .await
+    .ok();
+    let shard = run.json()["shards"][0].clone();
+    let leader = shard["leader"].as_str().expect("leader").to_string();
+    let url = serve_offsets(
+        serde_json::json!({
+            "shards": [{
+                "tenant_id": shard["tenant_id"], "namespace": shard["namespace"],
+                "name": "orders", "shard": 0, "kind": "stream",
+                "generation": shard["generation"], "logs": { "records": 41 },
+            }],
+            "skipped": [],
+        })
+        .to_string(),
+    )
+    .await;
+
+    let dir = tempfile::tempdir().expect("dir");
+    let file = dir.path().join("point.json");
+    let file_arg = file.to_str().unwrap();
+    let broker = format!("{leader}={url}");
+    let run = as_operator(
+        &env,
+        &cluster,
+        vec![
+            "backup-point",
+            "nightly",
+            "--out",
+            file_arg,
+            "--broker",
+            &broker,
+        ],
+    )
+    .await
+    .ok();
+    assert!(run.stdout.contains("wrote "), "{}", run.stdout);
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&file).expect("manifest")).expect("json");
+    assert_eq!(manifest["name"], "nightly");
+    assert_eq!(manifest["shards"][0]["logs"]["records"], 41);
+    assert_eq!(manifest["shards"][0]["leader"], leader.as_str());
+
+    // A leader with no address the control plane can use needs --broker.
+    let run = as_operator(
+        &env,
+        &cluster,
+        vec![
+            "backup-point",
+            "again",
+            "--out",
+            file_arg,
+            "--json",
+            "--broker",
+            &broker,
+        ],
+    )
+    .await
+    .ok();
+    assert_eq!(run.json()["manifest"]["name"], "again");
+}
+
 /// Run `felixctl` with a token allowed `node.manage`, which moves, drains and
 /// pausing placement need.
 async fn as_operator(env: &Env, cluster: &Cluster, mut args: Vec<&str>) -> Run {

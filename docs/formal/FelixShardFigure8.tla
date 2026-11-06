@@ -54,6 +54,7 @@ SeededInit ==
     /\ joining = {}
     /\ leaving = {}
     /\ joinedAt = 0
+    /\ cpGone = FALSE
     /\ CounterInit
     \* Seeded histories are checked without self-election.
     /\ opened = {}
@@ -65,6 +66,7 @@ SeededInit ==
     /\ cpNextGen = 0
     /\ cutOver = <<>>
     /\ splits = 0
+    /\ cpLeft = <<{}>>
     /\ IdInit
 \* The same history one leadership further, with no start records in it: the
 \* fleet finalized `generation_start` only after c's promotion. c was
@@ -111,6 +113,7 @@ SeededCutOverInit ==
     /\ joining = {}
     /\ leaving = {}
     /\ joinedAt = 0
+    /\ cpGone = FALSE
     /\ CounterInit
     \* Seeded histories are checked without self-election.
     /\ opened = {}
@@ -122,6 +125,7 @@ SeededCutOverInit ==
     /\ cpNextGen = 0
     /\ cutOver = <<>>
     /\ splits = 0
+    /\ cpLeft = <<{}>>
     /\ IdInit
 \* The code moves no mark while it fences: nothing ships until it opens.
 NoAckWhileFencing == \A m \in Brokers : fencing[m] => hwm'[m] = hwm[m]

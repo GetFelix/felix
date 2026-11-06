@@ -113,8 +113,10 @@ pub enum MoveStep {
     /// for a shard it learned from a snapshot, or it or a replica of its set
     /// already accepted a newer generation no assignment named. It is named
     /// again one generation up, on the same set, whose set before is the one
-    /// it is named on now.
-    SetUnknown,
+    /// it is named on now, or at `at_least` when that is higher: past a newer
+    /// ballot its own copy holds for another node, which a fence one up would
+    /// find promised away and wait on. 0 when there is none.
+    SetUnknown { at_least: u64 },
     /// The leader's broker is live, but the leader has shown no progress at
     /// its generation for `MovePolicy::stuck_leader_millis`: it is named
     /// again one generation up, on the same set, as for `SetUnknown`. A new
@@ -133,6 +135,15 @@ pub enum MoveStep {
 }
 
 impl MoveStep {
+    /// The generation the step's write takes at least, above the next one.
+    /// 0 for the next.
+    pub fn at_least(&self) -> u64 {
+        match self {
+            Self::SetUnknown { at_least } => *at_least,
+            _ => 0,
+        }
+    }
+
     pub fn label(&self) -> &'static str {
         match self {
             Self::Stage { .. } => "stage",
@@ -156,7 +167,7 @@ impl MoveStep {
             Self::TakePendingSet => "take_pending_set",
             Self::PendingSetTimedOut => "pending_set_timed_out",
             Self::ElectionRefused => "election_refused",
-            Self::SetUnknown => "set_unknown",
+            Self::SetUnknown { .. } => "set_unknown",
             Self::Stuck { .. } => "stuck",
             Self::PendingSetDropped => "pending_set_dropped",
             Self::PendingSetCancelled => "pending_set_cancelled",

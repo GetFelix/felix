@@ -50,6 +50,7 @@ fn counting_control_plane(
             token: None,
             incarnation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             storage_id: None,
+            held: None,
         },
         sizes,
         server,
@@ -379,6 +380,7 @@ fn judging_control_plane(
             token: None,
             incarnation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             storage_id: None,
+            held: None,
         },
         server,
     )
@@ -470,6 +472,7 @@ async fn a_report_names_the_leaders_own_storage_identity() {
         token: None,
         incarnation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1)),
         storage_id: Some(own),
+        held: None,
     };
     let mut sent = report("s");
     sent.storage_ids = vec![("broker-b".to_string(), StorageId::from_bytes([9; 16]))];
@@ -521,6 +524,7 @@ async fn a_report_names_the_pending_set_it_started() {
         token: None,
         incarnation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1)),
         storage_id: None,
+        held: None,
     };
     let started = report("s").with_joint_start(Some(5));
 
@@ -570,6 +574,39 @@ fn the_followers_holding_the_start_are_those_past_it_on_every_log() {
         vec!["broker-c".to_string()]
     );
     assert!(names(4, Some((&counters, None))).is_empty());
+}
+
+/// **A held reporter announces nothing.** A broker that started from its
+/// control-plane view must not tell the control plane its storage id or
+/// offsets before the control plane has checked the directory is not a
+/// restored copy, so every report is refused unsent until it is released.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_held_reporter_sends_nothing_until_released() {
+    let (mut to, sizes, server) = counting_control_plane(
+        axum::http::StatusCode::NO_CONTENT,
+        std::time::Duration::ZERO,
+    );
+    let held = CancellationToken::new();
+    to.held = Some(held.clone());
+    let shutdown = CancellationToken::new();
+    let (reporter, task) = Reporter::spawn(to, shutdown.clone());
+
+    assert!(!reporter.send(report("s0")).await, "a held report landed");
+    assert!(
+        sizes.lock().is_empty(),
+        "a held report reached the control plane"
+    );
+
+    held.cancel();
+    assert!(
+        reporter.send(report("s0")).await,
+        "a released report did not land"
+    );
+    assert_eq!(*sizes.lock(), vec![1]);
+
+    shutdown.cancel();
+    let _ = task.await;
+    server.abort();
 }
 
 /// **A refusal is repeated at its generation and ends at the next.** A later
@@ -694,6 +731,7 @@ async fn a_fake_link_carries_a_report() {
             token: None,
             incarnation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             storage_id: None,
+            held: None,
         },
         shutdown.clone(),
     );
