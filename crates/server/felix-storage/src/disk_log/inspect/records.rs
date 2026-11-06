@@ -169,7 +169,7 @@ pub fn first_damage(dir: &Path, config: &LogConfig) -> Result<Option<Stop>> {
 fn retrying<T>(dir: &Path, read: impl Fn() -> Result<T>) -> Result<T> {
     match read() {
         Err(StorageError::Io(err))
-            if err.kind() == std::io::ErrorKind::NotFound && crate::fs::is_dir(&dir) =>
+            if err.kind() == std::io::ErrorKind::NotFound && crate::fs::is_dir(dir) =>
         {
             read()
         }

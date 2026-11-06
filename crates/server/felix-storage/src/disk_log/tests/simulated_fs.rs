@@ -115,7 +115,7 @@ async fn recover(dir: &Path, fsync_mode: FsyncMode, acknowledged: u64, appended:
 async fn on_commit_acknowledged_records_survive_every_crash() {
     for seed in 0..24 {
         let sim = Sim::new(seed);
-        let log = DiskLog::open(&sim.log_dir(), KEY, config(FsyncMode::OnCommit)).expect("open");
+        let log = DiskLog::open(sim.log_dir(), KEY, config(FsyncMode::OnCommit)).expect("open");
         append(&log, 0, 80).await;
         let acknowledged = log.durable_offset();
         assert_eq!(
@@ -140,7 +140,7 @@ async fn an_unsynced_tail_is_repaired_and_the_synced_prefix_survives() {
     let mut whole = 0;
     for seed in 0..48 {
         let sim = Sim::new(1_000 + seed);
-        let log = DiskLog::open(&sim.log_dir(), KEY, config(FsyncMode::None)).expect("open");
+        let log = DiskLog::open(sim.log_dir(), KEY, config(FsyncMode::None)).expect("open");
         append(&log, 0, 20).await;
         log.sync().await.expect("sync");
         let acknowledged = log.durable_offset();

@@ -251,7 +251,7 @@ pub fn inspect_shard(dir: &Path, config: &LogConfig) -> Result<ShardReport> {
     let (startup, actions) = verdict(&plan);
 
     let mut segments = Vec::new();
-    if crate::fs::exists(&dir) {
+    if crate::fs::exists(dir) {
         for id in recovery::discover_segment_ids(dir)? {
             segments.push(inspect_segment(dir, &label, config, id)?);
         }

@@ -319,7 +319,7 @@ fn a_crash_is_the_same_for_the_same_seed() {
         durable_file(&sim.path("seg"), &bytes(PAGE, 1));
         let file = OpenOptions::new()
             .write(true)
-            .open(&sim.path("seg"))
+            .open(sim.path("seg"))
             .expect("open");
         io::write_at(&file, &bytes(4 * PAGE, 2), PAGE as u64).expect("write");
         fs::write(sim.path("other"), b"x").expect("write");
@@ -409,7 +409,7 @@ fn crash_replaces_the_tree_and_orphans_old_handles() {
     durable_file(&sim.path("f"), b"kept");
     let stale = OpenOptions::new()
         .write(true)
-        .open(&sim.path("f"))
+        .open(sim.path("f"))
         .expect("open");
     sim.crash(1);
     io::write_all(&stale, b"lost").expect("the old handle still writes");
@@ -423,7 +423,7 @@ fn in_order_writeback_never_leaves_a_hole() {
         durable_file(&sim.path("seg"), &bytes(PAGE, 1));
         let file = OpenOptions::new()
             .write(true)
-            .open(&sim.path("seg"))
+            .open(sim.path("seg"))
             .expect("open");
         io::write_at(&file, &bytes(5 * PAGE, 2), PAGE as u64).expect("write");
         let tree = crate::fs::tree_at(&sim.root).expect("tree");
