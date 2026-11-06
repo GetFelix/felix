@@ -663,6 +663,11 @@ async fn a_moved_shard_is_stood_on_once_its_set_opened() {
         ctx.router = router(7);
         if !opened {
             assert_eq!(
+                standing_sets(&ctx, &log, &kept),
+                Err("the kept replica set keeps earlier sets"),
+                "refused for the earlier sets, not another reason"
+            );
+            assert_eq!(
                 stand(&ctx, &key(), &route_of(&ctx)).await,
                 Round::Ineligible
             );
