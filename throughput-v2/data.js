@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793938609402,
+  "lastUpdate": 1793940364754,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -46800,6 +46800,58 @@ window.BENCHMARK_DATA = {
             "range": "7147.70",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1594790.04\nmean: 1596397.56\nstdev: 7147.70\ncv: 0.45%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "78a01c1b112850038ba526f9e7acd5a82219e768",
+          "message": "feat(broker): a broker restarted while the control plane is down rejoins elections (#1196) (#1877)\n\n* feat(broker): a broker restarted while the control plane is down rejoins elections (#1196)\n\n* docs(broker): a broker started from its view may reopen a shard the view names it leader of (#1196)\n\nReview follow-up: the docs said it only votes and follows; the driver can\nstill reopen at the view's generation. Drop the now-dead branch in the\ncluster test.",
+          "timestamp": "2026-11-05T19:56:44-08:00",
+          "tree_id": "b180e83146f1251fb548773315bbbbf7d38d2f46",
+          "url": "https://github.com/GetFelix/felix/commit/78a01c1b112850038ba526f9e7acd5a82219e768"
+        },
+        "date": 1793940363943,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 346392.62,
+            "range": "14634.19",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 346392.62\nmean: 356017.55\nstdev: 14634.19\ncv: 4.11%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 346392.62,
+            "range": "14634.19",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 346392.62\nmean: 356017.55\nstdev: 14634.19\ncv: 4.11%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79164.78,
+            "range": "587.81",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79164.78\nmean: 79437.60\nstdev: 587.81\ncv: 0.74%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 791647.82,
+            "range": "5878.13",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 791647.82\nmean: 794376.03\nstdev: 5878.13\ncv: 0.74%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
