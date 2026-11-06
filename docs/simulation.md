@@ -58,9 +58,13 @@ RUSTFLAGS="--cfg tokio_unstable" FELIX_SIM_SEED=<n> FELIX_SIM_HISTORY=run1.txt \
 read) to a file, so two runs can be diffed.
 
 Several things the brokers do would otherwise make two runs differ, and under
-the simulator each is held to the run's one thread and its seed. Everything is
-gated so a broker outside the simulator is unchanged: a plain release build
-compiles the simulated paths out.
+the simulator each is held to the run's one thread and its seed. Only some of
+this is gated. The seeded randomness (`felix_common::random`), the retry
+jitter, the blocking-work runner and the clock hook exist only in debug builds
+or under the `felix-common/sim` feature; a plain release build does not have
+them. Two changes run in every build: passes over routing tables and
+assignment sets walk in key order, and the deadlines and backoffs read
+`tokio::time::Instant` instead of `std::time::Instant`.
 
 - **Blocking work.** Shard opens, reads, rollovers and the log's append and
   flush threads run on real threads in a broker, and finish in real time.
@@ -88,9 +92,12 @@ compiles the simulated paths out.
   that flag a replay still has the same faults and operations, but a
   timing-sensitive failure may need a few replays to show again.
 
-A replay is exact only as far as these cover. Storage still reads the host
-clock in a few places and does real file I/O, and the control plane draws a few
-ids from the OS; a run can differ if one of those decides something.
+Replay is not exact yet. Known gaps: storage reads the host clock in a few
+places and does real file I/O, and the control plane draws a few ids from the
+OS. There is at least one more gap nobody has found: seed 59 still diverges by
+about 2 ms around 10.5 s of virtual time, and the cause is unknown. A replay
+can differ from the original run, so a failure may need a few replays to show
+again.
 
 Seeds known to fail are kept as ignored tests named after the issue that
 tracks them.

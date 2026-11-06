@@ -23,9 +23,10 @@
 //! the seed (`felix_common::jitter`, `felix_common::random`), wall time is
 //! virtual (`felix_common::clock::system_time`), and passes over routing
 //! tables and assignment sets walk in key order. Built with
-//! `--cfg tokio_unstable`, `select!` is seeded too. What is left is storage
-//! reading the host clock and the control plane's ids, so a replay can still
-//! differ if one of those decides something.
+//! `--cfg tokio_unstable`, `select!` is seeded too. Replay is not exact
+//! yet. Known gaps are storage reading the host clock and the control plane's
+//! ids. There is at least one unknown gap: seed 59 diverges by about 2 ms
+//! around 10.5 s.
 //! See `docs/simulation.md`.
 
 use std::sync::Arc;
