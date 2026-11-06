@@ -175,8 +175,8 @@ cargo test -p felix-cluster --lib history::
    ([Clock skew](#clock-skew)). While the faults run, the checkers marked
    "every second" below sample the cluster.
 3. **Heal and settle.** Every link is healed, the control plane answers again
-   and crashed brokers restart. Skewed clocks stay skewed. The cluster then has 60 virtual seconds to get
-   every shard served again. The clients keep running until second 120.
+   and crashed brokers restart. Skewed clocks stay skewed. The cluster then
+   has 60 virtual seconds to get every shard served again. The clients keep running until second 120.
 4. **Check.** Clients stop, work in flight drains for 20 seconds, a last read
    takes each shard and cache key, and the checkers below run on the clients'
    history and the brokers' state.
@@ -502,15 +502,25 @@ cluster harness.
 | --- | --- | --- | --- |
 | `off` (default) | 1x | 0 | |
 | `bounded` | 0.8x to 1.2x | within 1 s | Lease safety assumes a bound on drift rate, and its margins are checked against clocks that drift by a quarter ([replication-design.md](replication-design.md#the-clock-assumption-stated-precisely)). Lease-claim tokens allow 2 s of skew between two nodes ([auth.md](auth.md)). |
-| `unbounded` | 0.25x to 0.7x, or 1.3x to 4x | within 30 s | Past both bounds, to show what breaks there. |
+| `unbounded` | 0.25x to 0.7x, or 1.3x to 4x | up to 30 s | Past the rate bound, with wall clocks drawn from a much wider range, to show what breaks there. |
 
-A run draws each node's starting rate and offset from the seed, then every 3
-to 12 seconds of the fault window picks a node and either steps its wall clock
+A run draws each node's starting rate and offset from the seed, then from 2 to
+10 seconds in, and every 3 to 12 seconds after that until the fault window
+ends, picks a node and either steps its wall clock
 to a new offset or changes its lease clock's rate, within the same bounds. Every
 change is in the trace (`clock: b2 wall clock steps to -420 ms`). The
 schedule has its own stream of the seed, so turning skew on moves no other
-fault. A `bounded` seed that breaks a history or cluster check is a bug in
-Felix; an `unbounded` one is expected to.
+fault. A `bounded` seed that breaks the history checker or a safety check
+(`AtMostOneServing`, `AckedHeldByLeader`) is a bug in Felix; an `unbounded`
+one is expected to. Liveness checks such as `ElectionSettles` also fail on
+some seeds with skew off, so compare against an `off` run of the same seed
+before blaming the clocks.
+
+The wall-clock bound matters only where two nodes compare wall times. The
+sim's clients claim no leases and set no cache TTLs yet, so today wall skew
+reaches the control plane's heartbeat stamps (stamped and judged on its own
+clock), record and retention times, and the broker's token-expiry check. No
+cross-node wall-time comparison is exercised yet.
 
 All nodes run in one process, so a clock read has to know whose code is
 asking. The harness marks the code it runs for a node: a broker's startup, a

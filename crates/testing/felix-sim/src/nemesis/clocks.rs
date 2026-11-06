@@ -9,6 +9,8 @@
 //!   clock assumption, stated precisely").
 //! - A wall clock sits within 1 second of true time, so two nodes disagree by
 //!   at most the 2 seconds of skew lease-token checks allow (`docs/auth.md`).
+//!   The sim's clients claim no leases yet, so no cross-node wall comparison
+//!   is exercised; see "Clock skew" in `docs/simulation.md`.
 //!
 //! [`ClockSkew::Unbounded`] goes past both, to show what breaks there.
 //!
@@ -38,7 +40,7 @@ pub enum ClockSkew {
     /// Within the bounds the docs claim (module docs).
     Bounded,
     /// Past them: lease clocks at 0.25x to 0.7x or 1.3x to 4x true speed,
-    /// wall clocks up to 30 seconds off.
+    /// wall clocks drawn from up to 30 seconds off.
     Unbounded,
 }
 
