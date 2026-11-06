@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793968043338,
+  "lastUpdate": 1793970502363,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -47216,6 +47216,58 @@ window.BENCHMARK_DATA = {
             "range": "72901.15",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 817745.87\nmean: 766741.04\nstdev: 72901.15\ncv: 9.51%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5b4d582268fd28c26e86742d8b073aaf5b3e23eb",
+          "message": "fix(broker): leading a shard again waits for a discarded hold to go idle (#2035)\n\nLeading a shard again waits (up to 1 s) for a discarded commit hold's release task to finish before reading the tail. Before this, a lead that ran ahead of that task did nothing: readers stayed open on the old log and the state view missed the dropped commit. A release still in flight after the wait leaves the shard closed and is retried on a later pass, never marked failed.",
+          "timestamp": "2026-11-06T13:00:32Z",
+          "tree_id": "68612be069b4d7b7822764e8245a37afec3695c5",
+          "url": "https://github.com/GetFelix/felix/commit/5b4d582268fd28c26e86742d8b073aaf5b3e23eb"
+        },
+        "date": 1793970501514,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 530451.84,
+            "range": "24055.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 530451.84\nmean: 517017.44\nstdev: 24055.59\ncv: 4.65%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 530451.84,
+            "range": "24055.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 530451.84\nmean: 517017.44\nstdev: 24055.59\ncv: 4.65%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 118265.64,
+            "range": "1574.30",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 118265.64\nmean: 118036.10\nstdev: 1574.30\ncv: 1.33%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1182656.42,
+            "range": "15743.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1182656.42\nmean: 1180361.04\nstdev: 15743.00\ncv: 1.33%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
