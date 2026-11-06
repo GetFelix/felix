@@ -50,9 +50,14 @@ It checks twenty-one rules:
     offset.
 11. Every record in the final log reaches a subscriber or shows up as a gap
     in its offsets, up to the end of the log.
-12. to 19. The appends and reads of a stream form no dependency cycle, the
-    anomalies Elle names G0, G1c, G-single and G2, plus the realtime form of
-    each (see below).
+12. No G0: append order alone forms no cycle.
+13. No G1c: append order and what reads saw form no cycle.
+14. No G1c-realtime: as 13, with real-time order as one of the edges.
+15. No G-single: no cycle has exactly one read that missed an append.
+16. No G-single-realtime: as 15, with real-time order as one of the edges.
+17. No G2: no cycle has two or more reads that missed an append.
+18. No G2-realtime: as 17, with real-time order as one of the edges.
+19. No G0-realtime: as 12, with real-time order as one of the edges.
 20. The puts, gets and deletes on a cache key can be put in one order that
     respects real time and behaves like a single variable.
 21. No two brokers open one shard for writes at the same generation. This
