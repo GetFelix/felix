@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793993461763,
+  "lastUpdate": 1793994422576,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -47580,6 +47580,58 @@ window.BENCHMARK_DATA = {
             "range": "20043.91",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1207986.19\nmean: 1200188.61\nstdev: 20043.91\ncv: 1.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e28821da736329f073f0d6951c848a1c0aeb7be7",
+          "message": "ci: split the TLA+ model job into ten shards (#2050)\n\nSplit the PR TLA+ model check into 10 shards instead of 7. The 0.7 spec growth had pushed the heaviest shard to the 60-minute PR timeout.",
+          "timestamp": "2026-11-06T19:28:56Z",
+          "tree_id": "554dbc463885f7f5c0eb1f499b507f3875ae12a6",
+          "url": "https://github.com/GetFelix/felix/commit/e28821da736329f073f0d6951c848a1c0aeb7be7"
+        },
+        "date": 1793994422011,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 521556.49,
+            "range": "15178.35",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 521556.49\nmean: 526480.72\nstdev: 15178.35\ncv: 2.88%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 521556.49,
+            "range": "15178.35",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 521556.49\nmean: 526480.72\nstdev: 15178.35\ncv: 2.88%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 117445.48,
+            "range": "4743.34",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 117445.48\nmean: 115613.26\nstdev: 4743.34\ncv: 4.10%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1174454.81,
+            "range": "47433.44",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1174454.81\nmean: 1156132.64\nstdev: 47433.44\ncv: 4.10%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
