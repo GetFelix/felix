@@ -47,6 +47,12 @@ pub(super) const MAX_CONTROLS_PER_STREAM: usize = 1024;
 /// of records until it is written; the rest wait their turn off the stream.
 const MAX_CONCURRENT_FETCHES_PER_STREAM: usize = 16;
 
+/// Record batches one stream may have being stored at once. Stored one at a
+/// time, a batch waited behind every other batch on its stream, so a leader's
+/// round trip grew with how many shards it was shipping while the store itself
+/// stayed fast (#1968). Past this the stream stops reading until one finishes.
+const MAX_CONCURRENT_BATCHES_PER_STREAM: usize = 16;
+
 /// What answers a peer's request.
 ///
 /// The broker implements it with `BrokerPeerHandler` (#106). A listener built
@@ -441,6 +447,7 @@ async fn serve_connection(
             let forwards = Arc::new(Semaphore::new(MAX_CONCURRENT_FORWARDS_PER_STREAM));
             let controls = Arc::new(Semaphore::new(MAX_CONTROLS_PER_STREAM));
             let fetches = Arc::new(Semaphore::new(MAX_CONCURRENT_FETCHES_PER_STREAM));
+            let batches = Arc::new(Semaphore::new(MAX_CONCURRENT_BATCHES_PER_STREAM));
             loop {
                 let request = tokio::select! {
                     _ = shutdown.cancelled() => break,
@@ -722,6 +729,39 @@ async fn serve_connection(
                         });
                         continue;
                     }
+                    // Batches for different logs have nothing to wait on each
+                    // other for, so they are stored side by side and answered
+                    // as they finish. Nothing relies on the stream's order: a
+                    // leader has one batch in flight per follower and log, and
+                    // spreads its batches over streams anyway. Bootstraps and
+                    // rebuilds replace a log, so they stay in turn below.
+                    request @ (InternalMessage::ReplicateRecords(_)
+                    | InternalMessage::ReplicateMarkedRecords(_)
+                    | InternalMessage::ReplicateGroupRecords(_)
+                    | InternalMessage::ReplicateDeadLetterRecords(_)
+                    | InternalMessage::ReplicateCounterRecords(_)
+                    | InternalMessage::ReplicateCacheRecords(_)) => {
+                        // The semaphore is never closed.
+                        let Ok(permit) = Arc::clone(&batches).acquire_owned().await else {
+                            break;
+                        };
+                        let handler = Arc::clone(&handler);
+                        let peer = ballot_identity(&offered, &identity);
+                        let send = Arc::clone(&send);
+                        let learner_acks = Arc::clone(&learner_acks);
+                        app.spawn(async move {
+                            let _permit = permit;
+                            answer_out_of_order(&send, async {
+                                let response = handler.handle_from(peer, request).await;
+                                for_caller(
+                                    response,
+                                    learner_acks.load(std::sync::atomic::Ordering::Relaxed),
+                                )
+                            })
+                            .await;
+                        });
+                        continue;
+                    }
                     // Off the pump's runtime; the pump only waits. Everything
                     // else on a stream is answered one request at a time.
                     request => {
@@ -777,6 +817,7 @@ async fn serve_connection(
                     tokio::join!(
                         forwards.acquire_many(MAX_CONCURRENT_FORWARDS_PER_STREAM as u32),
                         controls.acquire_many(MAX_CONTROLS_PER_STREAM as u32),
+                        batches.acquire_many(MAX_CONCURRENT_BATCHES_PER_STREAM as u32),
                     )
                 } => {}
             }

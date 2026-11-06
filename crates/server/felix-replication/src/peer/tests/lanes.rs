@@ -1,8 +1,12 @@
 //! A stream whose handler never returns must not stay wedged: the requester
-//! replaces it, and the listener gives it up once the requester has.
+//! replaces it, and the listener gives it up once the requester has. Record
+//! batches are stored side by side, so the requests that can wedge a stream
+//! are the ones still answered in turn, such as a bootstrap.
 
 use felix_transport::{QuicClient, TransportConfig};
-use felix_wire::internal::{Hello, PeerCapabilities, ReplicateOk, ReplicateRecords};
+use felix_wire::internal::{
+    Hello, PeerCapabilities, ReplicateBootstrap, ReplicateOk, ReplicateRecords,
+};
 
 use super::*;
 use crate::peer::codec::{Incoming, read_frame, write_frame};
@@ -27,15 +31,24 @@ pub(super) fn record(correlation_id: u64, first_offset: u64) -> InternalMessage 
     })
 }
 
-/// Answers every record at once, except one at [`STALL`], which it never
-/// answers.
+/// A bootstrap at `base_offset`: answered in turn on its stream.
+fn bootstrap(correlation_id: u64, base_offset: u64) -> InternalMessage {
+    InternalMessage::ReplicateBootstrap(ReplicateBootstrap {
+        correlation_id,
+        shard: shard(),
+        base_offset,
+    })
+}
+
+/// Answers everything at once, except a bootstrap at [`STALL`], which it
+/// never answers.
 struct Stalls;
 
 #[async_trait::async_trait]
 impl PeerRequestHandler for Stalls {
     async fn handle(&self, request: InternalMessage) -> InternalMessage {
-        if let InternalMessage::ReplicateRecords(records) = &request
-            && records.first_offset == STALL
+        if let InternalMessage::ReplicateBootstrap(offer) = &request
+            && offer.base_offset == STALL
         {
             std::future::pending::<()>().await;
         }
@@ -68,7 +81,7 @@ async fn a_stalled_handler_does_not_wedge_replication_on_its_connection() {
         ..config()
     });
 
-    let stalled = pool.request(PEER, listener.addr, record(0, STALL)).await;
+    let stalled = pool.request(PEER, listener.addr, bootstrap(0, STALL)).await;
     assert!(
         matches!(stalled, Err(PeerError::Timeout { .. })),
         "{stalled:?}"
@@ -134,7 +147,7 @@ pub(super) async fn connect(listener: &Listener) -> felix_transport::QuicConnect
 /// The `first_offset` that makes [`Slow`] take its time.
 const SLOW: u64 = 7;
 
-/// Answers a record at [`SLOW`] only after `delay`, longer than the
+/// Answers a bootstrap at [`SLOW`] only after `delay`, longer than the
 /// listener's request timeout; everything else at once.
 struct Slow {
     delay: Duration,
@@ -143,8 +156,8 @@ struct Slow {
 #[async_trait::async_trait]
 impl PeerRequestHandler for Slow {
     async fn handle(&self, request: InternalMessage) -> InternalMessage {
-        if let InternalMessage::ReplicateRecords(records) = &request
-            && records.first_offset == SLOW
+        if let InternalMessage::ReplicateBootstrap(offer) = &request
+            && offer.base_offset == SLOW
         {
             tokio::time::sleep(self.delay).await;
         }
@@ -176,7 +189,7 @@ async fn an_older_requester_keeps_its_stream_through_a_slow_handler() {
     let connection = connect(&listener).await;
     let (mut send, mut recv) = greet(&connection, None).await;
 
-    write_frame(&mut send, &record(2, SLOW))
+    write_frame(&mut send, &bootstrap(2, SLOW))
         .await
         .expect("slow");
     write_frame(&mut send, &record(3, 1)).await.expect("record");
@@ -212,7 +225,7 @@ async fn the_listener_gives_up_a_stream_whose_handler_overran() {
     let connection = connect(&listener).await;
     let (mut send, mut recv) = greet(&connection, Some(PeerCapabilities::LANE_RENEWAL)).await;
 
-    write_frame(&mut send, &record(2, STALL))
+    write_frame(&mut send, &bootstrap(2, STALL))
         .await
         .expect("stall");
     write_frame(&mut send, &record(3, 1)).await.expect("record");
@@ -234,5 +247,132 @@ async fn the_listener_gives_up_a_stream_whose_handler_overran() {
     );
 
     connection.close(0u32.into(), b"done");
+    listener.stop().await;
+}
+
+/// Holds every record batch until `want` of them are being stored at once.
+struct Together {
+    want: usize,
+    arrived: AtomicUsize,
+    all_in: tokio::sync::Notify,
+}
+
+#[async_trait::async_trait]
+impl PeerRequestHandler for Together {
+    async fn handle(&self, request: InternalMessage) -> InternalMessage {
+        let all_in = self.all_in.notified();
+        if self.arrived.fetch_add(1, Ordering::SeqCst) + 1 >= self.want {
+            self.all_in.notify_waiters();
+        } else {
+            let _ = tokio::time::timeout(Duration::from_secs(5), all_in).await;
+        }
+        InternalMessage::ReplicateOk(ReplicateOk {
+            correlation_id: request.correlation_id(),
+            durable_offset: 1,
+            learner: false,
+        })
+    }
+}
+
+/// **Record batches on one stream are stored side by side.** A leader ships
+/// many shards at once over a few streams, and a follower storing one batch
+/// at a time per stream made every pass wait behind the batches queued ahead
+/// of it (#1968). Here each batch waits until all of them are in, which only
+/// happens if the listener reads past the first before answering it.
+#[tokio::test]
+async fn record_batches_on_one_stream_are_stored_side_by_side() {
+    const BATCHES: u64 = 8;
+    let listener = Listener::start(
+        PEER,
+        Arc::new(Together {
+            want: BATCHES as usize,
+            arrived: AtomicUsize::new(0),
+            all_in: tokio::sync::Notify::new(),
+        }),
+    )
+    .await;
+    let connection = connect(&listener).await;
+    let (mut send, mut recv) = greet(&connection, Some(PeerCapabilities::LANE_RENEWAL)).await;
+    for id in 0..BATCHES {
+        write_frame(&mut send, &record(10 + id, id))
+            .await
+            .expect("record");
+    }
+    let mut answered = Vec::new();
+    for _ in 0..BATCHES {
+        let answer = tokio::time::timeout(Duration::from_secs(2), read_frame(&mut recv))
+            .await
+            .expect("the batches were stored one at a time");
+        match answer {
+            Ok(Incoming::Message(InternalMessage::ReplicateOk(ok))) => {
+                answered.push(ok.correlation_id);
+            }
+            _ => panic!("a record batch was not acknowledged"),
+        }
+    }
+    answered.sort_unstable();
+    assert_eq!(answered, (10..10 + BATCHES).collect::<Vec<_>>());
+
+    connection.close(0u32.into(), b"done");
+    listener.stop().await;
+}
+
+/// Takes `delay` to store every record batch, as a follower waiting on its
+/// disk does.
+struct Stores {
+    delay: Duration,
+}
+
+#[async_trait::async_trait]
+impl PeerRequestHandler for Stores {
+    async fn handle(&self, request: InternalMessage) -> InternalMessage {
+        tokio::time::sleep(self.delay).await;
+        InternalMessage::ReplicateOk(ReplicateOk {
+            correlation_id: request.correlation_id(),
+            durable_offset: 1,
+            learner: false,
+        })
+    }
+}
+
+/// **A leader's round trip is about the follower's store time, however many
+/// shards it ships at once.** Batches stored in turn made the round trip grow
+/// with the batches queued on the stream: 32 at 50 ms each on one stream took
+/// 1.6 s for the last one (#1968).
+#[tokio::test]
+async fn a_round_trip_does_not_wait_behind_other_shards_batches() {
+    const BATCHES: u64 = 32;
+    const STORE: Duration = Duration::from_millis(50);
+    let listener = Listener::start(PEER, Arc::new(Stores { delay: STORE })).await;
+    let pool = pool(PeerTransportConfig {
+        streams_per_conn: 1,
+        request_timeout: Duration::from_secs(10),
+        ..config()
+    });
+    // Connected first, so the dial is not in the timing.
+    let warm = pool.request(PEER, listener.addr, record(0, 0)).await;
+    assert!(
+        matches!(warm, Ok(InternalMessage::ReplicateOk(_))),
+        "{warm:?}"
+    );
+
+    let started = std::time::Instant::now();
+    let answers = futures::future::join_all((0..BATCHES).map(|offset| {
+        let pool = Arc::clone(&pool);
+        let addr = listener.addr;
+        async move { pool.request(PEER, addr, record(0, offset)).await }
+    }))
+    .await;
+    let took = started.elapsed();
+    for answer in &answers {
+        assert!(
+            matches!(answer, Ok(InternalMessage::ReplicateOk(_))),
+            "{answer:?}"
+        );
+    }
+    // Generous: in turn this is BATCHES * STORE = 1.6 s.
+    assert!(took < 8 * STORE, "{BATCHES} batches took {took:?}");
+
+    pool.shutdown().await;
     listener.stop().await;
 }
