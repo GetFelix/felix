@@ -817,6 +817,20 @@ ContinuingTrustsAnyCopy == FALSE
 ContinuingKeptBallot == FALSE
 ContinuingForgottenAnswers == FALSE
 ContinuingCountsForgotten == FALSE
+\* A continuing fence round starts fresh: a lost answer or a Pending round
+\* drops every answer and the next round asks again. By then a replica that
+\* answered the first round holds the ballot at the fence's own generation,
+\* so the attestation also takes a ballot naming the leader at `g`.
+\* `ContinuingRetries`: the leader retries its fence once after the first
+\* answers came in (`RetryContinuingFence`).
+\* `ContinuingCopiesNew`: every follower answers from a new copy, so the
+\* leader counts only attested answers, as in the code after an unclean
+\* restart of every follower.
+\* `ContinuingAttestsBelowOnly`: the attestation takes only `g - 1`. A retry
+\* then never completes (FelixShardElectUncleanContinuingRetryBelowOnly.cfg).
+ContinuingRetries == FALSE
+ContinuingCopiesNew == FALSE
+ContinuingAttestsBelowOnly == FALSE
 \* Liveness of elections (`ElectionSettles`, checked under `LiveSpec`).
 \* `CpDown`: the control plane takes no step. `FailStops`: how many brokers
 \* may stop for good, as `halted` ones. `PreVoteAsked`: the pre-vote counts
@@ -1150,7 +1164,7 @@ VARIABLES
     cpLearner,  \* under `WipedNonVoter`, the copies placement holds as learners
     cpRefused,  \* under `ReportStore`, the refusal the control plane's stored report carries: {} or {<<generation, leader>>}
     refusedAt,  \* under `ReportStore`, the generation each broker last reported refused: 0 for none
-    contAt,     \* per broker, <<generation, incarnation>> of its last continuing open, <<0, 0>> for none
+    contAt,     \* per broker, <<generation, incarnation, retried>> of its last continuing open, <<0, 0, 0>> for none
     forgot,     \* the brokers that ever lost their promises (`Wipe`, `Forget`)
     cpGone      \* under `CpStops`, whether the control plane has stopped, for good
 
@@ -1540,7 +1554,7 @@ IdInit ==
     /\ learner = [b \in Brokers |-> FALSE]
     /\ marked = [b \in Brokers |-> FALSE]
     /\ cpLearner = {}
-    /\ contAt = [b \in Brokers |-> <<0, 0>>]
+    /\ contAt = [b \in Brokers |-> <<0, 0, 0>>]
     /\ forgot = {}
 
 Init ==
@@ -2434,13 +2448,16 @@ ShortCopyRefuses(b, f) == RefuseShortCopy /\ ShortCopy(f) /\ ~AckedByTwo(b, f)
 
 \* Whether `b`'s fence is a continuing open that has not restarted since.
 \* A crash or restart bumps `inc`.
-Continuing(b) == contAt[b] = <<bgen[b], inc[b]>> /\ bgen[b] > 0
+Continuing(b) == contAt[b][1] = bgen[b] /\ contAt[b][2] = inc[b] /\ bgen[b] > 0
 ContinuingFence(b) == (ContinuingTrustsBallot \/ ContinuingTrustsAnyCopy) /\ Continuing(b)
 \* Whether `f`'s ballot, before it answers, names `b` at the generation `b`
-\* served: what `continues_from` checks and `FenceKeptOk` attests.
+\* served, or at the one it fences (a retried round): what `continues_from`
+\* checks and `FenceKeptOk` attests.
 ContinuingBallot(b, f) ==
     /\ ContinuingTrustsBallot
-    /\ promised[f] = bgen[b] - 1 /\ ballot[f] = {b}
+    /\ \/ promised[f] = bgen[b] - 1
+       \/ ~ContinuingAttestsBelowOnly /\ promised[f] = bgen[b]
+    /\ ballot[f] = {b}
     /\ ContinuingKeptBallot => f \notin forgot
 \* Whether `f` answers `b`'s continuing fence past the short-copy and
 \* non-voter refusals.
@@ -2450,12 +2467,25 @@ ContinuingTrusts(b, f) ==
 \* Whether `b`'s continuing fence counts `f`'s answer: from the copy it
 \* expects, or attesting the ballot.
 ContinuingCounts(b, f) ==
-    \/ FenceCounts(b, f) /\ (ContinuingCountsForgotten \/ f \notin forgot)
+    \/ FenceCounts(b, f) /\ ~ContinuingCopiesNew /\ (ContinuingCountsForgotten \/ f \notin forgot)
     \/ ContinuingTrustsAnyCopy
     \/ ContinuingBallot(b, f)
 \* What `b` records when it fences `g` as a continuing open.
 ContinuesAt(b, g) ==
-    contAt' = IF ~draining THEN [contAt EXCEPT ![b] = <<g, inc[b]>>] ELSE contAt
+    contAt' = IF ~draining THEN [contAt EXCEPT ![b] = <<g, inc[b], 0>>] ELSE contAt
+
+\* Under `ContinuingRetries`, a continuing fence that has answers starts a
+\* fresh round, as a lost answer or a Pending round does in the code. Once
+\* per open, which `contAt` marks.
+RetryContinuingFence(b) ==
+    /\ ContinuingRetries
+    /\ ContinuingFence(b) /\ fencing[b] /\ answered[b] /= {} /\ contAt[b][3] = 0
+    /\ answered' = [answered EXCEPT ![b] = {}]
+    /\ contAt' = [contAt EXCEPT ![b] = <<@[1], @[2], 1>>]
+    /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
+                    hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit,
+                    promised, fencing, confirmed, ballot, opened, setVars, ackGen >>
+    /\ UNCHANGED handoffVars
 
 \* Whether `b` fences as a leader the control plane named at its generation,
 \* on a set written at it, with no change pending: the flip's leader
@@ -4449,6 +4479,9 @@ Steps ==
            /\ UNCHANGED << counterVars, heard, named, wipeVars, cpRefused >>
         \/ FinishChange(b) /\ UNCHANGED quietVars
         \/ ForgetSet(b) /\ UNCHANGED quietVars
+        \/ RetryContinuingFence(b)
+           /\ UNCHANGED << counterVars, heard, idVars, named, refusalVars, wipedAt, readmit, learner,
+                           marked, cpLearner, forgot >>
         \/ \E f \in Brokers :
             \/ Ship(b, f) /\ UNCHANGED quietVars
             \/ LearnHwm(b, f) /\ UNCHANGED quietVars
@@ -4831,6 +4864,12 @@ NoFailoverBesideNonVoter ==
 \* non-voter in the model lost its promises, so none is trusted
 \* (FelixShardElectUncleanContinuing.cfg). Under `ContinuingTrustsBallot`
 \* alone TLC finds one.
+\* A canary: no continuing open completes after retrying its fence. Under
+\* `ContinuingRetries` TLC should find one
+\* (FelixShardElectUncleanContinuingRetry.cfg).
+RetriedContinuingNeverOpens ==
+    \A b \in Brokers : ~(Continuing(b) /\ contAt[b][3] = 1 /\ ~fencing[b])
+
 NeverContinuingCountsNonVoter ==
     \A b \in Brokers : (bgen[b] > 0 /\ ~fencing[b] /\ <<bgen[b], b>> \in opened /\ Continuing(b)) =>
         \A f \in answered[b] : ~(NonVoter(f) /\ wipedAt[f] < bgen[b] /\ \A r \in readmit : r[1] /= f)
@@ -4964,7 +5003,7 @@ TypeOK ==
     /\ marked \in [Brokers -> BOOLEAN]
     /\ \A r \in readmit : r[1] \in Brokers /\ r[2] \in Nat /\ r[3] \in Brokers
     /\ wipes \in 0..(IF LosePromises THEN Forgets ELSE Wipes)
-    /\ contAt \in [Brokers -> Nat \X Nat]
+    /\ contAt \in [Brokers -> Nat \X Nat \X (0..1)]
     /\ forgot \subseteq Brokers
 
 =============================================================================
