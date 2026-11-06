@@ -283,7 +283,12 @@ observer used by the storage tests (`io/power_loss.rs`):
   replaced by a rename comes back with the bytes of its last flush. A create
   made before a rename that is lost can still stay (a temporary file next to
   the old file), and a create or unlink of a name after a kept rename gets its
-  own choice. The Linux observer pairs renames within one directory only.
+  own choice. A directory removed or replaced after a rename is not brought
+  back when the rename commits. A file synced through a handle after its
+  unlink commits the unlink, so the name does not come back. One whose unlink
+  is lost comes back with the bytes of its last flush, without any writeback
+  that happened before the unlink. The Linux observer pairs renames within one
+  directory only.
 - Renames are kept in order, but creates and unlinks of different names are
   not ordered against each other. POSIX allows that. ext4 and xfs journal all
   metadata in order, so the model can leave states those filesystems would not.

@@ -392,6 +392,58 @@ fn a_rename_commits_the_directory_it_moved_into() {
 }
 
 #[test]
+fn a_removed_directory_stays_gone_when_the_rename_into_it_commits_later() {
+    for seed in 0..64 {
+        let sim = Sim::new("rename-into-removed");
+        fs::create_dir_all(sim.path("x")).expect("dir");
+        durable_file(&sim.path("x/f"), b"data");
+        io::sync_dir(&sim.root).expect("sync");
+        fs::create_dir_all(sim.path("y")).expect("dir");
+        fs::rename(sim.path("x/f"), sim.path("y/f")).expect("rename");
+        fs::remove_dir_all(sim.path("y")).expect("remove");
+        io::sync_dir(&sim.root).expect("sync");
+        io::sync_dir(&sim.path("x")).expect("sync");
+        sim.crash(seed);
+        assert!(!sim.path("y").exists(), "seed {seed}");
+    }
+}
+
+#[test]
+fn a_directory_made_again_is_not_overwritten_by_a_late_rename_commit() {
+    for seed in 0..64 {
+        let sim = Sim::new("rename-into-remade");
+        fs::create_dir_all(sim.path("x")).expect("dir");
+        durable_file(&sim.path("x/f"), b"data");
+        io::sync_dir(&sim.root).expect("sync");
+        fs::create_dir_all(sim.path("y")).expect("dir");
+        fs::rename(sim.path("x/f"), sim.path("y/f")).expect("rename");
+        fs::remove_file(sim.path("y/f")).expect("unlink");
+        fs::remove_dir(sim.path("y")).expect("rmdir");
+        fs::create_dir_all(sim.path("y")).expect("dir");
+        io::sync_dir(&sim.root).expect("sync");
+        io::sync_dir(&sim.path("x")).expect("sync");
+        sim.crash(seed);
+        assert!(sim.path("y").exists(), "seed {seed}");
+        assert!(!sim.path("y/f").exists(), "seed {seed}");
+    }
+}
+
+#[test]
+fn syncing_an_unlinked_file_commits_the_unlink() {
+    for seed in 0..64 {
+        let sim = Sim::new("sync-after-unlink");
+        let file = create(&sim.path("a"));
+        io::write_all(&file, b"data").expect("write");
+        io::sync_data(&file).expect("sync");
+        io::sync_dir(&sim.root).expect("sync dir");
+        fs::remove_file(sim.path("a")).expect("unlink");
+        io::sync_data(&file).expect("sync");
+        sim.crash(seed);
+        assert!(!sim.path("a").exists(), "seed {seed}");
+    }
+}
+
+#[test]
 fn a_kept_rename_in_a_chain_keeps_the_unsynced_pages() {
     let mut longest = 0;
     for seed in 0..128 {

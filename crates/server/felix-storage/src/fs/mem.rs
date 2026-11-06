@@ -73,6 +73,11 @@ struct FileData {
     /// The file lost its last name. A crash that brings the name back brings
     /// back the bytes of its last flush only.
     unlinked: bool,
+    /// The last name was removed with an unlink, not replaced by a rename.
+    removed: bool,
+    /// The file was synced through a handle after its unlink. The journal
+    /// commits the unlink with it, so the name never comes back.
+    gone: bool,
 }
 
 /// A directory: its entries now and as of the last flush of the directory.
@@ -197,7 +202,7 @@ impl Tree {
         let mut entries = parent.data.lock();
         match entries.current.get(name) {
             Some(Node::File(file)) => {
-                file.data.lock().unlinked = true;
+                file.data.lock().remove();
                 entries.current.remove(name);
                 Ok(())
             }
@@ -364,14 +369,22 @@ impl FileNode {
                 dirty_from: usize::MAX,
                 reserved: 0,
                 unlinked: false,
+                removed: false,
+                gone: false,
             }),
         }
     }
 }
 
 impl FileData {
+    fn remove(&mut self) {
+        self.unlinked = true;
+        self.removed = true;
+    }
+
     /// Make the file's bytes and length durable.
     fn sync(&mut self) {
+        self.gone |= self.removed;
         let from = self
             .dirty_from
             .min(self.durable.len())
@@ -430,7 +443,7 @@ fn unlink_all(dir: &Arc<DirNode>) {
     for (name, node) in children {
         match &node {
             Node::Dir(child) => unlink_all(child),
-            Node::File(file) => file.data.lock().unlinked = true,
+            Node::File(file) => file.data.lock().remove(),
         }
         dir.data.lock().current.remove(&name);
     }

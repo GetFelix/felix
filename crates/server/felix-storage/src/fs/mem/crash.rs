@@ -61,7 +61,16 @@ pub(super) fn commit(pending: &mut Vec<Rename>, count: usize) {
             .durable
             .insert(rename.to_name, rename.node);
         for (parent, name, child) in rename.chains {
-            parent.data.lock().durable.insert(name, child);
+            // A directory removed or replaced since stays out, even when its
+            // parent was synced after the rename.
+            let mut parent = parent.data.lock();
+            if parent
+                .current
+                .get(&name)
+                .is_some_and(|now| same(now, &child))
+            {
+                parent.durable.insert(name, child);
+            }
         }
     }
 }
@@ -151,20 +160,20 @@ pub(super) fn dir(
         let chosen = match plan.get(old, name) {
             Some(touch) => {
                 let base = match &touch.kept {
-                    Some(after) => after.as_ref(),
-                    None => data.durable.get(name),
+                    Some(after) => alive(after.as_ref()),
+                    None => alive(data.durable.get(name)),
                 };
                 // Dropped: the name may still show what it held just before
                 // the rename, such as a temporary file created without a
                 // directory flush. Kept: a later create or unlink of the
                 // name is its own change.
                 let other = match &touch.before_dropped {
-                    Some(before) => before.as_ref(),
-                    None => data.current.get(name),
+                    Some(before) => alive(before.as_ref()),
+                    None => alive(data.current.get(name)),
                 };
                 pick(base, other, rng)
             }
-            None => match (data.current.get(name), data.durable.get(name)) {
+            None => match (alive(data.current.get(name)), alive(data.durable.get(name))) {
                 (Some(now), Some(then)) if same(now, then) => Some(now),
                 (Some(now), Some(then)) => Some(if rng.coin() { now } else { then }),
                 (Some(now), None) => rng.coin().then_some(now),
@@ -185,6 +194,11 @@ pub(super) fn dir(
     Arc::new(DirNode {
         data: parking_lot::Mutex::new(kept),
     })
+}
+
+/// `node`, unless it is a file whose unlink a sync already committed.
+fn alive(node: Option<&Node>) -> Option<&Node> {
+    node.filter(|node| !matches!(node, Node::File(file) if file.data.lock().gone))
 }
 
 /// What the file reads back as. One with no name left only has the bytes of
