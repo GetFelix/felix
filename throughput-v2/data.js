@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793921547726,
+  "lastUpdate": 1793926523615,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -46540,6 +46540,58 @@ window.BENCHMARK_DATA = {
             "range": "6480.74",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 812044.82\nmean: 812858.57\nstdev: 6480.74\ncv: 0.80%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "76ec6287075a912ca8db74da4a465e62c5a4bac3",
+          "message": "fix(placement): a fenced shard is never handed back to a leader that deregistered (#1982) (#1985)\n\nA fenced shard is never handed back to a leader that departed while its lease still ran (#1982). A staged move under a departed leader waits on refusal, lost destination, abandon or timeout.",
+          "timestamp": "2026-11-06T00:45:53Z",
+          "tree_id": "115e9eed3203eb321c96419c3c98be4337e8a1a6",
+          "url": "https://github.com/GetFelix/felix/commit/76ec6287075a912ca8db74da4a465e62c5a4bac3"
+        },
+        "date": 1793926522970,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 665906.79,
+            "range": "42927.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 665906.79\nmean: 656205.47\nstdev: 42927.88\ncv: 6.54%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 665906.79,
+            "range": "42927.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 665906.79\nmean: 656205.47\nstdev: 42927.88\ncv: 6.54%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 162149.4,
+            "range": "844.07",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 162149.40\nmean: 161917.81\nstdev: 844.07\ncv: 0.52%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1621494.01,
+            "range": "8440.66",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1621494.01\nmean: 1619178.12\nstdev: 8440.66\ncv: 0.52%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
