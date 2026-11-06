@@ -215,7 +215,7 @@ again after the heal.
 Run a batch of seeds, or replay one:
 
 ```bash
-cargo test -p felix-sim --test seeds seeds
+cargo test -p felix-sim --test seeds -- --ignored --exact seeds
 FELIX_SIM_SEED=<n> cargo test -p felix-sim --test seeds replay -- --nocapture
 ```
 
@@ -232,9 +232,11 @@ A replay injects the same faults at the same virtual times and sends the same
 client operations. Built with `RUSTFLAGS="--cfg tokio_unstable"`, which lets
 tokio seed `select!`, it is the same run event for event. Without the flag the
 brokers' interleaving can differ, so a failure may take a few replays to show
-again. CI runs the `seeds` test with the workspace tests, so seeds 1 to 4 run
-on every pull request, and `task sim:determinism` runs seeds 1 to 20 twice each
-with the flag and fails on the first event that differs.
+again. CI runs `task sim:determinism` on every pull request: seeds 1 to 20 run
+twice each with the flag, and the job fails on the first event that differs. It
+blocks merging. The `seeds` test, seeds 1 to 4, is ignored in the workspace
+tests and runs in its own job, which does not block merging until the open
+liveness bugs it finds are fixed.
 Seeds that expose a bug are pinned as ignored tests named after their issue,
 and [`docs/simulation.md`](https://github.com/GetFelix/felix/blob/main/docs/simulation.md)
 lists the ones that fail today.

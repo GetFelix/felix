@@ -14,11 +14,13 @@ const SECOND: u64 = 1_000;
 const BOUND: u64 = 70 * SECOND;
 
 /// Reports as of `NOW`, with the leader of every shard stuck since `since`
-/// after `renames` recent renames, and `halted` reported halted.
+/// after `renames` recent renames, `halted` reported halted, and `learner`'s
+/// storage replaced since the assignment named it.
 struct Stuck {
     since: Option<u64>,
     renames: u32,
     halted: Option<&'static str>,
+    learner: Option<&'static str>,
     reason: StuckReason,
 }
 
@@ -44,6 +46,10 @@ impl CaughtUp for Stuck {
         (self.halted == Some(node_id)).then_some(&HALT)
     }
 
+    fn is_learner(&self, _key: &ShardKey, node_id: &str) -> bool {
+        self.learner == Some(node_id)
+    }
+
     fn stuck_leader(&self, _key: &ShardKey, generation: u64) -> Option<StuckLeader> {
         let since_millis = self.since.filter(|_| generation == 3)?;
         Some(StuckLeader {
@@ -60,6 +66,7 @@ fn stuck(since: u64, renames: u32) -> Stuck {
         since: Some(since),
         renames,
         halted: None,
+        learner: None,
         reason: StuckReason::NotCommitting,
     }
 }
@@ -172,6 +179,37 @@ fn no_rename_without_a_live_unhalted_majority() {
     // One follower down alone still leaves a majority.
     let decisions = decide_on(&quorum(1), &nodes, &[shard(0)], &stuck(0, 0));
     assert!(is_stuck(&decisions[0]), "{decisions:?}");
+}
+
+/// A follower wiped since the set named it acks nothing at the next
+/// generation, though the assignment does not list it as a learner yet: with
+/// the other follower down, the leader alone is no majority.
+#[test]
+fn no_rename_when_the_majority_counts_a_wiped_follower() {
+    let mut nodes = live(&["broker-a", "broker-b", "broker-c"]);
+    nodes[2].status.lifecycle = NodeLifecycle::Down;
+    let wiped = Stuck {
+        learner: Some("broker-b"),
+        ..stuck(0, 0)
+    };
+    let decisions = decide_on(&quorum(1), &nodes, &[shard(0)], &wiped);
+    assert!(!is_stuck(&decisions[0]), "{decisions:?}");
+}
+
+/// Only the placement lease holder renames: the cap and backoff are in its
+/// memory, and a pass another instance runs on a wake would have its own.
+#[test]
+fn only_the_lease_holder_renames() {
+    let nodes = live(&["broker-a", "broker-b", "broker-c"]);
+    let pass = |held| {
+        let policy = super::super::reconciler::pass_policy(&policy(), held);
+        plan_with(&quorum(1), &[], &nodes, &[shard(0)], &stuck(0, 0), policy)
+            .shards
+            .remove(0)
+            .decision
+    };
+    assert!(is_stuck(&pass(true)));
+    assert!(!is_stuck(&pass(false)));
 }
 
 /// A move, a fence or a set change ends through its own steps.

@@ -80,7 +80,8 @@ const PATCH_FENCE_LEVEL: u16 = 19;
 const INHERITED_STORAGE_LEVEL: u16 = 20;
 
 /// The metadata level whose members store a cut-over's pending set and the
-/// joint start a report names, and finalize `replica_election` (#1009).
+/// joint start a report names (#1009). Finalizing `replica_election` needs
+/// level 26.
 const PENDING_SET_LEVEL: u16 = 21;
 
 /// The metadata level whose members store the storage identity each member of
@@ -88,7 +89,8 @@ const PENDING_SET_LEVEL: u16 = 21;
 const MEMBER_STORAGE_LEVEL: u16 = 22;
 
 /// The metadata level whose members store an assignment's learners and the
-/// start holders a report names, and finalize `joint_fence` (#1737).
+/// start holders a report names (#1737). Finalizing `joint_fence` needs
+/// level 25.
 const LEARNER_LEVEL: u16 = 23;
 
 /// The metadata level whose members store a stream's MQTT mount (#1690).
