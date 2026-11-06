@@ -175,6 +175,7 @@ async fn without_consumer_groups_the_group_fence_answers_empty() {
                 log_end: 0,
                 commit_offset: 0,
                 last_generation: 0,
+                kept_ballot: false,
             })
         );
         assert_eq!(
