@@ -61,7 +61,9 @@ impl Lane {
 
 /// The QUIC stream a lane currently writes to.
 pub(super) struct LaneStream {
-    tx: mpsc::Sender<Bytes>,
+    tx: mpsc::Sender<(Bytes, Instant)>,
+    inflight: AtomicU32,
+    replication: bool,
     /// Timeouts since this stream last carried an answer.
     unanswered: AtomicU32,
     /// Set when either half has ended; nothing sent on it can be answered.
@@ -79,11 +81,14 @@ impl LaneStream {
 async fn open_stream(
     connection: &QuicConnection,
     pending: &Arc<Mutex<Pending>>,
+    replication: bool,
 ) -> Result<(Arc<LaneStream>, [tokio::task::JoinHandle<()>; 2])> {
     let (mut send, mut recv) = connection.open_bi().await.context("open peer stream")?;
-    let (tx, mut rx) = mpsc::channel::<Bytes>(64);
+    let (tx, mut rx) = mpsc::channel::<(Bytes, Instant)>(64);
     let stream = Arc::new(LaneStream {
         tx,
+        inflight: AtomicU32::new(0),
+        replication,
         unanswered: AtomicU32::new(0),
         ended: AtomicBool::new(false),
     });
@@ -92,9 +97,15 @@ async fn open_stream(
     // strong reference would keep the writer waiting on itself forever.
     let ended = Arc::downgrade(&stream);
     let writer = connection.spawn_pump(async move {
-        while let Some(frame) = rx.recv().await {
+        while let Some((frame, queued_at)) = rx.recv().await {
+            let dequeued = Instant::now();
             if send.write_all(&frame).await.is_err() {
                 break;
+            }
+            if replication {
+                crate::peer::prof::add(crate::peer::prof::L_QUEUED, dequeued - queued_at);
+                crate::peer::prof::add(crate::peer::prof::L_WRITE, dequeued.elapsed());
+                crate::peer::prof::value(crate::peer::prof::L_BYTES, frame.len() as u64);
             }
         }
         if let Some(lane) = ended.upgrade() {
@@ -117,7 +128,7 @@ async fn open_stream(
                     // already timed out. Dropping it is correct; the
                     // caller has been told the request failed.
                     if let Some(waiter) = waiter {
-                        let _ = waiter.send(message);
+                        let _ = waiter.send((message, Instant::now()));
                     }
                 }
                 // A *response* kind this build does not know. Nothing
@@ -150,7 +161,7 @@ async fn open_stream(
 /// itself just after the connection died.
 #[derive(Default)]
 pub(super) struct Pending {
-    pub(super) waiters: HashMap<u64, oneshot::Sender<InternalMessage>>,
+    pub(super) waiters: HashMap<u64, oneshot::Sender<(InternalMessage, Instant)>>,
     pub(super) closed: bool,
 }
 
@@ -176,8 +187,8 @@ impl PeerConnection {
         let mut lanes = Vec::with_capacity(1 + 2 * streams);
         let mut tasks = Vec::new();
 
-        for _ in 0..1 + 2 * streams {
-            let (stream, opened) = open_stream(&connection, &pending).await?;
+        for index in 0..1 + 2 * streams {
+            let (stream, opened) = open_stream(&connection, &pending, index > streams).await?;
             tasks.extend(opened);
             lanes.push(Lane {
                 stream: Mutex::new(stream),
@@ -314,6 +325,7 @@ impl PeerConnection {
             _ => self.next_correlation.fetch_add(1, Ordering::Relaxed),
         };
         let message = with_correlation(message, correlation_id);
+        let encode_started = Instant::now();
         let frame = message.encode().map_err(|err| PeerError::Handshake {
             node_id: self.node_id.clone(),
             detail: err.to_string(),
@@ -342,7 +354,28 @@ impl PeerConnection {
             }
         };
         let stream = self.lanes[lane].current();
-        if stream.dead() || stream.tx.send(frame).await.is_err() {
+        let records = matches!(
+            message,
+            InternalMessage::ReplicateRecords(_) | InternalMessage::ReplicateMarkedRecords(_)
+        );
+        let sent_at = Instant::now();
+        if stream.replication {
+            crate::peer::prof::add(crate::peer::prof::L_ENCODE, sent_at - encode_started);
+            crate::peer::prof::value(
+                crate::peer::prof::L_DEPTH,
+                stream.inflight.fetch_add(1, Ordering::Relaxed) as u64,
+            );
+        }
+        struct Done<'a>(&'a LaneStream);
+        impl Drop for Done<'_> {
+            fn drop(&mut self) {
+                if self.0.replication {
+                    self.0.inflight.fetch_sub(1, Ordering::Relaxed);
+                }
+            }
+        }
+        let _done = Done(&stream);
+        if stream.dead() || stream.tx.send((frame, sent_at)).await.is_err() {
             self.pending.lock().waiters.remove(&correlation_id);
             self.replace_lane(lane, &stream, timeout).await;
             return Err(PeerError::Disconnected {
@@ -350,9 +383,23 @@ impl PeerConnection {
             });
         }
 
+        if stream.replication {
+            crate::peer::prof::add(crate::peer::prof::L_ENQ, sent_at.elapsed());
+        }
         tokio::select! {
             response = tokio::time::timeout(timeout, rx) => match response {
-                Ok(Ok(message)) => Ok(message),
+                Ok(Ok((message, read_at))) => {
+                    if stream.replication {
+                        let now = Instant::now();
+                        crate::peer::prof::add(crate::peer::prof::L_WAKE, now - read_at);
+                        crate::peer::prof::add(crate::peer::prof::L_REMOTE, read_at - sent_at);
+                        crate::peer::prof::add(
+                            if records { crate::peer::prof::L_TOTAL_REC } else { crate::peer::prof::L_TOTAL },
+                            now - sent_at,
+                        );
+                    }
+                    Ok(message)
+                }
                 // The sender is dropped by `fail_all`, so this is the
                 // connection dropping rather than a lost response.
                 Ok(Err(_)) => Err(PeerError::Disconnected { node_id: self.node_id.clone() }),
@@ -388,9 +435,13 @@ impl PeerConnection {
         }
         // Bounded: opening waits for stream credit, which a peer still holding
         // the old streams may be slow to give back.
-        let opened = tokio::time::timeout(within, open_stream(&self.connection, &self.pending))
-            .await
-            .unwrap_or_else(|_| Err(anyhow!("no stream credit within {within:?}")));
+        let replication = lane > self.per_class;
+        let opened = tokio::time::timeout(
+            within,
+            open_stream(&self.connection, &self.pending, replication),
+        )
+        .await
+        .unwrap_or_else(|_| Err(anyhow!("no stream credit within {within:?}")));
         match opened {
             Ok((fresh, opened)) => {
                 *slot.stream.lock() = fresh;

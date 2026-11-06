@@ -20,6 +20,8 @@ pub mod server;
 pub mod tls;
 
 mod partition;
+#[doc(hidden)]
+pub mod prof;
 
 pub use capabilities::KnownCapabilities;
 pub use config::PeerTransportConfig;

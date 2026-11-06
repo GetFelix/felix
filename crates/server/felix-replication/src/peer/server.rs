@@ -463,6 +463,8 @@ async fn serve_connection(
             // stream is given up as a request answered in turn would be.
             let given_up = CancellationToken::new();
             loop {
+                let cycle_start = std::time::Instant::now();
+                let mut served: Option<(std::time::Instant, std::time::Instant)> = None;
                 let request = tokio::select! {
                     _ = shutdown.cancelled() => break,
                     _ = given_up.cancelled() => break,
@@ -811,10 +813,39 @@ async fn serve_connection(
                     // Off the pump's runtime; the pump only waits. Everything
                     // else on a stream is answered one request at a time.
                     request => {
+                        let read_at = std::time::Instant::now();
+                        let read = read_at - cycle_start;
+                        crate::peer::prof::add(crate::peer::prof::F_READ, read);
+                        crate::peer::prof::value(
+                            crate::peer::prof::F_BACKLOG,
+                            u64::from(read < std::time::Duration::from_micros(100)),
+                        );
                         let handler = Arc::clone(&handler);
                         let peer = ballot_identity(&offered, &identity);
-                        let handling =
-                            app.spawn(async move { handler.handle_from(peer, request).await });
+                        let handling = app.spawn(async move {
+                            let started = std::time::Instant::now();
+                            crate::peer::prof::add(crate::peer::prof::F_SPAWN, started - read_at);
+                            let records = matches!(
+                                request,
+                                InternalMessage::ReplicateRecords(_)
+                                    | InternalMessage::ReplicateMarkedRecords(_)
+                            );
+                            let answer = handler.handle_from(peer, request).await;
+                            crate::peer::prof::add(
+                                if records {
+                                    crate::peer::prof::F_HANDLE_REC
+                                } else {
+                                    crate::peer::prof::F_HANDLE_OTHER
+                                },
+                                started.elapsed(),
+                            );
+                            (answer, std::time::Instant::now())
+                        });
+                        let handling = async move { handling.await.map(|(answer, done)| {
+                            crate::peer::prof::add(crate::peer::prof::F_JOIN, done.elapsed());
+                            answer
+                        }) };
+                        served = Some((cycle_start, read_at));
                         let bound = handler_bound(&renews, &offered);
                         let handled = tokio::time::timeout(bound, handling).await.ok();
                         match handled.and_then(|joined| joined.ok()).ok_or(()) {
@@ -843,9 +874,15 @@ async fn serve_connection(
                     }
                 };
 
+                let writing = std::time::Instant::now();
                 if write_frame(&mut *send.lock().await, &response).await.is_err() {
                     metrics::record_served(metrics::OUTCOME_ERROR);
                     break;
+                }
+                if let Some((cycle_start, read_at)) = served {
+                    crate::peer::prof::add(crate::peer::prof::F_WRITE, writing.elapsed());
+                    crate::peer::prof::add(crate::peer::prof::F_CYCLE, read_at.elapsed());
+                    let _ = cycle_start;
                 }
                 metrics::record_served(metrics::OUTCOME_OK);
             }

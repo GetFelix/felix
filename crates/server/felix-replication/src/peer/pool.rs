@@ -272,7 +272,11 @@ impl PeerPool {
             });
         };
 
+        let connecting = Instant::now();
         let connection = peer.connection(self, addr).await?;
+        if class == LaneClass::Replication {
+            crate::peer::prof::add(crate::peer::prof::L_PERMIT_CONN, connecting.elapsed());
+        }
         // Checked here, where the handshake's answer is, so no caller can
         // send a peer a request it never said it understands.
         if let Some(needed) = required_capability(&message)
