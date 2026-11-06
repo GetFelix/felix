@@ -206,11 +206,16 @@ pub(crate) fn note_replaced(
     id: StorageId,
     registered: Option<&Registered>,
 ) -> Result<bool> {
-    let replaced_now = registered
-        .and_then(|r| r.storage_id.as_deref())
-        .is_some_and(|prior| prior != id.to_hex());
-    if replaced_now {
-        felix_storage::run_state::record_replaced(root)
+    let replaced_after = registered
+        .filter(|r| {
+            r.storage_id
+                .as_deref()
+                .is_some_and(|prior| prior != id.to_hex())
+        })
+        .map(|r| r.incarnation);
+    let replaced_now = replaced_after.is_some();
+    if let Some(after) = replaced_after {
+        felix_storage::run_state::record_replaced(root, id, after)
             .with_context(|| format!("record a replaced storage id under {}", root.display()))?;
     }
     Ok(replaced_now
@@ -292,7 +297,17 @@ pub(crate) fn mark_clean_stop(root: &Path, id: StorageId) -> Result<()> {
 /// Give the data directory under `root` a new storage id, for when its
 /// contents have become an older copy of themselves.
 pub(crate) fn rotate_storage_id(root: &Path) -> Result<StorageId> {
-    felix_storage::storage_identity::replace(root, fresh_storage_id())
+    rotate_storage_id_after(root, |_| Ok(()))
+}
+
+/// [`rotate_storage_id`], running `before` with the new id first.
+pub(crate) fn rotate_storage_id_after(
+    root: &Path,
+    before: impl FnOnce(StorageId) -> Result<()>,
+) -> Result<StorageId> {
+    let fresh = fresh_storage_id();
+    before(StorageId::from_bytes(fresh))?;
+    felix_storage::storage_identity::replace(root, fresh)
         .with_context(|| format!("write a new storage id under {}", root.display()))
 }
 

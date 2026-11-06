@@ -79,6 +79,7 @@ pub(super) fn spawn<L: ControlPlaneLink + Clone>(
     registered: tokio::sync::watch::Sender<Option<u64>>,
     storage_id: felix_storage::StorageId,
     data_dir: Option<&std::path::Path>,
+    view: Option<crate::cluster::controlplane_view::ViewFile>,
     restore_check: Option<CancellationToken>,
     sync_shutdown: &CancellationToken,
 ) -> Option<MembershipTask> {
@@ -114,6 +115,7 @@ pub(super) fn spawn<L: ControlPlaneLink + Clone>(
                 registered,
                 Some(storage_id),
                 data_dir.map(std::path::Path::to_path_buf),
+                view,
                 restore_check,
                 own_thread,
             ))

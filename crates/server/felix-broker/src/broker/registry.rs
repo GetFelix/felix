@@ -222,6 +222,7 @@ impl Broker {
                 state.set_consistency(metadata.consistency);
                 self.mounts.set(&key, metadata.mount.as_deref());
                 streams.insert(key, metadata);
+                self.catalog_changed();
                 return Ok(());
             }
 
@@ -262,6 +263,7 @@ impl Broker {
             topics.insert(topic, state);
             self.mounts.set(&key, metadata.mount.as_deref());
             streams.insert(key.clone(), metadata);
+            self.catalog_changed();
             return Ok(());
         }
     }
@@ -321,6 +323,7 @@ impl Broker {
             let mut streams = self.streams.write().await;
             let metadata = streams.remove(key)?;
             self.mounts.set(key, None);
+            self.catalog_changed();
             metadata
         };
         let mut topics = self.topics.write().await;
@@ -418,6 +421,7 @@ impl Broker {
                 .map_err(BrokerError::from)?;
         }
         self.caches.write().await.insert(key, metadata);
+        self.catalog_changed();
         Ok(())
     }
 
