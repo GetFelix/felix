@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793944577379,
+  "lastUpdate": 1793944982602,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -59598,6 +59598,72 @@ window.BENCHMARK_DATA = {
             "range": "932.54",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1396.00\nmean: 1371.00\nstdev: 932.54\ncv: 68.02%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f31af08baedb9e19c584f3dec627abc69fbe5f53",
+          "message": "fix(replication): a moved shard elects once its kept set opened (#2012) (#2013)\n\n* fix(replication): a moved shard elects once its kept set opened (#2012)\n\nA follower's set file keeps earlier sets when it is raised past a\ngeneration it holds no record of, and drops them only at the next raise.\nA control plane move walks the shard through generations nobody writes\nat, so every follower reaches the cut-over's generation with earlier\nsets, and `standing_sets` refused them for as long as that generation\nlasted. With the control plane down the shard never elected.\n\nThe candidate now ignores earlier sets once its log holds a record of\nthe kept set's generation, the evidence a failover already uses for the\nsame sets (`unopened_sets`) and the candidate already uses for the set\nbeing left. That fence opened, and this log holds everything its leader\ninherited up to that record.\n\nSpec-Unaffected: FelixShard.tla's Elect does not model the \"keeps earlier sets\" refusal (its comment says so); no configuration combines Elections > 0 with kept earlier sets (LogDropsSets). The change reads earlier sets by the record rule the modelled failover uses (KeepsUnopened, HoldsRecordOf). Modelling elections with LogDropsSets is proposed in #2012.\n\n* test(replication): the unopened moved shard is refused for its earlier sets\n\nSpec-Unaffected: test-only; the spec follow-up is tracked in #2014",
+          "timestamp": "2026-11-05T21:55:59-08:00",
+          "tree_id": "a63b7b814441bbd981856e77152c7b05f555caa8",
+          "url": "https://github.com/GetFelix/felix/commit/f31af08baedb9e19c584f3dec627abc69fbe5f53"
+        },
+        "date": 1793944974644,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 151,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 151.00\nmean: 150.80\nstdev: 0.84\ncv: 0.55%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 204,
+            "range": "3.77",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 204.00\nmean: 204.20\nstdev: 3.77\ncv: 1.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 268,
+            "range": "19.91",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 268.00\nmean: 266.00\nstdev: 19.91\ncv: 7.49%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 201,
+            "range": "5.90",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 201.00\nmean: 202.60\nstdev: 5.90\ncv: 2.91%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 393,
+            "range": "177.63",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 393.00\nmean: 469.40\nstdev: 177.63\ncv: 37.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 516,
+            "range": "757.68",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 516.00\nmean: 851.00\nstdev: 757.68\ncv: 89.03%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
