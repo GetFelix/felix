@@ -30,6 +30,19 @@ pub fn record(root: &Path, body: &[u8]) -> Result<()> {
     crate::run_state::write_atomically(root, FILE_NAME, &encode(body), true)
 }
 
+/// Remove the file durably, so no later start can use it. Done before a
+/// broker deregisters: the control plane may then move its shards to sets
+/// without it, and a view of the old sets must not let it stand or vote.
+pub fn forget(root: &Path) -> Result<()> {
+    match std::fs::remove_file(root.join(FILE_NAME)) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err.into()),
+    }
+    crate::io::sync_dir(root)?;
+    Ok(())
+}
+
 /// The body last recorded under `root`, or `None` when there is none this
 /// build can trust. A read error is logged and read as absent too: the
 /// caller then waits for the control plane, which is always safe.

@@ -153,8 +153,9 @@ pub struct ShardOwnership {
     /// The set each shard had right before its current assignment, where this
     /// broker saw that step. A joint fence takes the set it leaves from here.
     priors: HashMap<ShardKey, felix_router::PriorSet>,
-    /// A whole snapshot has been taken, so `assignments` is every shard and
-    /// not just the changes seen so far.
+    /// A whole snapshot from the control plane has been taken in this
+    /// process, so `assignments` is every shard it holds and not just the
+    /// changes seen so far, or routes seeded from the control-plane view.
     seeded: bool,
     /// When the request behind the newest answer applied here started.
     as_of: Option<tokio::time::Instant>,
@@ -303,7 +304,6 @@ impl ShardOwnership {
             }
         }
         self.priors = priors;
-        self.seeded = true;
         self.assignments = items
             .into_iter()
             .map(|assignment| (assignment.key.clone(), assignment))
@@ -327,7 +327,20 @@ impl ShardOwnership {
         &self.renewals
     }
 
-    /// Whether a snapshot has been taken. See [`Self::reset`].
+    /// [`Self::reset_marked`] with a snapshot the control plane answered in
+    /// this process. Only this counts as seeded: routes a start took from the
+    /// control-plane view are not an answer the control plane gave since.
+    pub(crate) fn reset_from_control_plane(
+        &mut self,
+        items: Vec<ShardAssignment>,
+        first: &HashSet<ShardKey>,
+    ) {
+        self.reset_marked(items, first);
+        self.seeded = true;
+    }
+
+    /// Whether the control plane's snapshot has been taken. See
+    /// [`Self::reset_from_control_plane`].
     pub(crate) fn is_seeded(&self) -> bool {
         self.seeded
     }
@@ -610,7 +623,10 @@ async fn snapshot(
         .into_iter()
         .map(|item| item.assignment)
         .collect();
-    ownership.write().await.reset_marked(items, &first);
+    ownership
+        .write()
+        .await
+        .reset_from_control_plane(items, &first);
     mm::record_snapshot(count);
     tracing::info!(
         assignments = count,

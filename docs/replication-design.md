@@ -1304,9 +1304,11 @@ is implemented so far"). Without both, a leader that dies while the control
 plane is down is not replaced until the control plane is back.
 
 A broker that restarts while the control plane is down waits for it before
-it opens its data, so it neither votes nor stands until the control plane is
-back. A shard is elected during an outage only while a majority of its
-copies kept running (issue #1196).
+it opens its data, so by default it neither votes nor stands until the
+control plane is back, and a shard is elected during an outage only while a
+majority of its copies kept running. With `FELIX_START_WITHOUT_CONTROLPLANE`
+on it starts from what the control plane last told it and takes part again;
+see [Rejoining without the control plane](#rejoining-without-the-control-plane).
 
 **Which shards.** The ones failover on the followers' word already covers: a
 durable `Quorum` stream with `majority_ack` and `lease_free_reads` finalized,
@@ -1726,9 +1728,9 @@ that races an election or another write loses the conditional write.
    unenforced under follower acks, as it is today: a deposed leader may go on
    taking writes it cannot get acknowledged.
 4. A broker that restarts during a control-plane outage stays out of
-   elections until the control plane is back (see the status above).
-   Persisting its last routes and fleet gate so it can rejoin is a follow-up
-   (issue #1196).
+   elections until the control plane is back, unless
+   `FELIX_START_WITHOUT_CONTROLPLANE` is on (see
+   [Rejoining without the control plane](#rejoining-without-the-control-plane)).
 5. `replica_election` is one-way once finalized, like the other fleet
    features.
 6. Consumer groups on an elected leader still wait for the lease (issue
@@ -1810,6 +1812,69 @@ opening on the old set. `FelixShardElectAdopt.cfg` replaces a follower under
 adopted leaders and passes. `FelixShardElectPreVote.cfg` runs with pre-vote
 and stickiness. `FelixShardWalkElect.cfg` and `FelixShardWalkElectSwap.cfg`
 walk elections, replacements, cut-overs and promotions together.
+
+### Rejoining without the control plane
+
+**Status: built, off by default** (`FELIX_START_WITHOUT_CONTROLPLANE`). A
+broker restarted while the control plane is down can vote and follow again
+before the control plane is back. It stands for election and serves clients
+only once it registers. How to turn it on, the rules a data directory must meet and
+what happens when the control plane answers are in `docs/control-plane.md`,
+"Starting while the control plane is down".
+
+**What it starts from.** The control-plane view in the data directory
+(`docs/durable-storage.md`, "The control-plane view"): the fleet's finalized
+features, the routes of the shards the broker is in, the addresses of the
+nodes they name, and the catalog entries those shards open at. Each part is
+an answer the control plane gave this broker. The fleet gate is seeded from
+it but not adopted, so a feature missing from the view stays undecided, not
+off (`FleetGate::seeded`; see "Acknowledging by the followers" below).
+
+**Why it is safe.** A broker that starts from its view holds three kinds of
+state:
+
+- *Its durable per-shard state*: ballot, kept set, log, start records and
+  learner marks. Any process restart keeps these, and the model's `Crash`
+  covers them.
+- *What the control plane told it*: values it held in memory at an earlier
+  moment. A broker that stayed up but was cut off from the control plane and
+  its peers since then holds the same.
+- *What it lost*: the lease, confirmed reads, suspicions, follower cursors.
+  Losing each only refuses more. Without a lease nothing that rests on one
+  runs; a copy that holds no promise needs a confirmed read, which fails
+  without the control plane, so it refuses with `StaleRoute`.
+
+So a start from the view looks, to every peer, like a broker partitioned
+since it last wrote its view that then crashed. Elections are already safe
+against a broker holding any past view: a candidate stands at the generation
+after the higher of its ballot and its route, and the ballots of a majority
+refuse a generation taken already, whatever the route says. A set change it
+missed completed only after a joint fence, so a majority of the old set
+refuses a fence or pre-vote at the older set and names the newer one.
+
+The one thing registration gives that the view cannot is evidence that the
+directory changed. That is why the storage id on disk must be the one the
+view was registered under: a wiped directory, or one whose id rotated after a
+crash that may have lost acknowledged records, waits for the control plane
+and registers first, as the model's `Wipe` and rotating `Crash` assume.
+
+**What it does not protect against.** A directory restored from a snapshot
+without deleting `storage-id` votes on its old ballots until the control
+plane answers, and could then help elect two leaders at one generation. The
+broker checks for a restore as soon as the control plane answers, and stops
+before it registers, but that is after the fact. With the switch off the
+check runs before anything opens. A restore must delete `storage-id` or use
+`felix-broker restore-point` either way.
+
+**The model.** `docs/formal/FelixShard.tla` has no restart that runs before
+the broker registers again: its `Crash` registers a rotated id at once. Such a
+restart is the model's leader crash without giving up, enabled under
+elections while the control plane is down, with the id unchanged.
+
+**Tests.** The unit tests cover each rule on its own
+(`node::from_view`), the control plane being down versus refusing, the
+client gate before registration, the deferred restore check, and the catalog
+snapshot unregistering what it lacks without deleting it.
 
 ### The generation-start record
 
@@ -2001,9 +2066,9 @@ code. The report and the lease leave the write's path:
   something when read as off. Such a pass fences and decides before registration
   (`a_seeded_gate_fences_before_registration_only_with_what_it_reads`). A
   feature missing from the seed may have been finalized since, so
-  `fleet_decides` reports it as undecided rather than off. Nothing seeds a
-  gate yet: that is how a broker restarted during a control-plane outage will
-  rejoin elections (#1196).
+  `fleet_decides` reports it as undecided rather than off. A broker that
+  starts from its control-plane view seeds its gate this way (see
+  [Rejoining without the control plane](#rejoining-without-the-control-plane)).
 
 Why this is safe without a clock: a newer leader serves only after a majority
 took its generation, and every majority the old leader could count shares a

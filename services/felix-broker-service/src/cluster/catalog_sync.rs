@@ -30,6 +30,7 @@ mod fetch;
 mod pass;
 pub(crate) mod wire;
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -54,7 +55,15 @@ pub async fn start_sync(
     interval: Duration,
     credential: Option<NodeCredential>,
 ) -> Result<()> {
-    start_sync_with_signal(broker, base_url, interval, None, credential).await
+    start_sync_with_signal(
+        broker,
+        base_url,
+        interval,
+        None,
+        credential,
+        Provisional::default(),
+    )
+    .await
 }
 
 /// The least time between catalog polls asked for by
@@ -88,16 +97,21 @@ const MIN_ASKED_GAP: Duration = Duration::from_millis(100);
 /// `credential` is what the feeds are read with. They require
 /// `node.view:cluster:*`, so without one every poll is refused; the holder is
 /// read on each iteration, so a refresh is picked up without a restart.
+///
+/// `provisional` names the entries registered before the first snapshot from
+/// somewhere other than the control plane; see [`Provisional`].
 pub(crate) async fn start_sync_with_signal(
     broker: Arc<Broker>,
     base_url: String,
     interval: Duration,
     mut seeded: Option<tokio::sync::oneshot::Sender<()>>,
     credential: Option<NodeCredential>,
+    provisional: Provisional,
 ) -> Result<()> {
     let client = crate::cluster::controlplane_client::build()?;
     // Sequence cursors for each change feed; 0 means "not yet seeded".
     let mut state = SyncState::new();
+    state.provisional = provisional;
     let mut asked_gap = MIN_ASKED_GAP;
     let mut asked = false;
     loop {
@@ -191,6 +205,8 @@ struct SyncState {
     ///
     /// [`feed_cursor`]: crate::cluster::feed_cursor
     behind: BehindFeeds,
+    /// Entries the first snapshot must confirm or unregister.
+    provisional: Provisional,
 }
 
 impl SyncState {
@@ -224,8 +240,96 @@ impl SyncState {
             next_stream_seq: 0,
             seeded: SeededSnapshots::default(),
             behind: BehindFeeds::default(),
+            provisional: Provisional::default(),
         }
     }
+}
+
+/// Streams and caches registered before the first snapshot from a copy of
+/// the catalog, not from the control plane: the view a broker starts from
+/// while the control plane is down. The first snapshot unregisters the ones
+/// it lacks and keeps their data, since absence is no evidence of a delete
+/// (`Broker::unregister_stream`). Only a delete change or a tombstone
+/// deletes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Provisional {
+    pub(crate) streams: BTreeSet<(String, String, String)>,
+    pub(crate) caches: BTreeSet<(String, String, String)>,
+}
+
+/// Register `catalog`'s streams and caches as [`Provisional`] entries, so
+/// their logs open at the incarnation they had. An entry that fails is
+/// logged and left out: its shard then waits for the control plane.
+pub(crate) async fn seed_provisional(
+    broker: &Arc<Broker>,
+    catalog: &crate::cluster::controlplane_view::Catalog,
+) -> Provisional {
+    let mut provisional = Provisional::default();
+    for cache in &catalog.caches {
+        let applied = match cache.metadata() {
+            Ok(metadata) => {
+                apply::apply_cache_upsert(
+                    broker,
+                    cache.tenant_id.clone(),
+                    cache.namespace.clone(),
+                    cache.cache.clone(),
+                    metadata,
+                )
+                .await
+            }
+            Err(err) => Err(err),
+        };
+        match applied {
+            Ok(()) => {
+                provisional.caches.insert((
+                    cache.tenant_id.clone(),
+                    cache.namespace.clone(),
+                    cache.cache.clone(),
+                ));
+            }
+            Err(err) => tracing::warn!(
+                tenant_id = %cache.tenant_id,
+                namespace = %cache.namespace,
+                cache = %cache.cache,
+                error = %err,
+                "could not register a cache from the control-plane view; it waits for the \
+                 control plane"
+            ),
+        }
+    }
+    for stream in &catalog.streams {
+        let applied = match stream.metadata() {
+            Ok(metadata) => {
+                apply::apply_stream_upsert(
+                    broker,
+                    stream.tenant_id.clone(),
+                    stream.namespace.clone(),
+                    stream.stream.clone(),
+                    metadata,
+                )
+                .await
+            }
+            Err(err) => Err(err),
+        };
+        match applied {
+            Ok(()) => {
+                provisional.streams.insert((
+                    stream.tenant_id.clone(),
+                    stream.namespace.clone(),
+                    stream.stream.clone(),
+                ));
+            }
+            Err(err) => tracing::warn!(
+                tenant_id = %stream.tenant_id,
+                namespace = %stream.namespace,
+                stream = %stream.stream,
+                error = %err,
+                "could not register a stream from the control-plane view; it waits for the \
+                 control plane"
+            ),
+        }
+    }
+    provisional
 }
 
 /// Per-resource record of a completed cold-start snapshot.

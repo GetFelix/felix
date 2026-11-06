@@ -495,6 +495,7 @@ fn unreachable_reporter() -> (
             token: None,
             incarnation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1)),
             storage_id: None,
+            held: None,
         },
         shutdown.clone(),
     );

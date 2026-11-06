@@ -1016,11 +1016,13 @@ async fn the_control_plane_stays_down_across_a_leader_kill_under_load() {
     cluster.shutdown().await;
 }
 
-/// **A broker restarted while the control plane is down does not vote.** Three
-/// brokers, RF 3. A broker starts only once the control plane answers, so a
-/// follower restarted during the outage neither votes nor stands, and with
-/// the leader also dead only one copy is serving: no majority, no new
-/// generation until the control plane returns (#1196).
+/// **A broker restarted while the control plane is down does not vote**, with
+/// `FELIX_START_WITHOUT_CONTROLPLANE` off, the default. Three brokers, RF 3.
+/// A broker starts only once the control plane answers, so a follower
+/// restarted during the outage neither votes nor stands, and with the leader
+/// also dead only one copy is serving: no majority, no new generation until
+/// the control plane returns. With the switch on it votes: see
+/// [`a_broker_restarted_while_the_control_plane_is_down_votes`].
 #[serial]
 #[tokio::test]
 async fn a_broker_restarted_while_the_control_plane_is_down_does_not_vote() {
@@ -1105,6 +1107,161 @@ async fn a_broker_restarted_while_the_control_plane_is_down_does_not_vote() {
         missing.is_empty(),
         "{leader} lost acknowledged records: {missing:?}"
     );
+    read_logged(&cluster, OPENED, &mut opened);
+    assert_one_leader_per_generation(&opened, before.generation);
+    cluster.shutdown().await;
+}
+
+/// What a broker logs when it starts from its control-plane view.
+const FROM_VIEW: &str = "starting from the control-plane view";
+
+/// Whether `node`'s current log has `message`.
+fn node_logged(cluster: &Cluster, node: &str, message: &str) -> bool {
+    let dir = &cluster.node(node).expect("node").data_dir;
+    std::fs::read_to_string(dir.join("broker.log"))
+        .unwrap_or_default()
+        .lines()
+        .map(strip_ansi)
+        .any(|line| line.contains(message))
+}
+
+/// Wait until `node`'s control-plane view names `replica_election` and the
+/// stream's set at `generation`, so a restart has it to start from.
+async fn view_written(cluster: &Cluster, node: &str, generation: u64) {
+    let path = cluster
+        .node(node)
+        .expect("node")
+        .storage_dir()
+        .join("controlplane.view");
+    let wanted = format!("\"generation\":{generation}");
+    felix_cluster::wait::until(
+        Duration::from_secs(30),
+        "the control-plane view to hold the set and replica_election",
+        || async {
+            let body =
+                String::from_utf8_lossy(&std::fs::read(&path).unwrap_or_default()).into_owned();
+            body.contains(fleet::REPLICA_ELECTION.name()) && body.contains(&wanted)
+        },
+    )
+    .await
+    .unwrap_or_else(|err| panic!("{node} wrote no usable view: {err:#}"));
+}
+
+/// **A broker restarted while the control plane is down votes**, with
+/// `FELIX_START_WITHOUT_CONTROLPLANE` on. Three brokers, RF 3. With the
+/// control plane stopped a follower restarts, starts from its control-plane
+/// view, and then the leader is killed: the two live copies elect a leader,
+/// which needs the restarted one's vote. The restarted broker serves no
+/// client before it registers. When the control plane returns it adopts the
+/// elected leader, the restarted broker registers, and no acknowledged
+/// record is lost (#1196).
+#[serial]
+#[tokio::test]
+async fn a_broker_restarted_while_the_control_plane_is_down_votes() {
+    let mut cluster = start_with(
+        3,
+        3,
+        false,
+        vec![
+            (
+                "FELIX_START_WITHOUT_CONTROLPLANE".to_string(),
+                "true".to_string(),
+            ),
+            (
+                "FELIX_CONTROLPLANE_STARTUP_WAIT_MS".to_string(),
+                "1000".to_string(),
+            ),
+        ],
+    )
+    .await;
+    let before = assignment(&cluster).await;
+    let mut acked = publish_acked(&cluster, &before.leader, "before", 20).await;
+    let restarted = before.replicas.first().expect("a follower").clone();
+    let survivor = before
+        .replicas
+        .iter()
+        .find(|id| **id != restarted)
+        .expect("another follower")
+        .clone();
+    view_written(&cluster, &restarted, before.generation).await;
+
+    cluster
+        .crash_control_plane()
+        .await
+        .expect("crash the control plane");
+    cluster.kill_node(&restarted).expect("kill a follower");
+    cluster
+        .start_node_unready(&restarted)
+        .expect("start the follower again without waiting for it");
+    felix_cluster::wait::until(
+        Duration::from_secs(30),
+        "the restarted follower to start from its view",
+        || async { node_logged(&cluster, &restarted, FROM_VIEW) },
+    )
+    .await
+    .expect("the restarted follower starts from its control-plane view");
+    cluster.kill_node(&before.leader).expect("kill the leader");
+
+    // Only two copies are up, so any new generation needs the restarted one.
+    let mut opened = BTreeMap::new();
+    let (elected, generation) = felix_cluster::wait::until_some(
+        ELECTED_WITHIN * 2,
+        "a leader elected with the restarted follower's vote",
+        || {
+            read_logged(&cluster, OPENED, &mut opened);
+            let newest = opened.range(before.generation + 1..).next_back().and_then(
+                |(generation, brokers)| Some((brokers.iter().next()?.clone(), *generation)),
+            );
+            async move { newest }
+        },
+    )
+    .await
+    .expect("the two live copies elect a leader while the control plane is down");
+    // The restarted broker votes but does not stand before it registers:
+    // its peers would suspect it and take the shard back.
+    assert_eq!(
+        elected, survivor,
+        "the unregistered {restarted} led instead of {survivor}"
+    );
+    // Not registered, so not serving clients.
+    let refused = tokio::time::timeout(
+        Duration::from_secs(5),
+        cluster.publish_via(&restarted, STREAM, b"too-early".to_vec()),
+    )
+    .await;
+    assert!(
+        !matches!(refused, Ok(Ok(()))),
+        "{restarted} served a client before it registered"
+    );
+    acked.extend(publish_acked(&cluster, &elected, "elected", 20).await);
+    read_logged(&cluster, OPENED, &mut opened);
+    assert_eq!(
+        opened.range(generation + 1..).next(),
+        None,
+        "a generation after {generation} was opened while the control plane was down"
+    );
+
+    cluster
+        .recover_control_plane()
+        .await
+        .expect("recover the control plane");
+    adopted(&cluster, &elected, generation).await;
+    cluster
+        .await_node_ready(&restarted)
+        .await
+        .expect("the restarted follower registers once the control plane answers");
+    acked.extend(publish_acked(&cluster, &elected, "adopted", 5).await);
+    let missing = missing_on(&cluster, &elected, &acked).await;
+    assert!(
+        missing.is_empty(),
+        "{elected} lost acknowledged records: {missing:?}"
+    );
+    let follower = if elected == survivor {
+        restarted.clone()
+    } else {
+        survivor.clone()
+    };
+    caught_up(&cluster, &[follower], generation).await;
     read_logged(&cluster, OPENED, &mut opened);
     assert_one_leader_per_generation(&opened, before.generation);
     cluster.shutdown().await;

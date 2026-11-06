@@ -101,10 +101,6 @@ impl View {
 }
 
 /// The view recorded under `root` for `node_id`, if there is one to trust.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "read by the start without the control plane")
-)]
 pub(crate) fn read(root: &std::path::Path, node_id: &str) -> Option<View> {
     View::decode(&felix_storage::controlplane_view::read(root)?, node_id)
 }
@@ -236,31 +232,164 @@ fn members(assignment: &ShardAssignment) -> impl Iterator<Item = &str> {
         .chain(assignment.successor.as_deref())
 }
 
-/// Keep the view under `root` current until `shutdown`, then write it once
-/// more.
-pub(crate) fn spawn(
-    sources: Sources,
+/// The file, shared by the writer and the stop that forgets it.
+///
+/// Every write and the removal take one lock, and a forgotten file is never
+/// written again by the writer. So a write still in flight when the stop
+/// gives up waiting cannot put the view back after a deregistration.
+#[derive(Clone)]
+pub(crate) struct ViewFile {
     root: PathBuf,
+    forgotten: Arc<std::sync::Mutex<bool>>,
+}
+
+impl ViewFile {
+    pub(crate) fn new(root: PathBuf) -> Self {
+        Self {
+            root,
+            forgotten: Arc::default(),
+        }
+    }
+
+    /// Record `body` unless the file was forgotten. Blocking.
+    fn record(&self, body: &[u8]) -> felix_storage::Result<()> {
+        let forgotten = self.forgotten.lock().unwrap_or_else(|err| err.into_inner());
+        if *forgotten {
+            return Ok(());
+        }
+        felix_storage::controlplane_view::record(&self.root, body)
+    }
+
+    /// Remove the file durably and stop the writer recording it. Blocking.
+    fn forget(&self) -> felix_storage::Result<()> {
+        let mut forgotten = self.forgotten.lock().unwrap_or_else(|err| err.into_inner());
+        *forgotten = true;
+        felix_storage::controlplane_view::forget(&self.root)
+    }
+
+    /// Put `body` back after [`Self::forget`]. Blocking.
+    fn restore(&self, body: &[u8]) -> felix_storage::Result<()> {
+        let _forgotten = self.forgotten.lock().unwrap_or_else(|err| err.into_inner());
+        felix_storage::controlplane_view::record(&self.root, body)
+    }
+
+    /// Remove the file durably and stop the writer recording it, for a broker
+    /// that stops because the control plane refused it or found its directory
+    /// replaced. Returns whether it is gone.
+    pub(crate) async fn forget_now(&self) -> bool {
+        let file = self.clone();
+        let forgotten = tokio::task::spawn_blocking(move || file.forget()).await;
+        let gone = matches!(forgotten, Ok(Ok(())));
+        if !gone {
+            tracing::error!(
+                outcome = ?forgotten.map(|forgotten| forgotten.map_err(|err| err.to_string())),
+                "could not remove the control-plane view",
+            );
+        }
+        gone
+    }
+
+    /// Forget the view before deregistering, and put `last` back if the
+    /// control plane never got the request.
+    ///
+    /// Once the control plane has a deregistration it may move this node's
+    /// shards to sets without it, so a later start must not stand or vote
+    /// from the old ones: it waits for the control plane instead. A crash
+    /// between the two steps leaves no view, which is the same wait. When the
+    /// file cannot be removed this does not deregister, and returns `false`:
+    /// the control plane then expires the node as if it had crashed, and a
+    /// node that is down is what the view is for.
+    pub(crate) async fn forget_while<D>(&self, last: Option<Vec<u8>>, deregister: D) -> bool
+    where
+        D: Future<Output = bool>,
+    {
+        let forgotten = {
+            let file = self.clone();
+            tokio::task::spawn_blocking(move || file.forget()).await
+        };
+        if !matches!(forgotten, Ok(Ok(()))) {
+            tracing::error!(
+                outcome = ?forgotten.map(|forgotten| forgotten.map_err(|err| err.to_string())),
+                "could not remove the control-plane view; not deregistering, so the control \
+                 plane expires this node instead",
+            );
+            return false;
+        }
+        if !deregister.await
+            && let Some(last) = last
+        {
+            // The control plane never saw the request, so the view is as good
+            // as it was.
+            let file = self.clone();
+            let restored = tokio::task::spawn_blocking(move || file.restore(&last)).await;
+            if !matches!(restored, Ok(Ok(()))) {
+                tracing::warn!(
+                    "could not put the control-plane view back; the next start waits for the \
+                     control plane"
+                );
+            }
+        }
+        true
+    }
+}
+
+/// The running writer.
+pub(crate) struct ViewWriter {
+    task: JoinHandle<Option<Vec<u8>>>,
     shutdown: CancellationToken,
-) -> JoinHandle<()> {
+    file: ViewFile,
+}
+
+impl ViewWriter {
+    pub(crate) fn file(&self) -> ViewFile {
+        self.file.clone()
+    }
+
+    /// Write once more and stop. Returns the body this process last wrote,
+    /// or `None` if it wrote none. Dropped before it finishes, the task is
+    /// aborted.
+    pub(crate) async fn stop(self) -> Option<Vec<u8>> {
+        struct AbortOnDrop(JoinHandle<Option<Vec<u8>>>);
+        impl Drop for AbortOnDrop {
+            fn drop(&mut self) {
+                self.0.abort();
+            }
+        }
+        self.shutdown.cancel();
+        let mut task = AbortOnDrop(self.task);
+        (&mut task.0).await.ok().flatten()
+    }
+}
+
+/// Keep the view under `root` current until it is stopped, then write it
+/// once more.
+pub(crate) fn spawn(sources: Sources, root: PathBuf) -> ViewWriter {
     let sources = Arc::new(sources);
-    tokio::spawn(run(
+    let shutdown = CancellationToken::new();
+    let file = ViewFile::new(root);
+    let task = tokio::spawn(run(
         move || {
             let sources = Arc::clone(&sources);
             async move { sources.build().await }
         },
-        root,
+        file.clone(),
+        shutdown.clone(),
+    ));
+    ViewWriter {
+        task,
         shutdown,
-    ))
+        file,
+    }
 }
 
-/// The writer's loop, over any way of building the view.
-async fn run<B, F>(build: B, root: PathBuf, shutdown: CancellationToken)
+/// The writer's loop, over any way of building the view. Returns the body
+/// it last wrote.
+async fn run<B, F>(build: B, file: ViewFile, shutdown: CancellationToken) -> Option<Vec<u8>>
 where
     B: Fn() -> F,
     F: Future<Output = Option<View>>,
 {
-    let mut writer = Writer::new(root);
+    let mut writer = Writer::new(file);
     let mut ticker = tokio::time::interval(WRITE_EVERY);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
@@ -273,17 +402,18 @@ where
     // A change made since the last tick would otherwise be lost to a stop
     // that is not a crash.
     writer.write(build().await).await;
+    writer.last
 }
 
 /// Writes a view when it differs from the last one written.
 pub(crate) struct Writer {
-    root: PathBuf,
+    file: ViewFile,
     last: Option<Vec<u8>>,
 }
 
 impl Writer {
-    pub(crate) fn new(root: PathBuf) -> Self {
-        Self { root, last: None }
+    pub(crate) fn new(file: ViewFile) -> Self {
+        Self { file, last: None }
     }
 
     /// Record `view` if it is new. Returns whether the file was written.
@@ -303,13 +433,10 @@ impl Writer {
         if self.last.as_ref() == Some(&body) {
             return false;
         }
-        let root = self.root.clone();
         let written = {
+            let file = self.file.clone();
             let body = body.clone();
-            tokio::task::spawn_blocking(move || {
-                felix_storage::controlplane_view::record(&root, &body)
-            })
-            .await
+            tokio::task::spawn_blocking(move || file.record(&body)).await
         };
         match written {
             Ok(Ok(())) => {

@@ -125,6 +125,10 @@ struct Ctx<R> {
     /// Test-only: while this file exists, a pre-vote waits before it asks,
     /// so a test can release two candidates' rounds together.
     pre_vote_gate: Option<std::path::PathBuf>,
+    /// Until cancelled this broker votes but neither stands nor restores a
+    /// standing. Peers suspect a broker that cannot serve clients yet, so a
+    /// standing it won would be taken from it a few seconds later.
+    leads_after: Option<CancellationToken>,
 }
 
 /// What a shard's quiet clock started on. Any change restarts it: a new
@@ -335,6 +339,10 @@ impl<R> Ctx<R> {
 /// Stand for every shard whose leader this broker suspects, until
 /// `shutdown`. `None` when the broker does not check sets, has no
 /// registry of elections, or the config turns the detector off.
+///
+/// With `leads_after`, it stands and restores standings only once that is
+/// cancelled; until then it only votes.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn<R: PeerRequester + Send + Sync + 'static>(
     requester: Arc<R>,
     broker: Arc<Broker>,
@@ -342,6 +350,7 @@ pub fn spawn<R: PeerRequester + Send + Sync + 'static>(
     marks: Arc<QuorumMarks>,
     suspects: Arc<Suspects>,
     config: SuspicionConfig,
+    leads_after: Option<CancellationToken>,
     shutdown: CancellationToken,
 ) -> Option<tokio::task::JoinHandle<()>> {
     if config.suspect_after.is_zero() || !requester.offers_election() {
@@ -367,6 +376,7 @@ pub fn spawn<R: PeerRequester + Send + Sync + 'static>(
         stood: Default::default(),
         named_here: Default::default(),
         pre_vote_gate: pre_vote_gate(),
+        leads_after,
     });
     Some(tokio::spawn(run(ctx, shutdown)))
 }
@@ -448,6 +458,13 @@ async fn run<R: PeerRequester + Send + Sync + 'static>(
         if !ctx
             .marks
             .fleet_supports(felix_common::fleet::REPLICA_ELECTION)
+        {
+            continue;
+        }
+        if ctx
+            .leads_after
+            .as_ref()
+            .is_some_and(|leads| !leads.is_cancelled())
         {
             continue;
         }
