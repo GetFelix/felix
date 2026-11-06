@@ -459,10 +459,14 @@ placement treats a `left` node as `draining` until the same window a silent
 node gets has passed since its last heartbeat: the expiry timeout plus the
 regrant margin, on the store's clock. Until then nothing it leads is promoted
 away, abandoned, or re-placed; a move it takes part in can still hand a shard
-over. It is never promoted itself, as a draining follower can be. A node
-already silent for that long, such as one `down` before it was
-deregistered, is failed over straight away. An operator deregistering a live
-broker should expect its shards to move about 19 s later with the default
+over. Placement never names it leader again at a new generation, even
+when a move off it gives up after the fence or it refuses a generation: the
+shard waits for another caught-up copy or for the lease to run out. While a
+follower is being seated, only the lease running out ends the wait. It is
+never promoted itself, as a draining follower can be. Only an operator's cancel
+hands it back. A node already silent for that long, such as one `down` before
+it was deregistered, is failed over straight away. An operator deregistering a
+live broker should expect its shards to move about 19 s later with the default
 settings. In-memory streams are the exception, as for a drain: they have no log
 to move and are re-placed at once.
 
@@ -1600,7 +1604,10 @@ the move's leader is draining, since that fence ends through its own steps.
 A move still copying to its destination is dropped instead: the leader that
 refused cannot ship to it, so the move would only wait for its timeout. The
 next generation drops a destination that was staged on top of the set, as an
-abandoned move does, and a later pass can start the move again. A follower replacement does not stop
+abandoned move does, and a later pass can start the move again. A leader that
+has deregistered is not named again: placement waits for its lease to run
+out, and the same holds for a staged move that times out or loses its
+destination under it. A follower replacement does not stop
 the step: the new generation keeps the joining copy, and the replacement goes
 on under the same leader.
 
@@ -1705,7 +1712,12 @@ A move stops safely at every step. A destination that stops being live is
 dropped from the move (`abandon`). After the fence, the old leader takes the
 shard back at once at a new generation, unless it has already reported
 drained; then the cut-over goes to another caught-up replica or the old
-leader itself. A leader that dies mid-move is a failover, where
+leader itself. A leader that has deregistered does not take the shard back
+unless an operator cancels the move: it is stopping, and a new generation
+would land on a broker about to stop serving it. The shard stays fenced until another caught-up replica can take
+it or the leader's lease runs out and it fails over (`admin plan` says the
+leader has deregistered). While a follower is being seated, only the lease ends
+the wait. A leader that dies mid-move is a failover, where
 the successor is a candidate like any other replica, except on a durable
 `Quorum` stream: there a broker from before every change of leader was
 fenced would open the shard as a cut-over, without the fence, so failover

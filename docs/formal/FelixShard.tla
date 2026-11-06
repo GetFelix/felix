@@ -868,6 +868,12 @@ ReissueOwnOnOtherSet == FALSE
 \* refusal (RefuseStaleSet), which the code never keeps, can be newer. Off
 \* elsewhere, which only adds behaviours.
 StandsAboveKeptSet == FALSE
+\* `StandsOnPendingSet`: a replica standing while a change to its kept set is
+\* pending, which the code refuses (`stand` in election/candidate.rs). On only
+\* in the witnesses that show what the refusal protects: the control plane
+\* then has a leader to name again that never took its generation
+\* (FelixShardElectRenameDue.cfg, FelixShardElectRenameFencingDue.cfg).
+StandsOnPendingSet == FALSE
 \* `RefusalLearnsSet`: a candidate whose fence is refused for a stale set
 \* keeps the newer set the refusal names. The code only stops standing
 \* (promotion.rs keeps no set from a refusal); learning it adds behaviours.
@@ -2517,6 +2523,16 @@ ElectStep(f) ==
     /\ BrokerSuspicion => \/ Followed(f) \subseteq halted
                           \/ ShardSuspicion /\ f \notin Followed(f) /\ ~Hears(f)
                           \/ SelfSuspicion /\ Followed(f) = {f} /\ bgen[f] = 0 /\ ~Hears(f)
+    \* Not while a change to its kept set is pending: a set it is leaving may
+    \* differ from it in learner flags only (`stand` in crates/server/
+    \* felix-replication/src/election/candidate.rs refuses "the kept replica
+    \* set has a change pending"; its "keeps earlier sets" refusal is not
+    \* modelled, as no configuration keeps earlier sets). Across a change
+    \* the control plane names the leader. The code takes the ballot only on
+    \* the set those checks read (`accept_generation_on_set`), so the guard
+    \* and the promise are one step, as here. Its further check, that the
+    \* routes record the kept set, is left out: that only adds behaviours.
+    /\ SetCheck => StandsOnPendingSet \/ oldSet[f] \subseteq {mine[f]}
     /\ StandsAboveKeptSet => setGen[f] <= promised[f] + 1
     /\ ~WipeWaits(f) /\ WipeFloor(f, f, promised[f] + 1) /\ ~NonVoter(f)
     /\ PreVoteWon(f)
@@ -2533,7 +2549,8 @@ ElectStep(f) ==
     \* Counter-fence answers from an earlier generation do not count at this one.
     /\ canswered' = [canswered EXCEPT ![f] = {}]
     /\ cconfirmed' = [cconfirmed EXCEPT ![f] = [m \in Brokers |-> 0]]
-    \* A replica standing while a set change is pending fences the old set too.
+    \* A replica standing while a set change is pending fences the old set too
+    \* (under `SetCheck`, only one with the same copies stands).
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, hbOut, hbAt,
                     log, hwm, halted, acked, writes, staleCommit, opened, ackGen,
                     setGen, oldSet, installed, cpNext, cpNextGen, cutOver >>
@@ -2590,6 +2607,8 @@ StandOnStaleRoute(f) ==
     /\ bgen[f] = gen /\ fencing[f] /\ answered[f] = {}
     /\ promised[f] = gen /\ ballot[f] = {f}
     /\ Adopt > 0 => gen < Adopt
+    \* The round runs `stand`'s set checks, as `Elect` does.
+    /\ SetCheck => StandsOnPendingSet \/ oldSet[f] \subseteq {mine[f]}
     /\ PreVoteWon(f)
     /\ \E took \in {{}} \cup (IF StaleFenceAnswered THEN { {m} : m \in StaleAnswerers(f) } ELSE {}) :
            /\ promised' = [m \in Brokers |-> IF m \in took \cup {f} THEN gen + 1 ELSE promised[m]]

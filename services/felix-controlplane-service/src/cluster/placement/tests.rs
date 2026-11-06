@@ -5,6 +5,7 @@ mod adoption;
 mod balance;
 mod caches;
 mod departed;
+mod departed_leader;
 mod failover;
 mod fence_timeout;
 mod halted;

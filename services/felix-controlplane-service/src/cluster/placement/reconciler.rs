@@ -854,7 +854,8 @@ async fn load(
 /// Draining, not gone: its shards stay where they are, or move only through a
 /// handoff it takes part in. Promoting a follower sooner is two leaders, and a
 /// deregistration involves no clock at all to stop that on its own. The ids
-/// come back too: a broker that left has stopped, so it is never promoted.
+/// come back too: a broker that left has stopped, so it is never handed a
+/// shard to lead.
 fn fence_departed(
     mut nodes: Vec<Node>,
     liveness: &crate::config::NodeLivenessConfig,
