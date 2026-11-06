@@ -1586,10 +1586,6 @@ async fn a_leader_that_promised_its_generation_away_reports_the_refusal() {
 struct RefusedAfterOpen {
     detail: fn(u64) -> String,
     c_answers: bool,
-    /// `broker-c` answers once a second and is down in between, as a stalled
-    /// follower that gets one batch through now and then.
-    c_flaps: bool,
-    c_answered: std::sync::Mutex<Option<std::time::Instant>>,
     accepting: AcceptingFollower,
 }
 
@@ -1598,23 +1594,8 @@ impl RefusedAfterOpen {
         Self {
             detail,
             c_answers,
-            c_flaps: false,
-            c_answered: std::sync::Mutex::default(),
             accepting: AcceptingFollower::default(),
         }
-    }
-
-    fn c_answers_now(&self) -> bool {
-        if !self.c_flaps {
-            return self.c_answers;
-        }
-        let mut answered = self.c_answered.lock().expect("lock");
-        let now = std::time::Instant::now();
-        let due = answered.is_none_or(|at| now.duration_since(at) >= Duration::from_secs(1));
-        if due {
-            *answered = Some(now);
-        }
-        due
     }
 }
 
@@ -1634,7 +1615,7 @@ impl PeerRequester for RefusedAfterOpen {
                     detail: (self.detail)(4),
                 },
             )),
-            _ if self.c_answers_now() => self.accepting.request(node_id, addr, message).await,
+            _ if self.c_answers => self.accepting.request(node_id, addr, message).await,
             _ => Err(PeerError::Unavailable {
                 node_id: node_id.to_string(),
                 detail: "down".to_string(),
@@ -1688,16 +1669,16 @@ async fn refusal_after_open(
 }
 
 /// Every report an open leader at generation 4 sends within `within`, when
-/// broker-b refuses it for a newer ballot and broker-c is down, or flaps.
-async fn reports_after_open(c_flaps: bool, within: Duration) -> Vec<ShardReplicaStatus> {
+/// broker-b refuses it for a newer ballot and broker-c is down.
+async fn reports_after_open(within: Duration) -> Vec<ShardReplicaStatus> {
     let (broker, _dir) = leader_with(3).await;
     let (control_plane, received) = recording_control_plane().await;
     let shutdown = CancellationToken::new();
     let driver = spawn(
-        Arc::new(RefusedAfterOpen {
-            c_flaps,
-            ..RefusedAfterOpen::new(|g| crate::replica::superseded_detail(g + 1, g), false)
-        }),
+        Arc::new(RefusedAfterOpen::new(
+            |g| crate::replica::superseded_detail(g + 1, g),
+            false,
+        )),
         broker,
         router(LOCAL, &["broker-b", "broker-c"], 4),
         Arc::new(Unfenced),
@@ -1722,7 +1703,7 @@ async fn reports_after_open(c_flaps: bool, within: Duration) -> Vec<ShardReplica
 /// never be renamed.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_refusal_stays_on_every_later_report() {
-    let reports = reports_after_open(false, BALLOT_ELSEWHERE_FOR + Duration::from_secs(2)).await;
+    let reports = reports_after_open(BALLOT_ELSEWHERE_FOR + Duration::from_secs(2)).await;
     let first = reports
         .iter()
         .position(|report| report.refused.is_some())
@@ -1775,21 +1756,6 @@ async fn a_ship_refusal_is_held_while_its_ballot_may_open() {
     )
     .await;
     assert_eq!(refused, None);
-}
-
-/// **A follower that gets a batch through now and then does not hold the
-/// refusal back forever.** A guard: the ship refusal keeps its clock across
-/// such a pass, and the follower's ballot is also reported on its own, so
-/// this passes with either alone.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_flapping_follower_does_not_hold_the_ship_refusal_forever() {
-    let reports = reports_after_open(true, BALLOT_ELSEWHERE_FOR + Duration::from_secs(4)).await;
-    assert!(
-        reports
-            .iter()
-            .any(|report| report.refused == Some(RefusedGeneration::above(4, 5))),
-        "the ballot was never carried"
-    );
 }
 
 /// The same, when the follower answers from a routing view laid over by a

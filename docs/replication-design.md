@@ -1563,8 +1563,8 @@ elected leader waits for the lease until the control plane is back (issue
     step. It holds the report until that ballot has stayed for 10 s: a
     candidate standing there may still hold a majority and open, and any
     rename of the leader would depose it. The leader acknowledges nothing
-    meanwhile, so the wait costs no writes. A follower that gets one batch
-    through during the wait does not restart it. If the leader's own copy
+    meanwhile, so the wait costs no writes. The wait restarts only when the
+    ballot or the generation changes. If the leader's own copy
     holds a higher ballot, the report carries that one instead, so one
     rename gets past both. A refusal at the leader's own generation, which
     a follower promised to another node, is reported at once naming no

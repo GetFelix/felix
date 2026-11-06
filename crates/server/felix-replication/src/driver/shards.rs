@@ -282,9 +282,9 @@ struct ShardState {
     /// and no majority is left without it
     /// ([`crate::follower::refused_without_majority`]). Reported each tick.
     ship_refused: Option<RefusedGeneration>,
-    /// The followers' ballot behind a ship refusal, kept across passes that
-    /// briefly miss it. One past the generation is reported only once it
-    /// outlasts [`super::BALLOT_ELSEWHERE_FOR`].
+    /// The followers' ballot behind the last ship refusal. One past the
+    /// generation is reported only once it outlasts
+    /// [`super::BALLOT_ELSEWHERE_FOR`].
     ship_ballot: Option<ShipBallot>,
     /// The last pass found this broker's own copy, or a follower that fenced
     /// it, holding a ballot past the generation it leads. Reported each
@@ -304,10 +304,8 @@ struct ShardState {
 struct ShipBallot {
     /// The generation led and the ballot.
     at: (u64, u64),
-    /// First seen.
+    /// First seen. Kept while the generation and ballot stay the same.
     since: tokio::time::Instant,
-    /// Last seen. A gap under [`super::SHIP_BALLOT_GAP`] keeps `since`.
-    seen: tokio::time::Instant,
     /// The refusal was logged.
     warned: bool,
 }
@@ -1408,20 +1406,12 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         let now = tokio::time::Instant::now();
         if let Some(ballot) = ship_refused {
             let at = (generation, ballot);
-            match &mut state.ship_ballot {
-                Some(kept)
-                    if kept.at == at && now.duration_since(kept.seen) < super::SHIP_BALLOT_GAP =>
-                {
-                    kept.seen = now;
-                }
-                _ => {
-                    state.ship_ballot = Some(ShipBallot {
-                        at,
-                        since: now,
-                        seen: now,
-                        warned: false,
-                    })
-                }
+            if state.ship_ballot.as_ref().is_none_or(|kept| kept.at != at) {
+                state.ship_ballot = Some(ShipBallot {
+                    at,
+                    since: now,
+                    warned: false,
+                });
             }
         }
         // A ballot past the generation is held back whole: a candidate
