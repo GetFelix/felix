@@ -97,7 +97,7 @@ const FLOORS: &str = ".floors";
 const FLOORS_HEADER: &str = "felix-stream-floors 1";
 
 /// Deleted floors by (tenant, namespace, stream).
-pub(crate) type Floors = std::collections::HashMap<(String, String, String), u64>;
+pub(crate) type Floors = felix_common::random::HashMap<(String, String, String), u64>;
 
 /// The floors file, empty when there is none. A line that does not parse is
 /// skipped with a warning: the file is replaced whole and flushed, so that is
@@ -106,15 +106,15 @@ pub(crate) fn read_floors(root: &Path) -> Result<Floors> {
     let path = root.join(STREAMS_DIR).join(FLOORS);
     let text = match crate::fs::read_to_string(&path) {
         Ok(text) => text,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Floors::new()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Floors::default()),
         Err(err) => return Err(StorageError::Io(err)),
     };
     let mut lines = text.lines();
     if lines.next() != Some(FLOORS_HEADER) {
         tracing::warn!(path = %path.display(), "unreadable stream floors file; ignoring it");
-        return Ok(Floors::new());
+        return Ok(Floors::default());
     }
-    let mut floors = Floors::new();
+    let mut floors = Floors::default();
     for line in lines {
         let mut parts = line.split(' ');
         let parsed = (|| {

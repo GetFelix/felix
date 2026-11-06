@@ -969,7 +969,7 @@ async fn deferred_restore_check(
     };
     let root = root.to_path_buf();
     let view = view.cloned();
-    let judged = tokio::task::spawn_blocking(move || {
+    let judged = felix_common::blocking::spawn(move || {
         judge_directory(&root, id, answer.as_ref(), view.as_ref())
     })
     .await

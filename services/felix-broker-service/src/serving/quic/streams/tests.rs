@@ -30,7 +30,7 @@ mod pipeline;
 mod uni;
 mod writer;
 
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -85,7 +85,7 @@ fn auth_fixture(tenant_id: &str, perms: Vec<String>) -> AuthFixture {
     let signing_key = Ed25519SigningKey::from_bytes(&TEST_PRIVATE_KEY);
     let public_key = signing_key.verifying_key().to_bytes();
     let jwks = jwks_from_public_key(&public_key, "k1");
-    let mut key_materials = HashMap::new();
+    let mut key_materials = std::collections::HashMap::new();
     key_materials.insert(
         tenant_id.to_string(),
         TenantKeyMaterial {
@@ -323,7 +323,7 @@ async fn run_control_loop_with_codes(
         config,
         auth,
         publish_ctx,
-        HashMap::new(),
+        HashMap::default(),
         String::new(),
         out_ack_tx,
         Arc::new(std::sync::atomic::AtomicUsize::new(0)),

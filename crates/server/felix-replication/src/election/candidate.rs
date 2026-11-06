@@ -8,7 +8,8 @@
 //! generation, and the shard opens through the promotion path with a
 //! candidate's fence.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use felix_common::random::{HashMap, HashSet};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -215,8 +216,8 @@ impl<R> Ctx<R> {
     async fn scan_stuck(&self, suspected: &BTreeSet<String>) {
         let local = self.router.local_node_id();
         let now = Instant::now();
-        let mut followed = HashSet::new();
-        let mut stuck = HashSet::new();
+        let mut followed = HashSet::default();
+        let mut stuck = HashSet::default();
         for (key, route) in self.router.snapshot().iter() {
             if !holds_copy(route, local) {
                 continue;
@@ -408,16 +409,16 @@ async fn run<R: PeerRequester + Send + Sync + 'static>(
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut rounds: ShardTasks<Round> = ShardTasks::default();
     // By whether the round stands on the shard's suspicion alone.
-    let mut in_flight: HashMap<ShardKey, bool> = HashMap::new();
-    let mut backoff: HashMap<ShardKey, Backoff> = HashMap::new();
+    let mut in_flight: HashMap<ShardKey, bool> = HashMap::default();
+    let mut backoff: HashMap<ShardKey, Backoff> = HashMap::default();
     // Shards whose standing from before this broker started was looked for.
-    let mut looked_at: HashSet<ShardKey> = HashSet::new();
+    let mut looked_at: HashSet<ShardKey> = HashSet::default();
     let mut lookups: ShardTasks<Found> = ShardTasks::default();
     // Shards looked at or being put back.
-    let mut restoring: HashSet<ShardKey> = HashSet::new();
+    let mut restoring: HashSet<ShardKey> = HashSet::default();
     let mut scanned: Option<Instant> = None;
     // The generation each shard was last fenced again from, so it is once.
-    let mut restood: HashMap<ShardKey, u64> = HashMap::new();
+    let mut restood: HashMap<ShardKey, u64> = HashMap::default();
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => return,
@@ -599,7 +600,7 @@ impl<T> Default for ShardTasks<T> {
     fn default() -> Self {
         Self {
             set: JoinSet::new(),
-            keys: HashMap::new(),
+            keys: HashMap::default(),
         }
     }
 }

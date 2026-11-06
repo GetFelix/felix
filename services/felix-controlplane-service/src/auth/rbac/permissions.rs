@@ -2,7 +2,7 @@
 //! principal holds, then expand the implied hierarchy (tenant admin implies
 //! namespace/stream/cache rights). Expansion must stay conservative — it only
 //! ever adds what the hierarchy implies, never more.
-use std::collections::HashSet;
+use felix_common::random::HashSet;
 
 use casbin::{Enforcer, RbacApi};
 
@@ -17,7 +17,7 @@ pub fn effective_permissions(enforcer: &Enforcer, principal: &str, domain: &str)
     let rules: Vec<Vec<String>> =
         enforcer.get_implicit_permissions_for_user(principal, Some(domain));
 
-    let mut perms: HashSet<String> = HashSet::new();
+    let mut perms: HashSet<String> = HashSet::default();
     for rule in rules {
         if rule.len() < 4 {
             continue;

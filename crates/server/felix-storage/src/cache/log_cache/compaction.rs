@@ -161,18 +161,22 @@ impl CacheShard {
         Ok(state.log.clone())
     }
 
-    /// Live, unexpired entries whose record sits below `cut`.
+    /// Live, unexpired entries whose record sits below `cut`, in log order.
+    /// Ordered so the copies land in the order the originals did, not in the
+    /// index's hash order, which differs from run to run.
     pub(super) async fn live_below(&self, cut: Offset) -> Result<Vec<(String, IndexEntry)>> {
         let mut state = self.state.lock().await;
         self.ensure_index(&mut state).await?;
         let now = now_millis();
-        Ok(state
+        let mut live: Vec<(String, IndexEntry)> = state
             .index
             .entries
             .iter()
             .filter(|(_, entry)| entry.offset < cut && !entry.is_expired(now))
             .map(|(key, entry)| (key.clone(), *entry))
-            .collect())
+            .collect();
+        live.sort_unstable_by_key(|(_, entry)| entry.offset);
+        Ok(live)
     }
 
     /// Re-append one batch of live records at the tail. False when the pass

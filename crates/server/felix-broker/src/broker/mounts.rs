@@ -9,7 +9,7 @@
 //! replaced whole, and only when a stream's mount changes, by the registry
 //! code that holds the streams write lock; that is what keeps the table in
 //! step with the registry.
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;

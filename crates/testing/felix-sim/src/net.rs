@@ -35,7 +35,7 @@
 //! reach the new incarnation: tasks a crash leaves running cannot reach the
 //! live cluster.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -64,8 +64,8 @@ impl SimNet {
             inner: Arc::new(Inner {
                 config,
                 state: Mutex::new(State {
-                    nodes: HashMap::new(),
-                    links: HashMap::new(),
+                    nodes: BTreeMap::new(),
+                    links: BTreeMap::new(),
                     next_incarnation: 1,
                     rng: splitmix(seed),
                 }),
@@ -88,7 +88,7 @@ impl SimNet {
                 capabilities: node.capabilities,
                 identity: node.identity,
                 handler: node.handler,
-                known: HashMap::new(),
+                known: BTreeMap::new(),
             },
         );
         SimPeer {
@@ -322,8 +322,8 @@ struct Inner {
 }
 
 struct State {
-    nodes: HashMap<String, Running>,
-    links: HashMap<(String, String), Link>,
+    nodes: BTreeMap<String, Running>,
+    links: BTreeMap<(String, String), Link>,
     next_incarnation: u64,
     /// xorshift64, so a seed replays the same drops without a dependency.
     rng: u64,
@@ -392,7 +392,7 @@ struct Running {
     identity: PeerIdentity,
     handler: Arc<dyn PeerRequestHandler>,
     /// What each peer offered in its latest handshake with this incarnation.
-    known: HashMap<String, PeerCapabilities>,
+    known: BTreeMap<String, PeerCapabilities>,
     /// Set when it crashes, and dropped when a restart replaces it: either
     /// way the requests it was answering lose their connection.
     died: tokio::sync::watch::Sender<bool>,

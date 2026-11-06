@@ -6,7 +6,7 @@ use super::*;
 async fn handle_binary_publish_batch_control_requires_auth() {
     let broker = Broker::new(EphemeralCache::new().into());
     let (publish_ctx, _rx, _tx) = make_publish_context(1);
-    let mut cache = HashMap::new();
+    let mut cache = HashMap::default();
     let mut key = String::new();
     let frame = make_binary_publish_frame("tenant", "ns", "stream");
     let err = handle_binary_publish_batch_control(
@@ -29,7 +29,7 @@ async fn handle_binary_publish_batch_control_requires_auth() {
 async fn handle_binary_publish_batch_control_tenant_mismatch() {
     let broker = Broker::new(EphemeralCache::new().into());
     let (publish_ctx, _rx, _tx) = make_publish_context(1);
-    let mut cache = HashMap::new();
+    let mut cache = HashMap::default();
     let mut key = String::new();
     let frame = make_binary_publish_frame("tenant", "ns", "stream");
     let auth_ctx = make_auth_ctx("other", &["stream.publish:stream:tenant/ns/stream"]);
@@ -53,7 +53,7 @@ async fn handle_binary_publish_batch_control_tenant_mismatch() {
 async fn handle_binary_publish_batch_control_forbidden() {
     let broker = Broker::new(EphemeralCache::new().into());
     let (publish_ctx, _rx, _tx) = make_publish_context(1);
-    let mut cache = HashMap::new();
+    let mut cache = HashMap::default();
     let mut key = String::new();
     let frame = make_binary_publish_frame("tenant", "ns", "stream");
     let auth_ctx = make_auth_ctx("tenant", &["stream.subscribe:stream:tenant/ns/stream"]);
@@ -77,7 +77,7 @@ async fn handle_binary_publish_batch_control_forbidden() {
 async fn handle_binary_publish_batch_control_missing_stream_is_ok() {
     let broker = Broker::new(EphemeralCache::new().into());
     let (publish_ctx, mut rx, _tx) = make_publish_context(1);
-    let mut cache = HashMap::new();
+    let mut cache = HashMap::default();
     let mut key = String::new();
     let frame = make_binary_publish_frame("tenant", "ns", "stream");
     let auth_ctx = make_auth_ctx("tenant", &["stream.publish:stream:tenant/ns/*"]);
@@ -117,7 +117,7 @@ async fn handle_binary_publish_batch_control_enqueue_dropped_is_ok() {
         .expect("stream");
     let (publish_ctx, _rx, tx) = make_publish_context(1);
     tx.try_send(make_job()).expect("fill queue");
-    let mut cache = HashMap::new();
+    let mut cache = HashMap::default();
     let mut key = String::new();
     let frame = make_binary_publish_frame("tenant", "ns", "stream");
     let auth_ctx = make_auth_ctx("tenant", &["stream.publish:stream:tenant/ns/*"]);
@@ -155,7 +155,7 @@ async fn handle_binary_publish_batch_control_enqueue_error_is_ok() {
         .expect("stream");
     let (publish_ctx, rx, _tx) = make_publish_context(1);
     drop(rx);
-    let mut cache = HashMap::new();
+    let mut cache = HashMap::default();
     let mut key = String::new();
     let frame = make_binary_publish_frame("tenant", "ns", "stream");
     let auth_ctx = make_auth_ctx("tenant", &["stream.publish:stream:tenant/ns/*"]);
@@ -198,7 +198,7 @@ async fn an_accepted_binary_batch_is_counted_with_its_payload_bytes() {
         .await
         .expect("stream");
     let (publish_ctx, mut rx, _tx) = make_publish_context(4);
-    let mut cache = HashMap::new();
+    let mut cache = HashMap::default();
     let mut key = String::new();
     let payloads = vec![vec![0u8; 4096], vec![1u8; 100]];
     let frame = felix_wire::binary::encode_publish_batch("tenant", "ns", "stream", &payloads)

@@ -319,7 +319,7 @@ pub(super) struct ShardTaskDeps<'a, R, L> {
     pub(super) prefetch: Option<replication::confirmed::Prefetch>,
     /// Node addresses from the control-plane view, routed by until the
     /// first node catalog read.
-    pub(super) nodes: std::collections::HashMap<String, felix_router::NodeRef>,
+    pub(super) nodes: felix_common::random::HashMap<String, felix_router::NodeRef>,
     /// After a start from the view, replica reports wait for the restore
     /// check: they announce this directory's storage id as current.
     pub(super) reports_held: Option<CancellationToken>,

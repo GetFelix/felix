@@ -1,5 +1,5 @@
 //! Reading the node catalog, with each node's placement standing explained.
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 
 use axum::Json;
 use axum::extract::{Path, Query, State};

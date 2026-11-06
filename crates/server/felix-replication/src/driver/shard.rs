@@ -1,7 +1,8 @@
 //! One shard's pass: ship to each follower, advance the quorum mark, and
 //! build the report.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use felix_common::random::{HashMap, HashSet};
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -1343,7 +1344,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
             exchange
         })
         .collect();
-    let mut answered: HashSet<String> = HashSet::new();
+    let mut answered: HashSet<String> = HashSet::default();
 
     /// Put a finished cursor back where its stale copy was.
     fn settle(positions: &mut [FollowerCursor], cursor: FollowerCursor) {

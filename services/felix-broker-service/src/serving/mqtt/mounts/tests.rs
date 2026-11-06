@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::net::SocketAddr;
 
 use felix_broker::StreamMetadata;
@@ -36,7 +36,7 @@ fn four_shard_ingress(routing: felix_wire::routing::ShardRouting) -> Arc<Ingress
         region: "us-west-2".to_string(),
         live: true,
     };
-    let nodes = HashMap::from([(node.node_id.clone(), node)]);
+    let nodes = HashMap::from_iter([(node.node_id.clone(), node)]);
     let owned: HashMap<ShardKey, ShardAssignment> = (0..4)
         .map(|shard| {
             let key = ShardKey {
@@ -94,7 +94,7 @@ async fn the_shard_is_chosen_by_the_full_topic_under_the_streams_routing() {
     let broker = broker_with_mount("plant/").await;
     for routing in [ShardRouting::Modulo, ShardRouting::JumpHash] {
         let mounts = BrokerMounts::new(Arc::clone(&broker), Some(four_shard_ingress(routing)));
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = felix_common::random::HashSet::default();
         for line in 0..64 {
             let topic = format!("plant/line{line}/temp");
             let found = mounts.resolve("t1", &topic).expect("mounted");
