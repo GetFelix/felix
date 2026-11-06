@@ -377,10 +377,13 @@ type PassFuture<'a> = BoxFuture<'a, (u64, ShardPass<'a>)>;
 pub(super) struct Shards<'a, R> {
     cx: Context<'a, R>,
     pub(super) scan: u64,
-    streams: HashMap<ShardKey, ShardCursors>,
-    group: HashMap<ShardKey, ShardCursors>,
-    dead_letters: HashMap<ShardKey, ShardCursors>,
-    counters: HashMap<ShardKey, ShardCursors>,
+    /// Seeded, as are the maps below whose order decides what runs next: a
+    /// `retain` drops cursors, and with them any rebuild slot they hold, in
+    /// the same order every run of a simulation.
+    streams: Map<ShardKey, ShardCursors>,
+    group: Map<ShardKey, ShardCursors>,
+    dead_letters: Map<ShardKey, ShardCursors>,
+    counters: Map<ShardKey, ShardCursors>,
     states: Map<ShardKey, ShardState>,
     /// Followers with an exchange still under way, per shard, and whether
     /// each may hold a rebuild slot. Kept apart from the shard's state: a
@@ -435,10 +438,10 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         Self {
             cx,
             scan: 0,
-            streams: HashMap::new(),
-            group: HashMap::new(),
-            dead_letters: HashMap::new(),
-            counters: HashMap::new(),
+            streams: Map::default(),
+            group: Map::default(),
+            dead_letters: Map::default(),
+            counters: Map::default(),
             states: Map::default(),
             busy: Map::default(),
             passes: FuturesUnordered::new(),

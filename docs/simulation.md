@@ -96,11 +96,14 @@ maps below hash with `ahash` instead of std's hasher.
 - **Map order.** Where the order a map is walked in decides what runs next,
   the map is a `felix_common::random::Map` or `Set`, whose hash keys come from
   the same seeded generator, even when the map is built by `collect` or
-  `Default`. That covers the replication driver's shard states and queues, the
-  elections and candidate loop, the quorum marks (dropping a mark wakes its
-  waiters, so `retain` order is wake order), the replica's fence records, the
-  leadership rounds, the status board and the peer pool. A std `HashMap` takes
-  its keys from the OS, so walking one differs from run to run.
+  `Default`. A std `HashMap` takes its keys from the OS, so walking one
+  differs from run to run. Dropping entries is a walk too: `retain` drops
+  them in hash order, and a dropped quorum mark wakes its waiters and a
+  dropped cursor can free a rebuild slot. The seeded maps are the replication
+  driver's shard states, queues and cursors, the elections and the candidate
+  loop, the quorum marks, the replica's fence records, the leadership rounds,
+  the status board and the peer pool. A cache shard's compaction copies live
+  entries forward in log order rather than in its index's hash order.
 - **Wall time.** Expiry stamps and deadlines read `felix_common::clock::system_time`,
   which is virtual time counted from the fixed simulated epoch. That includes
   the control plane's stream and cache incarnations, the cache's expiry

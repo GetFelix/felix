@@ -11,6 +11,7 @@ mod shard;
 mod shards;
 
 use std::collections::{HashMap, HashSet};
+use std::hash::BuildHasher;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -376,16 +377,16 @@ impl WriteFence for Unfenced {
 // One cursor map per log kind the pass ships, plus the shared context: folding
 // the maps into a struct would move the argument list rather than shorten it.
 #[allow(clippy::too_many_arguments)]
-pub async fn replicate_once<R: PeerRequester + Sync>(
+pub async fn replicate_once<R: PeerRequester + Sync, S: BuildHasher>(
     requester: &R,
     broker: &Arc<Broker>,
     router: &ShardRouter,
     marks: &QuorumMarks,
     reporter: Option<&Reporter>,
-    cursors: &mut HashMap<ShardKey, ShardCursors>,
-    group_cursors: &mut HashMap<ShardKey, ShardCursors>,
-    dead_letter_cursors: &mut HashMap<ShardKey, ShardCursors>,
-    counter_cursors: &mut HashMap<ShardKey, ShardCursors>,
+    cursors: &mut HashMap<ShardKey, ShardCursors, S>,
+    group_cursors: &mut HashMap<ShardKey, ShardCursors, S>,
+    dead_letter_cursors: &mut HashMap<ShardKey, ShardCursors, S>,
+    counter_cursors: &mut HashMap<ShardKey, ShardCursors, S>,
 ) -> Pass {
     replicate_once_with(
         requester,
@@ -409,7 +410,7 @@ pub async fn replicate_once<R: PeerRequester + Sync>(
 /// destination paced by `throttle`, and a draining shard held back until
 /// `fence` says its writes have stopped.
 #[allow(clippy::too_many_arguments)]
-pub async fn replicate_once_with<R: PeerRequester + Sync>(
+pub async fn replicate_once_with<R: PeerRequester + Sync, S: BuildHasher>(
     requester: &R,
     broker: &Arc<Broker>,
     router: &ShardRouter,
@@ -417,10 +418,10 @@ pub async fn replicate_once_with<R: PeerRequester + Sync>(
     gate: &dyn PromotionGate,
     marks: &QuorumMarks,
     reporter: Option<&Reporter>,
-    cursors: &mut HashMap<ShardKey, ShardCursors>,
-    group_cursors: &mut HashMap<ShardKey, ShardCursors>,
-    dead_letter_cursors: &mut HashMap<ShardKey, ShardCursors>,
-    counter_cursors: &mut HashMap<ShardKey, ShardCursors>,
+    cursors: &mut HashMap<ShardKey, ShardCursors, S>,
+    group_cursors: &mut HashMap<ShardKey, ShardCursors, S>,
+    dead_letter_cursors: &mut HashMap<ShardKey, ShardCursors, S>,
+    counter_cursors: &mut HashMap<ShardKey, ShardCursors, S>,
     rebuilds: &Rebuilds,
     throttle: &MoveThrottle,
 ) -> Pass {
@@ -871,13 +872,13 @@ async fn alone_report(broker: &Broker, key: &ShardKey, generation: u64, floor: u
 ///
 /// `None` when there is nothing to ship: the cursors stay in the map, so a
 /// destination staged later is known to be one this shard did not have.
-fn take_work(
+fn take_work<S: BuildHasher>(
     key: &ShardKey,
     route: &felix_router::Route,
-    cursors: &mut HashMap<ShardKey, ShardCursors>,
-    group_cursors: &mut HashMap<ShardKey, ShardCursors>,
-    dead_letter_cursors: &mut HashMap<ShardKey, ShardCursors>,
-    counter_cursors: &mut HashMap<ShardKey, ShardCursors>,
+    cursors: &mut HashMap<ShardKey, ShardCursors, S>,
+    group_cursors: &mut HashMap<ShardKey, ShardCursors, S>,
+    dead_letter_cursors: &mut HashMap<ShardKey, ShardCursors, S>,
+    counter_cursors: &mut HashMap<ShardKey, ShardCursors, S>,
 ) -> Option<(ShardCursors, AuxCursors)> {
     let previous = cursors.remove(key);
     let learner = shard::staged_learner(previous.as_ref(), route);
@@ -936,7 +937,7 @@ pub struct Pass {
     pub fencing: bool,
 }
 
-fn rebuilding_count(maps: &[&HashMap<ShardKey, ShardCursors>]) -> usize {
+fn rebuilding_count<S>(maps: &[&HashMap<ShardKey, ShardCursors, S>]) -> usize {
     maps.iter()
         .flat_map(|map| map.values())
         .flat_map(|entry| entry.followers.iter())
