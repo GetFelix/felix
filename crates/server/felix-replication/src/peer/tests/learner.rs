@@ -85,3 +85,61 @@ fn a_refusal_reason_goes_only_to_a_caller_that_reads_it() {
         Some(felix_wire::internal::RefusalReason::NotAReplica)
     );
 }
+
+/// Refuses every request as a replica whose ballot holds the generation for
+/// another node, with the reason as fields.
+struct PromisedAway;
+
+#[async_trait::async_trait]
+impl PeerRequestHandler for PromisedAway {
+    async fn handle(&self, request: InternalMessage) -> InternalMessage {
+        InternalMessage::ReplicateError(felix_wire::internal::ReplicateError {
+            correlation_id: request.correlation_id(),
+            code: felix_wire::internal::ErrorCode::FencedEpoch,
+            expected_offset: 0,
+            detail: crate::replica::promised_detail(7, "broker-d"),
+            reason: Some(felix_wire::internal::RefusalReason::PromisedTo {
+                generation: 7,
+                leader: "broker-d".to_string(),
+            }),
+        })
+    }
+}
+
+/// **A refused fence reaches an older leader in the body it decodes.**
+/// Fences are answered out of turn, and that path must shape the answer for
+/// its caller too: trailing reason fields would fail an older decoder's
+/// check that the body ends, turning a `FencedEpoch` into a decode error.
+#[tokio::test]
+async fn a_fence_refused_out_of_turn_reaches_an_older_caller_without_its_reason() {
+    let listener = Listener::start_on(PEER, Arc::new(PromisedAway), config()).await;
+    let connection = connect(&listener).await;
+    let (mut send, mut recv) = greet(&connection, Some(PeerCapabilities::LANE_RENEWAL)).await;
+    let fence = InternalMessage::Fence(felix_wire::internal::Fence {
+        correlation_id: 9,
+        shard: shard(),
+        log: felix_wire::internal::ReplicaLog::Stream,
+        election: None,
+    });
+    write_frame(&mut send, &fence).await.expect("fence");
+    let answer = tokio::time::timeout(Duration::from_secs(2), read_frame(&mut recv))
+        .await
+        .expect("an answer");
+    connection.close(0u32.into(), b"done");
+    listener.stop().await;
+    let Ok(Incoming::Message(InternalMessage::ReplicateError(refused))) = answer else {
+        panic!("expected a refusal");
+    };
+    // The body an older build decodes: everything up to the detail, and
+    // nothing after it.
+    assert_eq!(
+        refused.reason, None,
+        "the reason went to a caller that cannot read it"
+    );
+    assert_eq!(refused.code, felix_wire::internal::ErrorCode::FencedEpoch);
+    assert_eq!(
+        crate::replica::promised_to(&refused, 7),
+        Some("broker-d"),
+        "read from the detail"
+    );
+}

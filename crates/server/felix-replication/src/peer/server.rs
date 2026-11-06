@@ -518,6 +518,10 @@ async fn serve_connection(
                     },
                 };
 
+                // Read per request: the `Hello` that sets it comes first.
+                let offered_by = PeerCapabilities::from_bits(
+                    caller.load(std::sync::atomic::Ordering::Relaxed),
+                );
                 let response = match request {
                     // Answered here rather than by the handler: identity is the
                     // transport's to assert, and it must work before the broker
@@ -679,7 +683,7 @@ async fn serve_connection(
                                     detail: "this broker is not serving yet".to_string(),
                                 })
                             };
-                            answer_out_of_order(&send, async { pong }).await;
+                            answer_out_of_order(&send, offered_by, async { pong }).await;
                         });
                         continue;
                     }
@@ -708,7 +712,7 @@ async fn serve_connection(
                             // a large fetch answer and the pings after it.
                             let send = Arc::clone(&send);
                             app.spawn(async move {
-                                answer_out_of_order(&send, async { refusal }).await;
+                                answer_out_of_order(&send, offered_by, async { refusal }).await;
                             });
                             continue;
                         };
@@ -724,7 +728,7 @@ async fn serve_connection(
                                 Some(fetches) => fetches.acquire_owned().await.ok(),
                                 None => None,
                             };
-                            answer_out_of_order(&send, handler.handle_from(peer, request)).await;
+                            answer_out_of_order(&send, offered_by, handler.handle_from(peer, request)).await;
                         });
                         continue;
                     }
@@ -758,7 +762,7 @@ async fn serve_connection(
                         let send = Arc::clone(&send);
                         app.spawn(async move {
                             let _permit = permit;
-                            answer_out_of_order(&send, handler.handle_from(peer, request)).await;
+                            answer_out_of_order(&send, offered_by, handler.handle_from(peer, request)).await;
                         });
                         continue;
                     }
@@ -928,12 +932,14 @@ pub fn for_caller(response: InternalMessage, caller: PeerCapabilities) -> Intern
     }
 }
 
-/// Write the answer to a request handed off so its stream could read on.
+/// Write the answer to a request handed off so its stream could read on,
+/// shaped for a caller that offered `caller` ([`for_caller`]).
 ///
 /// A handler that panicked may have applied the write, so the stream is ended
 /// rather than answered, as a panic in a request answered in turn ends it.
 async fn answer_out_of_order(
     send: &tokio::sync::Mutex<quinn::SendStream>,
+    caller: PeerCapabilities,
     answering: impl std::future::Future<Output = InternalMessage>,
 ) {
     let answered = AssertUnwindSafe(answering).catch_unwind().await;
@@ -944,7 +950,7 @@ async fn answer_out_of_order(
         let _ = send.finish();
         return;
     };
-    match write_frame(&mut send, &response).await {
+    match write_frame(&mut send, &for_caller(response, caller)).await {
         Ok(()) => metrics::record_served(metrics::OUTCOME_OK),
         Err(_) => metrics::record_served(metrics::OUTCOME_ERROR),
     }
