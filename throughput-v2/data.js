@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793995142364,
+  "lastUpdate": 1793996226596,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -47684,6 +47684,58 @@ window.BENCHMARK_DATA = {
             "range": "11003.93",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1218731.71\nmean: 1219038.21\nstdev: 11003.93\ncv: 0.90%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c787ece449a58912adbf355a46f30f18453ea949",
+          "message": "fix(sim): replay a seed exactly from the command a failure prints (#2055)\n\nSeed replays are exact again: the command a failing seed prints is task sim:replay, which builds with --cfg tokio_unstable so select! is seeded. A plain cargo test build refuses FELIX_SIM_HISTORY, and sim:determinism also compares one seed replayed in two separate processes (#419).",
+          "timestamp": "2026-11-06T20:10:45Z",
+          "tree_id": "01c848456e46c8aac5e0def4ca388d3ca17cc5de",
+          "url": "https://github.com/GetFelix/felix/commit/c787ece449a58912adbf355a46f30f18453ea949"
+        },
+        "date": 1793996225764,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 762235.65,
+            "range": "114600.44",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 762235.65\nmean: 722103.04\nstdev: 114600.44\ncv: 15.87%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 762235.65,
+            "range": "114600.44",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 762235.65\nmean: 722103.04\nstdev: 114600.44\ncv: 15.87%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 171668.06,
+            "range": "2198.43",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 171668.06\nmean: 171495.82\nstdev: 2198.43\ncv: 1.28%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1716680.61,
+            "range": "21984.33",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1716680.61\nmean: 1714958.20\nstdev: 21984.33\ncv: 1.28%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
