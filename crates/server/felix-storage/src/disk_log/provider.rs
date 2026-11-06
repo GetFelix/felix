@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 
 use super::{DiskLog, layout};
 use crate::incarnation::{self, Incarnations};
@@ -67,8 +67,8 @@ impl DiskLogProvider {
             open_logs: ShardSlots::new(),
             incarnations: Incarnations::default(),
             dirs: Default::default(),
-            stream_retention: parking_lot::RwLock::new(HashMap::new()),
-            stream_hold: parking_lot::RwLock::new(HashMap::new()),
+            stream_retention: parking_lot::RwLock::new(HashMap::default()),
+            stream_hold: parking_lot::RwLock::new(HashMap::default()),
             #[cfg(test)]
             open_hook: parking_lot::Mutex::new(None),
         })

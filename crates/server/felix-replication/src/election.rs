@@ -9,12 +9,12 @@
 //! followers take its batches and send clients to it, until the control plane
 //! names that generation or a newer one.
 
+use felix_common::random::HashMap;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use felix_common::membership::ElectedLeadership;
-use felix_common::random::Map;
 use felix_router::ShardKey;
 use felix_storage::disk_log::Membership;
 use felix_wire::internal::ReplicaSetView;
@@ -30,30 +30,30 @@ pub use candidate::spawn;
 #[derive(Debug)]
 pub struct Elections {
     local_node_id: String,
-    entries: Mutex<Map<ShardKey, Elected>>,
+    entries: Mutex<HashMap<ShardKey, Elected>>,
     /// The control plane's set for each shard with an entry, which the
     /// overlay hides from the router.
-    recorded: Mutex<Map<ShardKey, Recorded>>,
+    recorded: Mutex<HashMap<ShardKey, Recorded>>,
     /// The generation each of this broker's standings is being fenced or
     /// caught up at, while the driver works on it.
-    fencing: Mutex<Map<ShardKey, u64>>,
+    fencing: Mutex<HashMap<ShardKey, u64>>,
     /// The generation and incarnation each shard last opened at here once
     /// this broker's standing fenced it. Outlives the entry, which the
     /// overlay drops when the control plane adopts the leadership.
-    opened: Mutex<Map<ShardKey, (u64, u64)>>,
+    opened: Mutex<HashMap<ShardKey, (u64, u64)>>,
     /// When each of this broker's standings was recorded or first fenced, by
     /// generation. Outlives the fence guard, so a fence retried pass after
     /// pass keeps its first time.
-    fenced_since: Mutex<Map<ShardKey, (u64, Instant)>>,
+    fenced_since: Mutex<HashMap<ShardKey, (u64, Instant)>>,
     /// When this copy last stored a batch or took a fence from each shard's
     /// leader, for per-shard suspicion. A candidate's fence does not count.
-    heard: Mutex<Map<ShardKey, Instant>>,
+    heard: Mutex<HashMap<ShardKey, Instant>>,
     /// Since when the control plane's route names another leader at the
     /// generation of this broker's own standing, by shard.
-    collided: Mutex<Map<ShardKey, (u64, Instant)>>,
+    collided: Mutex<HashMap<ShardKey, (u64, Instant)>>,
     /// When the driver last saw a copy refuse this broker's elected
     /// leadership at a generation while the rest of the set answered.
-    refused_copy: Mutex<Map<ShardKey, (u64, Instant)>>,
+    refused_copy: Mutex<HashMap<ShardKey, (u64, Instant)>>,
     /// How long a copy defers to an elected leader that has not started its
     /// generation. See [`Self::with_defer_for`].
     defer_for: Duration,
@@ -145,14 +145,14 @@ impl Elections {
     pub fn new(local_node_id: impl Into<String>, changed: Arc<Notify>) -> Self {
         Self {
             local_node_id: local_node_id.into(),
-            entries: Mutex::new(Map::default()),
-            recorded: Mutex::new(Map::default()),
-            fencing: Mutex::new(Map::default()),
-            opened: Mutex::new(Map::default()),
-            fenced_since: Mutex::new(Map::default()),
-            heard: Mutex::new(Map::default()),
-            collided: Mutex::new(Map::default()),
-            refused_copy: Mutex::new(Map::default()),
+            entries: Mutex::new(HashMap::default()),
+            recorded: Mutex::new(HashMap::default()),
+            fencing: Mutex::new(HashMap::default()),
+            opened: Mutex::new(HashMap::default()),
+            fenced_since: Mutex::new(HashMap::default()),
+            heard: Mutex::new(HashMap::default()),
+            collided: Mutex::new(HashMap::default()),
+            refused_copy: Mutex::new(HashMap::default()),
             defer_for: crate::suspicion::DEFAULT_DEFER_FOR,
             changed,
         }
@@ -390,7 +390,7 @@ impl Elections {
     }
 
     /// Drop what was heard for shards this copy no longer follows.
-    pub(crate) fn forget_heard_except(&self, followed: &felix_common::random::Set<ShardKey>) {
+    pub(crate) fn forget_heard_except(&self, followed: &felix_common::random::HashSet<ShardKey>) {
         self.heard.lock().retain(|key, _| followed.contains(key));
     }
 

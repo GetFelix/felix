@@ -4,7 +4,7 @@
 //! memory or file descriptors, and every other client is refused with it.
 //! The count is by IP, not by port: a client's ports are free for it to pick.
 
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
 
@@ -21,7 +21,7 @@ impl PerIpLimiter {
     pub(crate) fn new(max: usize) -> Arc<Self> {
         Arc::new(Self {
             max,
-            counts: Mutex::new(HashMap::new()),
+            counts: Mutex::new(HashMap::default()),
         })
     }
 

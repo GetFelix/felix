@@ -7,7 +7,7 @@
 //! a move for the totals never widens a stream's spread. Every move then
 //! lowers (each stream's spread, the cluster's spread) in that order, which
 //! is what keeps the two from trading shards back and forth.
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 
 use crate::model::{ShardKey, ShardKind};
 

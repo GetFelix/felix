@@ -13,7 +13,7 @@
 //! leaves it where nothing opens it. A crash part-way through the delete
 //! leaves debris only `.deleted/` holds, cleared at the next start.
 
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
@@ -224,7 +224,7 @@ impl DirIndex {
 }
 
 fn read_root(root: &Path) -> Result<HashMap<String, std::collections::BTreeSet<String>>> {
-    let mut index: HashMap<String, std::collections::BTreeSet<String>> = HashMap::new();
+    let mut index: HashMap<String, std::collections::BTreeSet<String>> = HashMap::default();
     let entries = match crate::fs::read_dir(root) {
         Ok(entries) => entries,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(index),

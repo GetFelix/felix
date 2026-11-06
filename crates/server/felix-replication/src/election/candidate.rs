@@ -8,13 +8,13 @@
 //! generation, and the shard opens through the promotion path with a
 //! candidate's fence.
 
+use felix_common::random::{HashMap, HashSet};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
 use felix_broker::{Broker, LogKind, StreamLog};
 use felix_common::membership::ELECTION_GENERATION_WINDOW;
-use felix_common::random::{Map, Set};
 use felix_router::{Route, ShardKey, ShardKind, ShardRouter};
 use felix_storage::disk_log::{GenerationCheck, Membership, ReplicaSet};
 use felix_wire::internal::{InternalMessage, PreVote, PreVoteRefusal, ReplicaLog};
@@ -106,22 +106,22 @@ struct Ctx<R> {
     suspects: Arc<Suspects>,
     /// Why each shard last could not stand, so the reason is logged once
     /// when it changes rather than every round.
-    held_back: std::sync::Mutex<Map<ShardKey, (&'static str, String)>>,
+    held_back: std::sync::Mutex<HashMap<ShardKey, (&'static str, String)>>,
     /// When each shard was first held back for following a newer leader,
     /// by the generation it follows. See [`Ctx::defers`].
-    deferring: std::sync::Mutex<Map<ShardKey, (u64, Instant)>>,
+    deferring: std::sync::Mutex<HashMap<ShardKey, (u64, Instant)>>,
     /// See [`SuspicionConfig::shard_suspect_after`]; zero is off.
     shard_after: Duration,
     /// Since when each followed shard has had no word from its leader, by
     /// what the clock started on. See [`Ctx::shard_stuck`].
-    quiet: std::sync::Mutex<Map<ShardKey, Quiet>>,
+    quiet: std::sync::Mutex<HashMap<ShardKey, Quiet>>,
     /// The shards the last scan found stuck.
-    stuck: std::sync::Mutex<Set<ShardKey>>,
+    stuck: std::sync::Mutex<HashSet<ShardKey>>,
     /// The generation each shard last stood at here.
-    stood: std::sync::Mutex<Map<ShardKey, u64>>,
+    stood: std::sync::Mutex<HashMap<ShardKey, u64>>,
     /// When a ballot naming this broker that no standing here wrote was
     /// first seen, by generation. See [`Ctx::named_here`].
-    named_here: std::sync::Mutex<Map<ShardKey, (u64, Instant)>>,
+    named_here: std::sync::Mutex<HashMap<ShardKey, (u64, Instant)>>,
     /// Test-only: while this file exists, a pre-vote waits before it asks,
     /// so a test can release two candidates' rounds together.
     pre_vote_gate: Option<std::path::PathBuf>,
@@ -218,8 +218,8 @@ impl<R> Ctx<R> {
     async fn scan_stuck(&self, suspected: &BTreeSet<String>) {
         let local = self.router.local_node_id();
         let now = Instant::now();
-        let mut followed = Set::default();
-        let mut stuck = Set::default();
+        let mut followed = HashSet::default();
+        let mut stuck = HashSet::default();
         for (key, route) in self.router.snapshot().iter() {
             if !holds_copy(route, local) {
                 continue;
@@ -390,16 +390,16 @@ async fn run<R: PeerRequester + Send + Sync + 'static>(
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut rounds: JoinSet<(ShardKey, Round)> = JoinSet::new();
     // By whether the round stands on the shard's suspicion alone.
-    let mut in_flight: Map<ShardKey, bool> = Map::default();
-    let mut backoff: Map<ShardKey, Backoff> = Map::default();
+    let mut in_flight: HashMap<ShardKey, bool> = HashMap::default();
+    let mut backoff: HashMap<ShardKey, Backoff> = HashMap::default();
     // Shards whose standing from before this broker started was looked for.
-    let mut looked_at: Set<ShardKey> = Set::default();
+    let mut looked_at: HashSet<ShardKey> = HashSet::default();
     let mut lookups: JoinSet<(ShardKey, Found)> = JoinSet::new();
     // Shards looked at or being put back.
-    let mut restoring: Set<ShardKey> = Set::default();
+    let mut restoring: HashSet<ShardKey> = HashSet::default();
     let mut scanned: Option<Instant> = None;
     // The generation each shard was last fenced again from, so it is once.
-    let mut restood: Map<ShardKey, u64> = Map::default();
+    let mut restood: HashMap<ShardKey, u64> = HashMap::default();
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => return,

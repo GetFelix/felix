@@ -17,12 +17,12 @@
 //! let a fenced leader's bytes reach the disk, and records are never rewritten.
 mod election;
 
+use felix_common::random::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use felix_broker::Broker;
 use felix_broker::replication::{self, Divergence};
-use felix_common::random::Map;
 use felix_router::{ReplicaRole, ShardRouter};
 use felix_storage::disk_log::GenerationCheck;
 use felix_wire::internal::{
@@ -53,14 +53,14 @@ pub struct ReplicaHandler {
     /// How far each shard's records from before the current leader's
     /// generation have been compared with it, while that takes more than one
     /// batch. See [`unverified_from`].
-    verified: parking_lot::Mutex<Map<felix_router::ShardKey, Verified>>,
+    verified: parking_lot::Mutex<HashMap<felix_router::ShardKey, Verified>>,
     /// The generation whose leader shipped a record that disagreed with one
     /// this broker holds as committed, per log, with the stream or cache
     /// incarnation it shipped. A rebuild from that leader would only find the same
     /// disagreement again; a recreated stream at the same generation is
     /// another log.
     mismatched:
-        parking_lot::Mutex<Map<(felix_router::ShardKey, felix_broker::LogKind), (u64, u64)>>,
+        parking_lot::Mutex<HashMap<(felix_router::ShardKey, felix_broker::LogKind), (u64, u64)>>,
     /// Set when this process started after a crash that may have cost it
     /// records it acknowledged. See [`crate::unclean`].
     unclean: Option<Arc<crate::unclean::UncleanStart>>,
@@ -69,7 +69,7 @@ pub struct ReplicaHandler {
     confirmed: Option<Arc<dyn crate::confirmed::ConfirmedRoutes>>,
     /// When this replica last heard each shard's leader, from a batch or
     /// fence that carried a set. See [`Self::with_stickiness`].
-    heard: parking_lot::Mutex<Map<felix_router::ShardKey, Instant>>,
+    heard: parking_lot::Mutex<HashMap<felix_router::ShardKey, Instant>>,
     /// Confirmed reads, made off the peer lane and reused while fresh.
     confirmed_reads: Arc<crate::confirmed::ConfirmedReads>,
     /// How long after hearing its leader this replica refuses a candidate.
@@ -83,10 +83,10 @@ pub struct ReplicaHandler {
     /// identity. See `election.rs`.
     replaced_storage: bool,
     /// Each leader's turn to fence here. See [`Self::fence`].
-    fence_turns: parking_lot::Mutex<Map<String, Arc<tokio::sync::Semaphore>>>,
+    fence_turns: parking_lot::Mutex<HashMap<String, Arc<tokio::sync::Semaphore>>>,
     /// The generation each log last took a fence at, which a read round's
     /// fence repeats. Only paces fences; the ballot decides every one.
-    fenced_at: parking_lot::Mutex<Map<(felix_router::ShardKey, felix_broker::LogKind), u64>>,
+    fenced_at: parking_lot::Mutex<HashMap<(felix_router::ShardKey, felix_broker::LogKind), u64>>,
     /// Run after an incarnation check passes, to change the catalog between
     /// the check and the open.
     #[cfg(test)]
@@ -138,18 +138,18 @@ impl ReplicaHandler {
         Self {
             broker,
             router,
-            verified: parking_lot::Mutex::new(Map::default()),
-            mismatched: parking_lot::Mutex::new(Map::default()),
+            verified: parking_lot::Mutex::new(HashMap::default()),
+            mismatched: parking_lot::Mutex::new(HashMap::default()),
             unclean: None,
             confirmed: None,
-            heard: parking_lot::Mutex::new(Map::default()),
+            heard: parking_lot::Mutex::new(HashMap::default()),
             confirmed_reads: Default::default(),
             stickiness: crate::suspicion::DEFAULT_SUSPECT_AFTER,
             fleet: None,
             local_storage: None,
             replaced_storage: false,
-            fence_turns: parking_lot::Mutex::new(Map::default()),
-            fenced_at: parking_lot::Mutex::new(Map::default()),
+            fence_turns: parking_lot::Mutex::new(HashMap::default()),
+            fenced_at: parking_lot::Mutex::new(HashMap::default()),
             #[cfg(test)]
             incarnation_checked: parking_lot::Mutex::new(None),
         }

@@ -10,12 +10,12 @@
 //! still answering only until the shard's next pass is wanted. Then it hands
 //! their exchanges back, and the driver waits for them instead.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use felix_common::random::{HashMap, HashSet};
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use felix_broker::{Appended, AppendedShards, Broker};
 use felix_common::membership::RefusedGeneration;
-use felix_common::random::{Map, Set};
 use felix_router::{ShardKey, ShardRouter};
 use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
@@ -377,28 +377,25 @@ type PassFuture<'a> = BoxFuture<'a, (u64, ShardPass<'a>)>;
 pub(super) struct Shards<'a, R> {
     cx: Context<'a, R>,
     pub(super) scan: u64,
-    /// Seeded, as are the maps below whose order decides what runs next: a
-    /// `retain` drops cursors, and with them any rebuild slot they hold, in
-    /// the same order every run of a simulation.
-    streams: Map<ShardKey, ShardCursors>,
-    group: Map<ShardKey, ShardCursors>,
-    dead_letters: Map<ShardKey, ShardCursors>,
-    counters: Map<ShardKey, ShardCursors>,
-    states: Map<ShardKey, ShardState>,
+    streams: HashMap<ShardKey, ShardCursors>,
+    group: HashMap<ShardKey, ShardCursors>,
+    dead_letters: HashMap<ShardKey, ShardCursors>,
+    counters: HashMap<ShardKey, ShardCursors>,
+    states: HashMap<ShardKey, ShardState>,
     /// Followers with an exchange still under way, per shard, and whether
     /// each may hold a rebuild slot. Kept apart from the shard's state: a
     /// shard lost and led again must not ship to a follower that an exchange
     /// from its earlier leadership is still talking to.
-    busy: Map<ShardKey, HashMap<String, bool>>,
+    busy: HashMap<ShardKey, HashMap<String, bool>>,
     pub(super) passes: FuturesUnordered<PassFuture<'a>>,
     /// Fence attempts for shards promoted here, which ship nothing until
     /// one succeeds.
     pub(super) fences: FuturesUnordered<BoxFuture<'a, FenceAttempt>>,
     pub(super) exchanges: FuturesUnordered<BoxFuture<'a, Answered>>,
     /// Shards led here with no other copy, by when each last reported.
-    alone: Map<ShardKey, Alone>,
+    alone: HashMap<ShardKey, Alone>,
     /// When each shard this broker gave up was last probed.
-    probed: Map<ShardKey, tokio::time::Instant>,
+    probed: HashMap<ShardKey, tokio::time::Instant>,
     pub(super) reports: FuturesUnordered<BoxFuture<'a, Reported>>,
     /// Shards waiting for a pass slot, oldest first, each with the ticket it
     /// was queued with. An entry whose ticket the shard's state no longer
@@ -424,12 +421,12 @@ pub(super) struct Shards<'a, R> {
     scanned_table: Option<Arc<felix_router::RoutingTable>>,
     /// Shards whose route names this broker as leader, by the bit an append
     /// to them sets, as of [`Self::scanned_table`].
-    led_slots: Map<u16, Vec<ShardKey>>,
+    led_slots: HashMap<u16, Vec<ShardKey>>,
     /// Of those, the ones moving.
     moving: Vec<ShardKey>,
     /// Of those, the ones this broker does not lead yet (withheld, or an
     /// open refused). Each append wake checks them again.
-    not_led: Set<ShardKey>,
+    not_led: HashSet<ShardKey>,
     metrics: DriverMetrics,
 }
 
@@ -438,17 +435,17 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         Self {
             cx,
             scan: 0,
-            streams: Map::default(),
-            group: Map::default(),
-            dead_letters: Map::default(),
-            counters: Map::default(),
-            states: Map::default(),
-            busy: Map::default(),
+            streams: HashMap::default(),
+            group: HashMap::default(),
+            dead_letters: HashMap::default(),
+            counters: HashMap::default(),
+            states: HashMap::default(),
+            busy: HashMap::default(),
             passes: FuturesUnordered::new(),
             fences: FuturesUnordered::new(),
             exchanges: FuturesUnordered::new(),
-            alone: Map::default(),
-            probed: Map::default(),
+            alone: HashMap::default(),
+            probed: HashMap::default(),
             reports: FuturesUnordered::new(),
             appended: VecDeque::new(),
             urgent: VecDeque::new(),
@@ -460,9 +457,9 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             refresh_passed_over: 0,
             urgent_passed_over: 0,
             scanned_table: None,
-            led_slots: Map::default(),
+            led_slots: HashMap::default(),
             moving: Vec::new(),
-            not_led: Set::default(),
+            not_led: HashSet::default(),
             metrics: DriverMetrics::new(),
         }
     }
@@ -562,7 +559,8 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                 .filter(|key| !self.states.contains_key(*key))
                 .cloned(),
         );
-        let mut asked: HashSet<ShardKey> = HashSet::with_capacity(visit.len());
+        let mut asked: HashSet<ShardKey> =
+            HashSet::with_capacity_and_hasher(visit.len(), Default::default());
         for key in visit {
             if asked.contains(&key) {
                 continue;

@@ -21,7 +21,7 @@ pub(crate) mod record;
 
 use record::CounterOp;
 
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;

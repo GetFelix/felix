@@ -1,7 +1,7 @@
 //! The view holds only what the control plane backed, is rewritten only when
 //! it changed, at most once per interval, and reads back as written or not
 //! at all.
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use felix_broker::{CacheMetadata, ConsistencyLevel, StreamMetadata};
@@ -154,7 +154,7 @@ async fn fixture() -> Fixture {
             ),
             assignment(key("unknown", 0, ShardKind::Stream), ME, &[ME]),
         ],
-        &std::collections::HashSet::new(),
+        &felix_common::random::HashSet::default(),
     );
     let catalog_seeded = CancellationToken::new();
     catalog_seeded.cancel();
@@ -276,7 +276,7 @@ async fn routes_seeded_from_the_view_are_not_a_snapshot() {
         .await
         .reset_from_control_plane(
             vec![assignment(key("orders", 0, ShardKind::Stream), ME, &[ME])],
-            &std::collections::HashSet::new(),
+            &felix_common::random::HashSet::default(),
         );
     assert!(fixture.sources.build().await.is_some());
 }

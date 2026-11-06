@@ -1,5 +1,5 @@
 //! Streams and caches created together, all or none.
-use std::collections::{HashMap, HashSet};
+use felix_common::random::{HashMap, HashSet};
 
 use super::{Decide, InMemoryStore};
 use crate::model::{
@@ -33,7 +33,7 @@ pub(super) async fn create_resources(
             return Err(StoreError::NotFound("namespace".into()));
         }
     }
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::default();
     for stream in &streams {
         let key = stream_key(stream);
         if stream_map.contains_key(&key) || !seen.insert(key) {
@@ -44,7 +44,7 @@ pub(super) async fn create_resources(
         }
     }
     check_mounts(&stream_map, &streams)?;
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::default();
     for cache in &caches {
         let key = cache_key(cache);
         if cache_map.contains_key(&key) || !seen.insert(key) {
@@ -117,7 +117,7 @@ pub(super) async fn create_resources(
 /// Every mount in the batch against the stored ones and against each other,
 /// so a refusal leaves nothing.
 fn check_mounts(stored: &HashMap<StreamKey, Stream>, batch: &[Stream]) -> StoreResult<()> {
-    let mut added: HashMap<StreamKey, Stream> = HashMap::new();
+    let mut added: HashMap<StreamKey, Stream> = HashMap::default();
     for stream in batch {
         let Some(prefix) = &stream.mount else {
             continue;

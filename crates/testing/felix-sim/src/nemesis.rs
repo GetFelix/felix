@@ -26,7 +26,7 @@
 //! network and heartbeat half of a pause is real; the zombie that wakes up
 //! believing it still leads is not reproduced.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
@@ -232,9 +232,9 @@ impl Plan {
 #[derive(Default)]
 struct Holds {
     /// Directed `(from, to)` links that drop everything.
-    links: HashMap<(usize, usize), u32>,
+    links: BTreeMap<(usize, usize), u32>,
     /// Brokers cut off from the control plane.
-    controlplane: HashMap<usize, u32>,
+    controlplane: BTreeMap<usize, u32>,
     /// Which control plane fault is current, so only its own end clears it.
     cp_epoch: u64,
 }

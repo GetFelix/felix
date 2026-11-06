@@ -6,7 +6,7 @@
 //! own series; the rest are counted together under [`OVERFLOW_LABEL`], and
 //! `felix_tenant_metrics_overflow_total` says that is happening.
 
-use std::collections::HashSet;
+use felix_common::random::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 

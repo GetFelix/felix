@@ -48,7 +48,7 @@ mod hasher {
     }
 
     fn map_order() -> Vec<u64> {
-        let map: Map<u64, ()> = (0..64).map(|key| (key, ())).collect();
+        let map: HashMap<u64, ()> = (0..64).map(|key| (key, ())).collect();
         map.into_keys().collect()
     }
 

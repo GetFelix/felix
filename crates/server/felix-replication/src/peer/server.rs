@@ -69,7 +69,7 @@ pub(super) const MAX_SERVED_BATCHES_PER_PEER: usize = 64;
 /// Per-peer batch limits by the peer's node id, so a reconnect does not
 /// reset one. One entry per node that ever greeted this broker.
 pub(super) type PeerBatches =
-    Arc<parking_lot::Mutex<std::collections::HashMap<Arc<str>, Arc<Semaphore>>>>;
+    Arc<parking_lot::Mutex<felix_common::random::HashMap<Arc<str>, Arc<Semaphore>>>>;
 
 /// What answers a peer's request.
 ///
@@ -129,7 +129,7 @@ impl PeerRequestHandler for UnavailableHandler {
 #[derive(Debug, Default)]
 struct Admitted {
     total: usize,
-    per_source: std::collections::HashMap<std::net::IpAddr, usize>,
+    per_source: felix_common::random::HashMap<std::net::IpAddr, usize>,
 }
 
 /// Holds a connection's place in the count, and gives it back on drop.

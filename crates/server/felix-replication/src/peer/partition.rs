@@ -13,7 +13,7 @@
 //!
 //! The file holds one node id per line. Empty or missing means no partition,
 //! so healing is a delete and injecting is a write.
-use std::collections::HashSet;
+use felix_common::random::HashSet;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -48,7 +48,7 @@ impl PartitionInjector {
         Self {
             path,
             cached: Mutex::new(Cached {
-                nodes: HashSet::new(),
+                nodes: HashSet::default(),
                 read_at: None,
             }),
         }

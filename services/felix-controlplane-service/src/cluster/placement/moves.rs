@@ -3,7 +3,8 @@
 //! Each step is one assignment write, decided from the store and fresh
 //! reports alone, so any instance resumes a half-done move where the last
 //! pass left it.
-use std::collections::{BTreeSet, HashMap};
+use felix_common::random::HashMap;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use felix_router::RegionRouter;
@@ -230,7 +231,7 @@ impl Moves {
     ) -> Self {
         let mut moves = Self {
             in_flight: 0,
-            per_node: HashMap::new(),
+            per_node: HashMap::default(),
             policy,
             cluster_moves: true,
             stream_wanted: false,

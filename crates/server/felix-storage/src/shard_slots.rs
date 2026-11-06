@@ -11,7 +11,7 @@
 //! [`StorageError::Closed`] instead of opening a second writer over files the
 //! close is still flushing.
 
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::future::Future;
 use std::hash::Hash;
 use std::sync::Arc;
@@ -40,7 +40,7 @@ where
 {
     pub(crate) fn new() -> Self {
         Self {
-            slots: Arc::new(Mutex::new(HashMap::new())),
+            slots: Arc::new(Mutex::new(HashMap::default())),
         }
     }
 

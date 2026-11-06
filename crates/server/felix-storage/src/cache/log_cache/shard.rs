@@ -5,7 +5,7 @@
 //! (from a checked snapshot when compaction left one) and caught up whenever
 //! records reach the log by another route.
 
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;

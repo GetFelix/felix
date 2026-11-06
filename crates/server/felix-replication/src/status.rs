@@ -5,7 +5,8 @@
 //! a metric label. The driver replaces a shard's entry after each of its passes
 //! and fence attempts and drops the shards it stops leading, so a read takes
 //! this board's lock and nothing the driver or the shard lifecycle holds.
-use felix_common::random::Map;
+use felix_common::random::HashMap;
+
 use parking_lot::RwLock;
 
 use crate::{FollowerCursor, ShardKey};
@@ -69,10 +70,10 @@ pub struct FenceStatus {
 #[derive(Debug, Default)]
 pub struct ShardStatusBoard {
     /// Each entry with when it was written.
-    shards: RwLock<Map<ShardKey, (tokio::time::Instant, ShardStatus)>>,
+    shards: RwLock<HashMap<ShardKey, (tokio::time::Instant, ShardStatus)>>,
     /// What each shard's pass is doing right now, written when a pass starts
     /// and ends and when an exchange ends, not when a pass folds.
-    live: RwLock<Map<ShardKey, LiveShard>>,
+    live: RwLock<HashMap<ShardKey, LiveShard>>,
     /// The driver's latest scan, which stops advancing if its loop is blocked.
     driver_scan: std::sync::atomic::AtomicU64,
 }

@@ -27,7 +27,8 @@
 //! throughput fix; it removes a hand-off that should not be there on a
 //! Linux-only server, and the dividend is small. See #547 and #548.
 
-use std::collections::{HashMap, VecDeque};
+use felix_common::random::HashMap;
+use std::collections::VecDeque;
 use std::io;
 use std::os::fd::{FromRawFd, OwnedFd};
 use std::os::unix::io::AsRawFd;

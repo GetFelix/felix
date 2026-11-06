@@ -27,7 +27,7 @@
 //! neither state — a leader that dies mid-redrive leaves it either still dead
 //! or owed, and the next leader reads which. The entry is deleted when the
 //! redriven record is finally acknowledged.
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -68,7 +68,7 @@ impl DeadLetters {
         Ok(Self {
             entries: LogCache::open(&root, config).map_err(BrokerError::from)?,
             legacy_root: root,
-            locks: SyncMutex::new(HashMap::new()),
+            locks: SyncMutex::new(HashMap::default()),
             #[cfg(test)]
             fail_next_record: std::sync::atomic::AtomicBool::new(false),
         })

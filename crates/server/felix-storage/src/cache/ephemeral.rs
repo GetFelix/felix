@@ -1,6 +1,6 @@
 //! The in-memory cache a broker uses when it has no durable storage.
 
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
@@ -51,7 +51,7 @@ impl EphemeralCache {
 
     pub fn with_capacity(max_entries: usize) -> Self {
         Self {
-            inner: RwLock::new(HashMap::new()),
+            inner: RwLock::new(HashMap::default()),
             max_entries: Some(max_entries),
             next_version: AtomicU64::new(incarnation_base()),
         }
@@ -112,7 +112,7 @@ fn live<'a>(map: &'a HashMap<CacheKey, CacheEntry>, key: &CacheKey) -> Option<&'
 impl Default for EphemeralCache {
     fn default() -> Self {
         Self {
-            inner: RwLock::new(HashMap::new()),
+            inner: RwLock::new(HashMap::default()),
             max_entries: None,
             next_version: AtomicU64::new(incarnation_base()),
         }

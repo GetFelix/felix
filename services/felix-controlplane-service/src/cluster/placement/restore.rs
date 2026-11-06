@@ -8,7 +8,8 @@
 //! it holds what a majority of the set held, so a fenced stream keeps the old
 //! set's majority rule. Each step is one assignment write, so a pass on any
 //! instance picks a restore up from the store where the last one left it.
-use std::collections::{BTreeSet, HashMap};
+use felix_common::random::HashMap;
+use std::collections::BTreeSet;
 
 use super::moves::{Moves, holds_what_the_set_held, seat_or_fence, undo_or_fence};
 use super::plan::{owner_of, replication_factors};

@@ -147,10 +147,10 @@ async fn retention_and_rebuilds_never_carry_the_mark_over_a_lost_record() {
     // The production default: one automatic rebuild at a time.
     let rebuilds = Rebuilds::new(crate::RebuildPolicy::default());
     let (mut cursors, mut group, mut dead, mut counters) = (
-        HashMap::new(),
-        HashMap::new(),
-        HashMap::new(),
-        HashMap::new(),
+        HashMap::default(),
+        HashMap::default(),
+        HashMap::default(),
+        HashMap::default(),
     );
     let mut pass = async || {
         replicate_once_with(
@@ -271,10 +271,10 @@ async fn a_shard_whose_followers_are_removed_is_no_longer_held() {
     followers.stopped.store(true, Ordering::SeqCst);
     let marks = QuorumMarks::new();
     let (mut cursors, mut group, mut dead, mut counters) = (
-        HashMap::new(),
-        HashMap::new(),
-        HashMap::new(),
-        HashMap::new(),
+        HashMap::default(),
+        HashMap::default(),
+        HashMap::default(),
+        HashMap::default(),
     );
     for i in 0..40 {
         log.append(&[Bytes::from(format!("value-{i:03}"))])

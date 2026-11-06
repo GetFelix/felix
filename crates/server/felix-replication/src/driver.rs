@@ -10,8 +10,7 @@
 mod shard;
 mod shards;
 
-use std::collections::{HashMap, HashSet};
-use std::hash::BuildHasher;
+use felix_common::random::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -377,16 +376,16 @@ impl WriteFence for Unfenced {
 // One cursor map per log kind the pass ships, plus the shared context: folding
 // the maps into a struct would move the argument list rather than shorten it.
 #[allow(clippy::too_many_arguments)]
-pub async fn replicate_once<R: PeerRequester + Sync, S: BuildHasher>(
+pub async fn replicate_once<R: PeerRequester + Sync>(
     requester: &R,
     broker: &Arc<Broker>,
     router: &ShardRouter,
     marks: &QuorumMarks,
     reporter: Option<&Reporter>,
-    cursors: &mut HashMap<ShardKey, ShardCursors, S>,
-    group_cursors: &mut HashMap<ShardKey, ShardCursors, S>,
-    dead_letter_cursors: &mut HashMap<ShardKey, ShardCursors, S>,
-    counter_cursors: &mut HashMap<ShardKey, ShardCursors, S>,
+    cursors: &mut HashMap<ShardKey, ShardCursors>,
+    group_cursors: &mut HashMap<ShardKey, ShardCursors>,
+    dead_letter_cursors: &mut HashMap<ShardKey, ShardCursors>,
+    counter_cursors: &mut HashMap<ShardKey, ShardCursors>,
 ) -> Pass {
     replicate_once_with(
         requester,
@@ -410,7 +409,7 @@ pub async fn replicate_once<R: PeerRequester + Sync, S: BuildHasher>(
 /// destination paced by `throttle`, and a draining shard held back until
 /// `fence` says its writes have stopped.
 #[allow(clippy::too_many_arguments)]
-pub async fn replicate_once_with<R: PeerRequester + Sync, S: BuildHasher>(
+pub async fn replicate_once_with<R: PeerRequester + Sync>(
     requester: &R,
     broker: &Arc<Broker>,
     router: &ShardRouter,
@@ -418,10 +417,10 @@ pub async fn replicate_once_with<R: PeerRequester + Sync, S: BuildHasher>(
     gate: &dyn PromotionGate,
     marks: &QuorumMarks,
     reporter: Option<&Reporter>,
-    cursors: &mut HashMap<ShardKey, ShardCursors, S>,
-    group_cursors: &mut HashMap<ShardKey, ShardCursors, S>,
-    dead_letter_cursors: &mut HashMap<ShardKey, ShardCursors, S>,
-    counter_cursors: &mut HashMap<ShardKey, ShardCursors, S>,
+    cursors: &mut HashMap<ShardKey, ShardCursors>,
+    group_cursors: &mut HashMap<ShardKey, ShardCursors>,
+    dead_letter_cursors: &mut HashMap<ShardKey, ShardCursors>,
+    counter_cursors: &mut HashMap<ShardKey, ShardCursors>,
     rebuilds: &Rebuilds,
     throttle: &MoveThrottle,
 ) -> Pass {
@@ -509,7 +508,7 @@ pub async fn replicate_once_with<R: PeerRequester + Sync, S: BuildHasher>(
     // Bounded, because each shard in flight holds a peer request and may hold
     // an HTTP report: a broker leading thousands of shards must not open
     // thousands of those at once.
-    let no_one = HashSet::new();
+    let no_one = HashSet::default();
     let passes: Vec<ShardPass> =
         futures::stream::iter(work.into_iter().map(|(key, route, entry, aux)| {
             let prior = router.prior_set(&key);
@@ -813,7 +812,7 @@ fn open_caches(broker: &Broker, keys: &[ShardKey]) -> OpenCaches {
     {
         broker.cache().open_shards().into_iter().collect()
     } else {
-        HashSet::new()
+        HashSet::default()
     }
 }
 
@@ -872,13 +871,13 @@ async fn alone_report(broker: &Broker, key: &ShardKey, generation: u64, floor: u
 ///
 /// `None` when there is nothing to ship: the cursors stay in the map, so a
 /// destination staged later is known to be one this shard did not have.
-fn take_work<S: BuildHasher>(
+fn take_work(
     key: &ShardKey,
     route: &felix_router::Route,
-    cursors: &mut HashMap<ShardKey, ShardCursors, S>,
-    group_cursors: &mut HashMap<ShardKey, ShardCursors, S>,
-    dead_letter_cursors: &mut HashMap<ShardKey, ShardCursors, S>,
-    counter_cursors: &mut HashMap<ShardKey, ShardCursors, S>,
+    cursors: &mut HashMap<ShardKey, ShardCursors>,
+    group_cursors: &mut HashMap<ShardKey, ShardCursors>,
+    dead_letter_cursors: &mut HashMap<ShardKey, ShardCursors>,
+    counter_cursors: &mut HashMap<ShardKey, ShardCursors>,
 ) -> Option<(ShardCursors, AuxCursors)> {
     let previous = cursors.remove(key);
     let learner = shard::staged_learner(previous.as_ref(), route);
@@ -937,7 +936,7 @@ pub struct Pass {
     pub fencing: bool,
 }
 
-fn rebuilding_count<S>(maps: &[&HashMap<ShardKey, ShardCursors, S>]) -> usize {
+fn rebuilding_count(maps: &[&HashMap<ShardKey, ShardCursors>]) -> usize {
     maps.iter()
         .flat_map(|map| map.values())
         .flat_map(|entry| entry.followers.iter())

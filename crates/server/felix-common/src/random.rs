@@ -60,15 +60,16 @@ impl std::hash::BuildHasher for HashState {
     }
 }
 
-/// A `HashMap` that iterates in the same order every run of a simulation
-/// seed. For maps whose iteration order decides what happens next; build one
-/// with `Map::default()`.
+/// A std `HashMap` hashed with [`HashState`], so it iterates and drops its
+/// entries in the same order every run of a simulation seed. A crate the
+/// simulator runs imports this one instead of std's. Build one with
+/// `HashMap::default()`; std's `new` exists only for std's own hasher.
 #[cfg(feature = "hasher")]
-pub type Map<K, V> = std::collections::HashMap<K, V, HashState>;
+pub type HashMap<K, V> = std::collections::HashMap<K, V, HashState>;
 
-/// The `HashSet` counterpart of [`Map`].
+/// The `HashSet` counterpart of [`HashMap`].
 #[cfg(feature = "hasher")]
-pub type Set<T> = std::collections::HashSet<T, HashState>;
+pub type HashSet<T> = std::collections::HashSet<T, HashState>;
 
 #[cfg(test)]
 mod tests;

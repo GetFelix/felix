@@ -5,7 +5,7 @@
 //! issuers, RBAC decides the effective permissions, and the result is a Felix
 //! EdDSA token for the broker. The request body can narrow those permissions
 //! but can never widen them.
-use std::collections::HashSet;
+use felix_common::random::HashSet;
 use std::time::Duration;
 
 use axum::Json;
@@ -488,7 +488,7 @@ fn filter_pairs(perms: Vec<String>, pairs: &[String], tenant_id: &str) -> Vec<St
         .collect();
 
     let mut kept = Vec::new();
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::default();
     for perm in perms {
         let Some((action, object)) = perm.split_once(':') else {
             continue;
@@ -532,7 +532,7 @@ pub(crate) fn filter_permissions(
     });
 
     let mut kept = Vec::new();
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::default();
     for perm in perms {
         let Some((action, object)) = perm.split_once(':') else {
             continue;

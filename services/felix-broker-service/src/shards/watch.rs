@@ -17,7 +17,7 @@
 //! once, and the loop then waits out the interval as it always did.
 pub mod metrics;
 
-use std::collections::{HashMap, HashSet};
+use felix_common::random::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -275,7 +275,7 @@ impl ShardOwnership {
     /// plane, and reopening on that would serve a generation a newer leader
     /// has written past.
     pub fn reset(&mut self, items: Vec<ShardAssignment>) {
-        self.reset_marked(items, &HashSet::new());
+        self.reset_marked(items, &HashSet::default());
     }
 
     /// [`Self::reset`], with the shards whose snapshot item the control plane
@@ -284,7 +284,7 @@ impl ShardOwnership {
     /// same terms: never at incarnation 0, and not at an incarnation this
     /// broker already held it at.
     pub(crate) fn reset_marked(&mut self, items: Vec<ShardAssignment>, first: &HashSet<ShardKey>) {
-        let mut priors = HashMap::new();
+        let mut priors = HashMap::default();
         for next in &items {
             let current = self.assignments.get(&next.key);
             let marked_first = first.contains(&next.key)

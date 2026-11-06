@@ -25,7 +25,7 @@
 //! read stops only at the log's tail, it cannot drop its newest records, and
 //! the history sets `exact_tails`.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -145,7 +145,7 @@ pub struct SimClient {
     recorder: Arc<Recorder>,
     rng: Rng,
     /// The broker that last took a request for each shard, tried first.
-    hints: HashMap<u32, usize>,
+    hints: BTreeMap<u32, usize>,
 }
 
 /// What looking for a broker to take a request found out.
@@ -173,7 +173,7 @@ impl SimClient {
             cluster,
             recorder,
             rng,
-            hints: HashMap::new(),
+            hints: BTreeMap::new(),
         }
     }
 

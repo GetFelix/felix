@@ -10,8 +10,6 @@ use felix_wire::internal::PeerCapabilities;
 use super::quorum::{follower_ack_marks, follower_ack_marks_adopted, quorum_leader};
 use super::*;
 
-type Cursors = HashMap<ShardKey, ShardCursors>;
-
 /// Stores every batch, records what it was stamped with, and says which
 /// followers offered `ELECTION`.
 struct Followers {
@@ -94,10 +92,10 @@ async fn pass_with<R: PeerRequester + Sync>(
         &NoGate,
         marks,
         None,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
         &Rebuilds::disabled(),
         &MoveThrottle::unlimited(),
     )
@@ -801,10 +799,10 @@ async fn a_standing_is_kept_until_its_shard_opens() {
         &gate,
         &marks,
         None,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
         &Rebuilds::disabled(),
         &MoveThrottle::unlimited(),
     )
@@ -987,8 +985,7 @@ async fn an_elected_leader_notes_a_copy_that_refuses_to_follow_it() {
         };
         let marks = elected_marks(leader);
         let router = router(LOCAL, &["broker-b", "broker-c"], 4);
-        let (mut cursors, mut aux, mut busy, mut moves): (Cursors, Cursors, Cursors, Cursors) =
-            Default::default();
+        let (mut cursors, mut aux, mut busy, mut moves) = Default::default();
         // The second pass reads the cursors the first left.
         for _ in 0..2 {
             replicate_once_with(
@@ -1073,8 +1070,7 @@ async fn a_copy_that_refused_then_went_unreachable_is_no_longer_noted() {
         fences: Mutex::new(Vec::new()),
     };
     let router = router(LOCAL, &["broker-b", "broker-c"], 4);
-    let (mut cursors, mut aux, mut busy, mut moves): (Cursors, Cursors, Cursors, Cursors) =
-        Default::default();
+    let (mut cursors, mut aux, mut busy, mut moves) = Default::default();
     // Passes 1 and 2 hear the refusal; pass 3 finds broker-b unreachable.
     // Pass 4 reads what pass 3 left, in marks that have noted nothing.
     let first = elected_marks(LOCAL);

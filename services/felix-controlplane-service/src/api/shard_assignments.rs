@@ -1,5 +1,5 @@
 //! Which broker leads each shard, as operators and brokers read it.
-use std::collections::{HashMap, HashSet};
+use felix_common::random::{HashMap, HashSet};
 use std::time::Duration;
 
 use tokio::time::Instant;

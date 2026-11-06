@@ -15,11 +15,11 @@
 //! reads of a shard share rounds: a read waits for one that started after it
 //! arrived, so at most one round per shard is in flight and one more queued.
 
+use felix_common::random::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use felix_broker::Broker;
-use felix_common::random::Map;
 use felix_router::ShardRouter;
 use felix_wire::internal::{Fence, InternalMessage, ReplicaLog};
 use futures::StreamExt;
@@ -41,7 +41,7 @@ struct Inner<R> {
     router: Arc<ShardRouter>,
     /// How long one round waits for a majority.
     timeout: Duration,
-    rounds: Mutex<Map<(ShardKey, u64), Arc<Rounds>>>,
+    rounds: Mutex<HashMap<(ShardKey, u64), Arc<Rounds>>>,
 }
 
 /// The rounds of one shard at one generation.
@@ -80,7 +80,7 @@ impl<R: PeerRequester + Send + Sync + 'static> ReadIndex<R> {
                 broker,
                 router,
                 timeout,
-                rounds: Mutex::new(Map::default()),
+                rounds: Mutex::new(HashMap::default()),
             }),
         }
     }

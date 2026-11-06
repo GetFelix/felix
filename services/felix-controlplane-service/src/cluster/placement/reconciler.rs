@@ -1,5 +1,6 @@
 //! Applying a plan to the store, on a timer or when woken.
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use felix_common::random::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
 use super::metrics::MoveClock;

@@ -36,7 +36,7 @@
 //! };
 //! let _ = mint_token(&keys, "tenant-a", "principal", vec![], Duration::from_secs(60));
 //! ```
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
