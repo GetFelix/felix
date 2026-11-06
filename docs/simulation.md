@@ -43,30 +43,39 @@ prints no census, since the busy task would hold that up too.
 When a seed fails, the test prints the command that replays it:
 
 ```bash
-FELIX_SIM_SEED=<n> cargo test -p felix-sim --test seeds replay
+FELIX_SIM_SEED=<n> task sim:replay
 ```
 
 A replay runs the same cluster, the same faults at the same virtual times and
-the same client operations. Built with tokio's seeded `select!`, it is the
-same run, event for event:
+the same client operations, and it is the same run, event for event.
+`task sim:replay` builds with `RUSTFLAGS="--cfg tokio_unstable"`, the only way
+tokio lets a runtime seed `select!`, in a target directory of its own, since
+the flag changes every crate's build. To diff two runs:
 
 ```bash
-RUSTFLAGS="--cfg tokio_unstable" FELIX_SIM_SEED=<n> FELIX_SIM_HISTORY=run1.txt \
-  cargo test -p felix-sim --release --test seeds replay
+FELIX_SIM_SEED=<n> FELIX_SIM_HISTORY=run1.txt task sim:replay
+FELIX_SIM_SEED=<n> FELIX_SIM_HISTORY=run2.txt task sim:replay
+diff run1.txt run2.txt
 ```
 
 `FELIX_SIM_HISTORY` writes the run's trace (every fault, operation, final
-read, opened generation and finding, one per line) to a file, so two runs can
-be diffed. Without the flag the faults and operations still repeat, but tokio
-picks among ready `select!` branches at random, so the interleaving under them
-does not, and a timing-sensitive failure may need a few replays to show again.
+read, opened generation and finding, one per line) to a file. A plain
+`cargo test -p felix-sim --test seeds replay` also works, but without the flag
+tokio picks among ready `select!` branches at random: the faults and
+operations still repeat, the interleaving under them does not, and a
+timing-sensitive failure may need a few replays to show again. Such a build
+refuses `FELIX_SIM_HISTORY`, since two of its histories differ wherever two
+branches raced.
 
 `task sim:determinism` checks that replay is exact. It runs each seed twice in
-one process and fails on the first event where the two traces differ. It
-builds with the flag in a target directory of its own, since the flag changes
-every crate's build. CI runs it on seeds 1 to 20 in the `Simulator
-determinism` job. A plain `cargo test` skips that test, because it cannot
-pass without the flag.
+one process and fails on the first event where the two traces differ, then
+replays seed 1 (`FELIX_SIM_REPLAY_SEED`) in two separate processes through
+`task sim:replay` and compares the two histories byte for byte. The second
+check runs the command a failing seed prints, and it catches anything that
+differs from process to process but not between two runs in one process. CI
+runs it on seeds 1 to 20 in the `Simulator determinism` job. A plain
+`cargo test` skips the in-process test, because it cannot pass without the
+flag.
 
 Several things the brokers do would otherwise make two runs differ, and under
 the simulator each is held to the run's one thread and its seed. Only some of

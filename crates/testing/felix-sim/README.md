@@ -41,7 +41,7 @@ A seed fails when any check reports a problem, except a warning.
 Run one seed, with the broker log:
 
 ```bash
-FELIX_SIM_SEED=<n> RUST_LOG=info cargo test -p felix-sim --test seeds replay -- --nocapture
+FELIX_SIM_SEED=<n> RUST_LOG=info task sim:replay
 ```
 
 Run a batch of seeds. `FELIX_SIM_SEEDS` is how many (default 4) and
@@ -62,15 +62,16 @@ default batch of four takes a few minutes, so run batches one at a time on a
 busy machine.
 
 A replay repeats the same faults at the same virtual times and the same client
-operations. Built with `RUSTFLAGS="--cfg tokio_unstable"`, it is the same run,
-event for event:
+operations. Run through `task sim:replay`, which builds with
+`RUSTFLAGS="--cfg tokio_unstable"` so tokio seeds `select!`, it is the same
+run, event for event:
 
 ```bash
-RUSTFLAGS="--cfg tokio_unstable" FELIX_SIM_SEED=<n> FELIX_SIM_HISTORY=run1.txt \
-  cargo test -p felix-sim --release --test seeds replay
+FELIX_SIM_SEED=<n> FELIX_SIM_HISTORY=run1.txt task sim:replay
 ```
 
-Without the flag the interleaving under the faults can differ, so a
-timing-sensitive failure may take a few replays to show again.
-`task sim:determinism` checks that replay is exact, and CI runs it on every pull
-request. `docs/simulation.md` has the details.
+A plain `cargo test` replay leaves `select!` unseeded, so the interleaving
+under the faults can differ and a timing-sensitive failure may take a few
+replays to show again. It refuses `FELIX_SIM_HISTORY` for that reason.
+`task sim:determinism` checks that replay is exact, in one process and across
+two, and CI runs it on every pull request. `docs/simulation.md` has the details.
