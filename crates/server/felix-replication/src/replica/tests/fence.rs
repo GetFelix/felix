@@ -1903,3 +1903,36 @@ async fn confirmed_check_cost() {
          batch apply (promised, 1 record) {apply:?}"
     );
 }
+
+/// **A ballot this broker wrote standing for election after an unclean
+/// start is not evidence that it led before the crash (#2025).** It only
+/// followed the shard; refusing a newer candidate's fence over its own
+/// candidacy would leave a set of three with a dead leader no majority.
+#[tokio::test]
+async fn a_copy_that_stood_after_an_unclean_start_takes_a_newer_fence() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    {
+        let broker = broker_on(dir.path());
+        let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5));
+        handler
+            .apply(SENDER, batch(5, 0, &["a"]), felix_broker::LogKind::Stream)
+            .await;
+    }
+    let broker = broker_on(dir.path());
+    let start = unclean();
+    let handler = ReplicaHandler::new(
+        Arc::clone(&broker),
+        router_led_by("broker-c", &[LOCAL, "broker-a"], 7),
+    )
+    .with_unclean_start(Arc::clone(&start));
+    let log = broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    // The candidacy, as `stand` in election/candidate.rs takes it: its own
+    // ballot one generation up, then no majority.
+    start.stand(&crate::driver::watch_key(&key()), &log, 6);
+    log.accept_generation(6, Some(LOCAL)).await.expect("stand");
+
+    taken(&handler.fence(Some("broker-c"), fence(7)).await);
+}

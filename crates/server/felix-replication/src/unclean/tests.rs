@@ -97,3 +97,72 @@ async fn a_copy_led_at_generation_zero_was_led() {
     assert!(unclean.led_before(&key(), &log, 0));
     assert!(unclean.led_before(&key(), &log, 1));
 }
+
+/// **A ballot this process wrote standing for election is not evidence that
+/// it led before the crash (#2025).** A copy it only followed stays one.
+#[tokio::test]
+async fn its_own_candidacy_is_not_a_copy_it_led() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let log = log(&dir);
+    let unclean = UncleanStart::new("broker-a");
+    log.accept_generation(5, Some("broker-b"))
+        .await
+        .expect("accept");
+
+    unclean.stand(&key(), &log, 6);
+    log.accept_generation(6, Some("broker-a"))
+        .await
+        .expect("stand");
+    assert!(!unclean.led_before(&key(), &log, 7));
+    // Followed at 5 and not shipped to since: still not one it can lead.
+    assert!(unclean.unvouched(&key(), &log, 6));
+
+    // Standing again keeps what the copy said before the first standing.
+    unclean.stand(&key(), &log, 7);
+    log.accept_generation(7, Some("broker-a"))
+        .await
+        .expect("stand");
+    assert!(!unclean.led_before(&key(), &log, 8));
+    assert!(unclean.unvouched(&key(), &log, 7));
+
+    unclean.vouch(&key());
+    assert!(!unclean.unvouched(&key(), &log, 7));
+}
+
+/// The other side: a copy this broker led before the crash is still one
+/// after it stands on it, though its new ballot is this process's own.
+#[tokio::test]
+async fn a_copy_led_before_stays_led_after_it_stands() {
+    for given_up in [false, true] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log = log(&dir);
+        let unclean = UncleanStart::new("broker-a");
+        log.accept_generation(5, Some("broker-a"))
+            .await
+            .expect("accept");
+        if given_up {
+            log.give_up_generation().await.expect("give up");
+        }
+
+        unclean.stand(&key(), &log, 6);
+        log.accept_generation(6, Some("broker-a"))
+            .await
+            .expect("stand");
+        assert!(unclean.led_before(&key(), &log, 7), "given up: {given_up}");
+        assert!(unclean.unvouched(&key(), &log, 6), "given up: {given_up}");
+    }
+}
+
+/// A standing that never wrote its ballot, a newer one having landed, says
+/// nothing of the ballot that did.
+#[tokio::test]
+async fn a_standing_overtaken_by_a_newer_ballot_records_nothing() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let log = log(&dir);
+    let unclean = UncleanStart::new("broker-a");
+    log.accept_generation(6, Some("broker-a"))
+        .await
+        .expect("accept");
+    unclean.stand(&key(), &log, 6);
+    assert!(unclean.led_before(&key(), &log, 7));
+}
