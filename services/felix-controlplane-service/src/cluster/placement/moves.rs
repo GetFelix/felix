@@ -169,8 +169,8 @@ pub struct MovePolicy {
     pub joint_fence: bool,
     /// Brokers that deregistered while their last lease may still run.
     /// Placement sees them as draining so what they lead stays put, but none
-    /// is promoted: a broker deregisters as it stops. Not configuration: each
-    /// pass reads it from the store.
+    /// is handed leadership: a broker deregisters as it stops. Not
+    /// configuration: each pass reads it from the store.
     pub departed: BTreeSet<String>,
     /// Where a stream with a home region may have copies: that region, and
     /// any region the allowlist bridges it to (`FELIX_REGION_BRIDGES`). A
@@ -489,6 +489,13 @@ pub(super) fn move_step<'a>(
     // Kept off as a destination, as of any report still believed.
     let is_halted = |node: &str| caught_up.halted(key, node).is_some();
 
+    // A leader that deregistered is stopping, so it is never named at a new
+    // generation it may not live to serve: not to answer a refusal, and not
+    // to take back a fenced shard. The shard cuts over to a copy that holds
+    // the log, or waits for the leader's lease to run out and then fails
+    // over (#1982).
+    let departed = moves.policy.departed.contains(leader);
+
     // The leader cannot serve this generation: it, or a majority of its set,
     // promised it to another node. That is usually an election recorded
     // without being adopted, but any fresh refusal at this generation is
@@ -503,6 +510,9 @@ pub(super) fn move_step<'a>(
     if existing.state != ShardState::Draining
         && let Some(refused) = caught_up.leader_refusal(key, existing.generation, leader)
     {
+        if departed {
+            return Decision::Waiting(Blocked::LeaderDeparted);
+        }
         let renamed = match existing.successor.as_deref() {
             Some(successor) => undo_staged(existing, successor, replication_factor),
             None => ShardAssignment {
@@ -606,6 +616,9 @@ pub(super) fn move_step<'a>(
         if existing.successor.is_none()
             && let Some(joining) = existing.joining.as_deref()
         {
+            if departed {
+                return Decision::Waiting(Blocked::LeaderDeparted);
+            }
             let restoring = existing.move_reason == Some(MoveReason::Restore);
             let from = if restoring {
                 replacing(existing, replication_factor, is_lost)
@@ -628,6 +641,9 @@ pub(super) fn move_step<'a>(
         // shard twice; going on waits for at most the lag bound's worth of
         // copy. Only a leader that never says drained is given the shard back.
         if !caught_up.is_drained(key, existing.generation) {
+            if departed {
+                return Decision::Waiting(Blocked::LeaderDeparted);
+            }
             // The fence may land while the destination is still copying, and
             // the leader will not report drained until it is level. One that
             // died first never will be, and its leader is likely busy taking
@@ -686,7 +702,9 @@ pub(super) fn move_step<'a>(
             }
             return Decision::Waiting(Blocked::LeaderStopping);
         }
-        if existing.successor.is_none()
+        // A trim hands the shard back to its leader.
+        if !departed
+            && existing.successor.is_none()
             && existing.nodes().count() > replication_factor.max(1) as usize
         {
             return trim(
@@ -703,10 +721,14 @@ pub(super) fn move_step<'a>(
             .successor
             .as_deref()
             .filter(|successor| is_live(successor) && caught_up.is_caught_up(key, successor))
-            .or_else(|| promote(key, existing, eligible, caught_up))
-            // Nothing else holds the log; the leader takes it back at a new
-            // generation and the move is chosen again.
-            .unwrap_or(leader);
+            .or_else(|| promote(key, existing, eligible, caught_up));
+        // Nothing else holds the log; the leader takes it back at a new
+        // generation and the move is chosen again.
+        let target = match target {
+            Some(target) => target,
+            None if departed => return Decision::Waiting(Blocked::LeaderDeparted),
+            None => leader,
+        };
         let replicas = replicas_after_cut_over(
             key,
             existing,
@@ -762,7 +784,15 @@ pub(super) fn move_step<'a>(
 
     if let Some(successor) = existing.successor.as_deref() {
         let halted = halted_now(successor);
-        if !is_live(successor) || halted.is_some() {
+        // Each way out of a staged move renames the leader at a new
+        // generation, so a departed leader's move waits for the lease.
+        let gives_up = !is_live(successor) || halted.is_some();
+        let abandons =
+            moves.recovering && leader_live && existing.move_reason == Some(MoveReason::Balance);
+        if departed && (gives_up || abandons) {
+            return Decision::Waiting(Blocked::LeaderDeparted);
+        }
+        if gives_up {
             // Gone or halted before it led. Undone rather than waited out, or
             // the move holds its slot until it times out.
             let mut replicas = existing.replicas.clone();
@@ -786,7 +816,7 @@ pub(super) fn move_step<'a>(
         // would stop the shard's writes behind brokers that may take minutes
         // to report drained, and held, it would keep the move slot a drain or
         // a restore needs. Not the shard's fault, so its start is cleared.
-        if moves.recovering && leader_live && existing.move_reason == Some(MoveReason::Balance) {
+        if abandons {
             return Decision::Move(
                 MoveStep::Abandon {
                     successor: successor.to_string(),
@@ -811,6 +841,9 @@ pub(super) fn move_step<'a>(
             );
         }
         if moves.timed_out(caught_up, existing.move_started_at_millis) {
+            if departed {
+                return Decision::Waiting(Blocked::LeaderDeparted);
+            }
             return Decision::Move(
                 MoveStep::TimedOut {
                     successor: successor.to_string(),
