@@ -106,6 +106,9 @@ pub enum Rule {
     /// 20. A cache key has no order of its operations that a register and
     ///     real time allow.
     NotLinearizable,
+    /// 21. Two brokers opened one shard for writes at the same generation,
+    ///     as their logs record it.
+    OneLeaderPerGeneration,
     /// The final read has a hole, so the lost-write rule cannot be trusted.
     IncompleteFinalRead,
     /// The history itself is malformed: the recorder is wrong, not the broker.
@@ -196,6 +199,7 @@ impl Rule {
             Rule::G2Realtime => "18 G2-realtime",
             Rule::G0Realtime => "19 G0-realtime",
             Rule::NotLinearizable => "20 not-linearizable",
+            Rule::OneLeaderPerGeneration => "21 one-leader-per-generation",
             Rule::IncompleteFinalRead => "incomplete-final-read",
             Rule::MalformedHistory => "malformed-history",
         }
@@ -238,6 +242,7 @@ pub fn check(history: &History) -> Report {
     );
     delivery::check(history, &mut violations);
     elle::check(history, &mut violations);
+    super::leaders::check(&history.opens, &mut violations);
     Report {
         violations,
         faults: history.faults.clone(),

@@ -16,9 +16,10 @@
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 
 use super::campaign::Campaign;
+use super::model::Opened;
 use super::workload::Workload;
 use crate::cluster::{HaltedReplica, ShardStatus};
 use crate::{Cluster, wait};
@@ -30,6 +31,16 @@ pub(super) const RECOVERY: Duration = Duration::from_secs(60);
 
 /// How often a cluster that has not recovered yet is looked at again.
 const RETRY: Duration = Duration::from_millis(500);
+
+/// How long after a leader is killed with the control plane down some other
+/// broker must serve each of its shards: the suspect window, a pre-vote, a
+/// place delay or two, the ballot and one fence, with room for a split
+/// round's backoff.
+pub(super) const ELECTED_WITHIN: Duration = Duration::from_secs(20);
+
+/// How long a leader about to be killed has for its shards to be ready to
+/// elect from.
+const READY_TO_ELECT: Duration = Duration::from_secs(30);
 
 /// Wait until every shard of the workload serves, returning how long that
 /// took, or fail naming the shards that never got there.
@@ -55,6 +66,171 @@ pub(super) async fn await_recovery(
         }
         tokio::time::sleep(RETRY).await;
     }
+}
+
+/// The shards `node` leads, once each has a replica reported caught up at its
+/// generation and nothing in flight, so its followers can elect. Called with
+/// the control plane up, just before [`FaultKind::ElectWithoutControlPlane`]
+/// crashes it.
+///
+/// [`FaultKind::ElectWithoutControlPlane`]: super::FaultKind::ElectWithoutControlPlane
+pub(super) async fn ready_to_elect(
+    cluster: &Cluster,
+    campaign: &Campaign,
+    node: &str,
+) -> Result<Vec<ShardStatus>> {
+    let last = std::sync::Mutex::new(Vec::new());
+    let found = wait::until_some(
+        READY_TO_ELECT,
+        &format!("the shards {node} leads to be ready to elect"),
+        || async {
+            let statuses = cluster.shard_statuses().await.ok()?;
+            let led: Vec<ShardStatus> = statuses
+                .into_iter()
+                .filter(|status| {
+                    status.leader == node
+                        && campaign
+                            .shard_names()
+                            .any(|(kind, name)| status.kind == kind && status.name == name)
+                })
+                .collect();
+            let waiting: Vec<String> = led
+                .iter()
+                .filter_map(|status| {
+                    let why = transition(cluster, status)?;
+                    Some(format!(
+                        "{} {}/{}: {why}",
+                        status.kind, status.name, status.shard
+                    ))
+                })
+                .collect();
+            let ready = waiting.is_empty();
+            *last.lock().expect("ready lock") = waiting;
+            ready.then_some(led)
+        },
+    )
+    .await;
+    let led = found.with_context(|| {
+        format!(
+            "still waiting on {}",
+            last.lock().expect("ready lock").join("; ")
+        )
+    })?;
+    if led.is_empty() {
+        bail!("{node} leads none of the workload's shards");
+    }
+    Ok(led)
+}
+
+/// Wait until each shard in `led`, which `killed` led until it was killed,
+/// has a new leader that stood for it, opened it at a later generation and
+/// serves a probe, all while the control plane stays down. Returns one line per shard naming
+/// who serves it and how soon. The opens it reads go into `opens` for rule
+/// 12.
+pub(super) async fn await_election(
+    cluster: &Cluster,
+    campaign: &Campaign,
+    workload: &Workload,
+    killed: &str,
+    led: &[ShardStatus],
+    opens: &mut BTreeSet<Opened>,
+) -> Result<Vec<String>> {
+    let started = Instant::now();
+    let bound = wait::budget(ELECTED_WITHIN);
+    // The prober is numbered after the workload's clients.
+    let prober = campaign.clients;
+    let mut lines = Vec::new();
+    let mut pending: Vec<&ShardStatus> = led.iter().collect();
+    let mut last_refusal = std::collections::BTreeMap::new();
+    let mut stood = BTreeSet::new();
+    while !pending.is_empty() {
+        if cluster.control_plane_running() {
+            bail!("the control plane came back before the election was checked");
+        }
+        // Nothing restarts while this waits, so the current runs hold every
+        // new open.
+        super::leaders::read_current(cluster, opens, &mut stood);
+        let mut still = Vec::new();
+        for status in pending {
+            let elected = super::leaders::elected(
+                opens,
+                &stood,
+                &status.name,
+                status.shard,
+                status.generation,
+                killed,
+            );
+            let shard = format!("{} {}/{}", status.kind, status.name, status.shard);
+            let Some(open) = elected else {
+                still.push(status);
+                continue;
+            };
+            let Some(addr) = cluster
+                .node(&open.node)
+                .filter(|node| node.is_running())
+                .map(|node| node.client_addr)
+            else {
+                still.push(status);
+                continue;
+            };
+            let probe = match status.kind {
+                "cache" => {
+                    let key = campaign.keys.first().map_or("k0", String::as_str);
+                    workload.probe_get(prober, addr, key).await
+                }
+                _ => workload.probe_append(prober, addr, &status.name).await,
+            };
+            match probe {
+                Ok(()) => lines.push(format!(
+                    "{shard}: {} elected at generation {} (was {} at {}), serving {:.1}s after \
+                     the kill with the control plane down",
+                    open.node,
+                    open.generation,
+                    killed,
+                    status.generation,
+                    started.elapsed().as_secs_f64()
+                )),
+                Err(err) => {
+                    last_refusal.insert(shard, format!("{} refused a probe: {err:#}", open.node));
+                    still.push(status);
+                }
+            }
+        }
+        pending = still;
+        if pending.is_empty() {
+            break;
+        }
+        if started.elapsed() >= bound {
+            let stuck: Vec<String> = pending
+                .iter()
+                .map(|status| {
+                    let shard = format!("{} {}/{}", status.kind, status.name, status.shard);
+                    let why = last_refusal.get(&shard).cloned().unwrap_or_else(|| {
+                        // Whether anyone stood tells a failed election from
+                        // one never started.
+                        let stood = super::leaders::stood(cluster, &status.name, status.shard);
+                        format!(
+                            "no broker that stood opened it at a later generation; stood: {}",
+                            if stood.is_empty() {
+                                "nobody".to_string()
+                            } else {
+                                stood.join(", ")
+                            }
+                        )
+                    });
+                    format!("{shard} (generation {}): {why}", status.generation)
+                })
+                .collect();
+            bail!(
+                "liveness: with the control plane down, {} shard(s) {killed} led had no elected \
+                 leader serving {bound:?} after the kill:\n  {}",
+                stuck.len(),
+                stuck.join("\n  ")
+            );
+        }
+        tokio::time::sleep(RETRY).await;
+    }
+    Ok(lines)
 }
 
 /// One line per shard that is not serving yet. `served` holds the shards
