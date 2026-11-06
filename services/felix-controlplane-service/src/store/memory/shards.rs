@@ -14,7 +14,18 @@ pub(super) async fn put_shard_assignment(
     assignment: ShardAssignment,
     seq_generation: bool,
 ) -> StoreResult<ShardAssignment> {
-    match write_shard_assignment(store, assignment, None, None, seq_generation, None, 0).await? {
+    match write_shard_assignment(
+        store,
+        assignment,
+        None,
+        None,
+        seq_generation,
+        None,
+        0,
+        false,
+    )
+    .await?
+    {
         AssignmentWrite::Written(stored) => Ok(stored),
         AssignmentWrite::Stale { .. } | AssignmentWrite::Fenced { .. } => {
             unreachable!("an unconditional write is never stale")
@@ -25,6 +36,9 @@ pub(super) async fn put_shard_assignment(
 /// `fence`: `None` only for a Raft log entry written before placement
 /// writes were fenced, which must apply as it did then. `at_least`: see
 /// [`crate::store::ControlPlaneStore::put_shard_assignment_at_least`].
+/// `record_previous`: a write landing past the next generation records the
+/// one it replaced ([`ShardAssignment::previous_generation`]); false for a
+/// Raft entry proposed below the level that stores it.
 pub(super) async fn put_shard_assignment_if(
     store: &InMemoryStore,
     assignment: ShardAssignment,
@@ -32,6 +46,7 @@ pub(super) async fn put_shard_assignment_if(
     fence: Option<u64>,
     seq_generation: bool,
     at_least: u64,
+    record_previous: bool,
 ) -> StoreResult<AssignmentWrite> {
     write_shard_assignment(
         store,
@@ -41,6 +56,7 @@ pub(super) async fn put_shard_assignment_if(
         seq_generation,
         None,
         at_least,
+        record_previous,
     )
     .await
 }
@@ -93,6 +109,7 @@ pub(super) async fn adopt_elected_leader(
         false,
         Some(generation),
         0,
+        false,
     )
     .await
 }
@@ -101,7 +118,8 @@ pub(super) async fn adopt_elected_leader(
 /// that generation (`Some(None)`: only where there is no assignment).
 /// `elected`: an adoption's generation, written in place of the next one;
 /// only over an assignment below it. `at_least`: written there when it is
-/// above the next one.
+/// above the next one. `record_previous`: see [`put_shard_assignment_if`].
+#[allow(clippy::too_many_arguments)]
 async fn write_shard_assignment(
     store: &InMemoryStore,
     assignment: ShardAssignment,
@@ -110,6 +128,7 @@ async fn write_shard_assignment(
     seq_generation: bool,
     elected: Option<u64>,
     at_least: u64,
+    record_previous: bool,
 ) -> StoreResult<AssignmentWrite> {
     assignment.validate().map_err(invalid_shard)?;
 
@@ -171,6 +190,7 @@ async fn write_shard_assignment(
     {
         return Ok(AssignmentWrite::Stale { current });
     }
+    let mut previous_generation = None;
     let (op, generation) = match state.records.get(&assignment.key) {
         Some(existing) => {
             if !existing.state.can_transition_to(assignment.state) {
@@ -195,6 +215,9 @@ async fn write_shard_assignment(
                 None => crate::model::generation_at_least(existing.generation, at_least)
                     .map_err(StoreError::Conflict)?,
             };
+            previous_generation =
+                crate::model::previous_generation(existing.generation, generation, elected)
+                    .filter(|_| record_previous);
             (ShardAssignmentChangeOp::Updated, generation)
         }
         // Only an assignment can be adopted.
@@ -214,6 +237,7 @@ async fn write_shard_assignment(
     let stored = ShardAssignment {
         generation,
         incarnation,
+        previous_generation,
         ..assignment
     };
     state.records.insert(stored.key.clone(), stored.clone());
@@ -315,6 +339,26 @@ pub(super) async fn first_shard_assignments(
         .filter_map(|change| change.assignment.as_ref())
         .filter(|first| first.incarnation > 0)
         .map(|first| (first.key.clone(), first.incarnation, first.generation))
+        .collect())
+}
+
+pub(super) async fn previous_shard_assignments(
+    store: &InMemoryStore,
+) -> StoreResult<Vec<ShardAssignment>> {
+    let state = store.shards.read().await;
+    let mut last_two: std::collections::HashMap<&ShardKey, [Option<&ShardAssignment>; 2]> =
+        std::collections::HashMap::new();
+    for change in &state.changes.items {
+        let held = last_two.entry(&change.key).or_default();
+        *held = [held[1], change.assignment.as_ref()];
+    }
+    Ok(last_two
+        .into_iter()
+        .filter_map(|(key, [before, last])| {
+            let current = state.records.get(key)?;
+            (last?.generation == current.generation).then_some(())?;
+            before.cloned()
+        })
         .collect())
 }
 
@@ -464,6 +508,7 @@ impl InMemoryStore {
             None,
             seq_generation,
             0,
+            false,
         )
         .await
     }
@@ -487,6 +532,7 @@ impl InMemoryStore {
         fence: u64,
         seq_generation: bool,
         at_least: u64,
+        record_previous: bool,
     ) -> StoreResult<AssignmentWrite> {
         put_shard_assignment_if(
             self,
@@ -495,6 +541,7 @@ impl InMemoryStore {
             Some(fence),
             seq_generation,
             at_least,
+            record_previous,
         )
         .await
     }

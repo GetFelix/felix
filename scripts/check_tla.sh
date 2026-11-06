@@ -344,6 +344,7 @@ expectations=(
   "FelixShardCpLiveNoOverlayRefused violates liveness"
   "FelixShardCpLiveNoHaltReported violates liveness"
   "FelixShardCpLiveNoAboveReported violates liveness"
+  "FelixShardCpLiveSkippedGenerationUnknownPrior violates liveness"
   "FelixShardCpDownNoSelfSuspicion violates liveness"
   "FelixShardCpDownBrokerSuspicion violates liveness"
   "FelixShardCpDownDegraded violates liveness"
@@ -474,6 +475,9 @@ fi
 # FelixShardCpLive and FelixShardCpLiveNoStandBehindBallot, which run past a
 # pull request's hour, and FelixShardElectAdoptAboveKeptSetReissued, which
 # had not finished after seven minutes and 3.9M distinct states on a laptop.
+# FelixShardCpLiveSkippedGeneration, FelixShardCpLive cut down to the #2024
+# scenario, runs past it too and is checked nightly (tla-walk.yml); its
+# violating twin stays registered.
 # FelixShardElectSwap is not registered: it does not finish in one run, so
 # it is checked in pieces split at the cut-over. The eleven that take under 45
 # minutes are registered above; FelixShardElectSwapKeep0, the four
@@ -645,6 +649,7 @@ weights=(
   "FelixShardCpLiveNoOverlayRefused 6"
   "FelixShardCpLiveNoHaltReported 5"
   "FelixShardCpLiveNoAboveReported 6"
+  "FelixShardCpLiveSkippedGenerationUnknownPrior 20"
   "FelixShardCpDownNoSelfSuspicion 15"
 )
 
