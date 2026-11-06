@@ -311,21 +311,34 @@ impl ViewFile {
     }
 
     /// Remove the file durably and stop the writer recording it. Returns
-    /// the body it held. Blocking.
-    fn forget(&self) -> felix_storage::Result<Option<Vec<u8>>> {
+    /// what [`Self::restore`] needs to put it back. Blocking.
+    fn forget(&self) -> felix_storage::Result<Forgotten> {
         let mut forgotten = self.forgotten.lock().unwrap_or_else(|err| err.into_inner());
         *forgotten = true;
         let held = felix_storage::controlplane_view::read(&self.root);
+        let marker = self.marker();
         felix_storage::controlplane_view::forget(&self.root)?;
-        Ok(held)
+        Ok(Forgotten { held, marker })
+    }
+
+    /// The replaced-storage marker's bytes, `Some(None)` without one, or
+    /// `None` when it cannot be read.
+    fn marker(&self) -> Option<Option<Vec<u8>>> {
+        match std::fs::read(self.root.join(felix_storage::run_state::REPLACED_FILE_NAME)) {
+            Ok(bytes) => Some(Some(bytes)),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Some(None),
+            Err(_) => None,
+        }
     }
 
     /// Put `body` back after [`Self::forget`], unless the directory was
-    /// marked replaced since: the view predates the marker, and only a
-    /// registration after it may write one. Blocking.
-    fn restore(&self, body: &[u8]) -> felix_storage::Result<()> {
+    /// marked replaced since (`marker` is what it held then): the view
+    /// predates that marker, and only a registration after it may write one.
+    /// An older marker, unchanged, says nothing about this view. Blocking.
+    fn restore(&self, body: &[u8], marker: Option<Option<Vec<u8>>>) -> felix_storage::Result<()> {
         let _forgotten = self.forgotten.lock().unwrap_or_else(|err| err.into_inner());
-        if felix_storage::run_state::replaced(&self.root)? {
+        let now = self.marker();
+        if marker.is_none() || now != marker {
             return Ok(());
         }
         felix_storage::controlplane_view::record(&self.root, body)
@@ -376,8 +389,8 @@ impl ViewFile {
             let file = self.clone();
             tokio::task::spawn_blocking(move || file.forget()).await
         };
-        let held = match forgotten {
-            Ok(Ok(held)) => held,
+        let Forgotten { held, marker } = match forgotten {
+            Ok(Ok(forgotten)) => forgotten,
             forgotten => {
                 tracing::error!(
                     outcome = ?forgotten.map(|forgotten| forgotten.map_err(|err| err.to_string())),
@@ -393,7 +406,7 @@ impl ViewFile {
             // The control plane never saw the request, so the view is as good
             // as it was.
             let file = self.clone();
-            let restored = tokio::task::spawn_blocking(move || file.restore(&last)).await;
+            let restored = tokio::task::spawn_blocking(move || file.restore(&last, marker)).await;
             if !matches!(restored, Ok(Ok(()))) {
                 tracing::warn!(
                     "could not put the control-plane view back; the next start waits for the \
@@ -403,6 +416,14 @@ impl ViewFile {
         }
         true
     }
+}
+
+/// What [`ViewFile::forget`] removed, and the replaced-storage marker as it
+/// stood then.
+#[derive(Debug)]
+struct Forgotten {
+    held: Option<Vec<u8>>,
+    marker: Option<Option<Vec<u8>>>,
 }
 
 /// The running writer.

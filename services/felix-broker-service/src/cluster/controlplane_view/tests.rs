@@ -573,6 +573,27 @@ async fn a_view_marked_replaced_during_the_deregistration_is_not_put_back() {
     assert_eq!(read(dir.path(), ME), None);
 }
 
+/// A marker from a replacement long ago, unchanged during the stop, does not
+/// keep the view the node registered since from being put back.
+#[tokio::test]
+async fn an_older_marker_does_not_stop_the_view_being_put_back() {
+    let dir = tempfile::tempdir().unwrap();
+    felix_storage::run_state::record_replaced(
+        dir.path(),
+        felix_storage::StorageId::from_bytes([1; 16]),
+        3,
+    )
+    .unwrap();
+    let mut writer = Writer::new(ViewFile::new(dir.path().to_path_buf()));
+    writer.write(Some(view(10))).await;
+    assert!(
+        ViewFile::new(dir.path().to_path_buf())
+            .forget_while(body(10), async { false })
+            .await
+    );
+    assert_eq!(read(dir.path(), ME), Some(view(10)));
+}
+
 #[tokio::test]
 async fn a_view_that_cannot_be_removed_is_not_deregistered_over() {
     let dir = tempfile::tempdir().unwrap();
