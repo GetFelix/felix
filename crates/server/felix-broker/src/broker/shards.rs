@@ -19,6 +19,11 @@ use crate::stream::StreamState;
 /// every other stream behind it.
 const HYDRATE_MAX_BYTES: usize = 64 * 1024 * 1024;
 
+/// How long [`Broker::lead_from_tail`] waits for a discarded hold's release
+/// task to end. Without a stuck fanout that takes one scheduling turn; the
+/// promotion that calls it retries on its next pass.
+const RELEASE_SETTLE_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// A record's payload and headers block, the bytes the replay ring holds for it.
 fn record_bytes(record: &felix_storage::log::LogRecord) -> usize {
     record.payload.len() + record.headers.as_deref().map_or(0, bytes::Bytes::len)
@@ -92,6 +97,9 @@ impl Broker {
     /// generation commits them, and a state read has to include them once
     /// readers can see them. A no-op for a shard not opened here yet, which
     /// starts from its log's tail when it is.
+    ///
+    /// [`BrokerError::ReleaseInFlight`], with nothing changed, if a release
+    /// of the shard's held batches is still running after a short wait.
     pub async fn lead_from_tail(
         &self,
         tenant_id: &str,
@@ -112,8 +120,15 @@ impl Broker {
             return Ok(());
         };
         // A hold just discarded reads as busy until its release task runs,
-        // and `lead_from` skips a busy hold.
-        state.held.settled().await;
+        // and `lead_from` skips a busy hold. Bounded because that task may be
+        // in a `Block` fanout to a slow subscriber, and callers hold the shard
+        // closed meanwhile; they retry on the error instead.
+        if tokio::time::timeout(RELEASE_SETTLE_WAIT, state.held.settled())
+            .await
+            .is_err()
+        {
+            return Err(BrokerError::ReleaseInFlight);
+        }
         let tail = log.tail_offset().await?;
         if tail <= state.tail_seq() {
             return Ok(());
@@ -360,9 +375,6 @@ impl Broker {
         let Some(log) = &state.durable else {
             return Ok(());
         };
-        // A hold just discarded reads as busy until its release task runs,
-        // and `lead_from` skips a busy hold.
-        state.held.settled().await;
         let tail = log.tail_offset().await?;
         let capacity = self.log_capacity;
         // A `Quorum` ring holds only committed records, and a tail past the
