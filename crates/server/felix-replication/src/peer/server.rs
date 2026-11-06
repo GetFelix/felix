@@ -781,8 +781,12 @@ async fn serve_connection(
                         let learner_acks = Arc::clone(&learner_acks);
                         let given_up = given_up.clone();
                         let bound = handler_bound(&renews, &offered);
-                        let handling =
-                            app.spawn(async move { handler.handle_from(peer, request).await });
+                        let handling = app.spawn(async move {
+                            let started = std::time::Instant::now();
+                            let response = handler.handle_from(peer, request).await;
+                            crate::peer::prof::add(crate::peer::prof::F_HANDLE_REC, started.elapsed());
+                            response
+                        });
                         app.spawn(async move {
                             let _permits = (permit, served);
                             let handled = tokio::time::timeout(bound, handling).await;
