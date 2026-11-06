@@ -151,6 +151,7 @@ impl InternalMessage {
             }
             Self::Fence(m) if m.election.is_some() => Kind::ElectionFence,
             Self::Fence(_) => Kind::Fence,
+            Self::FenceOk(m) if m.kept_ballot => Kind::FenceKeptOk,
             Self::FenceOk(_) => Kind::FenceOk,
             Self::ReplicateFetch(m) if m.labelled && m.timed && m.headers => {
                 Kind::ReplicateHeaderedFetch

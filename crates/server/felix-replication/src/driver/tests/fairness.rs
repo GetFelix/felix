@@ -69,6 +69,7 @@ impl PeerRequester for Follower {
                 log_end: 0,
                 commit_offset: 0,
                 last_generation: 0,
+                kept_ballot: false,
             }));
         }
         let InternalMessage::ReplicateRecords(batch) = message else {

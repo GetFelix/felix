@@ -231,6 +231,10 @@ pub enum Kind {
     /// sequence it is applied under. An older owner refuses it rather than
     /// writing the batch without the sequence check.
     SequencedForwardPublish = 52,
+    /// `FenceOk` from a replica whose kept ballot named the sender at the
+    /// generation before. Same body; a separate kind so an answer without
+    /// the attestation stays byte for byte what an older leader reads.
+    FenceKeptOk = 53,
 }
 
 impl Kind {
@@ -290,6 +294,7 @@ impl Kind {
             50 => Ok(Kind::ReplicateHeaderedFetch),
             51 => Ok(Kind::HeaderedForwardPublish),
             52 => Ok(Kind::SequencedForwardPublish),
+            53 => Ok(Kind::FenceKeptOk),
             other => Err(Error::UnsupportedInternalKind(other)),
         }
     }

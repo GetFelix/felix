@@ -295,6 +295,7 @@ impl PeerTransportConfig {
             .union(PeerCapabilities::LANE_RENEWAL)
             .union(PeerCapabilities::LEARNER_ACKS)
             .union(PeerCapabilities::REFUSAL_REASONS)
+            .union(PeerCapabilities::KEPT_BALLOTS)
     }
 
     /// Read the internal transport settings, validated against the
