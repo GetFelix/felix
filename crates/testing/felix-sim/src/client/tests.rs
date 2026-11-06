@@ -150,9 +150,10 @@ async fn a_read_on_a_replaced_leader_that_has_not_heard_is_not_recorded() {
     );
 }
 
-/// One list where `v0` was acknowledged before an abandon at 100 and `v1`
-/// after it; a read before the abandon saw `v0`. The final read is `last`.
-fn abandoned_history(last: Vec<Element>) -> History {
+/// One list where `v0` was acknowledged before an abandon at 100 and `v1` invoked
+/// at `v1_invoked`, completing 5 later; a read before the abandon saw `v0`.
+/// The final read is `last`.
+fn abandoned_history(last: Vec<Element>, v1_invoked: u64) -> History {
     let list = list_name(0);
     let element = |offset, value| Element {
         offset,
@@ -193,7 +194,7 @@ fn abandoned_history(last: Vec<Element>) -> History {
                 observed: vec![element(0, 0)],
             },
         },
-        append(200, 1, 0),
+        append(v1_invoked, 1, 0),
     ];
     history.final_reads.insert(list.clone(), last);
     forget_abandoned(&mut history, &BTreeMap::from([(list, 100)]));
@@ -207,14 +208,28 @@ fn an_abandon_forgives_what_was_acknowledged_before_it() {
         value: 1,
         skipped_before: 0,
     };
-    let report = felix_cluster::history::checker::check(&abandoned_history(vec![element]));
+    let report = felix_cluster::history::checker::check(&abandoned_history(vec![element], 200));
     assert!(report.violations.is_empty(), "{report}");
 }
 
 #[test]
 fn a_write_lost_after_an_abandon_still_fails() {
     use felix_cluster::history::checker::Rule;
-    let report = felix_cluster::history::checker::check(&abandoned_history(Vec::new()));
+    let report = felix_cluster::history::checker::check(&abandoned_history(Vec::new(), 200));
+    assert!(
+        report
+            .violations
+            .iter()
+            .any(|v| v.rule == Rule::LostWrite && v.explanation.contains("append 1 ")),
+        "{report}"
+    );
+}
+
+/// Invoked before the abandon and acknowledged after it, by the new leader.
+#[test]
+fn a_write_retried_across_an_abandon_and_lost_still_fails() {
+    use felix_cluster::history::checker::Rule;
+    let report = felix_cluster::history::checker::check(&abandoned_history(Vec::new(), 97));
     assert!(
         report
             .violations

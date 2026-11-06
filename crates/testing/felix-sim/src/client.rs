@@ -164,16 +164,18 @@ impl Recorder {
 }
 
 /// An abandoned log loses what it acknowledged by design, so for each list in
-/// `abandoned` (list, when) an append started before the abandon becomes
+/// `abandoned` (list, when) an append acknowledged before the abandon becomes
 /// unknown (it may or may not be on the new log) and a read started before it
-/// is dropped (it read the log that was given up). Everything started after
+/// is dropped (it may have read the log that was given up). An append still
+/// retrying at the abandon can only be acknowledged by the new leader, since
+/// the old one is stopped first, so it is held to the new log. Everything started after
 /// the abandon is checked as usual, so a write the new log loses still fails.
 pub fn forget_abandoned(history: &mut History, abandoned: &BTreeMap<String, u64>) {
     history.ops.retain_mut(|op| {
-        let invoke = op.invoke;
+        let (invoke, complete) = (op.invoke, op.complete);
         match &mut op.action {
             Action::Append { list, outcome, .. } => {
-                if abandoned.get(list).is_some_and(|at| invoke < *at)
+                if abandoned.get(list).is_some_and(|at| complete < *at)
                     && matches!(outcome, AppendOutcome::Ok { .. })
                 {
                     *outcome = AppendOutcome::Info;

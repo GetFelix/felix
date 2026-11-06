@@ -235,9 +235,11 @@ instant:
 - An abandoned log ends the hold. A later pair of kills can hold the shard
   again.
 
-An abandoned shard loses what it acknowledged by design. Appends started
-before the abandon count as unknown (they may or may not be on the new log),
-and reads started before it are dropped. Everything started after the abandon
+An abandoned shard loses what it acknowledged by design. Appends
+acknowledged before the abandon count as unknown (they may or may not be on
+the new log), and reads started before it are dropped. An append still being
+retried at the abandon can only be acknowledged by the new leader, since the
+old one is stopped first, so it is held to the new log. Everything started after the abandon
 is checked as usual, so the new log losing an acknowledged write still fails
 the run. The run names abandoned shards in a warning.
 

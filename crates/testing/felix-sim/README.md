@@ -69,7 +69,7 @@ A seed fails when any check reports a problem, except a warning.
   was named to lead is not counted as its leader, a follower being copied in
   counts in the set, and an abandoned log ends the hold.
 - A shard whose log an operator abandoned loses what it acknowledged by
-  design. Appends started before the abandon count as unknown and reads
+  design. Appends acknowledged before the abandon count as unknown and reads
   started before it are dropped; everything after it is checked as usual. A
   warning names the shard.
 - A run that stops making progress ends with a `stalled` finding instead of
