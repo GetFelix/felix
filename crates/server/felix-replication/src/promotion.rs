@@ -1373,15 +1373,42 @@ async fn keep_own_set(
     }
     let mut set = crate::replica_set::kept(route, None);
     set.leaving = leaving.cloned();
-    match crate::replica_set::accept(log, set, joint_fence).await {
+    // From this broker's own ballot: a standing that raised it since keeps
+    // the set it stood on.
+    match log
+        .accept_set_from(set, joint_fence, route.generation, Some(local_node_id))
+        .await
+    {
         // As a replica's newer set: it never goes back, so report it.
-        Ok(felix_storage::disk_log::SetCheck::Stale { known }) => Err(Outcome::Refused {
+        Ok(Ok(felix_storage::disk_log::SetCheck::Stale { known })) => Err(Outcome::Refused {
             ballot: 0,
             promised_to: String::new(),
             why: format!("this broker counts the set of generation {known}, newer than this one"),
             took: Vec::new(),
         }),
-        Ok(_) => Ok(()),
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(felix_storage::disk_log::GenerationCheck::Promised { leader })) => {
+            Err(Outcome::Refused {
+                why: format!(
+                    "this broker cannot lead generation {}: it promised it to {leader}",
+                    route.generation
+                ),
+                promised_to: leader,
+                took: Vec::new(),
+            })
+        }
+        Ok(Err(ballot)) => Err(Outcome::Refused {
+            promised_to: String::new(),
+            why: format!(
+                "this broker cannot lead generation {}: its own ballot holds {}",
+                route.generation,
+                match ballot {
+                    felix_storage::disk_log::GenerationCheck::Superseded { accepted } => accepted,
+                    _ => route.generation,
+                }
+            ),
+            took: Vec::new(),
+        }),
         Err(err) => Err(Outcome::pending(
             format!("could not keep this leader's replica set: {err}"),
             Vec::new(),

@@ -16,7 +16,7 @@ use std::time::Duration;
 use felix_broker::{Broker, LogKind, StreamLog};
 use felix_common::membership::ELECTION_GENERATION_WINDOW;
 use felix_router::{Route, ShardKey, ShardKind, ShardRouter};
-use felix_storage::disk_log::{GenerationCheck, Membership};
+use felix_storage::disk_log::{GenerationCheck, Membership, ReplicaSet};
 use felix_wire::internal::{InternalMessage, PreVote, PreVoteRefusal, ReplicaLog};
 use tokio::task::JoinSet;
 use tokio::time::Instant;
@@ -77,6 +77,9 @@ enum Round {
     Opened,
     /// Refused, split, or never opened: back off and try again.
     Failed,
+    /// The kept set moved between the checks and the ballot: as `Failed`,
+    /// and a fence-again round may run again at the same generation.
+    SetMoved,
     /// Not a shard this broker may stand for right now.
     Ineligible,
 }
@@ -383,7 +386,10 @@ async fn run<R: PeerRequester + Send + Sync + 'static>(
                             backoff.remove(&key);
                             ctx.held_back.lock().expect("held_back lock").remove(&key);
                         }
-                        Round::Failed => {
+                        Round::Failed | Round::SetMoved => {
+                            if matches!(round, Round::SetMoved) {
+                                restood.remove(&key);
+                            }
                             let backoff = backoff.entry(key).or_default();
                             backoff.failed();
                             if shard_only {
@@ -547,6 +553,7 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
     });
     let Standing {
         kept,
+        read,
         leaving,
         generation,
     } = match standing_on(ctx, key, route, &log) {
@@ -625,12 +632,19 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
     if !still {
         return Round::Failed;
     }
-    // The ballot is on disk before anything names this broker leader.
-    if !matches!(
-        log.accept_generation(generation, Some(local)).await,
-        Ok(GenerationCheck::Raised)
-    ) {
-        return Round::Failed;
+    // The ballot is on disk before anything names this broker leader. A set
+    // this copy took while the round ran (a fence or a batch below the new
+    // generation) would leave the checks above stale, so the ballot is taken
+    // only on the set they read, under the lock every set raise takes. A
+    // learner flip from `admit_member` fails the round on purpose: the
+    // tally's voting members changed.
+    match log.accept_generation_on_set(generation, local, read).await {
+        Ok(Some(GenerationCheck::Raised)) => {}
+        Ok(None) => {
+            ctx.held_back(key, "the kept replica set changed while the round ran", "");
+            return Round::SetMoved;
+        }
+        _ => return Round::Failed,
     }
     ctx.stood
         .lock()
@@ -682,17 +696,21 @@ async fn restand<R>(ctx: &Ctx<R>, key: &ShardKey, generation: u64) -> Round {
     }
     let Standing {
         kept,
+        read,
         leaving,
         generation: next,
     } = match standing_on(ctx, key, &route, &log) {
         Ok(standing) => standing,
         Err(round) => return round,
     };
-    if !matches!(
-        log.accept_generation(next, Some(local)).await,
-        Ok(GenerationCheck::Raised)
-    ) {
-        return Round::Failed;
+    // As in `stand`: the ballot only on the set `standing_on` checked.
+    match log.accept_generation_on_set(next, local, read).await {
+        Ok(Some(GenerationCheck::Raised)) => {}
+        Ok(None) => {
+            ctx.held_back(key, "the kept replica set changed while the round ran", "");
+            return Round::SetMoved;
+        }
+        _ => return Round::Failed,
     }
     ctx.stood
         .lock()
@@ -726,6 +744,9 @@ async fn restand<R>(ctx: &Ctx<R>, key: &ShardKey, generation: u64) -> Round {
 /// beside it, and the generation above both the copy's ballot and `route`.
 struct Standing {
     kept: Membership,
+    /// The set the checks read. The ballot is taken only while the copy
+    /// still keeps exactly this.
+    read: ReplicaSet,
     leaving: Option<Membership>,
     generation: u64,
 }
@@ -820,6 +841,7 @@ fn standing_on<R>(
         return Err(ctx.ineligible(key, "past the generations the control plane adopts"));
     }
     Ok(Standing {
+        read: kept.clone(),
         kept: kept.current,
         leaving,
         generation,

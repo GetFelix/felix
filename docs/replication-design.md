@@ -4885,7 +4885,8 @@ records the kept set with nothing pending. The cut-over that wrote it
 may not have finished, so the candidate does not rely on it: its own fence
 carries both sets and opens only on a majority of each, the old set counted
 with and without its learner, as any joint fence does. That is the model's
-`Elect` with `oldSet` kept: `FenceMembers` takes the old set in and
+`Elect`, which stands only when `oldSet` holds nothing but the kept set's
+brokers: `FenceMembers` takes the old set in and
 `OpenForWrites` needs its majority. Once open, the leader counts
 acknowledgements on the kept set alone, because the control plane records
 that set with nothing pending (`FinishChange`). Without `joint_fence`
@@ -4895,6 +4896,18 @@ A broker whose set file keeps earlier sets does not stand either. Those sets
 are kept only while a fence leaving them never opened, so a majority of one
 may hold an acknowledged write that no later set has. A candidate's fence
 leaves at most one set, so the control plane handles that shard.
+
+These checks read the kept set once, and the round's pre-votes take time.
+Meanwhile the copy can take a newer set: another leader's fence below the
+candidate's generation, or a fence a replaced copy learns from without taking
+its ballot. So the candidate writes its ballot only if the copy still keeps
+the set it checked (`DiskLog::accept_generation_on_set`). Every set the
+copy takes from a fence, a batch or its own leadership takes the same lock and
+is refused once the copy has promised a newer generation, or this one to
+another leader (`DiskLog::accept_set_from`). The set and the ballot land in
+one order or the other. If the set came first, the
+candidate writes no ballot, records nothing and sends no fence. If the ballot
+came first, the set is refused, and so is the fence that carried it (#1970).
 
 A replica that takes a candidate's fence records the candidate the same way,
 so it takes the candidate's batches and sends clients to it. The elected
