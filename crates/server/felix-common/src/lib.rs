@@ -24,6 +24,7 @@
 //!   shared by the broker's listeners and the control plane's. Behind the
 //!   `tls` feature.
 //! - [`jitter`] — random retry waits, repeatable under a simulator.
+//! - [`random`] — random ids and hash keys, repeatable under a simulator.
 //! - [`ids`] and [`Error`] — the region id and its parse error.
 //! - [`yaml`] — the rules both services read their config files by. Behind
 //!   the `yaml` feature.
@@ -43,6 +44,7 @@ pub mod lifecycle;
 // Not gated: they are serde types, and the two ends need them whether or not
 // either runs a process.
 pub mod membership;
+pub mod random;
 #[cfg(feature = "tls")]
 pub mod tls;
 // Also under `test`, so `cargo test -p felix-common` runs its tests without

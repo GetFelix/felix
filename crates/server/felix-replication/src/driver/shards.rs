@@ -547,7 +547,8 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         let local = self.cx.router.local_node_id();
         self.led_slots.clear();
         self.moving.clear();
-        for (key, route) in table.iter() {
+        let entries: Vec<_> = table.iter().collect();
+        for &(key, route) in &entries {
             if route.leader.node_id != local {
                 continue;
             }
@@ -558,21 +559,24 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             }
         }
         self.scanned_table = Some(Arc::clone(table));
-        let live: Vec<ShardKey> = table
+        let live: Vec<ShardKey> = entries
             .iter()
+            .copied()
             .filter(|(key, route)| self.leads(key, route))
             .map(|(key, _)| key.clone())
             .collect();
-        let given_up: Vec<(ShardKey, felix_router::Route)> = table
+        let given_up: Vec<(ShardKey, felix_router::Route)> = entries
             .iter()
+            .copied()
             .filter(|(key, route)| {
                 route.leader.node_id == self.cx.router.local_node_id()
                     && self.cx.fence.gave_up_at(&watch_key(key)) == Some(route.generation)
             })
             .map(|(key, route)| (key.clone(), route.clone()))
             .collect();
-        let refused: Vec<(ShardKey, RefusedGeneration)> = table
+        let refused: Vec<(ShardKey, RefusedGeneration)> = entries
             .iter()
+            .copied()
             .filter_map(|(key, route)| Some((key.clone(), self.refusal(key, route)?)))
             .collect();
         self.probed.retain(|key, _| {

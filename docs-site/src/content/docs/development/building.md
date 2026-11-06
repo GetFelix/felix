@@ -131,13 +131,23 @@ when nothing did. Each workflow ends with a job that always runs, `CI ok` and
 checks `main` requires, so `gh pr merge --auto --squash` waits for them. A
 docs-only change gets both within a minute or two.
 
-`coverage` itself runs only on pushes to main, where it publishes the badge;
-on a pull request it is skipped and `Coverage ok` passes.
+A draft pull request skips the heavy jobs in both workflows, and `CI ok` and
+`Coverage ok` fail with a "draft" message so a draft cannot look mergeable.
+Marking the pull request ready starts the jobs.
+
+`coverage` runs on pushes to main, where it publishes the badge, and on pull
+requests, where it fails if line coverage drops by more than 0.3 points. On a
+pull request it is also the workspace test run: `task coverage` runs every
+crate's tests, `felix-cluster` included, so `Coverage ok` fails on a failing
+test, and the job summary lists the failed tests by name. `ci.yml`'s `test` job
+then runs only what coverage skips (coverage's timeout scale is 5, CI's 3) (`task test:residual`: doctests, and the
+tests that need the `telemetry` feature off), plus the stress test. Pushes to
+main still run the full `task test:workspace` there.
 
 Its jobs, in [`ci.yml`](https://github.com/GetFelix/felix/blob/main/.github/workflows/ci.yml),
 which is the authority for what each one runs:
 
-- `test`: the workspace tests except `felix-cluster`, then the stress tests.
+- `test`: on main, the workspace tests except `felix-cluster`, then the stress tests. On a pull request, the stress tests and the tests `coverage.yml` does not run (see above).
 - `cluster`: the `felix-cluster` suites, split into `routing`, `failures`, `history` and the rest.
 - `checks`: lint, `cargo-deny`, publish and toolchain checks, `task docs:evidence`, the changelog and release-version checks, and `task demo:check`.
 - `images`: builds the broker and control-plane images and checks each starts, serves `/ready` and does not run as root.
@@ -154,7 +164,7 @@ the upstream versions of the crates under `vendor/` for advisories.
 
 Other workflows:
 
-- `coverage.yml`: `task coverage`.
+- `coverage.yml`: `task coverage`, the coverage gate, and on pull requests the workspace tests.
 - `pages.yml`: builds and deploys this docs site.
 - `history.yml`: the nightly history-checker campaign.
 - `fuzz-nightly.yml`: the long fuzz campaign.

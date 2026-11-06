@@ -867,6 +867,21 @@ impl StreamLog {
             .map_err(BrokerError::from)
     }
 
+    /// Accept `leader` at `generation` only while the kept set is still
+    /// `kept`; `None`, with nothing written, when it moved. See
+    /// `DiskLog::accept_generation_on_set`.
+    pub async fn accept_generation_on_set(
+        &self,
+        generation: u64,
+        leader: &str,
+        kept: felix_storage::disk_log::ReplicaSet,
+    ) -> Result<Option<felix_storage::disk_log::GenerationCheck>> {
+        self.log
+            .accept_generation_on_set(generation, leader, kept)
+            .await
+            .map_err(BrokerError::from)
+    }
+
     /// Give up the accepted generation, so no leader is accepted at it here
     /// again. See `DiskLog::give_up_generation`.
     pub async fn give_up_generation(&self) -> Result<u64> {
@@ -903,6 +918,27 @@ impl StreamLog {
     ) -> Result<felix_storage::disk_log::SetCheck> {
         self.log
             .accept_set_keeping_earlier(set)
+            .await
+            .map_err(BrokerError::from)
+    }
+
+    /// Count `set`, sent by `leader` at `generation`, unless this copy
+    /// accepted a newer generation or another leader at that one: then the
+    /// ballot's answer, and nothing written. See `DiskLog::accept_set_from`.
+    pub async fn accept_set_from(
+        &self,
+        set: felix_storage::disk_log::ReplicaSet,
+        keep_earlier: bool,
+        generation: u64,
+        leader: Option<&str>,
+    ) -> Result<
+        std::result::Result<
+            felix_storage::disk_log::SetCheck,
+            felix_storage::disk_log::GenerationCheck,
+        >,
+    > {
+        self.log
+            .accept_set_from(set, keep_earlier, generation, leader)
             .await
             .map_err(BrokerError::from)
     }
@@ -1080,7 +1116,7 @@ fn records(
 /// The time an append made now stores: microseconds since the Unix epoch on
 /// this broker's clock.
 pub fn append_time_now() -> u64 {
-    std::time::SystemTime::now()
+    felix_common::clock::system_time()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_micros() as u64)
         .unwrap_or(0)

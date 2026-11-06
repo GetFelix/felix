@@ -9,6 +9,7 @@
 use std::time::Duration;
 
 use felix_cluster::{Cluster, ClusterConfig, StreamSpec};
+use felix_controlplane_service::model::ShardKind;
 use serial_test::serial;
 
 const STREAM: &str = "orders";
@@ -68,6 +69,10 @@ async fn replication_settled(cluster: &Cluster, leader: &str, shipped_before: f6
     )
     .await
     .expect("replication should reach the followers of a healthy shard");
+    cluster
+        .wait_for_replica_report(ShardKind::Stream, STREAM, 0)
+        .await
+        .expect("the control plane should hear that the followers are caught up");
 }
 
 /// Everything `node_id` will replay from the start of the stream.

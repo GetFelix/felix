@@ -5,7 +5,9 @@ on:
     branches: [ main ]
   # No path filter here: the changes job skips coverage for docs or the badge
   # alone, so the run still reports `Coverage ok`.
+  # ready_for_review: a draft PR skips the coverage run (see `changes`).
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
 
 concurrency:
   # A new push cancels that PR's older run. Each main commit keeps its own
@@ -18,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      code: ${{ steps.code.outputs.code }}
+      code: ${{ github.event.pull_request.draft != true && steps.code.outputs.code || 'false' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -35,6 +37,8 @@ jobs:
   # job.
   # Main publishes the badge and its line percentage; a pull request runs the
   # same job and fails if it drops coverage by more than the gate allows.
+  # On a pull request this is also the workspace test run of record: ci.yml's
+  # `test` job runs only what this skips (Taskfile.yml, test:residual).
   coverage:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -121,7 +125,27 @@ jobs:
           FELIX_TEST_TIMEOUT_SCALE: "5"
         run: |
           set -euxo pipefail
-          task coverage
+          task coverage 2>&1 | tee "$RUNNER_TEMP/coverage.log"
+
+      # The tests run inside the coverage build, so a failure is a test
+      # failure first. Name the failing tests in the annotations and summary.
+      - name: Summarize failed tests
+        if: failure()
+        run: |
+          # The log is coloured (CARGO_TERM_COLOR), which splits "FAILED".
+          sed 's/\x1b\[[0-9;]*m//g' "$RUNNER_TEMP/coverage.log" |
+            grep -E '^test .* \.\.\. FAILED$|^error: test failed|^error: [0-9]+ targets? failed|panicked at' > "$RUNNER_TEMP/failed.txt" || true
+          # No test lines: the gate or the build failed, and its own step says why.
+          [ -s "$RUNNER_TEMP/failed.txt" ] || exit 0
+          grep -E '^test .* \.\.\. FAILED$' "$RUNNER_TEMP/failed.txt" | sed 's/^test //; s/ \.\.\. FAILED$//' | sort -u | while read -r name; do
+            echo "::error title=Test failed::$name"
+          done
+          {
+            echo "### Failed tests"
+            echo '```'
+            head -100 "$RUNNER_TEMP/failed.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # Before the gate, and even when coverage failed, so a drop can be
       # inspected from the artifact.
@@ -137,9 +161,15 @@ jobs:
       # points between runs of the same tree, hence 0.3. No baseline yet passes.
       - name: Gate on main's line coverage
         if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
           set -euo pipefail
-          if git fetch --quiet --depth=1 origin badges &&
+          # The baseline is main's; another base would be compared to the wrong numbers.
+          if [ "$BASE_REF" != main ]; then
+            echo "::notice::base is $BASE_REF, not main; skipping the coverage gate"
+            python3 scripts/ci/coverage_gate.py percent lcov.info
+          elif git fetch --quiet --depth=1 origin badges &&
             git show FETCH_HEAD:coverage-lines.txt > "$RUNNER_TEMP/baseline.txt"; then
             # The per-file summary is newer than the badge; absent, the gate
             # just skips the breakdown.
@@ -211,6 +241,10 @@ jobs:
     steps:
       - env:
           RESULTS: ${{ toJSON(needs.*.result) }}
+          DRAFT: ${{ github.event.pull_request.draft }}
         run: |
           echo "$RESULTS"
+          # A draft skips the heavy jobs, so a pass here would sit on the SHA
+          # until the ready run replaces it. Fail instead; a draft cannot merge.
+          if [ "$DRAFT" = true ]; then echo "draft: mark the PR ready to run the jobs"; exit 1; fi
           if grep -qE '"(failure|cancelled)"' <<< "$RESULTS"; then exit 1; fi

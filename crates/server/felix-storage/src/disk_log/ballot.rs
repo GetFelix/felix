@@ -23,7 +23,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use super::replica_state::{self, ReplicaState};
-use super::{DiskLog, GenerationCheck};
+use super::{DiskLog, GenerationCheck, ReplicaSet};
 use crate::io::sync_dir;
 use crate::{Result, StorageError};
 
@@ -112,17 +112,50 @@ impl DiskLog {
         generation: u64,
         leader: Option<&str>,
     ) -> Result<GenerationCheck> {
-        if let Some(found) = check(&self.inner.ballot.read(), generation, leader) {
-            return Ok(found);
+        let raised = self.raise_ballot(generation, leader, None).await?;
+        Ok(raised.expect("no set to check"))
+    }
+
+    /// [`Self::accept_generation`] for a candidate that read `kept` before
+    /// standing: the ballot is raised only while the kept set is still
+    /// `kept`, checked under the writer's lock that every set raise takes,
+    /// so no set lands between the check and the ballot. `None`, with
+    /// nothing written, when the set moved. `Elect`'s guard on the kept set
+    /// in `docs/formal/FelixShard.tla` is atomic with its promise.
+    pub async fn accept_generation_on_set(
+        &self,
+        generation: u64,
+        leader: &str,
+        kept: ReplicaSet,
+    ) -> Result<Option<GenerationCheck>> {
+        self.raise_ballot(generation, Some(leader), Some(kept))
+            .await
+    }
+
+    async fn raise_ballot(
+        &self,
+        generation: u64,
+        leader: Option<&str>,
+        kept: Option<ReplicaSet>,
+    ) -> Result<Option<GenerationCheck>> {
+        if kept.is_none()
+            && let Some(found) = check(&self.inner.ballot.read(), generation, leader)
+        {
+            return Ok(Some(found));
         }
         let inner = Arc::clone(&self.inner);
         let leader: Option<Arc<str>> = leader.map(Arc::from);
         felix_common::blocking::spawn(move || {
             let mut persisted = inner.replica_persisted.lock();
+            if let Some(kept) = &kept
+                && inner.replica_set.read().as_ref() != Some(kept)
+            {
+                return Ok(None);
+            }
             // Re-checked under the writer's lock: a concurrent request may
             // have raised it, or named its leader, while this waited.
             if let Some(found) = check(&inner.ballot.read(), generation, leader.as_deref()) {
-                return Ok(found);
+                return Ok(Some(found));
             }
             // Before `replica`, so a crash between the two leaves a ballot
             // the open takes the generation from, never a raised generation
@@ -153,11 +186,11 @@ impl DiskLog {
             inner
                 .accepted_generation
                 .store(generation, Ordering::Release);
-            Ok(if raised {
+            Ok(Some(if raised {
                 GenerationCheck::Raised
             } else {
                 GenerationCheck::Current
-            })
+            }))
         })
         .await
         .map_err(|err| StorageError::Io(std::io::Error::other(err)))?

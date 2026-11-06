@@ -25,7 +25,7 @@ pub mod promotion;
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use tokio::time::Instant;
 
 use crate::shards::lifecycle::metrics as mm;
 use crate::shards::{ShardKey, ShardKind, watch::ShardAssignment};
@@ -530,7 +530,7 @@ impl ShardLifecycle {
     ) -> Vec<Action> {
         let node = self.node_id.as_str();
         let mut closes = Vec::new();
-        for (key, assignment) in assignments {
+        for (key, assignment) in in_key_order(assignments) {
             let has_role = assignment.leader == node
                 || assignment.replicas.iter().any(|replica| replica == node)
                 || assignment.successor.as_deref() == Some(node);
@@ -547,6 +547,7 @@ impl ShardLifecycle {
                 });
             }
         }
+        let from_assignments = closes.len();
         self.held.retain(|key| {
             let assigned = assignments.contains_key(key);
             if !assigned {
@@ -557,6 +558,9 @@ impl ShardLifecycle {
             }
             assigned
         });
+        // Retain walks the set in hash order; closing in key order keeps the
+        // order of the flushes the same from one run to the next.
+        closes[from_assignments..].sort_by(|a, b| close_key(a).cmp(&close_key(b)));
         closes
     }
 
@@ -571,13 +575,16 @@ impl ShardLifecycle {
         present: impl IntoIterator<Item = &'a ShardKey>,
     ) -> Vec<ShardKey> {
         let present: std::collections::HashSet<&ShardKey> = present.into_iter().collect();
-        self.shards
+        let mut missing: Vec<ShardKey> = self
+            .shards
             .iter()
             .filter(|(key, shard)| {
                 !present.contains(*key) && !matches!(shard.phase, Phase::Closed | Phase::Unassigned)
             })
             .map(|(key, _)| key.clone())
-            .collect()
+            .collect();
+        missing.sort();
+        missing
     }
 
     /// Record that the driver opened the log successfully.
@@ -623,7 +630,10 @@ impl ShardLifecycle {
     /// any the assignments have moved past are dropped.
     pub fn ready_to_open(&mut self, ready: impl Fn(&ShardKey) -> bool) -> Vec<Action> {
         let mut opens = Vec::new();
-        let held = std::mem::take(&mut self.awaiting_registration);
+        let mut held: Vec<(ShardKey, Action)> = std::mem::take(&mut self.awaiting_registration)
+            .into_iter()
+            .collect();
+        held.sort_by(|a, b| a.0.cmp(&b.0));
         for (key, open) in held {
             let Action::Open { generation, .. } = &open else {
                 continue;
@@ -1045,6 +1055,8 @@ impl ShardReaders {
                             .filter_map(|key| Some((key.clone(), lifecycle.generation(key)?)))
                             .collect()
                     };
+                    let mut led = led;
+                    led.sort();
                     let now = tokio::time::Instant::now();
                     for (key, generation) in led {
                         if fence.sessions_lease_free(&key, generation) {
@@ -1095,15 +1107,17 @@ impl ShardReaders {
         silence: std::time::Duration,
     ) {
         let check = marks.reads_by_round();
-        let probed = unleased
+        let mut probed: Vec<(ShardKey, u64)> = unleased
             .iter()
             .map(|(key, (generation, _))| (key.clone(), *generation))
             .chain(
                 unheard
                     .iter()
                     .map(|(key, generation)| (key.clone(), *generation)),
-            );
-        let rounds = probed.map(|(key, generation)| async move {
+            )
+            .collect();
+        probed.sort();
+        let rounds = probed.into_iter().map(|(key, generation)| async move {
             let confirmed = match check {
                 Some(check) => check.confirm(&key, generation).await.is_ok(),
                 None => false,
@@ -2309,7 +2323,7 @@ pub(crate) async fn reconcile_reporting(
     let mut actions = Vec::new();
     {
         let mut owned = lifecycle.lock().await;
-        for (key, assignment) in assignments {
+        for (key, assignment) in in_key_order(assignments) {
             let renewal = renewals.get(key).copied().unwrap_or(0);
             actions.push(owned.observe_renewed(key, Some(assignment), renewal));
         }
@@ -2344,6 +2358,24 @@ pub(crate) async fn reconcile_reporting(
             let owned = lifecycle.lock().await;
             progress.opened(owned.servable());
         }
+    }
+}
+
+/// An assignment set's entries in key order. A hash map walks in an order that
+/// changes between processes, and this pass opens and closes shards in the
+/// order it walks them, so a simulated run would otherwise differ from its replay.
+fn in_key_order(
+    assignments: &HashMap<ShardKey, ShardAssignment>,
+) -> Vec<(&ShardKey, &ShardAssignment)> {
+    let mut entries: Vec<_> = assignments.iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(b.0));
+    entries
+}
+
+fn close_key(action: &Action) -> Option<&ShardKey> {
+    match action {
+        Action::Close { key, .. } => Some(key),
+        _ => None,
     }
 }
 
