@@ -458,7 +458,8 @@ fn plan_once(
             && !deposed
             && !replaced
         {
-            if let Some(decision) = readmit(existing, joint_fence, &is_live, caught_up) {
+            if let Some(decision) = readmit(existing, joint_fence, &is_live, caught_up, &mut moves)
+            {
                 shards.push(ShardPlan { key, decision });
                 continue;
             }
@@ -691,12 +692,14 @@ fn plan_once(
 /// caught up under its new identity: the same set is written at the next
 /// generation, which names the new identity and holds the member as a
 /// learner until it shows that generation's start record. Only for a shard
-/// with a live leader and nothing else in progress, and one member per pass.
+/// with a live leader and nothing else in progress, one member per shard,
+/// and while the pass has a re-admission left.
 fn readmit(
     existing: &ShardAssignment,
     joint_fence: bool,
     is_live: &dyn Fn(&str) -> bool,
     caught_up: &dyn CaughtUp,
+    moves: &mut Moves,
 ) -> Option<Decision> {
     if !joint_fence
         || existing.state == ShardState::Draining
@@ -722,13 +725,10 @@ fn readmit(
     if live_rest < set.len() / 2 + 1 {
         return None;
     }
+    moves.begin_readmit()?;
     Some(Decision::Move(
         MoveStep::Readmit { node },
-        ShardAssignment {
-            generation: 0,
-            fence_storage_ids: Default::default(),
-            ..existing.clone()
-        },
+        existing.renamed(),
     ))
 }
 

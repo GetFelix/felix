@@ -144,6 +144,20 @@ fn a_new_cluster_leaves_only_publisher_principal_to_the_operator() {
     );
 }
 
+/// `finalize_in_order` skips the election gate, which only the election
+/// features meet. Holds for a fleet that reports nothing and a level that
+/// is not ready.
+#[test]
+fn a_new_cluster_finalizes_nothing_the_election_gate_checks() {
+    let nodes = [at("a", NodeLifecycle::Live, &[])];
+    for feature in NEW_CLUSTER {
+        assert!(
+            check_election(&nodes, feature.name(), false).is_ok(),
+            "{feature} is gated by check_election; finalize_in_order must check it"
+        );
+    }
+}
+
 /// Finalized in order, a feature never meets a prerequisite still off.
 #[test]
 fn a_new_cluster_finalizes_prerequisites_first() {

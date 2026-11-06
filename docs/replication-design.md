@@ -1709,9 +1709,10 @@ the shard itself (`MoveStep::Stuck`, issue #1914):
   still be queued behind its broker's other fences.
 - *How often.* Each rename of a shard within an hour doubles the wait for
   the next, at most four an hour, and one pass renames at most sixteen
-  shards. The count is kept by each control-plane instance, so with several
-  instances placing a shard can be renamed up to four times an hour per
-  instance. Each is logged as a warning with its reason and counted in
+  shards. The count is kept in the memory of the instance holding the
+  placement lease, and only that instance renames, so several instances do
+  not each rename on their own count. A new holder starts with no count and
+  no watch, so it waits the bound out before its first rename. Each is logged as a warning with its reason and counted in
   `felix_shard_move_steps_total{step="stuck"}`.
 
 This is the one place the control plane acts on the absence of progress
