@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793980866076,
+  "lastUpdate": 1793987149256,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -47424,6 +47424,58 @@ window.BENCHMARK_DATA = {
             "range": "21856.91",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 832291.88\nmean: 824379.96\nstdev: 21856.91\ncv: 2.65%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "38d7f4b1be083ef0381e62b2f205fa5e46d19a1e",
+          "message": "fix(replication): ultra-review findings: batched confirmed reads, refusal reasons, candidate loop (#2023)\n\nReview fixes for the replication stack: typed refusals and learner acks reach the leader, and sim callers offer the capabilities the peer pool offers. RF3 A/B: noise (no metric >5% worse at p<0.05).",
+          "timestamp": "2026-11-06T17:33:41Z",
+          "tree_id": "956a50e271e3061ad29a5c5526317b599a44f18f",
+          "url": "https://github.com/GetFelix/felix/commit/38d7f4b1be083ef0381e62b2f205fa5e46d19a1e"
+        },
+        "date": 1793987148377,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 347765.85,
+            "range": "14086.65",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 347765.85\nmean: 350816.49\nstdev: 14086.65\ncv: 4.02%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 347765.85,
+            "range": "14086.65",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 347765.85\nmean: 350816.49\nstdev: 14086.65\ncv: 4.02%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82416.76,
+            "range": "872.54",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82416.76\nmean: 82537.84\nstdev: 872.54\ncv: 1.06%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 824167.65,
+            "range": "8725.43",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 824167.65\nmean: 825378.38\nstdev: 8725.43\ncv: 1.06%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
