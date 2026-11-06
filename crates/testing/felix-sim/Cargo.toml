@@ -7,7 +7,7 @@ rust-version.workspace = true
 description = "Deterministic simulation of a Felix cluster on virtual time"
 repository.workspace = true
 homepage.workspace = true
-readme.workspace = true
+readme = "README.md"
 # A test harness, not a library anyone consumes from a registry.
 publish = false
 
