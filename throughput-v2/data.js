@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793970502363,
+  "lastUpdate": 1793976695356,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -47268,6 +47268,58 @@ window.BENCHMARK_DATA = {
             "range": "15743.00",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1182656.42\nmean: 1180361.04\nstdev: 15743.00\ncv: 1.33%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8d3c6e223388f130bedeab130e124d1142cafc6c",
+          "message": "ci(sim): run the seed batch in its own non-blocking job until the stall fixes land (#2036)\n\nThe felix-sim seed batch moves to its own non-blocking CI job; the workspace tests and coverage skip it. Tracked stalls: #2024 #2032 #2033.",
+          "timestamp": "2026-11-06T14:45:37Z",
+          "tree_id": "848c83feead0788af745e4487dbd8884d2d3a819",
+          "url": "https://github.com/GetFelix/felix/commit/8d3c6e223388f130bedeab130e124d1142cafc6c"
+        },
+        "date": 1793976694640,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 638785.66,
+            "range": "37496.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 638785.66\nmean: 637098.25\nstdev: 37496.12\ncv: 5.89%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 638785.66,
+            "range": "37496.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 638785.66\nmean: 637098.25\nstdev: 37496.12\ncv: 5.89%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 154121.19,
+            "range": "2910.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 154121.19\nmean: 153146.34\nstdev: 2910.00\ncv: 1.90%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1541211.95,
+            "range": "29100.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1541211.95\nmean: 1531463.40\nstdev: 29100.05\ncv: 1.90%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
