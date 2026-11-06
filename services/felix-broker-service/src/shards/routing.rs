@@ -709,6 +709,7 @@ fn with_elected(
             key.clone(),
             felix_replication::election::Recorded {
                 generation: assignment.generation,
+                leader: assignment.leader.clone(),
                 members: std::iter::once(&assignment.leader)
                     .chain(&assignment.replicas)
                     .map(|node| (node.clone(), ids.get(node).cloned()))
