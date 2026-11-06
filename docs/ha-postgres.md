@@ -1,6 +1,10 @@
 # The Postgres the control plane requires
 
-The Felix control plane is deliberately stateless: every piece of durable
+This page is about the Postgres backend. The control plane can instead run an
+embedded Raft group with no external database; see
+[metadata-raft-design.md](metadata-raft-design.md).
+
+With the Postgres backend, the control plane is deliberately stateless: every piece of durable
 metadata (tenants, streams, membership, shard ownership, auth configuration)
 lives in one Postgres database, and any number of identical instances serve it.
 That buys a simple availability story for the service itself (run two or more
@@ -151,7 +155,7 @@ migrations rerun, which they do on the next restart.
 
 **Reconsidered: the "should Felix run without a database platform" trigger
 below fired, and the alternative now has a decided design,
-[metadata-raft-design.md](metadata-raft-design.md) (milestone M13). Postgres
+[metadata-raft-design.md](metadata-raft-design.md) (the embedded Raft backend). Postgres
 HA remains a supported backend and everything on this page stays true for
 it; Raft is the option that removes the external dependency.**
 

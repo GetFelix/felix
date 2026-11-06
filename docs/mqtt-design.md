@@ -1,14 +1,14 @@
 # MQTT ingress: design
 
 Status: accepted in #1685 on 2026-10-31, with the decisions listed at the end.
-The packet codec, `felix-mqtt-wire`, is built (#1687), and so is the listener
-skeleton, which authenticates connections and refuses every publish and
-subscribe (#1689, `docs/mqtt-compatibility.md`), and MQTT over WebSockets
-(#1700). The rest is not; the work is
-tracked as slices #1688 and #1690 to #1698.
+The packet codec, `felix-mqtt-wire`, is built (#1687), and so is the listener,
+which authenticates connections, mounts streams at topic prefixes and accepts
+PUBLISH at QoS 0 and 1 (#1689, `docs/mqtt-compatibility.md`), with record
+headers and forwarding to the shard's owner, and MQTT over WebSockets (#1700).
+Subscribe, retained messages, persistent sessions, QoS 2 and will messages are
+not built yet.
 
-Devices speak MQTT, and a Felix broker cannot accept an MQTT connection today.
-This page designs a native MQTT listener, built the way the Kafka listener is
+Devices speak MQTT. This page designs a native MQTT listener, built the way the Kafka listener is
 (`crates/server/felix-kafka`, `docs/kafka-compatibility.md`), under one hard
 requirement from the issue: it must not weaken Felix's performance or safety.
 Concretely, that means four things.
@@ -583,7 +583,8 @@ reconnect storm of a hundred thousand TLS handshakes spends those threads and no
 the ones serving QUIC. Publishes and reads cross into the broker through the
 same calls the Kafka listener makes ([D13](#d13-runtime)).
 
-The settings, with proposed defaults:
+The settings, with proposed defaults. Rows marked *not built yet* name a
+variable the broker does not read today:
 
 | Variable | Default | Bounds |
 |---|---|---|
@@ -600,15 +601,15 @@ The settings, with proposed defaults:
 | `FELIX_MQTT_MAX_TOPIC_LEVELS` | 16 | Levels in a topic or filter. |
 | `FELIX_MQTT_MAX_INFLIGHT` | 32 | Unacknowledged QoS 1 and 2 messages in each direction. Advertised as `Receive Maximum`. |
 | `FELIX_MQTT_MAX_SUBSCRIPTIONS` | 64 | Filters per session. |
-| `FELIX_MQTT_MAX_TOPIC_ALIASES` | 16 | Inbound topic aliases per connection (5.0). |
-| `FELIX_MQTT_SESSION_QUEUE_MAX_BYTES` | 1 MiB | A session's delivery queue. QoS 1 detaches to a catch-up read past it; QoS 0 drops. |
-| `FELIX_MQTT_QUEUE_MAX_BYTES_TOTAL` | 512 MiB | All session queues on the broker together. |
+| `FELIX_MQTT_MAX_TOPIC_ALIASES` | 16 | Inbound topic aliases per connection (5.0). *Not built yet.* |
+| `FELIX_MQTT_SESSION_QUEUE_MAX_BYTES` | 1 MiB | A session's delivery queue. QoS 1 detaches to a catch-up read past it; QoS 0 drops. *Not built yet.* |
+| `FELIX_MQTT_QUEUE_MAX_BYTES_TOTAL` | 512 MiB | All session queues on the broker together. *Not built yet.* |
 | `FELIX_MQTT_KEEPALIVE_MAX_SECS` | 600 | Longest keepalive honoured. |
-| `FELIX_MQTT_SESSION_EXPIRY_MAX_SECS` | 604800 | Longest persistent session. |
-| `FELIX_MQTT_SESSION_CACHE` | unset | `namespace/cache` holding persistent sessions. Unset refuses persistent sessions. |
-| `FELIX_MQTT_SESSION_CHECKPOINT_MS` | 1000 | Longest gap between cursor checkpoints. |
-| `FELIX_MQTT_MAX_RETAINED_PER_MOUNT` | 100000 | Retained topics in one mount; past it a new retained topic is refused. |
-| `FELIX_MQTT_PUBLISH_RESOLVE_TIMEOUT_MS` | 10000 | How long the listener re-sends an indeterminate write before closing the connection. |
+| `FELIX_MQTT_SESSION_EXPIRY_MAX_SECS` | 604800 | Longest persistent session. *Not built yet.* |
+| `FELIX_MQTT_SESSION_CACHE` | unset | `namespace/cache` holding persistent sessions. Unset refuses persistent sessions. *Not built yet.* |
+| `FELIX_MQTT_SESSION_CHECKPOINT_MS` | 1000 | Longest gap between cursor checkpoints. *Not built yet.* |
+| `FELIX_MQTT_MAX_RETAINED_PER_MOUNT` | 100000 | Retained topics in one mount; past it a new retained topic is refused. *Not built yet.* |
+| `FELIX_MQTT_PUBLISH_RESOLVE_TIMEOUT_MS` | 10000 | How long the listener re-sends an indeterminate write before closing the connection. *Not built yet.* |
 
 The per-subscriber settings that already bound QUIC subscribers
 (`FELIX_SUB_QUEUE_POLICY`, `FELIX_SUB_QUEUE_MAX_BYTES`,

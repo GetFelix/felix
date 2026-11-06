@@ -13,6 +13,7 @@ Located in `demos/broker/` and built from the `felix-broker-service` package:
 - `pubsub-demo-notifications`: Multi-tenant real-time alerts demo.
 - `pubsub-demo-orders`: Orders/payments pipeline demo.
 - `durable-restart-demo`: Publish, crash, restart, recover — the durability guarantee end to end.
+- `queue-semantics-demo`: A consumer group handing out work, redelivering after a worker dies and dead-lettering a poison job.
 
 ### Run
 
@@ -97,10 +98,10 @@ task demo:rbac-live
 ### Expected output (excerpt)
 
 ```
-STEP 9 publish denied: PASS
-STEP 12 RBAC policies added: PASS
-STEP 15 publish allowed: PASS
-STEP 17 cache allowed: PASS
+STEP 10 publish denied: PASS
+STEP 13 RBAC policies added: PASS
+STEP 16 publish allowed: PASS
+STEP 18 cache allowed: PASS
 ```
 
 ## Cross-Tenant Isolation (Control Plane + Broker)
@@ -126,7 +127,7 @@ task demo:cross-tenant-isolation
 ### Expected output (excerpt)
 
 ```
-STEP 13 t1 publish allowed: PASS
-STEP 16 t1 token on t2 publish denied: PASS
-STEP 19 t2 token publish denied: PASS
+STEP 15 t1 publish allowed: PASS
+STEP 18 t1 token on t2 publish denied: PASS
+STEP 21 t2 token publish denied: PASS
 ```

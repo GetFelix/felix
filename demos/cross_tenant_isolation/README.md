@@ -14,12 +14,12 @@ cargo run --manifest-path demos/cross_tenant_isolation/Cargo.toml
 ## Expected output (excerpt)
 
 ```
-STEP 9 t1 publish allowed: PASS
-STEP 12 t1 token on t2 publish denied: PASS
-STEP 14 t2 token publish denied: PASS
+STEP 15 t1 publish allowed: PASS
+STEP 18 t1 token on t2 publish denied: PASS
+STEP 21 t2 token publish denied: PASS
 
 Summary
-- STEP 9 t1 publish allowed: PASS
-- STEP 12 t1 token on t2 publish denied: PASS
-- STEP 14 t2 token publish denied: PASS
+- STEP 15 t1 publish allowed: PASS
+- STEP 18 t1 token on t2 publish denied: PASS
+- STEP 21 t2 token publish denied: PASS
 ```

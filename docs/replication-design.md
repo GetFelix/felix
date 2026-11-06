@@ -4,7 +4,7 @@
 replication is log shipping from the leader to its followers. Per-shard Raft is
 rejected.**
 
-Recorded for M5.1 (#110). The rejected alternative and what would overturn the
+Recorded with the replication design (#110). The rejected alternative and what would overturn the
 decision are both below.
 
 ## What has to be true
@@ -78,14 +78,14 @@ is required either way. It is:
 Neither is a tuning problem. Both are a different storage layer.
 
 The storage layer was in fact built anticipating the other answer:
-`docs/durable-storage.md` says "Replication (M5) is what `seal`'s checksum and
-`read_range`'s bounded paging exist to serve." Sealed-segment checksums and
+`docs/durable-storage.md` was written with replication in mind: `seal`'s
+checksum and `read_range`'s bounded paging exist to serve it. Sealed-segment checksums and
 bounded range reads are the primitives of *shipping*, not of consensus.
 
 ## Why the control plane being Raft-backed does not settle this
 
-M7 makes control-plane metadata highly available, and Raft is the right tool
-there. It does not follow that payload replication should use Raft, and the
+Making control-plane metadata highly available is separate work, and Raft is
+the right tool there. It does not follow that payload replication should use Raft, and the
 issue asks for this to be said explicitly.
 
 The two have opposite cost profiles:
@@ -369,8 +369,9 @@ leader rejoins as a follower. A slow leader that misses a whole window of
 pings from a majority is replaced, which is the trade a shorter window makes.
 
 **What it does not change.** The control plane still makes the decision, so
-with the control plane down a dead leader is not replaced. Replicas electing
-a leader among themselves is the rest of issue #1009, designed in
+with the control plane down a dead leader is not replaced, unless the fleet has
+finalized `replica_election`. Replicas electing a leader among themselves is
+the rest of issue #1009, designed in
 [Electing without the control plane](#electing-without-the-control-plane).
 
 Evidence: `a_leader_a_majority_cannot_reach_is_replaced_while_it_heartbeats`,
@@ -3621,7 +3622,7 @@ Positions are held in the control plane's memory. They change constantly, are
 advisory, and expire in about a second, so persisting them would cost a write
 per report for data that is worthless by the time it could be read back. The
 consequence is that a second control-plane instance starts knowing nothing and
-cannot promote until leaders have reported to it, which matters for M7's
+cannot promote until leaders have reported to it, which matters for the
 multi-instance work and not before.
 
 #### A leader's own crash
@@ -3790,13 +3791,12 @@ with a crash use the lease and the report.
 
 ### Conditional head trim
 
-Issue 1662 designs a client call that trims a stream's history below an
-offset, conditional on the tail the client expects. The storage side, the
-broker's in-process call and replication are built: the logical floor,
+A client call trims a stream's history below an offset, conditional on the
+tail the client expects. The storage side, the broker's in-process call,
+replication and the client call (`Client::trim_before`) are built: the logical floor,
 deletion below it, the conditional append and what a reader sees are in
 [Conditional head trim](durable-storage.md#conditional-head-trim) in
-`docs/durable-storage.md`. The client call is not built yet. This section is
-how a trim survives replication.
+`docs/durable-storage.md`. This section is how a trim survives replication.
 
 The trim is a record in the log, so it is ordered with the writes around it
 and the existing rules carry it across a failover. It replicates like any
@@ -5200,7 +5200,7 @@ This is the model's `CpAdopt` with `AdoptMatch`, which checks it.
 > (felix-cluster): a follower drained out of the set stands on its old set
 > and every live replica refuses it with `StaleSet`.
 
-## What this does to the other M5 issues
+## What this does to the other replication issues
 
 - **#111 (fenced leadership)**: this is now specific: the epoch is the
   assignment generation, the fence is the lease, and it is enforced at both the
@@ -5217,8 +5217,10 @@ This is the model's `CpAdopt` with `AdoptMatch`, which checks it.
 - **#114 (bootstrap followers)**: bounded range reads from the leader; no
   snapshot-install protocol is needed, because the log is the snapshot.
 - **#115 (failure injection)**: needs lease expiry, clock skew, and suspension
-  as injectable faults, not just process kills. The harness can stop and move a
-  broker today (#108); it cannot yet pause one or skew its clock.
+  as injectable faults, not just process kills. The harness has them now:
+  message drops and delays, partitions, pausing a process with `SIGSTOP`,
+  clock skew and slow or failing disk writes. `docs/cluster-harness.md` lists
+  the fault set.
 - **#116 (semantics)**: must document the `Leader` loss window in terms of the
   lag metric, and state that `Quorum` is majority-including-leader.
 
