@@ -184,7 +184,8 @@ pub const FEATURE_SEQUENCE_REUSED: u32 = 0x0000_4000;
 /// The order is what an idempotent producer needs to keep several batches in
 /// flight: when one fails, every batch behind it on the stream is answered
 /// after it, so the producer learns about the failure before it acts on any
-/// later answer.
+/// later answer. With `FEATURE_PUBLISH_ANSWER_ON_COMPLETION` only idempotent
+/// publishes keep that order.
 pub const FEATURE_PUBLISH_PIPELINE: u32 = 0x0000_8000;
 
 /// The broker serves `commit` and `state_get`: an event and state updates
@@ -421,6 +422,20 @@ pub const FEATURE_HEAD_TRIM: u32 = 0x0000_0010;
 /// a refusal to mint. A client checks the bit before setting the field.
 pub const FEATURE_LEASE_TOKEN: u32 = 0x0000_0020;
 
+/// Plain acknowledged publishes on a pipelining stream are answered as they
+/// complete, not in request order.
+///
+/// An extended bit, in both words. Offered by a *client* together with
+/// `FEATURE_PUBLISH_PIPELINE`; a broker that grants a publish window answers
+/// it back. Each acknowledged publish still holds its window slot until it is
+/// answered, and idempotent publishes are still answered in the order the
+/// stream carried them, since a producer must see batch n fail before a
+/// sequence gap for batch n+1. Only the answers to other publishes stop
+/// waiting, so one stalled shard no longer holds back every shard behind it
+/// on the stream. A broker that does not answer the bit keeps request order
+/// for every publish.
+pub const FEATURE_PUBLISH_ANSWER_ON_COMPLETION: u32 = 0x0000_0040;
+
 /// Every extended feature bit this version implements: bits that travel in
 /// `client_features_hi` / `server_features_hi` rather than the first word.
 pub const KNOWN_FEATURES_HI: u32 = FEATURE_INSPECT
@@ -428,7 +443,8 @@ pub const KNOWN_FEATURES_HI: u32 = FEATURE_INSPECT
     | FEATURE_PUBLISH_WIDTH
     | FEATURE_EXPLICIT_SHARD
     | FEATURE_HEAD_TRIM
-    | FEATURE_LEASE_TOKEN;
+    | FEATURE_LEASE_TOKEN
+    | FEATURE_PUBLISH_ANSWER_ON_COMPLETION;
 
 /// The peer reads the other side's extended feature word.
 ///

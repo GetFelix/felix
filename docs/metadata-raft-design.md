@@ -233,6 +233,28 @@ disaster recovery beyond quorum loss, the same snapshot format doubles as an
 export: the import path below reads either a Postgres database or a snapshot
 file.
 
+Each member keeps one snapshot on disk, and it only moves forward. Openraft
+builds snapshots in a background task, so a member can capture its state for a
+snapshot, receive a newer snapshot from the leader, and only then finish
+writing the one it built. Writing that older snapshot would be unsafe: the log
+has already been purged up to the newer one, so on restart the member would
+need entries it no longer has, and it would refuse to start.
+
+So a snapshot is written only if its last log index is past the stored one's.
+The check and the write are one redb transaction, and redb runs one write at a
+time, so nothing can land in between. A snapshot's metadata and data are
+written in that one transaction, so a crash never leaves half of one. A
+received snapshot also never moves the applied state backwards. If one ever
+arrived behind what the member has applied, the member stops with an error
+rather than apply the entries in between a second time.
+
+One crash window remains. When a member receives a snapshot from the leader,
+openraft purges the log behind it without waiting for the snapshot to be
+written. A member that crashes between the two restarts with its older
+snapshot and a log purged past it, and refuses to start. It does not diverge.
+To recover, wipe its volume and let it rejoin as described in
+[Rejoining after a lost volume](#rejoining-after-a-lost-volume).
+
 ### Group membership and bootstrap
 
 Initial members come from configuration. For the StatefulSet shape, the
@@ -766,6 +788,8 @@ the field itself, on every member alike, or refuses the command:
 | assignment `learners`, replica report `holds_start`, both in the snapshot, finalizing `joint_fence` | 23 | the learners are cleared before the write is proposed and the report is proposed without its start holders, so placement reads the shard as it did before learners and a replaced copy is never re-admitted, on every member; the finalize is refused |
 | stream `mount`, stream patch `mount`, and in the snapshot | 24 | a create or patch that sets or clears a mount is refused with 409 before it reaches the log, so no member stores a mounted stream as unmounted or lets two overlapping mounts through; streams without a mount are proposed as before |
 | replica report `refused`, and in the snapshot | 25 | the report is proposed without it, so a leader that cannot serve a generation promised to an elected node is not named again above it and the shard waits as before #1730 |
+| `adopt_elected_leader` `elected_set` | 26 | every member takes only the generation of a leader elected on a set other than the recorded one, and the report handler then moves the shard past it |
+| `adopt_elected_leader` `own_leader_set` | 27 | every member takes only the generation when the shard's own leader was elected on another set, and the report handler then moves the shard past it (#1929) |
 
 **A member refuses what it would drop.** From level 3 on, a member that
 decodes an entry carrying a non-empty field it does not know answers

@@ -77,6 +77,14 @@ tasks:
         else
           cargo test --workspace --exclude felix-cluster
         fi
+  # What `task coverage` does not run, for a pull request: doctests (llvm-cov
+  # skips them) and the tests behind `cfg(not(feature = ...))` in the crates
+  # that have a `telemetry` feature, which coverage's --all-features switches
+  # off. Everything else in `test:workspace` runs under `task coverage`.
+  test:residual:
+    cmds:
+      - "cargo test --workspace --exclude felix-cluster --doc"
+      - "cargo test -p felix-broker -p felix-client -p felix-broker-service --lib"
   test:cluster:
     vars:
       # The suites that each get a CI job of their own (ci.yml, `cluster`).
@@ -170,11 +178,11 @@ tasks:
         export CONTAINER_ENGINE="{{.CONTAINER_ENGINE}}"
         flags="--no-cfg-coverage --skip-functions --all-features --workspace"
         if [ -n "${FELIX_TEST_DATABASE_URL:-}" ]; then
-          FELIX_TEST_DATABASE_URL="$FELIX_TEST_DATABASE_URL" cargo llvm-cov --no-report $flags
+          FELIX_TEST_DATABASE_URL="$FELIX_TEST_DATABASE_URL" cargo llvm-cov --no-report --no-fail-fast $flags
         elif [ -n "$CONTAINER_ENGINE" ]; then
-          FELIX_TEST_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:55432/postgres" cargo llvm-cov --no-report $flags
+          FELIX_TEST_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:55432/postgres" cargo llvm-cov --no-report --no-fail-fast $flags
         else
-          cargo llvm-cov --no-report $flags
+          cargo llvm-cov --no-report --no-fail-fast $flags
         fi
       # The C ABI is only exercised by its conformance harness, so the
       # workspace tests alone leave felix-capi mostly uncovered. This run adds

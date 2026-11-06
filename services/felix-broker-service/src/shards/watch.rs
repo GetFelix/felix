@@ -17,11 +17,12 @@
 //! once, and the loop then waits out the interval as it always did.
 pub mod metrics;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
+use felix_replication::controlplane_link::ControlPlaneLink;
 use serde::Deserialize;
 use tokio::sync::{Notify, RwLock};
 use tokio_util::sync::CancellationToken;
@@ -118,8 +119,19 @@ enum ChangeOp {
 
 #[derive(Debug, Deserialize)]
 struct SnapshotResponse {
-    items: Vec<ShardAssignment>,
+    items: Vec<SnapshotItem>,
     next_seq: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct SnapshotItem {
+    #[serde(flatten)]
+    assignment: ShardAssignment,
+    /// The control plane wrote this as the shard's first assignment. Absent
+    /// from a control plane that predates it, which leaves a joint fence
+    /// with no set before waiting instead of fencing the new set alone.
+    #[serde(default)]
+    first_assignment: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -141,9 +153,29 @@ pub struct ShardOwnership {
     /// The set each shard had right before its current assignment, where this
     /// broker saw that step. A joint fence takes the set it leaves from here.
     priors: HashMap<ShardKey, felix_router::PriorSet>,
+    /// When the request behind the newest answer applied here started.
+    as_of: Option<tokio::time::Instant>,
+    /// The feed seq the newest answer applied here brought this view to.
+    checkpoint: Option<u64>,
 }
 
 impl ShardOwnership {
+    /// When the request behind the newest answer applied here started: every
+    /// change the control plane committed before then is in this view.
+    pub(crate) fn as_of(&self) -> Option<tokio::time::Instant> {
+        self.as_of
+    }
+
+    /// The feed seq this view is caught up to, as of the same answer.
+    pub(crate) fn checkpoint(&self) -> Option<u64> {
+        self.checkpoint
+    }
+
+    pub(crate) fn answered(&mut self, started: tokio::time::Instant, seq: u64) {
+        self.as_of = Some(self.as_of.map_or(started, |was| was.max(started)));
+        self.checkpoint = Some(seq);
+    }
+
     /// Apply a change, ignoring one that would move a shard backwards.
     ///
     /// Returns whether anything changed. A duplicate delivery is therefore
@@ -239,12 +271,28 @@ impl ShardOwnership {
     /// plane, and reopening on that would serve a generation a newer leader
     /// has written past.
     pub fn reset(&mut self, items: Vec<ShardAssignment>) {
+        self.reset_marked(items, &HashSet::new());
+    }
+
+    /// [`Self::reset`], with the shards whose snapshot item the control plane
+    /// marked as their first assignment. Such a shard records nothing before
+    /// it, as [`Self::assign_afresh`] does for an `assigned` change, on the
+    /// same terms: never at incarnation 0, and not at an incarnation this
+    /// broker already held it at.
+    pub(crate) fn reset_marked(&mut self, items: Vec<ShardAssignment>, first: &HashSet<ShardKey>) {
         let mut priors = HashMap::new();
         for next in &items {
             let current = self.assignments.get(&next.key);
+            let marked_first = first.contains(&next.key)
+                && next.incarnation > 0
+                && current.is_none_or(|current| next.incarnation > current.incarnation);
             let prior = match current {
                 // The same assignment again: what came before it still did.
                 Some(current) if current == next => self.priors.get(&next.key).cloned(),
+                _ if marked_first => Some(felix_router::PriorSet {
+                    generation: next.generation,
+                    before: None,
+                }),
                 _ => prior_of(current, next),
             };
             if let Some(prior) = prior {
@@ -364,9 +412,9 @@ pub fn check_continuity(since: u64, first_seq: Option<u64>, next_seq: u64) -> Op
 /// `changed` is notified after every snapshot and every batch of changes that
 /// moved something, so the routing feed acts on it now rather than at its
 /// next tick.
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
-    client: reqwest::Client,
-    base_url: String,
+    link: impl ControlPlaneLink,
     // Held rather than copied: this task outlives many token lifetimes, and a
     // copy taken at startup is the exact bug that drops a broker out of the
     // cluster when its first token expires.
@@ -374,9 +422,12 @@ pub async fn run(
     ownership: Arc<RwLock<ShardOwnership>>,
     changed: Arc<Notify>,
     interval: Duration,
+    lease: Option<Arc<crate::cluster::lease::LeaseState>>,
     shutdown: CancellationToken,
 ) {
-    let base_url = base_url.trim_end_matches('/').to_string();
+    if let Some(lease) = &lease {
+        lease.follow_routes();
+    }
     // `None` means "no valid checkpoint": take a snapshot before polling.
     let mut checkpoint: Option<u64> = None;
     // The furthest this broker has applied. A snapshot older than that came
@@ -393,7 +444,16 @@ pub async fn run(
         tokio::select! {
             _ = shutdown.cancelled() => return,
             _ = tokio::time::sleep(delay) => {}
+            _ = wanted(&lease) => {}
         }
+        // A renewal waits on this answer, so it is asked for without the
+        // long-poll's hold.
+        let urgent = lease.as_ref().is_some_and(|lease| lease.wants_routes());
+        let wait = if urgent {
+            Duration::ZERO
+        } else {
+            LONG_POLL_WAIT
+        };
 
         // Read per poll, not once: a refreshed token has to reach this loop
         // without it knowing refresh exists.
@@ -404,10 +464,16 @@ pub async fn run(
         // and shutdown must not wait for it.
         let result = tokio::select! {
             _ = shutdown.cancelled() => return,
+            // A held poll, or one lost in a partition, would keep the renewal
+            // waiting until it times out. Asked again at once instead.
+            _ = wanted(&lease), if !urgent => {
+                delay = Duration::ZERO;
+                continue;
+            }
             result = async {
                 match checkpoint {
-                    None => snapshot(&client, &base_url, token, &ownership, floor).await,
-                    Some(since) => poll(&client, &base_url, token, &ownership, since).await,
+                    None => snapshot(&link, token, &ownership, floor).await,
+                    Some(since) => poll(&link, token, &ownership, since, wait).await,
                 }
             } => result,
         };
@@ -422,7 +488,10 @@ pub async fn run(
                 checkpoint = Some(seq);
                 floor = floor.max(seq);
                 mm::record_checkpoint(seq);
-                if moved {
+                ownership.write().await.answered(started, seq);
+                // Unmoved too when a renewal waits: the feed's publish is
+                // what confirms it.
+                if moved || urgent {
                     changed.notify_one();
                 }
                 next_delay(interval, moved, started.elapsed())
@@ -455,7 +524,7 @@ pub async fn run(
                 tracing::warn!(?reason, "shard watch must resnapshot");
                 mm::record_resync(reason);
                 checkpoint = None;
-                interval
+                if urgent { Duration::ZERO } else { interval }
             }
             Err(err) => {
                 failures = failures.saturating_add(1);
@@ -468,6 +537,14 @@ pub async fn run(
                 backoff(interval, failures)
             }
         };
+    }
+}
+
+/// Resolves when `lease` waits on the routes; never without one.
+async fn wanted(lease: &Option<Arc<crate::cluster::lease::LeaseState>>) {
+    match lease {
+        Some(lease) => lease.routes_wanted().await,
+        None => std::future::pending().await,
     }
 }
 
@@ -498,25 +575,33 @@ enum Progress {
 }
 
 async fn snapshot(
-    client: &reqwest::Client,
-    base_url: &str,
+    link: &impl ControlPlaneLink,
     bearer: Option<&str>,
     ownership: &Arc<RwLock<ShardOwnership>>,
     floor: u64,
 ) -> Result<Progress> {
-    let response: SnapshotResponse = get(
-        client,
-        &format!("{base_url}/v1/shard-assignments/snapshot"),
-        bearer,
+    let response: SnapshotResponse = decode(
+        link.assignment_snapshot(bearer, LONG_POLL_WAIT + LONG_POLL_SLACK)
+            .await,
     )
-    .await
     .context("shard assignment snapshot")?;
     if response.next_seq < floor {
         return Ok(Progress::Behind);
     }
 
     let count = response.items.len();
-    ownership.write().await.reset(response.items);
+    let first: HashSet<ShardKey> = response
+        .items
+        .iter()
+        .filter(|item| item.first_assignment)
+        .map(|item| item.assignment.key.clone())
+        .collect();
+    let items = response
+        .items
+        .into_iter()
+        .map(|item| item.assignment)
+        .collect();
+    ownership.write().await.reset_marked(items, &first);
     mm::record_snapshot(count);
     tracing::info!(
         assignments = count,
@@ -530,21 +615,16 @@ async fn snapshot(
 }
 
 async fn poll(
-    client: &reqwest::Client,
-    base_url: &str,
+    link: &impl ControlPlaneLink,
     bearer: Option<&str>,
     ownership: &Arc<RwLock<ShardOwnership>>,
     since: u64,
+    wait: Duration,
 ) -> Result<Progress> {
-    let response: ChangesResponse = get(
-        client,
-        &format!(
-            "{base_url}/v1/shard-assignments/changes?since={since}&wait_ms={}",
-            LONG_POLL_WAIT.as_millis()
-        ),
-        bearer,
+    let response: ChangesResponse = decode(
+        link.assignment_changes(bearer, since, wait, LONG_POLL_WAIT + LONG_POLL_SLACK)
+            .await,
     )
-    .await
     .context("shard assignment changes")?;
 
     let first_seq = response.items.first().map(|change| change.seq);
@@ -567,22 +647,14 @@ async fn poll(
     })
 }
 
-async fn get<T: serde::de::DeserializeOwned>(
-    client: &reqwest::Client,
-    url: &str,
-    bearer: Option<&str>,
+fn decode<T: serde::de::DeserializeOwned>(
+    response: Result<felix_replication::controlplane_link::LinkResponse>,
 ) -> Result<T> {
-    let mut request = client.get(url).timeout(LONG_POLL_WAIT + LONG_POLL_SLACK);
-    if let Some(bearer) = bearer {
-        request = request.bearer_auth(bearer);
+    let response = response.context("send request")?;
+    if !response.status.is_success() {
+        return Err(anyhow!("{}: {}", response.status, response.text()));
     }
-    let response = request.send().await.context("send request")?;
-    let status = response.status();
-    if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
-        return Err(anyhow!("{status}: {body}"));
-    }
-    response.json().await.context("decode response")
+    response.json()
 }
 
 /// Exponential backoff, capped, so a long control-plane outage does not turn

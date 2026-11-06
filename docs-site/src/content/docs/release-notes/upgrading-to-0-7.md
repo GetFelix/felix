@@ -61,18 +61,28 @@ carry `client_flags_ext` and `server_flags_ext` to agree on
 before. The Rust client offers it; the Python, TypeScript, C and C# clients do
 not yet. Header names starting with `felix.` are reserved.
 
+A pipelining client can also offer `FEATURE_PUBLISH_ANSWER_ON_COMPLETION`
+*(main)*. A broker that grants it a publish window then answers plain acked
+publishes as they complete and keeps request order only among idempotent
+ones, so a shard stalled during a failover no longer holds back the answers
+of every other shard on its stream. Older clients and brokers exchange the
+same frames as before. The Rust client offers it; nothing to configure.
+
 ## New settings
 
-None of these is required. Each default keeps the 0.6.2 behavior.
+None of these is required. Each default keeps the 0.6.2 behavior, except
+`FELIX_SHARD_STUCK_LEADER_MS`, which is on by default.
 
 | Setting | What it does |
 |---|---|
 | `FELIX_RECORD_HEADERS` *(main)* | Single broker only. `false` refuses publishes that carry headers, which keeps logs at v7 or older. Turning it off later leaves stored headers readable. A cluster follows the `record_headers` fleet feature instead. |
 | `FELIX_KAFKA_RECORD_HEADERS` *(main)* | `true` stores a Kafka producer's keys and headers with the record, which moves the logs to v8. Off by default, so the Kafka listener alone never does. |
-| `FELIX_MQTT_LISTEN`, `FELIX_MQTT_WS_LISTEN` *(main)* | Bind the MQTT listener, plain and over WebSockets. Unset leaves it off. Related `FELIX_MQTT_*` limits are in [the reference](/reference/environment-variables/). |
+| `FELIX_MQTT_LISTEN`, `FELIX_MQTT_WS_LISTEN` *(main)* | Bind the MQTT listener, plain and over WebSockets. Unset leaves it off, and the broker is then unchanged. Devices can publish; subscribing arrives in 0.8.0. Related `FELIX_MQTT_*` limits are in [the reference](/reference/environment-variables/). |
 | `FELIX_LEASE_TOKEN_KEY_FILE`, `FELIX_LEASE_TOKEN_MAX_TTL_SECONDS` *(main)* | Key file and longest lifetime for lease tokens. Without the key file a broker neither mints nor accepts them. Every broker needs the same file. |
 | `FELIX_INTERNAL_ELECTION` | Broker. `true` makes the broker offer replica elections. Every broker needs it before `joint_fence` and `replica_election` can be finalized, and keeps needing it after. See [Turning on failover without the control plane](#turning-on-failover-without-the-control-plane). |
 | `FELIX_SHARD_ELECTION_HOLD_MS`, `FELIX_SHARD_PENDING_SET_TIMEOUT_MS` | Control-plane timers for `replica_election`. Nothing uses them until that feature is finalized. |
+| `FELIX_SHARD_STUCK_LEADER_MS` | Control plane, 70 s by default. A `Quorum` shard whose leader is on a live broker but shows no progress at its generation for this long is named again one generation up, on the same set. In 0.6.2 such a shard stayed stuck until something else changed its assignment. `0` turns it off. See "The control plane's backstop" in `docs/replication-design.md`. |
+| `FELIX_SHARD_SUSPECT_AFTER_MS` | Broker, 120 s by default, used only under `replica_election`. A follower whose copy holds a generation that never started, and that has heard nothing from the shard's leader for this long, may stand for that one shard though the leader's broker is up. `0` turns it off. |
 
 In a cluster, headers are refused until the fleet finalizes `record_headers`,
 whatever `FELIX_RECORD_HEADERS` says.
@@ -84,7 +94,7 @@ breaking change).
 
 The ordinary order applies: control plane, then brokers one at a time, then
 clients. Back up the data directory first if you may use headers or head trim,
-because both write formats 0.6.2 cannot read.
+because both write formats 0.6.2 cannot read. The first MQTT publish to a mounted stream also stores record headers, so it counts as using headers.
 
 The `head_trim` and `record_headers` fleet features are new. They stay off after
 the brokers are upgraded, and nothing needs them unless you want to trim a
@@ -110,6 +120,14 @@ first broker registration. See [`head_trim`](/deployment/upgrades/#head_trim)
 and [`record_headers`](/deployment/upgrades/#record_headers)
 for what each writes and what an older broker does with it, and
 [Rollback](/deployment/upgrades/#rollback) for the limits above.
+
+A rollback can also trip on a shard's replica set file. A 0.7 broker that has
+not yet read whether `joint_fence` is finalized, for example right after a
+restart, keeps older replica sets in that file, because dropping them is unsafe
+if the fleet did finalize it. An older build refuses such a file and fails to
+open that shard's log. Start the broker on 0.7 again, let it learn that
+`joint_fence` is off and write the shard's next replica set, which drops them,
+then roll it back.
 
 ## Control plane changes
 
@@ -145,21 +163,33 @@ Later control-plane changes are on `main`:
   (`member_storage_ids`): Postgres migration `0039`, Raft metadata level 22.
 - A copy whose storage was replaced is a learner until it is re-admitted, and
   a leader reports where its generation started (`holds_start`): migration
-  `0040`, level 23. Finalizing `joint_fence` needs that level, and
+  `0040`, level 23. Finalizing `joint_fence` needs level 25 (below), and
   `generation_start`, `stream_incarnations` and `cache_incarnations`
-  finalized first. No broker reports `joint_fence` yet, so the control plane
-  refuses the finalize; it is not something to plan around in 0.7.
+  finalized first. A broker reports `joint_fence` only with
+  `FELIX_INTERNAL_ELECTION=true`, so it is part of turning on failover
+  without the control plane (below).
 - A stream can carry an MQTT mount: migration `0041`, level 24.
 - A leader that could not serve a generation because it had promised it to
   another node reports the refusal, and placement names it again at a higher
   generation (#1730): migration `0042`, level 25.
+- After `joint_fence` is finalized, a leader restarted at a generation that
+  started before the finalize cannot learn the replica set that generation
+  replaced. It reports the generation refused, and placement names it again
+  one generation up. The report uses the `refused` field above with no node
+  named, so it needs migration `0042` and level 25, and finalizing
+  `joint_fence` under Raft waits for level 25. Rolling restarts after the
+  finalize need no extra step. A new shard a broker first sees in a snapshot
+  opens on the snapshot's `first_assignment` mark, which a 0.7 control plane
+  sends. With the usual upgrade order (control plane first) every broker gets it.
 - An elected leader is adopted on the replica set it was elected on: level
   26, with no Postgres migration. Finalizing `replica_election` needs that
-  level.
+  level. Level 27 does the same when the elected leader is the one the
+  control plane already names; below it, the same report moves the shard
+  past the election at once, and the next report is only a fallback.
 
 In short, Postgres runs migrations `0037` to `0042` on start (`0039` to
 `0042` are on `main` only), and under Raft these features wait for metadata
-levels 20 to 26. Upgrade every control-plane member before the brokers.
+levels 20 to 27. Upgrade every control-plane member before the brokers.
 
 ## Turning on failover without the control plane
 

@@ -118,6 +118,11 @@ pub const PATH_LEASE: &str = "lease";
 /// had superseded, while taking that log.
 pub const PROMOTION_TRUNCATED_TOTAL: &str = "felix_broker_promotion_truncated_total";
 
+/// Fences under `joint_fence` that could not learn the set their generation
+/// leaves and reported the generation refused, so the control plane names the
+/// leader again one generation up.
+pub const FENCE_SET_UNKNOWN_TOTAL: &str = "felix_broker_fence_set_unknown_total";
+
 /// Scans the driver ran, by what woke it: `append`, `tick` or `routes`. Each
 /// one looks at every shard this broker leads.
 pub const SCANS_TOTAL: &str = "felix_broker_replication_scans_total";
@@ -130,20 +135,22 @@ pub const SCANS_TOTAL: &str = "felix_broker_replication_scans_total";
 pub const PASSES_WAITING: &str = "felix_broker_replication_passes_waiting";
 
 /// How long a shard waited for a slot before its pass or fence started, by
-/// `queue`: `urgent` (an append, a write waiting on the mark, or a follower
-/// answer), `refresh` (nothing new, only the regular pass), or `fence`.
+/// `queue`: `appended` (an append since the shard was last asked), `urgent`
+/// (a write waiting on the mark, a shard new here, or a follower answer),
+/// `refresh` (nothing new, only the regular pass), or `fence`.
 pub const SLOT_WAIT_SECONDS: &str = "felix_broker_replication_slot_wait_seconds";
 
 pub const QUEUE_URGENT: &str = "urgent";
 pub const QUEUE_REFRESH: &str = "refresh";
 pub const QUEUE_FENCE: &str = "fence";
+pub const QUEUE_APPENDED: &str = "appended";
 
 /// The driver's scheduling metrics, registered once so recording one is an
 /// atomic update with no lookup.
 pub(crate) struct DriverMetrics {
     scans: [metrics::Counter; 3],
     waiting: metrics::Gauge,
-    waited: [metrics::Histogram; 3],
+    waited: [metrics::Histogram; 4],
 }
 
 impl DriverMetrics {
@@ -152,7 +159,7 @@ impl DriverMetrics {
             scans: ["append", "tick", "routes"]
                 .map(|wake| metrics::counter!(SCANS_TOTAL, "wake" => wake)),
             waiting: metrics::gauge!(PASSES_WAITING),
-            waited: [QUEUE_URGENT, QUEUE_REFRESH, QUEUE_FENCE]
+            waited: [QUEUE_URGENT, QUEUE_REFRESH, QUEUE_FENCE, QUEUE_APPENDED]
                 .map(|queue| metrics::histogram!(SLOT_WAIT_SECONDS, "queue" => queue)),
         }
     }
@@ -166,7 +173,7 @@ impl DriverMetrics {
         self.waiting.set(count as f64);
     }
 
-    /// `queue` indexes `urgent`, `refresh`, `fence`.
+    /// `queue` indexes `urgent`, `refresh`, `fence`, `appended`.
     pub(crate) fn waited(&self, queue: usize, waited: std::time::Duration) {
         self.waited[queue].record(waited.as_secs_f64());
     }
@@ -178,6 +185,10 @@ pub fn record_promotion_opened(path: &'static str) {
 
 pub fn record_promotion_truncated() {
     metrics::counter!(PROMOTION_TRUNCATED_TOTAL).increment(1);
+}
+
+pub fn record_fence_set_unknown() {
+    metrics::counter!(FENCE_SET_UNKNOWN_TOTAL).increment(1);
 }
 
 pub fn record_move_throttled(bytes: u64) {

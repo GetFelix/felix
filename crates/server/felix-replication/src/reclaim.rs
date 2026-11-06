@@ -181,7 +181,8 @@ fn caught_up(positions: &[LogPosition]) -> Vec<String> {
 }
 
 /// The report for a shard this broker was named leader of and refused to open
-/// at `refused.generation`, having promised it to another node. It measures
+/// at `refused.generation`, having promised it to another node or lacking the
+/// set its joint fence leaves there. It measures
 /// nothing: the broker never opened the shard, and placement needs only the
 /// refusal. Without it the control plane, which still names this broker at
 /// that generation, would wait on silence.

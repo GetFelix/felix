@@ -163,7 +163,8 @@ async fn two_current_brokers_learn_each_others_capabilities() {
         .union(PeerCapabilities::BALLOTS)
         .union(PeerCapabilities::PING)
         .union(PeerCapabilities::HEAD_TRIM)
-        .union(PeerCapabilities::RECORD_HEADERS);
+        .union(PeerCapabilities::RECORD_HEADERS)
+        .union(PeerCapabilities::SEQUENCED_FORWARDS);
     assert_eq!(theirs, offered);
     assert_eq!(pool.known_capabilities().get(PEER), Some(offered));
     // A caller reads an identity whether or not it gives one, replaces
@@ -502,6 +503,7 @@ async fn a_broker_with_the_fence_off_neither_offers_nor_answers_it() {
             .union(PeerCapabilities::PING)
             .union(PeerCapabilities::HEAD_TRIM)
             .union(PeerCapabilities::RECORD_HEADERS)
+            .union(PeerCapabilities::SEQUENCED_FORWARDS)
     );
     let err = pool
         .request(PEER, listener.addr, fence())
@@ -850,6 +852,39 @@ async fn a_ping_is_answered_and_an_older_broker_is_not_pinged() {
     old.stop();
 }
 
+/// **A broker that cannot serve clients yet is silent to a pinger.** Its
+/// followers keep suspecting it, so they stand for the shards it leads
+/// instead of leaving them with a leader nobody can reach. Once it serves,
+/// the same connection answers.
+#[tokio::test]
+async fn a_broker_not_yet_serving_does_not_answer_a_ping() {
+    let serving = CancellationToken::new();
+    let server = Listener::bind_with_retry(PEER, Arc::new(CountingHandler::default()), &config())
+        .await
+        .with_serving(serving.clone());
+    let addr = server.local_addr().expect("addr");
+    let shutdown = CancellationToken::new();
+    let listener = Listener {
+        addr,
+        shutdown: shutdown.clone(),
+        task: tokio::spawn(server.serve(shutdown)),
+    };
+    let pool = pool(config());
+    let within = Duration::from_secs(2);
+    assert_eq!(
+        crate::suspicion::ping(&pool, PEER, listener.addr, within).await,
+        crate::suspicion::Answer::Silent
+    );
+
+    serving.cancel();
+    assert_eq!(
+        crate::suspicion::ping(&pool, PEER, listener.addr, within).await,
+        crate::suspicion::Answer::Pong
+    );
+    pool.shutdown().await;
+    listener.stop().await;
+}
+
 /// **A broker that never offered `ELECTION` refuses what needs it**, as a
 /// build that predates the kinds would, instead of reading a candidate fence
 /// as a plain one or dropping a batch's set stamp.
@@ -869,6 +904,7 @@ async fn a_broker_without_election_refuses_the_election_kinds() {
                 members: Vec::new(),
             },
             leaving: None,
+            earlier: Vec::new(),
         }),
     });
     let stamped = InternalMessage::ReplicateRecords(ReplicateRecords {
@@ -956,6 +992,8 @@ fn record_headers_are_offered_with_the_labels_and_times_they_ride_on() {
         }
         .capabilities();
         assert!(offered.contains(PeerCapabilities::RECORD_HEADERS));
+        // A sequenced forward is a headered one with the producer after it.
+        assert!(offered.contains(PeerCapabilities::SEQUENCED_FORWARDS));
         assert!(offered.contains(PeerCapabilities::GENERATION_LABELS));
         assert!(offered.contains(PeerCapabilities::RECORD_TIMES));
     }

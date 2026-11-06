@@ -72,6 +72,12 @@ one comes back every heartbeat stamp is as old as the outage, and sweeping at
 once would mark the whole fleet down. A broker that stays silent through the
 grace window is expired as usual.
 
+A control plane that was paused (a stopped process, a frozen VM) has the same
+problem without restarting: the heartbeats sent during the pause are still
+queued when it resumes, and the first sweep would run before it reads them. So
+when the sweep finds more than two sweep intervals have passed since its last
+tick, it does not count that gap as silence from any broker.
+
 Expiry needs two clocks to agree. The last heartbeat stamp has to be older
 than the timeout on the store's wall clock, and the instance running the sweep
 has to have seen the stamp stay unchanged for as long on its own monotonic
@@ -105,6 +111,14 @@ plus the cadence expected of it:
 
 `fleet_features` is the set of enabled features described in
 [Fleet features](#fleet-features).
+
+A broker that was marked down and registered again sends
+`"want_assignment_seq": true` until its routes catch up. The answer then
+carries `assignment_seq`, the shard-assignment feed's `next_seq` read after
+the heartbeat was accepted (on the Raft leader, after confirming it still
+leads). The broker serves again only on routes built from the feed at or past
+it, so its renewal cannot bring back shards that moved while it was away. A
+Raft leader that predates the field leaves it out.
 
 A broker that cannot reach the leader of a shard it follows also sends
 `"suspects": ["broker-2"]`, the leaders that have not answered its pings for
@@ -218,7 +232,7 @@ leaders leave that copy's answers out of their marks. None of these names is
 a feature an operator finalizes: the finalize endpoint, and its dry run,
 refuse them by name. Finalizing `joint_fence` is refused while a serving
 broker lacks `peer_election`, `start_holders` or `non_voting`, and until
-every Raft member is at metadata level 23 (see "Turning on joint fences"
+every Raft member is at metadata level 25 (see "Turning on joint fences"
 below). These are checked only when the operator finalizes; after that a
 broker is admitted on the enabled features alone. That is enough because no
 build reports `joint_fence` without the three markers; the one way around
@@ -418,6 +432,13 @@ The sequence:
    If the answer is `down`, the broker registers again, takes a new
    incarnation, and carries on heartbeating under it. `left` is not undone:
    that is a deregistration someone asked for.
+   Registration and heartbeats run on a thread of their own, with their own
+   runtime and HTTP client. A slow disk can block every worker of the broker's
+   main runtime at once (a filesystem journal stall under a burst of fsyncs,
+   for example), and the heartbeat is what renews the lease, so it must not
+   wait behind them. It still checks that the main runtime is running tasks: one
+   that has run nothing for 10 s is hung, not stalled, and the broker stops
+   renewing so its shards fail over to a live copy.
 3. **Drain, then deregister** on SIGTERM, before connections are drained, so
    nothing new is placed here while in-flight work finishes.
 
@@ -438,9 +459,14 @@ placement treats a `left` node as `draining` until the same window a silent
 node gets has passed since its last heartbeat: the expiry timeout plus the
 regrant margin, on the store's clock. Until then nothing it leads is promoted
 away, abandoned, or re-placed; a move it takes part in can still hand a shard
-over. A node already silent for that long, such as one `down` before it was
-deregistered, is failed over straight away. An operator deregistering a live
-broker should expect its shards to move about 19 s later with the default
+over. Placement never names it leader again at a new generation, even
+when a move off it gives up after the fence or it refuses a generation: the
+shard waits for another caught-up copy or for the lease to run out. While a
+follower is being seated, only the lease running out ends the wait. It is
+never promoted itself, as a draining follower can be. Only an operator's cancel
+hands it back. A node already silent for that long, such as one `down` before
+it was deregistered, is failed over straight away. An operator deregistering a
+live broker should expect its shards to move about 19 s later with the default
 settings. In-memory streams are the exception, as for a drain: they have no log
 to move and are re-placed at once.
 
@@ -929,9 +955,13 @@ checks the first four itself.
    after the finalize could open its first shard. A stream or cache created
    before the incarnations were finalized carries incarnation 0, so place
    all of its shards before finalizing `joint_fence`.
-4. Under Raft, every member is at metadata level 23.
+4. Under Raft, every member is at metadata level 25: 23 for learners and
+   start holders, 25 for the refusal report that renames a shard whose fence
+   cannot learn the set it leaves.
 5. On Postgres, every control-plane instance runs a release with learners
-   (migration 0040) before the finalize. Nothing checks this: an older
+   (migration 0040) and refusal reports (migration 0042) before the
+   finalize. Without 0042 an instance drops the refusal a restarted leader
+   sends, and that shard waits. Nothing checks this: an older
    instance that writes an assignment leaves its learners unmarked for that
    generation, and they read as none, so placement could count a learner.
    The same holds after the finalize: no control-plane instance may be rolled
@@ -964,8 +994,11 @@ is in progress; it is always one of `replicas`, and absent otherwise. See
 `POST /v1/nodes/{node_id}/replica-status` is how a shard's leader tells the
 control plane which replicas hold its log and how far each has got. Promotion
 is gated on it: a lost leader is replaced only by a replica reported caught up,
-and among those by the one reported furthest ahead. A report may also carry
-`drained: true`, the leader's word that it has stopped serving the shard at
+and among those by the one reported furthest ahead. A replica on a draining
+broker is picked only when no live one is caught up; the drain then moves the
+shard off it as usual. A broker that has deregistered is never picked, even
+while placement still counts it as draining: it has stopped. A report may also
+carry `drained: true`, the leader's word that it has stopped serving the shard at
 that generation and its log will not grow: the fence of a planned move. For a
 cache, `replica_counter_offsets` says how far each replica has got with the
 counter log, which placement counts as a restore's progress; brokers that
@@ -1070,12 +1103,14 @@ missing while the marker no longer matches the row's `incarnation` or
 dropped by the proposer below them. See
 [replication-design.md](replication-design.md#who-may-be-promoted).
 
-A leader promoted by a failover also reports, for each follower it has not
-reached yet, the identity that failover named it by
+A leader also reports, for each follower it has not reached yet at its
+generation, the identity it inherited for it: the one the failover that
+promoted it named, or after a set change that kept it as leader, the one it
+named the follower by at its previous generation
 (`inherited_storage_ids`, stored as `inherited_storage`; a malformed one is
 dropped). The next failover names such a follower by it in the assignment's
 `fence_storage_ids` instead of by an empty identity, so its fence answer can
-count (#1574). It never makes a follower caught up. Under Postgres its marker
+count (#1574, #1922). It never makes a follower caught up. Under Postgres its marker
 is `inherited_storage_at` (migration 0037); under Raft it needs metadata
 level 20 and is dropped below it, which names the follower by none, as
 before. See
@@ -1317,6 +1352,7 @@ does not run placement (a Raft follower) waits for the leader's next tick.
 | `shard_election_hold_ms` | `FELIX_SHARD_ELECTION_HOLD_MS` | 10000 (10 s); `0` promotes on the followers' word without waiting under `replica_election` |
 | `shard_restore_after_ms` | `FELIX_SHARD_RESTORE_AFTER_MS` | 300000 (5 min); `0` never replaces a lost follower |
 | `shard_restore_stall_ms` | `FELIX_SHARD_RESTORE_STALL_MS` | 120000 (2 min); `0` waits for the move timeout |
+| `shard_stuck_leader_ms` | `FELIX_SHARD_STUCK_LEADER_MS` | 70000 (70 s), never under two report TTLs; `0` never renames a stuck leader |
 | `placement_settle_ms` | `FELIX_PLACEMENT_SETTLE_MS` | 10000 (10 s); `0` places new shards on whatever is live |
 
 #### Moving a shard
@@ -1419,6 +1455,12 @@ elected generation itself, not the next one:
   - one outside it leads at the elected generation on the elected set, and
     placement moves that set as it moves any other.
 
+  This holds when the elected broker is already the control plane's leader
+  too. A leader can open on a set the control plane has since changed, for
+  example on a stale route after refusing the assignment that changed it.
+  Keeping it as leader at the elected generation would leave the record on
+  the wrong set, so it is reissued like any other leader in the set.
+
   Otherwise only the generation is taken and the report is refused as
   `not_leader`: a leader elected on the old set while a change is pending is
   deposed by the new set's leader. The exception is the control plane's own
@@ -1430,7 +1472,10 @@ elected generation itself, not the next one:
   level 26 apply the older form, which takes only the generation of any
   other set. A group finalizes `replica_election` only with every member at
   26. The older form stays so a member that has not yet rolled to 26
-  applies the same entries the same way.
+  applies the same entries the same way. Members below level 27 likewise
+  take only the generation when the elected leader is the control plane's
+  own, elected on another set; the report handler then moves past it as
+  below.
 
   When only the generation was taken, the control plane's leader is now
   named at the generation the elected leader opened at, which ballots never
@@ -1458,7 +1503,8 @@ generation an election took, for example by promoting a follower when it
 returns before the elected leader's first report lands. Ballots let only one
 of the two open there. If the elected leader opened, it keeps leading and
 reporting, and the other never opens. A report at the assignment's own
-generation from a leader the control plane did not name then moves the shard
+generation from a leader the control plane did not name, or named on another
+set than the one it was elected on, then moves the shard
 to the next generation under that elected leader, with the same conditional,
 placement-fenced write placement uses. Only the elected leader is named: its
 log holds everything acknowledged up to the collision, on whichever set. The
@@ -1553,17 +1599,78 @@ election: a refusal at the assignment's generation is enough. That also
 covers an election it never heard of, for example one that took a majority
 while placement was failing the shard over. Naming the same leader one
 generation up is a new fenced term either way. Placement ignores a refusal of
-an older generation and one that is no longer fresh. It also skips the step while the
-shard is in a move that ends through its own steps: one with a successor
-named, or one whose leader is draining. A follower replacement does not stop
-it: the new generation keeps the joining copy, and the replacement goes on
-under the same leader.
+an older generation and one that is no longer fresh. It skips the step while
+the move's leader is draining, since that fence ends through its own steps.
+A move still copying to its destination is dropped instead: the leader that
+refused cannot ship to it, so the move would only wait for its timeout. The
+next generation drops a destination that was staged on top of the set, as an
+abandoned move does, and a later pass can start the move again. A leader that
+has deregistered is not named again: placement waits for its lease to run
+out, and the same holds for a staged move that times out or loses its
+destination under it. A follower replacement does not stop
+the step: the new generation keeps the joining copy, and the replacement goes
+on under the same leader.
 
-Without the report the shard waits for the pending-set timeout or a lease
-lapse, as before. Under Raft the field is stored from metadata level 25 and
-dropped below it; under Postgres it is migration 0042 (`refused_generation`,
-`refused_to`), with `refused_at` as the marker that keeps what a member that
-predates the columns leaves behind from reading as a refusal.
+**When a newer ballot holds the generation**, the leader reports the same
+refusal with an empty `promised_to`. An election that persists its ballot
+and never opens leaves the candidate, and the replicas that answered it, at
+a generation no assignment names. A leader placement names below that ballot
+cannot open: its own open is refused if its own ballot is newer, and otherwise
+the replicas holding the ballot refuse its fence. Placement never heard of the
+ballot, so without the report it would keep naming a generation that can
+never serve. The broker reports it on that evidence alone: its own ballot
+newer than the open, or a replica answering its fence with a newer ballot. Placement names the leader one
+generation up each time (`set_unknown`), so it climbs past the ballot within
+a few reports; candidates never stand more than
+`ELECTION_GENERATION_WINDOW` (16) past the control plane, so this is
+bounded. A ballot the control plane did issue was for a newer assignment,
+and placement ignores a refusal of an older generation.
+
+**When the leader cannot learn the set it leaves**, it may report the same
+refusal with an empty `promised_to`. Under `joint_fence` every open is fenced,
+and the fence needs the set at the generation before. A leader restarted at
+a generation it opened before `joint_fence` was finalized keeps that
+generation's set and its own ballot in its log, but not the set before, and
+its watch, started from a snapshot, did not see the step. That earlier open
+already fenced the set before. A leader whose log keeps a set older than the
+one before reports the empty refusal too, once its own ballot and start record
+at the generation show it opened there, nothing is pending on the route, and
+its kept set names exactly the route's set on the same copies. That is a
+leader elected at a generation placement then adopted, restarted: it keeps
+the set it stood on, which is the set before.
+
+Placement answers the empty refusal the same way (`set_unknown`): the same
+leader and set at the next generation. The set that generation leaves is the one the broker kept and is
+named on now, so its fence can open there. Nothing in the control plane's
+state is new for this: the empty name is stored like any other.
+
+A broker reports it only from that evidence: this generation's set and a
+ballot naming itself, a ballot naming itself and a start record at this
+generation, or generation 0, where a log never keeps a set and
+nothing comes before it. A set kept from another node's fence or election
+request proves nothing was fenced from here, so that fence waits. So does
+one whose log keeps no set for the shard above generation 0. It may be a
+failover's new leader whose watch started from a snapshot, and the old
+leader, cut off but still running, may still be acknowledging on a majority
+of the old set. A
+rename would fence the new set alone and lose those records. The one such
+case that is safe is a shard's first assignment. The watch sees it as an
+`assigned` change, and the snapshot marks it (`first_assignment`, see "How
+brokers follow ownership"), so a new shard whose leader learns it from a
+snapshot opens at its first generation.
+
+So a rolling restart after finalizing `joint_fence` is safe: a leader that
+comes back at a generation it opened before the finalize is named again one
+generation up. `failures/joint_fence.rs` checks that, and a shard whose
+leader learns it only from a snapshot.
+
+Without a refusal report for a promise, the shard waits for the pending-set
+timeout or a lease lapse, as before. Without one for an unknown set, it waits
+until something else writes the assignment. Under Raft the field is stored
+from metadata level 25 and dropped below it; under Postgres it is migration
+0042 (`refused_generation`, `refused_to`), with `refused_at` as the marker
+that keeps what a member that predates the columns leaves behind from
+reading as a refusal.
 
 **Postgres: finish the control-plane upgrade before finalizing
 `replica_election`.** The finalize check runs on the instance that receives
@@ -1605,7 +1712,12 @@ A move stops safely at every step. A destination that stops being live is
 dropped from the move (`abandon`). After the fence, the old leader takes the
 shard back at once at a new generation, unless it has already reported
 drained; then the cut-over goes to another caught-up replica or the old
-leader itself. A leader that dies mid-move is a failover, where
+leader itself. A leader that has deregistered does not take the shard back
+unless an operator cancels the move: it is stopping, and a new generation
+would land on a broker about to stop serving it. The shard stays fenced until another caught-up replica can take
+it or the leader's lease runs out and it fails over (`admin plan` says the
+leader has deregistered). While a follower is being seated, only the lease ends
+the wait. A leader that dies mid-move is a failover, where
 the successor is a candidate like any other replica, except on a durable
 `Quorum` stream: there a broker from before every change of leader was
 fenced would open the shard as a cut-over, without the fence, so failover
@@ -1759,7 +1871,7 @@ after the fence.
 
 | Metric | Meaning |
 | --- | --- |
-| `felix_shard_move_steps_total{step}` | move steps written: `stage`, `fence`, `cut_over`, `abandon`, `halted` (the destination halted), `timed_out`, `stalled` (a restore's copy stopped moving), `reseat`, `restore`, `seat`, `take_pending_set` (a pending replica set taken on the leader's report), `pending_set_timed_out`, `pending_set_dropped`, `pending_set_cancelled` (one dropped), `readmit` (a replaced copy named by its new storage id and held as a learner), `election_refused` (a leader named again above a generation promised to an elected broker), and an operator's `cancel`, `retake` and `discard` |
+| `felix_shard_move_steps_total{step}` | move steps written: `stage`, `fence`, `cut_over`, `abandon`, `halted` (the destination halted), `timed_out`, `stalled` (a restore's copy stopped moving), `reseat`, `restore`, `seat`, `take_pending_set` (a pending replica set taken on the leader's report), `pending_set_timed_out`, `pending_set_dropped`, `pending_set_cancelled` (one dropped), `readmit` (a replaced copy named by its new storage id and held as a learner), `election_refused` (a leader named again above a generation promised to an elected broker), `set_unknown` (a leader named again above a generation whose set before it could not learn, or that a newer ballot holds), and an operator's `cancel`, `retake` and `discard` |
 | `felix_shards_under_replicated` | shards with fewer copies on serving brokers than their replication factor; non-zero for longer than the restore delay plus a copy means no broker can take the copy, or placement is paused |
 | `felix_shard_replicas_missing` | the copies those shards are missing between them |
 | `felix_shard_replicas_halted` | copies whose leader reports it has stopped shipping to them; counted as missing, kept out of placement, and replaced after the restore delay |
@@ -1922,6 +2034,18 @@ Output is a plain table; `--json` prints the API's response.
 there. A broker applies the snapshot and then polls, and the two together
 describe every committed change exactly once: the snapshot is read at a
 consistent point and `next_seq` is the log position at that same point.
+
+An item carries `"first_assignment": true` when it is the shard's first
+assignment, the one the control plane wrote when it had none for the shard.
+It is the snapshot's counterpart of an `assigned` change: a broker that
+learns a new shard from a snapshot knows nothing came before it, and its
+joint fence fences the new set alone. The control plane finds it in its
+shard change log. The in-memory and Raft stores keep the last
+`FELIX_CONTROLPLANE_CHANGE_RETENTION_MAX_ROWS` changes, so there an item
+whose `assigned` change has been trimmed is left unmarked; Postgres keeps
+every shard change. Only a stream or cache with an incarnation is marked. Absent never means "not first", only "not known", and a
+broker treats it as unknown. A control plane that predates the field sends
+none.
 
 **Confirmed reads.** The snapshot and the feed answer from the member's
 applied state, which a lagging Raft member serves behind.

@@ -56,14 +56,29 @@ fetch_tools() {
   if [ -f "$JAR" ]; then return; fi
   mkdir -p "$(dirname "$JAR")"
   echo "fetching TLA+ tools ${TLA_VERSION}"
-  curl -sSL -o "$JAR.tmp" "$TLA_URL"
-  actual="$(shasum -a 256 "$JAR.tmp" | awk '{print $1}')"
-  if [ "$actual" != "$TLA_SHA256" ]; then
-    echo "tla2tools.jar checksum mismatch: $actual" >&2
+  # The release CDN has served a wrong body with a 200 now and then, so a
+  # mismatch is retried. Only a file that matches the pinned hash is kept.
+  local attempt actual delay
+  for attempt in 1 2 3 4; do
+    if curl -sSL --fail --retry 3 -o "$JAR.tmp" "$TLA_URL"; then
+      actual="$(shasum -a 256 "$JAR.tmp" | awk '{print $1}')"
+      if [ "$actual" = "$TLA_SHA256" ]; then
+        mv "$JAR.tmp" "$JAR"
+        return
+      fi
+      echo "tla2tools.jar checksum mismatch (attempt $attempt/4): $actual," \
+        "$(wc -c <"$JAR.tmp" | tr -d ' ') bytes, starts: $(head -c 200 "$JAR.tmp" | LC_ALL=C tr -cd '[:print:]')" >&2
+    else
+      echo "tla2tools.jar download failed (attempt $attempt/4)" >&2
+    fi
     rm -f "$JAR.tmp"
-    exit 1
-  fi
-  mv "$JAR.tmp" "$JAR"
+    if [ "$attempt" -lt 4 ]; then
+      delay=$((attempt == 1 ? 5 : attempt == 2 ? 15 : 30))
+      sleep "$delay"
+    fi
+  done
+  echo "tla2tools.jar could not be fetched with the pinned checksum" >&2
+  exit 1
 }
 
 # Run TLC on one configuration, printing its output; the exit code is TLC's.
@@ -115,6 +130,8 @@ tlc() {
 # Each configuration and what it must do. `pass`, or `violates <Invariant>`.
 expectations=(
   "FelixShardLease pass"
+  "FelixShardLeaseAnyHeartbeat violates AtMostOneServing"
+  "FelixShardLeaseRoutesHeartbeat pass"
   "FelixShardLogOrder pass"
   "FelixShardThinMargin violates AtMostOneServing"
   "FelixShardRealMarginsLease pass"
@@ -239,6 +256,21 @@ expectations=(
   "FelixShardElectRenameDue violates NeverRenameDue"
   "FelixShardElectRenameFencingDue violates NeverRenameWhileFencing"
   "FelixShardElectAdoptPromote pass"
+  "FelixShardElectReissue pass"
+  "FelixShardElectReissueReplace pass"
+  "FelixShardElectReissueReplaceBatchSet violates AckedHeldByLeader"
+  "FelixShardElectAdoptFailoverApart0Gen2 pass"
+  "FelixShardElectAdoptFailoverApart1Gen2 pass"
+  "FelixShardElectAdoptFailoverApart0StoodGen2 pass"
+  "FelixShardElectAdoptFailoverApart1StoodGen2 pass"
+  "FelixShardElectAdoptFailoverSame0StoodGen3 pass"
+  "FelixShardElectAdoptFailoverApart0StoodGen3 pass"
+  "FelixShardElectAdoptFailoverSame1StoodGen3 pass"
+  "FelixShardElectAdoptFailoverApart1StoodGen3 pass"
+  "FelixShardElectAdoptFailoverSame0StoodGen4 pass"
+  "FelixShardElectAdoptFailoverApart0StoodGen4 pass"
+  "FelixShardElectAdoptFailoverSame1StoodGen4 pass"
+  "FelixShardElectAdoptFailoverApart1StoodGen4 pass"
   "FelixShardSwapCounters pass"
   "FelixShardSwapCountersFlipUnchecked violates CountersOnSetMajority"
   "FelixShardSwapCountersNewSetOnly violates CountersOnSetMajority"
@@ -280,6 +312,13 @@ expectations=(
   "FelixShardElectLive pass"
   "FelixShardElectLiveLoosePreVote violates NoStandAgainstHeardLeader"
   "FelixShardElectLiveNoBackoff violates liveness"
+  "FelixShardElectLiveReissue pass"
+  "FelixShardElectLiveNoReissue violates liveness"
+  "FelixShardElectRouteLag pass"
+  "FelixShardElectRouteLagNoFix violates liveness"
+  "FelixShardElectRouteLagReportOnly pass"
+  "FelixShardElectRouteLagFence pass"
+  "FelixShardElectRouteLagFenceNoFix violates liveness"
   "FelixShardElectPreVote pass"
   "FelixShardElectNoBallotAcks violates AckedHeldByLeader"
   "FelixShardElectStepDown pass"
@@ -414,6 +453,13 @@ fi
 # stand wrote, so the StoodOneDest pieces should reach the same states as the
 # pieces where nobody stood; that is argued, not measured. Its
 # witnesses and the two rename walks stay registered.
+# FelixShardElectAdoptFailover is checked in pieces split at the first
+# failover (FelixShardElectAdoptFailover{Same,Apart}{0,1}{,Stood}Gen{2,3,4}).
+# The twelve registered above are empty: no first failover reaches them, and
+# each checks it stays so. FelixShardElectAdoptFailover{Same0,Apart0,Apart1,Same1}Gen4
+# and Same1Gen2 run nightly. Same{0,1}Gen{2,3} without Same1Gen2, Apart{0,1}Gen3
+# did not finish in six hours, so nothing checks them yet. Same{0,1}StoodGen2
+# are split again (Stood{One,Several}{Dest,Other}) and not measured yet.
 
 # Minutes each of the longer configurations takes on a four-core CI runner,
 # from the `Finished in` lines of a CI run (a new one is a guess until it has
@@ -472,6 +518,26 @@ weights=(
   "FelixShardElectAdopt 11"
   "FelixShardElectPreVote 1"
   "FelixShardElectAdoptPromote 10"
+  "FelixShardElectReissue 1"
+  "FelixShardElectReissueReplaceBatchSet 2"
+  "FelixShardElectLiveReissue 8"
+  "FelixShardElectRouteLag 12"
+  "FelixShardElectRouteLagReportOnly 18"
+  "FelixShardElectRouteLagNoFix 2"
+  "FelixShardElectRouteLagFence 20"
+  "FelixShardElectRouteLagFenceNoFix 1"
+  "FelixShardElectAdoptFailoverApart0Gen2 5"
+  "FelixShardElectAdoptFailoverApart1Gen2 5"
+  "FelixShardElectAdoptFailoverApart0StoodGen2 5"
+  "FelixShardElectAdoptFailoverApart1StoodGen2 5"
+  "FelixShardElectAdoptFailoverSame0StoodGen3 4"
+  "FelixShardElectAdoptFailoverApart0StoodGen3 4"
+  "FelixShardElectAdoptFailoverSame1StoodGen3 3"
+  "FelixShardElectAdoptFailoverApart1StoodGen3 5"
+  "FelixShardElectAdoptFailoverSame0StoodGen4 5"
+  "FelixShardElectAdoptFailoverApart0StoodGen4 4"
+  "FelixShardElectAdoptFailoverSame1StoodGen4 3"
+  "FelixShardElectAdoptFailoverApart1StoodGen4 5"
   "FelixShardSwapCounters 40"
   "FelixShardSessionsSubscriber 2"
   "FelixShardSuspicion 2"

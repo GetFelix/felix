@@ -190,7 +190,7 @@ scenario can cut a leader's links and speed up its clock at once.
 
 Process-level faults are methods: `stop_node`, `kill_node`, `pause_node`,
 `partition_node`, `restart_control_plane`, `crash_control_plane` with
-`recover_control_plane`, `power_off` with `restart_stopped_nodes`,
+`recover_control_plane`, `pause_control_plane` with `resume_control_plane`, `power_off` with `restart_stopped_nodes`,
 `drain_node` and `add_node`. `power_off` needs a cluster started with
 `ClusterConfig::power_loss`, which sets `FELIX_STORAGE_POWER_LOSS_ROOT` on
 every broker, and writes a `power_loss` directive to each broker's

@@ -358,6 +358,10 @@ pub trait ControlPlaneStore: Send + Sync {
     /// acknowledged before the call. [`Self::get_shard_assignment`] on a
     /// Raft member answers from what that member has applied, which can lag.
     async fn confirmed_shard_assignment(&self, key: &ShardKey) -> StoreResult<ConfirmedAssignment>;
+    /// The shard-assignment feed's `next_seq`, read no earlier than every
+    /// write acknowledged before the call, so every change committed by then
+    /// has a lower seq. `None` from a Raft leader that predates the read.
+    async fn confirmed_shard_assignment_head(&self) -> StoreResult<Option<u64>>;
     /// Every assignment, ordered by stream then shard.
     async fn list_shard_assignments(&self) -> StoreResult<Vec<ShardAssignment>>;
     /// Assignments ordered by tenant, namespace, kind, name, then shard, one
@@ -376,6 +380,13 @@ pub trait ControlPlaneStore: Send + Sync {
     /// Remove one assignment, leaving the shard unowned.
     async fn delete_shard_assignment(&self, key: &ShardKey) -> StoreResult<()>;
     async fn shard_assignment_snapshot(&self) -> StoreResult<Snapshot<ShardAssignment>>;
+    /// Each shard's first assignment still in the retained change log, as
+    /// `(key, incarnation, generation)`: the assignment written when the
+    /// store had none for the shard, at an incarnation above 0. A snapshot
+    /// marks an item found here so a broker learning it there knows nothing
+    /// came before it, as the `assigned` change tells a watching one. One
+    /// evicted from the log is not listed, and its item is not marked.
+    async fn first_shard_assignments(&self) -> StoreResult<Vec<(ShardKey, u64, u64)>>;
     async fn shard_assignment_changes(
         &self,
         since: u64,

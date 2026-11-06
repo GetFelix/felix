@@ -74,7 +74,25 @@ pub struct ShardCursors {
     /// a follower this leader has not reached yet by it. `None` before that
     /// pass. See [`inherited_names`].
     pub(super) inherited: Option<BTreeMap<String, String>>,
+    /// What this leader named each follower by at its previous generation,
+    /// for `inherited` when the new one is not a promotion. See
+    /// [`ShardCursors::next`].
+    pub(super) carried: BTreeMap<String, String>,
+    /// Followers whose cursors may describe a copy that is no longer there.
+    /// See [`Unconfirmed`].
+    pub(super) unconfirmed: Unconfirmed,
 }
+
+/// The followers an exchange is under way with that has not yet found the
+/// copy their cursors describe, or that has heard from another copy.
+///
+/// A vouch outlives its pass, so a slow follower's answer can count beside
+/// another's from a later pass (#1895). It stops counting as soon as an
+/// exchange starts, until the probe or an answer shows the same copy is still
+/// there: the old `confirmed` of a wiped copy would otherwise count while its
+/// exchange is still under way. Shared with the exchanges, which may finish
+/// after their pass.
+pub(super) type Unconfirmed = Arc<parking_lot::Mutex<HashSet<String>>>;
 
 impl ShardCursors {
     /// Empty, at `generation`. A leadership change discards every belief about
@@ -89,6 +107,8 @@ impl ShardCursors {
             learner: None,
             own_start: None,
             inherited: None,
+            carried: BTreeMap::new(),
+            unconfirmed: Unconfirmed::default(),
         }
     }
 
@@ -107,6 +127,43 @@ impl ShardCursors {
                 ..Self::at(generation)
             };
         }
+    }
+
+    /// Empty, at a later `generation` of the same leader, keeping what it
+    /// names its followers by: the identity a follower last answered from,
+    /// else the one it inherited. `keep_for` drops them if the log turns out
+    /// to be another incarnation's.
+    ///
+    /// A follower this leader does not reach at the new generation
+    /// acknowledged nothing there, and everything it acknowledged before came
+    /// from the copy it was named by. Named by none after a set change, its
+    /// fence answer would never count, and a failover that needs it could
+    /// not open (#1922).
+    pub(super) fn next(&self, generation: u64) -> Self {
+        Self {
+            incarnation: self.incarnation,
+            carried: if generation > self.generation {
+                self.names()
+            } else {
+                BTreeMap::new()
+            },
+            ..Self::at(generation)
+        }
+    }
+
+    /// What a report at this generation names each follower by.
+    fn names(&self) -> BTreeMap<String, String> {
+        let inherited = self.inherited.as_ref();
+        self.followers
+            .iter()
+            .filter_map(|follower| {
+                let id = match follower.storage_id {
+                    Some(id) => id.to_hex(),
+                    None => inherited?.get(&follower.node_id)?.clone(),
+                };
+                Some((follower.node_id.clone(), id))
+            })
+            .collect()
     }
 }
 
@@ -262,6 +319,9 @@ pub(super) struct ShardPass<'a> {
     pub(super) drain_pending: bool,
     /// No follower that could still catch up holds all of the log.
     pub(super) behind: bool,
+    /// This broker's own ballot holds this newer generation, so it cannot
+    /// count a mark at the pass's generation.
+    pub(super) ballot_above: Option<u64>,
 }
 
 impl ShardPass<'_> {
@@ -285,6 +345,7 @@ impl ShardPass<'_> {
             again: false,
             drain_pending: false,
             behind: false,
+            ballot_above: None,
         }
     }
 }
@@ -346,9 +407,15 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     let shard = crate::incarnation::shard_ref(broker, key, route.generation);
     let incarnation = shard.incarnation.unwrap_or(0);
     entry.keep_for(route.generation, incarnation);
+    // A promotion's assignment names the copies itself. Any other route at a
+    // new generation, a promotion that named no identities included, keeps
+    // what this leader named them by before.
     let inherited_ids = entry
         .inherited
-        .get_or_insert_with(|| inherited_names(route))
+        .get_or_insert_with(|| match route.fence_storage_ids {
+            Some(_) => inherited_names(route),
+            None => std::mem::take(&mut entry.carried),
+        })
         .clone();
     let Some(log) = broker
         .shard_log_for(
@@ -484,13 +551,43 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         fence.passed(mark_key, route.generation);
     }
     // Read from the cursors the last pass left: a follower halted this way
-    // stays halted until the assignment changes.
+    // stays halted until the assignment changes. Only an assignment names a
+    // newer leader. A follower's ballot or view may be a standing that never
+    // opened, and with a majority still answering this leader serves; with
+    // none left its rounds fail and its refusal is reported.
     if entry
         .followers
         .iter()
-        .any(|cursor| cursor.halted == Some(crate::Halt::Fenced))
+        .any(|cursor| cursor.halted == Some(crate::Halt::Fenced) && cursor.assigned_newer)
     {
         fence.deposed(mark_key, route.generation);
+    }
+    // Led by election while a copy of the set refuses to follow here, with
+    // the rest still a majority: the candidate fences one generation up
+    // once the control plane has collided with the election for long enough.
+    if elected.is_some()
+        && let Some(elections) = marks.elections()
+        && entry.followers.iter().any(|cursor| cursor.refuses_leader)
+    {
+        let answering = entry
+            .followers
+            .iter()
+            .filter(|cursor| {
+                cursor.halted.is_none()
+                    && !cursor.stalled
+                    && !cursor.learner
+                    && !cursor.refuses_leader
+            })
+            .count();
+        // Learners neither answer for the set nor count in its majority.
+        let voters = entry
+            .followers
+            .iter()
+            .filter(|cursor| !cursor.learner)
+            .count();
+        if answering + 1 >= crate::quorum::majority_of(voters) {
+            elections.note_refused_copy(key, route.generation);
+        }
     }
     // The leader keeps its own set before shipping at it, so a fence or
     // batch from an older set is refused here too once this broker follows.
@@ -532,7 +629,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         && elected.is_none()
         && !elected_on_route_set
         && log.set_generation() < route.generation
-        && log.accepted_generation() >= route.generation)
+        && log.accepted_generation() == route.generation)
         .then(|| {
             kept_with_leaving(
                 &log,
@@ -544,15 +641,26 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
             )
         })
         .flatten();
-    if let Some(kept) = kept
-        && let Err(err) = log.accept_set(kept).await
-    {
-        tracing::warn!(
-            stream = %key.stream,
-            shard = key.shard,
-            error = %err,
-            "could not keep this leader's replica set",
-        );
+    // Under this leader's own ballot: a standing that raised it since keeps
+    // the set it stood on.
+    if let Some(kept) = kept {
+        // Kept while the gate is unread too, as a replica keeps them.
+        let kept = log
+            .accept_set_from(
+                kept,
+                marks.fleet_decides(felix_common::fleet::JOINT_FENCE) != Some(false),
+                route.generation,
+                Some(route.leader.node_id.as_str()),
+            )
+            .await;
+        if !matches!(kept, Ok(Ok(_))) {
+            tracing::warn!(
+                stream = %key.stream,
+                shard = key.shard,
+                outcome = ?kept,
+                "could not keep this leader's replica set",
+            );
+        }
     }
     // Rule 5 of electing without the control plane: once this broker has
     // answered a newer fence or batch, or counts a newer set, a candidate may
@@ -580,6 +688,23 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     if stepped_down() {
         fence.deposed(mark_key, route.generation);
     }
+    // This broker's own ballot is past the generation it leads: a promotion
+    // whose route has not landed yet, or a standing here that was withdrawn.
+    // In the second case the leader stops counting its own copy, so its marks
+    // stall while its followers confirm; the driver reports the generation
+    // refused if it lasts, to be named again one up (#1933). Not while a
+    // standing is under way at that ballot: it may yet open there.
+    let ballot_above = {
+        let accepted = log.accepted_generation();
+        (accepted > route.generation
+            && log
+                .accepted_leader()
+                .is_some_and(|leader| *leader == *route.leader.node_id)
+            && marks
+                .elections()
+                .is_none_or(|elections| elections.candidacy(key, accepted).is_none()))
+        .then_some(accepted)
+    };
     // A set change the control plane has not taken yet: a record is held
     // only when a majority of the set being left holds it too (rule 8).
     let pending = route
@@ -625,12 +750,14 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 .offset_at(&watch_key(key), incarnation, route.generation)
                 .unwrap_or(0),
         );
-        // Nor below the log this leader inherited, while promotion trusts the
-        // report: an earlier leader may have acknowledged any of it. Without
-        // the floor, a new leader whose followers have not answered yet names
-        // all of them. Acknowledging by the followers, the promoted leader
-        // fences a majority and takes the furthest log instead.
-        if by_followers || stepped_down() {
+        // Nor below the log this leader inherited: an earlier leader may have
+        // acknowledged any of it. Without the floor, a new leader whose
+        // followers have not answered yet names all of them. Acknowledging by
+        // the followers does not lift it: once the set has changed since the
+        // records were acknowledged, a majority of the sets the next leader
+        // fences can lack them, and a follower named without them may fence
+        // only brokers that lack them too (#1922).
+        if stepped_down() {
             promised
         } else {
             promised.max(inherited.min(tail))
@@ -681,15 +808,20 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         ),
     };
     // The followers that answered this pass from the copy their cursor
-    // describes. Exchanges run concurrently, so any other follower may be a
-    // wiped copy still carrying the old copy's `confirmed`, and the marks
-    // count it as holding nothing. The report still
-    // offers it: a leader cut off from its followers names them as they last
-    // stood, and failover needs that. See [`checked_only`].
+    // describes.
     let checked: Arc<parking_lot::Mutex<HashSet<String>>> = Arc::default();
+    // The marks count each follower at what its last checked answer vouched
+    // for, from this pass or an earlier one, and at nothing while an exchange
+    // has not yet seen that copy again: a wiped copy still carries the old
+    // copy's `confirmed`. The report still offers every follower: a leader
+    // cut off from its followers names them as they last stood, and failover
+    // needs that. See [`vouched_only`].
+    let unconfirmed = Arc::clone(&entry.unconfirmed);
     // On every shard: besides the mark, a drain hands the shard to a
     // successor it judges level by this count.
-    let view = |followers: &[FollowerCursor]| checked_only(followers, &checked.lock());
+    let view = |followers: &[FollowerCursor]| {
+        vouched_only(followers, route.generation, &unconfirmed.lock())
+    };
     // The followers that hold this generation's start record, for the
     // control plane to re-admit a replaced copy on. A cache needs its counter
     // log's start too.
@@ -885,7 +1017,18 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                     .successor
                     .as_deref()
                     .is_none_or(|successor| successor == cursor.node_id);
+            // A learner is re-admitted on a report naming it as holding the
+            // start, and only an answer in this pass can name it. One caught
+            // up by an exchange that outlived its pass is level now and would
+            // be sent nothing, so with no further append it would never be
+            // named (#1892). A stalled one too: a ping that failed stalls the
+            // cursor, and nothing else would ask it again.
+            let unnamed_learner = cursor.learner
+                && cursor.halted.is_none()
+                && cursor.storage_id.is_some()
+                && cursor.confirmed > inherited;
             let ping = successor
+                || unnamed_learner
                 || would_raise(
                     &cursor.node_id,
                     &entry.followers,
@@ -933,11 +1076,15 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
             );
             let generation = route.generation;
             let candidacy = candidacy.clone();
+            // Before the exchange can be polled, so no mark counts the old
+            // vouch until this exchange has seen the copy.
+            entry.unconfirmed.lock().insert(cursor.node_id.clone());
+            let unconfirmed = Arc::clone(&entry.unconfirmed);
             let exchange: Exchange<'a> = Box::pin(async move {
                 // Every request below goes through this, so the pass counts
                 // the follower only on an answer from the copy its cursor
                 // describes. See [`Witness`].
-                let requester = &Witness::new(requester);
+                let requester = &Witness::new(requester, &unconfirmed);
                 // On an idle shard nothing is shipped, so this is the only
                 // contact that can tell a wiped follower from the copy its
                 // cursor describes. It reads the pooled connection's
@@ -945,7 +1092,9 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 // a cursor but never vouches for one. An error leaves the
                 // cursor as it is; the shipping below meets the same failure.
                 if let Ok(seen) = requester.identity(&cursor.node_id, cursor.addr).await {
+                    let same = seen == cursor.identity();
                     restart_copy(&mut cursor, &mut rode, seen, base, &shard, rebuilds);
+                    requester.expect(&cursor.node_id, seen, same);
                 }
                 let stored_before = rode.stored(&cursor);
                 let RideAlong {
@@ -1026,7 +1175,10 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 // fence reaches it: a candidate's generation is in no route,
                 // and a set being left is not learned from a batch (#1009).
                 if cursor.route_behind {
-                    if let Some(candidacy) = &candidacy {
+                    // Only a fence the follower took makes the next pass
+                    // worth asking for on an append. Otherwise it catches up
+                    // from the control plane and the tick retries it (#1944).
+                    cursor.refused = if let Some(candidacy) = &candidacy {
                         crate::promotion::refence(
                             requester,
                             &cursor.node_id,
@@ -1035,7 +1187,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                             log_kind,
                             candidacy,
                         )
-                        .await;
+                        .await
                     } else if refences_kept {
                         crate::promotion::refence_kept(
                             requester,
@@ -1046,8 +1198,10 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                             log.replica_set().as_ref(),
                             set_stamp,
                         )
-                        .await;
-                    }
+                        .await
+                    } else {
+                        false
+                    };
                 }
                 // A follower level with the tail was sent nothing, so nothing
                 // vouches for a position the mark still has to count. Its
@@ -1152,12 +1306,23 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 if let Some(&seen) = other {
                     restart_copy(&mut cursor, &mut rode, seen, base, &shard, rebuilds);
                 }
+                let checked =
+                    !answered.is_empty() && answered.iter().all(|seen| same_copy(*seen, before));
+                if checked {
+                    vouch(&mut cursor, generation);
+                    for aux in [&mut rode.group, &mut rode.dead_letters, &mut rode.counters]
+                        .into_iter()
+                        .flatten()
+                    {
+                        vouch(aux, generation);
+                    }
+                    unconfirmed.lock().remove(&cursor.node_id);
+                }
                 Shipped {
                     cursor,
                     rode,
                     cut: cut || counters_cut,
-                    checked: !answered.is_empty()
-                        && answered.iter().all(|seen| same_copy(*seen, before)),
+                    checked,
                 }
             });
             exchange
@@ -1358,11 +1523,15 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         // this pass can wait for: the cache log may have nothing to count (a
         // cache used only for counters), and the rest may include a follower
         // that is gone.
+        // Vouches from earlier passes count from the start, so a positive
+        // offset alone is not this pass's majority: it has to pass the mark
+        // already out, or reach the tail.
+        let raised = offset > 0 && (offset > mark_now || offset >= tail);
         let enough = match &counters {
             Some(level) => {
-                (offset > 0 && level.whole) || voted + 1 >= crate::quorum::majority_of(voters)
+                (raised && level.whole) || voted + 1 >= crate::quorum::majority_of(voters)
             }
-            None => offset > 0,
+            None => raised,
         };
         if enough {
             majority = Some((
@@ -1419,7 +1588,8 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         //
         // A shard acknowledging by its followers skips all of this: whoever
         // leads next fences a majority and takes the furthest log before it
-        // serves, so what promotion read no longer decides what survives.
+        // serves. That holds only while the report names nobody short of the
+        // log its leader inherited (see `acknowledged`).
         //
         // A report that did not land leaves the mark where it was, because
         // the argument above rests on the control plane knowing who holds
@@ -1709,6 +1879,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         again,
         drain_pending: route.draining && !drained,
         behind,
+        ballot_above,
     }
 }
 
@@ -1937,16 +2108,6 @@ async fn counter_level(
             .offset(&watch_key(key), route.generation)
             .unwrap_or(0),
     );
-    // Named only once it holds the updates this leader inherited, as for the
-    // shard's own log, while promotion trusts the report; with no recorded
-    // start, all of them. Acknowledging by the followers, the promoted leader
-    // fences a majority and takes the furthest counter log instead.
-    let inherited = start.map_or(tail, |start| start.min(tail));
-    let floor = if by_followers || stepped_down {
-        acknowledged
-    } else {
-        acknowledged.max(inherited)
-    };
     // The joint start counts from this stint's start record, as `own_start`
     // does for the shard's own log: an earlier stint at this generation may
     // have acknowledged updates on the old set alone.
@@ -1954,6 +2115,15 @@ async fn counter_level(
         log.stint_start(route.generation)
             .map_or(first, |stint| stint.max(first))
     });
+    // Named only once it holds the updates this leader inherited, from this
+    // stint's start as for the shard's own log and for the same reason, by
+    // followers or not; with no recorded start, all of them.
+    let inherited = stint.map_or(tail, |start| start.min(tail));
+    let floor = if stepped_down {
+        acknowledged
+    } else {
+        acknowledged.max(inherited)
+    };
     Some(CounterLevel {
         acknowledged,
         level: caught_up(floor, followers),
@@ -2426,16 +2596,36 @@ async fn reship_last<R: PeerRequester>(
 /// follower that crashed and came back wiped leaves the old connection open
 /// until QUIC's idle timeout, still naming the old copy, so only an answer
 /// says which copy is there now.
+///
+/// It also keeps the shard's [`Unconfirmed`] set honest while the exchange
+/// runs: an answer from any copy but the one the probe found, or a failed
+/// request, puts the follower back in it at once, not when the exchange ends.
 struct Witness<'r, R> {
     inner: &'r R,
     answered: parking_lot::Mutex<Vec<PeerIdentity>>,
+    unconfirmed: &'r Unconfirmed,
+    /// The follower and the copy the probe found its cursor describes.
+    expected: parking_lot::Mutex<Option<(String, PeerIdentity)>>,
 }
 
 impl<'r, R: PeerRequester> Witness<'r, R> {
-    fn new(inner: &'r R) -> Self {
+    fn new(inner: &'r R, unconfirmed: &'r Unconfirmed) -> Self {
         Self {
             inner,
             answered: parking_lot::Mutex::new(Vec::new()),
+            unconfirmed,
+            expected: parking_lot::Mutex::new(None),
+        }
+    }
+
+    /// The probe found `seen`, the copy `node`'s cursor now describes. Only
+    /// when that is the copy the cursor already described (`same`) may an
+    /// earlier answer's vouch count again, and then only until an answer
+    /// comes from another copy.
+    fn expect(&self, node: &str, seen: PeerIdentity, same: bool) {
+        *self.expected.lock() = Some((node.to_string(), seen));
+        if same {
+            self.unconfirmed.lock().remove(node);
         }
     }
 
@@ -2445,6 +2635,11 @@ impl<'r, R: PeerRequester> Witness<'r, R> {
     }
 
     fn record(&self, identity: PeerIdentity) {
+        if let Some((node, seen)) = &*self.expected.lock()
+            && *seen != identity
+        {
+            self.unconfirmed.lock().insert(node.clone());
+        }
         let mut answered = self.answered.lock();
         if !answered.contains(&identity) {
             answered.push(identity);
@@ -2494,32 +2689,54 @@ impl<R: PeerRequester> PeerRequester for Witness<'_, R> {
         addr: SocketAddr,
         message: InternalMessage,
     ) -> std::result::Result<(InternalMessage, PeerIdentity), PeerError> {
-        let (answer, identity) = self
-            .inner
-            .request_identified(node_id, addr, message)
-            .await?;
-        self.record(identity);
-        Ok((answer, identity))
+        match self.inner.request_identified(node_id, addr, message).await {
+            Ok((answer, identity)) => {
+                self.record(identity);
+                Ok((answer, identity))
+            }
+            Err(error) => {
+                // The probe may have read a connection older than a crash,
+                // so a failed request is the first sign the copy is gone.
+                self.unconfirmed.lock().insert(node_id.to_string());
+                Err(error)
+            }
+        }
     }
 }
 
-/// `followers` as this pass may count them toward a mark: one that has not
-/// answered it from the copy its cursor describes holds nothing.
+/// `followers` as a mark at `generation` may count them: each at what its
+/// last checked answer vouched for ([`FollowerCursor::vouched_at`]), and at
+/// nothing while an exchange with it has not seen that copy again.
 ///
-/// A cursor's `confirmed` is what the copy it was learned from holds. Until
-/// the follower is asked who it is, that copy may be gone, and counting it
-/// would let a record held only by the leader be acknowledged.
-fn checked_only(followers: &[FollowerCursor], checked: &HashSet<String>) -> Vec<FollowerCursor> {
+/// A cursor's `confirmed` is what the copy it was learned from holds. Once
+/// the leader has reason to think that copy may be gone, counting it would
+/// let a record held only by the leader be acknowledged.
+pub(super) fn vouched_only(
+    followers: &[FollowerCursor],
+    generation: u64,
+    unconfirmed: &HashSet<String>,
+) -> Vec<FollowerCursor> {
     followers
         .iter()
         .map(|cursor| {
             let mut cursor = cursor.clone();
-            if !checked.contains(&cursor.node_id) {
-                cursor.confirmed = 0;
-            }
+            cursor.confirmed = if unconfirmed.contains(&cursor.node_id) {
+                0
+            } else {
+                cursor.vouched_at(generation)
+            };
             cursor
         })
         .collect()
+}
+
+/// Record that `cursor`'s answer just now came from the copy it describes.
+fn vouch(cursor: &mut FollowerCursor, generation: u64) {
+    cursor.vouched = Some(crate::follower::Vouched {
+        identity: cursor.identity(),
+        generation,
+        offset: cursor.confirmed,
+    });
 }
 
 /// Whether two identities name the same copy of a follower's log. The same

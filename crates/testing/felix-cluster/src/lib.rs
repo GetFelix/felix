@@ -55,4 +55,4 @@ pub use config::{CacheSpec, ClusterConfig, StreamSpec};
 pub use controlplane::ControlPlane;
 pub use credentials::Credentials;
 pub use fault::{ClockFault, Endpoint, Fault, FsyncFault, WriteFault};
-pub use node::{BrokerNode, broker_binary};
+pub use node::{BrokerNode, broker_binary, joint_fence_broker_env};

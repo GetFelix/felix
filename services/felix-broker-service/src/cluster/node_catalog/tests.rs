@@ -143,6 +143,10 @@ mod over_http {
         (format!("http://{addr}"), task)
     }
 
+    fn link(base: &str) -> felix_replication::controlplane_link::HttpControlPlaneLink {
+        felix_replication::controlplane_link::HttpControlPlaneLink::new(client(), base)
+    }
+
     fn client() -> reqwest::Client {
         reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(5))
@@ -163,9 +167,7 @@ mod over_http {
         );
         let (base, task) = serve(app).await;
 
-        let catalog = fetch(&client(), &base, Some("a-token"))
-            .await
-            .expect("fetch");
+        let catalog = fetch(&link(&base), Some("a-token")).await.expect("fetch");
         assert!(catalog.nodes.contains_key("broker-a"));
 
         task.abort();
@@ -196,7 +198,7 @@ mod over_http {
         );
         let (base, task) = serve(app).await;
 
-        let catalog = fetch(&client(), &base, None).await.expect("fetch");
+        let catalog = fetch(&link(&base), None).await.expect("fetch");
         assert!(catalog.nodes.contains_key("broker-a"));
         assert!(
             catalog.nodes.contains_key("broker-b"),
@@ -214,7 +216,7 @@ mod over_http {
         );
         let (base, task) = serve(app).await;
 
-        assert!(fetch(&client(), &base, None).await.is_err());
+        assert!(fetch(&link(&base), None).await.is_err());
 
         task.abort();
     }
@@ -236,7 +238,7 @@ mod over_http {
         );
         let (base, task) = serve(app).await;
 
-        fetch(&client(), &base, Some("a-token"))
+        fetch(&link(&base), Some("a-token"))
             .await
             .expect("the token should have been accepted");
 
@@ -253,7 +255,7 @@ mod over_http {
         );
         let (base, task) = serve(app).await;
 
-        let err = fetch(&client(), &base, None)
+        let err = fetch(&link(&base), None)
             .await
             .expect_err("403 must not read as an empty catalog");
         let message = err.to_string();
@@ -271,7 +273,7 @@ mod over_http {
         let app = Router::new().route("/v1/nodes", get(|| async { "not json" }));
         let (base, task) = serve(app).await;
 
-        assert!(fetch(&client(), &base, None).await.is_err());
+        assert!(fetch(&link(&base), None).await.is_err());
 
         task.abort();
     }
@@ -283,11 +285,7 @@ mod over_http {
         let addr = listener.local_addr().expect("addr");
         drop(listener);
 
-        assert!(
-            fetch(&client(), &format!("http://{addr}"), None)
-                .await
-                .is_err()
-        );
+        assert!(fetch(&link(&format!("http://{addr}")), None).await.is_err());
     }
 }
 
@@ -503,4 +501,17 @@ fn kafka_endpoints_follow_routability_not_eligibility() {
 
     assert_eq!(catalog.kafka_endpoints.len(), 1);
     assert_eq!(catalog.kafka_endpoints[0].node_id, "broker-a");
+}
+
+#[tokio::test]
+async fn a_fake_link_drives_the_catalog_fetch() {
+    use crate::test_support::fake_link::FakeLink;
+
+    let link = FakeLink::default().reply(
+        "node_catalog_page",
+        serde_json::json!({ "items": [node("a", "10.0.0.1:7000", true)] }),
+    );
+    let catalog = fetch(&link, None).await.expect("fetch");
+    assert!(catalog.nodes.contains_key("a"));
+    assert_eq!(link.calls(), ["node_catalog_page"]);
 }

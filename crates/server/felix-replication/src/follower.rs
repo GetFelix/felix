@@ -47,6 +47,12 @@ pub struct FollowerCursor {
     /// A new cursor starts stalled, since its offset is only where shipping
     /// will start and says nothing about what the follower holds.
     pub stalled: bool,
+    /// The follower's last answer to a batch was that its routing view is
+    /// behind, and it took the fence the pass sent it again, so the next
+    /// pass resolves it. Stalled, but up and answering, unlike a follower
+    /// the request never reached or one refusing for a reason a pass cannot
+    /// fix.
+    pub(crate) refused: bool,
     /// The follower refused the frame kind that carries a commit offset, so
     /// it is shipped without one.
     pub legacy_frames: bool,
@@ -68,6 +74,29 @@ pub struct FollowerCursor {
     ///
     /// [`ReplicateOk::learner`]: felix_wire::internal::ReplicateOk::learner
     pub learner: bool,
+    /// What the follower's last checked answer said it holds, and the copy
+    /// and generation that answer came from. `confirmed` counts toward a
+    /// mark only up to this, and only while the cursor still names that copy
+    /// (see [`Self::vouched_at`]).
+    pub(crate) vouched: Option<Vouched>,
+    /// The newer generation the follower's ballot holds, from the refusal
+    /// that halted it. Only set beside a fenced halt, and only while the
+    /// cursor names the copy that refused.
+    pub(crate) superseded_by: Option<u64>,
+    /// The fenced halt's refusal said the control plane assigned a newer
+    /// generation. See [`crate::replica::assigned_newer`].
+    pub(crate) assigned_newer: bool,
+    /// The follower's last answer said its copy does not follow this leader
+    /// at this generation. See [`crate::replica::refuses_leader`].
+    pub(crate) refuses_leader: bool,
+}
+
+/// A follower's answer that came from the copy its cursor describes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Vouched {
+    pub(crate) identity: PeerIdentity,
+    pub(crate) generation: u64,
+    pub(crate) offset: u64,
 }
 
 impl FollowerCursor {
@@ -82,11 +111,36 @@ impl FollowerCursor {
             rebuild_refused: None,
             shipped_bytes: 0,
             stalled: true,
+            refused: false,
             legacy_frames: false,
             storage_id: None,
             incarnation: Incarnation::Unsent,
             route_behind: false,
             learner: false,
+            vouched: None,
+            superseded_by: None,
+            assigned_newer: false,
+            refuses_leader: false,
+        }
+    }
+
+    /// What this follower's last checked answer vouched for at `generation`,
+    /// while the cursor still describes the copy and generation that answer
+    /// came from. A copy the leader has seen change since, even only its
+    /// incarnation, has to answer again. A halted follower vouches for
+    /// nothing: it is no longer shipped to or pinged, so it must not be named
+    /// holding the start. A learner is still reported holding what it vouched
+    /// for; the marks leave it out ([`Self::counts`]).
+    pub(crate) fn vouched_at(&self, generation: u64) -> u64 {
+        match self.vouched {
+            Some(vouched)
+                if self.halted.is_none()
+                    && vouched.identity == self.identity()
+                    && vouched.generation == generation =>
+            {
+                vouched.offset.min(self.confirmed)
+            }
+            _ => 0,
         }
     }
 
@@ -187,6 +241,34 @@ pub fn caught_up(tail: u64, followers: &[FollowerCursor]) -> Vec<String> {
         .filter(|follower| tail.saturating_sub(follower.confirmed) <= CATCH_UP_BOUND)
         .map(|follower| follower.node_id.clone())
         .collect()
+}
+
+/// The newest generation a follower refused this leader's with, when the
+/// followers left cannot make a majority with the leader.
+///
+/// Such a refusal never goes back, and it came after the fence, so no fence
+/// reports it. A follower counts as left unless it is halted, a learner, the
+/// staged `learner`, or stalled: one whose exchanges hang to their timeout
+/// must not hold the report off.
+pub(crate) fn refused_without_majority(
+    followers: &[FollowerCursor],
+    learner: Option<&str>,
+) -> Option<u64> {
+    let set: Vec<&FollowerCursor> = followers
+        .iter()
+        .filter(|follower| learner != Some(follower.node_id.as_str()))
+        .collect();
+    let ballot = set
+        .iter()
+        .filter(|follower| follower.halted == Some(Halt::Fenced))
+        .filter_map(|follower| follower.superseded_by)
+        .max()?;
+    let left = set
+        .iter()
+        .filter(|follower| follower.halted.is_none() && !follower.learner)
+        .filter(|follower| !follower.stalled)
+        .count();
+    (left + 1 < crate::quorum::majority_of(set.len())).then_some(ballot)
 }
 
 /// How far behind the slowest follower is, in records.

@@ -26,6 +26,7 @@ members = [
   "crates/testing/felix-cluster",
   "crates/testing/felix-conformance",
   "crates/testing/felix-loadgen",
+  "crates/testing/felix-sim",
   # Command-line tools.
   "crates/tools/felixctl",
   # The deployables.

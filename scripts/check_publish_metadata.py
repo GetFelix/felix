@@ -48,6 +48,7 @@ COPYLEFT = {
     "felix-cluster",
     "felix-conformance",
     "felix-loadgen",
+    "felix-sim",
     "felixctl",
     "felix-broker-service",
     "felix-controlplane-service",
@@ -73,6 +74,7 @@ NOT_PUBLISHABLE = {
     "felix-controlplane-service",
     "felix-conformance",
     "felix-cluster",
+    "felix-sim",
 }
 
 # Publishable crates the release workflow does not publish yet. They are held

@@ -283,6 +283,10 @@ pub struct NodeHeartbeatRequest {
     /// pings. Absent from a broker that suspects nobody, or predates it.
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     pub suspects: std::collections::BTreeSet<String>,
+    /// Asks for `assignment_seq` in the answer. Absent from a broker that
+    /// does not need it, or predates it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub want_assignment_seq: bool,
 }
 
 /// What the control plane tells a broker in return.
@@ -302,6 +306,13 @@ pub struct NodeHeartbeatResponse {
     /// only ever adds to what it has from this.
     #[serde(default)]
     pub fleet_features: std::collections::BTreeSet<String>,
+    /// The shard-assignment feed's `next_seq`, read after this heartbeat was
+    /// accepted: every assignment change committed before then has a lower
+    /// seq. Only when asked for, and left out by a Raft leader that predates
+    /// it. A broker marked down serves again only on routes built from the
+    /// feed at or past it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignment_seq: Option<u64>,
 }
 
 /// A broker claiming its identity on boot.
@@ -466,9 +477,22 @@ pub struct ShardAssignmentListResponse {
     pub next_cursor: Option<String>,
 }
 
+/// A [`RoutedShardAssignment`] in a snapshot.
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq, Eq)]
+pub struct SnapshotShardAssignment {
+    #[serde(flatten)]
+    pub assigned: RoutedShardAssignment,
+    /// The shard's first assignment: written when the control plane had none
+    /// for it, so no set came before this one. The snapshot's counterpart of
+    /// an `assigned` change. Absent means not known, never "not first": the
+    /// change that would show it may have left the retained log.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub first_assignment: bool,
+}
+
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ShardAssignmentSnapshotResponse {
-    pub items: Vec<RoutedShardAssignment>,
+    pub items: Vec<SnapshotShardAssignment>,
     /// Where to start polling changes. A consumer that applies this snapshot and
     /// then polls from here sees every committed change exactly once.
     pub next_seq: u64,

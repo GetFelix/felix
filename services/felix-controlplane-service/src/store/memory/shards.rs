@@ -53,6 +53,7 @@ pub(super) async fn adopt_elected_leader(
     expected_generation: u64,
     elected: &ElectedLeader,
     elected_set: bool,
+    own_leader_set: bool,
 ) -> StoreResult<AssignmentWrite> {
     let current = get_shard_assignment(store, key).await?;
     if current.generation != expected_generation {
@@ -62,7 +63,12 @@ pub(super) async fn adopt_elected_leader(
     }
     let adopted = if elected_set {
         let nodes = store.nodes.read().await;
-        current.adopting_elected_set(elected, &|node| nodes.records.contains_key(node))
+        let known = |node: &str| nodes.records.contains_key(node);
+        if own_leader_set {
+            current.adopting_elected_set(elected, &known)
+        } else {
+            current.adopting_elected_set_keeping_own_leader(elected, &known)
+        }
     } else {
         current.adopting(elected)
     };
@@ -289,6 +295,21 @@ pub(super) async fn shard_assignment_snapshot(
         items,
         next_seq: state.changes.next_seq,
     })
+}
+
+pub(super) async fn first_shard_assignments(
+    store: &InMemoryStore,
+) -> StoreResult<Vec<(ShardKey, u64, u64)>> {
+    let state = store.shards.read().await;
+    Ok(state
+        .changes
+        .items
+        .iter()
+        .filter(|change| change.op == ShardAssignmentChangeOp::Assigned)
+        .filter_map(|change| change.assignment.as_ref())
+        .filter(|first| first.incarnation > 0)
+        .map(|first| (first.key.clone(), first.incarnation, first.generation))
+        .collect())
 }
 
 pub(super) async fn shard_assignment_changes(

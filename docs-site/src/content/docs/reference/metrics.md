@@ -210,7 +210,7 @@ Replication from a shard's leader to its followers, and the `Quorum` publish pat
 | `felix_broker_replication_move_throttled_bytes_total` | counter | - | Bytes shipped to a move's destination under `FELIX_SHARD_MOVE_BYTES_PER_SEC`. |
 | `felix_broker_replication_scans_total` | counter | `wake` | Scans of the shards this broker leads, by what woke the driver: `append`, `tick` or `routes`. Its rate is scans per second. |
 | `felix_broker_replication_passes_waiting` | gauge | - | Shards waiting for a pass or fence slot right now. Staying high means more shards have work than this broker ships at once. |
-| `felix_broker_replication_slot_wait_seconds` | histogram | `queue` | How long a shard waited for a slot before its pass or fence started. `urgent` is an append, a write waiting on the mark, or a follower answer; `refresh` is the regular pass; `fence` is a promoted shard's fence. |
+| `felix_broker_replication_slot_wait_seconds` | histogram | `queue` | How long a shard waited for a slot before its pass or fence started. `appended` is an append since the shard was last asked; `urgent` is a write waiting on the mark, a shard new to this leader, or a follower answer; `refresh` is the regular pass; `fence` is a promoted shard's fence. |
 | `felix_broker_replication_drain_withheld_total` | counter | `log` | Drained reports held back because a follower was still behind on a log. A planned move waits on this. |
 | `felix_broker_replicated_total` | counter | `outcome` | Replication batches stored as a follower. `gap` is ordinary during catch-up; other failure outcomes need different responses. |
 | `felix_broker_replica_reports_per_request` | histogram | - | Shards' reports sharing one control-plane request. One means nothing was batched. |
@@ -219,6 +219,7 @@ Replication from a shard's leader to its followers, and the `Quorum` publish pat
 | `felix_broker_publish_quorum_wait_seconds` | histogram | - | How long a `Quorum` publish waited for its majority, whatever the outcome. |
 | `felix_broker_promotions_opened_total` | counter | `path` | Shards opened for writes at a new leadership. `path` is `fenced` once a majority took the fence and `lease` when some replica did not offer it. |
 | `felix_broker_promotion_truncated_total` | counter | - | Times a promoted leader dropped records of its own that a replica's newer log had superseded. |
+| `felix_broker_fence_set_unknown_total` | counter | - | Fences under `joint_fence` that could not learn the set before this generation but proved this broker opened it (its own set kept at the generation, or its own ballot and start record there), or a shard at generation 0, and reported the generation refused so the control plane names the leader again one generation up. |
 | `felix_broker_fence_refused_ids_beyond_two_total` | counter | - | Fences a crashed leader's copy refused because the failover's fence ids also name a copy beside the set of two. With this control plane that is a staged or joining successor the failover left out. The shard stays closed; the [remedy](https://github.com/GetFelix/felix/blob/main/docs/replication-design.md#a-leaders-own-crash) is in the replication design ([#1635](https://github.com/GetFelix/felix/issues/1635)). |
 
 ## Storage

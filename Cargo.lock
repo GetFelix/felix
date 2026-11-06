@@ -1209,6 +1209,7 @@ dependencies = [
  "quinn",
  "rcgen",
  "reqwest",
+ "rumqttc",
  "rustls",
  "serde",
  "serde_json",
@@ -1415,6 +1416,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -1424,6 +1426,17 @@ dependencies = [
  "arc-swap",
  "felix-common",
  "felix-wire",
+]
+
+[[package]]
+name = "felix-sim"
+version = "0.7.0-preview.3"
+dependencies = [
+ "async-trait",
+ "felix-replication",
+ "felix-wire",
+ "parking_lot 0.13.0",
+ "tokio",
 ]
 
 [[package]]

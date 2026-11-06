@@ -50,7 +50,8 @@ permissions:
 
 concurrency:
   group: tla-walk-${{ github.ref }}
-  cancel-in-progress: false
+  # A superseded pull request run is dropped; nightly and dispatch runs finish.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   walk:
@@ -172,6 +173,11 @@ jobs:
           - FelixShardElectWipeNonVoterGroups
           - FelixShardElectHandoff
           - FelixShardElectAdoptTwoWrites
+          - FelixShardElectAdoptFailoverSame0Gen4
+          - FelixShardElectAdoptFailoverApart0Gen4
+          - FelixShardElectAdoptFailoverApart1Gen4
+          - FelixShardElectAdoptFailoverSame1Gen2
+          - FelixShardElectAdoptFailoverSame1Gen4
           - FelixShardElectRenameKeep0StoodOneDest
           - FelixShardElectRenameKeep1StoodOneDest
           - FelixShardElectRenameDrop0StoodOneDest

@@ -22,6 +22,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow};
 use felix_common::fleet::FleetGate;
 use felix_common::membership::NodeLifecycle;
+use felix_replication::controlplane_link::ControlPlaneLink;
 use felix_storage::StorageId;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
@@ -133,6 +134,10 @@ struct HeartbeatRequest {
     /// plane always read.
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     suspects: BTreeSet<String>,
+    /// Set while the lease waits on the routes, which then have to reach the
+    /// answer's `assignment_seq`. Left out otherwise, as before.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    want_assignment_seq: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -154,6 +159,10 @@ struct HeartbeatResponse {
     expiry_timeout_ms: Option<u64>,
     #[serde(default)]
     fleet_features: BTreeSet<String>,
+    /// The assignment feed's head as of the accept, when asked for. Absent
+    /// from a control plane that predates it.
+    #[serde(default)]
+    assignment_seq: Option<u64>,
 }
 
 /// A registered identity, and what the control plane told us about it.
@@ -222,36 +231,32 @@ impl std::fmt::Display for MembershipError {
 /// Fails loudly. A broker that cannot register is not a cluster member, and
 /// carrying on as if it were means publishing to a node no one will route to.
 pub async fn register(
-    client: &reqwest::Client,
-    base_url: &str,
+    link: &impl ControlPlaneLink,
     config: &MembershipConfig,
     credential: &crate::cluster::credential::NodeCredential,
     storage_id: Option<StorageId>,
 ) -> std::result::Result<Registration, MembershipError> {
-    let response = client
-        .post(format!("{}/v1/nodes", base_url.trim_end_matches('/')))
-        // Proves this broker may claim `node_id`. The control plane authorises
-        // the identity in the body against it, so a broker cannot register
-        // under a name its credential does not cover.
-        .bearer_auth(credential.bearer())
-        .json(&RegistrationRequest {
-            node_id: &config.node_id,
-            advertise_addr: &config.advertise_addr,
-            client_addr: config.client_advertise_addr.as_deref(),
-            kafka_addr: config.kafka_advertise_addr.as_deref(),
-            region: &config.region,
-            zone: config.zone.as_deref(),
-            features: &config.features,
-            storage_id: storage_id.map(|id| id.to_hex()),
-        })
-        .send()
+    let response = link
+        .register(
+            &credential.bearer(),
+            &RegistrationRequest {
+                node_id: &config.node_id,
+                advertise_addr: &config.advertise_addr,
+                client_addr: config.client_advertise_addr.as_deref(),
+                kafka_addr: config.kafka_advertise_addr.as_deref(),
+                region: &config.region,
+                zone: config.zone.as_deref(),
+                features: &config.features,
+                storage_id: storage_id.map(|id| id.to_hex()),
+            },
+        )
         .await
-        .with_context(|| format!("register node {} with {base_url}", config.node_id))
+        .with_context(|| format!("register node {} with {}", config.node_id, link.endpoint()))
         .map_err(MembershipError::Unavailable)?;
 
-    let status = response.status();
+    let status = response.status;
     if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
+        let body = response.text();
         return Err(MembershipError::from_status(
             status,
             format!(
@@ -263,7 +268,6 @@ pub async fn register(
 
     let registered: RegistrationResponse = response
         .json()
-        .await
         .context("decode node registration response")
         .map_err(MembershipError::Unavailable)?;
 
@@ -289,27 +293,21 @@ pub async fn register(
 /// The control plane's record of `node_id`'s last registration, or `None`
 /// when it has never registered it.
 pub async fn registered(
-    client: &reqwest::Client,
-    base_url: &str,
+    link: &impl ControlPlaneLink,
     node_id: &str,
     credential: &crate::cluster::credential::NodeCredential,
 ) -> std::result::Result<Option<Registered>, MembershipError> {
-    let response = client
-        .get(format!(
-            "{}/v1/nodes/{node_id}",
-            base_url.trim_end_matches('/')
-        ))
-        .bearer_auth(credential.bearer())
-        .send()
+    let response = link
+        .node(&credential.bearer(), node_id)
         .await
-        .with_context(|| format!("look up node {node_id} at {base_url}"))
+        .with_context(|| format!("look up node {node_id} at {}", link.endpoint()))
         .map_err(MembershipError::Unavailable)?;
-    let status = response.status();
+    let status = response.status;
     if status == reqwest::StatusCode::NOT_FOUND {
         return Ok(None);
     }
     if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
+        let body = response.text();
         // A refreshed credential can still come in, so a 401 is waited out.
         if status == reqwest::StatusCode::UNAUTHORIZED {
             return Err(MembershipError::Unavailable(anyhow!(
@@ -323,7 +321,6 @@ pub async fn registered(
     }
     let detail: NodeDetail = response
         .json()
-        .await
         .context("decode node lookup response")
         .map_err(MembershipError::Unavailable)?;
     Ok(Some(Registered {
@@ -337,14 +334,13 @@ pub async fn registered(
 /// outage holds startup rather than letting a directory older than the
 /// node's last registration be counted on.
 pub async fn await_registered(
-    client: &reqwest::Client,
-    base_url: &str,
+    link: &impl ControlPlaneLink,
     node_id: &str,
     credential: &crate::cluster::credential::NodeCredential,
 ) -> Result<Option<Registered>> {
     let mut attempt = 0u64;
     loop {
-        match registered(client, base_url, node_id, credential).await {
+        match registered(link, node_id, credential).await {
             Ok(registered) => return Ok(registered),
             Err(MembershipError::Rejected(message)) => return Err(anyhow!(message)),
             Err(MembershipError::Unavailable(err)) => {
@@ -384,8 +380,7 @@ pub enum HeartbeatEnd {
 /// next answer says so.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_heartbeat(
-    client: reqwest::Client,
-    base_url: String,
+    link: impl ControlPlaneLink,
     registration: Registration,
     shutdown: CancellationToken,
     consecutive_failures: Arc<AtomicU64>,
@@ -393,9 +388,33 @@ pub async fn run_heartbeat(
     fleet: Arc<FleetGate>,
     suspects: Arc<felix_replication::suspicion::Suspects>,
 ) -> HeartbeatEnd {
+    run_heartbeat_checked(
+        link,
+        registration,
+        shutdown,
+        consecutive_failures,
+        lease,
+        fleet,
+        suspects,
+        None,
+    )
+    .await
+}
+
+/// [`run_heartbeat`], skipping every beat while `pulse` says the broker's
+/// main runtime has stopped.
+#[allow(clippy::too_many_arguments)]
+async fn run_heartbeat_checked(
+    link: impl ControlPlaneLink,
+    registration: Registration,
+    shutdown: CancellationToken,
+    consecutive_failures: Arc<AtomicU64>,
+    lease: Arc<crate::cluster::lease::LeaseState>,
+    fleet: Arc<FleetGate>,
+    suspects: Arc<felix_replication::suspicion::Suspects>,
+    pulse: Option<Arc<RuntimePulse>>,
+) -> HeartbeatEnd {
     let mut suspected = suspects.subscribe();
-    let base_url = base_url.trim_end_matches('/').to_string();
-    let url = format!("{base_url}/v1/nodes/{}/heartbeat", registration.node_id);
     let mut interval = Duration::from_millis(registration.heartbeat_interval_ms.max(1));
     let mut last_success = std::time::Instant::now();
 
@@ -415,18 +434,30 @@ pub async fn run_heartbeat(
             Ok(()) = suspected.changed(), if failures == 0 => {}
         }
         let suspects = suspected.borrow_and_update().clone();
+        if let Some(silent) = pulse.as_ref().and_then(|pulse| pulse.hung()) {
+            // Renewing here would keep the shards this broker leads on a
+            // process that serves nothing. Letting the lease run out hands
+            // them to a live copy.
+            tracing::error!(
+                node_id = %registration.node_id,
+                silent_ms = silent.as_millis() as u64,
+                "the broker's runtime has stopped; not renewing the lease",
+            );
+            continue;
+        }
 
         // Before the request, not after the answer: see `LeaseState::renew_at`.
         let sent = lease.now();
         // Read per heartbeat, so a refresh between beats is picked up without
         // this loop knowing refresh exists.
         match send_heartbeat(
-            &client,
-            &url,
+            &link,
+            &registration.node_id,
             &registration.token.bearer(),
             HeartbeatRequest {
                 incarnation: registration.incarnation,
                 suspects,
+                want_assignment_seq: lease.awaits_routes(),
             },
             lease.usable() / LEASE_REQUEST_FRACTION,
         )
@@ -442,7 +473,7 @@ pub async fn run_heartbeat(
                     if let Some(expiry) = response.expiry_timeout_ms {
                         lease.adopt(Duration::from_millis(expiry.max(1)));
                     }
-                    lease.renew_at(sent);
+                    lease.renew_at(sent, response.assignment_seq);
                 }
                 mm::record_heartbeat_success();
                 for feature in fleet.observe(response.fleet_features.iter().map(String::as_str)) {
@@ -494,23 +525,13 @@ pub async fn run_heartbeat(
 }
 
 /// Stop receiving new placement, without stopping service.
-pub async fn drain(
-    client: &reqwest::Client,
-    base_url: &str,
-    node_id: &str,
-    token: &str,
-) -> Result<()> {
-    post_lifecycle(client, base_url, node_id, token, "drain").await
+pub async fn drain(link: &impl ControlPlaneLink, node_id: &str, token: &str) -> Result<()> {
+    post_lifecycle(link, node_id, token, "drain").await
 }
 
 /// Leave the cluster on purpose, so this is not mistaken for a crash.
-pub async fn deregister(
-    client: &reqwest::Client,
-    base_url: &str,
-    node_id: &str,
-    token: &str,
-) -> Result<()> {
-    post_lifecycle(client, base_url, node_id, token, "deregister").await
+pub async fn deregister(link: &impl ControlPlaneLink, node_id: &str, token: &str) -> Result<()> {
+    post_lifecycle(link, node_id, token, "deregister").await
 }
 
 /// Everything the broker needs to keep its membership current.
@@ -542,8 +563,7 @@ pub struct MembershipTask {
 /// expiry window would leave every broker running but out of the cluster.
 #[allow(clippy::too_many_arguments)]
 pub fn spawn(
-    client: reqwest::Client,
-    base_url: String,
+    link: impl ControlPlaneLink + Clone,
     config: MembershipConfig,
     credential: crate::cluster::credential::NodeCredential,
     serving: CancellationToken,
@@ -558,7 +578,8 @@ pub fn spawn(
 ) -> MembershipTask {
     let fatal = CancellationToken::new();
     let consecutive_failures = Arc::new(AtomicU64::new(0));
-    let handle = tokio::spawn({
+    let pulse = RuntimePulse::start(RUNTIME_HUNG_AFTER, shutdown.clone());
+    let handle = spawn_on_own_thread({
         let fatal = fatal.clone();
         let consecutive_failures = Arc::clone(&consecutive_failures);
         let lease = Arc::clone(&lease);
@@ -572,7 +593,7 @@ pub fn spawn(
             loop {
                 let mut attempt = 0u64;
                 let registration = loop {
-                    match register(&client, &base_url, &config, &credential, storage_id).await {
+                    match register(&link, &config, &credential, storage_id).await {
                         Ok(registration) => break registration,
                         Err(MembershipError::Rejected(message)) => {
                             mm::record_registration(mm::KIND_REJECTED);
@@ -615,13 +636,8 @@ pub fn spawn(
                     );
                     // Registered already, so placement could pick it; leave
                     // before stopping rather than wait for the expiry.
-                    if let Err(err) = deregister(
-                        &client,
-                        &base_url,
-                        &config.node_id,
-                        &registration.token.bearer(),
-                    )
-                    .await
+                    if let Err(err) =
+                        deregister(&link, &config.node_id, &registration.token.bearer()).await
                     {
                         tracing::warn!(error = %err, "could not deregister after refusing to join");
                     }
@@ -636,15 +652,15 @@ pub fn spawn(
                 incarnation.store(registration.incarnation, Ordering::Release);
                 registered.send_replace(Some(registration.incarnation));
 
-                match run_heartbeat(
-                    client.clone(),
-                    base_url.clone(),
+                match run_heartbeat_checked(
+                    link.clone(),
                     registration,
                     shutdown.clone(),
                     Arc::clone(&consecutive_failures),
                     Arc::clone(&lease),
                     Arc::clone(&fleet),
                     Arc::clone(&suspects),
+                    Some(Arc::clone(&pulse)),
                 )
                 .await
                 {
@@ -666,6 +682,109 @@ pub fn spawn(
         consecutive_failures,
         lease,
         fleet,
+    }
+}
+
+/// Run `task` on a thread of its own, with a runtime of its own.
+///
+/// The heartbeat is the lease renewal, so it must not share workers with
+/// anything that can block on disk: a broker whose every runtime worker waits
+/// on a stalled filesystem journal would otherwise stop renewing and lose its
+/// lease while it is otherwise healthy. The returned handle joins the task.
+/// Aborting it stops the task at its next await; a request already in flight
+/// finishes first.
+fn spawn_on_own_thread<F>(task: F) -> tokio::task::JoinHandle<()>
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    let stop = CancellationToken::new();
+    let (done, finished) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name("felix-membership".to_string())
+        .spawn({
+            let stop = stop.clone();
+            move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build the membership runtime");
+                let ended = runtime.block_on(async move {
+                    let task = tokio::spawn(task);
+                    let abort = task.abort_handle();
+                    tokio::select! {
+                        ended = task => ended,
+                        _ = stop.cancelled() => {
+                            abort.abort();
+                            Ok(())
+                        }
+                    }
+                });
+                let _ = done.send(ended);
+            }
+        })
+        .expect("start the membership thread");
+    tokio::spawn(async move {
+        // Dropped with this task, so aborting the handle stops the heartbeat.
+        let _stop = stop.drop_guard();
+        match finished.await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
+            Ok(Err(_)) => {}
+            Err(_) => panic!("the membership thread stopped without finishing"),
+        }
+    })
+}
+
+/// How long the broker's main runtime may go without running a task before
+/// the heartbeat stops renewing the lease. Well past a filesystem journal
+/// stall (seconds), so only a runtime that is stuck for good loses its shards.
+const RUNTIME_HUNG_AFTER: Duration = Duration::from_secs(10);
+
+/// Proof that the broker's main runtime still runs tasks, for the heartbeat on
+/// its own thread. Without it a deadlocked broker would keep renewing a lease
+/// it cannot serve under, and the shards it leads would never fail over.
+struct RuntimePulse {
+    started: std::time::Instant,
+    /// Milliseconds after `started` the main runtime last ran the ticker.
+    last: AtomicU64,
+    hung_after: Duration,
+}
+
+impl RuntimePulse {
+    /// Tick from the current runtime until `shutdown`.
+    fn start(hung_after: Duration, shutdown: CancellationToken) -> Arc<Self> {
+        let pulse = Arc::new(Self::new(hung_after));
+        let ticking = Arc::clone(&pulse);
+        tokio::spawn(async move {
+            loop {
+                ticking.tick();
+                tokio::select! {
+                    _ = shutdown.cancelled() => return,
+                    _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+                }
+            }
+        });
+        pulse
+    }
+
+    fn new(hung_after: Duration) -> Self {
+        Self {
+            started: std::time::Instant::now(),
+            last: AtomicU64::new(0),
+            hung_after,
+        }
+    }
+
+    fn tick(&self) {
+        let now = self.started.elapsed().as_millis() as u64;
+        self.last.store(now, Ordering::Release);
+    }
+
+    /// How long the runtime has been silent, when that is past `hung_after`.
+    fn hung(&self) -> Option<Duration> {
+        let last = Duration::from_millis(self.last.load(Ordering::Acquire));
+        let silent = self.started.elapsed().saturating_sub(last);
+        (silent > self.hung_after).then_some(silent)
     }
 }
 
@@ -778,16 +897,11 @@ fn adopt_fleet(fleet: &FleetGate, answer: &BTreeSet<String>) {
 /// then deregister so this reads as intentional rather than as a crash.
 /// Neither failure is worth aborting a shutdown over: if the control plane
 /// cannot be told, heartbeat expiry reaches the same conclusion a timeout later.
-pub async fn shutdown_membership(
-    client: &reqwest::Client,
-    base_url: &str,
-    node_id: &str,
-    token: &str,
-) {
-    if let Err(err) = drain(client, base_url, node_id, token).await {
+pub async fn shutdown_membership(link: &impl ControlPlaneLink, node_id: &str, token: &str) {
+    if let Err(err) = drain(link, node_id, token).await {
         tracing::warn!(node_id, error = %err, "could not mark this broker draining");
     }
-    if let Err(err) = deregister(client, base_url, node_id, token).await {
+    if let Err(err) = deregister(link, node_id, token).await {
         tracing::warn!(
             node_id,
             error = %err,
@@ -799,25 +913,21 @@ pub async fn shutdown_membership(
 }
 
 async fn send_heartbeat(
-    client: &reqwest::Client,
-    url: &str,
+    link: &impl ControlPlaneLink,
+    node_id: &str,
     token: &str,
     request: HeartbeatRequest,
     timeout: Duration,
 ) -> std::result::Result<HeartbeatResponse, MembershipError> {
-    let response = client
-        .post(url)
-        .timeout(timeout)
-        .bearer_auth(token)
-        .json(&request)
-        .send()
+    let response = link
+        .heartbeat(token, node_id, &request, timeout)
         .await
         .context("send heartbeat")
         .map_err(MembershipError::Unavailable)?;
 
-    let status = response.status();
+    let status = response.status;
     if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
+        let body = response.text();
         return Err(MembershipError::from_status(
             status,
             format!("heartbeat rejected ({status}): {body}"),
@@ -825,32 +935,24 @@ async fn send_heartbeat(
     }
     response
         .json()
-        .await
         .context("decode heartbeat response")
         .map_err(MembershipError::Unavailable)
 }
 
 async fn post_lifecycle(
-    client: &reqwest::Client,
-    base_url: &str,
+    link: &impl ControlPlaneLink,
     node_id: &str,
     token: &str,
     action: &str,
 ) -> Result<()> {
-    let response = client
-        .post(format!(
-            "{}/v1/nodes/{node_id}/{action}",
-            base_url.trim_end_matches('/')
-        ))
-        .bearer_auth(token)
-        .send()
+    let response = link
+        .lifecycle(token, node_id, action)
         .await
         .with_context(|| format!("{action} node {node_id}"))?;
 
-    let status = response.status();
+    let status = response.status;
     if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
-        return Err(anyhow!("{action} rejected ({status}): {body}"));
+        return Err(anyhow!("{action} rejected ({status}): {}", response.text()));
     }
     Ok(())
 }

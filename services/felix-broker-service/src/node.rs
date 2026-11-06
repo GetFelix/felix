@@ -111,6 +111,10 @@ where
     // it. Until then auth cannot tell an unknown tenant from one not yet
     // synced, so it lets both through to the JWKS fetch.
     let catalog_seeded = CancellationToken::new();
+    // Cancelled once every listener is bound. Readiness waits on it too: a
+    // bind that fails after `/ready` said yes looks like a crash, not a
+    // start-up to retry.
+    let listening = CancellationToken::new();
 
     let cluster = cluster::shard_state(&config);
     let ingress_router = cluster
@@ -391,17 +395,22 @@ where
         },
     )
     .await?;
+    let mqtt_writes = BrokerWrites::new(
+        Arc::clone(&broker),
+        ingress_router.clone(),
+        Some(Arc::clone(&quorum_marks)),
+        std::time::Duration::from_millis(config.publish_quorum_timeout_ms.max(1)),
+    )
+    .with_quotas(Arc::clone(&limits.tenant_rates));
+    let mqtt_writes = match &peers {
+        Some(pool) => mqtt_writes.with_forwarding(Arc::clone(pool), config.forward_budget()),
+        None => mqtt_writes,
+    };
     let mqtt = listeners::bind_mqtt(
         &client_tls,
         &auth,
         BrokerMounts::new(Arc::clone(&broker), ingress_router.clone()),
-        BrokerWrites::new(
-            Arc::clone(&broker),
-            ingress_router.clone(),
-            Some(Arc::clone(&quorum_marks)),
-            std::time::Duration::from_millis(config.publish_quorum_timeout_ms.max(1)),
-        )
-        .with_quotas(Arc::clone(&limits.tenant_rates)),
+        mqtt_writes,
     )?;
     let mut accept_tasks = listeners::spawn_accept_loops(
         &quic_servers,
@@ -464,6 +473,7 @@ where
         &draining,
         &seeded,
         seeded_rx,
+        &listening,
     );
 
     // Filled by the shard tasks, carried by the heartbeat.
@@ -475,7 +485,6 @@ where
     let (registered, registered_watch) = tokio::sync::watch::channel(None);
     let membership = membership::spawn(
         &config,
-        &membership_client,
         gate_readiness_on_sync,
         &seeded,
         &lease,
@@ -506,6 +515,9 @@ where
             .controlplane_url
             .as_deref()
             .map(|base_url| (&membership_client, base_url, &credential)),
+        // Peers suspect a broker that cannot serve clients yet, so they stand
+        // for the shards it leads instead of waiting on it.
+        gate_readiness_on_sync.then_some(&seeded),
         &peer_listener_shutdown,
     )?;
     let shard_tasks = cluster::spawn_shard_tasks(cluster::ShardTaskDeps {
@@ -528,6 +540,9 @@ where
         prefetch: peer_listener.prefetch,
         sync_shutdown: &sync_shutdown,
     });
+
+    // After the last bind: anything bound below here could fail after ready.
+    listening.cancel();
 
     // Only while the shard watch runs is there anything to hand off, and
     // anything to tell this broker when it is done.

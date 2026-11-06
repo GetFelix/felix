@@ -504,6 +504,10 @@ impl ControlPlaneStore for PostgresStore {
         super::ConfirmedAssignment::from_read(shards::get_shard_assignment(self, key).await)
     }
 
+    async fn confirmed_shard_assignment_head(&self) -> StoreResult<Option<u64>> {
+        shards::shard_assignment_head(self).await.map(Some)
+    }
+
     async fn list_shard_assignments(&self) -> StoreResult<Vec<ShardAssignment>> {
         shards::list_shard_assignments(self).await
     }
@@ -529,6 +533,10 @@ impl ControlPlaneStore for PostgresStore {
 
     async fn shard_assignment_snapshot(&self) -> StoreResult<Snapshot<ShardAssignment>> {
         shards::shard_assignment_snapshot(self).await
+    }
+
+    async fn first_shard_assignments(&self) -> StoreResult<Vec<(ShardKey, u64, u64)>> {
+        shards::first_shard_assignments(self).await
     }
 
     async fn shard_assignment_changes(

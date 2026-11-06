@@ -1162,6 +1162,10 @@ impl ControlPlaneStore for FailingStore {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
 
+    async fn confirmed_shard_assignment_head(&self) -> StoreResult<Option<u64>> {
+        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
+    }
+
     async fn list_shard_assignments(&self) -> StoreResult<Vec<ShardAssignment>> {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
@@ -1235,6 +1239,10 @@ impl ControlPlaneStore for FailingStore {
     }
 
     async fn shard_assignment_snapshot(&self) -> StoreResult<Snapshot<ShardAssignment>> {
+        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
+    }
+
+    async fn first_shard_assignments(&self) -> StoreResult<Vec<(ShardKey, u64, u64)>> {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
 

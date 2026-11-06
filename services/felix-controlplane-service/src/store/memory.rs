@@ -192,15 +192,26 @@ impl InMemoryStore {
 
     /// [`ControlPlaneStore::adopt_elected_leader`] in the form a Raft entry
     /// names: with `elected_set` false, as members below the level that
-    /// knows it apply it.
+    /// knows it apply it, and with `own_leader_set` false, as members below
+    /// the level that names this set's own leader on the set it was elected
+    /// on apply it (only its generation is taken).
     pub(crate) async fn apply_adopt_elected_leader(
         &self,
         key: &ShardKey,
         expected_generation: u64,
         elected: &crate::model::ElectedLeader,
         elected_set: bool,
+        own_leader_set: bool,
     ) -> StoreResult<crate::store::AssignmentWrite> {
-        shards::adopt_elected_leader(self, key, expected_generation, elected, elected_set).await
+        shards::adopt_elected_leader(
+            self,
+            key,
+            expected_generation,
+            elected,
+            elected_set,
+            own_leader_set,
+        )
+        .await
     }
 
     /// [`ControlPlaneStore::create_stream`], with incarnations decided by `decide`.
@@ -645,7 +656,28 @@ impl ControlPlaneStore for InMemoryStore {
         expected_generation: u64,
         elected: crate::model::ElectedLeader,
     ) -> StoreResult<crate::store::AssignmentWrite> {
-        shards::adopt_elected_leader(self, key, expected_generation, &elected, true).await
+        let own_leader_set = {
+            #[cfg(test)]
+            {
+                !self
+                    .faults
+                    .keep_own_leader
+                    .load(std::sync::atomic::Ordering::Relaxed)
+            }
+            #[cfg(not(test))]
+            {
+                true
+            }
+        };
+        shards::adopt_elected_leader(
+            self,
+            key,
+            expected_generation,
+            &elected,
+            true,
+            own_leader_set,
+        )
+        .await
     }
 
     async fn get_shard_assignment(&self, key: &ShardKey) -> StoreResult<ShardAssignment> {
@@ -659,6 +691,10 @@ impl ControlPlaneStore for InMemoryStore {
         key: &ShardKey,
     ) -> StoreResult<super::ConfirmedAssignment> {
         super::ConfirmedAssignment::from_read(shards::get_shard_assignment(self, key).await)
+    }
+
+    async fn confirmed_shard_assignment_head(&self) -> StoreResult<Option<u64>> {
+        Ok(Some(self.shards.read().await.changes.next_seq))
     }
 
     async fn list_shard_assignments(&self) -> StoreResult<Vec<ShardAssignment>> {
@@ -686,6 +722,10 @@ impl ControlPlaneStore for InMemoryStore {
 
     async fn shard_assignment_snapshot(&self) -> StoreResult<Snapshot<ShardAssignment>> {
         shards::shard_assignment_snapshot(self).await
+    }
+
+    async fn first_shard_assignments(&self) -> StoreResult<Vec<(ShardKey, u64, u64)>> {
+        shards::first_shard_assignments(self).await
     }
 
     async fn shard_assignment_changes(
@@ -1151,6 +1191,10 @@ pub(crate) struct Faults {
     pub(crate) shard_reads: std::sync::atomic::AtomicU32,
     /// Counts reads of revocation cutoffs, not a failure.
     pub(crate) cutoff_reads: std::sync::atomic::AtomicU32,
+    /// Adopts elected leaders as members below the own-leader-set level
+    /// do: an own leader elected on another set has only its generation
+    /// taken.
+    pub(crate) keep_own_leader: std::sync::atomic::AtomicBool,
     /// Once set, the next shard write says it has read its stream or cache,
     /// then waits to be resumed (or 300 ms) before it writes.
     pub(crate) shard_write_pause: std::sync::Mutex<Option<ShardWritePause>>,

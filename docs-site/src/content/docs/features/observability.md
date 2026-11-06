@@ -20,6 +20,14 @@ Log lines are structured key-value events (tenant, stream, subscription id,
 error), so they grep and parse cleanly. There is no JSON output mode today;
 if your aggregation pipeline needs JSON, wrap the process output.
 
+The broker writes log lines to stdout from a thread of its own. A slow disk
+under a redirected stdout then delays the log, not the broker: a worker that
+logs hands the line to a queue and carries on. No line is dropped. If the
+queue fills, logging waits for it to drain. The queue is written out when the
+broker exits cleanly and when it panics. A broker killed outright (`SIGKILL`,
+the kernel's OOM killer) can lose the last lines still queued, usually a few
+milliseconds' worth.
+
 The lines worth knowing on sight:
 
 - Startup: the QUIC listen address, and whether control-plane sync is on.
@@ -284,12 +292,16 @@ yet. `unmounted` counts a `PUBLISH` to a topic that is under no stream's mount,
 `invalid_topic_name` one whose topic name is not allowed (empty, a wildcard, a
 NUL, or too long), and `not_authorized` one by a token without `stream.publish`
 on the mounted stream. A publish that was not written and nobody was told about
-is counted where it was dropped: `not_owner` (another broker owns the shard),
+is counted where it was dropped: `not_owner` (no broker could take it: see
+[MQTT](/features/mqtt/)),
 `record_headers_disabled`, `stream_unavailable` and `reserved_header`. `qos2_unsupported`,
 `retain_unsupported`, `topic_alias_invalid` and `receive_maximum_exceeded` are
-publishes the client was not allowed to send. `leadership_lost`, `quorum_timeout` and
-`write_failed` are connections closed because a write's outcome was unknown;
-watch them during failovers, since the device sends the message again.
+publishes the client was not allowed to send. `leadership_lost`, `quorum_timeout`,
+`write_failed` and `forward_unanswered` (a forward to the shard's owner got no
+answer, and sending it again did not get one either, within the forward budget)
+are connections closed because a write's outcome was unknown; watch them during
+failovers, since the device sends the message again. A forward the owner
+refused for its token counts as `not_authorized`.
 `felix_mqtt_published_total{qos}` counts messages that were written; a QoS 1
 message is counted when its `PUBACK` is owed. Reasons that start with `ws_` are WebSocket
 upgrades that were refused (`ws_origin`, `ws_header_too_large`,
@@ -535,6 +547,11 @@ restarting every instance because a dependency is down turns one outage into
 a restart loop. `/ready` says "send this instance traffic," and goes false
 first thing during shutdown so load balancers steer away before anything
 stops working. See [Graceful shutdown](/deployment/graceful-shutdown/).
+
+A broker with durable storage and a control plane starts with `/ready` false.
+It turns true once the catalog is applied, every durable stream is recovered,
+and every listener is bound. A broker that cannot bind a port exits without
+ever reporting ready, so whatever started it sees a failed start, not a crash.
 
 ## Distributed tracing
 

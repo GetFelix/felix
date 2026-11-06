@@ -92,6 +92,10 @@ fn fence_backoff(failures: u32) -> Duration {
 /// shard's followers behind. Not at once: a follower that is unreachable would
 /// be redialled in a tight loop for the rest of the drain.
 const CATCH_UP_RETRY: Duration = Duration::from_millis(50);
+/// How long a leader's own ballot must stay past the generation it leads
+/// before it reports that generation refused. A promotion takes the new
+/// ballot before the routes name it, so a shorter gap is a route catching up.
+const BALLOT_ABOVE_FOR: Duration = Duration::from_secs(3);
 
 /// The running driver, as a stopping broker needs it.
 pub struct Replication {
@@ -299,8 +303,10 @@ pub trait WriteFence: Send + Sync {
     /// the two calls above, if they apply, came before this one.
     fn passed(&self, _key: &crate::ShardKey, _generation: u64) {}
 
-    /// A follower refused `key`'s ships at `generation` because it accepted a
-    /// newer leader. Called on every pass while the refusal stands.
+    /// `key` has a newer leader than `generation`: a follower refused its
+    /// ships because the control plane assigned a newer generation, or this
+    /// broker itself took a newer generation or set. Called on every pass
+    /// while that holds.
     fn deposed(&self, _key: &crate::ShardKey, _generation: u64) {}
 
     /// This broker does not lead `key` at `generation`, though the route says
@@ -715,6 +721,17 @@ async fn open_fenced(
             );
             false
         }
+        Outcome::SetUnknown { why } => {
+            tracing::warn!(
+                stream = %key.stream,
+                shard = key.shard,
+                generation,
+                why = %why,
+                "the set this generation leaves is not known here; reporting it refused",
+            );
+            metrics::record_fence_set_unknown();
+            false
+        }
         Outcome::Refused {
             promised_to, why, ..
         } => {
@@ -724,7 +741,8 @@ async fn open_fenced(
                 generation,
                 promised_to = %promised_to,
                 why = %why,
-                "a replica promised the generation to another node and no majority took it; reporting the refusal",
+                "replicas promised the generation to another node or took a newer one, and no \
+                 majority took it; reporting the refusal",
             );
             false
         }
@@ -772,6 +790,12 @@ async fn opened(
     let opened = gate.open(&watch_key(key), generation).await;
     if opened {
         metrics::record_promotion_opened(path);
+        tracing::info!(
+            stream = %key.stream,
+            shard = key.shard,
+            generation,
+            "the shard is open for writes",
+        );
     }
     opened
 }
@@ -854,7 +878,8 @@ fn take_work(
     let learner = shard::staged_learner(previous.as_ref(), route);
     let mut entry = match previous {
         Some(entry) if entry.generation == route.generation => entry,
-        _ => ShardCursors::at(route.generation),
+        Some(entry) => entry.next(route.generation),
+        None => ShardCursors::at(route.generation),
     };
     entry.learner = learner;
     // A draining shard reports even with nobody to ship to: its move lost

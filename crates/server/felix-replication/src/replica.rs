@@ -19,7 +19,7 @@ mod election;
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use felix_broker::Broker;
 use felix_broker::replication::{self, Divergence};
@@ -29,6 +29,7 @@ use felix_wire::internal::{
     ErrorCode, Fence, FenceOk, GenerationStart, InternalMessage, ReplicaLog, ReplicateBootstrap,
     ReplicateError, ReplicateFetch, ReplicateOk, ReplicateRebuild, ReplicateRecords,
 };
+use tokio::time::Instant;
 
 /// The most one fetch answer carries, whatever the leader asked for.
 const MAX_FETCH_BYTES: usize = 4 * 1024 * 1024;
@@ -275,7 +276,7 @@ impl ReplicaHandler {
         }
         let Some(log) = self
             .broker
-            .shard_log_for(
+            .shard_log_off_runtime(
                 log_kind,
                 &key.tenant_id,
                 &key.namespace,
@@ -502,7 +503,7 @@ impl ReplicaHandler {
         // is the authority either way.
         let Some(log) = self
             .broker
-            .shard_log_for(
+            .shard_log_off_runtime(
                 log_kind,
                 &key.tenant_id,
                 &key.namespace,
@@ -683,7 +684,7 @@ impl ReplicaHandler {
         // and silently keeping nothing.
         let Some(log) = self
             .broker
-            .shard_log_for(
+            .shard_log_off_runtime(
                 log_kind,
                 &key.tenant_id,
                 &key.namespace,
@@ -725,7 +726,14 @@ impl ReplicaHandler {
         }
         if let Some(stamped) = batch.set_generation
             && let Some(refusal) = self
-                .check_batch_set(correlation_id, &key, &log, stamped, batch.shard.generation)
+                .check_batch_set(
+                    correlation_id,
+                    &key,
+                    &log,
+                    stamped,
+                    batch.shard.generation,
+                    sender,
+                )
                 .await
         {
             return refusal;
@@ -964,6 +972,7 @@ impl ReplicaHandler {
                         batch.shard.generation,
                         batch.generations.as_deref(),
                     )
+                    .await
                 {
                     tracing::warn!(
                         stream = %key.stream,
@@ -1180,7 +1189,7 @@ impl ReplicaHandler {
         }
         let Some(log) = self
             .broker
-            .shard_log_for(
+            .shard_log_off_runtime(
                 log_kind,
                 &key.tenant_id,
                 &key.namespace,
@@ -1254,12 +1263,14 @@ impl ReplicaHandler {
         if log_kind == felix_broker::LogKind::Cache {
             let counters = self
                 .broker
-                .shard_log(
+                .shard_log_off_runtime(
                     felix_broker::LogKind::Counters,
                     &key.tenant_id,
                     &key.namespace,
                     &key.stream,
                     key.shard,
+                    None,
+                    None,
                 )
                 .await
                 .map_or(0, |log| log.accepted_generation());
@@ -1269,14 +1280,12 @@ impl ReplicaHandler {
                     correlation_id,
                     ErrorCode::FencedEpoch,
                     0,
-                    format!(
-                        "this broker accepted generation {counters}, the sender is at {generation}"
-                    ),
+                    superseded_detail(counters, generation),
                 );
             }
         }
         if let Some(refusal) = self
-            .refuse_non_voter_fence(correlation_id, &key, log_kind, &log, &request)
+            .refuse_non_voter_fence(correlation_id, &key, log_kind, &log, &request, sender)
             .await
         {
             return refusal;
@@ -1314,7 +1323,7 @@ impl ReplicaHandler {
         // any other node it is refused below, by the ballot.
         if let Some(election) = &request.election
             && let Some(refusal) =
-                self.check_fence_set(correlation_id, &key, &log, election, generation)
+                self.check_fence_set(correlation_id, &key, &log, election, generation, sender)
         {
             return refusal;
         }
@@ -1325,7 +1334,7 @@ impl ReplicaHandler {
         // After the ballot, as the open expects, and before the answer.
         if let Some(election) = &request.election
             && let Some(refusal) = self
-                .keep_fence_set(correlation_id, &key, &log, election)
+                .keep_fence_set(correlation_id, &key, &log, election, (generation, sender))
                 .await
         {
             return refusal;
@@ -1389,7 +1398,7 @@ impl ReplicaHandler {
         }
         let Some(log) = self
             .broker
-            .shard_log_for(
+            .shard_log_off_runtime(
                 log_kind,
                 &key.tenant_id,
                 &key.namespace,
@@ -1546,7 +1555,7 @@ impl ReplicaHandler {
         };
         let log = self
             .broker
-            .shard_log_for(
+            .shard_log_off_runtime(
                 own,
                 &key.tenant_id,
                 &key.namespace,
@@ -1566,9 +1575,7 @@ impl ReplicaHandler {
                 correlation_id,
                 ErrorCode::FencedEpoch,
                 0,
-                format!(
-                    "this broker accepted generation {accepted}, the sender is at {generation}"
-                ),
+                superseded_detail(accepted, generation),
             )
         })
     }
@@ -1600,7 +1607,7 @@ impl ReplicaHandler {
             Some(own) => {
                 opened = self
                     .broker
-                    .shard_log_for(
+                    .shard_log_off_runtime(
                         own,
                         &key.tenant_id,
                         &key.namespace,
@@ -1786,7 +1793,7 @@ impl ReplicaHandler {
             Some(own) => {
                 opened = self
                     .broker
-                    .shard_log_for(
+                    .shard_log_off_runtime(
                         own,
                         &key.tenant_id,
                         &key.namespace,
@@ -1990,7 +1997,7 @@ impl ReplicaHandler {
                     correlation_id,
                     ErrorCode::FencedEpoch,
                     0,
-                    format!("this broker is at generation {have}, the sender at {named}"),
+                    view_detail(have, named),
                 ))
             }
             ReplicaRole::Behind { have, named } => {
@@ -2002,7 +2009,7 @@ impl ReplicaHandler {
                     correlation_id,
                     ErrorCode::StaleRoute,
                     0,
-                    format!("this broker is at generation {have}, the sender at {named}"),
+                    view_detail(have, named),
                 ))
             }
             ReplicaRole::NotAReplica => {
@@ -2011,7 +2018,7 @@ impl ReplicaHandler {
                     correlation_id,
                     ErrorCode::Unauthorized,
                     0,
-                    "this broker is not a replica of that shard".to_string(),
+                    NOT_A_REPLICA.to_string(),
                 ))
             }
         }
@@ -2091,10 +2098,7 @@ fn confirmed_refusal(
                 correlation_id,
                 ErrorCode::FencedEpoch,
                 0,
-                format!(
-                    "the control plane assigned generation {assigned}, the sender is at \
-                         {generation}"
-                ),
+                assigned_detail(*assigned, generation),
             ))
         }
         Confirmed::Assigned {
@@ -2166,15 +2170,38 @@ async fn accept_sender(
     sender: Option<&str>,
 ) -> Option<InternalMessage> {
     match log.accept_generation(generation, sender).await {
-        Ok(GenerationCheck::Current | GenerationCheck::Raised) => None,
-        Ok(GenerationCheck::Promised { leader }) => Some(promised_elsewhere(
+        Ok(check) => ballot_refusal(check, correlation_id, key, generation, sender),
+        Err(err) => {
+            metrics::record_replicated(metrics::OUTCOME_ERROR);
+            Some(refused(
+                correlation_id,
+                ErrorCode::StorageFailed,
+                0,
+                err.to_string(),
+            ))
+        }
+    }
+}
+
+/// The refusal a ballot's answer to `sender` at `generation` calls for, if
+/// any.
+fn ballot_refusal(
+    check: GenerationCheck,
+    correlation_id: u64,
+    key: &felix_router::ShardKey,
+    generation: u64,
+    sender: Option<&str>,
+) -> Option<InternalMessage> {
+    match check {
+        GenerationCheck::Current | GenerationCheck::Raised => None,
+        GenerationCheck::Promised { leader } => Some(promised_elsewhere(
             correlation_id,
             key,
             generation,
             &leader,
             sender,
         )),
-        Ok(GenerationCheck::Superseded { accepted }) => {
+        GenerationCheck::Superseded { accepted } => {
             tracing::warn!(
                 stream = %key.stream,
                 shard = key.shard,
@@ -2187,18 +2214,7 @@ async fn accept_sender(
                 correlation_id,
                 ErrorCode::FencedEpoch,
                 0,
-                format!(
-                    "this broker accepted generation {accepted}, the sender is at {generation}"
-                ),
-            ))
-        }
-        Err(err) => {
-            metrics::record_replicated(metrics::OUTCOME_ERROR);
-            Some(refused(
-                correlation_id,
-                ErrorCode::StorageFailed,
-                0,
-                err.to_string(),
+                superseded_detail(accepted, generation),
             ))
         }
     }
@@ -2268,6 +2284,71 @@ pub(crate) fn promised_to(detail: &str, generation: u64) -> Option<&str> {
         .filter(|leader| !leader.is_empty())
 }
 
+/// What a replica answers a batch for a shard whose route at that
+/// generation does not name it a follower; [`refuses_leader`] reads it back.
+pub(crate) const NOT_A_REPLICA: &str = "this broker is not a replica of that shard";
+
+/// Whether a follower's refusal of a leader at `generation` says its copy
+/// does not follow that leader there: its route names it outside the set,
+/// as the leader the control plane named, or its ballot holds the
+/// generation for another node.
+pub(crate) fn refuses_leader(code: ErrorCode, detail: &str, generation: u64) -> bool {
+    match code {
+        ErrorCode::Unauthorized => detail == NOT_A_REPLICA,
+        ErrorCode::FencedEpoch => promised_to(detail, generation).is_some(),
+        _ => false,
+    }
+}
+
+/// What a replica answers a sender at `generation` once its ballot holds
+/// the newer `accepted`; [`superseded_by`] reads it back.
+pub(crate) fn superseded_detail(accepted: u64, generation: u64) -> String {
+    format!("this broker accepted generation {accepted}, the sender is at {generation}")
+}
+
+/// What a replica answers a sender at `generation` when the control plane's
+/// confirmed assignment is at the newer `assigned`; [`assigned_newer`] reads
+/// it back.
+pub(crate) fn assigned_detail(assigned: u64, generation: u64) -> String {
+    format!("the control plane assigned generation {assigned}, the sender is at {generation}")
+}
+
+/// Whether a `FencedEpoch` refusal of a sender at `generation` says the
+/// control plane assigned a newer generation. Unlike a ballot or a view,
+/// which an election may leave behind with no leader, that names one.
+pub(crate) fn assigned_newer(detail: &str, generation: u64) -> bool {
+    detail
+        .strip_prefix("the control plane assigned generation ")
+        .and_then(|rest| rest.strip_suffix(&format!(", the sender is at {generation}")))
+        .and_then(|assigned| assigned.parse::<u64>().ok())
+        .is_some_and(|assigned| assigned > generation)
+}
+
+/// What a replica answers a sender at `generation` when its routing view is
+/// at `have`; [`superseded_by`] reads it back from a fenced refusal.
+pub(crate) fn view_detail(have: u64, generation: u64) -> String {
+    format!("this broker is at generation {have}, the sender at {generation}")
+}
+
+/// The newer generation a `FencedEpoch` refusal says this replica holds,
+/// when it refused a sender at `generation` for that: its ballot, or its
+/// routing view ([`ReplicaRole::Fenced`]). A view above the control plane's
+/// comes from a candidate's fence this replica took, whose ballot it also
+/// holds. `None` for any other refusal.
+pub(crate) fn superseded_by(detail: &str, generation: u64) -> Option<u64> {
+    let newer = detail
+        .strip_prefix("this broker accepted generation ")
+        .and_then(|rest| rest.strip_suffix(&format!(", the sender is at {generation}")))
+        .or_else(|| {
+            detail
+                .strip_prefix("this broker is at generation ")?
+                .strip_suffix(&format!(", the sender at {generation}"))
+        })?
+        .parse::<u64>()
+        .ok()?;
+    (newer > generation).then_some(newer)
+}
+
 /// Where a batch from a leader at `generation` must start for every record
 /// this follower wrote under an older generation to be compared, or `None`
 /// when there is nothing uncompared.
@@ -2294,7 +2375,7 @@ fn unverified_from(
 /// what they keep. A batch from a sender that predates labels says only who
 /// sent it, so its generation is taken to start where the batch appended: an
 /// overclaim when the sender inherited the records, which is why labels exist.
-pub(crate) fn label_appended(
+pub(crate) async fn label_appended(
     log: &felix_broker::StreamLog,
     from: u64,
     durable: u64,
@@ -2311,9 +2392,12 @@ pub(crate) fn label_appended(
                     start_offset: start.start_offset,
                 })
                 .collect();
-            log.label_generations(from, &epochs)
+            log.label_generations_off_runtime(from, epochs).await
         }
-        None => log.record_generation(sender_generation, from).map(|_| ()),
+        None => log
+            .record_generation_off_runtime(sender_generation, from)
+            .await
+            .map(|_| ()),
     }
 }
 

@@ -125,6 +125,7 @@ impl Cluster {
                 self._root.path(),
                 index,
                 self.links.as_ref(),
+                None,
             )
             .with_context(|| format!("restart {node_id}"))?;
             self.nodes[index] = node;
@@ -173,6 +174,26 @@ impl Cluster {
         }
         set_aside_log(&self.nodes[index].data_dir);
         self.respawn(index)
+    }
+
+    /// [`Self::start_node_unready`] on the ports it had, as a broker with a
+    /// fixed address restarts. Peers whose view of the cluster the control
+    /// plane has not refreshed reach it at its old address only.
+    pub fn start_node_unready_in_place(&mut self, node_id: &str) -> Result<()> {
+        let index = self
+            .nodes
+            .iter()
+            .position(|node| node.node_id == node_id)
+            .ok_or_else(|| anyhow!("unknown node {node_id}"))?;
+        if self.nodes[index].is_running() {
+            bail!("{node_id} is still running");
+        }
+        let ports = (
+            self.nodes[index].client_addr,
+            self.nodes[index].internal_addr,
+        );
+        set_aside_log(&self.nodes[index].data_dir);
+        self.respawn_on(index, Some(ports))
     }
 
     /// Wait for a broker started with [`Self::start_node_unready`] to report

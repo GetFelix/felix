@@ -26,6 +26,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use super::Shared;
 use super::connect::Session;
 use super::connection::{Connection, End};
+use crate::auth::Credential;
 use crate::metrics;
 use crate::mount::MountedTopic;
 use crate::topic::check_topic_name;
@@ -40,6 +41,7 @@ type ShardKey = (Arc<str>, Arc<str>, u32);
 /// A connection's publishes between the socket and the broker.
 pub(super) struct Publishing<'a> {
     tenant: Arc<str>,
+    credential: Option<Credential>,
     producer_id: u64,
     max_inflight: usize,
     reason_strings: bool,
@@ -82,6 +84,7 @@ impl<'a> Publishing<'a> {
     pub(super) fn new(shared: &Shared, session: &Session) -> Self {
         Self {
             tenant: session.principal.tenant_id().into(),
+            credential: session.principal.credential().cloned(),
             producer_id: session.producer_id,
             max_inflight: usize::from(shared.settings.max_inflight),
             reason_strings: session.reason_strings,
@@ -137,6 +140,7 @@ impl<'a> Publishing<'a> {
         let hold = writes.admit_produce(&self.tenant, records.len() as u64, bytes);
         let batch = WriteBatch {
             tenant_id: Arc::clone(&self.tenant),
+            credential: self.credential.clone(),
             target,
             producer_id: self.producer_id,
             sequence: self.sequences.get(&key).copied().unwrap_or(0),
@@ -370,6 +374,7 @@ fn describe(refusal: Refusal) -> (ReasonCode, &'static str) {
         ),
         // 0x88 is not allowed on a PUBACK.
         Refusal::StreamUnavailable => (ReasonCode::UnspecifiedError, "stream_unavailable"),
+        Refusal::NotAuthorized => (NOT_AUTHORIZED.reason, NOT_AUTHORIZED.label),
     }
 }
 

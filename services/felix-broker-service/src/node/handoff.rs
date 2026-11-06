@@ -132,13 +132,15 @@ impl Handoff {
             .as_ref()
             .map(|credential| credential.bearer().to_string());
 
+        let link = felix_replication::controlplane_link::HttpControlPlaneLink::new(
+            self.client.clone(),
+            &self.base_url,
+        );
+
         // Draining the only broker would hold every shard waiting for a
         // destination until the timeout, then fail over to nobody.
-        let catalog = tokio::time::timeout(
-            CALL_TIMEOUT,
-            node_catalog::fetch(&self.client, &self.base_url, token.as_deref()),
-        )
-        .await;
+        let catalog =
+            tokio::time::timeout(CALL_TIMEOUT, node_catalog::fetch(&link, token.as_deref())).await;
         match catalog {
             Ok(Ok(catalog)) => {
                 if !catalog
@@ -158,12 +160,7 @@ impl Handoff {
 
         let drain = tokio::time::timeout(
             CALL_TIMEOUT,
-            membership::drain(
-                &self.client,
-                &self.base_url,
-                &self.node_id,
-                token.as_deref().unwrap_or_default(),
-            ),
+            membership::drain(&link, &self.node_id, token.as_deref().unwrap_or_default()),
         )
         .await;
         match drain {

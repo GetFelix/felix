@@ -1,5 +1,5 @@
-//! A leader named at a generation it promised to another node says so
-//! instead of failing quietly.
+//! A leader named at a generation it promised to another node, or below one
+//! it already accepted, says so instead of failing quietly.
 use std::sync::Arc;
 
 use felix_common::membership::RefusedGeneration;
@@ -80,14 +80,18 @@ async fn a_promised_generation_is_recorded_as_refused() {
     assert_eq!(held.fence().refused_at(&key(0)), None);
 }
 
-/// A generation this broker already moved past is a different failure: it is
-/// not a promise to someone else, so nothing is recorded.
+/// **A generation below one this broker already accepted is recorded as
+/// refused, naming no node** (#1914). With elections the newer ballot can be
+/// this broker's own standing that never opened, which no assignment names;
+/// unreported, the control plane keeps naming it at a generation it can
+/// never open. When the control plane did name the newer one, the report is
+/// for an older generation than it holds and changes nothing.
 #[tokio::test]
-async fn a_superseded_generation_is_not_recorded_as_refused() {
+async fn a_superseded_generation_is_recorded_as_refused() {
     let dir = tempfile::tempdir().expect("tempdir");
     let storage = storage(dir.path());
     log(&storage)
-        .accept_generation(6, Some("broker-b"))
+        .accept_generation(6, Some("broker-a"))
         .await
         .expect("accept");
     let (lifecycle, store) = node(&storage);
@@ -96,5 +100,92 @@ async fn a_superseded_generation_is_not_recorded_as_refused() {
 
     let held = lifecycle.lock().await;
     assert_eq!(held.phase(&key(0)), Phase::Failed);
+    assert_eq!(
+        held.fence().refused_at(&key(0)),
+        Some(RefusedGeneration::set_unknown(4)),
+    );
+    drop(held);
+
+    // Named again above the ballot, it opens and the refusal is cleared.
+    reconcile(&lifecycle, &store, &led_with_followers(7)).await;
+    let held = lifecycle.lock().await;
+    assert_eq!(held.phase(&key(0)), Phase::Active);
     assert_eq!(held.fence().refused_at(&key(0)), None);
+}
+
+/// **Named below a generation it let go of, the shard is refused, naming no
+/// node** (#1914). A withdrawn standing leaves the shard closed at its ballot,
+/// above the control plane's generation, and the assignment that follows is
+/// older than that. Dropped as a replay, it was never reported, so the
+/// control plane never named this broker past the ballot.
+#[test]
+fn an_assignment_below_a_withdrawn_standing_is_refused() {
+    let mut own = lifecycle();
+    // The standing at 6 opens, then is withdrawn: the route goes back to the
+    // old leader, and the shard is released.
+    own.observe(&key(0), Some(&assigned_to("broker-a", 6)));
+    own.opened(&key(0), 6);
+    assert!(matches!(
+        own.observe(&key(0), Some(&assigned_to("broker-b", 4))),
+        Action::Release { .. }
+    ));
+    own.released(&key(0), 6);
+
+    assert_eq!(
+        own.observe(&key(0), Some(&assigned_to("broker-a", 5))),
+        Action::None
+    );
+    assert_eq!(
+        own.fence().refused_at(&key(0)),
+        Some(RefusedGeneration::set_unknown(5)),
+    );
+
+    // Named at the ballot, it opens there.
+    assert!(matches!(
+        own.observe(&key(0), Some(&assigned_to("broker-a", 6))),
+        Action::Open { generation: 6, .. }
+    ));
+}
+
+/// **Named below a standing still fencing, the same.** The control plane's
+/// assignment names this broker, so the withdrawal that follows never
+/// releases the shard: it stays fencing at its ballot until the control
+/// plane names it at or above it.
+#[test]
+fn an_assignment_below_a_fencing_standing_is_refused() {
+    let mut own = lifecycle();
+    own.observe(&key(0), Some(&assigned_to("broker-b", 4)));
+    own.fence_promotions();
+    own.observe(&key(0), Some(&assigned_to("broker-a", 6)));
+    assert_eq!(own.opened(&key(0), 6), Opened::Fencing);
+
+    assert_eq!(
+        own.observe(&key(0), Some(&assigned_to("broker-a", 5))),
+        Action::None
+    );
+    assert_eq!(
+        own.fence().refused_at(&key(0)),
+        Some(RefusedGeneration::set_unknown(5)),
+    );
+
+    // Named at the ballot, the fence already running goes on, and serves
+    // there once it settles.
+    assert_eq!(
+        own.observe(&key(0), Some(&assigned_to("broker-a", 6))),
+        Action::None
+    );
+    assert!(own.fenced(&key(0), 6));
+    assert_eq!(own.phase(&key(0)), Phase::Active);
+    assert!(own.fence().admit(&key(0), 6).is_ok());
+}
+
+/// **A replayed older assignment for a shard still served says nothing.**
+#[test]
+fn a_replay_below_a_served_generation_is_not_refused() {
+    let mut own = lifecycle();
+    own.observe(&key(0), Some(&assigned_to("broker-a", 6)));
+    own.opened(&key(0), 6);
+
+    own.observe(&key(0), Some(&assigned_to("broker-a", 5)));
+    assert_eq!(own.fence().refused_at(&key(0)), None);
 }

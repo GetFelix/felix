@@ -105,6 +105,16 @@ impl PeerCapabilities {
     ///
     /// [`ReplicateOk::learner`]: super::ReplicateOk::learner
     pub const LEARNER_ACKS: Self = Self(1 << 15);
+    /// Keeps every set an election fence names, not only the set being
+    /// left, and every set its own log kept from generations that never
+    /// opened, and reads a fence that carries the older sets
+    /// ([`FenceElection::earlier`]). A joint fence counts only replicas
+    /// that offer it: one that keeps a single set would let a later
+    /// failover from its log skip a set that still holds acknowledged
+    /// writes.
+    ///
+    /// [`FenceElection::earlier`]: super::FenceElection::earlier
+    pub const KEPT_SETS: Self = Self(1 << 16);
     /// Reads batches that carry each record's key-and-headers block
     /// ([`ReplicateRecords::headers`]) and stores the blocks with the
     /// records, answers a headered [`ReplicateFetch`] with them, and reads a
@@ -115,6 +125,13 @@ impl PeerCapabilities {
     /// [`ReplicateRecords::headers`]: super::ReplicateRecords::headers
     /// [`ForwardPublish::headers`]: super::ForwardPublish::headers
     pub const RECORD_HEADERS: Self = Self(1 << 17);
+    /// Reads a forwarded publish that names its producer id and batch
+    /// sequence ([`ForwardPublish::producer`]) and applies it as that
+    /// producer's idempotent batch, so a re-sent batch already in the log is
+    /// answered with its offsets instead of written twice.
+    ///
+    /// [`ForwardPublish::producer`]: super::ForwardPublish::producer
+    pub const SEQUENCED_FORWARDS: Self = Self(1 << 18);
 
     pub fn from_bits(bits: u64) -> Self {
         Self(bits)
