@@ -331,6 +331,8 @@ expectations=(
   "FelixShardElectLiveNoBackoff violates liveness"
   "FelixShardElectLiveReissue pass"
   "FelixShardElectLiveNoReissue violates liveness"
+  "FelixShardElectLiveUnclean pass"
+  "FelixShardElectLiveUncleanOwnBallot violates liveness"
   "FelixShardCpLiveMain violates liveness"
   "FelixShardCpLiveNoOwnBallotRefused violates liveness"
   "FelixShardCpLiveNoOverlayRefused violates liveness"
