@@ -215,7 +215,7 @@ again after the heal.
 Run a batch of seeds, or replay one:
 
 ```bash
-cargo test -p felix-sim --test seeds seeds
+cargo test -p felix-sim --test seeds -- --ignored --exact seeds
 FELIX_SIM_SEED=<n> cargo test -p felix-sim --test seeds replay -- --nocapture
 ```
 
@@ -233,7 +233,8 @@ brokers' own tasks can still differ, so a failure may take a few replays to
 show again. Building with `RUSTFLAGS="--cfg tokio_unstable"` makes tokio's
 `select!` seeded as well, which closes most of that gap. It does not close all
 of it: storage still reads the host clock in a few places. CI runs the `seeds`
-test with the workspace tests, so seeds 1 to 4 run on every pull request.
+test, seeds 1 to 4, in its own job on every pull request. That job does not
+block merging until the open liveness bugs it finds are fixed.
 Seeds that expose a bug are pinned as ignored tests named after their issue,
 and [`docs/simulation.md`](https://github.com/GetFelix/felix/blob/main/docs/simulation.md)
 lists the ones that fail today.

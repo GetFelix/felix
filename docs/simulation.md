@@ -20,7 +20,7 @@ minutes of real time, not seconds (see [Running it](#running-it)).
 Run a batch of seeds:
 
 ```bash
-cargo test -p felix-sim --test seeds seeds
+cargo test -p felix-sim --test seeds -- --ignored --exact seeds
 ```
 
 `FELIX_SIM_SEEDS` sets how many seeds (default 4) and `FELIX_SIM_SEED_START`
@@ -239,7 +239,8 @@ it with `#[ignore = "#<issue>"]` in `tests/seeds.rs`.
 These seeds fail today. Each is pinned in `tests/seeds.rs` as an ignored test
 named after its issue, which passes when the bug is fixed; run them with
 `cargo test -p felix-sim --test seeds -- --ignored`. The default batch
-is seeds 1 to 4, so it fails until these are fixed.
+is seeds 1 to 4. It is ignored in the workspace tests and runs in its own CI
+job on every pull request, which does not block merging until these are fixed.
 
 | Seed | What it finds | Issue |
 | --- | --- | --- |
