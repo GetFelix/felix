@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use felix_cluster::Cluster;
-use felix_controlplane_service::admin::backup_point::{BackupPoint, Manifest, PointShard};
+use serde::{Deserialize, Serialize};
 
 /// A record some publisher was told is committed, and when it was told.
 #[derive(Debug, Clone)]
@@ -89,33 +89,93 @@ impl Load {
     }
 }
 
-/// A backup point of the cluster, reading each broker's offsets from its
-/// metrics listener.
-async fn take_point(cluster: &Cluster, name: &str) -> Manifest {
-    backup_point(cluster, name)
-        .take()
-        .await
-        .expect("take a backup point")
+/// A backup point as `felixctl backup-point` writes it; the fields the tests
+/// read, and enough of the rest for `felix-broker restore-point` to take the
+/// manifest back.
+#[derive(Debug, Serialize, Deserialize)]
+struct Manifest {
+    format_version: u32,
+    name: String,
+    taken_at_millis: u64,
+    metadata_version: u64,
+    shards: Vec<PointShard>,
 }
 
-fn backup_point(cluster: &Cluster, name: &str) -> BackupPoint {
-    BackupPoint {
-        control_plane_url: cluster.control_plane_url().to_string(),
-        token: Some(cluster.admin_token()),
-        name: name.to_string(),
-        // Every harness broker has its own metrics port on one host.
-        brokers: cluster
-            .nodes
-            .iter()
-            .map(|node| {
-                (
-                    node.node_id.clone(),
-                    format!("http://{}", node.metrics_addr),
-                )
-            })
-            .collect(),
-        metrics_port: 0,
+#[derive(Debug, Serialize, Deserialize)]
+struct PointShard {
+    tenant_id: String,
+    namespace: String,
+    name: String,
+    shard: u32,
+    kind: String,
+    leader: String,
+    generation: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    incarnation: u64,
+    logs: PointLogs,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PointLogs {
+    records: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    group_cursors: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    group_dead_letters: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    counters: Option<u64>,
+}
+
+/// A backup point of the cluster, taken by running `felixctl backup-point`
+/// (built alongside the tests by `cargo test --workspace`) against it.
+async fn take_point(cluster: &Cluster, name: &str) -> Manifest {
+    let mut exe = std::env::current_exe().expect("the running executable");
+    exe.pop();
+    // Integration test binaries live in `target/<profile>/deps`.
+    if exe.ends_with("deps") {
+        exe.pop();
     }
+    let exe = exe.join("felixctl");
+    assert!(
+        exe.exists(),
+        "felixctl not found at {}; build it with `cargo build -p felixctl`",
+        exe.display()
+    );
+    let scratch = tempfile::tempdir().expect("tempdir");
+    let out = scratch.path().join("point.json");
+    let mut command = std::process::Command::new(exe);
+    command
+        .arg("backup-point")
+        .arg(name)
+        .arg("--out")
+        .arg(&out)
+        .arg("--controlplane-url")
+        .arg(cluster.control_plane_url())
+        .arg("--controlplane-token")
+        .arg(cluster.admin_token())
+        .env_clear()
+        .env("HOME", scratch.path())
+        .env("FELIX_CLI_CONFIG", scratch.path().join("config.toml"));
+    // Every harness broker has its own metrics port on one host.
+    for node in &cluster.nodes {
+        command
+            .arg("--broker")
+            .arg(format!("{}=http://{}", node.node_id, node.metrics_addr));
+    }
+    let output = tokio::task::spawn_blocking(move || command.output())
+        .await
+        .expect("join")
+        .expect("run felixctl");
+    assert!(
+        output.status.success(),
+        "felixctl backup-point failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&std::fs::read(&out).expect("the manifest")).expect("parse the manifest")
 }
 
 /// `GET /backup/offsets` on `node`, as `(stream, shard) -> records offset`.

@@ -245,10 +245,10 @@ compatibility](/deployment/upgrades/#runbook-rolling-out-a-fleet-feature).
 For each feature, dry-run first:
 
 ```bash
-felix-controlplane admin features finalize joint_fence --dry-run
-felix-controlplane admin features finalize joint_fence
-felix-controlplane admin features finalize replica_election --dry-run
-felix-controlplane admin features finalize replica_election
+felixctl features finalize joint_fence --dry-run
+felixctl features finalize joint_fence --yes
+felixctl features finalize replica_election --dry-run
+felixctl features finalize replica_election --yes
 ```
 
 The dry run says either that the feature can be finalized, or what stops it:

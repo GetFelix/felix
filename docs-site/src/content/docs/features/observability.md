@@ -339,7 +339,7 @@ A broker restart makes these non-zero for as long as the broker is down. Once
 a follower's broker has been gone for `FELIX_SHARD_RESTORE_AFTER_MS`,
 placement copies the shard elsewhere, and the count falls when the copy is
 seated. Alert when either stays above zero for longer than the restore delay
-plus the time a shard takes to copy. `felix-controlplane admin replication`
+plus the time a shard takes to copy. `felixctl placement replication`
 (or `GET /v1/placement/replication`) lists which shards, which members are
 unavailable, and where a copy is going. See
 [Restoring the replication factor](/deployment/moving-shards/#restoring-the-replication-factor).

@@ -179,7 +179,7 @@ were never acknowledged, and an idempotent producer sends them again.
 is nothing to promote. The shard stays assigned to the lost broker and
 unavailable until that broker comes back, when it serves the shard again with
 every record it held. Only an operator can give the records up:
-`POST /v1/placement/abandon/...` (`felix-controlplane admin abandon`) places
+`POST /v1/placement/abandon/...` (`felixctl placement abandon`) places
 the shard afresh on another broker, which starts from an empty log. An
 in-memory stream has no log to wait for and is placed again straight away.
 

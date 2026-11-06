@@ -102,8 +102,8 @@ stream or store record keys and headers in a cluster. To turn one on, once
 every broker runs the new build:
 
 ```bash
-felix-controlplane admin features finalize head_trim --dry-run
-felix-controlplane admin features finalize head_trim
+felixctl features finalize head_trim --dry-run
+felixctl features finalize head_trim --yes
 ```
 
 Use `record_headers` in place of `head_trim` for headers. The two do not
@@ -213,8 +213,8 @@ upgrade above:
 5. Finalize `joint_fence`, dry run first:
 
    ```bash
-   felix-controlplane admin features finalize joint_fence --dry-run
-   felix-controlplane admin features finalize joint_fence
+   felixctl features finalize joint_fence --dry-run
+   felixctl features finalize joint_fence --yes
    ```
 
    From here a broker without `FELIX_INTERNAL_ELECTION=true` is refused at

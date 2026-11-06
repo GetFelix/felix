@@ -419,7 +419,7 @@ fn retry(store: &Store, pending: &Arc<NewClusterFinalize>) {
             if tokio::time::Instant::now() >= give_up_at {
                 tracing::warn!(
                     "new cluster: gave up finalizing fleet features; finalize them with \
-                     `felix-controlplane admin features finalize <feature>` \
+                     `felixctl features finalize <feature>` \
                      (POST /v1/fleet/features/{{feature}}/finalize) once every \
                      control-plane member runs this release"
                 );
