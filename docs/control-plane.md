@@ -19,7 +19,7 @@ the data plane and does not carry user payloads.
 > control plane runs one of two production-shaped backends: a stateless REST
 > service over a highly available Postgres (what that database must provide
 > is [ha-postgres.md](ha-postgres.md)), or a Raft group embedded in the
-> instances themselves, with no external database. M13 is complete, chaos
+> instances themselves, with no external database. The embedded Raft backend is complete, chaos
 > pass included: three instances survive rolling restarts, a SIGKILLed
 > leader, a frozen leader, and a wiped volume without losing an
 > acknowledged write. The implemented design, which differs from the
@@ -397,7 +397,7 @@ rather than a delay. It is tracked in
 [the replication design](replication-design.md): a broker without a valid lease
 refuses, rather than racing its watch. What holds today is convergence within the
 sync interval. See
-[the stale-ownership window](cluster-harness.md#a-gap-the-suite-does-not-paper-over-the-stale-ownership-window).
+[the stale-ownership window](cluster-harness.md#the-stale-ownership-window-and-what-closes-it).
 
 The internal transport is described in
 [the broker-internal forwarding protocol](internal-protocol.md); its remaining

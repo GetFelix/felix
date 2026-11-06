@@ -527,10 +527,10 @@ their pre-votes out together. A release build ignores it.
 > finalized and every gate opens; after that the old build is refused, and
 > the upgraded one rejoins with the gate open.
 
-`ClusterConfig::joint_fence` turns joint fences on, which no release can
-yet: every broker offers `ELECTION` and reports `joint_fence` with the rest of
-its features, and `Cluster::start` finalizes it, after `generation_start` and
-`majority_ack`, before it returns. It needs a debug-build broker, since a
+`ClusterConfig::joint_fence` turns joint fences on. A broker reports
+`joint_fence` once `FELIX_INTERNAL_ELECTION` is on, so every broker offers
+`ELECTION`, and `Cluster::start` finalizes the feature with the rest, after
+`generation_start` and `majority_ack`, before it returns. It needs a debug-build broker, since a
 release build ignores `FELIX_TEST_FLEET_FEATURES`.
 
 ## The failover demo
