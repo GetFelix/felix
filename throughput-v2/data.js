@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793980311628,
+  "lastUpdate": 1793980866076,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -47372,6 +47372,58 @@ window.BENCHMARK_DATA = {
             "range": "10923.35",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 776537.21\nmean: 774626.14\nstdev: 10923.35\ncv: 1.41%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1a169d8cdb6d68f626ea9406a033f13fae838625",
+          "message": "fix(broker): review fixes for starting without the control plane (#1196) (#2022)\n\nFixes the RC review findings in the FELIX_START_WITHOUT_CONTROLPLANE path: a view survives a clean stop whose deregister never left; a replaced-storage marker removes the view and dates later ones, so a restored directory never starts from an older view while a once-replaced one still can; a refusing control plane is reported at warn; the panic flush is bounded; a reopened fence clears silence; tenants and namespaces seeded from the view go when the snapshot lacks them; one ViewFile; the view is rebuilt only when something changed.",
+          "timestamp": "2026-11-06T15:56:09Z",
+          "tree_id": "8aad042c1b49f7da570852123c3bd768b3cdabf8",
+          "url": "https://github.com/GetFelix/felix/commit/1a169d8cdb6d68f626ea9406a033f13fae838625"
+        },
+        "date": 1793980865324,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 360605.63,
+            "range": "13785.09",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 360605.63\nmean: 360258.24\nstdev: 13785.09\ncv: 3.83%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 360605.63,
+            "range": "13785.09",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 360605.63\nmean: 360258.24\nstdev: 13785.09\ncv: 3.83%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 83229.19,
+            "range": "2185.69",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 83229.19\nmean: 82438.00\nstdev: 2185.69\ncv: 2.65%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 832291.88,
+            "range": "21856.91",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 832291.88\nmean: 824379.96\nstdev: 21856.91\ncv: 2.65%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
