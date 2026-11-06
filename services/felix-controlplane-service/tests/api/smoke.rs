@@ -1247,10 +1247,6 @@ impl ControlPlaneStore for FailingStore {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
 
-    async fn previous_shard_assignments(&self) -> StoreResult<Vec<ShardAssignment>> {
-        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
-    }
-
     async fn shard_assignment_changes(
         &self,
         _since: u64,

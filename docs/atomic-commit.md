@@ -174,8 +174,7 @@ is written. Everything else is the same as for a hashed shard: the leader takes
 the write, `Client` follows its redirect, and the fleet must have
 finalized `atomic_commit`. The broker must advertise `FEATURE_EXPLICIT_SHARD`;
 the client refuses to send otherwise, because an older broker would ignore the
-shard and commit wherever the key hashes. The Rust, TypeScript, .NET and Python
-clients all offer it. See
+shard and commit wherever the key hashes. Rust only for now. See
 [Named shards](protocol.md#named-shards).
 
 ## What atomic covers

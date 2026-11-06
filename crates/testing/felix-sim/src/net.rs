@@ -14,8 +14,10 @@
 //!   the pool's errors: `Unsupported` for a capability the target did not
 //!   offer, `Timeout` for an answer that never came.
 //! - The handler hears who asked only when the target keeps ballots.
-//! - Pings are answered without the handler, and a learner's ack reads as a
-//!   plain one to a caller that did not offer `LEARNER_ACKS`.
+//! - Pings are answered without the handler, and an answer is shaped by what
+//!   the caller offered ([`for_caller`]): a learner's ack reads as a plain one
+//!   without `LEARNER_ACKS`, and a refusal has no reason without
+//!   `REFUSAL_REASONS`.
 //!
 //! What it leaves out: the listener's per-stream permits (`Overload`) and its
 //! one-at-a-time answering of an older peer's stream. Every request runs at
@@ -473,7 +475,7 @@ async fn deliver(
             let Some(answer) = handled else {
                 return;
             };
-            for_caller(answer, from_offer.contains(PeerCapabilities::LEARNER_ACKS))
+            for_caller(answer, from_offer)
         }
     };
     if *died.borrow() || died.has_changed().is_err() {

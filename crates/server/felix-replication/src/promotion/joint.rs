@@ -11,9 +11,8 @@
 //! before the route's, as the model's `Swap` takes it (`oldSet' = CpSet`).
 //! A cut-over the control plane holds as pending names it on the route.
 //! Otherwise it comes from the assignment this broker's watch saw at that
-//! generation (also after a rename past a ballot, which names the generation
-//! it replaced, #2024), from the set the leader before shipped with at it, or
-//! from what this leader kept beside its own set. When none of those knows it, the fence
+//! generation, from the set the leader before shipped with at it, or from
+//! what this leader kept beside its own set. When none of those knows it, the fence
 //! stays pending: fencing the new set alone could leave a majority of the old
 //! one that never heard of the change.
 //!

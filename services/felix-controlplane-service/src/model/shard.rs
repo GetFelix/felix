@@ -253,15 +253,6 @@ pub struct ShardAssignment {
     /// Raft it needs metadata level 21.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_set: Option<PendingSet>,
-    /// The generation of the assignment this one replaced, when a placement
-    /// write landed more than one generation above it (a rename past a
-    /// ballot, `MoveStep::SetUnknown`). Nothing was recorded in between, so
-    /// the control plane's set right before this generation is that
-    /// assignment's set, the one a joint fence here leaves (#2024).
-    /// Store-owned like `generation`: whatever a caller passes is replaced.
-    /// Under Raft it needs metadata level 29.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub previous_generation: Option<u64>,
 }
 
 /// A leader that elected itself, as its report names it (rule 10 of
@@ -1063,19 +1054,6 @@ pub(crate) fn generation_at_least(current: u64, at_least: u64) -> Result<u64, St
     }
     check_elected_generation(current, at_least - 1)?;
     next_generation(at_least - 1)
-}
-
-/// [`ShardAssignment::previous_generation`] for a write over `current` at
-/// `generation`: `current` when the write skipped generations, unless it is
-/// an adoption (`elected`), whose set before is the elected leader's
-/// business, not the control plane's.
-pub(crate) fn previous_generation(
-    current: u64,
-    generation: u64,
-    elected: Option<u64>,
-) -> Option<u64> {
-    (elected.is_none() && current.checked_add(1).is_some_and(|next| generation > next))
-        .then_some(current)
 }
 
 /// Whether adopting an election at `elected` over `current` is allowed:

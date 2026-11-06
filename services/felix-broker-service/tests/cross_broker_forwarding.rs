@@ -203,7 +203,6 @@ impl Owner {
                 fence_storage_ids: Default::default(),
                 member_storage_ids: Default::default(),
                 pending_set: None,
-                previous_generation: None,
             },
         )]
         .into_iter()

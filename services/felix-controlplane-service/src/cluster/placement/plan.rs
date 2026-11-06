@@ -789,7 +789,6 @@ pub fn assignment_for(key: &ShardKey, leader: &str, replicas: Vec<String>) -> Sh
         member_storage_ids: Default::default(),
         learners: Default::default(),
         pending_set: None,
-        previous_generation: None,
     }
 }
 

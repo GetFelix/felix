@@ -141,7 +141,6 @@ fn pinned(stream: &str, shard: u32, leader: &str) -> ShardAssignment {
         member_storage_ids: Default::default(),
         learners: Default::default(),
         pending_set: None,
-        previous_generation: None,
     }
 }
 
@@ -167,6 +166,5 @@ fn assigned(stream: &str, leader: &str, replicas: &[&str]) -> ShardAssignment {
         member_storage_ids: Default::default(),
         learners: Default::default(),
         pending_set: None,
-        previous_generation: None,
     }
 }

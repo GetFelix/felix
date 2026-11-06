@@ -19,7 +19,7 @@ the data plane and does not carry user payloads.
 > control plane runs one of two production-shaped backends: a stateless REST
 > service over a highly available Postgres (what that database must provide
 > is [ha-postgres.md](ha-postgres.md)), or a Raft group embedded in the
-> instances themselves, with no external database. The embedded Raft backend is complete, chaos
+> instances themselves, with no external database. M13 is complete, chaos
 > pass included: three instances survive rolling restarts, a SIGKILLed
 > leader, a frozen leader, and a wiped volume without losing an
 > acknowledged write. The implemented design, which differs from the
@@ -219,12 +219,11 @@ a broker opens a new stream's or cache's shard only once it knows the
 assignment is the shard's first, and it can tell that only from an
 incarnation above 0. Without the incarnations, no stream or quorum cache
 created after the finalize would open
-(`joint_fence_is_refused_until_incarnations_are_finalized`). A broker reports
-both only with `FELIX_INTERNAL_ELECTION=true`, which is off by default, so a
-fleet that has not turned it on everywhere has a finalize of either refused
+(`joint_fence_is_refused_until_incarnations_are_finalized`). No build reports
+either feature yet, so a finalize of either is refused
 (`the_election_features_cannot_be_finalized_yet`), and a new cluster does not
 start with them. A broker that offers the `ELECTION`
-peer capability reports it as `peer_election`, also only with that switch on.
+peer capability reports it as `peer_election`, which no build does yet.
 Every broker from #1737 on also reports `start_holders`: its leaders name, in
 each replica report, the followers holding the generation's start record
 (`holds_start`). Current brokers report `non_voting` too:
@@ -398,7 +397,7 @@ rather than a delay. It is tracked in
 [the replication design](replication-design.md): a broker without a valid lease
 refuses, rather than racing its watch. What holds today is convergence within the
 sync interval. See
-[the stale-ownership window](cluster-harness.md#the-stale-ownership-window-and-what-closes-it).
+[the stale-ownership window](cluster-harness.md#a-gap-the-suite-does-not-paper-over-the-stale-ownership-window).
 
 The internal transport is described in
 [the broker-internal forwarding protocol](internal-protocol.md); its remaining
@@ -1008,21 +1007,6 @@ otherwise, so a write is what it was before. Postgres keeps it only for the
 generation that wrote it (migration 0040), and the Raft store writes it only
 at metadata level 23, which also carries a report's `holds_start`.
 
-A placement write that lands more than one generation up, which only a rename
-past a refusal's ballot does, also carries `previous_generation`: the
-generation of the assignment it replaced. Nothing was recorded in between, so a
-broker that watched that assignment takes its set as the one the new
-generation leaves (`docs/replication-design.md`, "Planned handoff"). The store
-sets it; a caller's value is ignored. Postgres keeps it only
-for the generation that wrote it (migration 0045), and the Raft store writes it
-only at metadata level 29.
-
-A snapshot item also carries `previous`, the set of the assignment the change
-log holds right before it (the generation below, or the one
-`previous_generation` names). A broker that reseeds from the snapshot takes it
-as the set its fence leaves. It is read from the retained change log, so an
-item whose earlier change has been evicted carries none.
-
 ##### Re-admitting a replaced copy
 
 A broker whose disk was wiped registers again under a new storage id. The
@@ -1069,8 +1053,8 @@ checks the first four itself.
    without `non_voting` would let a wiped copy vote and count its answers,
    so the check, not the order brokers and control planes are upgraded in,
    keeps a mixed fleet safe.
-2. Every serving broker reports `joint_fence` and `peer_election`. A broker
-   reports them only with `FELIX_INTERNAL_ELECTION=true`, off by default.
+2. Every serving broker reports `joint_fence` and `peer_election`. No release
+   does yet: they join a broker's report with the election driver.
 3. `generation_start`, `stream_incarnations` and `cache_incarnations` are
    finalized. A cluster created on 0.7 has all three; an upgraded one
    finalizes the incarnations first, or no stream or quorum cache created
@@ -2191,8 +2175,16 @@ write acknowledged before the request. 503 means no leader confirmed it in
 time, 501 that the Raft leader predates it. A broker asks here only for a
 copy with no election promise on disk, before it takes a leader
 ([#1332](https://github.com/GetFelix/felix/issues/1332)). It asks from a
-background task, one read per shard at a time and at most 16 at once, never
-while a peer request waits. A new shard's copy asks nothing once its
+background task, one read per shard at a time and at most 16 requests at
+once, never while a peer request waits. Reads that wait for a request go
+together: `POST /v1/shard-assignments/confirmed` with
+`{"keys": [{"tenant_id", "namespace", "stream", "shard", "kind"}, ...]}`
+answers `{"items": [{"assignment": ...}, ...]}` in the same order, read on
+the Raft leader after one read-index, for up to 256 shards (a 400 past that).
+Each answer is as fresh as a single read. A control plane without the form
+answers 404 or 405, and the broker reads one shard per request, asking for
+a batch again 10 s later. A Raft leader that predates the batch is asked
+one shard at a time by the member that took the request. A new shard's copy asks nothing once its
 routing view holds the creation set of the shard's incarnation naming it
 (a shard with no incarnation still reads); a learner under
 elections is refreshed about twice a second while it takes batches

@@ -183,6 +183,9 @@ and tenant-scoped tokens with OIDC token exchange.
 
 What does not exist yet:
 
+- Per-stream retention. A policy can be recorded on a stream, but nothing
+  reads it. Retention itself works, but it is configured per broker and is off
+  unless you set it, so by default a log grows until the disk does.
 - Load-aware placement. Rebalancing evens out shard counts, not load, so a
   broker leading its share of hot shards is left as it is.
 - Reading from tiered storage. Sealed segments can be copied out, but nothing

@@ -95,7 +95,7 @@ backoffs read `tokio::time::Instant` instead of `std::time::Instant`.
   timing-sensitive failure may need a few replays to show again.
 
 Replay is not exact yet. Known gaps: storage reads the host clock in a few
-places, and the control plane draws a few ids from the
+places and does real file I/O, and the control plane draws a few ids from the
 OS. There is at least one more gap nobody has found: seed 59 still diverges by
 about 2 ms around 10.5 s of virtual time, and the cause is unknown. A replay
 can differ from the original run, so a failure may need a few replays to show
@@ -116,7 +116,7 @@ cargo test -p felix-cluster --lib history::
 
 1. **Start.** The control plane gets a tenant, a durable stream with 50 to 200
    shards and a cache, all replicated three ways with quorum acknowledgement.
-   Each broker opens a real durable log in its own in-memory data directory, waits
+   Each broker opens a real durable log in its own temporary directory, waits
    for the stream catalog (the `seeded` gate a real broker has), registers, and
    starts its shard tasks. Once every broker has registered, the run finalizes
    replica election, so brokers elect a new leader themselves when one is lost.
@@ -386,7 +386,9 @@ process.
 
 ### The control plane
 
-Brokers reach the control plane only through the `ControlPlaneLink` trait.
+Brokers reach the control plane only through the `ControlPlaneLink` trait,
+confirmed assignment reads included, so a learner is backed in the simulator
+as in a broker.
 The simulator's link builds the same request a broker would send over HTTP and
 hands it to the control plane's real router in the same process, with an
 in-memory store. The control plane's background loops (placement and the sweep
@@ -395,12 +397,7 @@ of each on their real cadence. Placement keeps what it has seen between
 rounds (when a fence started, how long a suspicion or a pending replica set
 has stood, whether a restore moves), as the real loop does, so timeouts that
 depend on it fire. A control plane that goes down forgets it, as a restarted
-process does; a pause keeps it. The confirmed assignment read that a copy with
-no promise makes before it takes a leader (see "A directory that lost its
-ballots" in [replication-design.md](replication-design.md)) goes through the
-same link. So a copy whose routing view missed its leader's first fence joins
-once the control plane answers, as it does in a real broker. A fault applies
-to every call:
+process does; a pause keeps it. A fault applies to every call:
 
 | Fault | What a broker sees |
 | --- | --- |

@@ -10,7 +10,7 @@ in all three.
 
 ```toml
 [dependencies]
-felix-client = "0.6"
+felix-client = "0.4"
 ```
 
 ```rust

@@ -13,9 +13,10 @@ use crate::api::error::{ApiError, api_error, api_internal};
 use crate::api::nodes::require_cluster_node_view;
 use crate::api::pagination::{PageParams, list_visible};
 use crate::api::types::{
-    ConfirmedShardAssignmentResponse, PreviousSet, RoutedShardAssignment,
-    RoutedShardAssignmentChange, ShardAssignmentChangesResponse, ShardAssignmentListResponse,
-    ShardAssignmentSnapshotResponse, SnapshotShardAssignment,
+    ConfirmedShardAssignmentResponse, ConfirmedShardAssignmentsRequest,
+    ConfirmedShardAssignmentsResponse, RoutedShardAssignment, RoutedShardAssignmentChange,
+    ShardAssignmentChangesResponse, ShardAssignmentListResponse, ShardAssignmentSnapshotResponse,
+    SnapshotShardAssignment,
 };
 use crate::model::{ShardAssignment, ShardAssignmentChange, ShardKey, StreamRouting};
 use crate::store::{ConfirmedAssignment, StoreError};
@@ -109,16 +110,6 @@ pub(crate) async fn shard_assignment_snapshot(
         .map_err(|ref err| api_internal("failed to read first shard assignments", err))?
         .into_iter()
         .collect();
-    // Read after the snapshot too: an assignment written in between makes
-    // the one found here its own, never one right before an older item.
-    let previous: HashMap<ShardKey, ShardAssignment> = state
-        .store
-        .previous_shard_assignments()
-        .await
-        .map_err(|ref err| api_internal("failed to read previous shard assignments", err))?
-        .into_iter()
-        .map(|before| (before.key.clone(), before))
-        .collect();
     let items = with_routing(&state, snapshot.items)
         .await?
         .into_iter()
@@ -126,13 +117,9 @@ pub(crate) async fn shard_assignment_snapshot(
             let item = &assigned.assignment;
             let first_assignment =
                 first.contains(&(item.key.clone(), item.incarnation, item.generation));
-            let previous = previous
-                .get(&item.key)
-                .and_then(|before| PreviousSet::of(before, item));
             SnapshotShardAssignment {
                 assigned,
                 first_assignment,
-                previous,
             }
         })
         .collect();
@@ -195,6 +182,73 @@ pub(crate) async fn confirmed_shard_assignment(
         }
     };
     Ok(Json(ConfirmedShardAssignmentResponse { assignment }))
+}
+
+/// Most shards one batched confirmed read takes.
+const MAX_CONFIRMED_KEYS: usize = 256;
+
+#[utoipa::path(
+    post,
+    path = "/v1/shard-assignments/confirmed",
+    tag = "nodes",
+    request_body = ConfirmedShardAssignmentsRequest,
+    responses(
+        (status = 200, description = "Each shard's assignment, or none, in the request's order", body = ConfirmedShardAssignmentsResponse),
+        (status = 400, description = "More than 256 shards", body = crate::api::types::ErrorResponse),
+        (status = 501, description = "This control plane cannot confirm a read yet", body = crate::api::types::ErrorResponse),
+        (status = 503, description = "No leader confirmed the read in time", body = crate::api::types::ErrorResponse)
+    )
+)]
+/// Several shards' assignments, each as `GET` on this path reads one, so a
+/// broker keeping many copies' answers fresh needs one request for many.
+///
+/// # Errors
+/// - 400 for more than 256 shards.
+/// - 501 while the Raft leader predates confirmed reads.
+/// - 503 when no leader confirmed the read in time.
+pub(crate) async fn confirmed_shard_assignments(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<ConfirmedShardAssignmentsRequest>,
+) -> Result<Json<ConfirmedShardAssignmentsResponse>, ApiError> {
+    require_cluster_node_view(&state, &headers).await?;
+    if request.keys.len() > MAX_CONFIRMED_KEYS {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "too_many_keys",
+            "at most 256 shards per confirmed read",
+        ));
+    }
+    let confirmed = state
+        .store
+        .confirmed_shard_assignments(&request.keys)
+        .await
+        .map_err(|ref err| confirm_failed(err))?;
+    let mut assigned = Vec::new();
+    for answer in &confirmed {
+        match answer {
+            ConfirmedAssignment::Assigned(assignment) => assigned.push(assignment.clone()),
+            ConfirmedAssignment::Unassigned => {}
+            ConfirmedAssignment::NotServed => {
+                return Err(api_error(
+                    StatusCode::NOT_IMPLEMENTED,
+                    "not_served",
+                    "the raft leader cannot confirm a read yet",
+                ));
+            }
+        }
+    }
+    let mut routed = with_routing(&state, assigned).await?.into_iter();
+    let items = confirmed
+        .iter()
+        .map(|answer| ConfirmedShardAssignmentResponse {
+            assignment: match answer {
+                ConfirmedAssignment::Assigned(_) => routed.next(),
+                _ => None,
+            },
+        })
+        .collect();
+    Ok(Json(ConfirmedShardAssignmentsResponse { items }))
 }
 
 /// A confirmed read that did not complete is unavailable, never an answer.

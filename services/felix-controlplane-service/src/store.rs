@@ -377,6 +377,18 @@ pub trait ControlPlaneStore: Send + Sync {
     /// acknowledged before the call. [`Self::get_shard_assignment`] on a
     /// Raft member answers from what that member has applied, which can lag.
     async fn confirmed_shard_assignment(&self, key: &ShardKey) -> StoreResult<ConfirmedAssignment>;
+    /// [`Self::confirmed_shard_assignment`] for every key, in order, all
+    /// read no earlier than every write acknowledged before the call.
+    async fn confirmed_shard_assignments(
+        &self,
+        keys: &[ShardKey],
+    ) -> StoreResult<Vec<ConfirmedAssignment>> {
+        let mut confirmed = Vec::with_capacity(keys.len());
+        for key in keys {
+            confirmed.push(self.confirmed_shard_assignment(key).await?);
+        }
+        Ok(confirmed)
+    }
     /// The shard-assignment feed's `next_seq`, read no earlier than every
     /// write acknowledged before the call, so every change committed by then
     /// has a lower seq. `None` from a Raft leader that predates the read.
@@ -406,14 +418,6 @@ pub trait ControlPlaneStore: Send + Sync {
     /// came before it, as the `assigned` change tells a watching one. One
     /// evicted from the log is not listed, and its item is not marked.
     async fn first_shard_assignments(&self) -> StoreResult<Vec<(ShardKey, u64, u64)>>;
-    /// For each shard, the assignment the retained change log shows right
-    /// before its current one: the payload of the change before the one that
-    /// wrote it, when both are assignments. A snapshot carries it so a broker
-    /// that learns the shard there can tell the set its generation leaves,
-    /// as a watching broker tells it from the change it saw before (#2024).
-    /// None for a shard whose earlier change was evicted, or was an
-    /// unassignment.
-    async fn previous_shard_assignments(&self) -> StoreResult<Vec<ShardAssignment>>;
     async fn shard_assignment_changes(
         &self,
         since: u64,

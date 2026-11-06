@@ -193,7 +193,6 @@ fn ingress_with_replicas(leader: &str, servable: bool, replicas: Vec<String>) ->
         fence_storage_ids: Default::default(),
         member_storage_ids: Default::default(),
         pending_set: None,
-        previous_generation: None,
     };
     let assignments: HashMap<crate::shards::ShardKey, crate::shards::watch::ShardAssignment> =
         [(watch_key(), assignment)].into_iter().collect();

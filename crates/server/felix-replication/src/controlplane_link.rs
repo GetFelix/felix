@@ -2,7 +2,7 @@
 //!
 //! Every call a broker makes to the control plane goes through
 //! [`ControlPlaneLink`]: registration and heartbeats, the assignment watch,
-//! the node catalog and replica reports. [`HttpControlPlaneLink`] is the one
+//! confirmed assignment reads, the node catalog and replica reports. [`HttpControlPlaneLink`] is the one
 //! production implementation. The trait exists so a test harness can answer
 //! the same calls in-process, with faults of its own, instead of over a socket.
 //!
@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
+use felix_router::{ShardKey, ShardKind};
 use reqwest::StatusCode;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -115,25 +116,53 @@ pub trait ControlPlaneLink: Send + Sync + 'static {
     fn confirmed_assignment(
         &self,
         bearer: Option<&str>,
-        key: &felix_router::ShardKey,
+        key: &ShardKey,
+        timeout: Duration,
+    ) -> impl Future<Output = Result<LinkResponse>> + Send;
+
+    /// `POST /v1/shard-assignments/confirmed` for every shard in `keys`,
+    /// abandoned after `timeout`.
+    fn confirmed_assignments(
+        &self,
+        bearer: Option<&str>,
+        keys: &[ShardKey],
         timeout: Duration,
     ) -> impl Future<Output = Result<LinkResponse>> + Send;
 }
 
-/// The query of a confirmed assignment read for `key`, as name and value
-/// pairs.
-pub fn confirmed_query(key: &felix_router::ShardKey) -> [(&'static str, String); 5] {
-    let kind = match key.kind {
-        felix_router::ShardKind::Stream => "stream",
-        felix_router::ShardKind::Cache => "cache",
-    };
+/// The query of a confirmed read of `key`.
+pub fn confirmed_query(key: &ShardKey) -> [(&'static str, String); 5] {
     [
         ("tenant_id", key.tenant_id.clone()),
         ("namespace", key.namespace.clone()),
         ("stream", key.stream.clone()),
         ("shard", key.shard.to_string()),
-        ("kind", kind.to_string()),
+        ("kind", kind_name(key.kind).to_string()),
     ]
+}
+
+/// The body of a batched confirmed read of `keys`.
+pub fn confirmed_body(keys: &[ShardKey]) -> serde_json::Value {
+    let keys: Vec<serde_json::Value> = keys
+        .iter()
+        .map(|key| {
+            serde_json::json!({
+                "tenant_id": key.tenant_id,
+                "namespace": key.namespace,
+                "stream": key.stream,
+                "shard": key.shard,
+                "kind": kind_name(key.kind),
+            })
+        })
+        .collect();
+    serde_json::json!({ "keys": keys })
+}
+
+fn kind_name(kind: ShardKind) -> &'static str {
+    match kind {
+        ShardKind::Stream => "stream",
+        ShardKind::Cache => "cache",
+    }
 }
 
 /// [`ControlPlaneLink`] over the control plane's REST API.
@@ -281,13 +310,27 @@ impl ControlPlaneLink for HttpControlPlaneLink {
     async fn confirmed_assignment(
         &self,
         bearer: Option<&str>,
-        key: &felix_router::ShardKey,
+        key: &ShardKey,
         timeout: Duration,
     ) -> Result<LinkResponse> {
         let request = self
             .client
             .get(self.url("/v1/shard-assignments/confirmed"))
             .query(&confirmed_query(key))
+            .timeout(timeout);
+        finish(bearer_if(request, bearer)).await
+    }
+
+    async fn confirmed_assignments(
+        &self,
+        bearer: Option<&str>,
+        keys: &[ShardKey],
+        timeout: Duration,
+    ) -> Result<LinkResponse> {
+        let request = self
+            .client
+            .post(self.url("/v1/shard-assignments/confirmed"))
+            .json(&confirmed_body(keys))
             .timeout(timeout);
         finish(bearer_if(request, bearer)).await
     }

@@ -441,7 +441,6 @@ async fn a_first_assignment_is_listed_and_a_later_write_is_not(store: &dyn Contr
         member_storage_ids: Default::default(),
         learners: Default::default(),
         pending_set: None,
-        previous_generation: None,
     };
     let first = store
         .put_shard_assignment(assigned.clone())

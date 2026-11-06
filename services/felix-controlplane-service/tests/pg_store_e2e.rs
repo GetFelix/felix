@@ -2172,7 +2172,6 @@ async fn pg_assignment_long_polls_do_not_hold_connections() -> Result<()> {
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
-            previous_generation: None,
         })
         .await?;
     let written = started.elapsed();

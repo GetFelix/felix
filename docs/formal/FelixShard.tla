@@ -2821,13 +2821,11 @@ Restart(b) ==
             /\ Promise(b, b, gen)
             \* Its fence carries the assignment's set at the assignment's
             \* generation (`replica_set::view` in `fence_shard`, promotion.rs).
-            \* Under `JointFence` it learns the set right before from the
-            \* snapshot its watch reseeds from, which carries the control
-            \* plane's assignment before the current one (`previous` on a
-            \* snapshot item, #2024), so an older kept set no longer leaves
-            \* the fence pending (#1989). A set kept at the generation is
-            \* reported unknown.
-            /\ IF SetCheck /\ setGen[b] < gen
+            \* Under `JointFence` only when its log keeps the set right before
+            \* (`set_before` in promotion/joint.rs): a set kept at the
+            \* generation is reported unknown, and an older one leaves the
+            \* fence pending for good (`Skipped`), unreported (#1989).
+            /\ IF SetCheck /\ setGen[b] < gen /\ (JointFence => setGen[b] = gen - 1)
                THEN /\ mine' = [mine EXCEPT ![b] = IF cpNext = {} THEN CpSet ELSE cpNext]
                     /\ setGen' = [setGen EXCEPT ![b] = gen]
                     /\ oldSet' = [oldSet EXCEPT ![b] = IF cpNext = {} THEN {} ELSE {CpSet}]
@@ -3872,10 +3870,7 @@ RenameGen ==
 \* reopens it fenced (`begin_open_renewed` in lifecycle.rs), on the set the
 \* assignment names, and while a change is pending, jointly with the set
 \* being left. Each one follows a stand, a restart or a promotion, and stands
-\* stop at `Adopt`, so those bound them. A rename past a ballot skips
-\* generations, and the leader still takes `CpSet` as the set it leaves: the
-\* control plane recorded nothing in between and names the generation it
-\* replaced (`previous_generation`, #2024), which the broker's watch reads.
+\* stop at `Adopt`, so those bound them.
 CpRename(v, views) ==
     /\ RenameDue
     /\ ~v.draining

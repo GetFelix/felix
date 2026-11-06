@@ -247,12 +247,12 @@ Felix supports tunable guarantees per stream:
 
 - **At‑most‑once:** ephemeral, low‑latency
 - **At‑least‑once:** default
-- **Exactly‑once:** not claimed. Idempotent producers and atomic commit are
-  shipped; there is no end-to-end exactly-once guarantee.
+- **Exactly‑once:** planned (idempotent producers + transactions)
 
 Replication acknowledgement policies:
 - Leader‑only
 - Quorum
+- All replicas
 
 ---
 
@@ -267,14 +267,14 @@ Replication acknowledgement policies:
 - Stream‑level RBAC
 - Authorization enforced on publish and subscribe
 
-### 10.3 Encryption (target design)
+### 10.3 Encryption
 - Envelope encryption per region and tenant
 - Optional end‑to‑end encryption (broker routes ciphertext)
 - Explicit key rotation and key identifiers
 
 ---
 
-## 11. Multi‑Region and Bridges (target design)
+## 11. Multi‑Region and Bridges
 
 Felix does not support implicit federation.
 

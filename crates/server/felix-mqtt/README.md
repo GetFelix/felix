@@ -2,9 +2,9 @@
 
 The MQTT listener of a Felix broker: MQTT 3.1.1 and 5.0 over TCP, with TLS
 terminated by the broker service. Today it accepts a connection, checks the
-token in `CONNECT`, answers pings, enforces keepalive and the connection
-limits, and accepts `PUBLISH` at QoS 0 and 1 to streams mounted at topic
-prefixes. It refuses `SUBSCRIBE`; the subscribe path is a later slice of
+token in `CONNECT`, answers pings, and enforces keepalive and the connection
+limits. It refuses every `PUBLISH` and `SUBSCRIBE`; mounting streams at topics
+and the publish and subscribe paths are later slices of
 [docs/mqtt-design.md](../../../docs/mqtt-design.md).
 
 The `ws` module serves the same protocol to browsers: it reads the WebSocket

@@ -35,7 +35,6 @@ fn assignment(key: ShardKey, leader: &str, replicas: &[&str]) -> ShardAssignment
         fence_storage_ids: Default::default(),
         member_storage_ids: [("broker-a".to_owned(), "aa".to_owned())].into(),
         pending_set: None,
-        previous_generation: None,
     }
 }
 
@@ -156,7 +155,6 @@ async fn fixture() -> Fixture {
             assignment(key("unknown", 0, ShardKind::Stream), ME, &[ME]),
         ],
         &std::collections::HashSet::new(),
-        &std::collections::HashMap::new(),
     );
     let catalog_seeded = CancellationToken::new();
     catalog_seeded.cancel();
@@ -279,7 +277,6 @@ async fn routes_seeded_from_the_view_are_not_a_snapshot() {
         .reset_from_control_plane(
             vec![assignment(key("orders", 0, ShardKind::Stream), ME, &[ME])],
             &std::collections::HashSet::new(),
-            &std::collections::HashMap::new(),
         );
     assert!(fixture.sources.build().await.is_some());
 }

@@ -158,6 +158,16 @@ impl ControlPlaneLink for NodeLink {
         let call = self.inner.confirmed_assignment(bearer, key, timeout);
         self.cut.through(timeout, call).await
     }
+
+    async fn confirmed_assignments(
+        &self,
+        bearer: Option<&str>,
+        keys: &[felix_router::ShardKey],
+        timeout: Duration,
+    ) -> Result<LinkResponse> {
+        let call = self.inner.confirmed_assignments(bearer, keys, timeout);
+        self.cut.through(timeout, call).await
+    }
 }
 
 #[cfg(test)]

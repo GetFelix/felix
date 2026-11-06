@@ -475,7 +475,6 @@ fn assignment(name: &str) -> ShardAssignment {
         member_storage_ids: Default::default(),
         learners: Default::default(),
         pending_set: None,
-        previous_generation: None,
     }
 }
 

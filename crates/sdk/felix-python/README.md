@@ -90,7 +90,7 @@ headers=None)` hides a durable shard's oldest records, only if the shard's next
 offset is `expected_offset`, and returns a `ConditionalTrim`. A broker without
 head trims raises `TrimError`.
 
-The [clients page](../../../docs-site/src/content/docs/clients/python.md) has the
+The [clients page](../../../docs-site/src/content/docs/api/clients.md) has the
 worked examples.
 
 ## Tokens that expire

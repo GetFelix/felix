@@ -365,7 +365,7 @@ impl Broker {
 
     /// What [`Broker::shard_log_for`] would return, when the log is open
     /// already; `None` without opening anything otherwise.
-    async fn opened_log(
+    pub async fn opened_log(
         &self,
         kind: LogKind,
         tenant_id: &str,

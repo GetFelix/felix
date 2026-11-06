@@ -117,4 +117,13 @@ impl ControlPlaneLink for FakeLink {
     ) -> Result<LinkResponse> {
         self.answer("confirmed_assignment")
     }
+
+    async fn confirmed_assignments(
+        &self,
+        _: Option<&str>,
+        _: &[felix_router::ShardKey],
+        _: Duration,
+    ) -> Result<LinkResponse> {
+        self.answer("confirmed_assignments")
+    }
 }

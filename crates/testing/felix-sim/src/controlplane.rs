@@ -809,15 +809,29 @@ impl ControlPlaneLink for SimLink {
         key: &felix_router::ShardKey,
         timeout: Duration,
     ) -> Result<LinkResponse> {
-        let query = felix_replication::controlplane_link::confirmed_query(key)
+        let query: Vec<String> = felix_replication::controlplane_link::confirmed_query(key)
             .iter()
             .map(|(name, value)| format!("{name}={}", query_value(value)))
-            .collect::<Vec<_>>()
-            .join("&");
+            .collect();
         self.call(
             Method::GET,
-            &format!("/v1/shard-assignments/confirmed?{query}"),
+            &format!("/v1/shard-assignments/confirmed?{}", query.join("&")),
             None,
+            Some(timeout),
+        )
+        .await
+    }
+
+    async fn confirmed_assignments(
+        &self,
+        _bearer: Option<&str>,
+        keys: &[felix_router::ShardKey],
+        timeout: Duration,
+    ) -> Result<LinkResponse> {
+        self.call(
+            Method::POST,
+            "/v1/shard-assignments/confirmed",
+            Some(felix_replication::controlplane_link::confirmed_body(keys)),
             Some(timeout),
         )
         .await

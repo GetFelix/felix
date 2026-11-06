@@ -10,11 +10,10 @@ publishable, because `felixctl bench` links it.
   (`cargo build -p felix-broker-service --bin felix-broker`).
 - [`felix-conformance`](felix-conformance) is the client conformance kit: the
   scenario catalogue and the verifier that checks a client's results against
-  it. AGPL-3.0-only.
+  it. Apache-2.0, so a third party can vendor it.
 - [`felix-sim`](felix-sim) is the deterministic simulator: brokers in one
   process on tokio's virtual time, over an in-memory peer network with seeded
-  faults. It holds the network, the history checkers and an in-memory
-  filesystem with a power-loss model; see
+  faults. So far it holds the network; see
   [docs/simulation.md](../../docs/simulation.md).
 - [`felix-loadgen`](felix-loadgen) drives a remote cluster for the
   real-network performance suite. Its scenarios are also a library, which

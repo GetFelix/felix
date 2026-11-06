@@ -4,7 +4,7 @@
 replication is log shipping from the leader to its followers. Per-shard Raft is
 rejected.**
 
-Recorded with the replication design (#110). The rejected alternative and what would overturn the
+Recorded for M5.1 (#110). The rejected alternative and what would overturn the
 decision are both below.
 
 ## What has to be true
@@ -78,14 +78,14 @@ is required either way. It is:
 Neither is a tuning problem. Both are a different storage layer.
 
 The storage layer was in fact built anticipating the other answer:
-`docs/durable-storage.md` was written with replication in mind: `seal`'s
-checksum and `read_range`'s bounded paging exist to serve it. Sealed-segment checksums and
+`docs/durable-storage.md` says "Replication (M5) is what `seal`'s checksum and
+`read_range`'s bounded paging exist to serve." Sealed-segment checksums and
 bounded range reads are the primitives of *shipping*, not of consensus.
 
 ## Why the control plane being Raft-backed does not settle this
 
-Making control-plane metadata highly available is separate work, and Raft is
-the right tool there. It does not follow that payload replication should use Raft, and the
+M7 makes control-plane metadata highly available, and Raft is the right tool
+there. It does not follow that payload replication should use Raft, and the
 issue asks for this to be said explicitly.
 
 The two have opposite cost profiles:
@@ -369,9 +369,8 @@ leader rejoins as a follower. A slow leader that misses a whole window of
 pings from a majority is replaced, which is the trade a shorter window makes.
 
 **What it does not change.** The control plane still makes the decision, so
-with the control plane down a dead leader is not replaced, unless the fleet has
-finalized `replica_election`. Replicas electing a leader among themselves is
-the rest of issue #1009, designed in
+with the control plane down a dead leader is not replaced. Replicas electing
+a leader among themselves is the rest of issue #1009, designed in
 [Electing without the control plane](#electing-without-the-control-plane).
 
 Evidence: `a_leader_a_majority_cannot_reach_is_replaced_while_it_heartbeats`,
@@ -953,7 +952,9 @@ The cost is a fence round trip or a few while a follower's watch catches up
 or its confirmed read comes back. A new shard's copy costs neither once its
 view has the shard. A wiped copy costs a read every few seconds without
 elections, and a learner under elections about two a second per shard
-while it takes batches. With one replica of a
+while it takes batches. Those reads go up to 64 shards to a control-plane
+request, so a broker with many learners needs a request per 64 of them, not
+one per shard. With one replica of a
 set of three wiped the other two make the majority anyway. With a majority
 wiped at once their votes wait for their views; once they have them they
 answer, so the shard is not stuck, but what it acknowledged was on those
@@ -3622,7 +3623,7 @@ Positions are held in the control plane's memory. They change constantly, are
 advisory, and expire in about a second, so persisting them would cost a write
 per report for data that is worthless by the time it could be read back. The
 consequence is that a second control-plane instance starts knowing nothing and
-cannot promote until leaders have reported to it, which matters for the
+cannot promote until leaders have reported to it, which matters for M7's
 multi-instance work and not before.
 
 #### A leader's own crash
@@ -3791,12 +3792,13 @@ with a crash use the lease and the report.
 
 ### Conditional head trim
 
-A client call trims a stream's history below an offset, conditional on the
-tail the client expects. The storage side, the broker's in-process call,
-replication and the client call (`Client::trim_before`) are built: the logical floor,
+Issue 1662 designs a client call that trims a stream's history below an
+offset, conditional on the tail the client expects. The storage side, the
+broker's in-process call and replication are built: the logical floor,
 deletion below it, the conditional append and what a reader sees are in
 [Conditional head trim](durable-storage.md#conditional-head-trim) in
-`docs/durable-storage.md`. This section is how a trim survives replication.
+`docs/durable-storage.md`. The client call is not built yet. This section is
+how a trim survives replication.
 
 The trim is a record in the log, so it is ordered with the writes around it
 and the existing rules carry it across a failover. It replicates like any
@@ -4782,19 +4784,7 @@ Once it is finalized on a broker that offers `ELECTION`:
   when it names none; such a fence does not stay pending. For other changes the broker learns
   the set from the assignment its watch saw at that generation,
   from the set the leader before shipped with at it, or from what this
-  leader kept beside its own set. The watch knows that assignment only when
-  the route's generation is one above it, or when the control plane names it:
-  a rename past a ballot (`set_unknown` with a floor) lands more than one
-  generation up, records nothing in between, and stores the generation it
-  replaced on the assignment (`previous_generation`, #2024). An adoption also
-  skips generations but names none, since the set before an elected
-  generation is not the control plane's. The control plane records it under
-  Raft only at metadata level 29, so a group with an older member names
-  nothing and such a fence stays pending as below. A broker that reseeds its
-  watch from a snapshot, after a restart, holds no assignment before; each
-  snapshot item carries the set right before it (`previous`), read from the
-  control plane's retained change log, and the broker takes it as a watching
-  broker would. An item whose earlier change has left the log carries none. When none of those knows it, the fence
+  leader kept beside its own set. When none of those knows it, the fence
   does not fence the new set alone. What it does depends on what the log
   keeps, and it acts only on evidence that no earlier set can still hold
   acknowledged records:
@@ -4839,10 +4829,7 @@ Once it is finalized on a broker that offers `ELECTION`:
     fence pending.
   - Otherwise, the log keeps an older set than the one before: the leader
     skipped a generation it never opened, and a rename would leave that
-    generation's set unfenced. The fence stays pending. A leader the control
-    plane renamed past a withdrawn standing's ballot lands here only when
-    neither its watch nor its snapshot holds the assignment the rename
-    names.
+    generation's set unfenced. The fence stays pending.
   - The log keeps no set, above generation 0: this may be a failover's new leader whose watch
     started from a snapshot, while the old leader, cut off, still
     acknowledges on a majority of the old set. The fence stays pending.
@@ -5215,7 +5202,7 @@ This is the model's `CpAdopt` with `AdoptMatch`, which checks it.
 > (felix-cluster): a follower drained out of the set stands on its old set
 > and every live replica refuses it with `StaleSet`.
 
-## What this does to the other replication issues
+## What this does to the other M5 issues
 
 - **#111 (fenced leadership)**: this is now specific: the epoch is the
   assignment generation, the fence is the lease, and it is enforced at both the
@@ -5232,10 +5219,8 @@ This is the model's `CpAdopt` with `AdoptMatch`, which checks it.
 - **#114 (bootstrap followers)**: bounded range reads from the leader; no
   snapshot-install protocol is needed, because the log is the snapshot.
 - **#115 (failure injection)**: needs lease expiry, clock skew, and suspension
-  as injectable faults, not just process kills. The harness has them now:
-  message drops and delays, partitions, pausing a process with `SIGSTOP`,
-  clock skew and slow or failing disk writes. `docs/cluster-harness.md` lists
-  the fault set.
+  as injectable faults, not just process kills. The harness can stop and move a
+  broker today (#108); it cannot yet pause one or skew its clock.
 - **#116 (semantics)**: must document the `Leader` loss window in terms of the
   lag metric, and state that `Quorum` is majority-including-leader.
 

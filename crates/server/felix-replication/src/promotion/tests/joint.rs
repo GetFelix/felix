@@ -1146,41 +1146,6 @@ fn only_a_set_this_broker_could_not_know_is_unknown() {
     );
 }
 
-/// **A rename past a ballot learns the set before from the watch** (#2024).
-/// The log keeps the set from two generations back: the control plane
-/// adopted this leader there, a standing it never saw left a ballot one up,
-/// and placement named it again past that ballot. The control plane names the
-/// generation the rename replaced, and the watch takes that assignment's set
-/// as the prior, so the fence leaves it instead of waiting.
-#[test]
-fn a_rename_past_a_ballot_takes_the_set_before_from_the_watch() {
-    use crate::promotion::joint::NoSetBefore;
-    let route = swapped();
-    let kept = ReplicaSet {
-        current: Membership {
-            generation: PROMOTED - 2,
-            ..crate::replica_set::kept(&route, None).current
-        },
-        leaving: None,
-        earlier: Vec::new(),
-    };
-    assert_eq!(
-        crate::promotion::set_before(Some(&kept), &route, None),
-        Err(NoSetBefore::Skipped(PROMOTED))
-    );
-    let prior = prior_xbc();
-    assert_eq!(prior.generation, PROMOTED);
-    let before = crate::promotion::set_before(Some(&kept), &route, Some(&prior))
-        .expect("the watch names the set before")
-        .expect("not a first assignment");
-    assert_eq!(before.generation, PROMOTED - 1);
-    let named: Vec<&str> = before.members.iter().map(|m| m.node.as_str()).collect();
-    assert_eq!(named.len(), 3, "{named:?}");
-    for node in ["broker-x", "broker-b", "broker-c"] {
-        assert!(named.contains(&node), "{node} missing from {named:?}");
-    }
-}
-
 /// **A leader restarted at generation 0 asks for a rename** (#1872). A log
 /// never keeps a set at generation 0, so a shard never moved since its first
 /// assignment, restarted after `joint_fence` is finalized, would otherwise

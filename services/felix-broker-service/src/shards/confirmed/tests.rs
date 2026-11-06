@@ -1,7 +1,6 @@
 use axum::http::StatusCode;
 use axum::{Json, Router, routing::get};
 
-use felix_replication::controlplane_link::HttpControlPlaneLink;
 use felix_router::ShardKind;
 
 use super::*;
@@ -27,16 +26,15 @@ async fn serve(router: Router) -> (String, tokio::task::JoinHandle<()>) {
     (format!("http://{addr}"), server)
 }
 
-fn http_routes(base_url: &str) -> ControlPlaneRoutes<HttpControlPlaneLink> {
-    ControlPlaneRoutes::new(
-        HttpControlPlaneLink::new(reqwest::Client::new(), base_url),
-        None,
-    )
-}
-
 async fn read(router: Router) -> Confirmed {
     let (base_url, server) = serve(router).await;
-    let routes = http_routes(&base_url);
+    let routes = ControlPlaneRoutes::new(
+        felix_replication::controlplane_link::HttpControlPlaneLink::new(
+            reqwest::Client::new(),
+            &base_url,
+        ),
+        None,
+    );
     let confirmed = routes.confirmed(&key()).await;
     server.abort();
     confirmed
@@ -106,6 +104,89 @@ async fn a_failed_read_is_unavailable() {
         get(|| async { "not json" }),
     );
     assert_eq!(read(router).await, Confirmed::Unavailable);
-    let routes = http_routes("http://127.0.0.1:1");
+    let routes = ControlPlaneRoutes::new(
+        felix_replication::controlplane_link::HttpControlPlaneLink::new(
+            reqwest::Client::new(),
+            "http://127.0.0.1:1",
+        ),
+        None,
+    );
     assert_eq!(routes.confirmed(&key()).await, Confirmed::Unavailable);
+}
+
+/// **The read goes through the broker's control-plane link**, so an
+/// in-process link (the simulator's) answers it as the HTTP one does.
+#[tokio::test]
+async fn the_read_goes_through_the_link() {
+    let link = crate::test_support::fake_link::FakeLink::default().reply(
+        "confirmed_assignment",
+        serde_json::json!({ "assignment": {
+            "tenant_id": "t1", "namespace": "ns", "stream": "orders",
+            "shard": 3, "leader": "b2", "generation": 6, "state": "active"
+        }}),
+    );
+    let routes = ControlPlaneRoutes::new(link.clone(), None);
+    assert_eq!(
+        routes.confirmed(&key()).await,
+        Confirmed::Assigned {
+            generation: 6,
+            leader: "b2".to_string()
+        }
+    );
+    assert_eq!(link.calls(), ["confirmed_assignment"]);
+}
+
+/// **Several shards are read in one request**, answered in order; a control
+/// plane that serves only `GET` leaves each to be read alone.
+#[tokio::test]
+async fn several_shards_are_read_in_one_request() {
+    let router = Router::new().route(
+        "/v1/shard-assignments/confirmed",
+        axum::routing::post(|Json(body): Json<serde_json::Value>| async move {
+            assert_eq!(body["keys"][0]["shard"], 3);
+            assert_eq!(body["keys"][1]["shard"], 4);
+            Json(serde_json::json!({ "items": [
+                { "assignment": {
+                    "tenant_id": "t1", "namespace": "ns", "stream": "orders",
+                    "shard": 3, "leader": "b2", "generation": 6, "state": "active"
+                }},
+                { "assignment": null },
+            ]}))
+        }),
+    );
+    let (base_url, server) = serve(router).await;
+    let routes = ControlPlaneRoutes::new(
+        felix_replication::controlplane_link::HttpControlPlaneLink::new(
+            reqwest::Client::new(),
+            &base_url,
+        ),
+        None,
+    );
+    let keys = [key(), ShardKey { shard: 4, ..key() }];
+    assert_eq!(
+        routes.confirmed_many(&keys).await,
+        Some(vec![
+            Confirmed::Assigned {
+                generation: 6,
+                leader: "b2".to_string()
+            },
+            Confirmed::Unassigned,
+        ])
+    );
+    server.abort();
+
+    let only_get = Router::new().route(
+        "/v1/shard-assignments/confirmed",
+        get(|| async { Json(serde_json::json!({ "assignment": null })) }),
+    );
+    let (base_url, server) = serve(only_get).await;
+    let routes = ControlPlaneRoutes::new(
+        felix_replication::controlplane_link::HttpControlPlaneLink::new(
+            reqwest::Client::new(),
+            &base_url,
+        ),
+        None,
+    );
+    assert_eq!(routes.confirmed_many(&keys).await, None);
+    server.abort();
 }

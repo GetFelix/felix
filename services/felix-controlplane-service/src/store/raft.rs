@@ -112,10 +112,6 @@ const OWN_LEADER_SET_LEVEL: u16 = 27;
 /// carries and name it past that ballot (#1951).
 const REFUSED_BALLOT_LEVEL: u16 = 28;
 
-/// The metadata level whose members record the generation a write past the
-/// next one replaced (#2024).
-const PREVIOUS_GENERATION_LEVEL: u16 = 29;
-
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
     MetaCommand, MetaError, MetaResponse, decode_result, encode_command,
@@ -202,9 +198,6 @@ impl RaftStore {
         if !assignment.learners.is_empty() && self.group_level().await < LEARNER_LEVEL {
             assignment.learners.clear();
         }
-        // Store-owned: the apply decides it, and a value copied from the
-        // assignment being replaced would only raise the entry's level.
-        assignment.previous_generation = None;
     }
 
     /// Whether a delete takes the deleted resources' shard assignments and
@@ -910,9 +903,6 @@ impl ControlPlaneStore for RaftStore {
                     } else {
                         0
                     },
-                    // Only a floor can skip generations; other writes keep
-                    // the level they had.
-                    record_previous: at_least > 0 && level >= PREVIOUS_GENERATION_LEVEL,
                 },
             )
             .await?
@@ -982,6 +972,37 @@ impl ControlPlaneStore for RaftStore {
         }
     }
 
+    async fn confirmed_shard_assignments(
+        &self,
+        keys: &[ShardKey],
+    ) -> StoreResult<Vec<crate::store::ConfirmedAssignment>> {
+        let asked = self
+            .ask_leader(LeaderRequest::ShardAssignments {
+                keys: keys.to_vec(),
+            })
+            .await?;
+        match asked {
+            Some(MetaResponse::Assignments { assignments }) if assignments.len() == keys.len() => {
+                Ok(assignments
+                    .into_iter()
+                    .map(|assignment| match assignment {
+                        Some(assignment) => crate::store::ConfirmedAssignment::Assigned(assignment),
+                        None => crate::store::ConfirmedAssignment::Unassigned,
+                    })
+                    .collect())
+            }
+            Some(_) => Err(unexpected_shape("assignments")),
+            // A leader that predates the batch: one read each.
+            None => {
+                let mut confirmed = Vec::with_capacity(keys.len());
+                for key in keys {
+                    confirmed.push(self.confirmed_shard_assignment(key).await?);
+                }
+                Ok(confirmed)
+            }
+        }
+    }
+
     async fn confirmed_shard_assignment_head(&self) -> StoreResult<Option<u64>> {
         match self.ask_leader(LeaderRequest::ShardAssignmentHead).await? {
             Some(MetaResponse::AssignmentHead { next_seq }) => Ok(Some(next_seq)),
@@ -1021,10 +1042,6 @@ impl ControlPlaneStore for RaftStore {
 
     async fn first_shard_assignments(&self) -> StoreResult<Vec<(ShardKey, u64, u64)>> {
         self.local().first_shard_assignments().await
-    }
-
-    async fn previous_shard_assignments(&self) -> StoreResult<Vec<ShardAssignment>> {
-        self.local().previous_shard_assignments().await
     }
 
     async fn shard_assignment_changes(

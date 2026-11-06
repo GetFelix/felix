@@ -1,6 +1,6 @@
 # Tools
 
-The operator command-line tool for a Felix cluster.
+Command-line tools for people working with a Felix cluster.
 
 - [`felixctl`](felixctl) publishes, subscribes, reads and watches caches, shows
   where shards live, lists what the control plane knows, and runs benchmarks.

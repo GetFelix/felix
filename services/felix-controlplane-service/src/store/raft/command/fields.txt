@@ -422,7 +422,6 @@
 16 import_state.state.shard_changes.items[].assignment.fence_storage_ids.*
 22 import_state.state.shard_changes.items[].assignment.member_storage_ids.*
 23 import_state.state.shard_changes.items[].assignment.learners
-29 import_state.state.shard_changes.items[].assignment.previous_generation
 21 import_state.state.shard_changes.items[].assignment.pending_set
 21 import_state.state.shard_changes.items[].assignment.pending_set.generation
 21 import_state.state.shard_changes.items[].assignment.pending_set.replicas
@@ -455,7 +454,6 @@
 16 import_state.state.shards[][].fence_storage_ids.*
 22 import_state.state.shards[][].member_storage_ids.*
 23 import_state.state.shards[][].learners
-29 import_state.state.shards[][].previous_generation
 21 import_state.state.shards[][].pending_set
 21 import_state.state.shards[][].pending_set.generation
 21 import_state.state.shards[][].pending_set.replicas
@@ -607,7 +605,6 @@
 16 put_shard_assignment.assignment.fence_storage_ids.*
 22 put_shard_assignment.assignment.member_storage_ids.*
 23 put_shard_assignment.assignment.learners
-29 put_shard_assignment.assignment.previous_generation
 21 put_shard_assignment.assignment.pending_set
 21 put_shard_assignment.assignment.pending_set.generation
 21 put_shard_assignment.assignment.pending_set.replicas
@@ -633,7 +630,6 @@
 16 put_shard_assignment_fenced.assignment.fence_storage_ids.*
 22 put_shard_assignment_fenced.assignment.member_storage_ids.*
 23 put_shard_assignment_fenced.assignment.learners
-29 put_shard_assignment_fenced.assignment.previous_generation
 21 put_shard_assignment_fenced.assignment.pending_set
 21 put_shard_assignment_fenced.assignment.pending_set.generation
 21 put_shard_assignment_fenced.assignment.pending_set.replicas
@@ -655,7 +651,6 @@
 0 put_shard_assignment_fenced.fence
 17 put_shard_assignment_fenced.seq_generation
 28 put_shard_assignment_fenced.at_least
-29 put_shard_assignment_fenced.record_previous
 0 put_shard_assignment_if
 0 put_shard_assignment_if.assignment
 16 put_shard_assignment_if.assignment.fence_storage_ids
@@ -663,7 +658,6 @@
 16 put_shard_assignment_if.assignment.fence_storage_ids.*
 22 put_shard_assignment_if.assignment.member_storage_ids.*
 23 put_shard_assignment_if.assignment.learners
-29 put_shard_assignment_if.assignment.previous_generation
 21 put_shard_assignment_if.assignment.pending_set
 21 put_shard_assignment_if.assignment.pending_set.generation
 21 put_shard_assignment_if.assignment.pending_set.replicas
@@ -1047,7 +1041,6 @@
 16 snapshot.state.shard_changes.items[].assignment.fence_storage_ids.*
 22 snapshot.state.shard_changes.items[].assignment.member_storage_ids.*
 23 snapshot.state.shard_changes.items[].assignment.learners
-29 snapshot.state.shard_changes.items[].assignment.previous_generation
 21 snapshot.state.shard_changes.items[].assignment.pending_set
 21 snapshot.state.shard_changes.items[].assignment.pending_set.generation
 21 snapshot.state.shard_changes.items[].assignment.pending_set.replicas
@@ -1080,7 +1073,6 @@
 16 snapshot.state.shards[][].fence_storage_ids.*
 22 snapshot.state.shards[][].member_storage_ids.*
 23 snapshot.state.shards[][].learners
-29 snapshot.state.shards[][].previous_generation
 21 snapshot.state.shards[][].pending_set
 21 snapshot.state.shards[][].pending_set.generation
 21 snapshot.state.shards[][].pending_set.replicas

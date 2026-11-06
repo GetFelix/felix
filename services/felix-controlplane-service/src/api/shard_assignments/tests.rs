@@ -71,7 +71,6 @@ impl Fixture {
                 member_storage_ids: Default::default(),
                 learners: Default::default(),
                 pending_set: None,
-                previous_generation: None,
             })
             .await
             .expect("assign");
@@ -237,6 +236,53 @@ async fn the_confirmed_read_answers_one_shard() {
     let assigned = read(0).await;
     assert_eq!(assigned["assignment"]["leader"], "broker-x");
     assert_eq!(read(7).await["assignment"], serde_json::Value::Null);
+}
+
+/// The batched confirmed read answers each shard in the request's order,
+/// and refuses more shards than one request may read.
+#[tokio::test]
+async fn the_confirmed_read_answers_several_shards_in_order() {
+    let fixture = fixture().await;
+    fixture.assign("broker-x").await;
+    let read = |shards: Vec<u32>| {
+        let app = fixture.app.clone();
+        let bearer = fixture.bearer.clone();
+        async move {
+            let keys: Vec<serde_json::Value> = shards
+                .iter()
+                .map(|shard| {
+                    serde_json::json!({
+                        "tenant_id": "t1", "namespace": "ns", "stream": "orders", "shard": shard
+                    })
+                })
+                .collect();
+            let request = Request::builder()
+                .method("POST")
+                .uri("/v1/shard-assignments/confirmed")
+                .header("authorization", format!("Bearer {bearer}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({ "keys": keys })).expect("body"),
+                ))
+                .expect("request");
+            let response = app.oneshot(request).await.expect("response");
+            let status = response.status();
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body");
+            (
+                status,
+                serde_json::from_slice::<serde_json::Value>(&bytes).ok(),
+            )
+        }
+    };
+    let (status, body) = read(vec![7, 0]).await;
+    assert_eq!(status, StatusCode::OK);
+    let items = &body.expect("json")["items"];
+    assert_eq!(items[0]["assignment"], serde_json::Value::Null);
+    assert_eq!(items[1]["assignment"]["leader"], "broker-x");
+    let (status, _) = read((0..257).collect()).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
 /// **The snapshot marks a shard's first assignment, and only that one**

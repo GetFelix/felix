@@ -58,7 +58,6 @@ fn four_shard_ingress(routing: felix_wire::routing::ShardRouting) -> Arc<Ingress
                 fence_storage_ids: Default::default(),
                 member_storage_ids: Default::default(),
                 pending_set: None,
-                previous_generation: None,
             };
             (key, assignment)
         })
