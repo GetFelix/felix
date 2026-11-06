@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793940364754,
+  "lastUpdate": 1793942963767,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -46852,6 +46852,58 @@ window.BENCHMARK_DATA = {
             "range": "5878.13",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 791647.82\nmean: 794376.03\nstdev: 5878.13\ncv: 0.74%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a72715b53f4a19a0cbec9529a13321e709a1113a",
+          "message": "felixctl is the one operator CLI: fold felix-controlplane admin into it (#2008)\n\n* felixctl is the one operator CLI: move felix-controlplane admin into it and run the server tools through it\n\nshard moves, placement plan|replication, features ls|finalize and backup-point join felixctl; felix-controlplane admin is deleted. data inspect, data restore-point and controlplane migrate run felix-broker and felix-controlplane and pass their exit status through.\n\n* felix-controlplane refuses the removed admin subcommand; clarify abandon prompt wording\n\n* felixctl hands every argument after data/controlplane subcommands to the server binary\n\n* test(cluster): build felixctl before the cluster suites, the backup tests run it\n\nSpec-Unaffected: build step only.\n\n* test(controlplane): the removed admin subcommand exits instead of starting a server\n\nSpec-Unaffected: test only.",
+          "timestamp": "2026-11-06T05:16:44Z",
+          "tree_id": "2f1dfe399d64393dfbfe54b4c2ec1ef33b6a7286",
+          "url": "https://github.com/GetFelix/felix/commit/a72715b53f4a19a0cbec9529a13321e709a1113a"
+        },
+        "date": 1793942963262,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 349872.44,
+            "range": "11018.53",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 349872.44\nmean: 349422.58\nstdev: 11018.53\ncv: 3.15%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 349872.44,
+            "range": "11018.53",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 349872.44\nmean: 349422.58\nstdev: 11018.53\ncv: 3.15%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81711.06,
+            "range": "375.14",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81711.06\nmean: 81619.50\nstdev: 375.14\ncv: 0.46%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 817110.58,
+            "range": "3751.36",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 817110.58\nmean: 816195.05\nstdev: 3751.36\ncv: 0.46%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
