@@ -191,3 +191,45 @@ async fn three_brokers_get_replica_sets_and_the_election_features() {
         assert!(features.enabled.contains(feature.name()), "{feature}");
     }
 }
+
+/// Steps the control plane every sweep interval until `node` reads down, and
+/// returns how long that took on the shared clock.
+async fn time_to_down(cp: &SimControlPlane, node: &str) -> Duration {
+    let link = cp.link();
+    let started = Instant::now();
+    let limit = cp.config().silence_before_down() * 10;
+    while started.elapsed() < limit {
+        tokio::time::sleep(cp.config().sweep_interval()).await;
+        cp.step().await.unwrap();
+        let text = link.node("t", node).await.unwrap().text();
+        if text.contains("Down") || text.contains("down") {
+            return started.elapsed();
+        }
+    }
+    panic!("{node} never went down");
+}
+
+/// The silence watch reads the control plane's lease clock, so a control
+/// plane whose clock runs at half speed takes about twice as long to mark a
+/// silent broker down.
+#[tokio::test(start_paused = true)]
+async fn the_silence_watch_runs_on_the_control_planes_lease_clock() {
+    let window = CpConfig::default().silence_before_down();
+
+    let cp = control_plane().await;
+    register(&cp.link(), "b1").await;
+    let true_speed = time_to_down(&cp, "b1").await;
+
+    crate::clock::install(crate::clock::Clocks {
+        controlplane: crate::clock::NodeClock::new(0, crate::clock::PPM / 2),
+        brokers: Vec::new(),
+    });
+    let cp = SimControlPlane::new(CpConfig::default()).await.unwrap();
+    register(&cp.link(), "b1").await;
+    let half_speed = time_to_down(&cp, "b1").await;
+
+    assert!(
+        half_speed >= true_speed + window / 2,
+        "true speed {true_speed:?}, half speed {half_speed:?}, window {window:?}"
+    );
+}

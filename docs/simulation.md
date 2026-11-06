@@ -493,8 +493,24 @@ time (`crates/testing/felix-sim/src/clock.rs`):
 So every read through `felix_common::clock` is a per-node read: the lease and
 its fence checks, the control plane's heartbeat stamps and expiry, record and
 retention times, cache TTLs, lease-claim times and the broker's token-expiry
-checks. Timers and deadlines on tokio's clock are not skewed, as in the
-cluster harness.
+checks. In the simulator the control plane's silence watch (the second check
+before a broker is marked down) also reads the control plane's lease clock.
+A real control plane times it on tokio's clock, because the cluster harness's
+clock faults step the lease clock and the watch is what keeps a stepped clock
+from expiring a live broker. So under skew a slow control plane waits longer
+to mark a silent broker down, and a fast one is still held back by the
+heartbeat stamps, which are on its wall clock.
+
+Timers and deadlines on tokio's clock are not skewed, as in the cluster
+harness. So the simulator cannot catch code that waits out a lease with a
+tokio sleep and acts without checking the lease clock afterwards: that sleep
+lasts the same everywhere. A validity decision has to read
+`felix_common::clock` to be tested here.
+
+`SimConfig::clock_plan` pins a skew instead of drawing one.
+`seed_8_slow_brokers_and_a_fast_control_plane_stay_safe` in `tests/seeds.rs`
+runs every broker's lease clock at 0.8x and the control plane's at 1.2x, the
+worst pair the bounded mode allows, and checks only the safety findings.
 
 `SimConfig::clocks` (or `FELIX_SIM_CLOCKS`) picks how far:
 

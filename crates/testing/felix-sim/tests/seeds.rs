@@ -33,8 +33,9 @@
 //! A seed whose bug is still open is pinned with `#[ignore = "#<issue>"]` and
 //! runs with `cargo test -p felix-sim --test seeds -- --ignored`.
 
+use felix_sim::clock::{Clocks, NodeClock, PPM};
 use felix_sim::cluster::SimConfig;
-use felix_sim::nemesis::clocks::ClockSkew;
+use felix_sim::nemesis::clocks::{BOUNDED_RATE_PPM, ClockPlan, ClockSkew};
 use felix_sim::run::{SimOutcome, first_difference, run_seed};
 
 fn log() {
@@ -170,6 +171,44 @@ fn a_skewed_seed_runs_the_same_twice() {
     );
     if let Some(difference) = first_difference(&first.trace(), &second.trace()) {
         panic!("seed 2 with skewed clocks ran differently the second time: {difference}");
+    }
+}
+
+/// The pair the lease margins guard against, at the edge of the bounded
+/// drift: every broker's lease clock runs slow while the control plane's runs
+/// fast, so a broker counts its lease as longest while the control plane
+/// counts silence fastest. Only the safety checks are asserted; liveness
+/// findings are the known stalls.
+#[test]
+#[cfg_attr(
+    not(tokio_unstable),
+    ignore = "needs RUSTFLAGS=\"--cfg tokio_unstable\" for the task hooks"
+)]
+fn seed_8_slow_brokers_and_a_fast_control_plane_stay_safe() {
+    log();
+    let base = SimConfig::for_seed(8);
+    let plan = ClockPlan {
+        initial: Clocks {
+            controlplane: NodeClock::new(0, PPM + BOUNDED_RATE_PPM),
+            brokers: vec![NodeClock::new(0, PPM - BOUNDED_RATE_PPM); base.brokers],
+        },
+        steps: Vec::new(),
+    };
+    let outcome = run_seed(
+        8,
+        SimConfig {
+            clock_plan: Some(plan),
+            ..base
+        },
+    );
+    println!("{outcome}");
+    assert!(outcome.report.violations.is_empty(), "{outcome}");
+    for unsafe_finding in [
+        "at-most-one-serving",
+        "one-leader-per-generation",
+        "acked-held-by-leader",
+    ] {
+        assert!(!found(&outcome, unsafe_finding), "{outcome}");
     }
 }
 

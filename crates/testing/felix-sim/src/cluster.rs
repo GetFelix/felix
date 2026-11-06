@@ -104,6 +104,9 @@ pub struct SimConfig {
     /// ([`crate::nemesis::clocks`]). Anything but `Off` needs a build with
     /// `--cfg tokio_unstable`.
     pub clocks: ClockSkew,
+    /// A clock plan to use instead of drawing one from the seed under
+    /// `clocks`, to pin a particular skew.
+    pub clock_plan: Option<ClockPlan>,
 }
 
 impl SimConfig {
@@ -125,7 +128,13 @@ impl SimConfig {
             fsync_mode: FsyncMode::None,
             controlplane: CpConfig::default(),
             clocks: ClockSkew::Off,
+            clock_plan: None,
         }
+    }
+
+    /// Whether any node's clock differs from the shared one.
+    pub fn skews_clocks(&self) -> bool {
+        self.clocks != ClockSkew::Off || self.clock_plan.is_some()
     }
 }
 
@@ -150,6 +159,8 @@ pub struct NodeHandles {
 pub struct SimCluster {
     pub config: SimConfig,
     pub seed: u64,
+    /// Each node's clocks at the start and the changes the run makes.
+    pub clock_plan: ClockPlan,
     cp: SimControlPlane,
     net: SimNet,
     nodes: Vec<Node>,
@@ -174,8 +185,10 @@ impl SimCluster {
     /// Installs the virtual lease clock for this thread, so call it on the
     /// runtime the run will use.
     pub async fn start(seed: u64, config: SimConfig) -> Result<Arc<Self>> {
-        let clocks = ClockPlan::generate(seed, config.clocks, config.brokers, config.fault_window);
-        clock::install(clocks.initial);
+        let clock_plan = config.clock_plan.clone().unwrap_or_else(|| {
+            ClockPlan::generate(seed, config.clocks, config.brokers, config.fault_window)
+        });
+        clock::install(clock_plan.initial.clone());
         // Election backoff draws its jitter on this thread.
         felix_common::jitter::sim::seed(seed);
         let cp = clock::on(
@@ -191,6 +204,7 @@ impl SimCluster {
         let cluster = Arc::new(Self {
             config,
             seed,
+            clock_plan,
             cp,
             net,
             nodes,

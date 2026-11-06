@@ -362,7 +362,9 @@ impl SimControlPlane {
             };
         }
         let now = inner.store.now_millis().await.ok()?;
-        let at = tokio::time::Instant::now();
+        // The control plane's lease clock, so its rate skew reaches the
+        // watch. The real loop uses tokio's clock (`spawn_expiry_sweep`).
+        let at = felix_common::clock::boottime();
         let Sweep { watch, grace, .. } = &mut *sweep;
         if !grace.may_sweep(at) {
             // Watched from the first tick, so the window has been running

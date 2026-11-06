@@ -42,7 +42,7 @@ use tokio_util::sync::CancellationToken;
 use crate::check::{CheckContext, Checker, Finding, Point, Severity, default_checkers};
 use crate::client::{Recorder, SimClient};
 use crate::cluster::{SimCluster, SimConfig};
-use crate::nemesis::clocks::{ClockPlan, ClockSkew};
+use crate::nemesis::clocks::ClockSkew;
 use crate::nemesis::{Nemesis, Plan};
 
 /// How often the checkers are called at [`Point::Quiet`].
@@ -201,7 +201,7 @@ pub fn run_seed(seed: u64, config: SimConfig) -> SimOutcome {
 /// the runtime's task hooks can tell whose clock a spawned task reads.
 pub fn run_seed_with(seed: u64, config: SimConfig, checkers: Vec<Box<dyn Checker>>) -> SimOutcome {
     assert!(
-        config.clocks == ClockSkew::Off || cfg!(tokio_unstable),
+        !config.skews_clocks() || cfg!(tokio_unstable),
         "clock skew needs a build with RUSTFLAGS=\"--cfg tokio_unstable\"; run it through \
          task sim:replay"
     );
@@ -303,8 +303,8 @@ async fn drive(
         let plan = plan.clone();
         tokio::spawn(async move { nemesis.run(&plan).await });
     }
-    if config.clocks != ClockSkew::Off {
-        let clocks = ClockPlan::generate(seed, config.clocks, config.brokers, config.fault_window);
+    if config.skews_clocks() {
+        let clocks = cluster.clock_plan.clone();
         for line in clocks.describe_initial() {
             recorder.fault(line);
         }
