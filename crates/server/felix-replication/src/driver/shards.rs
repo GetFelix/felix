@@ -464,7 +464,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             led_slots: HashMap::new(),
             moving: Vec::new(),
             not_led: HashSet::new(),
-            released: HashMap::new(),
+            released: HashMap::default(),
             metrics: DriverMetrics::new(),
         }
     }
@@ -562,7 +562,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         let keys: Vec<ShardKey> = found.iter().map(|(key, ..)| key.clone()).collect();
         let open_caches = super::open_caches(self.cx.broker, &keys);
         let now = tokio::time::Instant::now();
-        let mut released = HashMap::new();
+        let mut released = HashMap::default();
         for (key, candidate, ballot, generation) in found {
             let Some(log) = super::opened_log(self.cx.broker, &key, &open_caches).await else {
                 continue;
