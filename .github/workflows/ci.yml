@@ -414,6 +414,41 @@ jobs:
       - name: Cancelled put under load
         run: task test:stress
 
+  # The felix-sim seed batch (tests/seeds.rs, ignored in the workspace tests).
+  # Non-blocking and left out of `ci-ok` until its known liveness stalls are
+  # fixed, so a seed that stalls does not fail the required gates.
+  sim-seeds:
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && github.event_name != 'workflow_dispatch'
+    continue-on-error: true
+    runs-on: ${{ github.event_name != 'pull_request' && vars.FELIX_SELF_HOSTED_RUNNERS != 'false' && fromJSON('["self-hosted","felix-azure"]') || vars.FELIX_LARGE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.99.1"
+
+      - name: Rust Cache
+        if: runner.environment == 'github-hosted'
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Warm target dir
+        if: runner.environment == 'self-hosted'
+        uses: ./.github/actions/warm-target
+        with:
+          slot: ci-sim-seeds
+
+      - name: Seeds
+        run: cargo test -p felix-sim --test seeds -- --ignored --exact seeds --nocapture
+
   # felix-cluster's suites, the three longest each on a runner of its own
   # (Taskfile.yml, test:cluster). One cluster per runner, as before: they are
   # load-sensitive, and sharing a runner would make them flaky.
