@@ -3,6 +3,7 @@
 //! Nothing here acts. `main` hands the parsed [`Cli`] to the module that owns
 //! each command.
 
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -24,8 +25,8 @@ Commands:
   Data plane     pub, sub, cache get|put|del|watch, topology
   Groups         group, counter
   Control plane  tenant, namespace, stream, cache ls|info|create|set|rm,
-                 node, shard, placement, rbac
-  Operators      inspect shard|subs
+                 node, shard, placement, features, rbac
+  Operators      inspect shard|subs, backup-point, data, controlplane migrate
   Tools          context, bench, completions
 
 Run `felixctl help <command>` or `felixctl <command> --help` for details.
@@ -37,7 +38,10 @@ Run `felixctl help <command>` or `felixctl <command> --help` for details.
     version,
     about = "Work with a Felix cluster from the terminal",
     long_about = "Publish and subscribe to streams, read and watch caches, see where shards \
-                  live, list what the control plane knows, and run benchmarks.\n\n\
+                  live, list what the control plane knows, steer placement and run \
+                  benchmarks. It is the one operator command line: `data` and \
+                  `controlplane migrate` run the broker's and the control plane's own \
+                  tools on the host that holds their data.\n\n\
                   Connection settings come from a named context (see `felixctl context`), \
                   overridden by FELIX_* environment variables, overridden by flags.",
     after_long_help = "Examples:
@@ -49,6 +53,15 @@ Run `felixctl help <command>` or `felixctl <command> --help` for details.
 pub(crate) struct Cli {
     #[command(flatten)]
     pub(crate) connection: ConnectionFlags,
+    /// The felix-broker binary `data` runs [env: FELIX_BROKER_BIN] [default:
+    /// felix-broker on PATH]. Goes before the command
+    #[arg(long, value_name = "PATH", help_heading = "Tools")]
+    pub(crate) broker_bin: Option<PathBuf>,
+    /// The felix-controlplane binary `controlplane` runs [env:
+    /// FELIX_CONTROLPLANE_BIN] [default: felix-controlplane on PATH]. Goes
+    /// before the command
+    #[arg(long, value_name = "PATH", help_heading = "Tools")]
+    pub(crate) controlplane_bin: Option<PathBuf>,
     /// Print JSON instead of human-readable output. Errors go to stderr as
     /// JSON too.
     #[arg(long, global = true, help_heading = "Output")]
@@ -283,28 +296,66 @@ pub(crate) enum Command {
     #[command(
         subcommand,
         long_about = "List which broker leads each shard of every stream and cache, as the \
-                      control plane assigned them, and move a shard's leadership or cancel \
-                      a move.",
+                      control plane assigned them, list the moves in progress, and move a \
+                      shard's leadership or cancel a move.",
         after_long_help = "Examples:
   felixctl shard ls
   felixctl shard ls --leader broker-2
+  felixctl shard moves
   felixctl shard move orders 2 --to broker-3
   felixctl shard move cancel orders 2"
     )]
     Shard(ShardCommand),
 
-    /// Pause or resume placement's own moves (control plane)
+    /// See what placement will do, and pause or resume its moves (control plane)
     #[command(
         subcommand,
-        long_about = "Pause or resume the moves placement starts by itself, and give up a \
-                      stranded shard's log. Needs a control-plane token allowed node.manage \
-                      on the cluster.",
+        long_about = "See what placement would do next and which shards are short of their \
+                      replication factor, pause or resume the moves placement starts by \
+                      itself, and give up a stranded shard's log. Reading needs a \
+                      control-plane token allowed node.view on the cluster; pausing, \
+                      resuming and abandoning need node.manage.",
         after_long_help = "Examples:
+  felixctl placement plan
+  felixctl placement replication
   felixctl placement pause
   felixctl placement resume
   felixctl placement abandon orders 2 --yes"
     )]
     Placement(PlacementCommand),
+
+    /// List fleet features and finalize them (control plane)
+    #[command(
+        subcommand,
+        long_about = "A fleet feature is a behaviour every serving broker must support \
+                      before it is switched on. `features ls` shows which each broker \
+                      version offers and which are on; `features finalize` switches one on \
+                      fleet-wide. Finalizing is one-way: brokers without the feature are \
+                      refused afterwards. Reading needs a control-plane token allowed \
+                      node.view on the cluster; finalizing needs node.manage.",
+        after_long_help = "Examples:
+  felixctl features ls
+  felixctl features finalize jump_hash_routing --dry-run
+  felixctl features finalize jump_hash_routing --yes"
+    )]
+    Features(FeaturesCommand),
+
+    /// Record every shard's committed offsets as a backup point (control plane)
+    #[command(
+        name = "backup-point",
+        long_about = "Record one committed offset per shard log, across every broker, and \
+                      write them to a manifest a restore cuts back to. The offsets are read \
+                      from each shard leader's metrics listener, so run it from somewhere \
+                      that can reach those listeners. Reading needs a control-plane token \
+                      allowed node.view on the cluster.\n\n\
+                      The brokers do not agree on an instant, so a record written while the \
+                      point is collected can be in it on one shard and not on another.",
+        after_long_help = "Examples:
+  felixctl backup-point nightly-2026-11-05
+  felixctl backup-point nightly --out /backups/nightly.json
+  felixctl backup-point nightly --broker broker-1=http://10.0.0.5:9090 --metrics-port 9090"
+    )]
+    BackupPoint(BackupPointArgs),
 
     /// List, grant and revoke RBAC policies and role assignments (control plane)
     #[command(
@@ -336,6 +387,47 @@ pub(crate) enum Command {
   felixctl inspect subs --node broker-a --limit 500"
     )]
     Inspect(InspectCommand),
+
+    /// Inspect and restore a broker's data directory (runs felix-broker)
+    #[command(
+        subcommand,
+        name = "data",
+        long_about = "Work on a broker's data directory with the tools in the felix-broker \
+                      binary. These run on the host that holds the directory, with \
+                      felix-broker installed there: felixctl finds it with --broker-bin (before \
+                      `data`), then $FELIX_BROKER_BIN, then PATH, passes every argument after \
+                      the subcommand through unchanged, --help included, and ends with its \
+                      exit status.\n\n\
+                      `data inspect segments|records` reads a data directory, read-only: \
+                      what startup would decide about every shard's segments, and the \
+                      records around an offset. `data restore-point` cuts a stopped \
+                      broker's logs back to a backup point written by `felixctl \
+                      backup-point`. For their own usage run `felixctl data inspect \
+                      --help` or `felixctl data restore-point --help`.",
+        after_long_help = "Examples:
+  felixctl data inspect segments /var/lib/felix/data
+  felixctl data inspect records /var/lib/felix/data acme/default/orders/3 --offset 1500
+  felixctl data restore-point --point nightly.backup-point.json --node broker-1"
+    )]
+    Data(DataCommand),
+
+    /// Run control-plane maintenance tools (runs felix-controlplane)
+    #[command(
+        subcommand,
+        name = "controlplane",
+        long_about = "Run the maintenance tools in the felix-controlplane binary. They \
+                      read or write the control plane's own database, so they run on a host \
+                      that can reach it, with felix-controlplane installed there: felixctl \
+                      finds it with --controlplane-bin (before `controlplane`), then \
+                      $FELIX_CONTROLPLANE_BIN, then PATH, passes every argument after `migrate` \
+                      through unchanged, --help included, and ends with its exit status. \
+                      `migrate export-postgres` writes the metadata to a file; `migrate \
+                      import` loads a file into a Raft group.",
+        after_long_help = "Examples:
+  felixctl controlplane migrate export-postgres state.json
+  felixctl controlplane migrate import state.json http://cp-0:8444"
+    )]
+    Controlplane(ControlplaneCommand),
 
     /// Run a load test against the cluster
     #[command(
@@ -1194,6 +1286,16 @@ pub(crate) enum ShardCommand {
   felixctl shard move cancel orders 2"
     )]
     Move(ShardMoveArgs),
+    /// List the moves in progress
+    #[command(
+        long_about = "List the shard moves in progress: the step each is at, why it \
+                      started, the old and new leader and how far the destination's copy \
+                      lags. Says so when placement is paused.",
+        after_long_help = "Examples:
+  felixctl shard moves
+  felixctl shard moves --json"
+    )]
+    Moves,
 }
 
 /// `shard move NAME SHARD --to NODE`, or `shard move cancel NAME SHARD`.
@@ -1249,6 +1351,23 @@ pub(crate) struct ShardRef {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum PlacementCommand {
+    /// Show what placement would do next
+    #[command(
+        long_about = "Show what placement would do next for each shard it has work for: \
+                      stage a move, wait for a slot, or leave it. Starts nothing.",
+        after_long_help = "Examples:
+  felixctl placement plan"
+    )]
+    Plan,
+    /// Show shards short of their replication factor
+    #[command(
+        long_about = "Show the shards with fewer copies than their replication factor: how \
+                      many they have, which copies are on brokers that are unavailable, \
+                      which are halted and why, and the broker a copy is being added on.",
+        after_long_help = "Examples:
+  felixctl placement replication"
+    )]
+    Replication,
     /// Stop placement starting moves of its own
     #[command(
         long_about = "Stop placement starting moves of its own, on every control-plane \
@@ -1284,6 +1403,83 @@ pub(crate) enum PlacementCommand {
         #[command(flatten)]
         confirm: Confirm,
     },
+}
+
+/// `data inspect ...` and `data restore-point ...`. Everything after the
+/// subcommand name is the broker's, so it is taken as an external subcommand:
+/// clap does not look at it, and a `--json` or `--help` there reaches the
+/// broker unchanged.
+#[derive(Debug, Subcommand)]
+pub(crate) enum DataCommand {
+    #[command(external_subcommand)]
+    Run(Vec<OsString>),
+}
+
+/// `controlplane migrate ...`, passed through the same way.
+#[derive(Debug, Subcommand)]
+pub(crate) enum ControlplaneCommand {
+    #[command(external_subcommand)]
+    Run(Vec<OsString>),
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum FeaturesCommand {
+    /// List the features the brokers support and the ones that are on
+    #[command(
+        long_about = "Show how many brokers are serving, the features every one of them \
+                      supports, and the features finalized fleet-wide.",
+        after_long_help = "Examples:
+  felixctl features ls
+  felixctl features ls --json"
+    )]
+    Ls,
+    /// Switch a feature on for the whole fleet. One-way
+    #[command(
+        long_about = "Switch a feature on for the whole fleet. ONE-WAY: it cannot be turned \
+                      off, and brokers without the feature are refused from then on. The \
+                      control plane refuses it unless every serving broker supports the \
+                      feature and the features it needs are on. --dry-run says whether it \
+                      would be accepted and changes nothing.",
+        after_long_help = "Examples:
+  felixctl features finalize jump_hash_routing --dry-run
+  felixctl features finalize jump_hash_routing --yes"
+    )]
+    Finalize {
+        /// Feature name, as `features ls` lists it
+        feature: String,
+        /// Say whether it could be finalized, without finalizing it
+        #[arg(long)]
+        dry_run: bool,
+        #[command(flatten)]
+        confirm: Confirm,
+    },
+}
+
+/// `backup-point NAME`.
+#[derive(Debug, Args)]
+pub(crate) struct BackupPointArgs {
+    /// Name recorded in the manifest
+    pub(crate) name: String,
+    /// Where to write the manifest [default: NAME.backup-point.json]
+    #[arg(long, value_name = "FILE")]
+    pub(crate) out: Option<PathBuf>,
+    /// Metrics URL of a broker, where the address the control plane has for it
+    /// is not the one to use. Repeat for more brokers
+    #[arg(long, value_name = "NODE=URL", value_parser = broker_override)]
+    pub(crate) broker: Vec<(String, String)>,
+    /// Port of the brokers' metrics listeners
+    #[arg(long, value_name = "PORT", default_value_t = 8080)]
+    pub(crate) metrics_port: u16,
+}
+
+/// Parse `NODE=URL`.
+fn broker_override(value: &str) -> Result<(String, String), String> {
+    match value.split_once('=') {
+        Some((node, url)) if !node.is_empty() && !url.is_empty() => {
+            Ok((node.to_string(), url.trim_end_matches('/').to_string()))
+        }
+        _ => Err(format!("expected NODE=URL, not {value:?}")),
+    }
 }
 
 #[derive(Debug, Subcommand)]

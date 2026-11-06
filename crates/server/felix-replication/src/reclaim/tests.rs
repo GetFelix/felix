@@ -255,6 +255,7 @@ fn a_refusal_report_carries_the_refusal_and_no_positions() {
     let refused = RefusedGeneration {
         generation: 6,
         promised_to: "broker-d".to_string(),
+        ballot: 0,
     };
 
     let report = refusal_report(&key(), refused.clone());

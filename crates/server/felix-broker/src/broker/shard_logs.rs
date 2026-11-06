@@ -587,7 +587,7 @@ impl Broker {
 
 /// Where readers ended by another leader's records are sent: the leader this
 /// shard's log last accepted. A hint, like every handoff.
-fn accepted_leader(state: &crate::stream::StreamState) -> crate::ShardHandoff {
+pub(super) fn accepted_leader(state: &crate::stream::StreamState) -> crate::ShardHandoff {
     let log = state.durable.as_ref();
     crate::ShardHandoff {
         node_id: log

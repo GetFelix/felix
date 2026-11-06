@@ -516,6 +516,9 @@ Otherwise it waits for the control plane, as without the switch. A 401,
 another 4xx, or an answer that does not decode is a control plane that is
 up, so it never counts as down.
 
+Peers learn a broker's address only from the control plane, so a broker
+started this way votes only if it comes back at its registered address.
+
 ```mermaid
 flowchart TD
     A["Startup lookup, at most FELIX_CONTROLPLANE_STARTUP_WAIT_MS"] -- "answered" --> N["Start as usual"]
@@ -1778,6 +1781,14 @@ from metadata level 25 and dropped below it; under Postgres it is migration
 that keeps what a member that predates the columns leaves behind from
 reading as a refusal.
 
+A refusal can carry the ballot the leader's own copy holds for another node
+above its generation. Placement then names the leader one past that ballot
+instead of one up, as long as the ballot is at most 16 generations (the
+election window) above the shard's. Under Raft the ballot needs metadata level 28 and is dropped
+below it, so the leader is named one up on every member. Under Postgres it
+is migration 0043 (`refused_ballot`), with `refused_ballot_at` as its
+marker.
+
 **Postgres: finish the control-plane upgrade before finalizing
 `replica_election`.** The finalize check runs on the instance that receives
 it, and the store records no version for the other instances (only who holds
@@ -1821,7 +1832,7 @@ drained; then the cut-over goes to another caught-up replica or the old
 leader itself. A leader that has deregistered does not take the shard back
 unless an operator cancels the move: it is stopping, and a new generation
 would land on a broker about to stop serving it. The shard stays fenced until another caught-up replica can take
-it or the leader's lease runs out and it fails over (`admin plan` says the
+it or the leader's lease runs out and it fails over (`placement plan` says the
 leader has deregistered). While a follower is being seated, only the lease ends
 the wait. A leader that dies mid-move is a failover, where
 the successor is a candidate like any other replica, except on a durable
@@ -1848,7 +1859,7 @@ destination's copy, so the next move of that shard waits: the fence timeout
 after one give-up, twice that after two in a row, and so on up to an hour.
 The count starts again once the shard has another leader. A draining leader
 whose shards cannot drain would otherwise fence and give up every few
-minutes; with the wait it does so ever more rarely. `admin plan` shows a move
+minutes; with the wait it does so ever more rarely. `placement plan` shows a move
 held by the wait and when it ends, and from the second give-up in a row
 the control plane logs a warning naming the shard and its leader. The
 count is kept by the instance running placement, like the fence clock.
@@ -1887,7 +1898,7 @@ totals, and not to spread a zone. A balance move already staged is dropped
 (`abandon`) before it fences, which also frees its move slot for a drain or a
 restore. A zone reseat already staged and caught up on a stream that
 fences its seats waits too, instead of fencing a leader that is busy; it
-stays a follower meanwhile. `admin plan` lists the held shards as waiting
+stays a follower meanwhile. `placement plan` lists the held shards as waiting
 for the recovery. Failover is not held: a dead
 broker's shards get new leaders in the same pass as always. Drains,
 restores and an operator's moves go on too. The reason is what a fence costs
@@ -2113,25 +2124,27 @@ first to keep a layout that is not even.
 The same controls from a shell, as a client of these endpoints:
 
 ```bash
-felix-controlplane admin --url http://cp:8443 --token "$TOKEN" moves
-felix-controlplane admin plan
-felix-controlplane admin move t1/ns/orders/0 broker-3
-felix-controlplane admin cancel t1/ns/orders/0        # --cache for a cache shard
-felix-controlplane admin abandon t1/ns/orders/0       # loses the shard's records
-felix-controlplane admin pause
-felix-controlplane admin resume
+felixctl shard moves
+felixctl placement plan
+felixctl placement replication
+felixctl shard move orders 0 --to broker-3
+felixctl shard move cancel orders 0        # --cache for a cache shard
+felixctl placement abandon orders 0 --yes  # loses the shard's records
+felixctl placement pause
+felixctl placement resume
 ```
 
 Fleet features have their own two commands (see [Fleet features](#fleet-features)):
 
 ```bash
-felix-controlplane admin features                              # supported and enabled
-felix-controlplane admin features finalize jump_hash_routing --dry-run
-felix-controlplane admin features finalize jump_hash_routing   # one-way
+felixctl features ls                                    # supported and enabled
+felixctl features finalize jump_hash_routing --dry-run
+felixctl features finalize jump_hash_routing --yes      # one-way
 ```
 
-`--url` defaults to `FELIX_CONTROLPLANE_URL` and `--token` to `FELIX_TOKEN`.
-Output is a plain table; `--json` prints the API's response.
+The connection comes from a felixctl context or `FELIX_CONTROLPLANE_URL` and
+`FELIX_CONTROLPLANE_TOKEN`; shards are named in the context's tenant and
+namespace. Output is a plain table; `--json` prints the API's response.
 
 #### How brokers follow ownership
 

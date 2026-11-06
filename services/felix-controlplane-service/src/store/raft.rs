@@ -108,6 +108,10 @@ const ELECTED_SET_LEVEL: u16 = 26;
 /// (#1929).
 const OWN_LEADER_SET_LEVEL: u16 = 27;
 
+/// The metadata level whose members store the ballot a leader's refusal
+/// carries and name it past that ballot (#1951).
+const REFUSED_BALLOT_LEVEL: u16 = 28;
+
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
     MetaCommand, MetaError, MetaResponse, decode_result, encode_command,
@@ -872,11 +876,12 @@ impl ControlPlaneStore for RaftStore {
         }
     }
 
-    async fn put_shard_assignment_if(
+    async fn put_shard_assignment_at_least(
         &self,
         mut assignment: ShardAssignment,
         expected_generation: Option<u64>,
         fence: u64,
+        at_least: u64,
     ) -> StoreResult<AssignmentWrite> {
         // A pending set is never dropped, unlike the fence ids: without it a
         // cut-over takes the new set at once. Its level refuses the write
@@ -891,6 +896,13 @@ impl ControlPlaneStore for RaftStore {
                     expected_generation,
                     fence,
                     seq_generation: level >= SHARD_RENEWAL_LEVEL,
+                    // Below its level every member takes the next
+                    // generation, as before.
+                    at_least: if level >= REFUSED_BALLOT_LEVEL {
+                        at_least
+                    } else {
+                        0
+                    },
                 },
             )
             .await?
@@ -1053,6 +1065,13 @@ impl ControlPlaneStore for RaftStore {
         // Without it the shard waits on the leader's silence, as before.
         if report.refused.is_some() && self.group_level().await < REFUSED_LEVEL {
             report.refused = None;
+        }
+        // Without it the leader is named one up, as before.
+        if let Some(refused) = report.refused.as_mut()
+            && refused.ballot != 0
+            && self.group_level().await < REFUSED_BALLOT_LEVEL
+        {
+            refused.ballot = 0;
         }
         // The API's own check still stands for a group that cannot apply
         // the field.

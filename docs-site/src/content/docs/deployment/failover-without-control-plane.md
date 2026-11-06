@@ -189,7 +189,9 @@ treat it as down and elect one of themselves. It starts this way only if the
 control plane is down rather than refusing it, and only from the data
 directory the control plane last registered. The switch is off by default
 because a data directory restored from a backup is caught only once the
-control plane answers. See
+control plane answers. Peers learn a broker's address only from the control
+plane, so a broker restarted while it is down votes only if it comes back at
+its registered address. See
 [Starting while the control plane is down](https://github.com/GetFelix/felix/blob/main/docs/control-plane.md#starting-while-the-control-plane-is-down).
 
 **16 generations per outage.** The control plane adopts an election only up to
@@ -245,10 +247,10 @@ compatibility](/deployment/upgrades/#runbook-rolling-out-a-fleet-feature).
 For each feature, dry-run first:
 
 ```bash
-felix-controlplane admin features finalize joint_fence --dry-run
-felix-controlplane admin features finalize joint_fence
-felix-controlplane admin features finalize replica_election --dry-run
-felix-controlplane admin features finalize replica_election
+felixctl features finalize joint_fence --dry-run
+felixctl features finalize joint_fence --yes
+felixctl features finalize replica_election --dry-run
+felixctl features finalize replica_election --yes
 ```
 
 The dry run says either that the feature can be finalized, or what stops it:

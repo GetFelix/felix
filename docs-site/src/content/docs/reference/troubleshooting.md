@@ -153,7 +153,7 @@ at once as `FELIX_REPLICATION_REBUILD_MAX_CONCURRENT` allows (default `1`;
 `0` leaves them all to an operator). The entry clears once the rebuild is done.
 
 The control plane sees the same halts through the leader's replica reports:
-`felix-controlplane admin replication` lists them in `HALTED`, and
+`felixctl placement replication` lists them in `HALTED`, and
 `felix_shard_replicas_halted` counts them. Placement never moves a shard onto a
 halted copy, and replaces a copy that stays halted for
 `FELIX_SHARD_RESTORE_AFTER_MS`. A move to one by hand is refused with
@@ -166,7 +166,7 @@ The error's `detail.reason` says why:
 | `reason` | Meaning |
 | --- | --- |
 | `moving` | The shard is moving and the move did not cut over within `FELIX_SHARD_MOVE_HOLD_MS` (default 2 s). Nothing was accepted. Retry after `detail.retry_after_ms`. |
-| `not_assigned` | Placement has not assigned the shard. `felix-controlplane admin plan` says why it is waiting. |
+| `not_assigned` | Placement has not assigned the shard. `felixctl placement plan` says why it is waiting. |
 | `owner_unavailable` | The leader is known but not live or not reachable. |
 | `not_ready` | The leader has not finished opening the shard. |
 | `stale` | This broker's routing view is behind the request's. It resolves as the assignment feed arrives. |
@@ -174,7 +174,7 @@ The error's `detail.reason` says why:
 | `region_not_routable` | The leader is in a region this broker has no bridge to (`FELIX_REGION_BRIDGES`). |
 
 A durable shard whose only copy of the log is on a broker that is down stays
-unassigned until that broker returns. `felix-controlplane admin abandon` gives
+unassigned until that broker returns. `felixctl placement abandon` gives
 up its log and places it afresh, which loses data. See
 [Moving shards by hand](/deployment/moving-shards/#abandoning-a-shards-log).
 

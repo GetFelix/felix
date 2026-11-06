@@ -257,12 +257,12 @@ control-plane blip):
 # 2. Freeze writes: take the Postgres-backed instances out of rotation.
 # 3. Export through the store traits (exactly what the API serves):
 FELIX_CONTROLPLANE_POSTGRES_URL=postgres://... \
-  felix-controlplane migrate export-postgres state.json
+  felixctl controlplane migrate export-postgres state.json
 
 # 4. One atomic command, proposed to any member's peer listener as a peer
 #    (it forwards to the leader):
 FELIX_RAFT_CLUSTER_ID=prod-metadata FELIX_RAFT_PEER_TOKEN=... \
-  felix-controlplane migrate import state.json http://cp-0:8444
+  felixctl controlplane migrate import state.json http://cp-0:8444
 
 # 5. Compare the printed summaries, spot-check, repoint, retire Postgres.
 ```
@@ -279,7 +279,7 @@ restore. `--overwrite` discards whatever the target holds, checkpoints
 included, so it belongs in a runbook and should only be run deliberately. A
 broker kept running across a restore to an earlier point refuses a stream
 whose restored incarnation is below the one it holds, since it never moves a
-name back; run `felix-broker restore-point` with the matching backup point, or
+name back; run `felixctl data restore-point` with the matching backup point, or
 delete and recreate the stream (see `docs/durable-storage.md`, "Deleting a
 stream"). A restore also rewinds node incarnations and replica reports
 together, which lets placement replace a running leader on an old report while
