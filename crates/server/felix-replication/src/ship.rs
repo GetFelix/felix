@@ -262,7 +262,16 @@ async fn ship_batch<R: PeerRequester>(
         return Progress::UpToDate;
     }
 
-    let offered = requester.recorded_capabilities(&cursor.node_id);
+    // On first contact nothing is recorded until the connection's handshake,
+    // so dial first: an unlabelled batch cannot vouch for an unclean copy,
+    // and an idle shard would never send another (#2029).
+    let offered = match requester.recorded_capabilities(&cursor.node_id) {
+        None if !cursor.legacy_frames => requester
+            .capabilities(&cursor.node_id, cursor.addr)
+            .await
+            .ok(),
+        recorded => recorded,
+    };
     // Headers ride the timed layout, so a follower that refused the committed
     // kinds cannot be sent them either.
     let carries_headers = !cursor.legacy_frames

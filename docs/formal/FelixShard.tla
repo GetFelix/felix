@@ -4165,15 +4165,28 @@ RefuseOpen(b) ==
                     confirmed, ballot, opened, setVars, ackGen, idVarsButDoubt >>
     /\ UNCHANGED handoffVars
 
+\* Where `b`'s generation starts in its log: its length when it opened,
+\* before its start record if it wrote one.
+OwnStart(b) ==
+    LET own == {k \in 1..Len(log[b]) : log[b][k].g = bgen[b]}
+    IN IF own = {} THEN Len(log[b])
+       ELSE (CHOOSE k \in own : \A m \in own : k <= m) - 1
+
 \* A batch stored from a leader vouches for the copy (`UncleanStart::vouch`).
-\* Under `VouchOnGeneration` only one that leaves the copy holding a record
-\* of that leader's generation: the leader writes its start record after
-\* every record it holds, so the copy then holds everything acknowledged
-\* before the crash. Without it, a batch that brings back only part of a
-\* lost suffix vouches for a copy still short of it.
+\* Under `VouchOnGeneration` only one that leaves the copy level with the
+\* leader up to where its generation starts: the leader opened after
+\* fencing a majority, so below that it holds everything acknowledged
+\* before the crash, whether or not it wrote a start record
+\* (FelixShardElectUncleanNoStartRecord.cfg). Ship leaves the copy a prefix
+\* of the leader's log. The code reads the start from the batch's own
+\* labels, never from an unlabelled batch's fallback to the sender's
+\* generation. `ReplicaHandler::apply` in replica.rs does this, and until
+\* then `UncleanStart` keeps reading the copy as one it led, though a batch
+\* rewrote its ballot (`accepting`). Without it, a batch that brings back
+\* only part of a lost suffix vouches for a copy still short of it (#2029).
 Vouch(b, f) ==
     doubt' = IF /\ doubt[f] = "led"
-                /\ VouchOnGeneration => \E i \in 1..Len(log'[f]) : log'[f][i].g = bgen[b]
+                /\ VouchOnGeneration => Len(log'[f]) >= OwnStart(b)
              THEN [doubt EXCEPT ![f] = "vouched"]
              ELSE doubt
 ShipStep(b, f) ==

@@ -720,6 +720,17 @@ impl ReplicaHandler {
         ) {
             return refusal;
         }
+        // Before the ballot changes: it is the evidence of a copy this
+        // broker led before an unclean start.
+        if let Some(unclean) = &self.unclean
+            && own_kind(log_kind).is_none()
+        {
+            unclean.accepting(
+                &crate::driver::watch_key(&key),
+                &log,
+                batch.shard.generation,
+            );
+        }
         if let Some(refusal) =
             accept_sender(&log, correlation_id, &key, batch.shard.generation, sender).await
         {
@@ -936,14 +947,6 @@ impl ReplicaHandler {
                 if batch.set_generation.is_some() {
                     self.heard_leader(&key);
                 }
-                if let Some(unclean) = &self.unclean
-                    && matches!(
-                        log_kind,
-                        felix_broker::LogKind::Stream | felix_broker::LogKind::Cache
-                    )
-                {
-                    unclean.vouch(&crate::driver::watch_key(&key));
-                }
                 // Not a reason to fail the batch: the offset only guards
                 // truncation, and the log writes it behind. Only what
                 // this batch left level with the leader: past the
@@ -980,6 +983,26 @@ impl ReplicaHandler {
                         error = %err,
                         "stored a replicated batch but could not record its generation",
                     );
+                }
+                // Only once the copy is level with this leader up to where
+                // its generation starts (#2029). It opened after fencing a
+                // majority, so below that offset it holds every acknowledged
+                // record, start record written or not. Only the batch's own
+                // labels say where that is: an unlabelled batch labels
+                // whatever it carried, inherited records too, with the
+                // sender's generation.
+                let reaches_own = batch.generations.as_deref().is_some_and(|starts| {
+                    starts.iter().any(|start| {
+                        start.generation == batch.shard.generation
+                            && start.start_offset <= applied.durable_offset
+                    })
+                });
+                if let Some(unclean) = &self.unclean
+                    && own_kind(log_kind).is_none()
+                    && level
+                    && reaches_own
+                {
+                    unclean.vouch(&crate::driver::watch_key(&key));
                 }
                 // Until the sender's own generation is recorded here, the
                 // newest one recorded is older, and `unverified_from` would
