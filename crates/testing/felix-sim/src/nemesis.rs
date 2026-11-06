@@ -25,7 +25,7 @@
 //! | `Move` | Moves a shard's leadership to another broker, and sometimes cancels the move. |
 //! | `Drain` | Drains a broker, then puts it back. Its leaderships move away and, with four or more brokers, the follower seats it holds are replaced. |
 //! | `Remove` | Takes a broker out: drains it, stops it, deregisters it and deletes its record once no shard names it. It comes back later as a new registration. |
-//! | `Abandon` | Abandons the log of each stream shard the broker holds after unclean kills (`felixctl placement abandon`). |
+//! | `Abandon` | Stops the broker assigned the stream shards the broker holds after unclean kills, abandons their logs (`felixctl placement abandon`), and starts it again. |
 //! | `KillBeforeOpen` | Kills the next broker placement names leader of a shard, before it opens the shard. |
 //! | `SeatRace` | Drains a broker so a follower seat is being replaced, kills that shard's leader, then kills the next leader named for it before it opens: seat replacement plus two promotions. |
 //!

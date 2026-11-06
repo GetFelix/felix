@@ -32,8 +32,10 @@ runs its real move, drain, replacement and abandon paths:
   with four or more brokers, its follower seats are replaced.
 - `Remove`: a broker is drained, stopped and deregistered, and its record is
   deleted once no shard names it. It comes back later as a new registration.
-- `Abandon`: the log of each stream shard the broker holds after unclean kills
-  is abandoned, as `felixctl placement abandon` does.
+- `Abandon`: for the stream shards the broker holds after unclean kills, the
+  broker they are assigned to is stopped, their logs are abandoned (as
+  `felixctl placement abandon` does) and the broker is started again, the
+  procedure `docs/replication-design.md` gives.
 - `KillBeforeOpen`: the next broker named or elected leader of a shard is
   stopped before it opens the shard.
 - `SeatRace`: a broker is drained so a follower seat is being replaced, the
@@ -66,9 +68,10 @@ A seed fails when any check reports a problem, except a warning.
   the shard had at that instant: a broker killed before it opened a shard it
   was named to lead is not counted as its leader, a follower being copied in
   counts in the set, and an abandoned log ends the hold.
-- A shard whose log an operator abandoned loses its records by design. It is
-  left out of the history check and `AckedHeldByLeader`, and a warning names
-  it.
+- A shard whose log an operator abandoned loses what it acknowledged by
+  design. Appends started before the abandon count as unknown and reads
+  started before it are dropped; everything after it is checked as usual. A
+  warning names the shard.
 - A run that stops making progress ends with a `stalled` finding instead of
   hanging.
 

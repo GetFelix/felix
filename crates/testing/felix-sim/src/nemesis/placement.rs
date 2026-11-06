@@ -34,8 +34,10 @@ const SEAT_POLL: Duration = Duration::from_millis(100);
 const SEAT_WITHIN: Duration = Duration::from_secs(20);
 /// How long a seat race waits for the second promotion.
 const SECOND_PROMOTION_WITHIN: Duration = Duration::from_secs(20);
+/// How long an abandon keeps the assigned broker stopped while it asks.
+const ABANDON_STOPPED: Duration = Duration::from_secs(30);
 /// How often a removal retries deleting the node's record, and an abandon
-/// looks for held shards.
+/// looks for held shards or asks again.
 const OPERATOR_RETRY: Duration = Duration::from_secs(1);
 
 impl Plan {
@@ -250,29 +252,103 @@ impl Nemesis {
         self.release_drain(node).await;
     }
 
-    /// Abandon each held stream shard, as an operator reading the held list
-    /// would. The control plane refuses until it, too, sees the shard waiting
-    /// on a lost log, so a refused shard is asked again each second and only
-    /// its first refusal is logged. A cache shard is left alone: its keys would
-    /// be lost too, and the cache check has no way to forget them.
+    /// Abandon the logs of held stream shards the way an operator must
+    /// (`docs/replication-design.md`, "The way out is the operator's"): stop
+    /// the broker the shard is assigned to, so placement finds no caught-up
+    /// replica, abandon, then start the broker again. While it is up the
+    /// control plane answers `not_stranded`. Waits up to `within` for a held
+    /// shard, then works on every held shard of that one broker. A cache shard
+    /// is left alone: its keys would be lost too, and the cache check cannot
+    /// tell that apart from a bug.
     async fn abandon_held(&self, within: Duration) {
         let until = Instant::now() + within;
-        let mut refused = BTreeSet::new();
-        while Instant::now() < until && !self.stopped.is_cancelled() {
-            let held = self.cluster.held_shards().await;
-            for key in self.cluster.shard_keys() {
-                let shard = describe(&key);
-                if key.kind != ShardKind::Stream || !held.contains(&shard) {
-                    continue;
-                }
-                let answer = self.cluster.abandon(&key).await;
-                if answer.ok || refused.insert(shard.clone()) {
-                    self.recorder
-                        .fault(format!("abandon the log of {shard}: {}", answer.text));
-                }
+        let (index, mut shards) = loop {
+            if self.stopped.is_cancelled() {
+                return;
+            }
+            if let Some(found) = self.held_by_one_leader().await {
+                break found;
+            }
+            if Instant::now() >= until {
+                self.recorder.fault("abandon: no held shard");
+                return;
+            }
+            self.lapse(OPERATOR_RETRY).await;
+        };
+        let id = self.cluster.node_id(index).to_string();
+        // It may be restarting from an earlier fault; wait for it to run.
+        let ready_by = Instant::now() + ABANDON_STOPPED;
+        while !self.may_crash(index) {
+            if self.stopped.is_cancelled() || Instant::now() >= ready_by {
+                self.recorder.fault(format!(
+                    "abandon: {id} could not be stopped, so nothing is abandoned"
+                ));
+                return;
             }
             self.lapse(OPERATOR_RETRY).await;
         }
+        let names: Vec<String> = shards.iter().map(describe).collect();
+        self.recorder.fault(format!(
+            "stop {id} to abandon the logs of {}",
+            names.join(", ")
+        ));
+        self.cluster.crash(index).await;
+        let deadline = Instant::now() + ABANDON_STOPPED;
+        let mut refused = BTreeSet::new();
+        while !shards.is_empty() && Instant::now() < deadline && !self.stopped.is_cancelled() {
+            let mut left = Vec::new();
+            for key in shards {
+                let shard = describe(&key);
+                let answer = self.cluster.abandon(&key).await;
+                if answer.ok {
+                    self.recorder.abandoned(key.shard);
+                    self.recorder
+                        .fault(format!("abandoned the log of {shard}: {}", answer.text));
+                    continue;
+                }
+                if refused.insert(shard.clone()) {
+                    self.recorder.fault(format!(
+                        "abandon the log of {shard} refused: {}",
+                        answer.text
+                    ));
+                }
+                left.push(key);
+            }
+            shards = left;
+            if !shards.is_empty() {
+                self.lapse(OPERATOR_RETRY).await;
+            }
+        }
+        for key in &shards {
+            self.recorder.fault(format!(
+                "abandon the log of {} still refused with {id} stopped",
+                describe(key)
+            ));
+        }
+        if !self.stopped.is_cancelled() {
+            self.recorder.fault(format!("restart b{}", index + 1));
+            self.cluster.restart(index);
+        }
+    }
+
+    /// The held stream shards assigned to the first broker that leads any,
+    /// with its index.
+    async fn held_by_one_leader(&self) -> Option<(usize, Vec<ShardKey>)> {
+        let held = self.cluster.held_shards().await;
+        let views = self.cluster.cp().shard_views().await.ok()?;
+        let leader_of = |key: &ShardKey| views.get(&describe(key)).map(|v| v.leader.clone());
+        let held: Vec<ShardKey> = self
+            .cluster
+            .shard_keys()
+            .filter(|key| key.kind == ShardKind::Stream && held.contains(&describe(key)))
+            .collect();
+        let leader = held.iter().find_map(leader_of)?;
+        let index = self.cluster.index_of(&leader)?;
+        let keys = held
+            .into_iter()
+            .filter(|key| leader_of(key).as_deref() == Some(leader.as_str()))
+            .collect();
+        Some((index, keys))
     }
 
     /// Wait up to `within` for a seat being replaced on a shard `node`

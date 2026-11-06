@@ -129,8 +129,9 @@ pub(crate) fn newest_held(
 /// newest generation known to any broker must hold everything acknowledged;
 /// a deposed one still serving is held to its own log (see
 /// [`missing_by_server`]; after the heal, see [`newest_held`]). A shard
-/// nobody serves is skipped here: `ElectionSettles` reports it, and so is one
-/// whose log an operator abandoned. The records are read from each broker's log
+/// nobody serves is skipped here: `ElectionSettles` reports it. An append
+/// acknowledged before an operator abandoned the log is not held to it (the
+/// history marks it unknown). The records are read from each broker's log
 /// directly, whether a quorum has committed them or not.
 #[derive(Debug)]
 pub struct AckedHeldByLeader {
@@ -241,9 +242,6 @@ impl Checker for AckedHeldByLeader {
     async fn check(&mut self, ctx: &CheckContext) -> Vec<Finding> {
         let cluster = &ctx.cluster;
         let mut waiting = acked_by_shard(&ctx.history, cluster.config.shards);
-        // An abandoned log loses what it acknowledged by design.
-        let abandoned = cluster.abandoned_shards();
-        waiting.retain(|shard, _| !abandoned.contains(&describe(&stream_key(*shard))));
         let mut findings = Vec::new();
         let deadline = ctx.healed_at + cluster.config.settle_within;
         // After the heal, give the shards the time `ElectionSettles` does to

@@ -379,12 +379,12 @@ async fn drive(
 
     let held = cluster.held_shards().await;
     let mut history = recorder.history();
-    let abandoned = drop_abandoned_lists(&mut history, &cluster.abandoned_shards());
+    let abandoned: Vec<String> = recorder.abandoned_lists().into_keys().collect();
     if !abandoned.is_empty() {
         findings.push(Finding::warning(
             "abandoned",
             format!(
-                "an operator abandoned the logs of {} shards, which loses their records by design; left out of the history check: {}",
+                "an operator abandoned the logs of {} shards, which loses what they acknowledged by design; operations started before each abandon are not held to it: {}",
                 abandoned.len(),
                 abandoned.join(", ")
             ),
@@ -448,33 +448,6 @@ fn finished(
         history,
         elapsed,
     }
-}
-
-/// Remove the lists of shards (`stream/3`) whose log an operator abandoned:
-/// their acknowledged records are gone on purpose, and the new log starts
-/// over. Returns the names of the lists removed.
-fn drop_abandoned_lists(history: &mut History, abandoned: &BTreeSet<String>) -> Vec<String> {
-    let dropped: Vec<String> = history
-        .lists
-        .keys()
-        .filter(|list| {
-            let shard = list.rsplit('/').next().and_then(|n| n.parse().ok());
-            shard.is_some_and(|shard| {
-                abandoned.contains(&crate::cluster::describe(&crate::cluster::stream_key(
-                    shard,
-                )))
-            })
-        })
-        .cloned()
-        .collect();
-    for list in &dropped {
-        history.lists.remove(list);
-        history.final_reads.remove(list);
-    }
-    history
-        .ops
-        .retain(|op| !dropped.iter().any(|list| *list == op.list()));
-    dropped
 }
 
 /// The checker's lost-write rule needs a final read of each list. A shard

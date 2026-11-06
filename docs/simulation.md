@@ -211,7 +211,7 @@ abandon code:
 | `Move` | `POST /v1/shard-moves`: moves a shard's leadership to another broker. Three in ten are cancelled (`DELETE /v1/shard-moves/...`) a few seconds later. |
 | `Drain` | `POST /v1/nodes/{id}/drain`, then `PATCH /v1/nodes/{id}` back to `live`. Leaderships move away. With four or more brokers the follower seats the broker holds are replaced: a newcomer copies in and a pending set swaps it for the drained broker. |
 | `Remove` | Drains a broker, stops it, deregisters it and retries `DELETE /v1/nodes/{id}` each second. The delete is refused while any shard still names the broker, which with a hundred shards to reseat is usually the whole window. The broker comes back later and registers again. |
-| `Abandon` | `POST /v1/placement/abandon/...` for each stream shard the broker holds after unclean kills, retried each second while the control plane answers `not_stranded`. A cache shard is left alone. |
+| `Abandon` | The procedure in `docs/replication-design.md`: stops the broker assigned the stream shards the broker holds after unclean kills, sends `POST /v1/placement/abandon/...` for each (retried each second for up to 30 s while the control plane answers `not_stranded`), then starts the broker again. While that broker is up, `not_stranded` is the expected answer. A cache shard is left alone. |
 | `KillBeforeOpen` | Watches for the next new leader of any shard and stops it before it opens the shard. A new leader is one placement names, seen in the store's change feed, or one that won an election and routes the shard to itself above every generation the control plane wrote. |
 | `SeatRace` | Drains a broker, waits for a shard whose seat on it is being replaced, stops that shard's leader, then stops the next leader named or elected for it before it opens. That is seat replacement plus two promotions, the shape behind #1922 and #1929. Drawn only with four or more brokers. |
 
@@ -235,9 +235,11 @@ instant:
 - An abandoned log ends the hold. A later pair of kills can hold the shard
   again.
 
-An abandoned shard loses its acknowledged records by design. It is left out of
-the history check and of `AckedHeldByLeader`, and the run reports it as a
-warning.
+An abandoned shard loses what it acknowledged by design. Appends started
+before the abandon count as unknown (they may or may not be on the new log),
+and reads started before it are dropped. Everything started after the abandon
+is checked as usual, so the new log losing an acknowledged write still fails
+the run. The run names abandoned shards in a warning.
 
 `tests/seeds.rs` pins one seed per fault (`seed_*_replays_the_same_twice`).
 Each test checks that its seed reaches the fault and runs the same twice; it
@@ -364,8 +366,10 @@ that added them. None breaks a history rule or a cluster check other than
 | 3, 4 | Most shards are served by nobody after the heal: all 178 on seed 3, where the control plane keeps a failed leader with a move to `b2` that never ends, and 103 on seed 4. | not filed yet |
 
 Seed 33, which `seed_33_abandoning_held_shards_replays_the_same_twice` pins,
-has shards the broker holds after unclean kills, and the control plane refuses
-to abandon every one of them (`not_stranded`) for the whole window.
+stops `b5` at 58 s to abandon the 17 shards it holds after unclean kills. Nine
+are abandoned. The control plane refuses the other eight (`not_stranded`) for
+the 30 s `b5` stays down, so those stay unserved. Some of the nine
+abandoned shards (`stream/14`, `stream/18`) are not served again either.
 
 Any change to the code a run executes can move a seed from one row to
 another, because the run takes a different path from the first difference

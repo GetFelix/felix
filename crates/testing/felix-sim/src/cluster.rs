@@ -174,7 +174,6 @@ pub struct SimCluster {
     /// Tells the stall watch to stop when the cluster is dropped.
     done: Arc<AtomicBool>,
     kills: parking_lot::Mutex<KillLog>,
-    abandoned: parking_lot::Mutex<std::collections::BTreeSet<String>>,
 }
 
 impl Drop for SimCluster {
@@ -209,7 +208,6 @@ impl SimCluster {
             stalled,
             done,
             kills: Default::default(),
-            abandoned: Default::default(),
         });
         cluster.reset_links();
         cluster.create_catalog().await?;
@@ -393,22 +391,14 @@ impl SimCluster {
         self.kills.lock().held()
     }
 
-    /// Abandon `key`'s log through the operator API. On success the shard's
-    /// records are gone by design: it is no longer held, and the checks that
-    /// compare it with what clients were acknowledged leave it out.
+    /// Abandon `key`'s log through the operator API. On success the shard is
+    /// no longer held.
     pub async fn abandon(&self, key: &ShardKey) -> Answer {
         let answer = self.cp.abandon(key).await;
         if answer.ok {
-            let shard = describe(key);
-            self.kills.lock().abandon(&shard, self.elapsed());
-            self.abandoned.lock().insert(shard);
+            self.kills.lock().abandon(&describe(key), self.elapsed());
         }
         answer
-    }
-
-    /// Shards (`stream/3`) whose log an operator abandoned.
-    pub fn abandoned_shards(&self) -> std::collections::BTreeSet<String> {
-        self.abandoned.lock().clone()
     }
 
     /// Whether the broker at `index` is running and started after an unclean
