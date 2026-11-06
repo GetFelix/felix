@@ -54,6 +54,7 @@ pub(crate) fn assignment(shard: u32, leader: &str) -> ShardAssignment {
         member_storage_ids: Default::default(),
         learners: Default::default(),
         pending_set: None,
+        previous_generation: None,
     }
 }
 
@@ -207,6 +208,7 @@ fn cache_assignment(shard: u32, leader: &str) -> ShardAssignment {
         member_storage_ids: Default::default(),
         learners: Default::default(),
         pending_set: None,
+        previous_generation: None,
     }
 }
 
@@ -323,6 +325,7 @@ pub(crate) async fn an_assignment_racing_a_recreate_names_the_stream_it_landed_o
         member_storage_ids: Default::default(),
         learners: Default::default(),
         pending_set: None,
+        previous_generation: None,
     };
     store.create_stream(stream(1)).await.expect("create");
     for round in 0..50u64 {
@@ -1566,6 +1569,7 @@ async fn deleting_a_stream_or_cache_takes_its_shard_assignments_with_it(
         member_storage_ids: Default::default(),
         learners: Default::default(),
         pending_set: None,
+        previous_generation: None,
     };
     for shard in 0..2 {
         store
@@ -1850,6 +1854,7 @@ pub(crate) async fn an_assignment_names_the_incarnation_it_was_written_for(
         member_storage_ids: Default::default(),
         learners: Default::default(),
         pending_set: None,
+        previous_generation: None,
     };
     let key = StreamKey {
         tenant_id: TENANT.to_string(),
@@ -1964,6 +1969,7 @@ pub(crate) async fn a_recreated_stream_never_repeats_a_generation(store: &dyn Co
         member_storage_ids: Default::default(),
         learners: Default::default(),
         pending_set: None,
+        previous_generation: None,
     };
     let key = StreamKey {
         tenant_id: TENANT.to_string(),

@@ -654,6 +654,7 @@ impl ControlPlaneStore for InMemoryStore {
             Some(fence),
             true,
             at_least,
+            true,
         )
         .await
     }

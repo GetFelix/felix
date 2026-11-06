@@ -56,7 +56,7 @@ pub const COMMAND_VERSION: u16 = 1;
 /// it the next level and raises this, so nothing proposes it until every
 /// member runs that release. New fields get their level in `fields.txt`.
 /// Never lower it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 28;
+pub const METADATA_VERSION: u16 = 29;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -249,6 +249,10 @@ pub enum MetaCommand {
         /// omitted, for the next.
         #[serde(default, skip_serializing_if = "is_zero")]
         at_least: u64,
+        /// Level 29: a write past the next generation records the one it
+        /// replaced (`ShardAssignment::previous_generation`, #2024).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        record_previous: bool,
     },
     /// Adopt a leader that elected itself
     /// ([`crate::store::ControlPlaneStore::adopt_elected_leader`]). Level 21.

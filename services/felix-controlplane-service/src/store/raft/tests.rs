@@ -776,6 +776,7 @@ async fn shard_renewal_waits_for_every_member() {
                     member_storage_ids: Default::default(),
                     learners: Default::default(),
                     pending_set: None,
+                    previous_generation: None,
                 })
                 .await
                 .expect("assign");
@@ -862,6 +863,7 @@ async fn deletes_take_shard_state_only_once_every_member_does() {
                     member_storage_ids: Default::default(),
                     learners: Default::default(),
                     pending_set: None,
+                    previous_generation: None,
                 })
                 .await
                 .expect("assign");
@@ -1060,6 +1062,7 @@ async fn halted_copies_wait_for_every_member_and_the_report_does_not() {
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
+            previous_generation: None,
         })
         .await
         .expect("assign");
@@ -1178,6 +1181,7 @@ async fn a_refused_ballot_waits_for_every_member() {
         member_storage_ids: Default::default(),
         learners: Default::default(),
         pending_set: None,
+        previous_generation: None,
     };
     let assigned = store
         .put_shard_assignment(assignment.clone())
@@ -1309,6 +1313,7 @@ async fn fence_storage_ids_wait_for_every_member() {
         member_storage_ids: Default::default(),
         learners: Default::default(),
         pending_set: None,
+        previous_generation: None,
     };
 
     let written = store
@@ -1386,6 +1391,7 @@ async fn by_round_waits_for_every_member_and_the_rest_of_the_report_does_not() {
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
+            previous_generation: None,
         })
         .await
         .expect("assign");
@@ -1514,6 +1520,7 @@ async fn pending_sets_wait_for_every_member() {
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
+            previous_generation: None,
         })
         .await
         .expect("assign");
@@ -1681,6 +1688,7 @@ async fn an_adoption_on_another_set_waits_for_every_member() {
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
+            previous_generation: None,
         })
         .await
         .expect("assign");
@@ -1782,6 +1790,7 @@ async fn its_own_leader_on_another_set_waits_for_every_member() {
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
+            previous_generation: None,
         })
         .await
         .expect("assign");
@@ -1884,6 +1893,7 @@ async fn inherited_storage_waits_for_every_member() {
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
+            previous_generation: None,
         })
         .await
         .expect("assign");
@@ -1999,6 +2009,7 @@ async fn learners_wait_for_every_member() {
         member_storage_ids: [("broker-y".to_string(), id.clone())].into(),
         learners: ["broker-y".to_string()].into(),
         pending_set: None,
+        previous_generation: None,
     };
     let assigned = store
         .put_shard_assignment(learning.clone())
@@ -2144,6 +2155,7 @@ async fn a_refusal_waits_for_every_member() {
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
+            previous_generation: None,
         })
         .await
         .expect("assign");
@@ -2278,6 +2290,7 @@ async fn storage_ids_wait_for_every_member() {
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
+            previous_generation: None,
         })
         .await
         .expect("assign");
@@ -2602,6 +2615,7 @@ async fn confirmed_shard_assignments_are_read_on_the_leader() {
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
+            previous_generation: None,
         })
         .await
         .expect("assign");
@@ -3497,6 +3511,7 @@ async fn adoption_waits_for_every_member() {
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
+            previous_generation: None,
         })
         .await
         .expect("assign");

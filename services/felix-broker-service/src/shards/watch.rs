@@ -80,6 +80,12 @@ pub struct ShardAssignment {
     /// other assignment, and from a control plane that predates it.
     #[serde(default)]
     pub pending_set: Option<PendingSet>,
+    /// The generation of the assignment this one replaced, when the control
+    /// plane wrote it more than one generation up without an election: the
+    /// set right before this generation is that assignment's. Absent from
+    /// every other assignment, and from a control plane that predates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_generation: Option<u64>,
 }
 
 /// The set a cut-over is moving a shard to, and the generation that wrote it.
@@ -373,15 +379,18 @@ impl ShardOwnership {
 /// What came before `next`, when `current` is the assignment right before it:
 /// the same incarnation one generation down. A write raises the generation by
 /// one, except an adoption, which lands at the elected generation: the set
-/// before that one is left unknown here.
+/// before that one is left unknown here. A rename past a ballot also skips
+/// generations, and the control plane says so by naming the one it replaced
+/// (`previous_generation`, #2024): nothing was recorded in between.
 fn prior_of(
     current: Option<&ShardAssignment>,
     next: &ShardAssignment,
 ) -> Option<felix_router::PriorSet> {
     let current = current?;
-    (current.incarnation == next.incarnation
-        && current.generation.checked_add(1) == Some(next.generation))
-    .then(|| felix_router::PriorSet {
+    let follows = current.generation.checked_add(1) == Some(next.generation)
+        || (next.previous_generation == Some(current.generation)
+            && current.generation < next.generation);
+    (current.incarnation == next.incarnation && follows).then(|| felix_router::PriorSet {
         generation: next.generation,
         before: Some(std::sync::Arc::new(felix_router::PlacedSet {
             leader: current.leader.clone(),
