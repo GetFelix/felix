@@ -409,10 +409,7 @@ impl IngressRouter {
                 }
             }
             let deadline = held.as_ref().map(hold::Held::deadline).expect("held");
-            if tokio::time::timeout_at(deadline.into(), changed)
-                .await
-                .is_err()
-            {
+            if tokio::time::timeout_at(deadline, changed).await.is_err() {
                 if let Some(hold) = held.take() {
                     hold.timed_out();
                 }
@@ -466,10 +463,7 @@ impl IngressRouter {
                 }
             }
             let deadline = held.as_ref().map(hold::Held::deadline).expect("held");
-            if tokio::time::timeout_at(deadline.into(), changed)
-                .await
-                .is_err()
-            {
+            if tokio::time::timeout_at(deadline, changed).await.is_err() {
                 if let Some(hold) = held.take() {
                     hold.timed_out();
                 }
