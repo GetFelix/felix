@@ -61,9 +61,11 @@ the simulator each is held to the run's one thread and its seed. Only some of
 this is gated. The seeded randomness (`felix_common::random`), the retry
 jitter, the blocking-work runner and the clock hook exist only in debug builds
 or under the `felix-common/sim` feature; a plain release build does not have
-them. Two changes run in every build: passes over routing tables and
-assignment sets walk in key order, and the deadlines and backoffs read
-`tokio::time::Instant` instead of `std::time::Instant`.
+them. Three changes run in every build: passes over routing tables and
+assignment sets walk in key order, the election walk starts at a per-broker
+offset (a hash of the node id) so followers do not all stand on the same
+shards first, and the deadlines and backoffs read `tokio::time::Instant`
+instead of `std::time::Instant`.
 
 - **Blocking work.** Shard opens, reads, rollovers and the log's append and
   flush threads run on real threads in a broker, and finish in real time.
