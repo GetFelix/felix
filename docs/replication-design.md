@@ -973,7 +973,9 @@ The cost is a fence round trip or a few while a follower's watch catches up
 or its confirmed read comes back. A new shard's copy costs neither once its
 view has the shard. A wiped copy costs a read every few seconds without
 elections, and a learner under elections about two a second per shard
-while it takes batches. With one replica of a
+while it takes batches. Those reads go up to 64 shards to a control-plane
+request, so a broker with many learners needs a request per 64 of them, not
+one per shard. With one replica of a
 set of three wiped the other two make the majority anyway. With a majority
 wiped at once their votes wait for their views; once they have them they
 answer, so the shard is not stuck, but what it acknowledged was on those
@@ -4861,16 +4863,33 @@ Once it is finalized on a broker that offers `ELECTION`:
 - A leader moving on to the next generation of a shard it serves (same
   process, not draining, exactly one generation up) is a continuing leader.
   It wrote every record acknowledged before, so its joint fence needs only
-  promises: it counts an answer from any copy of a member, whatever storage
-  id the answer comes from, and takes no tail from an answer. A copy
-  doubted after an unclean crash, a learner because its storage id rotated,
-  answers such a fence when its ballot names that leader at the generation
-  before and the crash kept every ballot. It promises and stays doubted
-  until a leader ships to it. Every other copy refuses as before. A wiped or
-  restored directory, or one that already replaced a lost copy, may have
-  promised the generation to a candidate and then lost that ballot, and a
-  ballot it took since proves nothing, so its promise now could make a
-  second leader there
+  promises, and it takes no tail from an answer. It counts an answer from
+  the copy the sets expect, as any fence does. It also counts an answer
+  from another copy of a member when the answer attests a kept ballot
+  (`FenceKeptOk`, negotiated with `KEPT_BALLOTS`): the copy's ballot, before
+  this fence, named that leader at the generation before or at this one (a
+  retried fence finds it there, and it promised this generation to no one
+  else), and its directory kept every ballot it took. Without the attestation the answer still
+  refuses older leaders but counts for nothing. A restored directory can
+  pass every refusal and answer from a new storage id, though before the
+  restore it may have promised this generation to another leader.
+- A copy doubted after an unclean crash, a learner because its storage id
+  rotated, answers a continuing leader's fence, and attests, only when its
+  ballot names that leader at the generation before or at this one, and the crash kept
+  every ballot. It promises and stays doubted until a leader ships to it.
+  Every other copy refuses as before. A broker knows the crash kept every
+  ballot only when the control plane's record of the node names the storage
+  id the directory had before the crash rotated it, and the directory never
+  replaced a lost copy. That is kept in a `lost-copy` marker under the data
+  directory, written before the node registers and never cleared: set for a
+  wiped directory the control plane knew another id for, a restored one, or
+  one whose old id the control plane did not have. A start from the
+  control-plane view, which opens before asking, never counts as keeping
+  them. A directory an older build ran counts as a lost copy if it has the
+  replaced-storage marker, since that build wrote it after its own crashes
+  too. A wiped or restored directory may have promised the generation to a
+  candidate and then lost that ballot, and a ballot it took since proves
+  nothing, so its promise now could make a second leader there
   ([#1331](https://github.com/GetFelix/felix/issues/1331)). So a set change
   that re-admits a member after two members crashed uncleanly opens under
   the leader that kept serving
@@ -4994,9 +5013,13 @@ acknowledgement is the one it was.
 > fence is unchanged when the feature is off.
 > `under_joint_fence_the_next_generation_is_refused_by_a_replica_that_promised_it`:
 > the fenced next-generation open.
-> `a_continuing_joint_fence_counts_followers_answering_from_new_copies` and
-> `a_failover_joint_fence_does_not_count_followers_answering_from_new_copies`:
-> a continuing leader counts promises from any copy, a failover does not.
+> `a_continuing_joint_fence_counts_followers_answering_from_new_copies`,
+> `a_continuing_joint_fence_does_not_count_new_copies_that_attest_no_kept_ballot`
+> and `a_failover_joint_fence_does_not_count_followers_answering_from_new_copies`:
+> a continuing leader counts another copy's promise only with the kept-ballot
+> attestation, a failover not at all.
+> `only_a_crash_on_a_directory_that_lost_nothing_keeps_its_promises`
+> (felix-broker-service, `node::storage`): when a directory may attest.
 > `a_learner_whose_ballot_names_the_leader_promises_its_next_generation` and
 > `a_learner_without_the_leaders_ballot_still_refuses_its_next_generation`
 > (`non_voting`): the replica's side. `a_two_member_swap_waits_for_the_old_majority`

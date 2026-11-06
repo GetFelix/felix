@@ -154,6 +154,7 @@ mod correlation {
                 code: ErrorCode::LogGap,
                 expected_offset: 9,
                 detail: "behind".to_string(),
+                reason: None,
             }),
             InternalMessage::ReplicateBootstrap(ReplicateBootstrap {
                 correlation_id: 7,
@@ -177,6 +178,7 @@ mod correlation {
                 log_end: 1,
                 commit_offset: 1,
                 last_generation: 1,
+                kept_ballot: false,
             }),
             InternalMessage::ReplicateFetch(ReplicateFetch {
                 timed: false,

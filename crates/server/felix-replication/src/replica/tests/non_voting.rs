@@ -1414,13 +1414,17 @@ async fn continuing_fence(
 /// promises that leader its next one.** Its storage id rotated after an
 /// unclean crash, so it is a learner until a leader vouches for it, but the
 /// crash kept its ballot: it promised broker-a generation 5, and broker-a,
-/// moving on to 6, holds every record it might have lost. It promises, and
-/// stays marked: the promise is no vote for what it holds (#2047).
+/// moving on to 6, holds every record it might have lost. It promises, says
+/// its ballot was kept, and stays marked: the promise is no vote for what it
+/// holds (#2047).
 #[tokio::test]
 async fn a_learner_whose_ballot_names_the_leader_promises_its_next_generation() {
     let (answer, log) = continuing_fence(Some((5, "broker-a")), true).await;
 
-    assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
+    assert!(
+        matches!(answer, InternalMessage::FenceOk(ok) if ok.kept_ballot),
+        "{answer:?}"
+    );
     assert_eq!(log.accepted_generation(), 6);
     assert_eq!(log.accepted_leader().as_deref(), Some("broker-a"));
     assert!(

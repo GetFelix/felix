@@ -403,12 +403,7 @@ impl PeerPool {
             node_id.to_string(),
             self.local_node_id.clone(),
             // This side reads an identity whatever it offers itself.
-            self.config
-                .capabilities()
-                .union(PeerCapabilities::STORAGE_IDENTITY)
-                .union(PeerCapabilities::NODE_INCARNATION)
-                .union(PeerCapabilities::LANE_RENEWAL)
-                .union(PeerCapabilities::LEARNER_ACKS),
+            self.config.outgoing_capabilities(),
             self.config.streams_per_conn,
             self.config.handshake_timeout,
         )

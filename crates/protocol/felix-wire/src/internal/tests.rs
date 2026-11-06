@@ -112,6 +112,7 @@ fn every_message() -> Vec<InternalMessage> {
             log_end: 120,
             commit_offset: 100,
             last_generation: 6,
+            kept_ballot: false,
         }),
         InternalMessage::ReplicateFetch(ReplicateFetch {
             timed: false,
@@ -134,6 +135,7 @@ fn every_message() -> Vec<InternalMessage> {
             code: ErrorCode::LogGap,
             expected_offset: 100,
             detail: "batch starts at 105, expected 100".to_string(),
+            reason: None,
         }),
         InternalMessage::ReplicateBootstrap(ReplicateBootstrap {
             correlation_id: 42,

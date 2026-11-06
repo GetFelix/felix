@@ -3,11 +3,12 @@
 use std::time::Duration;
 
 use felix_replication::confirmed::{Confirmed, ConfirmedRoutes};
+use felix_replication::controlplane_link::{ControlPlaneLink, LinkResponse};
 use serde::Deserialize;
 
 use crate::cluster::credential::NodeCredential;
 use crate::shards::watch::ShardAssignment;
-use felix_router::{ShardKey, ShardKind};
+use felix_router::ShardKey;
 
 /// How long a fence waits on the control plane. The leader retries a
 /// refusal, so a slow read costs a round, not the shard.
@@ -17,10 +18,9 @@ const READ_TIMEOUT: Duration = Duration::from_secs(2);
 /// confirmed read.
 const NOT_SERVED_WARN_EVERY: Duration = Duration::from_secs(60);
 
-/// Asks the control plane over its REST API.
-pub(crate) struct ControlPlaneRoutes {
-    client: reqwest::Client,
-    base_url: String,
+/// Asks the control plane through the broker's link to it.
+pub(crate) struct ControlPlaneRoutes<L> {
+    link: L,
     bearer: Option<NodeCredential>,
     /// When the last not-served warning was logged.
     warned: parking_lot::Mutex<Option<tokio::time::Instant>>,
@@ -31,15 +31,15 @@ struct Response {
     assignment: Option<ShardAssignment>,
 }
 
-impl ControlPlaneRoutes {
-    pub(crate) fn new(
-        client: reqwest::Client,
-        base_url: &str,
-        bearer: Option<NodeCredential>,
-    ) -> Self {
+#[derive(Deserialize)]
+struct ManyResponse {
+    items: Vec<Response>,
+}
+
+impl<L: ControlPlaneLink> ControlPlaneRoutes<L> {
+    pub(crate) fn new(link: L, bearer: Option<NodeCredential>) -> Self {
         Self {
-            client,
-            base_url: base_url.trim_end_matches('/').to_string(),
+            link,
             bearer,
             warned: parking_lot::Mutex::new(None),
         }
@@ -74,29 +74,15 @@ impl ControlPlaneRoutes {
 }
 
 #[async_trait::async_trait]
-impl ConfirmedRoutes for ControlPlaneRoutes {
+impl<L: ControlPlaneLink> ConfirmedRoutes for ControlPlaneRoutes<L> {
     async fn confirmed(&self, key: &ShardKey) -> Confirmed {
-        let kind = match key.kind {
-            ShardKind::Stream => "stream",
-            ShardKind::Cache => "cache",
-        };
-        let shard = key.shard.to_string();
-        let mut request = self
-            .client
-            .get(format!("{}/v1/shard-assignments/confirmed", self.base_url))
-            .query(&[
-                ("tenant_id", key.tenant_id.as_str()),
-                ("namespace", key.namespace.as_str()),
-                ("stream", key.stream.as_str()),
-                ("shard", shard.as_str()),
-                ("kind", kind),
-            ])
-            .timeout(READ_TIMEOUT);
-        if let Some(bearer) = &self.bearer {
-            request = request.bearer_auth(bearer.bearer().as_str());
-        }
-        let confirmed = match request.send().await {
-            Ok(response) => answer(response.status(), response.json::<Response>().await.ok()),
+        let bearer = self.bearer.as_ref().map(|bearer| bearer.bearer());
+        let answered = self
+            .link
+            .confirmed_assignment(bearer.as_deref().map(String::as_str), key, READ_TIMEOUT)
+            .await;
+        let confirmed = match answered {
+            Ok(response) => answer(response.status, response.json::<Response>().ok()),
             Err(err) => {
                 tracing::debug!(error = %err, "confirmed shard assignment read failed");
                 Confirmed::Unavailable
@@ -104,6 +90,42 @@ impl ConfirmedRoutes for ControlPlaneRoutes {
         };
         self.record(key, &confirmed);
         confirmed
+    }
+
+    async fn confirmed_many(&self, keys: &[ShardKey]) -> Option<Vec<Confirmed>> {
+        let bearer = self.bearer.as_ref().map(|bearer| bearer.bearer());
+        let answered = self
+            .link
+            .confirmed_assignments(bearer.as_deref().map(String::as_str), keys, READ_TIMEOUT)
+            .await;
+        let answers = match answered {
+            Ok(response) => answer_many(&response, keys.len())?,
+            Err(err) => {
+                tracing::debug!(error = %err, "confirmed shard assignment read failed");
+                vec![Confirmed::Unavailable; keys.len()]
+            }
+        };
+        for (key, confirmed) in keys.iter().zip(&answers) {
+            self.record(key, confirmed);
+        }
+        Some(answers)
+    }
+}
+
+/// `None` from a control plane without the batched read: 404 from one
+/// without confirmed reads at all, 405 from one that serves only `GET`.
+fn answer_many(response: &LinkResponse, keys: usize) -> Option<Vec<Confirmed>> {
+    match response.status {
+        reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::METHOD_NOT_ALLOWED => None,
+        status if status.is_success() => Some(match response.json::<ManyResponse>() {
+            Ok(many) if many.items.len() == keys => many
+                .items
+                .into_iter()
+                .map(|item| answer(status, Some(item)))
+                .collect(),
+            _ => vec![Confirmed::Unavailable; keys],
+        }),
+        status => Some(vec![answer(status, None); keys]),
     }
 }
 

@@ -132,6 +132,17 @@ impl PeerCapabilities {
     ///
     /// [`ForwardPublish::producer`]: super::ForwardPublish::producer
     pub const SEQUENCED_FORWARDS: Self = Self(1 << 18);
+    /// Offered by a caller that reads [`ReplicateError::reason`], so a
+    /// refusal to it carries the reason as fields after its detail. To any
+    /// other caller the refusal goes without them.
+    ///
+    /// [`ReplicateError::reason`]: super::ReplicateError::reason
+    pub const REFUSAL_REASONS: Self = Self(1 << 19);
+
+    /// Offered by a caller that reads [`FenceOk::kept_ballot`], so a fence
+    /// answer that attests to a kept ballot travels to it as `FenceKeptOk`.
+    /// To any other caller the answer goes without the attestation.
+    pub const KEPT_BALLOTS: Self = Self(1 << 20);
 
     pub fn from_bits(bits: u64) -> Self {
         Self(bits)
@@ -188,6 +199,12 @@ pub struct FenceOk {
     /// The generation its last record was written at, zero for an empty log.
     /// With `log_end` it orders two replicas' logs the way promotion does.
     pub last_generation: u64,
+    /// The replica's ballot before this fence named the sender at the
+    /// generation right before this one, and its data directory has kept
+    /// every ballot it took. `true` travels as `FenceKeptOk`, sent only to a
+    /// caller that offered [`PeerCapabilities::KEPT_BALLOTS`]; `false` is the
+    /// original `FenceOk`, byte for byte.
+    pub kept_ballot: bool,
 }
 
 /// The leader that fenced a replica reads the replica's copy of the shard's

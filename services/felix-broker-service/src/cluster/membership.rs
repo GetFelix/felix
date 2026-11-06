@@ -907,7 +907,11 @@ pub(crate) fn judge_directory(
         }
         .with_context(|| format!("record a replaced storage id under {}", root.display()))
     };
-    if recorded.behind(registered.map(|registered| registered.incarnation)) {
+    let restored = recorded.behind(registered.map(|registered| registered.incarnation));
+    // Before the replaced-storage marker below, which it reads on a
+    // directory an older build ran.
+    crate::node::storage::note_lost_copy(root, Some(&id.to_hex()), restored, registered)?;
+    if restored {
         let rotated = crate::node::storage::rotate_storage_id_after(root, replaced)?;
         return Ok(Directory::Restored { rotated });
     }

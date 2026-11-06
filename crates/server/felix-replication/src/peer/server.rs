@@ -443,8 +443,8 @@ async fn serve_connection(
     // Whether the peer replaces a stream it gets no answer on, from its
     // `Hello`. Until it says so, a stream is never dropped under it.
     let renews = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    // Whether the peer reads a learner's answer, from its `Hello`.
-    let learner_acks = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // What the peer offered in its `Hello`, which shapes its answers.
+    let caller = Arc::new(std::sync::atomic::AtomicU64::new(0));
     loop {
         let stream = tokio::select! {
             _ = shutdown.cancelled() => break,
@@ -467,7 +467,7 @@ async fn serve_connection(
         let identity = Arc::clone(&identity);
         let connection_batches = Arc::clone(&connection_batches);
         let renews = Arc::clone(&renews);
-        let learner_acks = Arc::clone(&learner_acks);
+        let caller = Arc::clone(&caller);
         connection.spawn_pump(async move {
             let connection = stream_connection;
             let (send, mut recv) = stream;
@@ -518,6 +518,10 @@ async fn serve_connection(
                     },
                 };
 
+                // Read per request: the `Hello` that sets it comes first.
+                let offered_by = PeerCapabilities::from_bits(
+                    caller.load(std::sync::atomic::Ordering::Relaxed),
+                );
                 let response = match request {
                     // Answered here rather than by the handler: identity is the
                     // transport's to assert, and it must work before the broker
@@ -563,10 +567,8 @@ async fn serve_connection(
                                 .is_some_and(|c| c.contains(PeerCapabilities::LANE_RENEWAL)),
                             std::sync::atomic::Ordering::Relaxed,
                         );
-                        learner_acks.store(
-                            hello
-                                .capabilities
-                                .is_some_and(|c| c.contains(PeerCapabilities::LEARNER_ACKS)),
+                        caller.store(
+                            hello.capabilities.unwrap_or(PeerCapabilities::NONE).bits(),
                             std::sync::atomic::Ordering::Relaxed,
                         );
                         // A plain `Hello` is a peer that predates the bits, so
@@ -681,7 +683,7 @@ async fn serve_connection(
                                     detail: "this broker is not serving yet".to_string(),
                                 })
                             };
-                            answer_out_of_order(&send, async { pong }).await;
+                            answer_out_of_order(&send, offered_by, async { pong }).await;
                         });
                         continue;
                     }
@@ -704,12 +706,13 @@ async fn serve_connection(
                                 expected_offset: 0,
                                 detail: "this broker is serving as many control requests as it allows"
                                     .to_string(),
+                                reason: None,
                             });
                             // Off the loop, so a refusal never waits behind
                             // a large fetch answer and the pings after it.
                             let send = Arc::clone(&send);
                             app.spawn(async move {
-                                answer_out_of_order(&send, async { refusal }).await;
+                                answer_out_of_order(&send, offered_by, async { refusal }).await;
                             });
                             continue;
                         };
@@ -725,7 +728,7 @@ async fn serve_connection(
                                 Some(fetches) => fetches.acquire_owned().await.ok(),
                                 None => None,
                             };
-                            answer_out_of_order(&send, handler.handle_from(peer, request)).await;
+                            answer_out_of_order(&send, offered_by, handler.handle_from(peer, request)).await;
                         });
                         continue;
                     }
@@ -759,7 +762,7 @@ async fn serve_connection(
                         let send = Arc::clone(&send);
                         app.spawn(async move {
                             let _permit = permit;
-                            answer_out_of_order(&send, handler.handle_from(peer, request)).await;
+                            answer_out_of_order(&send, offered_by, handler.handle_from(peer, request)).await;
                         });
                         continue;
                     }
@@ -805,7 +808,7 @@ async fn serve_connection(
                         let handler = Arc::clone(&handler);
                         let peer = ballot_identity(&offered, &identity);
                         let send = Arc::clone(&send);
-                        let learner_acks = Arc::clone(&learner_acks);
+                        let caller = Arc::clone(&caller);
                         let given_up = given_up.clone();
                         let bound = handler_bound(&renews, &offered);
                         // The peer and broker-wide permits go with the handler,
@@ -832,7 +835,9 @@ async fn serve_connection(
                             };
                             let response = for_caller(
                                 response,
-                                learner_acks.load(std::sync::atomic::Ordering::Relaxed),
+                                PeerCapabilities::from_bits(
+                                    caller.load(std::sync::atomic::Ordering::Relaxed),
+                                ),
                             );
                             match write_frame(&mut *send.lock().await, &response).await {
                                 Ok(()) => metrics::record_served(metrics::OUTCOME_OK),
@@ -853,7 +858,9 @@ async fn serve_connection(
                         match handled.and_then(|joined| joined.ok()).ok_or(()) {
                             Ok(response) => for_caller(
                                 response,
-                                learner_acks.load(std::sync::atomic::Ordering::Relaxed),
+                                PeerCapabilities::from_bits(
+                                    caller.load(std::sync::atomic::Ordering::Relaxed),
+                                ),
                             ),
                             // A handler that panicked may have applied the
                             // write, so no answer here is safe to retry on.
@@ -898,27 +905,51 @@ async fn serve_connection(
     }
 }
 
-/// `response` as the caller reads it: a learner's answer to a caller that
-/// did not offer [`PeerCapabilities::LEARNER_ACKS`] goes as the original
-/// kind, which such a caller counts as it always has.
-pub fn for_caller(response: InternalMessage, learner_acks: bool) -> InternalMessage {
+/// `response` as a caller that offered `caller` reads it: a learner's answer
+/// to one that did not offer [`PeerCapabilities::LEARNER_ACKS`], or a
+/// kept-ballot fence answer to one that did not offer
+/// [`PeerCapabilities::KEPT_BALLOTS`], goes as the original kind, which such
+/// a caller reads as it always has; and a refusal to one that did not offer
+/// [`PeerCapabilities::REFUSAL_REASONS`] goes without its reason, a body such
+/// a caller would not decode.
+pub fn for_caller(response: InternalMessage, caller: PeerCapabilities) -> InternalMessage {
     match response {
-        InternalMessage::ReplicateOk(ok) if ok.learner && !learner_acks => {
+        InternalMessage::ReplicateOk(ok)
+            if ok.learner && !caller.contains(PeerCapabilities::LEARNER_ACKS) =>
+        {
             InternalMessage::ReplicateOk(felix_wire::internal::ReplicateOk {
                 learner: false,
                 ..ok
+            })
+        }
+        InternalMessage::FenceOk(ok)
+            if ok.kept_ballot && !caller.contains(PeerCapabilities::KEPT_BALLOTS) =>
+        {
+            InternalMessage::FenceOk(felix_wire::internal::FenceOk {
+                kept_ballot: false,
+                ..ok
+            })
+        }
+        InternalMessage::ReplicateError(err)
+            if err.reason.is_some() && !caller.contains(PeerCapabilities::REFUSAL_REASONS) =>
+        {
+            InternalMessage::ReplicateError(felix_wire::internal::ReplicateError {
+                reason: None,
+                ..err
             })
         }
         response => response,
     }
 }
 
-/// Write the answer to a request handed off so its stream could read on.
+/// Write the answer to a request handed off so its stream could read on,
+/// shaped for a caller that offered `caller` ([`for_caller`]).
 ///
 /// A handler that panicked may have applied the write, so the stream is ended
 /// rather than answered, as a panic in a request answered in turn ends it.
 async fn answer_out_of_order(
     send: &tokio::sync::Mutex<quinn::SendStream>,
+    caller: PeerCapabilities,
     answering: impl std::future::Future<Output = InternalMessage>,
 ) {
     let answered = AssertUnwindSafe(answering).catch_unwind().await;
@@ -929,7 +960,7 @@ async fn answer_out_of_order(
         let _ = send.finish();
         return;
     };
-    match write_frame(&mut send, &response).await {
+    match write_frame(&mut send, &for_caller(response, caller)).await {
         Ok(()) => metrics::record_served(metrics::OUTCOME_OK),
         Err(_) => metrics::record_served(metrics::OUTCOME_ERROR),
     }

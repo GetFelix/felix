@@ -14,8 +14,10 @@
 //!   the pool's errors: `Unsupported` for a capability the target did not
 //!   offer, `Timeout` for an answer that never came.
 //! - The handler hears who asked only when the target keeps ballots.
-//! - Pings are answered without the handler, and a learner's ack reads as a
-//!   plain one to a caller that did not offer `LEARNER_ACKS`.
+//! - Pings are answered without the handler, and an answer is shaped by what
+//!   the caller offered ([`for_caller`]): a learner's ack reads as a plain one
+//!   without `LEARNER_ACKS`, a kept-ballot fence answer as a plain one without
+//!   `KEPT_BALLOTS`, and a refusal has no reason without `REFUSAL_REASONS`.
 //!
 //! What it leaves out: the listener's per-stream permits (`Overload`) and its
 //! one-at-a-time answering of an older peer's stream. Every request runs at
@@ -94,6 +96,7 @@ impl SimNet {
             node_id: node.node_id,
             incarnation,
             capabilities: node.capabilities,
+            outgoing: node.outgoing,
         }
     }
 
@@ -117,6 +120,14 @@ impl SimNet {
         {
             node.identity.incarnation = incarnation;
         }
+    }
+
+    /// What `from` offered the last time it reached `target`, as `target`
+    /// recorded it.
+    #[cfg(test)]
+    pub(crate) fn offered_to(&self, target: &str, from: &str) -> Option<PeerCapabilities> {
+        let state = self.inner.state.lock();
+        state.nodes.get(target)?.known.get(from).copied()
     }
 
     /// Set the link from `from` to `to`. The reverse direction is separate.
@@ -155,6 +166,8 @@ pub struct SimNode {
     pub node_id: String,
     /// What it offers its peers, as its pool and listener would.
     pub capabilities: PeerCapabilities,
+    /// What it offers when it dials a peer.
+    pub outgoing: PeerCapabilities,
     /// What its handshake says about it.
     pub identity: PeerIdentity,
     /// What answers its peers' requests.
@@ -179,6 +192,7 @@ pub struct SimPeer {
     node_id: String,
     incarnation: u64,
     capabilities: PeerCapabilities,
+    outgoing: PeerCapabilities,
 }
 
 impl SimPeer {
@@ -201,12 +215,7 @@ impl SimPeer {
             identity: target.identity,
             incarnation: target.incarnation,
         };
-        state.record_handshake(
-            &self.node_id,
-            self.capabilities,
-            node_id,
-            reached.capabilities,
-        );
+        state.record_handshake(&self.node_id, self.outgoing, node_id, reached.capabilities);
         Ok(reached)
     }
 }
@@ -274,7 +283,7 @@ impl PeerRequester for SimPeer {
             Arc::clone(&self.net),
             Delivery {
                 from: self.node_id.clone(),
-                from_offer: self.capabilities,
+                from_offer: self.outgoing,
                 to: node_id.to_string(),
                 to_incarnation: reached.incarnation,
                 frame,
@@ -473,7 +482,7 @@ async fn deliver(
             let Some(answer) = handled else {
                 return;
             };
-            for_caller(answer, from_offer.contains(PeerCapabilities::LEARNER_ACKS))
+            for_caller(answer, from_offer)
         }
     };
     if *died.borrow() || died.has_changed().is_err() {

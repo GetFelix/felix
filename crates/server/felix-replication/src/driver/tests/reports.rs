@@ -1016,6 +1016,7 @@ impl PeerRequester for PromisedAwayFollowers {
                     code: felix_wire::internal::ErrorCode::FencedEpoch,
                     expected_offset: 0,
                     detail: crate::replica::promised_detail(fence.shard.generation, "broker-d"),
+                    reason: None,
                 },
             )),
             // As a replica whose ballot holds the generation for broker-d
@@ -1026,6 +1027,7 @@ impl PeerRequester for PromisedAwayFollowers {
                     code: felix_wire::internal::ErrorCode::FencedEpoch,
                     expected_offset: 0,
                     detail: crate::replica::promised_detail(fetch.shard.generation, "broker-d"),
+                    reason: None,
                 },
             )),
             other => panic!("unexpected {:?}", other.kind()),
@@ -1113,6 +1115,7 @@ impl PeerRequester for ViewAheadFollowers {
                     code: felix_wire::internal::ErrorCode::FencedEpoch,
                     expected_offset: 0,
                     detail: crate::replica::view_detail(7, fence.shard.generation),
+                    reason: None,
                 },
             )),
             other => panic!("unexpected {:?}", other.kind()),
@@ -1142,6 +1145,7 @@ impl PeerRequester for SupersededFollowers {
                     code: felix_wire::internal::ErrorCode::FencedEpoch,
                     expected_offset: 0,
                     detail: crate::replica::superseded_detail(7, fence.shard.generation),
+                    reason: None,
                 },
             )),
             other => panic!("unexpected {:?}", other.kind()),
@@ -1456,6 +1460,7 @@ impl PeerRequester for ElectingFenceTakers {
                     log_end: 0,
                     commit_offset: 0,
                     last_generation: 0,
+                    kept_ballot: false,
                 }))
             }
             other => panic!("unexpected {:?}", other.kind()),
@@ -1629,6 +1634,7 @@ impl PeerRequester for RefusedAfterOpen {
                     code: felix_wire::internal::ErrorCode::FencedEpoch,
                     expected_offset: 0,
                     detail: (self.detail)(4),
+                    reason: None,
                 },
             )),
             _ if self.c_answers => self.accepting.request(node_id, addr, message).await,
@@ -2084,6 +2090,7 @@ impl PeerRequester for FencingFollower {
                     code: felix_wire::internal::ErrorCode::FencedEpoch,
                     expected_offset: 0,
                     detail: self.detail.clone(),
+                    reason: None,
                 },
             ));
         }
