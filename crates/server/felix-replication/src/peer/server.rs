@@ -54,6 +54,11 @@ const MAX_CONCURRENT_FETCHES_PER_STREAM: usize = 16;
 /// so a stream holds at most this many batches plus the one it read.
 pub(super) const MAX_CONCURRENT_BATCHES_PER_STREAM: usize = 16;
 
+/// Record batches being stored at once across every connection. Without it
+/// the batches a follower holds grow with peers and streams; with it, at most
+/// this many, each about the leader's 1 MiB batch budget plus one record.
+pub(super) const MAX_SERVED_BATCHES: usize = 256;
+
 /// What answers a peer's request.
 ///
 /// The broker implements it with `BrokerPeerHandler` (#106). A listener built
@@ -175,6 +180,7 @@ pub struct PeerServer {
     max_inbound_per_source: usize,
     handler_timeout: std::time::Duration,
     served_forwards: Arc<Semaphore>,
+    served_batches: Arc<Semaphore>,
     /// `Some` when peers must present a certificate, and the name a peer
     /// claims in `Hello` is held to it.
     tls: Option<Arc<tls::PeerTls>>,
@@ -232,6 +238,7 @@ impl PeerServer {
             max_inbound_per_source: config.max_inbound_per_source,
             handler_timeout: config.request_timeout,
             served_forwards: Arc::new(Semaphore::new(config.max_served_forwards.max(1))),
+            served_batches: Arc::new(Semaphore::new(MAX_SERVED_BATCHES)),
             tls,
             app,
             capabilities: config.capabilities(),
@@ -369,6 +376,7 @@ impl PeerServer {
                 serving: self.serving.clone(),
                 handler_timeout: self.handler_timeout,
                 served_forwards: Arc::clone(&self.served_forwards),
+                served_batches: Arc::clone(&self.served_batches),
             };
             connection.spawn_pump(async move {
                 // The guard lives as long as the connection is served, and
@@ -394,6 +402,8 @@ struct Offered {
     handler_timeout: std::time::Duration,
     /// Forwards being served across every connection.
     served_forwards: Arc<Semaphore>,
+    /// Record batches being stored across every connection.
+    served_batches: Arc<Semaphore>,
 }
 
 /// Serve every stream a peer opens on one connection.
@@ -747,10 +757,19 @@ async fn serve_connection(
                     | InternalMessage::ReplicateDeadLetterRecords(_)
                     | InternalMessage::ReplicateCounterRecords(_)
                     | InternalMessage::ReplicateCacheRecords(_)) => {
+                        // The stream's permit first, so no stream takes more
+                        // of the broker-wide limit than its own.
                         let permit = tokio::select! {
                             _ = shutdown.cancelled() => break,
                             _ = given_up.cancelled() => break,
                             permit = Arc::clone(&batches).acquire_owned() => {
+                                permit.expect("the batch semaphore is never closed")
+                            }
+                        };
+                        let served = tokio::select! {
+                            _ = shutdown.cancelled() => break,
+                            _ = given_up.cancelled() => break,
+                            permit = Arc::clone(&offered.served_batches).acquire_owned() => {
                                 permit.expect("the batch semaphore is never closed")
                             }
                         };
@@ -763,7 +782,7 @@ async fn serve_connection(
                         let handling =
                             app.spawn(async move { handler.handle_from(peer, request).await });
                         app.spawn(async move {
-                            let _permit = permit;
+                            let _permits = (permit, served);
                             let handled = tokio::time::timeout(bound, handling).await;
                             let Ok(Ok(response)) = handled else {
                                 // As for a request answered in turn: the

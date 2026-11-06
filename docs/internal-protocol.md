@@ -244,7 +244,10 @@ and cache logs) are also stored side by side and answered as each finishes,
 up to 16 at once per stream; past that the broker stops reading the stream
 until one finishes. A batch is not refused like a forward, because the leader
 would only send it again. So one stream holds at most 17 batches in memory: 16
-being stored and one read. A batch whose handler overruns the requester's
+being stored and one read. Across every connection a broker stores at most 256
+batches at once, each about the leader's 1 MiB batch budget plus one record,
+so a follower holds roughly 256 MiB of batches however many peers and streams
+it serves. A stream that finds that limit taken also stops reading. A batch whose handler overruns the requester's
 timeout ends its stream, as an overrun request answered in turn does. Every
 other request on a stream, bootstraps and rebuilds
 included, is answered in turn. Requesters have always matched by correlation
