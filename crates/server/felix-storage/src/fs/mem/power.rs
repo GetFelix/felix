@@ -16,13 +16,16 @@ use std::sync::Arc;
 use super::DirNode;
 use crate::io::writeback::{SECTOR, SplitMix64, Writeback, crash_contents};
 
+/// Told the segment a cut tore, below the root, and where its append began.
+pub(crate) type OnCut = Box<dyn FnOnce(&Path, u64) + Send>;
+
 pub(super) enum Power {
     On,
     /// The next append to a segment cuts the power. `on_cut` is told the
     /// segment, below the root, and where the append started.
     Armed {
         seed: u64,
-        on_cut: Box<dyn FnOnce(&Path, u64) + Send>,
+        on_cut: OnCut,
     },
     /// The power is out. This is what the device held at the cut, which the
     /// reboot puts in place of the tree the dying process still writes to.

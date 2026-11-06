@@ -371,7 +371,7 @@ impl Tree {
 
     /// Cut the power during the next append to a log segment: see
     /// `sim_fs::arm_power_cut`. Replaces a cut that was armed and not taken.
-    pub(crate) fn arm(&self, seed: u64, on_cut: Box<dyn FnOnce(&Path, u64) + Send>) {
+    pub(crate) fn arm(&self, seed: u64, on_cut: power::OnCut) {
         let mut power = self.power.lock();
         if !matches!(*power, power::Power::Out(_)) {
             *power = power::Power::Armed { seed, on_cut };
