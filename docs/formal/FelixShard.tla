@@ -607,6 +607,17 @@ OwnBallotReported == TRUE
 StaleFenceAnswered == FALSE
 OpenChecksOwnBallot == FALSE
 OwnBallotFenceRefused == FALSE
+\* `ReportStore`: a refusal reaches the control plane in a report, and the
+\* rename reads the report the control plane stored rather than the
+\* broker's state. The store keeps one report per shard, and at the same
+\* generation a later one replaces it (`ReplicaReport::supersedes` in
+\* services/felix-controlplane-service/src/model/shard.rs), so a pass report
+\* landing after the refusal hides it (#1969). `RefusalRepeats`: the
+\* reporter repeats a refusal on every later report at its generation
+\* (`Refusals` in crates/server/felix-replication/src/reporter.rs, #1971).
+\* Off by default, so the configurations from before keep their state counts.
+ReportStore == FALSE
+RefusalRepeats == TRUE
 FenceChecksIds == TRUE
 UnnamedCounts == FALSE
 NameByRegistration == FALSE
@@ -1110,6 +1121,8 @@ VARIABLES
     learner,    \* under `WipedNonVoter`, the learner mark each copy keeps in its set file
     marked,     \* the wiped mark kept beside it, which under `GroupLogs` outlasts it
     cpLearner,  \* under `WipedNonVoter`, the copies placement holds as learners
+    cpRefused,  \* under `ReportStore`, the refusal the control plane's stored report carries: {} or {<<generation, leader>>}
+    refusedAt,  \* under `ReportStore`, the generation each broker last reported refused: 0 for none
     cpGone      \* under `CpStops`, whether the control plane has stopped, for good
 
 \* The counter log's state, which only a cache shard's actions change.
@@ -1124,6 +1137,9 @@ setVars == << setGen, oldSet, installed, nextVars >>
 \* learning one, a registration and a promotion change them.
 idVars == << sid, seen, seenInc, wipes, checked, registered, inc, restarting, expect, inherited,
              leftDirty, gaveUp, fenceIds >>
+\* The refusal the control plane last stored, and what each broker's reporter
+\* repeats.
+refusalVars == << cpRefused, refusedAt >>
 \* A wiped replica's guard, and a re-admission the control plane has pending.
 wipeVars == << wipedAt, readmit, learner, marked, cpLearner >>
 \* All of them but `expect`, `inherited` and the promoted leader's `seen`
@@ -1134,7 +1150,15 @@ vars == << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
            hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit,
            draining, successor, stopped, moves, ver, cpView, staged, heard,
            promised, fencing, answered, confirmed, out, mine, joining, leaving, joinedAt,
-           counterVars, ballot, opened, setVars, ackGen, idVars, named, wipeVars, cpGone >>
+           counterVars, ballot, opened, setVars, ackGen, idVars, named, refusalVars, wipeVars, cpGone >>
+
+\* Everything but the refusal reports.
+notRefusalVars ==
+    << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
+       hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit,
+       draining, successor, stopped, moves, ver, cpView, staged, heard,
+       promised, fencing, answered, confirmed, out, mine, joining, leaving, joinedAt,
+       counterVars, ballot, opened, setVars, ackGen, idVars, named, wipeVars, cpGone >>
 
 \* A VIEW for a configuration where time stands still (`MaxTime = 0`), there
 \* is no handoff (`~Handoff`), no leader is reclaimed (`~Reclaims`), and
@@ -1154,7 +1178,7 @@ QuietView ==
        [b \in Brokers |-> IF bgen[b] > 0 THEN answered[b] ELSE {}],
        [b \in Brokers |-> IF bgen[b] > 0 THEN confirmed[b] ELSE [m \in Brokers |-> 0]],
        out, mine, joining, leaving, joinedAt,
-       counterVars, ballot, opened, setVars, ackGen, idVars, named, wipeVars, cpGone >>
+       counterVars, ballot, opened, setVars, ackGen, idVars, named, refusalVars, wipeVars, cpGone >>
 
 \* Placement's state, which only the control plane's decisions change, but
 \* `mine`, which a follower also learns under `SetCheck`.
@@ -1478,6 +1502,8 @@ IdInit ==
     /\ gaveUp = [b \in Brokers |-> 0]
     /\ fenceIds = [b \in Brokers |-> {}]
     /\ named = {}
+    /\ cpRefused = {}
+    /\ refusedAt = [b \in Brokers |-> 0]
     /\ wipedAt = [b \in Brokers |-> 0]
     /\ readmit = {}
     /\ learner = [b \in Brokers |-> FALSE]
@@ -3773,11 +3799,42 @@ OtherRefusal ==
 
 AboveRefusal == AboveReported /\ promised[leader] > gen /\ bgen[leader] < gen
 
-RenameDue ==
-    /\ Renames
-    \* A stopped broker reports nothing.
+\* What the control plane's leader reports refused at its generation, read
+\* from its own state. A stopped broker reports nothing.
+RefusalLive ==
     /\ leader \notin halted
     /\ OtherRefusal \/ AboveRefusal
+
+\* Under `ReportStore`, the control plane renames on the refusal its stored
+\* report carries, from the leader at its generation (`refused` in
+\* services/felix-controlplane-service/src/cluster/placement/replica_positions.rs).
+\* The model keeps a report for good; the code drops one past its TTL, which
+\* only takes renames away.
+RenameDue ==
+    /\ Renames
+    /\ IF ReportStore THEN <<gen, leader>> \in cpRefused ELSE RefusalLive
+
+\* Under `ReportStore`, the leader reports its generation refused, and the
+\* control plane stores that report over the last one. A refusal report has
+\* no tail (`send_reports` in crates/server/felix-replication/src/reporter.rs),
+\* so it replaces any report at its generation.
+SendRefusal(b) ==
+    /\ ReportStore
+    /\ b = leader /\ RefusalLive
+    /\ cpRefused' = {<<gen, b>>}
+    /\ refusedAt' = [refusedAt EXCEPT ![b] = gen]
+    /\ cpRefused' /= cpRefused \/ refusedAt' /= refusedAt
+
+\* Under `ReportStore`, one of the open leader's pass reports lands. It has a
+\* tail, so it replaces a refusal at its generation. Under `RefusalRepeats` it
+\* carries the refusal the leader last reported there. A leader still fencing
+\* runs no passes.
+PassReport(b) ==
+    /\ ReportStore
+    /\ b = leader /\ bgen[b] = gen /\ ~fencing[b]
+    /\ cpRefused' = IF RefusalRepeats /\ refusedAt[b] = gen THEN {<<gen, b>>} ELSE {}
+    /\ cpRefused' /= cpRefused
+    /\ UNCHANGED refusedAt
 
 \* The generation a rename names. Under `RenamePastBallot` the
 \* `AboveReported` refusal, when the ballot is another node's, carries it, and
@@ -4282,8 +4339,8 @@ EndPass(b) ==
 \* The counter log changes only in the actions that name it.
 \* Identities change only in a wipe, a crash, a probe, a registration and a
 \* promotion.
-quietVars == << counterVars, heard, idVars, named, wipeVars >>
-loudVars == << heard, idVars, named, wipeVars >>
+quietVars == << counterVars, heard, idVars, named, refusalVars, wipeVars >>
+loudVars == << heard, idVars, named, refusalVars, wipeVars >>
 
 \* Whether the control plane takes steps.
 CpUp == ~CpDown /\ ~cpGone
@@ -4307,15 +4364,17 @@ Steps ==
         \/ AckQuorum(b) /\ UNCHANGED quietVars
         \/ Report(b) /\ EndPass(b)
            /\ UNCHANGED << counterVars, heard, sid, seen, seenInc, wipes, registered, inc, restarting,
-                           expect, inherited, leftDirty, gaveUp, fenceIds, wipeVars, named >>
+                           expect, inherited, leftDirty, gaveUp, fenceIds, wipeVars, named, refusalVars >>
         \/ ObserveFence(b) /\ UNCHANGED quietVars
-        \/ Elect(b) /\ UNCHANGED << clog, chwm, cacked, heard, idVars, named, wipeVars >>
+        \/ Elect(b) /\ UNCHANGED << clog, chwm, cacked, heard, idVars, named, refusalVars, wipeVars >>
         \/ GiveUpRound(b) /\ UNCHANGED quietVars
         \/ StandOnStaleRoute(b) /\ UNCHANGED quietVars
         \/ FailStop(b) /\ UNCHANGED quietVars
         \/ Withdraw(b) /\ UNCHANGED quietVars
         \/ Depose(b) /\ UNCHANGED quietVars
-        \/ Restart(b) /\ UNCHANGED << counterVars, heard, named, wipeVars >>
+        \* A restarted broker's reporter starts with no refusals.
+        \/ Restart(b) /\ refusedAt' = [refusedAt EXCEPT ![b] = 0]
+           /\ UNCHANGED << counterVars, heard, named, wipeVars, cpRefused >>
         \/ FinishChange(b) /\ UNCHANGED quietVars
         \/ ForgetSet(b) /\ UNCHANGED quietVars
         \/ \E f \in Brokers :
@@ -4323,41 +4382,46 @@ Steps ==
             \/ LearnHwm(b, f) /\ UNCHANGED quietVars
             \/ AnswerFence(b, f) /\ UNCHANGED quietVars
             \/ RefuseStaleSet(b, f) /\ UNCHANGED quietVars
-            \/ WipedLearnSet(b, f) /\ UNCHANGED << counterVars, heard, idVars, named, wipedAt, readmit, cpLearner >>
+            \/ WipedLearnSet(b, f) /\ UNCHANGED << counterVars, heard, idVars, named, refusalVars, wipedAt, readmit, cpLearner >>
             \/ AnswerSetlessFence(b, f) /\ UNCHANGED quietVars
             \/ CatchUp(b, f) /\ UNCHANGED quietVars
-            \/ CatchUpCounters(b, f) /\ UNCHANGED << chwm, canswered, cacked, heard, idVars, named, wipeVars >>
+            \/ CatchUpCounters(b, f) /\ UNCHANGED << chwm, canswered, cacked, heard, idVars, named, refusalVars, wipeVars >>
             \/ ShipCounter(b, f) /\ UNCHANGED loudVars
             \/ AnswerCounterFence(b, f) /\ UNCHANGED loudVars
-            \/ Probe(b, f) /\ UNCHANGED << counterVars, heard, named >>
-            \/ Answer(b, f) /\ UNCHANGED << counterVars, heard, named >>
-        \/ Wipe(b) /\ UNCHANGED << counterVars, heard, named >>
-        \/ Forget(b) /\ UNCHANGED << cconfirmed, canswered, cacked, heard, named, readmit >>
-        \/ Readmit(b) /\ UNCHANGED << counterVars, heard, idVars, named, wipedAt, learner, marked, cpLearner >>
-        \/ Readmitted(b) /\ UNCHANGED << counterVars, heard, idVars, named, cpLearner >>
-        \/ CpAdmit(b) /\ UNCHANGED << counterVars, heard, idVars, named, wipedAt, readmit, learner, marked >>
-        \/ GroupsCaughtUp(b) /\ UNCHANGED << counterVars, heard, idVars, named, wipedAt, readmit, learner, cpLearner >>
-        \/ KeepOwnSet(b) /\ UNCHANGED << counterVars, heard, idVars, named, wipedAt, readmit, learner, cpLearner >>
-        \/ Crash(b) /\ UNCHANGED << counterVars, named >>
-        \/ CleanStop(b) /\ UNCHANGED << counterVars, heard, named >>
-        \/ Register(b) /\ UNCHANGED << counterVars, heard, named >>
+            \/ Probe(b, f) /\ UNCHANGED << counterVars, heard, named, refusalVars >>
+            \/ Answer(b, f) /\ UNCHANGED << counterVars, heard, named, refusalVars >>
+        \/ Wipe(b) /\ UNCHANGED << counterVars, heard, named, refusalVars >>
+        \/ Forget(b) /\ UNCHANGED << cconfirmed, canswered, cacked, heard, named, refusalVars, readmit >>
+        \/ Readmit(b) /\ UNCHANGED << counterVars, heard, idVars, named, refusalVars, wipedAt, learner, marked, cpLearner >>
+        \/ Readmitted(b) /\ UNCHANGED << counterVars, heard, idVars, named, refusalVars, cpLearner >>
+        \/ CpAdmit(b) /\ UNCHANGED << counterVars, heard, idVars, named, refusalVars, wipedAt, readmit, learner, marked >>
+        \/ GroupsCaughtUp(b) /\ UNCHANGED << counterVars, heard, idVars, named, refusalVars, wipedAt, readmit, learner, cpLearner >>
+        \/ KeepOwnSet(b) /\ UNCHANGED << counterVars, heard, idVars, named, refusalVars, wipedAt, readmit, learner, cpLearner >>
+        \* The reporter's refusals live in the broker's memory.
+        \/ Crash(b) /\ refusedAt' = [refusedAt EXCEPT ![b] = 0]
+           /\ UNCHANGED << counterVars, named, cpRefused >>
+        \/ CleanStop(b) /\ UNCHANGED << counterVars, heard, named, refusalVars >>
+        \/ Register(b) /\ UNCHANGED << counterVars, heard, named, refusalVars >>
         \/ OpenForWrites(b) /\ UNCHANGED loudVars
-        \/ CpUp /\ Decide(Now, b, cpView) /\ UNCHANGED << heard, decideIdVars, named >>
+        \/ CpUp /\ Decide(Now, b, cpView) /\ UNCHANGED << heard, decideIdVars, named, refusalVars >>
         \/ /\ CpUp /\ WriteDropsLearners
            /\ Decide(Now, b, cpView)
            /\ cpLearner' = {}
            /\ UNCHANGED << heard, sid, wipes, checked, registered, inc, restarting, leftDirty, gaveUp,
-                          wipedAt, readmit, learner, marked, named >>
+                          wipedAt, readmit, learner, marked, named, refusalVars >>
         \/ /\ CpUp
            /\ \E p \in Planners : \E v \in cpView[p] : Decide(v, b, [cpView EXCEPT ![p] = {}])
-           /\ UNCHANGED << heard, decideIdVars, named >>
+           /\ UNCHANGED << heard, decideIdVars, named, refusalVars >>
         \/ CommitCounter(b) /\ UNCHANGED loudVars
         \/ AckCounters(b) /\ UNCHANGED loudVars
     \/ LoseReport /\ UNCHANGED quietVars
     \/ CpUp /\ CpFlip /\ UNCHANGED quietVars
-    \/ CpUp /\ CpFlipNamed /\ UNCHANGED << clog, chwm, cacked, heard, idVars, named, wipeVars >>
+    \/ CpUp /\ CpFlipNamed /\ UNCHANGED << clog, chwm, cacked, heard, idVars, named, refusalVars, wipeVars >>
     \/ CpUp /\ (\E p \in Planners : Snapshot(p)) /\ UNCHANGED quietVars
-    \/ CpUp /\ DeliverReport /\ UNCHANGED << counterVars, idVars, wipeVars >>
+    \/ CpUp /\ DeliverReport /\ UNCHANGED << counterVars, idVars, wipeVars, refusalVars >>
+    \/ CpUp /\ \E b \in Brokers :
+        \/ SendRefusal(b) /\ UNCHANGED notRefusalVars
+        \/ PassReport(b) /\ UNCHANGED notRefusalVars
 
 \* The control plane stops for good, under `CpStops`.
 CpStop ==
@@ -4367,7 +4431,7 @@ CpStop ==
            hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit,
            draining, successor, stopped, moves, ver, cpView, staged, heard,
            promised, fencing, answered, confirmed, out, mine, joining, leaving, joinedAt,
-           counterVars, ballot, opened, setVars, ackGen, idVars, named, wipeVars >>
+           counterVars, ballot, opened, setVars, ackGen, idVars, named, refusalVars, wipeVars >>
 
 Next ==
     \/ Steps /\ UNCHANGED cpGone
@@ -4395,14 +4459,15 @@ LiveSpec == Spec /\ Fairness
 CpFairness ==
     /\ \A b \in Brokers :
         /\ WF_vars(Promote(Now, b, cpView)
-                   /\ UNCHANGED << counterVars, heard, decideIdVars, named, cpGone >>)
+                   /\ UNCHANGED << counterVars, heard, decideIdVars, named, refusalVars, cpGone >>)
         /\ WF_vars(Withdraw(b) /\ UNCHANGED << quietVars, cpGone >>)
         /\ WF_vars(Depose(b) /\ UNCHANGED << quietVars, cpGone >>)
-        /\ WF_vars(Restart(b) /\ UNCHANGED << counterVars, heard, named, wipeVars, cpGone >>)
+        /\ WF_vars(Restart(b) /\ refusedAt' = [refusedAt EXCEPT ![b] = 0]
+                   /\ UNCHANGED << counterVars, heard, named, wipeVars, cpRefused, cpGone >>)
         /\ WF_vars(AckQuorum(b) /\ UNCHANGED << quietVars, cpGone >>)
     /\ WF_vars(CpRename(Now, cpView)
                /\ UNCHANGED << counterVars, expect, inherited, seen, seenInc, fenceIds,
-                               heard, decideIdVars, named, cpGone >>)
+                               heard, decideIdVars, named, refusalVars, cpGone >>)
 
 \* With the control plane stopped for good at some point and every stopped
 \* broker back, elections alone get a leader serving: a candidate's stand
@@ -4413,7 +4478,8 @@ CpDownFairness ==
     /\ \A b \in Brokers :
         /\ WF_vars(Withdraw(b) /\ UNCHANGED << quietVars, cpGone >>)
         /\ WF_vars(Depose(b) /\ UNCHANGED << quietVars, cpGone >>)
-        /\ WF_vars(Restart(b) /\ UNCHANGED << counterVars, heard, named, wipeVars, cpGone >>)
+        /\ WF_vars(Restart(b) /\ refusedAt' = [refusedAt EXCEPT ![b] = 0]
+                   /\ UNCHANGED << counterVars, heard, named, wipeVars, cpRefused, cpGone >>)
         /\ WF_vars(AckQuorum(b) /\ UNCHANGED << quietVars, cpGone >>)
     /\ WF_vars(CpStop)
 
@@ -4476,10 +4542,10 @@ ReportFairness ==
     \A b \in Brokers :
         /\ WF_vars(CpAdopt(Now, b, cpView)
                    /\ UNCHANGED << counterVars, expect, inherited, seen, seenInc, fenceIds,
-                                   heard, decideIdVars, named, cpGone >>)
+                                   heard, decideIdVars, named, refusalVars, cpGone >>)
         /\ WF_vars(CpReissue(Now, b, cpView)
                    /\ UNCHANGED << counterVars, expect, inherited, seen, seenInc, fenceIds,
-                                   heard, decideIdVars, named, cpGone >>)
+                                   heard, decideIdVars, named, refusalVars, cpGone >>)
 
 ReissueSpec == Spec /\ Fairness /\ ReportFairness
 
@@ -4491,9 +4557,12 @@ CpLiveSpec == Spec /\ Fairness /\ ReportFairness /\ CpFairness
 
 \* Under `Renames`, the control plane's rename, taken once it stays possible.
 RenameFairness ==
-    WF_vars(CpRename(Now, cpView)
-            /\ UNCHANGED << counterVars, expect, inherited, seen, seenInc, fenceIds,
-                            heard, decideIdVars, named, cpGone >>)
+    /\ WF_vars(CpRename(Now, cpView)
+               /\ UNCHANGED << counterVars, expect, inherited, seen, seenInc, fenceIds,
+                               heard, decideIdVars, named, refusalVars, cpGone >>)
+    \* Under `ReportStore`, a refusal the leader still has is reported again
+    \* (`report_refusal` in crates/server/felix-replication/src/driver/shards.rs).
+    /\ \A b \in Brokers : WF_vars(CpUp /\ SendRefusal(b) /\ UNCHANGED notRefusalVars)
 
 \* Elections with the control plane up, renaming its leader on a refusal.
 RenameSpec == Spec /\ Fairness /\ ReportFairness /\ RenameFairness
@@ -4807,6 +4876,7 @@ TypeOK ==
     /\ inherited \in [Brokers -> SUBSET Brokers]
     /\ leftDirty \in [Brokers -> Nat]
     /\ gaveUp \in [Brokers -> Nat] /\ fenceIds \in [Brokers -> SUBSET Brokers] /\ named \subseteq Brokers
+    /\ cpRefused \subseteq (Nat \X Brokers) /\ refusedAt \in [Brokers -> Nat]
     /\ wipedAt \in [Brokers -> Nat] /\ learner \in [Brokers -> BOOLEAN] /\ cpLearner \subseteq Brokers
     /\ marked \in [Brokers -> BOOLEAN]
     /\ \A r \in readmit : r[1] \in Brokers /\ r[2] \in Nat /\ r[3] \in Brokers
