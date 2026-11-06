@@ -95,7 +95,9 @@ where
     // instance that reports ready before then invites an orchestrator to route
     // traffic at streams that are, from any client's point of view, missing.
     // An in-memory broker has nothing to recover and keeps the old behaviour.
-    let durable_root = DurableStorageConfig::from_env()?.map(|durable| durable.root);
+    // Parsed once: what readiness gates on is what storage opens.
+    let durable_config = DurableStorageConfig::from_env()?;
+    let durable_root = durable_config.as_ref().map(|durable| durable.root.clone());
     let durable_storage_configured = durable_root.is_some();
     let gate_readiness_on_sync = durable_storage_configured && config.controlplane_url.is_some();
     let readiness = if gate_readiness_on_sync {
@@ -221,11 +223,7 @@ where
         membership::Start::Asked(registered) => (registered, None),
         membership::Start::FromView(view) => (None, Some(*view)),
     };
-    let mut stored = startup::open_storage(
-        &config,
-        DurableStorageConfig::from_env()?,
-        registered.as_ref(),
-    )?;
+    let mut stored = startup::open_storage(&config, durable_config, registered.as_ref())?;
     let storage_id = stored.storage_id;
     // Beginning the run may have rotated the id the view was registered
     // under, and a new id registers before it acts: wait for the control
@@ -482,6 +480,11 @@ where
             )
         });
     let view_registered = registered_watch.clone();
+    // Shared by membership and the view's writer, so a view membership forgets
+    // is not written back.
+    let view_file = durable_storage.as_ref().map(|storage| {
+        crate::cluster::controlplane_view::ViewFile::new(storage.root().to_path_buf())
+    });
     let membership = membership::spawn(
         &config,
         heartbeat_link,
@@ -496,6 +499,7 @@ where
         registered,
         storage_id,
         durable_storage.as_ref().map(|storage| storage.root()),
+        view_file.clone(),
         view.as_ref().map(|_| restore_checked.clone()),
         &sync_shutdown,
     );
@@ -550,8 +554,8 @@ where
 
     // Only where a restart could start from it: a cluster member with a data
     // directory whose routes come from the shard watch.
-    let controlplane_view = match (&config.membership, &cluster, &durable_storage, &shard_tasks) {
-        (Some(membership), Some((router, _, _, ownership)), Some(storage), Some(_)) => {
+    let controlplane_view = match (&config.membership, &cluster, &view_file, &shard_tasks) {
+        (Some(membership), Some((router, _, _, ownership)), Some(view_file), Some(_)) => {
             Some(crate::cluster::controlplane_view::spawn(
                 crate::cluster::controlplane_view::Sources {
                     node_id: membership.node_id.clone(),
@@ -560,10 +564,11 @@ where
                     fleet: Arc::clone(&fleet),
                     catalog_seeded: catalog_seeded.clone(),
                     ownership: Arc::clone(ownership),
+                    ownership_changes: ownership.read().await.changes(),
                     router: Arc::clone(router),
                     broker: Arc::clone(&broker),
                 },
-                storage.root().to_path_buf(),
+                view_file.clone(),
             ))
         }
         _ => None,

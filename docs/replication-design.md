@@ -953,7 +953,9 @@ The cost is a fence round trip or a few while a follower's watch catches up
 or its confirmed read comes back. A new shard's copy costs neither once its
 view has the shard. A wiped copy costs a read every few seconds without
 elections, and a learner under elections about two a second per shard
-while it takes batches. With one replica of a
+while it takes batches. Those reads go up to 64 shards to a control-plane
+request, so a broker with many learners needs a request per 64 of them, not
+one per shard. With one replica of a
 set of three wiped the other two make the majority anyway. With a majority
 wiped at once their votes wait for their views; once they have them they
 answer, so the shard is not stuck, but what it acknowledged was on those

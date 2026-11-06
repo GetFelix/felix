@@ -172,3 +172,45 @@ async fn without_provisional_entries_a_snapshot_only_upserts() -> Result<()> {
     assert!(broker.stream_exists("t1", "ns", "local").await);
     Ok(())
 }
+
+/// **A tenant deleted while the control plane was down does not stay
+/// registered.** Seeding a stream from the view created its tenant and
+/// namespace; the first snapshots, which lack them, unregister them too.
+#[tokio::test]
+async fn parents_created_from_the_view_go_when_the_snapshot_lacks_them() -> Result<()> {
+    let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
+    let mut deleted = stream("orphan");
+    deleted.tenant_id = "t2".to_owned();
+    let view = Catalog {
+        streams: vec![stream("kept"), deleted],
+        caches: Vec::new(),
+    };
+    let provisional = seed_provisional(&broker, &view).await;
+    assert!(broker.namespace_exists("t2", "ns").await);
+
+    let (addr, stop, handle) = serve_router(restored_control_plane()).await?;
+    let mut state = SyncState::new();
+    state.provisional = provisional;
+    let state = sync_once(
+        &broker,
+        &HttpSource::new(build_test_client()?, format!("http://{addr}")),
+        None,
+        state,
+    )
+    .await?;
+    let _ = stop.send(());
+    let _ = handle.await;
+
+    assert_eq!(state.provisional, Provisional::default());
+    assert!(
+        !broker.tenant_exists("t2").await,
+        "the deleted tenant stays"
+    );
+    assert!(!broker.namespace_exists("t2", "ns").await);
+    assert!(
+        broker.namespace_exists("t1", "ns").await,
+        "a listed one stays"
+    );
+    assert!(!broker.stream_exists("t2", "ns", "orphan").await);
+    Ok(())
+}

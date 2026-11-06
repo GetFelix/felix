@@ -44,6 +44,7 @@ fn config() -> PeerTransportConfig {
 
 fn node(node_id: &str, capabilities: PeerCapabilities, handler: &Arc<Echo>) -> SimNode {
     SimNode {
+        outgoing: capabilities,
         node_id: node_id.to_string(),
         capabilities,
         identity: PeerIdentity::default(),

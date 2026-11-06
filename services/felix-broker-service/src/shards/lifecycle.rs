@@ -1078,8 +1078,13 @@ impl ShardReaders {
                 }
                 _ = tokio::time::sleep(probe), if !unleased.is_empty() || !unheard.is_empty() => {
                     unheard.retain(|key, generation| {
-                        fence.is_open_at(key, *generation)
-                            && !fence.names_newer_leader(key, *generation)
+                        let tracked = fence.is_open_at(key, *generation)
+                            && !fence.names_newer_leader(key, *generation);
+                        // Untracked, no round would ever hear it again.
+                        if !tracked {
+                            fence.heard(key, *generation);
+                        }
+                        tracked
                     });
                     // A renewed lease alone does not clear silence: the
                     // routes it serves on may predate a promotion made while
