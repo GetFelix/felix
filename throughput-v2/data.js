@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794000578246,
+  "lastUpdate": 1794001489846,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -47788,6 +47788,58 @@ window.BENCHMARK_DATA = {
             "range": "56211.59",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 972649.20\nmean: 951355.97\nstdev: 56211.59\ncv: 5.91%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "76d11560a59d54aa5bfc44d5773148b3bac6bd95",
+          "message": "fix(controlplane): a rename past a ballot names the generation it replaced, so its joint fence knows the set it leaves (#2024) (#2027)\n\n* wip: the control plane records the generation a rename past a ballot replaced (#2024)\n\nSpec-Unaffected: WIP\n\n* wip: the control plane records the generation a rename past a ballot replaced (#2024)\n\nSpec-Unaffected: WIP\n\n* test: a rename past a ballot names the generation it replaced, and the watch keeps its set (#2024)\n\nSpec-Unaffected: WIP\n\n* docs: the set a rename past a ballot leaves (#2024)\n\nSpec-Unaffected: CpRename already takes CpSet as the set a rename past a ballot leaves, with no set being left beside it; previous_generation is the evidence the code reads for it. Comment-only spec change.\n\n* fix(controlplane): a snapshot item carries the set right before it, so a reseeded watch knows what a fence leaves (#2024)\n\nA leader restarted right after a one-step cut-over reseeds its watch from a\nsnapshot, which named nothing before the current assignment, so its joint\nfence stayed pending (seed 3 events/0 in the sim). The snapshot now carries,\nper item, the set of the assignment the change log holds right before it,\nread at snapshot time from the retained log: no new replicated state.\nPostgres migration renumbered to 0045 to follow #2020's 0044.\n\nSpec-Unaffected: CpRename and Restart already take CpSet as the set left; this is the evidence the code reads for it after a reseed.\n\n* spec: a restarted leader learns the set before from its snapshot (#2024)\n\nFelixShard.tla Restart no longer requires the log's own set at gen - 1 under\nJointFence (the #1989 pin): the broker now learns the set right before from\nthe snapshot item's previous set. This replaces the previous commit's\nSpec-Unaffected note, which was wrong for the restart path. Also factors the\nPostgres row key type for clippy.\n\n* docs: a reseeded watch takes the set before from the snapshot (#2024)\n\n* spec: a restarted leader may find no set before in its snapshot (#2024)\n\nRestart chooses whether the snapshot's previous set is known under\nPriorMayBeUnknown: the control plane reads it from the retained change log,\nso after an eviction only a log keeping the set at gen - 1 opens the fence,\nas before #2024. FelixShardCpLive.cfg states that its liveness assumes the\nchange log still holds that change (PriorMayBeUnknown off).\n\nSpec: FelixShard.tla changed (Restart, PriorMayBeUnknown) and\nFelixShardCpLive.cfg; this supersedes the Spec-Unaffected note in ac9f64283.\n\n* spec: a bounded liveness check for the skipped-generation restart (#2024)\n\n* fix(broker): set seeded before the reset so the change counter covers it\n\n* spec: make the skipped-generation check reach its case\n\nAt Adopt = 2 an adopted leader keeps the set right before its generation,\nand a rename or promotion hands the leader the current set, so no restarted\nleader's log was ever two generations back: the passing config could not\nfail and its UnknownPrior twin had nothing to find (it ran out the CI hour\nexploring instead). Adopt = 3 reaches it; TLC finds the twin's violation in\nabout 9 minutes, a leader adopted at 3 that restarts with its set from 1.\n\nA new `Stops` bound (default: no bound) caps how many brokers stop; the case\nneeds two. The passing config still runs past a pull request's hour, so it\nis unregistered and checked by the nightly exhaustive job.",
+          "timestamp": "2026-11-06T13:06:18-08:00",
+          "tree_id": "9ff96c9f29bd73acc9e8403aa356517bb63af1b3",
+          "url": "https://github.com/GetFelix/felix/commit/76d11560a59d54aa5bfc44d5773148b3bac6bd95"
+        },
+        "date": 1794001489043,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 364753.12,
+            "range": "9061.25",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 364753.12\nmean: 362546.92\nstdev: 9061.25\ncv: 2.50%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 364753.12,
+            "range": "9061.25",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 364753.12\nmean: 362546.92\nstdev: 9061.25\ncv: 2.50%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81975.76,
+            "range": "328.97",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81975.76\nmean: 81905.37\nstdev: 328.97\ncv: 0.40%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 819757.57,
+            "range": "3289.66",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 819757.57\nmean: 819053.69\nstdev: 3289.66\ncv: 0.40%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
