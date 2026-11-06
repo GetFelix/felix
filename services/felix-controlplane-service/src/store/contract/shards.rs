@@ -172,6 +172,7 @@ pub(crate) async fn run_shard_contract(store: Arc<dyn ControlPlaneStore>) {
     a_conditional_write_lands_only_at_the_expected_generation(store).await;
     a_write_at_least_a_generation_lands_there_within_the_window(store).await;
     a_write_past_the_next_generation_names_the_one_it_replaced(store).await;
+    the_assignment_before_the_current_one_is_listed(store).await;
     a_fence_planned_before_a_cut_over_is_refused_after_it(store).await;
     a_consistency_change_fences_placement(store).await;
     why_a_move_started_is_persisted(store).await;
@@ -1050,6 +1051,49 @@ async fn a_write_past_the_next_generation_names_the_one_it_replaced(store: &dyn 
         panic!("the next write lands");
     };
     assert_eq!(after.previous_generation, None, "not copied forward");
+}
+
+/// The change log's assignment right before each current one is listed, so a
+/// snapshot can carry the set a reseeded broker's fence leaves (#2024). A
+/// shard with one write lists nothing, and neither does one whose change
+/// before was an unassignment.
+async fn the_assignment_before_the_current_one_is_listed(store: &dyn ControlPlaneStore) {
+    clear(store).await;
+    let previous = || async {
+        store
+            .previous_shard_assignments()
+            .await
+            .expect("previous")
+            .into_iter()
+            .filter(|before| before.key == key(0))
+            .map(|before| (before.leader, before.generation))
+            .collect::<Vec<_>>()
+    };
+    let written = |leader: &'static str| async move {
+        store
+            .put_shard_assignment(assignment(0, leader))
+            .await
+            .expect("write")
+    };
+    let first = written("broker-x").await;
+    assert_eq!(previous().await, Vec::new(), "nothing before a first write");
+    written("broker-y").await;
+    assert_eq!(
+        previous().await,
+        vec![("broker-x".to_string(), first.generation)]
+    );
+    let second = written("broker-x").await;
+    assert_eq!(
+        previous().await,
+        vec![("broker-y".to_string(), second.generation - 1)]
+    );
+
+    store
+        .delete_shard_assignment(&key(0))
+        .await
+        .expect("delete");
+    written("broker-x").await;
+    assert_eq!(previous().await, Vec::new(), "an unassignment came before");
 }
 
 /// A conditional write lands only over the generation it names, or where

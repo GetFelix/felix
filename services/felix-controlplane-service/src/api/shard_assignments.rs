@@ -13,9 +13,9 @@ use crate::api::error::{ApiError, api_error, api_internal};
 use crate::api::nodes::require_cluster_node_view;
 use crate::api::pagination::{PageParams, list_visible};
 use crate::api::types::{
-    ConfirmedShardAssignmentResponse, RoutedShardAssignment, RoutedShardAssignmentChange,
-    ShardAssignmentChangesResponse, ShardAssignmentListResponse, ShardAssignmentSnapshotResponse,
-    SnapshotShardAssignment,
+    ConfirmedShardAssignmentResponse, PreviousSet, RoutedShardAssignment,
+    RoutedShardAssignmentChange, ShardAssignmentChangesResponse, ShardAssignmentListResponse,
+    ShardAssignmentSnapshotResponse, SnapshotShardAssignment,
 };
 use crate::model::{ShardAssignment, ShardAssignmentChange, ShardKey, StreamRouting};
 use crate::store::{ConfirmedAssignment, StoreError};
@@ -109,6 +109,16 @@ pub(crate) async fn shard_assignment_snapshot(
         .map_err(|ref err| api_internal("failed to read first shard assignments", err))?
         .into_iter()
         .collect();
+    // Read after the snapshot too: an assignment written in between makes
+    // the one found here its own, never one right before an older item.
+    let previous: HashMap<ShardKey, ShardAssignment> = state
+        .store
+        .previous_shard_assignments()
+        .await
+        .map_err(|ref err| api_internal("failed to read previous shard assignments", err))?
+        .into_iter()
+        .map(|before| (before.key.clone(), before))
+        .collect();
     let items = with_routing(&state, snapshot.items)
         .await?
         .into_iter()
@@ -116,9 +126,13 @@ pub(crate) async fn shard_assignment_snapshot(
             let item = &assigned.assignment;
             let first_assignment =
                 first.contains(&(item.key.clone(), item.incarnation, item.generation));
+            let previous = previous
+                .get(&item.key)
+                .and_then(|before| PreviousSet::of(before, item));
             SnapshotShardAssignment {
                 assigned,
                 first_assignment,
+                previous,
             }
         })
         .collect();

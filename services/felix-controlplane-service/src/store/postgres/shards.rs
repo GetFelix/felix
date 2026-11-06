@@ -351,7 +351,7 @@ async fn write_shard_assignment(
         .then(|| serde_json::to_value(&stored.learners))
         .transpose()?;
     let learners_generation = learners.as_ref().map(|_| stored.generation as i64);
-    // And for the generation a write past the next one replaced (0044).
+    // And for the generation a write past the next one replaced (0045).
     let previous_generation = stored.previous_generation.map(|previous| previous as i64);
     let previous_generation_at = previous_generation.map(|_| stored.generation as i64);
 
@@ -619,6 +619,58 @@ pub(super) async fn first_shard_assignments(
             },
         )
         .collect()
+}
+
+pub(super) async fn previous_shard_assignments(
+    store: &PostgresStore,
+) -> StoreResult<Vec<ShardAssignment>> {
+    // The two newest changes of each current assignment, newest first. A
+    // shard is listed when the newer wrote its current generation and the
+    // older wrote an assignment.
+    let rows = sqlx::query_as::<
+        _,
+        (
+            String,
+            String,
+            String,
+            i32,
+            String,
+            i64,
+            Option<serde_json::Value>,
+        ),
+    >(
+        r#"SELECT a.tenant_id, a.namespace, a.stream, a.shard, a.kind, a.generation, c.payload
+               FROM shard_assignments a
+               CROSS JOIN LATERAL (
+                   SELECT seq, payload FROM shard_assignment_changes c
+                   WHERE c.tenant_id = a.tenant_id AND c.namespace = a.namespace
+                     AND c.stream = a.stream AND c.shard = a.shard AND c.kind = a.kind
+                   ORDER BY seq DESC LIMIT 2
+               ) c
+               ORDER BY a.tenant_id, a.namespace, a.stream, a.shard, a.kind, c.seq DESC"#,
+    )
+    .fetch_all(&store.pool)
+    .await?;
+    let mut previous = Vec::new();
+    let mut newest: Option<((String, String, String, i32, String), bool)> = None;
+    for (tenant_id, namespace, stream, shard, kind, generation, payload) in rows {
+        let key = (tenant_id, namespace, stream, shard, kind);
+        let written: Option<ShardAssignment> = payload.map(serde_json::from_value).transpose()?;
+        match newest.take() {
+            Some((newer, wrote_current)) if newer == key => {
+                if wrote_current && let Some(written) = written {
+                    previous.push(written);
+                }
+            }
+            _ => {
+                let wrote_current = written
+                    .as_ref()
+                    .is_some_and(|written| written.generation == generation as u64);
+                newest = Some((key, wrote_current));
+            }
+        }
+    }
+    Ok(previous)
 }
 
 pub(super) async fn shard_assignment_head(store: &PostgresStore) -> StoreResult<u64> {

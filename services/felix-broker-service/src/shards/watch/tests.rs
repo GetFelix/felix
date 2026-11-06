@@ -486,6 +486,43 @@ fn a_rename_past_a_ballot_keeps_the_set_it_replaced() {
     assert_eq!(parsed.previous_generation, Some(23));
 }
 
+/// **A broker reseeded from a snapshot takes the set before from the item**
+/// (#2024). The control plane cut shard 0 over from broker-a at 1 to broker-b
+/// at 2, and broker-b restarted: its watch holds nothing, so only the
+/// snapshot can say what came before. An item without `previous`, from an
+/// older control plane or after the change left the log, leaves it unknown,
+/// and a `previous` that is not right before the item proves nothing.
+#[test]
+fn a_reseeded_watch_takes_the_set_before_from_the_snapshot() {
+    let item = |previous: Option<serde_json::Value>| {
+        let mut json = serde_json::json!({
+            "tenant_id": "t1", "namespace": "ns", "stream": "orders", "shard": 0,
+            "leader": "broker-b", "replicas": ["broker-a", "broker-c"],
+            "generation": 2, "state": "active",
+        });
+        if let Some(previous) = previous {
+            json["previous"] = previous;
+        }
+        serde_json::from_value::<super::SnapshotItem>(json).expect("item")
+    };
+    let before = |generation: u64| {
+        serde_json::json!({
+            "generation": generation, "leader": "broker-a",
+            "replicas": ["broker-b", "broker-c"],
+        })
+    };
+    for (previous, expected) in [
+        (Some(before(1)), Some(Some("broker-a".to_string()))),
+        (None, None),
+        (Some(before(0)), None),
+    ] {
+        let mut owned = ShardOwnership::default();
+        let (items, first, previous) = super::seed_of(vec![item(previous)]);
+        owned.reset_from_control_plane(items, &first, &previous);
+        assert_eq!(prior_leader(&owned), expected);
+    }
+}
+
 /// **A first assignment has nothing before it**, unless the same incarnation
 /// carries on from a deleted stream's logs.
 #[test]

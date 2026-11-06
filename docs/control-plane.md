@@ -1014,7 +1014,7 @@ generation of the assignment it replaced. Nothing was recorded in between, so a
 broker that watched that assignment takes its set as the one the new
 generation leaves (`docs/replication-design.md`, "Planned handoff"). The store
 sets it; a caller's value is ignored. Postgres keeps it only
-for the generation that wrote it (migration 0044), and the Raft store writes it
+for the generation that wrote it (migration 0045), and the Raft store writes it
 only at metadata level 29.
 
 ##### Re-admitting a replaced copy

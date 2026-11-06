@@ -1023,6 +1023,10 @@ impl ControlPlaneStore for RaftStore {
         self.local().first_shard_assignments().await
     }
 
+    async fn previous_shard_assignments(&self) -> StoreResult<Vec<ShardAssignment>> {
+        self.local().previous_shard_assignments().await
+    }
+
     async fn shard_assignment_changes(
         &self,
         since: u64,

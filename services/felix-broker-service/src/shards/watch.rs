@@ -138,6 +138,46 @@ struct SnapshotItem {
     /// with no set before waiting instead of fencing the new set alone.
     #[serde(default)]
     first_assignment: bool,
+    /// The set of the assignment right before this one, from the control
+    /// plane's change log (#2024). Absent from a control plane that predates
+    /// it, or when the log no longer holds it.
+    #[serde(default)]
+    previous: Option<PreviousSet>,
+}
+
+/// The set of the assignment a snapshot item replaced.
+#[derive(Debug, Clone, Deserialize)]
+struct PreviousSet {
+    generation: u64,
+    leader: String,
+    #[serde(default)]
+    replicas: Vec<String>,
+    #[serde(default)]
+    successor: Option<String>,
+    #[serde(default)]
+    fence_storage_ids: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    member_storage_ids: std::collections::BTreeMap<String, String>,
+}
+
+impl PreviousSet {
+    /// As the assignment it was, for [`prior_of`] to check against `item`.
+    fn before(self, item: &ShardAssignment) -> ShardAssignment {
+        ShardAssignment {
+            key: item.key.clone(),
+            leader: self.leader,
+            replicas: self.replicas,
+            generation: self.generation,
+            state: String::new(),
+            successor: self.successor,
+            routing: Default::default(),
+            incarnation: item.incarnation,
+            fence_storage_ids: self.fence_storage_ids,
+            member_storage_ids: self.member_storage_ids,
+            pending_set: None,
+            previous_generation: None,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -290,6 +330,19 @@ impl ShardOwnership {
     /// same terms: never at incarnation 0, and not at an incarnation this
     /// broker already held it at.
     pub(crate) fn reset_marked(&mut self, items: Vec<ShardAssignment>, first: &HashSet<ShardKey>) {
+        self.reset_seeded(items, first, &HashMap::new());
+    }
+
+    /// [`Self::reset_marked`], with the assignment the control plane's change
+    /// log holds right before each item (#2024). A shard this broker did not
+    /// hold right before takes its set before from there, as it would from
+    /// the change it watched.
+    pub(crate) fn reset_seeded(
+        &mut self,
+        items: Vec<ShardAssignment>,
+        first: &HashSet<ShardKey>,
+        previous: &HashMap<ShardKey, ShardAssignment>,
+    ) {
         let mut priors = HashMap::new();
         for next in &items {
             let current = self.assignments.get(&next.key);
@@ -303,7 +356,7 @@ impl ShardOwnership {
                     generation: next.generation,
                     before: None,
                 }),
-                _ => prior_of(current, next),
+                _ => prior_of(current, next).or_else(|| prior_of(previous.get(&next.key), next)),
             };
             if let Some(prior) = prior {
                 priors.insert(next.key.clone(), prior);
@@ -340,8 +393,9 @@ impl ShardOwnership {
         &mut self,
         items: Vec<ShardAssignment>,
         first: &HashSet<ShardKey>,
+        previous: &HashMap<ShardKey, ShardAssignment>,
     ) {
-        self.reset_marked(items, first);
+        self.reset_seeded(items, first, previous);
         self.seeded = true;
     }
 
@@ -605,6 +659,32 @@ enum Progress {
     Behind,
 }
 
+/// A snapshot's items, the shards it marks first, and the assignment right
+/// before each item that names one.
+type Seed = (
+    Vec<ShardAssignment>,
+    HashSet<ShardKey>,
+    HashMap<ShardKey, ShardAssignment>,
+);
+
+fn seed_of(items: Vec<SnapshotItem>) -> Seed {
+    let mut first = HashSet::new();
+    let mut previous = HashMap::new();
+    let items = items
+        .into_iter()
+        .map(|item| {
+            if item.first_assignment {
+                first.insert(item.assignment.key.clone());
+            }
+            if let Some(before) = item.previous {
+                previous.insert(item.assignment.key.clone(), before.before(&item.assignment));
+            }
+            item.assignment
+        })
+        .collect();
+    (items, first, previous)
+}
+
 async fn snapshot(
     link: &impl ControlPlaneLink,
     bearer: Option<&str>,
@@ -621,21 +701,11 @@ async fn snapshot(
     }
 
     let count = response.items.len();
-    let first: HashSet<ShardKey> = response
-        .items
-        .iter()
-        .filter(|item| item.first_assignment)
-        .map(|item| item.assignment.key.clone())
-        .collect();
-    let items = response
-        .items
-        .into_iter()
-        .map(|item| item.assignment)
-        .collect();
+    let (items, first, previous) = seed_of(response.items);
     ownership
         .write()
         .await
-        .reset_from_control_plane(items, &first);
+        .reset_from_control_plane(items, &first, &previous);
     mm::record_snapshot(count);
     tracing::info!(
         assignments = count,

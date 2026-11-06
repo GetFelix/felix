@@ -342,6 +342,26 @@ pub(super) async fn first_shard_assignments(
         .collect())
 }
 
+pub(super) async fn previous_shard_assignments(
+    store: &InMemoryStore,
+) -> StoreResult<Vec<ShardAssignment>> {
+    let state = store.shards.read().await;
+    let mut last_two: std::collections::HashMap<&ShardKey, [Option<&ShardAssignment>; 2]> =
+        std::collections::HashMap::new();
+    for change in &state.changes.items {
+        let held = last_two.entry(&change.key).or_default();
+        *held = [held[1], change.assignment.as_ref()];
+    }
+    Ok(last_two
+        .into_iter()
+        .filter_map(|(key, [before, last])| {
+            let current = state.records.get(key)?;
+            (last?.generation == current.generation).then_some(())?;
+            before.cloned()
+        })
+        .collect())
+}
+
 pub(super) async fn shard_assignment_changes(
     store: &InMemoryStore,
     since: u64,
