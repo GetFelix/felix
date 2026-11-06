@@ -77,7 +77,8 @@ writes the run's history to a file so two runs can be diffed.
 
 `seeds` is `#[ignore]`, so `cargo test --workspace` skips it. It runs in the
 non-blocking `sim-seeds` job in CI, which does not gate merges while its known
-liveness stalls are open. One seed takes a few seconds in a debug build and the
+liveness stalls are open. That job builds with `--cfg tokio_unstable` and runs
+seeds 1 and 2 without clock skew and seeds 3 and 4 with `bounded` skew. One seed takes a few seconds in a debug build and the
 default batch of four takes a few minutes, so run batches one at a time on a
 busy machine.
 

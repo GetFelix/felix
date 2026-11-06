@@ -454,7 +454,9 @@ jobs:
 
   # The felix-sim seed batch (tests/seeds.rs, ignored in the workspace tests).
   # Non-blocking and left out of `ci-ok` until its known liveness stalls are
-  # fixed, so a seed that stalls does not fail the required gates.
+  # fixed, so a seed that stalls does not fail the required gates. Built with
+  # `--cfg tokio_unstable`, which clock skew needs, in a target directory of its
+  # own as `task sim:replay` does; half the seeds run with bounded skew.
   sim-seeds:
     needs: changes
     if: needs.changes.outputs.code == 'true' && github.event_name != 'workflow_dispatch'
@@ -463,6 +465,7 @@ jobs:
     timeout-minutes: 45
     env:
       CARGO_TERM_COLOR: always
+      RUSTFLAGS: "--cfg tokio_unstable"
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -477,15 +480,32 @@ jobs:
       - name: Rust Cache
         if: runner.environment == 'github-hosted'
         uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: sim-seeds-tokio-unstable
 
       - name: Warm target dir
         if: runner.environment == 'self-hosted'
         uses: ./.github/actions/warm-target
         with:
-          slot: ci-sim-seeds
+          slot: ci-sim-seeds-tokio-unstable
 
       - name: Seeds
-        run: cargo test -p felix-sim --test seeds -- --ignored --exact seeds --nocapture
+        env:
+          FELIX_SIM_SEED_START: "1"
+          FELIX_SIM_SEEDS: "2"
+        run: |
+          CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}/tokio-unstable" \
+            cargo test -p felix-sim --test seeds -- --ignored --exact seeds --nocapture
+
+      - name: Seeds with bounded clock skew
+        if: ${{ !cancelled() }}
+        env:
+          FELIX_SIM_SEED_START: "3"
+          FELIX_SIM_SEEDS: "2"
+          FELIX_SIM_CLOCKS: bounded
+        run: |
+          CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}/tokio-unstable" \
+            cargo test -p felix-sim --test seeds -- --ignored --exact seeds --nocapture
 
   # felix-cluster's suites, the three longest each on a runner of its own
   # (Taskfile.yml, test:cluster). One cluster per runner, as before: they are

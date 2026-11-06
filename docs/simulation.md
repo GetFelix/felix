@@ -528,7 +528,8 @@ client's call into a broker, a peer message handled by its target, and every
 control plane request. Under `--cfg tokio_unstable` the runtime's task hooks
 carry that mark to each task the code spawns, and to the tasks those spawn.
 That is why skew needs the `tokio_unstable` build, and a run with skew in a
-plain build panics with the command to use instead. Clients and checkers
+plain build panics with the command to use instead. CI's non-blocking `sim-seeds`
+job builds that way and runs half its seeds with `bounded` skew. Clients and checkers
 belong to no node and read the shared time. The control plane mints and
 checks tokens on the host clock (`jsonwebtoken` validates expiry against it),
 so token expiry on the control plane is not skewed; the sim's tokens last ten
