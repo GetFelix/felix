@@ -601,7 +601,7 @@ weights=(
   "FelixShardElectRenameDrop1StoodSeveralDest 36"
   "FelixShardElectStepDown 3"
   "FelixShardHandoffLeaderAck 3"
-  "FelixShardCpLiveNoOwnBallotRefused 3"
+  "FelixShardCpLiveNoOwnBallotRefused 175"
   "FelixShardCpLiveNoOverlayRefused 6"
   "FelixShardCpLiveNoHaltReported 5"
   "FelixShardCpLiveNoAboveReported 6"
