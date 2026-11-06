@@ -214,6 +214,7 @@ async fn a_change_that_always_fails_does_not_replay_the_changes_before_it() -> R
         Duration::from_millis(20),
         None,
         None,
+        Provisional::default(),
     ));
 
     // The first pass deletes the old stream and creates the new one. Waits on
@@ -303,6 +304,7 @@ async fn a_delete_naming_no_incarnation_keeps_an_incarnated_stream() -> Result<(
         Duration::from_millis(20),
         None,
         None,
+        Provisional::default(),
     ));
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     while broker.stream_incarnation("t1", "ns", "orders").is_none() {

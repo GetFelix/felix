@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use felix_replication::controlplane_link::ControlPlaneLink;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{Notify, RwLock};
 use tokio_util::sync::CancellationToken;
 
@@ -42,7 +42,7 @@ const LONG_POLL_WAIT: Duration = Duration::from_secs(20);
 /// Without a bound, a connection that died silently would stop the watch.
 const LONG_POLL_SLACK: Duration = Duration::from_secs(10);
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct ShardAssignment {
     #[serde(flatten)]
     pub key: ShardKey,
@@ -83,7 +83,7 @@ pub struct ShardAssignment {
 }
 
 /// The set a cut-over is moving a shard to, and the generation that wrote it.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct PendingSet {
     pub replicas: Vec<String>,
     pub generation: u64,
@@ -153,6 +153,10 @@ pub struct ShardOwnership {
     /// The set each shard had right before its current assignment, where this
     /// broker saw that step. A joint fence takes the set it leaves from here.
     priors: HashMap<ShardKey, felix_router::PriorSet>,
+    /// A whole snapshot from the control plane has been taken in this
+    /// process, so `assignments` is every shard it holds and not just the
+    /// changes seen so far, or routes seeded from the control-plane view.
+    seeded: bool,
     /// When the request behind the newest answer applied here started.
     as_of: Option<tokio::time::Instant>,
     /// The feed seq the newest answer applied here brought this view to.
@@ -321,6 +325,24 @@ impl ShardOwnership {
     /// can tell a renewed shard from an old generation delivered late.
     pub(crate) fn renewals(&self) -> &HashMap<ShardKey, u64> {
         &self.renewals
+    }
+
+    /// [`Self::reset_marked`] with a snapshot the control plane answered in
+    /// this process. Only this counts as seeded: routes a start took from the
+    /// control-plane view are not an answer the control plane gave since.
+    pub(crate) fn reset_from_control_plane(
+        &mut self,
+        items: Vec<ShardAssignment>,
+        first: &HashSet<ShardKey>,
+    ) {
+        self.reset_marked(items, first);
+        self.seeded = true;
+    }
+
+    /// Whether the control plane's snapshot has been taken. See
+    /// [`Self::reset_from_control_plane`].
+    pub(crate) fn is_seeded(&self) -> bool {
+        self.seeded
     }
 
     /// Everything this broker currently believes about ownership.
@@ -601,7 +623,10 @@ async fn snapshot(
         .into_iter()
         .map(|item| item.assignment)
         .collect();
-    ownership.write().await.reset_marked(items, &first);
+    ownership
+        .write()
+        .await
+        .reset_from_control_plane(items, &first);
     mm::record_snapshot(count);
     tracing::info!(
         assignments = count,

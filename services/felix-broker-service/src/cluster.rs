@@ -9,11 +9,14 @@
 //! renewed by the same heartbeat, checked cheaply on admission and against the
 //! clock again before any record is committed. `controlplane_client` is the
 //! HTTP client all of them share, with deadlines on every request.
+//! `controlplane_view` keeps a copy of what the control plane said about this
+//! broker's shards in the data directory.
 
 pub mod catalog_sync;
 pub(crate) mod client_endpoints;
 pub(crate) mod controlplane_client;
 pub(crate) mod controlplane_http;
+pub(crate) mod controlplane_view;
 pub mod credential;
 pub(crate) mod feed_cursor;
 pub mod lease;

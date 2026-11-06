@@ -1096,6 +1096,15 @@ Bootstrap tokens **never** authorize normal admin endpoints.
 
    After that, requests do not wait on the control plane. See
    [Keeping tenant keys current](#keeping-tenant-keys-current).
+
+   A broker that started from its control-plane view while the control plane
+   was down (`FELIX_START_WITHOUT_CONTROLPLANE`) checks no client token until
+   it registers, because it serves no client until then: its listeners accept
+   nothing, and a client request a peer forwards to it is refused as
+   retryable. Nothing about auth is kept in the view. Its peers still reach
+   it for replication and elections, and they authenticate by their mTLS
+   certificates (`docs/internal-protocol.md`), not by tenant JWKS, so that
+   needs nothing from the control plane.
 3) Broker validates claims:
    - `iss = felix-auth`
    - `aud = felix-broker`

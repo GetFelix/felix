@@ -44,6 +44,21 @@ impl BrokerConfig {
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(2000);
+        // Off unless asked for: a start from the view gives up the restore
+        // check until the control plane answers (docs/control-plane.md).
+        let start_without_controlplane = std::env::var("FELIX_START_WITHOUT_CONTROLPLANE")
+            .ok()
+            .map(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(false);
+        let controlplane_startup_wait_ms = std::env::var("FELIX_CONTROLPLANE_STARTUP_WAIT_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_CONTROLPLANE_STARTUP_WAIT_MS);
         let controlplane_token = controlplane_token_from_env()?;
         // A value, not a path — which cannot work, so say why rather than accept
         // it and lock the broker out at its first restart.
@@ -436,6 +451,8 @@ impl BrokerConfig {
             node_refresh_token_file,
             node_token_file,
             controlplane_sync_interval_ms,
+            start_without_controlplane,
+            controlplane_startup_wait_ms,
             controlplane_ca: super::tls::controlplane_ca_from_env(),
             client_tls: super::ClientTlsConfig::from_env()?,
             membership,

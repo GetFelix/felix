@@ -74,6 +74,9 @@ pub(super) const DEFAULT_SHUTDOWN_PREDRAIN_MS: u64 = 0;
 // default (`FELIX_SHARD_MOVES_MAX_CONCURRENT`). Spent before the drain deadline,
 // so the grace period has to cover both; see deployment/graceful-shutdown.md.
 pub(super) const DEFAULT_SHUTDOWN_HANDOFF_TIMEOUT_MS: u64 = 30_000;
+// Long enough to ride out a control plane restarting, short enough that a
+// broker restarted during an outage rejoins its elections soon.
+pub(super) const DEFAULT_CONTROLPLANE_STARTUP_WAIT_MS: u64 = 10_000;
 pub(super) const DEFAULT_PUB_WORKERS_PER_CONN: usize = 4;
 // Enough to keep a device flush busy with company without letting a burst put
 // unbounded concurrent callers into shared broker state. `sync_batch_appends`
