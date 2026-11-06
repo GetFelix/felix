@@ -1434,6 +1434,41 @@ async fn comparing_an_older_generation_over_several_batches_still_repairs() {
     assert_eq!(held(&broker).await, ["a", "b", "c", "d", "e"]);
 }
 
+/// A stale record larger than the leader's at the same offset is still
+/// compared, and dropped. The overlap read is budgeted from the leader's
+/// records, so it used to stop before the stale one and append past it.
+#[tokio::test]
+async fn a_stale_record_larger_than_the_leaders_is_compared_and_dropped() {
+    let (broker, _dir) = broker_with_storage().await;
+    let stale = "s".repeat(2048);
+    let old = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
+    old.apply(
+        SENDER,
+        batch(4, 0, &["a", "b", &stale]),
+        felix_broker::LogKind::Stream,
+    )
+    .await;
+
+    let new = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 6));
+    let answer = new
+        .apply(SENDER, batch(6, 3, &["d"]), felix_broker::LogKind::Stream)
+        .await;
+    assert_eq!(refusal(&answer).expected_offset, 0);
+    let answer = new
+        .apply(
+            SENDER,
+            batch(6, 0, &["a", "b", "c", "d"]),
+            felix_broker::LogKind::Stream,
+        )
+        .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{:?}",
+        answer.kind()
+    );
+    assert_eq!(held(&broker).await, ["a", "b", "c", "d"]);
+}
+
 mod labels {
     use felix_storage::log::Epoch;
     use felix_wire::internal::GenerationStart;
