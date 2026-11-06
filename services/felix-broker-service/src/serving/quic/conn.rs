@@ -200,6 +200,9 @@ fn close_severity(err: &quinn::ConnectionError) -> CloseSeverity {
     use quinn::ConnectionError::*;
     match err {
         ApplicationClosed(_) | LocallyClosed | TimedOut => CloseSeverity::Info,
+        ConnectionClosed(c) if c.error_code == quinn::TransportErrorCode::NO_ERROR => {
+            CloseSeverity::Info
+        }
         _ => CloseSeverity::Warn,
     }
 }
@@ -227,7 +230,16 @@ fn log_connection_closed(connection: &QuicConnection, err: &anyhow::Error) {
 /// A stream failing on a connection that has already closed is a consequence of
 /// the close, not a separate fault.
 fn log_stream_failure(connection: &QuicConnection, what: &str, err: &anyhow::Error) {
-    if connection.close_reason().is_some() {
+    let lost = err.chain().any(|e| {
+        matches!(
+            e.downcast_ref::<quinn::ReadError>(),
+            Some(quinn::ReadError::ConnectionLost(_))
+        ) || matches!(
+            e.downcast_ref::<quinn::WriteError>(),
+            Some(quinn::WriteError::ConnectionLost(_))
+        )
+    });
+    if lost || connection.close_reason().is_some() {
         tracing::debug!(error = %format!("{err:#}"), "{what} after connection close");
     } else {
         tracing::warn!(error = %format!("{err:#}"), "{what}");

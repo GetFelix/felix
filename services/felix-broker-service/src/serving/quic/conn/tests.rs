@@ -263,6 +263,21 @@ fn close_severity_by_variant() {
     assert_eq!(close_severity(&app), CloseSeverity::Info);
     assert_eq!(close_severity(&E::LocallyClosed), CloseSeverity::Info);
     assert_eq!(close_severity(&E::TimedOut), CloseSeverity::Info);
+    let transport = |code| {
+        E::ConnectionClosed(quinn::ConnectionClose {
+            error_code: code,
+            frame_type: None,
+            reason: Default::default(),
+        })
+    };
+    assert_eq!(
+        close_severity(&transport(quinn::TransportErrorCode::NO_ERROR)),
+        CloseSeverity::Info
+    );
+    assert_eq!(
+        close_severity(&transport(quinn::TransportErrorCode::PROTOCOL_VIOLATION)),
+        CloseSeverity::Warn
+    );
     assert_eq!(close_severity(&E::Reset), CloseSeverity::Warn);
     assert_eq!(close_severity(&E::VersionMismatch), CloseSeverity::Warn);
     assert_eq!(close_severity(&E::CidsExhausted), CloseSeverity::Warn);
