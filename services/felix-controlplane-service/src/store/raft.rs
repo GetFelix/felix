@@ -910,7 +910,9 @@ impl ControlPlaneStore for RaftStore {
                     } else {
                         0
                     },
-                    record_previous: level >= PREVIOUS_GENERATION_LEVEL,
+                    // Only a floor can skip generations; other writes keep
+                    // the level they had.
+                    record_previous: at_least > 0 && level >= PREVIOUS_GENERATION_LEVEL,
                 },
             )
             .await?
