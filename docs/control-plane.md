@@ -516,6 +516,9 @@ Otherwise it waits for the control plane, as without the switch. A 401,
 another 4xx, or an answer that does not decode is a control plane that is
 up, so it never counts as down.
 
+Peers learn a broker's address only from the control plane, so a broker
+started this way votes only if it comes back at its registered address.
+
 ```mermaid
 flowchart TD
     A["Startup lookup, at most FELIX_CONTROLPLANE_STARTUP_WAIT_MS"] -- "answered" --> N["Start as usual"]

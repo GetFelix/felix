@@ -1037,7 +1037,7 @@ async fn a_broker_restarted_while_the_control_plane_is_down_does_not_vote() {
         .expect("crash the control plane");
     cluster.kill_node(&restarted).expect("kill a follower");
     cluster
-        .start_node_unready(&restarted)
+        .start_node_unready_in_place(&restarted)
         .expect("start the follower again without waiting for it");
     cluster.kill_node(&before.leader).expect("kill the leader");
 
@@ -1191,7 +1191,7 @@ async fn a_broker_restarted_while_the_control_plane_is_down_votes() {
         .expect("crash the control plane");
     cluster.kill_node(&restarted).expect("kill a follower");
     cluster
-        .start_node_unready(&restarted)
+        .start_node_unready_in_place(&restarted)
         .expect("start the follower again without waiting for it");
     felix_cluster::wait::until(
         Duration::from_secs(30),
