@@ -424,6 +424,61 @@ async fn a_replica_that_hears_its_leader_refuses_a_candidate() {
         .await);
 }
 
+/// **What the stickiness hears is what per-shard suspicion hears**: a
+/// stamped batch stored and a leader's fence taken, but not a candidate's
+/// fence. Otherwise a copy could suspect a leader its voters still hear, or
+/// the other way round.
+#[tokio::test]
+async fn a_replica_notes_hearing_its_leader_for_shard_suspicion() {
+    let (broker, _dir) = broker_with_storage().await;
+    let marks = Arc::new(crate::quorum::QuorumMarks::new());
+    let elections = Arc::new(crate::election::Elections::new(
+        LOCAL,
+        Arc::new(tokio::sync::Notify::new()),
+    ));
+    marks.set_elections(Arc::clone(&elections));
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 6))
+        .with_stickiness(Duration::ZERO)
+        .with_fleet(marks);
+    let key = felix_router::ShardKey {
+        tenant_id: TENANT.into(),
+        namespace: NAMESPACE.into(),
+        stream: STREAM.into(),
+        shard: 0,
+        kind: felix_router::ShardKind::Stream,
+    };
+
+    ok(&handler
+        .fence(SENDER, election_fence(6, voters(6), false))
+        .await);
+    let fenced = elections.last_heard(&key).expect("a leader's fence");
+
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    let answer = handler
+        .apply(
+            SENDER,
+            stamped(6, 0, &["a"], 6),
+            felix_broker::LogKind::Stream,
+        )
+        .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    let stored = elections.last_heard(&key).expect("a batch");
+    assert!(stored > fenced);
+
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    ok(&handler
+        .fence(Some("broker-c"), election_fence(7, voters(7), true))
+        .await);
+    assert_eq!(
+        elections.last_heard(&key),
+        Some(stored),
+        "a candidate's fence"
+    );
+}
+
 /// Stickiness is judged on tokio's clock, so a simulation on virtual time
 /// sees a silent leader's window close.
 #[tokio::test(start_paused = true)]
@@ -942,4 +997,38 @@ async fn a_standing_not_yet_fencing_refuses_a_pre_vote() {
         pre_vote_answer(handler.pre_vote(pre_vote_at(7)).await),
         None
     );
+}
+
+/// **A set from a fence or batch below a ballot taken since is refused**
+/// (#1970): a candidate's ballot can land between the sender's ballot and
+/// its set, and the candidate stood on the set the copy kept then.
+#[tokio::test]
+async fn a_set_from_a_sender_promised_past_is_not_kept() {
+    let (broker, _dir) = broker_with_storage().await;
+    let log = stream_log(&broker).await;
+    knows_set(&broker, 3).await;
+    // The sender's ballot, then a candidate's above it.
+    log.accept_generation(4, SENDER).await.expect("ballot");
+    log.accept_generation(6, Some(LOCAL)).await.expect("ballot");
+    let before = log.replica_set();
+
+    let member = |node: &str| Member {
+        node: node.to_string(),
+        storage: None,
+        learner: false,
+        wiped: false,
+    };
+    let set = ReplicaSet {
+        current: Membership {
+            generation: 4,
+            members: vec![member("broker-a"), member(LOCAL), member("broker-d")],
+        },
+        leaving: before.as_ref().map(|kept| kept.current.clone()),
+        earlier: Vec::new(),
+    };
+    let answer = super::super::election::keep(9, &key(), &log, set, false, (4, SENDER))
+        .await
+        .expect("refused");
+    assert_eq!(refusal(&answer).code, ErrorCode::FencedEpoch);
+    assert_eq!(log.replica_set(), before, "the set is unchanged");
 }

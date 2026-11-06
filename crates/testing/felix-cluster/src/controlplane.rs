@@ -437,6 +437,46 @@ impl ControlPlane {
             .collect())
     }
 
+    /// What the store still lacks before it counts every replica of a shard
+    /// as caught up, or `None` once it does.
+    ///
+    /// Reads the stored report placement reads, and checks its generation and
+    /// caught-up set. It does not apply placement's freshness test.
+    pub async fn missing_replica_report(
+        &self,
+        kind: felix_controlplane_service::model::ShardKind,
+        tenant_id: &str,
+        namespace: &str,
+        name: &str,
+        shard: u32,
+    ) -> Result<Option<String>> {
+        let matches = |key: &felix_controlplane_service::model::ShardKey| {
+            key.kind == kind
+                && key.tenant_id == tenant_id
+                && key.namespace == namespace
+                && key.stream == name
+                && key.shard == shard
+        };
+        let Some(assignment) = self
+            .store
+            .list_shard_assignments()
+            .await
+            .context("list shard assignments")?
+            .into_iter()
+            .find(|assignment| matches(&assignment.key))
+        else {
+            return Ok(Some("no shard assignment".to_string()));
+        };
+        let report = self
+            .replica_report_of(kind, tenant_id, namespace, name, shard)
+            .await?;
+        Ok(replica_report_gap(
+            assignment.generation,
+            &assignment.replicas,
+            report.as_ref(),
+        ))
+    }
+
     /// The node record the store holds for `node_id`.
     pub async fn registered_node(
         &self,
@@ -596,6 +636,34 @@ impl StoppedControlPlane {
         }
         Ok(control_plane)
     }
+}
+
+/// What is missing from `report` before it counts every one of `replicas` as
+/// caught up at `generation`, or `None` when nothing is.
+fn replica_report_gap(
+    generation: u64,
+    replicas: &[String],
+    report: Option<&felix_controlplane_service::model::ReplicaReport>,
+) -> Option<String> {
+    let Some(report) = report else {
+        return Some(format!("no report at generation {generation}"));
+    };
+    if report.generation != generation {
+        return Some(format!(
+            "report is at generation {}, assignment at {generation}",
+            report.generation
+        ));
+    }
+    let missing: Vec<_> = replicas
+        .iter()
+        .filter(|node| !report.caught_up.contains(*node))
+        .collect();
+    (!missing.is_empty()).then(|| {
+        format!(
+            "report at generation {generation} does not count {missing:?} caught up (caught up: {:?})",
+            report.caught_up
+        )
+    })
 }
 
 #[cfg(test)]

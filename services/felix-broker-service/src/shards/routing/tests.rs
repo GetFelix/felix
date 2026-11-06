@@ -696,6 +696,59 @@ mod feed {
         let _ = feed.await;
     }
 
+    /// **A fence finishing as the pass publishes stays published.** The pass
+    /// reads the servable set and then publishes it; a fence that lands in
+    /// between must not be overwritten by the older set.
+    #[tokio::test]
+    async fn a_fence_finishing_during_the_end_of_pass_publish_is_kept() {
+        let (state, _router) = state(&[assignment(0, "broker-a", 1)]);
+        state.lifecycle.lock().await.fence_promotions();
+        let ingress = Arc::clone(&state.ingress);
+        let lifecycle = Arc::clone(&state.lifecycle);
+        let publishes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        // A fence finishing just before the view is stored, if it can get
+        // the lock it finishes under.
+        *ingress.before_publish.lock().unwrap() = Some(Box::new({
+            let lifecycle = Arc::clone(&lifecycle);
+            let publishes = Arc::clone(&publishes);
+            move |ingress: &IngressRouter| {
+                if let Ok(mut owned) = lifecycle.try_lock()
+                    && owned.fenced(&key(0), 1)
+                {
+                    ingress.publish_servable(owned.servable());
+                }
+                publishes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }));
+        let shutdown = CancellationToken::new();
+        let feed = spawn_feed(
+            state,
+            no_catalog(),
+            Duration::from_secs(60),
+            shutdown.clone(),
+        );
+        // One interim publish for the new shard, then the end-of-pass one.
+        until("the first pass to publish", || {
+            publishes.load(std::sync::atomic::Ordering::SeqCst) >= 2
+        })
+        .await;
+        // The fence finishes after the pass, if the pass kept it out.
+        {
+            let mut owned = lifecycle.lock().await;
+            if owned.fenced(&key(0), 1) {
+                ingress.publish_servable(owned.servable());
+            }
+        }
+
+        let after = ingress.dispatch(&key(0));
+        assert!(
+            matches!(after, Dispatch::Local { generation: 1 }),
+            "the pass undid the fence's publish: {after:?}"
+        );
+        shutdown.cancel();
+        let _ = feed.await;
+    }
+
     /// A shard led elsewhere is only forwardable once the catalog supplies an
     /// address. Before that it is known and unreachable, which is the state the
     /// address book exists to leave.

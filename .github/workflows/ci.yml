@@ -5,7 +5,10 @@ on:
     branches: ["main"]
   # No path filter here: the changes job skips the work for docs alone, so the
   # run still reports `CI ok`. The TLA+ specs under docs/formal count as code.
+  # ready_for_review: heavy jobs skip a draft PR (see `changes`), so marking it
+  # ready starts them.
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   # Model-check chosen TLA+ configurations on a branch, including the ones too
   # big for the per-PR budget. Only the formal job runs.
   workflow_dispatch:
@@ -44,10 +47,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      code: ${{ steps.code.outputs.code }}
-      formal: ${{ steps.formal.outputs.code }}
+      # A draft pull request skips the heavy jobs; `docs` stays cheap.
+      code: ${{ github.event.pull_request.draft != true && steps.code.outputs.code || 'false' }}
+      formal: ${{ github.event.pull_request.draft != true && steps.formal.outputs.code || 'false' }}
       docs: ${{ steps.docs.outputs.code }}
-      dotnet: ${{ steps.dotnet.outputs.code }}
+      dotnet: ${{ github.event.pull_request.draft != true && steps.dotnet.outputs.code || 'false' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -389,11 +393,21 @@ jobs:
           # install fails with "API rate limit exceeded" before any code runs.
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # A pull request's workspace tests run in coverage.yml, whose
+      # `Coverage ok` gates the merge; this job runs only what that run
+      # skips (Taskfile.yml, test:residual). Main runs both.
       - name: Test
+        if: github.event_name != 'pull_request'
         env:
           # raft_chaos waits on the same scaled constants as the cluster suites.
           FELIX_TEST_TIMEOUT_SCALE: "3"
         run: task test:workspace
+
+      - name: Test (what coverage does not run)
+        if: github.event_name == 'pull_request'
+        env:
+          FELIX_TEST_TIMEOUT_SCALE: "3"
+        run: task test:residual
 
       # Failed 74 times in 640 under load, and never alone, before cache puts
       # staged on a task of their own.
@@ -1265,6 +1279,10 @@ jobs:
     steps:
       - env:
           RESULTS: ${{ toJSON(needs.*.result) }}
+          DRAFT: ${{ github.event.pull_request.draft }}
         run: |
           echo "$RESULTS"
+          # A draft skips the heavy jobs, so a pass here would sit on the SHA
+          # until the ready run replaces it. Fail instead; a draft cannot merge.
+          if [ "$DRAFT" = true ]; then echo "draft: mark the PR ready to run the jobs"; exit 1; fi
           if grep -qE '"(failure|cancelled)"' <<< "$RESULTS"; then exit 1; fi
