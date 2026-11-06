@@ -1212,7 +1212,7 @@ fn a_directory_behind_the_control_plane_is_a_restore() {
         incarnation: 5,
         storage_id: Some(id.to_hex()),
     };
-    let judged = judge_directory(dir.path(), id, Some(&registered)).expect("judge");
+    let judged = judge_directory(dir.path(), id, Some(&registered), None).expect("judge");
     let Directory::Restored { rotated } = judged else {
         panic!("not a restore: {judged:?}");
     };
@@ -1240,7 +1240,7 @@ fn a_directory_the_control_plane_registered_is_current() {
         storage_id: Some(id.to_hex()),
     };
     assert_eq!(
-        judge_directory(dir.path(), id, Some(&registered)).expect("judge"),
+        judge_directory(dir.path(), id, Some(&registered), None).expect("judge"),
         Directory::Current
     );
     assert_eq!(
@@ -1259,7 +1259,7 @@ fn a_node_registered_under_another_id_is_replaced() {
         storage_id: Some(LOOKUP_STORAGE_ID.to_string()),
     };
     assert_eq!(
-        judge_directory(dir.path(), id, Some(&registered)).expect("judge"),
+        judge_directory(dir.path(), id, Some(&registered), None).expect("judge"),
         Directory::Replaced
     );
     assert_eq!(
@@ -1269,6 +1269,36 @@ fn a_node_registered_under_another_id_is_replaced() {
             after: 5,
         })
     );
+}
+
+/// **Marking the directory replaced goes through the view file the writer
+/// shares**, so the writer cannot record the view after it.
+#[tokio::test]
+async fn a_replacement_judged_through_the_view_file_stops_its_writer() {
+    let dir = tempfile::tempdir().expect("dir");
+    let id = directory(dir.path(), 5);
+    let view = ViewFile::new(dir.path().to_path_buf());
+    let registered = Registered {
+        incarnation: 5,
+        storage_id: Some(LOOKUP_STORAGE_ID.to_string()),
+    };
+    assert_eq!(
+        judge_directory(dir.path(), id, Some(&registered), Some(&view)).expect("judge"),
+        Directory::Replaced
+    );
+    let mut writer = crate::cluster::controlplane_view::Writer::new(view);
+    writer
+        .write(Some(crate::cluster::controlplane_view::View {
+            node_id: "broker-a".to_owned(),
+            storage_id: id.to_hex(),
+            incarnation: 9,
+            fleet: Vec::new(),
+            routes: Vec::new(),
+            nodes: Vec::new(),
+            catalog: Default::default(),
+        }))
+        .await;
+    assert!(felix_storage::controlplane_view::read(dir.path()).is_none());
 }
 
 /// Spawn membership as a start from the view does, with the restore check
@@ -1487,6 +1517,7 @@ async fn a_restore_check_refused_by_a_live_control_plane_warns() {
         ),
         "broker-a",
         &crate::cluster::credential::NodeCredential::new("a-node-token"),
+        None,
         None,
         None,
         &shutdown,

@@ -544,6 +544,35 @@ async fn a_view_this_process_never_wrote_survives_a_deregistration_that_never_le
     assert_eq!(read(dir.path(), ME), Some(view(1)));
 }
 
+/// **A stop does not put back a view the restore check marked replaced
+/// meanwhile.** The deregistration never left, but the directory was found
+/// replaced while it was out, so the old view must stay gone whatever its
+/// incarnation.
+#[tokio::test]
+async fn a_view_marked_replaced_during_the_deregistration_is_not_put_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = ViewFile::new(dir.path().to_path_buf());
+    let mut earlier = Writer::new(file.clone());
+    earlier.write(Some(view(9))).await;
+    let deregister = {
+        let file = file.clone();
+        let root = dir.path().to_path_buf();
+        async move {
+            file.forget_while_recording(|| {
+                felix_storage::run_state::record_replaced(
+                    &root,
+                    felix_storage::StorageId::from_bytes([1; 16]),
+                    1,
+                )
+            })
+            .unwrap();
+            false
+        }
+    };
+    assert!(file.forget_while(None, deregister).await);
+    assert_eq!(read(dir.path(), ME), None);
+}
+
 #[tokio::test]
 async fn a_view_that_cannot_be_removed_is_not_deregistered_over() {
     let dir = tempfile::tempdir().unwrap();

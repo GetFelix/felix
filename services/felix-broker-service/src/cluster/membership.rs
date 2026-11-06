@@ -736,6 +736,7 @@ pub(crate) fn spawn_with(
                     &credential,
                     record_in.as_deref(),
                     storage_id,
+                    view.as_ref(),
                     &shutdown,
                 )
                 .await
@@ -888,6 +889,7 @@ pub(crate) fn judge_directory(
     root: &std::path::Path,
     id: StorageId,
     registered: Option<&Registered>,
+    view: Option<&crate::cluster::controlplane_view::ViewFile>,
 ) -> Result<Directory> {
     let recorded = felix_storage::run_state::read_registration(root)
         .with_context(|| format!("read the registration record under {}", root.display()))?;
@@ -895,9 +897,15 @@ pub(crate) fn judge_directory(
     // control plane's incarnation now, so only a view from a registration
     // after this one starts this directory again.
     let after = registered.map_or(0, |registered| registered.incarnation);
+    // Under the view file's lock, so a stop putting a view back cannot
+    // interleave with it, and the writer records nothing after it.
     let replaced = |under: StorageId| {
-        felix_storage::run_state::record_replaced(root, under, after)
-            .with_context(|| format!("record a replaced storage id under {}", root.display()))
+        let record = || felix_storage::run_state::record_replaced(root, under, after);
+        match view {
+            Some(view) => view.forget_while_recording(record),
+            None => record(),
+        }
+        .with_context(|| format!("record a replaced storage id under {}", root.display()))
     };
     if recorded.behind(registered.map(|registered| registered.incarnation)) {
         let rotated = crate::node::storage::rotate_storage_id_after(root, replaced)?;
@@ -922,6 +930,7 @@ async fn deferred_restore_check(
     credential: &crate::cluster::credential::NodeCredential,
     root: Option<&std::path::Path>,
     storage_id: Option<StorageId>,
+    view: Option<&crate::cluster::controlplane_view::ViewFile>,
     shutdown: &CancellationToken,
 ) -> Option<bool> {
     let mut attempt = 0u64;
@@ -959,10 +968,13 @@ async fn deferred_restore_check(
         return Some(true);
     };
     let root = root.to_path_buf();
-    let judged = tokio::task::spawn_blocking(move || judge_directory(&root, id, answer.as_ref()))
-        .await
-        .map_err(anyhow::Error::from)
-        .and_then(|judged| judged);
+    let view = view.cloned();
+    let judged = tokio::task::spawn_blocking(move || {
+        judge_directory(&root, id, answer.as_ref(), view.as_ref())
+    })
+    .await
+    .map_err(anyhow::Error::from)
+    .and_then(|judged| judged);
     match judged {
         Ok(Directory::Current) => {
             tracing::info!(

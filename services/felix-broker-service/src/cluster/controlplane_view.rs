@@ -320,10 +320,24 @@ impl ViewFile {
         Ok(held)
     }
 
-    /// Put `body` back after [`Self::forget`]. Blocking.
+    /// Put `body` back after [`Self::forget`], unless the directory was
+    /// marked replaced since: the view predates the marker, and only a
+    /// registration after it may write one. Blocking.
     fn restore(&self, body: &[u8]) -> felix_storage::Result<()> {
         let _forgotten = self.forgotten.lock().unwrap_or_else(|err| err.into_inner());
+        if felix_storage::run_state::replaced(&self.root)? {
+            return Ok(());
+        }
         felix_storage::controlplane_view::record(&self.root, body)
+    }
+
+    /// Run `record`, which marks the directory replaced and removes the view,
+    /// under the lock every write and restore takes, and stop the writer
+    /// recording the view after it. Blocking.
+    pub(crate) fn forget_while_recording<R>(&self, record: impl FnOnce() -> R) -> R {
+        let mut forgotten = self.forgotten.lock().unwrap_or_else(|err| err.into_inner());
+        *forgotten = true;
+        record()
     }
 
     /// Remove the file durably and stop the writer recording it, for a broker
