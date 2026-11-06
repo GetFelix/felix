@@ -1560,7 +1560,17 @@ elected leader waits for the lease until the control plane is back (issue
     another candidate's fence, once the leader has opened. That follower
     then refuses every batch. If the leader has no majority left without
     it, no write can be acknowledged at that generation again, so the
-    leader reports the generation refused the same way. A follower whose
+    leader reports the generation refused, carrying the newest ballot its
+    followers named, so the control plane names it past that ballot in one
+    step. It holds the report until that ballot has stayed for 10 s: a
+    candidate standing there may still hold a majority and open, and any
+    rename of the leader would depose it. The leader acknowledges nothing
+    meanwhile, so the wait costs no writes. The wait restarts only when the
+    ballot or the generation changes. If the leader's own copy
+    holds a higher ballot, the report carries that one instead, so one
+    rename gets past both. A refusal at the leader's own generation, which
+    a follower promised to another node, is reported at once naming no
+    ballot (issue #1949). A follower whose
     last batch did not get through does not count toward that majority,
     and only a refusal that names a newer generation counts, because a
     replica's generation never goes back. A
@@ -1574,7 +1584,7 @@ elected leader waits for the lease until the control plane is back (issue
     a follower saying the control plane assigned a newer generation does,
     since an election may leave a ballot behind with no leader. With a
     majority still answering the leader serves; with none, it reports the
-    generation refused at once, and its rounds fail, so its readers end
+    generation refused as above, and its rounds fail, so its readers end
     once no majority has confirmed it for a lease duration. A leader whose open fails
     for any other reason, an I/O error say, reports the generation refused
     too, once until the shard next opens, since the same assignment never
@@ -3212,9 +3222,9 @@ id, nobody matches the report, and the
 shard is `NoCaughtUpReplica`. It resolves if the old leader returns, unless
 it crashed that way too ([A leader's own crash](#a-leaders-own-crash)). If it
 cannot, an operator either gives up the log with `felixctl placement abandon
-<stream> <shard> --yes` (`felix-controlplane admin abandon`; records only the
+<stream> <shard> --yes` (records only the
 old copies held are lost) or restores the shard from a backup point with
-`felix-broker restore-point` (see `deployment/backup-and-restore.md` in the
+`felixctl data restore-point` (see `deployment/backup-and-restore.md` in the
 docs site). Under `OnCommit` an acknowledged record is on disk, so a crash
 keeps the id. A crash of an older release, or one the first start on this
 release finds no torn tail for, is not detected (see
@@ -4296,7 +4306,7 @@ keep, so it takes the offered base. It used to refuse, like a log holding
 records, and the copy then waited for a rebuild slot, or for ever with
 `FELIX_REPLICATION_REBUILD_MAX_CONCURRENT=0`.
 
-`GET /v1/placement/replication` (and `felix-controlplane admin replication`)
+`GET /v1/placement/replication` (and `felixctl placement replication`)
 lists each shard's halted copies with the reason, the generation and the time
 the halt began, and `felix_shard_replicas_halted` counts them.
 `a_halted_follower_is_shown_and_replaced` in the cluster suite leaves a
@@ -5002,7 +5012,13 @@ finalized such a fence could never open, so the broker does not stand.
 A broker whose set file keeps earlier sets does not stand either. Those sets
 are kept only while a fence leaving them never opened, so a majority of one
 may hold an acknowledged write that no later set has. A candidate's fence
-leaves at most one set, so the control plane handles that shard.
+leaves at most one set, so the control plane handles that shard. The
+exception is a log that holds a record of the kept set's own generation: that
+fence opened, and the log holds everything its leader inherited, so the
+candidate stands and fences the kept set alone. A failover reads the same
+record the same way. The set file only drops earlier sets when it is next
+raised, and a control plane move leaves them behind on every follower, so
+without this a moved shard could never elect while the control plane is down.
 
 These checks read the kept set once, and the round's pre-votes take time.
 Meanwhile the copy can take a newer set: another leader's fence below the
@@ -5063,22 +5079,48 @@ Five rules keep an election from getting stuck:
   leader's own ballot moved past the generation it serves. Its own copy then
   stopped counting toward a majority there, and every write waited out its
   quorum timeout while the followers confirmed it (issue #1933).
-- **A leader past its generation by its own ballot reports it.** A leader
-  whose own copy holds a newer ballot of its own cannot acknowledge a write
-  at the generation it serves. A promotion leaves that state for a moment,
-  because it takes the new ballot before the routes name the new
-  generation. A withdrawn standing leaves it for good. So once it has lasted
+- **A leader past its generation by a ballot in its own copy reports it.**
+  A leader cannot acknowledge a write at the generation it serves once its
+  own copy holds a newer ballot naming the leader itself. A promotion
+  leaves that state for a moment, because it takes the new ballot before
+  the routes name the new generation. A withdrawn standing leaves it for good. So once it has lasted
   3 s, with no standing of this broker under way at that ballot, the leader
   reports its generation refused each tick, naming no node, and logs a
   warning the first time. The control plane then names it one generation
-  up, as it does for any refused generation. A ballot from another node is
-  left to the stepping-down rule (rule 5 of the protocol above), since that
-  node may be standing.
+  up, as it does for any refused generation. A ballot from another node
+  means the leader answered that node's fence and stepped down (rule 5 of
+  the protocol above). If that node opens, its route moves the shard on.
+  If it withdraws, the leader's broker still answers pings, so only the
+  per-shard suspicion above would stand again, after
+  `FELIX_SHARD_SUSPECT_AFTER_MS`. So the leader reports its generation refused after 10 s rather
+  than 3 s, which gives the candidate time to open, and the report carries
+  that ballot. The control plane names the same leader one past the ballot,
+  not one up: at the ballot's own generation the leader's fence finds that
+  generation promised away and waits (issue #1872). If the candidate did
+  open but the control plane had not adopted it yet, for example because
+  the control plane was down for longer than those 10 s, the rename's fence
+  deposes it like any newer generation would. That costs a leader change
+  but loses no acknowledged write (issue #1951).
   That rule is for an open leader. A leader still fencing can never open
   if its own copy already holds a newer ballot, whoever it names: the open
   takes the generation's ballot on its own copy, which refuses it. So its
   fence reports the generation refused at once instead of asking the set
-  (issue #1940).
+  (issue #1940). When that ballot names another node, the fence waits the
+  same 10 s before reporting, so a candidate that can still open is not
+  deposed, and the report carries the ballot, so the leader is named past
+  it in one step rather than one generation per report.
+  A follower can hold that ballot instead of the leader. It then refuses
+  every batch from the leader for the rest of the generation, so the shard
+  runs one copy short and has one less failure to spare. If the
+  candidate withdrew, nothing renames the shard, so that copy never
+  rejoins. The leader therefore also reports its generation refused after
+  10 s, carrying the follower's ballot. Placement names the same leader past
+  that ballot and the follower takes batches again (issue #1949). When the
+  followers' newer ballots leave no majority, the leader holds its report
+  for the same 10 s, so a candidate that can still open is not deposed,
+  and then reports the generation refused carrying their ballot. If its
+  own copy holds a higher ballot, the report carries that one, so a single
+  rename gets past both.
 
 Elections need `joint_fence` finalized first, which the control plane allows
 once every serving broker offers `ELECTION`, names start holders and keeps a
@@ -5095,9 +5137,11 @@ the kept set alone never reaches.
 > `a_round_on_routes_that_moved_on_writes_no_ballot`,
 > `a_withdrawn_standing_stands_again`,
 > `a_leader_past_its_generation_by_its_own_ballot_reports_the_refusal`,
-> `a_leader_past_its_generation_by_another_ballot_reports_no_refusal`,
+> `a_leader_past_its_generation_by_another_ballot_reports_the_refusal`,
 > `a_leader_standing_at_its_ballot_reports_no_refusal`,
 > `a_fence_below_its_own_ballot_reports_the_refusal`,
+> `a_leader_a_follower_fenced_for_a_newer_ballot_reports_the_refusal`,
+> `a_leader_a_follower_fenced_at_its_own_generation_reports_the_refusal`,
 > `a_granted_pre_vote_puts_the_ballot_on_disk_then_records_the_standing`,
 > `a_refused_pre_vote_writes_nothing`,
 > `a_set_the_control_plane_does_not_record_is_not_stood_on`,

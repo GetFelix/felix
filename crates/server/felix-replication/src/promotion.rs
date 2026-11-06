@@ -103,6 +103,9 @@ pub enum Outcome {
     /// the control plane names it again above the generation (#1730).
     Refused {
         promised_to: String,
+        /// A newer generation this broker's own copy accepted for another
+        /// node, which placement names it above; 0 when there is none.
+        ballot: u64,
         why: String,
         took: Vec<String>,
     },
@@ -290,10 +293,16 @@ pub(crate) async fn fence_shard_as<R: PeerRequester>(
             // the control plane names this broker again above it (#1940). This
             // generation promised to another node is not this check's case:
             // `keep_own_set` refuses it, naming that node.
+            // A ballot naming another node is carried: a rename only one up
+            // would be refused again, one generation per report (#1951).
             let accepted = log.accepted_generation();
             if set.is_some() && candidacy.is_none() && accepted > route.generation {
+                let own = log
+                    .accepted_leader()
+                    .is_some_and(|leader| *leader == *local_node_id);
                 return Err(Outcome::Refused {
                     promised_to: String::new(),
+                    ballot: if own { 0 } else { accepted },
                     why: format!(
                         "this broker's own copy has accepted generation {accepted}, past {}",
                         route.generation
@@ -319,6 +328,7 @@ pub(crate) async fn fence_shard_as<R: PeerRequester>(
                         // leave a set unfenced, so they stay pending.
                         Err(why @ joint::NoSetBefore::Newer(_)) => {
                             return Err(Outcome::Refused {
+                                ballot: 0,
                                 promised_to: String::new(),
                                 why: why.to_string(),
                                 took: Vec::new(),
@@ -667,6 +677,7 @@ async fn fence_log<R: PeerRequester>(
             }
             Some(Refusal::Final(why)) => {
                 return Err(Outcome::Refused {
+                    ballot: 0,
                     promised_to: String::new(),
                     why,
                     took: took(&answered),
@@ -753,6 +764,7 @@ async fn fence_log<R: PeerRequester>(
         if let Some((_, promised_to)) = promised_away.first().filter(|_| explained) {
             return Err(Outcome::Refused {
                 promised_to: promised_to.clone(),
+                ballot: 0,
                 why,
                 took: took(&answered),
             });
@@ -912,6 +924,7 @@ async fn fence_groups<R: PeerRequester>(
         match refused {
             Some(Refusal::Final(why)) => {
                 return Err(Outcome::Refused {
+                    ballot: 0,
                     promised_to: String::new(),
                     why,
                     took: took(&answered),
@@ -1106,6 +1119,7 @@ fn promised_away_refused(
         why.push_str(refusal);
     }
     Outcome::Refused {
+        ballot: 0,
         promised_to: promised_away
             .first()
             .map(|(_, leader)| leader.clone())
@@ -1330,6 +1344,7 @@ async fn keep_own_set(
         // a retry here never opens; the report moves the shard up (#1914).
         Ok(felix_storage::disk_log::GenerationCheck::Superseded { accepted }) => {
             return Err(Outcome::Refused {
+                ballot: 0,
                 promised_to: String::new(),
                 why: format!(
                     "this broker cannot lead generation {}: its own ballot holds {accepted}",
@@ -1340,6 +1355,7 @@ async fn keep_own_set(
         }
         Ok(felix_storage::disk_log::GenerationCheck::Promised { leader }) => {
             return Err(Outcome::Refused {
+                ballot: 0,
                 why: format!(
                     "this broker cannot lead generation {}: it promised it to {leader}",
                     route.generation
@@ -1365,6 +1381,7 @@ async fn keep_own_set(
     {
         // As a replica's newer set: it never goes back, so report it.
         Ok(Ok(felix_storage::disk_log::SetCheck::Stale { known })) => Err(Outcome::Refused {
+            ballot: 0,
             promised_to: String::new(),
             why: format!("this broker counts the set of generation {known}, newer than this one"),
             took: Vec::new(),
@@ -1372,6 +1389,7 @@ async fn keep_own_set(
         Ok(Ok(_)) => Ok(()),
         Ok(Err(felix_storage::disk_log::GenerationCheck::Promised { leader })) => {
             Err(Outcome::Refused {
+                ballot: 0,
                 why: format!(
                     "this broker cannot lead generation {}: it promised it to {leader}",
                     route.generation
@@ -1381,6 +1399,7 @@ async fn keep_own_set(
             })
         }
         Ok(Err(ballot)) => Err(Outcome::Refused {
+            ballot: 0,
             promised_to: String::new(),
             why: format!(
                 "this broker cannot lead generation {}: its own ballot holds {}",

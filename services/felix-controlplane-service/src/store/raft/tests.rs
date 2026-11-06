@@ -1135,6 +1135,141 @@ async fn halted_copies_wait_for_every_member_and_the_report_does_not() {
     }
 }
 
+/// A member before level 28 would drop a refusal's ballot and take the next
+/// generation where the others take one past the ballot (#1951). So while
+/// one is in the group the ballot is dropped from the report and the write
+/// takes the next generation on every member; once every member has the
+/// level, both are kept.
+#[tokio::test]
+async fn a_refused_ballot_waits_for_every_member() {
+    use crate::model::{ReplicaReport, ShardAssignment, ShardKey, ShardKind, ShardState};
+    use felix_common::membership::RefusedGeneration;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), REFUSED_BALLOT_LEVEL - 1).await;
+    store
+        .create_stream(routed_stream("orders", Default::default()))
+        .await
+        .expect("stream");
+    for (id, port) in [("broker-x", 7101), ("broker-y", 7102)] {
+        store
+            .register_node(crate::store::contract::nodes::node(id, port))
+            .await
+            .expect("register");
+    }
+    let key = ShardKey {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "orders".to_string(),
+        shard: 0,
+        kind: ShardKind::Stream,
+    };
+    let assignment = ShardAssignment {
+        key: key.clone(),
+        leader: "broker-x".to_string(),
+        replicas: vec!["broker-y".to_string()],
+        generation: 0,
+        state: ShardState::Active,
+        successor: None,
+        joining: None,
+        move_started_at_millis: None,
+        move_reason: None,
+        incarnation: 0,
+        fence_storage_ids: Default::default(),
+        member_storage_ids: Default::default(),
+        learners: Default::default(),
+        pending_set: None,
+    };
+    let assigned = store
+        .put_shard_assignment(assignment.clone())
+        .await
+        .expect("assign");
+    let report = |generation: u64, reported_at_millis: u64| ReplicaReport {
+        inherited_storage: Default::default(),
+        given_up: false,
+        counter_offsets: Default::default(),
+        stream_incarnation: None,
+        by_round: false,
+        leader_incarnation: None,
+        key: key.clone(),
+        generation,
+        caught_up: Default::default(),
+        offsets: Default::default(),
+        reported_at_millis,
+        drained: false,
+        leader_offset: None,
+        halted: Default::default(),
+        leader: None,
+        node_incarnations: Default::default(),
+        follower_storage: Default::default(),
+        joint_start_acked: None,
+        refused: Some(RefusedGeneration::above(generation, generation + 3)),
+        holds_start: Default::default(),
+    };
+    let held_ballot = || async {
+        store
+            .list_replica_reports()
+            .await
+            .expect("reports")
+            .into_iter()
+            .find(|held| held.key == key)
+            .and_then(|held| held.refused)
+            .map(|refused| refused.ballot)
+    };
+    let rename = |expected: u64| {
+        let store = Arc::clone(&store);
+        let assignment = assignment.clone();
+        async move {
+            let fence = store.placement_token().await.expect("token");
+            match store
+                .put_shard_assignment_at_least(assignment, Some(expected), fence, expected + 4)
+                .await
+                .expect("rename")
+            {
+                AssignmentWrite::Written(written) => written.generation,
+                other => panic!("{other:?}"),
+            }
+        }
+    };
+
+    assert_eq!(
+        store
+            .record_replica_report(report(assigned.generation, 1), "broker-x")
+            .await
+            .expect("recorded without the ballot"),
+        crate::store::ReportWrite::Stored
+    );
+    assert_eq!(held_ballot().await, Some(0));
+    let one_up = rename(assigned.generation).await;
+    assert_eq!(
+        one_up,
+        assigned.generation + 1,
+        "named one up below its level"
+    );
+
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut reported_at = 2;
+    loop {
+        store
+            .record_replica_report(report(one_up, reported_at), "broker-x")
+            .await
+            .expect("record");
+        reported_at += 1;
+        if held_ballot().await == Some(one_up + 3) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the ballot is still dropped after every member reported the level"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(rename(one_up).await, one_up + 4);
+}
+
 /// A member before the fence identities would drop them from an assignment it
 /// applies and diverge from the others. So until every member has the level
 /// the assignment is written without them; once it does, they are kept.
@@ -2035,6 +2170,7 @@ async fn a_refusal_waits_for_every_member() {
         refused: Some(felix_common::membership::RefusedGeneration {
             generation: assigned.generation,
             promised_to: "broker-z".to_string(),
+            ballot: 0,
         }),
     };
     let held = || async {
