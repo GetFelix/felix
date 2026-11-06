@@ -270,7 +270,7 @@ pub(crate) fn refused_without_majority(
         .max()?;
     let left = set
         .iter()
-        .filter(|follower| follower.halted.is_none() && !follower.learner)
+        .filter(|follower| follower.counts())
         .filter(|follower| !follower.stalled)
         .count();
     (left + 1 < crate::quorum::majority_of(set.len())).then_some(ballot)

@@ -183,6 +183,7 @@ fn refused(code: ErrorCode, expected_offset: u64) -> InternalMessage {
         code,
         expected_offset,
         detail: "no".to_string(),
+        reason: None,
     })
 }
 

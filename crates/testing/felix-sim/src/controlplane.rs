@@ -823,6 +823,40 @@ impl ControlPlaneLink for SimLink {
         )
         .await
     }
+
+    async fn confirmed_assignment(
+        &self,
+        _bearer: Option<&str>,
+        key: &felix_router::ShardKey,
+        timeout: Duration,
+    ) -> Result<LinkResponse> {
+        let query: Vec<String> = felix_replication::controlplane_link::confirmed_query(key)
+            .iter()
+            .map(|(name, value)| format!("{name}={}", query_value(value)))
+            .collect();
+        self.call(
+            Method::GET,
+            &format!("/v1/shard-assignments/confirmed?{}", query.join("&")),
+            None,
+            Some(timeout),
+        )
+        .await
+    }
+
+    async fn confirmed_assignments(
+        &self,
+        _bearer: Option<&str>,
+        keys: &[felix_router::ShardKey],
+        timeout: Duration,
+    ) -> Result<LinkResponse> {
+        self.call(
+            Method::POST,
+            "/v1/shard-assignments/confirmed",
+            Some(felix_replication::controlplane_link::confirmed_body(keys)),
+            Some(timeout),
+        )
+        .await
+    }
 }
 
 /// A cursor percent-encoded as reqwest's `.query()` would, so the router

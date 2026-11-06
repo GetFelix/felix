@@ -1537,6 +1537,65 @@ async fn a_copy_with_no_promise_refuses_a_lagging_views_leader_a_rebuild() {
     assert!(log.accepted_leader().is_none());
 }
 
+/// A refusal from a broker that predates [`RefusalReason`]: its detail alone.
+fn old_peer(detail: String) -> ReplicateError {
+    ReplicateError {
+        correlation_id: 0,
+        code: ErrorCode::FencedEpoch,
+        expected_offset: 0,
+        detail,
+        reason: None,
+    }
+}
+
+/// **A leader reads a refusal's reason from its fields when it has them**,
+/// not from the detail, whose wording is for people.
+#[test]
+fn a_refusal_with_a_reason_is_read_from_its_fields() {
+    let with = |reason: RefusalReason| ReplicateError {
+        detail: "reworded".to_string(),
+        reason: Some(reason),
+        ..old_peer(String::new())
+    };
+    let promised = with(RefusalReason::PromisedTo {
+        generation: 4,
+        leader: "broker-d".to_string(),
+    });
+    assert_eq!(promised_to(&promised, 4), Some("broker-d"));
+    assert_eq!(promised_to(&promised, 5), None, "another generation");
+    assert!(crate::replica::refuses_leader(&promised, 4));
+    assert_eq!(superseded_by(&promised, 4), None);
+
+    let accepted = with(RefusalReason::Accepted {
+        accepted: 6,
+        sender: 4,
+    });
+    assert_eq!(superseded_by(&accepted, 4), Some(6));
+    assert_eq!(superseded_by(&accepted, 5), None, "another sender");
+    assert_eq!(promised_to(&accepted, 4), None);
+    assert!(!crate::replica::refuses_leader(&accepted, 4));
+
+    let view = with(RefusalReason::View { have: 6, sender: 4 });
+    assert_eq!(superseded_by(&view, 4), Some(6));
+
+    let assigned = with(RefusalReason::Assigned {
+        assigned: 6,
+        sender: 4,
+    });
+    assert!(crate::replica::assigned_newer(&assigned, 4));
+    assert!(
+        !crate::replica::assigned_newer(&assigned, 5),
+        "another sender"
+    );
+    assert!(!crate::replica::assigned_newer(&accepted, 4));
+
+    let not_a_replica = ReplicateError {
+        code: ErrorCode::Unauthorized,
+        ..with(RefusalReason::NotAReplica)
+    };
+    assert!(crate::replica::refuses_leader(&not_a_replica, 4));
+}
+
 /// **A leader reads whom a refused generation was promised to.** It tells a
 /// ballot cast for another node at its own generation from a newer leader,
 /// and only the first says the control plane recorded an election it did
@@ -1545,10 +1604,20 @@ async fn a_copy_with_no_promise_refuses_a_lagging_views_leader_a_rebuild() {
 fn a_promise_refusal_names_the_node_it_was_promised_to() {
     let promised = promised_detail(4, "broker-d");
 
-    assert_eq!(promised_to(&promised, 4), Some("broker-d"));
-    assert_eq!(promised_to(&promised, 5), None, "another generation");
     assert_eq!(
-        promised_to("this broker accepted generation 6, the sender is at 4", 4),
+        promised_to(&old_peer(promised.clone()), 4),
+        Some("broker-d")
+    );
+    assert_eq!(
+        promised_to(&old_peer(promised.clone()), 5),
+        None,
+        "another generation"
+    );
+    assert_eq!(
+        promised_to(
+            &old_peer("this broker accepted generation 6, the sender is at 4".to_string()),
+            4
+        ),
         None,
         "a newer generation is not a promise"
     );
@@ -1559,15 +1628,21 @@ fn a_promise_refusal_names_the_node_it_was_promised_to() {
 /// against another sender's, is not one.
 #[test]
 fn a_superseded_refusal_names_the_newer_ballot() {
-    assert_eq!(superseded_by(&superseded_detail(6, 4), 4), Some(6));
     assert_eq!(
-        superseded_by(&superseded_detail(6, 4), 5),
+        superseded_by(&old_peer(superseded_detail(6, 4)), 4),
+        Some(6)
+    );
+    assert_eq!(
+        superseded_by(&old_peer(superseded_detail(6, 4)), 5),
         None,
         "another sender"
     );
-    assert_eq!(superseded_by(&promised_detail(4, "broker-d"), 4), None);
     assert_eq!(
-        superseded_by(&superseded_detail(4, 4), 4),
+        superseded_by(&old_peer(promised_detail(4, "broker-d")), 4),
+        None
+    );
+    assert_eq!(
+        superseded_by(&old_peer(superseded_detail(4, 4)), 4),
         None,
         "not newer"
     );
@@ -1578,20 +1653,34 @@ fn a_superseded_refusal_names_the_newer_ballot() {
 /// ballot is checked, and that refusal must not read as an unknown one.
 #[test]
 fn a_newer_routing_view_names_the_newer_generation() {
-    assert_eq!(superseded_by(&view_detail(6, 4), 4), Some(6));
-    assert_eq!(superseded_by(&view_detail(6, 4), 5), None, "another sender");
-    assert_eq!(superseded_by(&view_detail(4, 4), 4), None, "not newer");
+    assert_eq!(superseded_by(&old_peer(view_detail(6, 4)), 4), Some(6));
+    assert_eq!(
+        superseded_by(&old_peer(view_detail(6, 4)), 5),
+        None,
+        "another sender"
+    );
+    assert_eq!(
+        superseded_by(&old_peer(view_detail(4, 4)), 4),
+        None,
+        "not newer"
+    );
 }
 
 /// **Only a newer assignment reads as one.** A ballot or view names no leader.
 #[test]
 fn a_newer_assignment_is_read_from_its_refusal() {
     use crate::replica::{assigned_detail, assigned_newer};
-    assert!(assigned_newer(&assigned_detail(6, 4), 4));
-    assert!(!assigned_newer(&assigned_detail(6, 4), 5), "another sender");
-    assert!(!assigned_newer(&assigned_detail(4, 4), 4), "not newer");
-    assert!(!assigned_newer(&superseded_detail(6, 4), 4));
-    assert!(!assigned_newer(&view_detail(6, 4), 4));
+    assert!(assigned_newer(&old_peer(assigned_detail(6, 4)), 4));
+    assert!(
+        !assigned_newer(&old_peer(assigned_detail(6, 4)), 5),
+        "another sender"
+    );
+    assert!(
+        !assigned_newer(&old_peer(assigned_detail(4, 4)), 4),
+        "not newer"
+    );
+    assert!(!assigned_newer(&old_peer(superseded_detail(6, 4)), 4));
+    assert!(!assigned_newer(&old_peer(view_detail(6, 4)), 4));
 }
 
 /// A control plane that names broker-a at generation 1 for every shard, but

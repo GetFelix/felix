@@ -394,7 +394,9 @@ process.
 
 ### The control plane
 
-Brokers reach the control plane only through the `ControlPlaneLink` trait.
+Brokers reach the control plane only through the `ControlPlaneLink` trait,
+confirmed assignment reads included, so a learner is backed in the simulator
+as in a broker.
 The simulator's link builds the same request a broker would send over HTTP and
 hands it to the control plane's real router in the same process, with an
 in-memory store. The control plane's background loops (placement and the sweep
