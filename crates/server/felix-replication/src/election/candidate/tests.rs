@@ -1677,3 +1677,23 @@ async fn a_set_kept_in_the_place_delay_stops_the_standing() {
 async fn a_set_kept_in_the_second_pre_vote_stops_the_standing() {
     set_changes_during_the_round(ChangesIn::SecondPreVote, false).await;
 }
+
+/// **The walk starts at a per-broker offset**: two brokers do not begin on
+/// the same shard, and a full walk still visits every shard once.
+#[test]
+fn the_walk_starts_at_a_different_shard_on_each_broker() {
+    let table: Vec<u32> = (0..200).collect();
+    let walk = |node: &str| {
+        let mut order = table.clone();
+        rotate_by_node(&mut order, node);
+        order
+    };
+    let (a, b) = (walk("broker-a"), walk("broker-b"));
+    assert_ne!(a[0], b[0], "both brokers start on the same shard");
+    assert_eq!(a, walk("broker-a"), "the offset is not stable");
+    for order in [a, b] {
+        let mut visited = order.clone();
+        visited.sort();
+        assert_eq!(visited, table, "a shard was skipped or visited twice");
+    }
+}

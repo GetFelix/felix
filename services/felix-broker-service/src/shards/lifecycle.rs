@@ -2323,6 +2323,8 @@ pub(crate) async fn reconcile_reporting(
     let mut actions = Vec::new();
     {
         let mut owned = lifecycle.lock().await;
+        // Every open runs this pass, so key order only decides which come up
+        // first; after a restart, streams whose keys sort last come up last.
         for (key, assignment) in in_key_order(assignments) {
             let renewal = renewals.get(key).copied().unwrap_or(0);
             actions.push(owned.observe_renewed(key, Some(assignment), renewal));
