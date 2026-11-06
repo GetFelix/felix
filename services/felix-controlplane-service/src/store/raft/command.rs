@@ -637,6 +637,11 @@ pub enum MetaResponse {
     Assignment {
         assignment: ShardAssignment,
     },
+    /// Each requested shard's assignment, or none, in order, for
+    /// `LeaderRequest::ShardAssignments`. Never the answer to a command.
+    Assignments {
+        assignments: Vec<Option<ShardAssignment>>,
+    },
     /// The leader's shard-assignment feed `next_seq`, for
     /// `LeaderRequest::ShardAssignmentHead`. Never the answer to a command.
     AssignmentHead {

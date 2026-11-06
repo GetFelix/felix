@@ -288,7 +288,14 @@ impl SimBroker {
             &auth,
             storage_id,
             unclean.clone(),
-            None,
+            // Through the same link as every other control-plane call, so a
+            // learner is backed here as in a broker.
+            link.clone().map(|link| {
+                Arc::new(crate::shards::ControlPlaneRoutes::new(
+                    link,
+                    credential.clone(),
+                )) as Arc<dyn replication::confirmed::ConfirmedRoutes>
+            }),
         );
         let handler = Arc::new(handler);
         let (registered, registered_watch) = tokio::sync::watch::channel(None);
