@@ -17,7 +17,7 @@ pub fn up_to(max: u64) -> u64 {
     }
 }
 
-fn draw() -> u64 {
+pub(crate) fn draw() -> u64 {
     #[cfg(any(debug_assertions, test, feature = "sim"))]
     if let Some(drawn) = sim::next() {
         return drawn;
@@ -40,6 +40,11 @@ pub mod sim {
     /// one thread, so parallel runs on other threads keep their own sequences.
     pub fn seed(seed: u64) {
         STATE.with(|state| state.set(Some(seed)));
+    }
+
+    /// Whether this thread draws from a seeded generator.
+    pub(crate) fn is_seeded() -> bool {
+        STATE.with(|state| state.get().is_some())
     }
 
     /// The next draw of this thread's generator, if it has been seeded.

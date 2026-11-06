@@ -1227,6 +1227,7 @@ dependencies = [
 name = "felix-common"
 version = "0.7.0-preview.3"
 dependencies = [
+ "ahash",
  "arc-swap",
  "libc",
  "metrics",

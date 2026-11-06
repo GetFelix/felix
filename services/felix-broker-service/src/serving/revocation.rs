@@ -10,7 +10,7 @@
 //! token, or an open stream would outlive the lease (see "Lease tokens").
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, UNIX_EPOCH};
 
 use parking_lot::RwLock;
 use tokio::sync::watch;
@@ -183,7 +183,7 @@ fn until(at: i64) -> Duration {
 }
 
 fn since_epoch() -> Duration {
-    SystemTime::now()
+    felix_common::clock::system_time()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
 }

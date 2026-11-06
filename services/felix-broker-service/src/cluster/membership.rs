@@ -1309,13 +1309,7 @@ fn jittered(delay: Duration) -> Duration {
     if spread <= 0.0 {
         return delay;
     }
-    // Cheap and adequate: this only needs to decorrelate brokers, not resist
-    // prediction, so it avoids pulling in an RNG on the shutdown path.
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos())
-        .unwrap_or(0);
-    let fraction = f64::from(nanos) / f64::from(u32::MAX);
+    let fraction = felix_common::jitter::up_to(u64::from(u32::MAX)) as f64 / f64::from(u32::MAX);
     delay + Duration::from_secs_f64(spread * fraction)
 }
 

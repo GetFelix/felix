@@ -78,6 +78,15 @@ fn source_wall() -> Duration {
     raw_wall()
 }
 
+/// The wall clock as a `SystemTime`, for expiry stamps and deadlines.
+///
+/// Under a simulator this is virtual time counted from [`sim::EPOCH`], so
+/// every run of a seed stamps the same dates. It carries no clock fault, so
+/// outside a simulator it is exactly `SystemTime::now()`.
+pub fn system_time() -> std::time::SystemTime {
+    std::time::UNIX_EPOCH + source_wall()
+}
+
 fn raw_wall() -> Duration {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

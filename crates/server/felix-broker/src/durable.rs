@@ -1116,7 +1116,7 @@ fn records(
 /// The time an append made now stores: microseconds since the Unix epoch on
 /// this broker's clock.
 pub fn append_time_now() -> u64 {
-    std::time::SystemTime::now()
+    felix_common::clock::system_time()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_micros() as u64)
         .unwrap_or(0)

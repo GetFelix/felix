@@ -434,7 +434,7 @@ impl PeerTransportConfig {
             .reconnect_base
             .saturating_mul(1u32 << attempt.min(16))
             .min(self.reconnect_max);
-        let jitter = fastrand_fraction();
+        let jitter = jitter_fraction();
         // Full jitter: uniform over [0, exponential]. Decorrelates redials even
         // when every broker starts its backoff in the same millisecond.
         exponential.mul_f64(jitter)
@@ -492,16 +492,6 @@ impl PeerTransportConfig {
 }
 
 /// A uniform fraction in [0, 1), without pulling in an RNG dependency.
-fn fastrand_fraction() -> f64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.subsec_nanos() as u64)
-        .unwrap_or(0);
-    // Mix so successive calls in the same microsecond do not correlate.
-    let mixed = nanos
-        .wrapping_mul(0x9e37_79b9_7f4a_7c15)
-        .rotate_left(31)
-        .wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    (mixed >> 11) as f64 / (1u64 << 53) as f64
+fn jitter_fraction() -> f64 {
+    (felix_common::jitter::up_to(u64::MAX) >> 11) as f64 / (1u64 << 53) as f64
 }
