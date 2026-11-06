@@ -299,15 +299,14 @@ fn server_tools_get_their_arguments_unchanged_and_their_exit_status_back() {
 
     let output = run(
         &[
-            "data",
-            "inspect",
             "--broker-bin",
             stub_arg,
-            "records",
-            "/data",
-            "--offset",
-            "5",
+            "data",
+            "inspect",
+            "segments",
+            "--json",
             "--help",
+            "/data",
         ],
         None,
         "0",
@@ -320,7 +319,7 @@ fn server_tools_get_their_arguments_unchanged_and_their_exit_status_back() {
     assert_eq!(stdout(&output), "from-stub\n");
     assert_eq!(
         std::fs::read_to_string(&seen).unwrap(),
-        "inspect\nrecords\n/data\n--offset\n5\n--help\n"
+        "inspect\nsegments\n--json\n--help\n/data\n"
     );
 
     let output = run(

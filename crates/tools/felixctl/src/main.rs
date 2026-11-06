@@ -95,8 +95,10 @@ async fn run(cli: Cli, out: &Output) -> anyhow::Result<()> {
             );
         }
         // Run on the host holding the data, so no context is read.
-        Command::Data(command) => return delegate::data(command),
-        Command::Controlplane(command) => return delegate::controlplane(command),
+        Command::Data(command) => return delegate::data(command, cli.broker_bin.clone()),
+        Command::Controlplane(command) => {
+            return delegate::controlplane(command, cli.controlplane_bin.clone());
+        }
         _ => {}
     }
     let path = context::config_path(cli.connection.config.as_deref(), &env)?;

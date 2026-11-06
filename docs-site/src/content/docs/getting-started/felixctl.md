@@ -690,13 +690,14 @@ database, which only the server programs know how to do. `felixctl` runs them
 for you so there is one command line to learn: `data inspect` and `data
 restore-point` run `felix-broker inspect` and `felix-broker restore-point`, and
 `controlplane migrate` runs `felix-controlplane migrate`. Everything after the
-subcommand name is passed through unchanged, the program's output is yours, and
+subcommand name is passed through unchanged (`--help` and `--json` included, so
+`felixctl data inspect --help` shows the broker's usage), the program's output is yours, and
 `felixctl` exits with its status.
 
 They run on the machine that holds the data, so `felix-broker` or
 `felix-controlplane` has to be installed there. `felixctl` looks for the
-program at `--broker-bin` or `--controlplane-bin` (before the other
-arguments), then `FELIX_BROKER_BIN` or `FELIX_CONTROLPLANE_BIN`, then on
+program at `--broker-bin` or `--controlplane-bin` (before the command,
+as in `felixctl --broker-bin ./felix-broker data inspect ...`), then `FELIX_BROKER_BIN` or `FELIX_CONTROLPLANE_BIN`, then on
 `PATH`. An image that does not carry `felixctl` can run the program directly:
 `felix-broker inspect segments /var/lib/felix/data` does the same thing. They
 read no context and need no token.

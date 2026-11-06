@@ -280,47 +280,41 @@ fn backup_point_takes_a_name_brokers_and_a_port() {
 #[test]
 fn the_server_tools_take_everything_after_their_name_verbatim() {
     let cli = parse(&[
-        "data",
-        "inspect",
         "--broker-bin",
         "/opt/felix-broker",
+        "data",
+        "inspect",
         "records",
-        "/data",
-        "t/ns/orders/3",
-        "--offset",
-        "5",
         "--json",
+        "--context",
+        "x",
+        "-h",
+        "--help",
     ])
     .expect("parse");
-    let Some(Command::Data(DataCommand::Inspect(tool))) = cli.command else {
-        panic!("not data inspect");
+    assert_eq!(cli.broker_bin, Some(PathBuf::from("/opt/felix-broker")));
+    let Some(Command::Data(DataCommand::Run(words))) = cli.command else {
+        panic!("not data");
     };
-    assert_eq!(tool.broker_bin, Some(PathBuf::from("/opt/felix-broker")));
     assert_eq!(
-        tool.args,
+        words,
         [
+            "inspect",
             "records",
-            "/data",
-            "t/ns/orders/3",
-            "--offset",
-            "5",
-            "--json"
+            "--json",
+            "--context",
+            "x",
+            "-h",
+            "--help"
         ]
     );
+    assert!(!cli.json, "--json after the subcommand is the broker's");
 
-    let cli =
-        parse(&["controlplane", "migrate", "import", "s.json", "--overwrite"]).expect("parse");
-    let Some(Command::Controlplane(ControlplaneCommand::Migrate(tool))) = cli.command else {
-        panic!("not controlplane migrate");
+    let cli = parse(&["controlplane", "migrate", "import", "s.json", "--json"]).expect("parse");
+    let Some(Command::Controlplane(ControlplaneCommand::Run(words))) = cli.command else {
+        panic!("not controlplane");
     };
-    assert_eq!(tool.controlplane_bin, None);
-    assert_eq!(tool.args, ["import", "s.json", "--overwrite"]);
-
-    let cli = parse(&["data", "restore-point", "--point", "p.json"]).expect("parse");
-    let Some(Command::Data(DataCommand::RestorePoint(tool))) = cli.command else {
-        panic!("not data restore-point");
-    };
-    assert_eq!(tool.args, ["--point", "p.json"]);
+    assert_eq!(words, ["migrate", "import", "s.json", "--json"]);
 }
 
 #[test]

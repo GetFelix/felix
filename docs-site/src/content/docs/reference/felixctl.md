@@ -1879,7 +1879,9 @@ felixctl inspect subs --node broker-a --cursor eyJ0ZW5hbnRfaWQiOi4uLn0
 
 ## `felixctl data`
 
-Work on a broker's data directory with the tools in the felix-broker binary. These run on the host that holds the directory, with felix-broker installed there: felixctl finds it with --broker-bin, then $FELIX_BROKER_BIN, then PATH, passes the arguments through unchanged and ends with its exit status. `inspect` only reads; `restore-point` rewrites the logs and needs the broker stopped.
+Work on a broker's data directory with the tools in the felix-broker binary. These run on the host that holds the directory, with felix-broker installed there: felixctl finds it with --broker-bin (before `data`), then $FELIX_BROKER_BIN, then PATH, passes every argument after the subcommand through unchanged, --help included, and ends with its exit status.
+
+`data inspect segments\|records` reads a data directory, read-only: what startup would decide about every shard's segments, and the records around an offset. `data restore-point` cuts a stopped broker's logs back to a backup point written by `felixctl backup-point`. For their own usage run `felixctl data inspect --help` or `felixctl data restore-point --help`.
 
 ```text
 felixctl data [OPTIONS] <COMMAND>
@@ -1893,81 +1895,13 @@ felixctl data inspect records /var/lib/felix/data acme/default/orders/3 --offset
 felixctl data restore-point --point nightly.backup-point.json --node broker-1
 ```
 
-### `felixctl data inspect`
-
-Run `felix-broker inspect`: `segments` reports, read-only, what startup would decide about every shard's segments, and `records` decodes the records around one offset. Arguments after `inspect` go to felix-broker as they are; run `felixctl data inspect --broker-bin PATH help` or `felix-broker inspect` for its own usage.
-
-```text
-felixctl data inspect [OPTIONS] [ARGS]...
-```
-
-| Argument | Required | Description |
-| --- | --- | --- |
-| `ARGS` | no | Arguments for felix-broker, passed through unchanged |
-
-| Option | Value | Default | Description |
-| --- | --- | --- | --- |
-| `--broker-bin` | `<PATH>` | - | The felix-broker binary [env: FELIX_BROKER_BIN] [default: felix-broker on PATH]. Only recognised before the other arguments |
-
-Examples:
-
-```bash
-felixctl data inspect segments /var/lib/felix/data
-felixctl data inspect records /var/lib/felix/data acme/default/orders/3 --damage
-```
-
-### `felixctl data restore-point`
-
-Run `felix-broker restore-point`: cut a stopped broker's shard logs back to a backup point written by `felixctl backup-point`. Arguments after `restore-point` go to felix-broker as they are.
-
-```text
-felixctl data restore-point [OPTIONS] [ARGS]...
-```
-
-| Argument | Required | Description |
-| --- | --- | --- |
-| `ARGS` | no | Arguments for felix-broker, passed through unchanged |
-
-| Option | Value | Default | Description |
-| --- | --- | --- | --- |
-| `--broker-bin` | `<PATH>` | - | The felix-broker binary [env: FELIX_BROKER_BIN] [default: felix-broker on PATH]. Only recognised before the other arguments |
-
-Examples:
-
-```bash
-felixctl data restore-point --point nightly.backup-point.json --node broker-1
-```
-
 ## `felixctl controlplane`
 
-Run the maintenance tools in the felix-controlplane binary. They read or write the control plane's own database, so they run on a host that can reach it, with felix-controlplane installed there: felixctl finds it with --controlplane-bin, then $FELIX_CONTROLPLANE_BIN, then PATH, passes the arguments through unchanged and ends with its exit status.
+Run the maintenance tools in the felix-controlplane binary. They read or write the control plane's own database, so they run on a host that can reach it, with felix-controlplane installed there: felixctl finds it with --controlplane-bin (before `controlplane`), then $FELIX_CONTROLPLANE_BIN, then PATH, passes every argument after `migrate` through unchanged, --help included, and ends with its exit status. `migrate export-postgres` writes the metadata to a file; `migrate import` loads a file into a Raft group.
 
 ```text
 felixctl controlplane [OPTIONS] <COMMAND>
 ```
-
-Examples:
-
-```bash
-felixctl controlplane migrate export-postgres state.json
-felixctl controlplane migrate import state.json http://cp-0:8444
-```
-
-### `felixctl controlplane migrate`
-
-Run `felix-controlplane migrate`: export the metadata from Postgres to a file, and import a file into a Raft group. Arguments after `migrate` go to felix-controlplane as they are.
-
-```text
-felixctl controlplane migrate [OPTIONS] [ARGS]...
-```
-
-| Argument | Required | Description |
-| --- | --- | --- |
-| `ARGS` | no | Arguments for felix-controlplane, passed through unchanged |
-
-| Option | Value | Default | Description |
-| --- | --- | --- | --- |
-| `--controlplane-bin` | `<PATH>` | - | The felix-controlplane binary [env: FELIX_CONTROLPLANE_BIN] [default: felix-controlplane on PATH]. Only recognised before the other arguments |
 
 Examples:
 

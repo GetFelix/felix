@@ -11,7 +11,7 @@ use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::process::Command;
 
-use crate::cli::{BrokerToolArgs, ControlplaneCommand, ControlplaneToolArgs, DataCommand};
+use crate::cli::{ControlplaneCommand, DataCommand};
 use crate::error::{Exit, fail};
 
 const BROKER: Tool = Tool {
@@ -32,21 +32,19 @@ struct Tool {
     env: &'static str,
 }
 
-pub(crate) fn data(command: &DataCommand) -> anyhow::Result<()> {
-    let (subcommand, tool) = match command {
-        DataCommand::Inspect(tool) => ("inspect", tool),
-        DataCommand::RestorePoint(tool) => ("restore-point", tool),
-    };
-    let BrokerToolArgs { broker_bin, args } = tool;
-    run(&BROKER, broker_bin.clone(), subcommand, args)
+/// `data <inspect|restore-point> ARGS...`.
+pub(crate) fn data(command: &DataCommand, broker_bin: Option<PathBuf>) -> anyhow::Result<()> {
+    let DataCommand::Run(words) = command;
+    run(&BROKER, broker_bin, &["inspect", "restore-point"], words)
 }
 
-pub(crate) fn controlplane(command: &ControlplaneCommand) -> anyhow::Result<()> {
-    let ControlplaneCommand::Migrate(ControlplaneToolArgs {
-        controlplane_bin,
-        args,
-    }) = command;
-    run(&CONTROLPLANE, controlplane_bin.clone(), "migrate", args)
+/// `controlplane migrate ARGS...`.
+pub(crate) fn controlplane(
+    command: &ControlplaneCommand,
+    controlplane_bin: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let ControlplaneCommand::Run(words) = command;
+    run(&CONTROLPLANE, controlplane_bin, &["migrate"], words)
 }
 
 /// Run `tool subcommand args...` with this process's stdio, and exit with its
@@ -54,13 +52,22 @@ pub(crate) fn controlplane(command: &ControlplaneCommand) -> anyhow::Result<()> 
 fn run(
     tool: &Tool,
     flag: Option<PathBuf>,
-    subcommand: &str,
-    args: &[String],
+    known: &[&str],
+    words: &[OsString],
 ) -> anyhow::Result<()> {
+    let name = words[0].to_string_lossy();
+    if !known.contains(&name.as_ref()) {
+        return Err(fail(
+            Exit::Usage,
+            format!(
+                "unknown subcommand {name:?}; expected one of: {}",
+                known.join(", ")
+            ),
+        ));
+    }
     let program = program(tool, flag, std::env::var_os(tool.env));
     let status = Command::new(&program)
-        .arg(subcommand)
-        .args(args)
+        .args(words)
         .status()
         .map_err(|err| spawn_error(tool, &program, &err))?;
     if status.success() {

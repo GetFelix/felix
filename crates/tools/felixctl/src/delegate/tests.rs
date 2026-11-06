@@ -30,8 +30,8 @@ fn a_missing_binary_says_how_to_point_at_it() {
     let err = run(
         &CONTROLPLANE,
         Some(PathBuf::from("/nonexistent/felix-controlplane")),
-        "migrate",
-        &[],
+        &["migrate"],
+        &[OsString::from("migrate")],
     )
     .expect_err("nothing to run");
     assert_eq!(crate::error::exit_for(&err), Exit::Usage);
@@ -46,4 +46,10 @@ fn a_signal_is_reported_the_way_a_shell_does() {
     use std::os::unix::process::ExitStatusExt;
     assert_eq!(exit_code(std::process::ExitStatus::from_raw(9)), 128 + 9);
     assert_eq!(exit_code(std::process::ExitStatus::from_raw(3 << 8)), 3);
+}
+
+#[test]
+fn an_unknown_subcommand_is_a_usage_error() {
+    let err = run(&BROKER, None, &["inspect"], &[OsString::from("bogus")]).expect_err("refused");
+    assert_eq!(crate::error::exit_for(&err), Exit::Usage);
 }

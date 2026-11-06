@@ -3,6 +3,7 @@
 //! Nothing here acts. `main` hands the parsed [`Cli`] to the module that owns
 //! each command.
 
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -52,6 +53,15 @@ Run `felixctl help <command>` or `felixctl <command> --help` for details.
 pub(crate) struct Cli {
     #[command(flatten)]
     pub(crate) connection: ConnectionFlags,
+    /// The felix-broker binary `data` runs [env: FELIX_BROKER_BIN] [default:
+    /// felix-broker on PATH]. Goes before the command
+    #[arg(long, value_name = "PATH", help_heading = "Tools")]
+    pub(crate) broker_bin: Option<PathBuf>,
+    /// The felix-controlplane binary `controlplane` runs [env:
+    /// FELIX_CONTROLPLANE_BIN] [default: felix-controlplane on PATH]. Goes
+    /// before the command
+    #[arg(long, value_name = "PATH", help_heading = "Tools")]
+    pub(crate) controlplane_bin: Option<PathBuf>,
     /// Print JSON instead of human-readable output. Errors go to stderr as
     /// JSON too.
     #[arg(long, global = true, help_heading = "Output")]
@@ -384,10 +394,16 @@ pub(crate) enum Command {
         name = "data",
         long_about = "Work on a broker's data directory with the tools in the felix-broker \
                       binary. These run on the host that holds the directory, with \
-                      felix-broker installed there: felixctl finds it with --broker-bin, \
-                      then $FELIX_BROKER_BIN, then PATH, passes the arguments through \
-                      unchanged and ends with its exit status. `inspect` only reads; \
-                      `restore-point` rewrites the logs and needs the broker stopped.",
+                      felix-broker installed there: felixctl finds it with --broker-bin (before \
+                      `data`), then $FELIX_BROKER_BIN, then PATH, passes every argument after \
+                      the subcommand through unchanged, --help included, and ends with its \
+                      exit status.\n\n\
+                      `data inspect segments|records` reads a data directory, read-only: \
+                      what startup would decide about every shard's segments, and the \
+                      records around an offset. `data restore-point` cuts a stopped \
+                      broker's logs back to a backup point written by `felixctl \
+                      backup-point`. For their own usage run `felixctl data inspect \
+                      --help` or `felixctl data restore-point --help`.",
         after_long_help = "Examples:
   felixctl data inspect segments /var/lib/felix/data
   felixctl data inspect records /var/lib/felix/data acme/default/orders/3 --offset 1500
@@ -402,9 +418,11 @@ pub(crate) enum Command {
         long_about = "Run the maintenance tools in the felix-controlplane binary. They \
                       read or write the control plane's own database, so they run on a host \
                       that can reach it, with felix-controlplane installed there: felixctl \
-                      finds it with --controlplane-bin, then $FELIX_CONTROLPLANE_BIN, then \
-                      PATH, passes the arguments through unchanged and ends with its exit \
-                      status.",
+                      finds it with --controlplane-bin (before `controlplane`), then \
+                      $FELIX_CONTROLPLANE_BIN, then PATH, passes every argument after `migrate` \
+                      through unchanged, --help included, and ends with its exit status. \
+                      `migrate export-postgres` writes the metadata to a file; `migrate \
+                      import` loads a file into a Raft group.",
         after_long_help = "Examples:
   felixctl controlplane migrate export-postgres state.json
   felixctl controlplane migrate import state.json http://cp-0:8444"
@@ -1387,76 +1405,21 @@ pub(crate) enum PlacementCommand {
     },
 }
 
+/// `data inspect ...` and `data restore-point ...`. Everything after the
+/// subcommand name is the broker's, so it is taken as an external subcommand:
+/// clap does not look at it, and a `--json` or `--help` there reaches the
+/// broker unchanged.
 #[derive(Debug, Subcommand)]
 pub(crate) enum DataCommand {
-    /// Read a data directory: segments, and the records in them
-    #[command(
-        long_about = "Run `felix-broker inspect`: `segments` reports, read-only, what \
-                      startup would decide about every shard's segments, and `records` \
-                      decodes the records around one offset. Arguments after `inspect` go \
-                      to felix-broker as they are; run `felixctl data inspect --broker-bin \
-                      PATH help` or `felix-broker inspect` for its own usage.",
-        after_long_help = "Examples:
-  felixctl data inspect segments /var/lib/felix/data
-  felixctl data inspect records /var/lib/felix/data acme/default/orders/3 --damage"
-    )]
-    Inspect(BrokerToolArgs),
-    /// Cut a stopped broker's logs back to a backup point
-    #[command(
-        name = "restore-point",
-        long_about = "Run `felix-broker restore-point`: cut a stopped broker's shard logs \
-                      back to a backup point written by `felixctl backup-point`. Arguments \
-                      after `restore-point` go to felix-broker as they are.",
-        after_long_help = "Examples:
-  felixctl data restore-point --point nightly.backup-point.json --node broker-1"
-    )]
-    RestorePoint(BrokerToolArgs),
+    #[command(external_subcommand)]
+    Run(Vec<OsString>),
 }
 
+/// `controlplane migrate ...`, passed through the same way.
 #[derive(Debug, Subcommand)]
 pub(crate) enum ControlplaneCommand {
-    /// Move the control plane's metadata between backends
-    #[command(
-        long_about = "Run `felix-controlplane migrate`: export the metadata from Postgres \
-                      to a file, and import a file into a Raft group. Arguments after \
-                      `migrate` go to felix-controlplane as they are.",
-        after_long_help = "Examples:
-  felixctl controlplane migrate export-postgres state.json
-  felixctl controlplane migrate import state.json http://cp-0:8444"
-    )]
-    Migrate(ControlplaneToolArgs),
-}
-
-/// A command that runs the `felix-broker` binary.
-#[derive(Debug, Args)]
-pub(crate) struct BrokerToolArgs {
-    /// The felix-broker binary [env: FELIX_BROKER_BIN] [default: felix-broker on PATH].
-    /// Only recognised before the other arguments
-    #[arg(long, value_name = "PATH")]
-    pub(crate) broker_bin: Option<PathBuf>,
-    /// Arguments for felix-broker, passed through unchanged
-    #[arg(
-        trailing_var_arg = true,
-        allow_hyphen_values = true,
-        value_name = "ARGS"
-    )]
-    pub(crate) args: Vec<String>,
-}
-
-/// A command that runs the `felix-controlplane` binary.
-#[derive(Debug, Args)]
-pub(crate) struct ControlplaneToolArgs {
-    /// The felix-controlplane binary [env: FELIX_CONTROLPLANE_BIN] [default:
-    /// felix-controlplane on PATH]. Only recognised before the other arguments
-    #[arg(long, value_name = "PATH")]
-    pub(crate) controlplane_bin: Option<PathBuf>,
-    /// Arguments for felix-controlplane, passed through unchanged
-    #[arg(
-        trailing_var_arg = true,
-        allow_hyphen_values = true,
-        value_name = "ARGS"
-    )]
-    pub(crate) args: Vec<String>,
+    #[command(external_subcommand)]
+    Run(Vec<OsString>),
 }
 
 #[derive(Debug, Subcommand)]
