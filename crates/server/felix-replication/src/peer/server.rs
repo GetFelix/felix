@@ -754,7 +754,9 @@ async fn serve_connection(
                         app.spawn(async move {
                             let _permit = permit;
                             answer_out_of_order(&send, async {
+                                let started = std::time::Instant::now();
                                 let response = handler.handle_from(peer, request).await;
+                                crate::peer::prof::add(crate::peer::prof::F_HANDLE_REC, started.elapsed());
                                 for_caller(
                                     response,
                                     learner_acks.load(std::sync::atomic::Ordering::Relaxed),
