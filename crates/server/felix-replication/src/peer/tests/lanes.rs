@@ -510,7 +510,9 @@ async fn record_batches_stored_at_once_are_bounded_across_streams() {
     });
     let listener = Listener::start_on(PEER, Arc::clone(&gated) as _, config()).await;
     // An older requester, so nothing is given up while the batches wait.
-    let (connection, _streams) = fill_broker(&listener, None).await;
+    let (_peer0, _streams) = fill_broker(&listener, None).await;
+    let connection = connect(&listener).await;
+    let _ = greet_as(&connection, "probe", None).await;
     tokio::time::timeout(Duration::from_secs(5), async {
         while gated.held.load(Ordering::SeqCst) < MAX_SERVED_BATCHES {
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -561,8 +563,9 @@ async fn an_overrun_batch_keeps_its_place_in_the_broker_wide_limit() {
         },
     )
     .await;
-    let (connection, mut streams) =
-        fill_broker(&listener, Some(PeerCapabilities::LANE_RENEWAL)).await;
+    let (_peer0, mut streams) = fill_broker(&listener, Some(PeerCapabilities::LANE_RENEWAL)).await;
+    let connection = connect(&listener).await;
+    let _ = greet_as(&connection, "probe", None).await;
     // Every one of those streams is given up once its batches overrun.
     for (_send, recv) in &mut streams {
         let ended = tokio::time::timeout(Duration::from_secs(5), read_frame(recv))
@@ -598,7 +601,9 @@ async fn an_overrun_batch_keeps_its_place_in_the_broker_wide_limit() {
 /// another peer's batch is still stored.
 #[tokio::test]
 async fn one_stalled_peer_holds_only_its_share_of_the_broker() {
-    use crate::peer::server::{MAX_CONCURRENT_BATCHES_PER_STREAM, MAX_SERVED_BATCHES_PER_PEER};
+    use crate::peer::server::{
+        MAX_CONCURRENT_BATCHES_PER_STREAM, MAX_SERVED_BATCHES, MAX_SERVED_BATCHES_PER_PEER,
+    };
 
     let open = Arc::new(tokio::sync::Semaphore::new(0));
     let gated = Arc::new(Gated {
@@ -606,10 +611,11 @@ async fn one_stalled_peer_holds_only_its_share_of_the_broker() {
         held: AtomicUsize::new(0),
     });
     let listener = Listener::start_on(PEER, Arc::clone(&gated) as _, config()).await;
-    // Two connections from one node: the limit follows the node.
+    // Enough connections from one node to take the whole broker if only the
+    // broker-wide limit applied: the limit follows the node.
     let mut stalled = Vec::new();
     let mut id = 10;
-    for _ in 0..2 {
+    for _ in 0..MAX_SERVED_BATCHES / MAX_SERVED_BATCHES_PER_PEER {
         let connection = connect(&listener).await;
         let mut streams = vec![greet_as(&connection, "stalled", None).await];
         while streams.len() < MAX_SERVED_BATCHES_PER_PEER / MAX_CONCURRENT_BATCHES_PER_STREAM {
@@ -647,7 +653,26 @@ async fn one_stalled_peer_holds_only_its_share_of_the_broker() {
         matches!(answer, Ok(Incoming::Message(InternalMessage::ReplicateOk(ref ok))) if ok.correlation_id == 4)
     );
 
-    open.add_permits(2 * MAX_SERVED_BATCHES_PER_PEER);
+    open.add_permits(MAX_SERVED_BATCHES);
     other.close(0u32.into(), b"done");
     listener.stop().await;
+}
+
+/// **Limits for node ids that are gone do not pile up.** An entry is dropped
+/// once nothing holds it and every permit is back.
+#[test]
+fn a_peer_limit_nobody_holds_is_dropped() {
+    use crate::peer::server::{PeerBatches, peer_limit};
+
+    let peers = PeerBatches::default();
+    let held = peer_limit(&peers, Arc::from("held"));
+    let _permit = Arc::clone(&held).try_acquire_owned().expect("a permit");
+    drop(peer_limit(&peers, Arc::from("gone")));
+    assert_eq!(peers.lock().len(), 2);
+
+    // Looking up another node sweeps: "gone" is idle, "held" is in use.
+    drop(peer_limit(&peers, Arc::from("next")));
+    let nodes: Vec<_> = peers.lock().keys().map(|k| k.to_string()).collect();
+    assert!(nodes.contains(&"held".to_string()), "{nodes:?}");
+    assert!(!nodes.contains(&"gone".to_string()), "{nodes:?}");
 }

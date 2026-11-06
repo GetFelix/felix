@@ -68,7 +68,8 @@ pub(super) const MAX_SERVED_BATCHES_PER_PEER: usize = 64;
 
 /// Per-peer batch limits by the peer's node id, so a reconnect does not
 /// reset one. One entry per node that ever greeted this broker.
-type PeerBatches = Arc<parking_lot::Mutex<std::collections::HashMap<Arc<str>, Arc<Semaphore>>>>;
+pub(super) type PeerBatches =
+    Arc<parking_lot::Mutex<std::collections::HashMap<Arc<str>, Arc<Semaphore>>>>;
 
 /// What answers a peer's request.
 ///
@@ -966,9 +967,6 @@ fn overloaded(request: &InternalMessage) -> InternalMessage {
     }
 }
 
-/// Who the peer said it is, for a handler that keeps ballots. Ballots name a
-/// leader by this identity, so it goes to the handler only when this broker
-/// keeps them.
 /// The limit for the peer a stream belongs to. A stream that has not said
 /// hello has no node id yet, so its connection gets a limit of its own.
 fn peer_batch_limit(
@@ -979,7 +977,16 @@ fn peer_batch_limit(
     let Some(node) = identity.lock().clone() else {
         return Arc::clone(connection_limit);
     };
-    let mut peers = offered.peer_batches.lock();
+    peer_limit(&offered.peer_batches, node)
+}
+
+/// The node's limit, made on first use. Entries nothing holds and that have
+/// every permit back are dropped here, so changing node ids do not grow the map.
+pub(super) fn peer_limit(peers: &PeerBatches, node: Arc<str>) -> Arc<Semaphore> {
+    let mut peers = peers.lock();
+    peers.retain(|_, limit| {
+        Arc::strong_count(limit) > 1 || limit.available_permits() < MAX_SERVED_BATCHES_PER_PEER
+    });
     Arc::clone(
         peers
             .entry(node)
@@ -987,6 +994,9 @@ fn peer_batch_limit(
     )
 }
 
+/// Who the peer said it is, for a handler that keeps ballots. Ballots name a
+/// leader by this identity, so it goes to the handler only when this broker
+/// keeps them.
 fn ballot_identity(
     offered: &Offered,
     identity: &parking_lot::Mutex<Option<Arc<str>>>,

@@ -249,7 +249,10 @@ batches at once, each about the leader's 1 MiB batch budget plus one record,
 so a follower holds roughly 256 MiB of batches however many peers and streams
 it serves. One peer node, on any of its connections, holds at most 64 of those
 256, so a peer whose stores stall cannot starve the others. A stream that
-finds either limit taken also stops reading. A batch whose handler overruns this broker's peer
+finds either limit taken also stops reading. Raising `FELIX_INTERNAL_STREAMS_PER_CONN` or
+`FELIX_INTERNAL_CONNS_PER_PEER` past 64 batches per peer meets the per-peer
+limit. Before its `Hello` a connection has a limit of its own; peers are
+trusted, and the pool always sends `Hello` first. A batch whose handler overruns this broker's peer
 request timeout ends its stream, as an overrun request answered in turn does,
 but only for a requester that offered stream renewal; an older requester's
 stream waits for it. The overrun handler runs on and keeps its place in the
