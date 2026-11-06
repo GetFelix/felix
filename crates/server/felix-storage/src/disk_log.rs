@@ -622,6 +622,15 @@ impl DiskLog {
         Ok(())
     }
 
+    /// Whether the generation history labels every record in `first..=last`.
+    ///
+    /// False for any of them that arrived after a cut with no label, such as
+    /// records a promotion took from a replica that sent none: the entry
+    /// before the cut would otherwise claim them. Since this log was opened.
+    pub fn labels_known(&self, first: Offset, last: Offset) -> bool {
+        self.inner.epochs.lock().labelled(first, last)
+    }
+
     /// Whether [`DiskLog::label_generations`] with these arguments would
     /// change the stored history, and so write and fsync it.
     pub fn relabels(&self, from: Offset, generations: &[Epoch]) -> bool {
@@ -1630,6 +1639,7 @@ impl LogInner {
     /// the generation history and the producer table down with them. Called
     /// holding the flush lock and the `segments` write lock.
     fn cut_suffix(&self, segments: &mut SegmentSet, offset: Offset) -> Result<()> {
+        let cuts_records = offset < segments.tail_offset();
         segments.truncate(offset)?;
         segments.active_mut().sync()?;
         self.note_rewound(segments)?;
@@ -1637,7 +1647,11 @@ impl LogInner {
         // The history cannot outlive the records it describes, or it would
         // answer with a start offset the log no longer holds.
         let mut epochs = self.epochs.lock();
-        epochs.truncate_from(offset);
+        if cuts_records {
+            epochs.cut_at(offset);
+        } else {
+            epochs.truncate_from(offset);
+        }
         epochs::store(&self.dir, &epochs)?;
         self.reset_producers(segments)
     }

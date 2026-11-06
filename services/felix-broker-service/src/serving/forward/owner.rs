@@ -401,6 +401,14 @@ impl ForwardingHandler {
         } else {
             None
         };
+        let at = if writes {
+            Some(
+                felix_replication::quorum::cache_write_at(&self.broker, &key, op.shard.generation)
+                    .await,
+            )
+        } else {
+            None
+        };
         let answered = match (op.op, op.condition) {
             (CacheOpKind::Put, None) => {
                 let ttl = (op.ttl_ms > 0).then(|| std::time::Duration::from_millis(op.ttl_ms));
@@ -539,7 +547,7 @@ impl ForwardingHandler {
             } else {
                 felix_replication::quorum::Access::Read
             },
-            op.shard.generation,
+            at,
         )
         .await
         {

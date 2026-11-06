@@ -4555,9 +4555,13 @@ promotion: its catch-up can drop the leader's unacknowledged suffix and take
 a newer leader's records at the same offsets (#2048). So a wait that ends at
 a newer generation than its write's checks that the log still labels the
 write's offsets with the write's generation. One generation has one leader,
-so a record at that offset and generation is the write. Otherwise the client
-is told leadership was lost, and the outcome is unknown. Cache puts and
-counter adds wait the same way. `FelixShardFigure8AckWaitByOffset` in
+so a record at that offset and generation is the write. Records a catch-up
+took from a replica that sent no labels have no known generation, since the
+entry from before the cut would claim them, so the check refuses those too.
+Otherwise the client is told leadership was lost, and the outcome is unknown.
+Cache puts and counter adds wait the same way. A cache put does not report
+its offset, so it checks everything between the cache log's tail read inside
+its fence before the put and the tail after. `FelixShardFigure8AckWaitByOffset` in
 `docs/formal/` finds the lost write without the check, and
 `FelixShardFigure8AckWait` shows it holds with it.
 

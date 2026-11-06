@@ -1982,16 +1982,19 @@ HeldAtGen(b, i) ==
 \* follows its broker into any generation it leads next, so the mark may be
 \* a newer generation's, counting a log a promotion's catch-up rewrote
 \* (`wait_while_leading` in crates/server/felix-replication/src/quorum.rs).
-\* The broker acknowledges only if its log still holds a record of the
-\* write's generation at the write's offset (`still_holds`); one generation
-\* has one leader, so that record is the write. With `AckByOffset` it
+\* The broker acknowledges only if its log's generation history still
+\* labels the write's offset with the write's generation (`still_holds`),
+\* which is `lg` here; one generation has one leader, so that record is the
+\* write. A record the code holds with no known label (taken after a cut
+\* from a replica that sent none) is refused there; the model always has a
+\* label, `lg`, so it checks the case where the label is known. With `AckByOffset` it
 \* acknowledges on the offset alone: FelixShardFigure8AckWaitByOffset.cfg. The
 \* waits the mark passes and does not answer end as a lost leadership.
 Answered(b, i) ==
     { wt[1] : wt \in { wt \in waits :
         /\ wt[2] = b
         /\ wt[4] <= i
-        /\ AckByOffset \/ log[b][wt[4]].g = wt[3] } }
+        /\ AckByOffset \/ log[b][wt[4]].lg = wt[3] } }
 
 \* With `AckChecksLease = FALSE` the lease plays no part: a broker that still
 \* believes it leads acknowledges on the report alone, however lapsed its own

@@ -761,7 +761,10 @@ async fn cache_and_counter_acks_skip_the_lease_where_followers_decide_the_mark()
             Some(&Unleased),
             QUICK,
             Access::Write,
-            3,
+            Some(CacheWrite {
+                generation: 3,
+                from: 0,
+            }),
         )
         .await;
         let add = await_counter_quorum(
@@ -854,7 +857,10 @@ async fn cache_and_counter_waits_at_a_newer_generation_check_the_log_still_holds
             Some(&LeadsAt(5)),
             QUICK,
             Access::Write,
-            3,
+            Some(CacheWrite {
+                generation: 3,
+                from: 0,
+            }),
         )
         .await;
         let add = await_counter_quorum(
@@ -900,6 +906,63 @@ async fn cache_and_counter_waits_at_a_newer_generation_check_the_log_still_holds
             "{what}: {err:?}"
         );
     }
+}
+
+/// **A cache put cut before the wait reads the tail is not acknowledged.**
+/// A promotion's catch-up can truncate the put between its write and the
+/// tail the wait reads, which then ends below it. The tail read before the
+/// put is where the put starts, so a tail that never got past it means the
+/// put is gone, however the record below is labelled.
+#[tokio::test]
+async fn a_cache_put_cut_before_its_wait_reads_the_tail_is_not_acknowledged() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let broker = quorum_cache_broker(dir.path()).await;
+    let cache = ShardKey {
+        kind: crate::ShardKind::Cache,
+        ..key("sessions")
+    };
+    let put = |key: &'static str| {
+        broker.cache().put(
+            "t1",
+            "ns",
+            "sessions",
+            0,
+            key,
+            bytes::Bytes::from_static(b"v"),
+            None,
+        )
+    };
+    put("before").await.expect("put");
+    let log = broker
+        .shard_log(felix_broker::LogKind::Cache, "t1", "ns", "sessions", 0)
+        .await
+        .expect("log");
+    log.record_generation(3, 0).expect("generation");
+    let at = cache_write_at(&broker, &cache, 3).await;
+    put("k").await.expect("put");
+    assert!(log.tail_offset().await.expect("tail") > at.from);
+    log.truncate(at.from).await.expect("truncate");
+
+    let marks = QuorumMarks::new();
+    marks.publish(&cache, 5, 1 << 20);
+    let err = await_cache_quorum(
+        &broker,
+        &cache,
+        Some(&marks),
+        Some(&LeadsAt(5)),
+        QUICK,
+        Access::Write,
+        Some(at),
+    )
+    .await
+    .expect_err("the put was cut");
+    assert!(
+        matches!(
+            err.downcast_ref::<QuorumError>(),
+            Some(QuorumError::LeadershipLost { .. })
+        ),
+        "{err:?}"
+    );
 }
 
 /// **A stall logs once per shard per window, not once per publish.** Every

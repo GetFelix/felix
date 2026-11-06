@@ -952,13 +952,27 @@ async fn quorum_leader_writing(
 /// gone.
 #[tokio::test]
 async fn a_wait_across_a_promotion_does_not_acknowledge_a_dropped_write() {
+    wait_across_a_promotion_that_drops_the_write(true).await;
+}
+
+/// **The same, from replicas that send no labels.** The records the fence
+/// takes then arrive unlabelled after the cut, and the history's entry from
+/// before the cut would claim them for the write's generation.
+#[tokio::test]
+async fn a_wait_across_a_promotion_from_unlabelled_replicas_does_not_acknowledge_a_dropped_write() {
+    wait_across_a_promotion_that_drops_the_write(false).await;
+}
+
+async fn wait_across_a_promotion_that_drops_the_write(labels: bool) {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     let mut replicas = Replicas::new();
     for id in ["broker-b", "broker-c"] {
         replicas.get(id).holds(id, 3, 0, &["a"]).await;
         replicas.get(id).holds(id, 4, 0, &["a", "y"]).await;
-        replicas.get_mut(id).capabilities = REQUIRED.union(PeerCapabilities::GENERATION_LABELS);
+        if labels {
+            replicas.get_mut(id).capabilities = REQUIRED.union(PeerCapabilities::GENERATION_LABELS);
+        }
     }
     let (leader, handle, outcome, _dir) = quorum_leader_writing("lost").await;
 
