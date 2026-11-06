@@ -1683,6 +1683,18 @@ model shows the guarantee fails without it.
 > Checked by hand with a temporary `acked = {}` invariant, which TLC violates
 > in 2,307 states: acknowledgements are released, and the pass is about them.
 
+Since #1924 the broker never names a follower short of the log its leader
+inherited (`acknowledged` in crates/server/felix-replication/src/driver/shard.rs),
+which the model calls `ReportFloor`. The floor is not a pure guard, so a pass
+without it does not carry over. It shrinks the report's `holders`, and
+`QuorumReportNamesASuccessor` needs them non-empty. It raises the report's
+`len`, and under `ReportBeforeAck` that is what an acknowledgement may reach.
+So every configuration whose report reads that way (`Quorum`, a `ReportBound`
+other than `"tail"`, and `ReportBeforeAck` or `QuorumReportNamesASuccessor`)
+sets `ReportFloor = TRUE`, the witnesses included, and each still does what
+the table says. `FelixShardReportFromAnswers.cfg` keeps it off: it is the
+witness that the floor is needed.
+
 Promotion by log order finds no trace, in the same bounds. A replica holding an
 acknowledged `Quorum` record is in every majority that could acknowledge one
 after it, so the replica with the greatest (last generation, length) among the
