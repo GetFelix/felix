@@ -40,7 +40,11 @@ struct Voters {
     /// Nodes that do not answer from their second ask on.
     silent_again: Vec<&'static str>,
     asked: Mutex<Vec<String>>,
+    /// Run before answering the ask with this index, counted from zero.
+    on_ask: Mutex<Option<(usize, OnAsk)>>,
 }
+
+type OnAsk = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
 
 impl PeerRequester for Voters {
     async fn request(
@@ -53,12 +57,25 @@ impl PeerRequester for Voters {
             matches!(message, InternalMessage::PreVote(_)),
             "{message:?}"
         );
-        let again = {
+        let (again, index) = {
             let mut asked = self.asked.lock().expect("lock");
             let again = asked.iter().any(|asked| asked == node_id);
             asked.push(node_id.to_string());
-            again
+            (again, asked.len() - 1)
         };
+        let hook = {
+            let mut on_ask = self.on_ask.lock().expect("lock");
+            match on_ask.take() {
+                Some((at, hook)) if at == index => Some(hook),
+                other => {
+                    *on_ask = other;
+                    None
+                }
+            }
+        };
+        if let Some(hook) = hook {
+            hook.await;
+        }
         if again && self.silent_again.contains(&node_id) {
             return Err(PeerError::Disconnected {
                 node_id: node_id.to_string(),
@@ -239,6 +256,7 @@ fn voters(c: Option<PreVoteRefusal>) -> Voters {
         then: Vec::new(),
         silent_again: Vec::new(),
         asked: Mutex::new(Vec::new()),
+        on_ask: Mutex::new(None),
     }
 }
 
@@ -250,6 +268,7 @@ fn second_in_order(then: Option<PreVoteRefusal>) -> Voters {
         then: vec![("broker-a", then)],
         silent_again: Vec::new(),
         asked: Mutex::new(Vec::new()),
+        on_ask: Mutex::new(None),
     }
 }
 
@@ -371,7 +390,8 @@ async fn a_set_the_control_plane_does_not_record_is_not_stood_on() {
 /// **No standing while a set change is pending**, on the kept set or on the
 /// control plane's: a candidate fences one set, so it would miss a majority
 /// of the other, and with it the counter updates and records acknowledged
-/// there (#1830).
+/// there (#1830). The model's `Elect` has the kept-set half as its `oldSet`
+/// guard (docs/formal/FelixShard.tla).
 #[tokio::test(start_paused = true)]
 async fn a_pending_set_change_is_not_stood_on() {
     let (broker, _dir) = follower().await;
@@ -1543,4 +1563,117 @@ async fn a_round_on_routes_that_moved_on_writes_no_ballot() {
     assert_eq!(stand(&ctx, &key(), &stale).await, Round::Failed);
     assert_eq!(log.accepted_generation(), 3);
     assert!(ctx.elections.get(&key()).is_none());
+}
+
+/// When, in a round second in the order, the copy's kept set changes.
+#[derive(Clone, Copy)]
+enum ChangesIn {
+    /// While the first pre-vote is out.
+    FirstPreVote,
+    /// While the candidate waits its place.
+    PlaceDelay,
+    /// While the second pre-vote is out.
+    SecondPreVote,
+}
+
+/// The routes name broker-a at 5 while `LOCAL` keeps the set of 3 with its
+/// ballot at 3, so it stands at 6. While the round runs, the copy takes a set
+/// at 4 that is leaving the one it stood on with other copies: with
+/// `with_ballot` as another leader's fence at 4 would (ballot first, then its
+/// set), otherwise without a ballot, as a refused learner or replaced copy
+/// keeps a fence's set. Either way the round's checks read a set the copy no
+/// longer keeps, so it must write no ballot and record nothing, and so never
+/// fence.
+async fn set_changes_during_the_round(when: ChangesIn, with_ballot: bool) {
+    let (broker, _dir) = follower().await;
+    let log = shard_log(&broker, &key()).await.expect("log");
+    let changed = {
+        let log = log.clone();
+        async move {
+            if with_ballot {
+                log.accept_generation(4, Some("broker-d"))
+                    .await
+                    .expect("ballot");
+            }
+            let mut current = set(4);
+            current.members[2].node = "broker-d".to_string();
+            log.accept_set(ReplicaSet {
+                current,
+                leaving: Some(set(3)),
+                earlier: Vec::new(),
+            })
+            .await
+            .expect("set");
+        }
+    };
+    let mut voters = second_in_order(None);
+    match when {
+        ChangesIn::FirstPreVote => voters.on_ask = Mutex::new(Some((0, Box::pin(changed)))),
+        // broker-a and broker-c answered the first; this is the third ask.
+        ChangesIn::SecondPreVote => voters.on_ask = Mutex::new(Some((2, Box::pin(changed)))),
+        ChangesIn::PlaceDelay => {
+            tokio::spawn(async move {
+                tokio::time::sleep(PLACE_DELAY / 2).await;
+                changed.await;
+            });
+        }
+    }
+    let mut ctx = ctx(&broker, voters);
+    ctx.router = router(5);
+    let route = ctx.router.snapshot().get(&key()).expect("route").clone();
+
+    let round = stand(&ctx, &key(), &route).await;
+    assert!(
+        matches!(round, Round::Failed | Round::SetMoved),
+        "{round:?}"
+    );
+    let ballot = if with_ballot { 4 } else { 3 };
+    assert_eq!(log.accepted_generation(), ballot, "no ballot at 6");
+    assert!(ctx.elections.get(&key()).is_none(), "nothing recorded");
+    assert_eq!(
+        log.replica_set().expect("kept").current.generation,
+        4,
+        "the set changed mid-round",
+    );
+    // Only pre-votes went out: `Voters` refuses any other request.
+    assert_eq!(ctx.requester.asked.lock().expect("lock").len(), 4);
+}
+
+/// **A fence taken mid-round, below the candidate's generation, stops it**
+/// (#1970): during the first pre-vote.
+#[tokio::test(start_paused = true)]
+async fn a_fence_taken_in_the_first_pre_vote_stops_the_standing() {
+    set_changes_during_the_round(ChangesIn::FirstPreVote, true).await;
+}
+
+/// **A fence taken mid-round stops it**: while it waits its place.
+#[tokio::test(start_paused = true)]
+async fn a_fence_taken_in_the_place_delay_stops_the_standing() {
+    set_changes_during_the_round(ChangesIn::PlaceDelay, true).await;
+}
+
+/// **A fence taken mid-round stops it**: during the second pre-vote.
+#[tokio::test(start_paused = true)]
+async fn a_fence_taken_in_the_second_pre_vote_stops_the_standing() {
+    set_changes_during_the_round(ChangesIn::SecondPreVote, true).await;
+}
+
+/// **A set kept with no ballot mid-round stops it**: during the first
+/// pre-vote.
+#[tokio::test(start_paused = true)]
+async fn a_set_kept_in_the_first_pre_vote_stops_the_standing() {
+    set_changes_during_the_round(ChangesIn::FirstPreVote, false).await;
+}
+
+/// **A set kept with no ballot mid-round stops it**: while it waits its place.
+#[tokio::test(start_paused = true)]
+async fn a_set_kept_in_the_place_delay_stops_the_standing() {
+    set_changes_during_the_round(ChangesIn::PlaceDelay, false).await;
+}
+
+/// **A set kept with no ballot mid-round stops it**: during the second
+/// pre-vote.
+#[tokio::test(start_paused = true)]
+async fn a_set_kept_in_the_second_pre_vote_stops_the_standing() {
+    set_changes_during_the_round(ChangesIn::SecondPreVote, false).await;
 }

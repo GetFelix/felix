@@ -635,7 +635,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         && elected.is_none()
         && !elected_on_route_set
         && log.set_generation() < route.generation
-        && log.accepted_generation() >= route.generation)
+        && log.accepted_generation() == route.generation)
         .then(|| {
             kept_with_leaving(
                 &log,
@@ -647,21 +647,26 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
             )
         })
         .flatten();
-    if let Some(kept) = kept
+    // Under this leader's own ballot: a standing that raised it since keeps
+    // the set it stood on.
+    if let Some(kept) = kept {
         // Kept while the gate is unread too, as a replica keeps them.
-        && let Err(err) = crate::replica_set::accept(
-            &log,
-            kept,
-            marks.fleet_decides(felix_common::fleet::JOINT_FENCE) != Some(false),
-        )
-        .await
-    {
-        tracing::warn!(
-            stream = %key.stream,
-            shard = key.shard,
-            error = %err,
-            "could not keep this leader's replica set",
-        );
+        let kept = log
+            .accept_set_from(
+                kept,
+                marks.fleet_decides(felix_common::fleet::JOINT_FENCE) != Some(false),
+                route.generation,
+                Some(route.leader.node_id.as_str()),
+            )
+            .await;
+        if !matches!(kept, Ok(Ok(_))) {
+            tracing::warn!(
+                stream = %key.stream,
+                shard = key.shard,
+                outcome = ?kept,
+                "could not keep this leader's replica set",
+            );
+        }
     }
     // Rule 5 of electing without the control plane: once this broker has
     // answered a newer fence or batch, or counts a newer set, a candidate may

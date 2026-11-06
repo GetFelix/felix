@@ -48,3 +48,24 @@ async fn restarts_on_the_same_address_and_drops_inside_async_code() {
     // Dropped, not shut down, as a cluster dropped by a failing test is.
     drop(control_plane);
 }
+
+fn report(generation: u64, caught_up: &[&str]) -> felix_controlplane_service::model::ReplicaReport {
+    serde_json::from_value(serde_json::json!({
+        "key": {"tenant_id": "t", "namespace": "n", "stream": "s", "shard": 0},
+        "generation": generation,
+        "caught_up": caught_up,
+        "offsets": {},
+        "reported_at_millis": 0,
+    }))
+    .expect("report")
+}
+
+#[test]
+fn a_shard_is_reported_only_when_every_replica_is_caught_up_at_its_generation() {
+    use super::replica_report_gap as gap;
+    let replicas = ["b".to_string(), "c".to_string()];
+    assert!(gap(3, &replicas, None).is_some(), "no report yet");
+    assert!(gap(3, &replicas, Some(&report(2, &["b", "c"]))).is_some());
+    assert!(gap(3, &replicas, Some(&report(3, &["b"]))).is_some());
+    assert!(gap(3, &replicas, Some(&report(3, &["b", "c"]))).is_none());
+}
