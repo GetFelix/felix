@@ -374,12 +374,14 @@ impl MetadataStateMachine {
                 expected_generation,
                 fence,
                 seq_generation,
+                at_least,
             } => store
                 .apply_put_shard_assignment_if(
                     assignment,
                     expected_generation,
                     fence,
                     seq_generation,
+                    at_least,
                 )
                 .await
                 .map(assignment_written)

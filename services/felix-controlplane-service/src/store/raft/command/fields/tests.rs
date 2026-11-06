@@ -219,6 +219,7 @@ fn report() -> ReplicaReport {
         refused: Some(felix_common::membership::RefusedGeneration {
             generation: 1,
             promised_to: s("b"),
+            ballot: 2,
         }),
         holds_start: BTreeSet::from([s("c")]),
     }
@@ -482,6 +483,7 @@ fn commands() -> Vec<MetaCommand> {
             assignment: assignment(),
             expected_generation: Some(1),
             fence: 1,
+            at_least: 3,
         },
         MetaCommand::AdoptElectedLeader {
             key: shard_key(),

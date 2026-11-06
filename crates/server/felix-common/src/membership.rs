@@ -219,6 +219,14 @@ pub struct RefusedGeneration {
     /// set it leaves at that generation, or because it or a replica of its
     /// set already accepted a newer generation ([`Self::set_unknown`]).
     pub promised_to: String,
+    /// A newer generation the broker's own copy accepted for another node,
+    /// reported once it has lasted long enough that its standing is taken
+    /// not to open. Placement names the broker again above
+    /// it rather than one up, since a fence at the ballot's own generation
+    /// finds that generation promised away and waits. 0, and omitted, when
+    /// there is none, and from brokers that predate it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub ballot: u64,
 }
 
 impl RefusedGeneration {
@@ -231,6 +239,16 @@ impl RefusedGeneration {
         Self {
             generation,
             promised_to: String::new(),
+            ballot: 0,
+        }
+    }
+
+    /// [`Self::set_unknown`], lost to `ballot`, a newer generation in the
+    /// broker's own copy that names another node.
+    pub fn above(generation: u64, ballot: u64) -> Self {
+        Self {
+            ballot,
+            ..Self::set_unknown(generation)
         }
     }
 

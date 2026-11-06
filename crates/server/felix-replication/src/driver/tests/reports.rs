@@ -897,6 +897,7 @@ fn refused(generation: u64) -> RefusedGeneration {
     RefusedGeneration {
         generation,
         promised_to: "broker-d".to_string(),
+        ballot: 0,
     }
 }
 
@@ -1183,10 +1184,14 @@ async fn a_fence_met_by_a_newer_ballot_reports_the_refusal() {
     );
 }
 
-/// The first report from a driver still fencing `key()` at generation 4,
+/// The first refusal reported within `within` by a driver still fencing `key()` at generation 4,
 /// with every follower taking the fence, its own copy holding a ballot at
 /// `ballot` from `ballot_leader`.
-async fn fence_refusal(ballot: u64, ballot_leader: &str) -> Option<ShardReplicaStatus> {
+async fn fence_refusal(
+    ballot: u64,
+    ballot_leader: &str,
+    within: Duration,
+) -> Option<ShardReplicaStatus> {
     let (broker, _dir) = leader_with(3).await;
     let log = broker
         .shard_log_for(
@@ -1219,7 +1224,22 @@ async fn fence_refusal(ballot: u64, ballot_leader: &str) -> Option<ShardReplicaS
         MoveThrottle::unlimited(),
         shutdown.clone(),
     );
-    let report = first_report(&received, Duration::from_secs(5)).await;
+    let report = tokio::time::timeout(within, async {
+        loop {
+            let found = received
+                .lock()
+                .expect("lock")
+                .iter()
+                .find(|report| report.refused.is_some())
+                .cloned();
+            if let Some(report) = found {
+                return report;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .ok();
     shutdown.cancel();
     driver.stop().await;
     report
@@ -1233,13 +1253,26 @@ async fn fence_refusal(ballot: u64, ballot_leader: &str) -> Option<ShardReplicaS
 /// control plane waits on silence.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_fence_below_its_own_ballot_reports_the_refusal() {
-    for leader in [LOCAL, "broker-b"] {
-        let report = fence_refusal(5, leader)
-            .await
-            .expect("no report of the generation its own ballot left");
-        assert_eq!(report.generation, 4);
-        assert_eq!(report.refused, Some(RefusedGeneration::set_unknown(4)));
-    }
+    let report = fence_refusal(7, LOCAL, Duration::from_secs(5))
+        .await
+        .expect("no report of the generation its own ballot left");
+    assert_eq!(report.generation, 4);
+    assert_eq!(report.refused, Some(RefusedGeneration::set_unknown(4)));
+}
+
+/// **A fence below another node's ballot reports it once it has lasted
+/// [`BALLOT_ELSEWHERE_FOR`], with the ballot** (#1951). Carried, placement
+/// names this broker past it in one step rather than one generation per
+/// report; held back, a standing that may yet open there is not deposed.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fence_below_another_ballot_reports_it_after_the_wait() {
+    let early = BALLOT_ELSEWHERE_FOR - Duration::from_millis(500);
+    assert_eq!(fence_refusal(7, "broker-b", early).await, None);
+    let report = fence_refusal(7, "broker-b", BALLOT_ELSEWHERE_FOR * 2)
+        .await
+        .expect("no report of the generation another node's ballot left");
+    assert_eq!(report.generation, 4);
+    assert_eq!(report.refused, Some(RefusedGeneration::above(4, 7)));
 }
 
 /// [`PromisedAwayFollowers`] that check sets, so a fence under
@@ -1932,13 +1965,19 @@ async fn a_leader_standing_at_its_ballot_reports_no_refusal() {
     );
 }
 
-/// **A leader whose copy took another node's ballot reports nothing for
-/// it**: that node may be standing, and the stepping-down rule deposes this
-/// leader instead.
+/// **An open leader that answered another node's higher fence reports its
+/// generation refused once that node has had time to open** (#1951). It
+/// stepped down when its copy took the ballot; if the candidate withdraws,
+/// this live broker is not suspected, and only per-shard suspicion would
+/// stand again, minutes later. Not before [`BALLOT_ELSEWHERE_FOR`]: a
+/// candidate that opens moves the route on first.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_leader_past_its_generation_by_another_ballot_reports_no_refusal() {
-    assert_eq!(
-        ballot_refusal(5, "broker-b", false, BALLOT_ABOVE_FOR * 2).await,
-        None
-    );
+async fn a_leader_past_its_generation_by_another_ballot_reports_the_refusal() {
+    let early = BALLOT_ELSEWHERE_FOR - Duration::from_millis(500);
+    assert_eq!(ballot_refusal(5, "broker-b", false, early).await, None);
+    let report = ballot_refusal(5, "broker-b", false, BALLOT_ELSEWHERE_FOR * 2)
+        .await
+        .expect("no report of the generation another node's ballot left");
+    assert_eq!(report.generation, 4);
+    assert_eq!(report.refused, Some(RefusedGeneration::above(4, 5)));
 }

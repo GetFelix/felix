@@ -475,13 +475,15 @@ impl ControlPlaneStore for PostgresStore {
         shards::put_shard_assignment(self, assignment).await
     }
 
-    async fn put_shard_assignment_if(
+    async fn put_shard_assignment_at_least(
         &self,
         assignment: ShardAssignment,
         expected_generation: Option<u64>,
         fence: u64,
+        at_least: u64,
     ) -> StoreResult<crate::store::AssignmentWrite> {
-        shards::put_shard_assignment_if(self, assignment, expected_generation, fence).await
+        shards::put_shard_assignment_if(self, assignment, expected_generation, fence, at_least)
+            .await
     }
 
     async fn adopt_elected_leader(

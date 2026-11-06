@@ -96,6 +96,11 @@ const CATCH_UP_RETRY: Duration = Duration::from_millis(50);
 /// before it reports that generation refused. A promotion takes the new
 /// ballot before the routes name it, so a shorter gap is a route catching up.
 const BALLOT_ABOVE_FOR: Duration = Duration::from_secs(3);
+/// The same for a ballot naming another node, which this leader took by
+/// answering that node's fence. Longer than a candidate's stand timeout plus
+/// the control plane adopting it: a standing that opens moves the route on
+/// first, and one that was withdrawn leaves this leader stopped for good.
+const BALLOT_ELSEWHERE_FOR: Duration = Duration::from_secs(10);
 
 /// The running driver, as a stopping broker needs it.
 pub struct Replication {
