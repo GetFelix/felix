@@ -7,6 +7,7 @@ use axum::routing::post;
 use serde_json::json;
 
 use super::*;
+use crate::cluster::controlplane_view::ViewFile;
 use crate::test_support::{build_test_client, spawn_axum_with_shutdown, wait_for_listen};
 
 /// Records what the broker sent, so a test can assert on the calls rather than
@@ -1211,7 +1212,7 @@ fn a_directory_behind_the_control_plane_is_a_restore() {
         incarnation: 5,
         storage_id: Some(id.to_hex()),
     };
-    let judged = judge_directory(dir.path(), id, Some(&registered)).expect("judge");
+    let judged = judge_directory(dir.path(), id, Some(&registered), None).expect("judge");
     let Directory::Restored { rotated } = judged else {
         panic!("not a restore: {judged:?}");
     };
@@ -1220,7 +1221,14 @@ fn a_directory_behind_the_control_plane_is_a_restore() {
         felix_storage::storage_identity::load(dir.path()).expect("load"),
         Some(rotated)
     );
-    assert!(felix_storage::run_state::replaced(dir.path()).expect("marker"));
+    // Only a view from a registration of the new id may start it again.
+    assert_eq!(
+        felix_storage::run_state::read_replaced(dir.path()).expect("marker"),
+        Some(felix_storage::run_state::ReplacedMark::Under {
+            storage_id: rotated.to_hex(),
+            after: 5,
+        })
+    );
 }
 
 #[test]
@@ -1232,7 +1240,7 @@ fn a_directory_the_control_plane_registered_is_current() {
         storage_id: Some(id.to_hex()),
     };
     assert_eq!(
-        judge_directory(dir.path(), id, Some(&registered)).expect("judge"),
+        judge_directory(dir.path(), id, Some(&registered), None).expect("judge"),
         Directory::Current
     );
     assert_eq!(
@@ -1251,10 +1259,46 @@ fn a_node_registered_under_another_id_is_replaced() {
         storage_id: Some(LOOKUP_STORAGE_ID.to_string()),
     };
     assert_eq!(
-        judge_directory(dir.path(), id, Some(&registered)).expect("judge"),
+        judge_directory(dir.path(), id, Some(&registered), None).expect("judge"),
         Directory::Replaced
     );
-    assert!(felix_storage::run_state::replaced(dir.path()).expect("marker"));
+    assert_eq!(
+        felix_storage::run_state::read_replaced(dir.path()).expect("marker"),
+        Some(felix_storage::run_state::ReplacedMark::Under {
+            storage_id: id.to_hex(),
+            after: 5,
+        })
+    );
+}
+
+/// **Marking the directory replaced goes through the view file the writer
+/// shares**, so the writer cannot record the view after it.
+#[tokio::test]
+async fn a_replacement_judged_through_the_view_file_stops_its_writer() {
+    let dir = tempfile::tempdir().expect("dir");
+    let id = directory(dir.path(), 5);
+    let view = ViewFile::new(dir.path().to_path_buf());
+    let registered = Registered {
+        incarnation: 5,
+        storage_id: Some(LOOKUP_STORAGE_ID.to_string()),
+    };
+    assert_eq!(
+        judge_directory(dir.path(), id, Some(&registered), Some(&view)).expect("judge"),
+        Directory::Replaced
+    );
+    let mut writer = crate::cluster::controlplane_view::Writer::new(view);
+    writer
+        .write(Some(crate::cluster::controlplane_view::View {
+            node_id: "broker-a".to_owned(),
+            storage_id: id.to_hex(),
+            incarnation: 9,
+            fleet: Vec::new(),
+            routes: Vec::new(),
+            nodes: Vec::new(),
+            catalog: Default::default(),
+        }))
+        .await;
+    assert!(felix_storage::controlplane_view::read(dir.path()).is_none());
 }
 
 /// Spawn membership as a start from the view does, with the restore check
@@ -1263,13 +1307,14 @@ async fn join_from_view(
     calls: &Shared,
     data: &std::path::Path,
     id: StorageId,
-) -> (MembershipTask, CancellationToken) {
+) -> (MembershipTask, CancellationToken, ViewFile) {
     let (base_url, stop, handle) = serve(Arc::clone(calls)).await;
+    let view = ViewFile::new(data.to_path_buf());
     let serving = CancellationToken::new();
     serving.cancel();
     let shutdown = CancellationToken::new();
     let checked = CancellationToken::new();
-    let task = spawn(
+    let task = spawn_with(
         link(&build_test_client().expect("client"), &base_url),
         config(),
         crate::cluster::credential::NodeCredential::new("a-node-token"),
@@ -1284,7 +1329,9 @@ async fn join_from_view(
         tokio::sync::watch::channel(None).0,
         Some(id),
         Some(data.to_path_buf()),
+        Some(view.clone()),
         Some(checked.clone()),
+        true,
     );
     for _ in 0..500 {
         if task.fatal.is_cancelled() || !calls.lock().expect("lock").heartbeats.is_empty() {
@@ -1295,7 +1342,7 @@ async fn join_from_view(
     shutdown.cancel();
     let _ = stop.send(());
     let _ = handle.await;
-    (task, checked)
+    (task, checked, view)
 }
 
 /// **A restored directory that started from its view stops before it
@@ -1310,7 +1357,7 @@ async fn a_restore_found_after_a_start_from_the_view_stops_before_registering() 
     let calls = Shared::default();
     calls.lock().expect("lock").lookup = Some((5, id.to_hex()));
 
-    let (task, checked) = join_from_view(&calls, dir.path(), id).await;
+    let (task, checked, _) = join_from_view(&calls, dir.path(), id).await;
 
     assert!(task.fatal.is_cancelled(), "the broker stops");
     assert!(felix_storage::controlplane_view::read(dir.path()).is_none());
@@ -1336,7 +1383,7 @@ async fn a_current_directory_registers_once_the_check_passes() {
     let calls = Shared::default();
     calls.lock().expect("lock").lookup = Some((5, id.to_hex()));
 
-    let (task, checked) = join_from_view(&calls, dir.path(), id).await;
+    let (task, checked, _) = join_from_view(&calls, dir.path(), id).await;
 
     assert!(!task.fatal.is_cancelled());
     assert!(checked.is_cancelled());
@@ -1356,7 +1403,7 @@ async fn a_replaced_directory_found_after_a_start_from_the_view_forgets_its_view
     let calls = Shared::default();
     calls.lock().expect("lock").lookup = Some((5, LOOKUP_STORAGE_ID.to_string()));
 
-    let (task, checked) = join_from_view(&calls, dir.path(), id).await;
+    let (task, checked, view) = join_from_view(&calls, dir.path(), id).await;
 
     assert!(task.fatal.is_cancelled(), "the broker stops");
     assert!(!checked.is_cancelled());
@@ -1365,6 +1412,24 @@ async fn a_replaced_directory_found_after_a_start_from_the_view_forgets_its_view
     assert!(
         felix_storage::controlplane_view::read(dir.path()).is_none(),
         "the view is gone"
+    );
+    // The writer, still running until the stop, shares the file and must not
+    // bring it back.
+    let mut writer = crate::cluster::controlplane_view::Writer::new(view);
+    writer
+        .write(Some(crate::cluster::controlplane_view::View {
+            node_id: "broker-a".to_owned(),
+            storage_id: id.to_hex(),
+            incarnation: 5,
+            fleet: Vec::new(),
+            routes: Vec::new(),
+            nodes: Vec::new(),
+            catalog: Default::default(),
+        }))
+        .await;
+    assert!(
+        felix_storage::controlplane_view::read(dir.path()).is_none(),
+        "the writer put the view back"
     );
 }
 
@@ -1393,6 +1458,80 @@ async fn an_answer_that_does_not_decode_is_not_down() {
     )
     .await;
     assert_eq!(bounded, Bounded::Refusing);
+    let _ = stop.send(());
+    let _ = handle.await;
+}
+
+/// Captures what the current thread logs.
+#[derive(Clone, Default)]
+struct Captured(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for Captured {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().expect("lock").extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// **A control plane that is up but refuses the restore check's lookup is
+/// reported as a warning**, not folded into "still down" at debug, where a
+/// broker could wait on a bad credential forever unseen.
+#[tokio::test(flavor = "current_thread")]
+async fn a_restore_check_refused_by_a_live_control_plane_warns() {
+    let app = axum::Router::new().route(
+        "/v1/nodes/{node_id}",
+        axum::routing::get(|| async { axum::http::StatusCode::UNAUTHORIZED }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let (stop, handle) = spawn_axum_with_shutdown(listener, app);
+    wait_for_listen(addr).await.expect("listen");
+    let captured = Captured::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_ansi(false)
+        .with_writer({
+            let captured = captured.clone();
+            move || captured.clone()
+        })
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+    let shutdown = CancellationToken::new();
+    let stopper = {
+        let shutdown = shutdown.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            shutdown.cancel();
+        })
+    };
+    let checked = deferred_restore_check(
+        &link(
+            &build_test_client().expect("client"),
+            &format!("http://{addr}"),
+        ),
+        "broker-a",
+        &crate::cluster::credential::NodeCredential::new("a-node-token"),
+        None,
+        None,
+        None,
+        &shutdown,
+    )
+    .await;
+    assert_eq!(checked, None, "it waits until the stop");
+    let _ = stopper.await;
+    let logged = String::from_utf8(captured.0.lock().expect("lock").clone()).expect("utf8");
+    assert!(
+        logged
+            .lines()
+            .any(|line| line.contains("WARN") && line.contains("credential")),
+        "no warning for the refused lookup: {logged}"
+    );
     let _ = stop.send(());
     let _ = handle.await;
 }

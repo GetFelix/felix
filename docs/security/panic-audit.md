@@ -7,7 +7,8 @@ into [#154](https://github.com/GetFelix/felix/issues/154).
 
 ## Scope and environment
 
-- Commit: branch `users/gabloe/remainingm0`.
+- Commit: the state of the tree when the audit was done (a dated record; the
+  branch it ran on is gone).
 - Crates in scope: `crates/protocol/felix-wire`, `crates/server/felix-broker`, `crates/protocol/felix-transport`,
   `crates/server/felix-storage`, `services/felix-broker-service`, `services/felix-controlplane-service`.
 - Method: static inventory of `unwrap`/`expect`/`panic!`/`unreachable!`/`todo!`/
@@ -99,7 +100,7 @@ path involved no `unwrap` at all. Counting `unwrap` would not have found it.
 - The `telemetry` feature's 103 mutex-poisoning `expect`s are unreviewed. They are not
   in default builds; if `telemetry` is ever enabled in production, they need their own
   pass.
-- The frame and message decoders are fuzzed (`crates/protocol/felix-wire/fuzz/`, four
+- The frame and message decoders are fuzzed (`crates/protocol/felix-wire/fuzz/`, five
   targets), as is the MQTT packet decoder (`crates/protocol/felix-mqtt-wire/fuzz/`, one
   target over both protocol versions), as are the Kafka listener's request and record-batch decoders
   (`crates/server/felix-kafka/fuzz/`), plus six storage targets covering segments, the
@@ -107,6 +108,5 @@ path involved no `unwrap` at all. Counting `unwrap` would not have found it.
   target for 30 s on every PR as a regression gate, and `fuzz-nightly.yml` runs each for
   25 minutes a night from a corpus that carries over between runs.
 - Sustained-load, connection-churn, and resource-leak evidence is not covered by this
-  document; it is tracked in [#154](https://github.com/GetFelix/felix/issues/154). Until
-  that lands, M0's "no known concurrency or leak issues" criterion rests on this static
-  audit alone.
+  document; it is in [soak-report.md](soak-report.md)
+  ([#154](https://github.com/GetFelix/felix/issues/154)).

@@ -205,6 +205,10 @@ impl ShardFence {
     /// Let writes to `key` in, if they were admitted at `generation`.
     pub fn open(&self, key: &ShardKey, generation: u64) {
         let gate = Arc::clone(self.gates.write().entry(key.clone()).or_default());
+        // Silence ended the last term only until a majority answered, and the
+        // watch that would have heard it stopped tracking the closed shard.
+        // A deposal for a newer leader is evidence, and stays.
+        gate.unheard_at.store(CLOSED, SeqCst);
         gate.open_at.store(generation, SeqCst);
         gate.opened_below
             .fetch_max(generation.saturating_add(1), SeqCst);

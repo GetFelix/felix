@@ -824,7 +824,7 @@ pub fn spawn_reconciler(
             reconcile_remembering(
                 store.as_ref(),
                 &liveness,
-                policy.clone(),
+                pass_policy(&policy, held),
                 &wakes,
                 &mut memory,
             )
@@ -838,6 +838,18 @@ pub fn spawn_reconciler(
             metrics::gauge!(PLACEMENT_LEASE_HELD).set(0.0);
         }
     })
+}
+
+/// The policy one pass of the running loop plans under. Only the lease
+/// holder renames stuck leaders: the rename cap and its backoff live in the
+/// memory of the instance that renamed, so a pass a wake runs on another
+/// instance would rename with a cap of its own. A new holder starts its own
+/// watch, which waits the stuck bound out again first.
+pub(super) fn pass_policy(policy: &MovePolicy, held: bool) -> MovePolicy {
+    MovePolicy {
+        stuck_leader_millis: policy.stuck_leader_millis.filter(|_| held),
+        ..policy.clone()
+    }
 }
 
 /// Log when shards start or stop being short of their replication factor,

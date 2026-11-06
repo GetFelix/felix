@@ -284,6 +284,19 @@ impl PeerTransportConfig {
         }
     }
 
+    /// What an outgoing connection offers: [`Self::capabilities`] plus the
+    /// bits this side reads whatever it offers as a listener. The pool and the
+    /// simulated network both use it, so they cannot drift.
+    pub fn outgoing_capabilities(&self) -> felix_wire::internal::PeerCapabilities {
+        use felix_wire::internal::PeerCapabilities;
+        self.capabilities()
+            .union(PeerCapabilities::STORAGE_IDENTITY)
+            .union(PeerCapabilities::NODE_INCARNATION)
+            .union(PeerCapabilities::LANE_RENEWAL)
+            .union(PeerCapabilities::LEARNER_ACKS)
+            .union(PeerCapabilities::REFUSAL_REASONS)
+    }
+
     /// Read the internal transport settings, validated against the
     /// client-facing bind.
     pub fn from_env(client_bind: SocketAddr, client_listeners: usize) -> std::io::Result<Self> {

@@ -1320,7 +1320,9 @@ gone or set aside, and the broker treats its copies of older shards as
 learners (`docs/replication-design.md`, "A copy that lost its storage does not
 vote"). It records that in a `replaced-storage` file under the data root
 before it registers the new id, and never removes it, so later starts know
-too once the control plane holds the new id.
+too once the control plane holds the new id. The file also names the new id
+and the incarnation the control plane held, so a start from the
+control-plane view can tell a view registered since from an older one.
 
 - **Unreachable control plane:** the broker opens nothing and announces no id
   until it answers, asking again with backoff up to 5 seconds. A stop while
@@ -1423,7 +1425,8 @@ plane is down can start from it
 It is read at startup only with `FELIX_START_WITHOUT_CONTROLPLANE` on, and
 only when the startup lookup found the control plane down. A broker uses it
 only if it names this node, the storage id on disk is the one it was
-registered under, the directory has no `replaced-storage` marker, its fleet
+registered under, it was registered after any `replaced-storage` marker on
+the directory, its fleet
 finalized `replica_election`, and this build
 reports every feature it lists; otherwise the broker waits for the control
 plane. See `docs/control-plane.md`, "Starting while the control plane is
@@ -1431,7 +1434,8 @@ down".
 
 A background task builds the view from what the broker holds in memory and
 rewrites the file when the view changed, at most once a second and once more
-at a clean stop. It writes nothing until the broker has registered in this
+at a clean stop. A second in which no route, node address, catalog entry,
+fleet feature or registration changed builds nothing. It writes nothing until the broker has registered in this
 process and taken a routes snapshot and a catalog snapshot from the control
 plane, so every part of a view on disk is an answer the control plane gave
 this broker. Routes a start seeded from the view do not count as that

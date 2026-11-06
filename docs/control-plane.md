@@ -19,7 +19,7 @@ the data plane and does not carry user payloads.
 > control plane runs one of two production-shaped backends: a stateless REST
 > service over a highly available Postgres (what that database must provide
 > is [ha-postgres.md](ha-postgres.md)), or a Raft group embedded in the
-> instances themselves, with no external database. M13 is complete, chaos
+> instances themselves, with no external database. The embedded Raft backend is complete, chaos
 > pass included: three instances survive rolling restarts, a SIGKILLed
 > leader, a frozen leader, and a wiped volume without losing an
 > acknowledged write. The implemented design, which differs from the
@@ -219,11 +219,12 @@ a broker opens a new stream's or cache's shard only once it knows the
 assignment is the shard's first, and it can tell that only from an
 incarnation above 0. Without the incarnations, no stream or quorum cache
 created after the finalize would open
-(`joint_fence_is_refused_until_incarnations_are_finalized`). No build reports
-either feature yet, so a finalize of either is refused
+(`joint_fence_is_refused_until_incarnations_are_finalized`). A broker reports
+both only with `FELIX_INTERNAL_ELECTION=true`, which is off by default, so a
+fleet that has not turned it on everywhere has a finalize of either refused
 (`the_election_features_cannot_be_finalized_yet`), and a new cluster does not
 start with them. A broker that offers the `ELECTION`
-peer capability reports it as `peer_election`, which no build does yet.
+peer capability reports it as `peer_election`, also only with that switch on.
 Every broker from #1737 on also reports `start_holders`: its leaders name, in
 each replica report, the followers holding the generation's start record
 (`holds_start`). Current brokers report `non_voting` too:
@@ -397,7 +398,7 @@ rather than a delay. It is tracked in
 [the replication design](replication-design.md): a broker without a valid lease
 refuses, rather than racing its watch. What holds today is convergence within the
 sync interval. See
-[the stale-ownership window](cluster-harness.md#a-gap-the-suite-does-not-paper-over-the-stale-ownership-window).
+[the stale-ownership window](cluster-harness.md#the-stale-ownership-window-and-what-closes-it).
 
 The internal transport is described in
 [the broker-internal forwarding protocol](internal-protocol.md); its remaining
@@ -496,17 +497,24 @@ hold:
 
 1. The data directory has a view (`controlplane.view`, see
    `docs/durable-storage.md`) for this node. A new or wiped directory has
-   none. A broker removes its view before it deregisters itself, and when it
-   stops because the control plane refused it or found its directory
-   replaced. A node an operator deregistered, or one expired while it was
+   none. A broker removes its view before it deregisters itself, and puts
+   it back if the deregistration never reached the control plane, including
+   a view an earlier start wrote. It also removes it when it stops because
+   the control plane refused it or found its directory replaced. A node an operator deregistered, or one expired while it was
    down, keeps its view: elections stay safe on any past view, because
    every decision is checked against the ballots and sets a majority holds
    (`docs/replication-design.md`, "Rejoining without the control plane").
 2. The storage id on disk is the one the view was registered under. A new or
    rotated id has never been registered, and must register before it acts.
-3. The directory has no `replaced-storage` marker: the control plane last
-   registered the node under another storage id, and only a registration
-   says which copies here it still holds.
+3. The view was registered after any `replaced-storage` marker on the
+   directory. The marker says the control plane once registered the node
+   under another storage id, and only a registration under the current id
+   says which copies here the node still holds. Writing the marker removes
+   the view, so only a view from a later registration of the current id
+   qualifies. The marker also names that id and the incarnation the control
+   plane held when the broker found the replacement, and the view must match
+   both. A marker written by an older release names
+   neither, and refuses every view.
 4. The view's fleet had finalized `replica_election`.
 5. This build reports every feature the view's fleet finalized. That is the
    check the control plane makes when a broker registers: a build rolled back,
@@ -523,7 +531,7 @@ started this way votes only if it comes back at its registered address.
 flowchart TD
     A["Startup lookup, at most FELIX_CONTROLPLANE_STARTUP_WAIT_MS"] -- "answered" --> N["Start as usual"]
     A -- "up but refusing or unreadable" --> W["Wait for the control plane"]
-    A -- "down on every attempt" --> Q{"View for this node, registered storage id,<br/>not replaced, replica_election, every feature reported?"}
+    A -- "down on every attempt" --> Q{"View for this node, registered storage id,<br/>registered since any replacement, replica_election, every feature reported?"}
     Q -- "no" --> W
     Q -- "yes" --> O["Open storage"]
     O -- "the run rotated the storage id" --> W
@@ -1028,7 +1036,8 @@ and placement treats it as one. With `joint_fence` finalized:
    assignment's generation shows the replaced member caught up under its
    new id, placement writes the same leader and replicas at the next
    generation (the `readmit` step, at most one member per shard per pass).
-   The write names the new id and puts the member in `learners`.
+   Each is a new fenced term on the leader, so a pass re-admits into at most
+   16 shards, and none while placement is paused. The write names the new id and puts the member in `learners`.
 3. **The report lets it count.** The leader's report at that generation
    lists the member in `holds_start` once the member holds the generation's
    start record. For a cache shard its counter log must hold the counter
@@ -1053,8 +1062,8 @@ checks the first four itself.
    without `non_voting` would let a wiped copy vote and count its answers,
    so the check, not the order brokers and control planes are upgraded in,
    keeps a mixed fleet safe.
-2. Every serving broker reports `joint_fence` and `peer_election`. No release
-   does yet: they join a broker's report with the election driver.
+2. Every serving broker reports `joint_fence` and `peer_election`. A broker
+   reports them only with `FELIX_INTERNAL_ELECTION=true`, off by default.
 3. `generation_start`, `stream_incarnations` and `cache_incarnations` are
    finalized. A cluster created on 0.7 has all three; an upgraded one
    finalizes the incarnations first, or no stream or quorum cache created

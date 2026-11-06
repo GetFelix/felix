@@ -158,6 +158,7 @@ async fn fixture() -> Fixture {
     );
     let catalog_seeded = CancellationToken::new();
     catalog_seeded.cancel();
+    let ownership_changes = ownership.changes();
     fleet.restart(["generation_start"]);
     registered.send_replace(Some(9));
     Fixture {
@@ -168,6 +169,7 @@ async fn fixture() -> Fixture {
             fleet,
             catalog_seeded,
             ownership: Arc::new(RwLock::new(ownership)),
+            ownership_changes,
             router,
             broker,
         },
@@ -344,7 +346,10 @@ async fn writes_come_at_most_once_an_interval_and_once_more_at_a_stop() {
     let dir = tempfile::tempdir().unwrap();
     let builds = Arc::new(AtomicU64::new(0));
     let shutdown = CancellationToken::new();
+    let ticks = Arc::new(AtomicU64::new(0));
     let task = tokio::spawn(run(
+        // Something moved on every tick.
+        move || ticks.fetch_add(1, Ordering::SeqCst),
         {
             let builds = Arc::clone(&builds);
             // A view that changes every time it is built, so every build is
@@ -365,6 +370,105 @@ async fn writes_come_at_most_once_an_interval_and_once_more_at_a_stop() {
     assert_eq!(builds.load(Ordering::SeqCst), 7);
     assert_eq!(read(dir.path(), ME), Some(view(7)));
     assert_eq!(last, Some(serde_json::to_vec(&view(7)).unwrap()));
+}
+
+/// **A tick on which nothing moved builds nothing**: no lock, no registry
+/// reads, no encoding. A failed write is tried again though nothing moved.
+#[tokio::test(start_paused = true)]
+async fn an_idle_tick_does_not_rebuild_the_view() {
+    let dir = tempfile::tempdir().unwrap();
+    let builds = Arc::new(AtomicU64::new(0));
+    let moved = Arc::new(AtomicU64::new(0));
+    let shutdown = CancellationToken::new();
+    let task = tokio::spawn(run(
+        {
+            let moved = Arc::clone(&moved);
+            move || moved.load(Ordering::SeqCst)
+        },
+        {
+            let builds = Arc::clone(&builds);
+            move || {
+                builds.fetch_add(1, Ordering::SeqCst);
+                async { Some(view(1)) }
+            }
+        },
+        ViewFile::new(dir.path().to_path_buf()),
+        shutdown.clone(),
+    ));
+    tokio::time::sleep(WRITE_EVERY * 5 + WRITE_EVERY / 2).await;
+    assert_eq!(builds.load(Ordering::SeqCst), 1, "idle ticks rebuilt");
+    moved.fetch_add(1, Ordering::SeqCst);
+    tokio::time::sleep(WRITE_EVERY).await;
+    assert_eq!(builds.load(Ordering::SeqCst), 2, "a change was not built");
+    shutdown.cancel();
+    task.await.unwrap();
+}
+
+/// The stamp holds still while nothing changes, and moves with the routes,
+/// the catalog and registration.
+#[tokio::test]
+async fn the_stamp_moves_only_with_an_input() {
+    let fixture = fixture().await;
+    let sources = &fixture.sources;
+    assert_eq!(sources.stamp(), sources.stamp());
+
+    let before = sources.stamp();
+    sources.ownership.write().await.apply(
+        &key("orders", 5, ShardKind::Stream),
+        Some(assignment(key("orders", 5, ShardKind::Stream), ME, &[ME])),
+    );
+    assert_ne!(before, sources.stamp(), "routes");
+
+    let before = sources.stamp();
+    sources
+        .broker
+        .register_cache("t1", "ns", "more", CacheMetadata::default())
+        .await
+        .unwrap();
+    assert_ne!(before, sources.stamp(), "catalog");
+
+    let before = sources.stamp();
+    fixture.registered.send_replace(Some(10));
+    assert_ne!(before, sources.stamp(), "registration");
+}
+
+/// A tick whose write failed builds again on the next one, though nothing
+/// moved.
+#[tokio::test(start_paused = true)]
+async fn a_failed_write_is_retried_on_an_idle_tick() {
+    let dir = tempfile::tempdir().unwrap();
+    let blocker = dir
+        .path()
+        .join(felix_storage::controlplane_view::FILE_NAME)
+        .with_extension("tmp");
+    std::fs::create_dir(&blocker).unwrap();
+    let builds = Arc::new(AtomicU64::new(0));
+    let shutdown = CancellationToken::new();
+    let task = tokio::spawn(run(
+        || 0u64,
+        {
+            let builds = Arc::clone(&builds);
+            move || {
+                builds.fetch_add(1, Ordering::SeqCst);
+                async { Some(view(1)) }
+            }
+        },
+        ViewFile::new(dir.path().to_path_buf()),
+        shutdown.clone(),
+    ));
+    tokio::time::sleep(WRITE_EVERY * 2 + WRITE_EVERY / 2).await;
+    assert_eq!(builds.load(Ordering::SeqCst), 3);
+    std::fs::remove_dir(&blocker).unwrap();
+    tokio::time::sleep(WRITE_EVERY).await;
+    assert_eq!(read(dir.path(), ME), Some(view(1)));
+    tokio::time::sleep(WRITE_EVERY * 2).await;
+    assert_eq!(
+        builds.load(Ordering::SeqCst),
+        4,
+        "rebuilt after it was written"
+    );
+    shutdown.cancel();
+    task.await.unwrap();
 }
 
 /// The body a stopped writer hands back for `n`.
@@ -422,6 +526,72 @@ async fn a_deregistration_that_never_left_keeps_the_view() {
             .await
     );
     assert_eq!(read(dir.path(), ME), Some(view(1)));
+}
+
+/// A broker that started from its view and stops before it registered has
+/// written nothing in this process. A deregistration that never left keeps
+/// the view an earlier process wrote.
+#[tokio::test]
+async fn a_view_this_process_never_wrote_survives_a_deregistration_that_never_left() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut earlier = Writer::new(ViewFile::new(dir.path().to_path_buf()));
+    earlier.write(Some(view(1))).await;
+    assert!(
+        ViewFile::new(dir.path().to_path_buf())
+            .forget_while(None, async { false })
+            .await
+    );
+    assert_eq!(read(dir.path(), ME), Some(view(1)));
+}
+
+/// **A stop does not put back a view the restore check marked replaced
+/// meanwhile.** The deregistration never left, but the directory was found
+/// replaced while it was out, so the old view must stay gone whatever its
+/// incarnation.
+#[tokio::test]
+async fn a_view_marked_replaced_during_the_deregistration_is_not_put_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = ViewFile::new(dir.path().to_path_buf());
+    let mut earlier = Writer::new(file.clone());
+    earlier.write(Some(view(9))).await;
+    let deregister = {
+        let file = file.clone();
+        let root = dir.path().to_path_buf();
+        async move {
+            file.forget_while_recording(|| {
+                felix_storage::run_state::record_replaced(
+                    &root,
+                    felix_storage::StorageId::from_bytes([1; 16]),
+                    1,
+                )
+            })
+            .unwrap();
+            false
+        }
+    };
+    assert!(file.forget_while(None, deregister).await);
+    assert_eq!(read(dir.path(), ME), None);
+}
+
+/// A marker from a replacement long ago, unchanged during the stop, does not
+/// keep the view the node registered since from being put back.
+#[tokio::test]
+async fn an_older_marker_does_not_stop_the_view_being_put_back() {
+    let dir = tempfile::tempdir().unwrap();
+    felix_storage::run_state::record_replaced(
+        dir.path(),
+        felix_storage::StorageId::from_bytes([1; 16]),
+        3,
+    )
+    .unwrap();
+    let mut writer = Writer::new(ViewFile::new(dir.path().to_path_buf()));
+    writer.write(Some(view(10))).await;
+    assert!(
+        ViewFile::new(dir.path().to_path_buf())
+            .forget_while(body(10), async { false })
+            .await
+    );
+    assert_eq!(read(dir.path(), ME), Some(view(10)));
 }
 
 #[tokio::test]

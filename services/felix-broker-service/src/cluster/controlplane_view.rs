@@ -6,8 +6,9 @@
 //! this broker is in, the addresses of the nodes those routes name, and the
 //! catalog entries those shards open at. One background task builds it from
 //! what the broker holds in memory and rewrites the file when it changed, at
-//! most once per [`WRITE_EVERY`] and once more at a clean stop. Nothing on the
-//! publish path touches it.
+//! most once per [`WRITE_EVERY`] and once more at a clean stop. A tick on
+//! which none of its inputs moved builds nothing. Nothing on the publish path
+//! touches it.
 //!
 //! Only state the control plane has backed is written: nothing until this
 //! process has registered, taken the registration's features, and seeded its
@@ -23,6 +24,7 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use felix_broker::Broker;
@@ -115,11 +117,59 @@ pub(crate) struct Sources {
     pub(crate) fleet: Arc<FleetGate>,
     pub(crate) catalog_seeded: CancellationToken,
     pub(crate) ownership: Arc<RwLock<ShardOwnership>>,
+    /// [`ShardOwnership::changes`] of `ownership`.
+    pub(crate) ownership_changes: Arc<AtomicU64>,
     pub(crate) router: Arc<ShardRouter>,
     pub(crate) broker: Arc<Broker>,
 }
 
+/// Everything a view is built from, as far as telling whether it moved: one
+/// that compares equal to the last builds the same view.
+#[derive(Debug)]
+pub(crate) struct Stamp {
+    registered: Option<u64>,
+    adopted: bool,
+    fleet: Vec<String>,
+    catalog_seeded: bool,
+    ownership: u64,
+    /// Node addresses: each publish swaps in a new one.
+    routes: Arc<felix_router::Routes>,
+    catalog: u64,
+}
+
+impl PartialEq for Stamp {
+    fn eq(&self, other: &Self) -> bool {
+        self.registered == other.registered
+            && self.adopted == other.adopted
+            && self.fleet == other.fleet
+            && self.catalog_seeded == other.catalog_seeded
+            && self.ownership == other.ownership
+            && Arc::ptr_eq(&self.routes, &other.routes)
+            && self.catalog == other.catalog
+    }
+}
+
 impl Sources {
+    /// Where every input stands, without the locks or reads a build takes.
+    /// Taken before [`Self::build`], so a change during the build shows as a
+    /// new stamp next time.
+    pub(crate) fn stamp(&self) -> Stamp {
+        Stamp {
+            registered: *self.registered.borrow(),
+            adopted: self.fleet.view().adopted(),
+            fleet: self
+                .fleet
+                .enabled()
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+            catalog_seeded: self.catalog_seeded.is_cancelled(),
+            ownership: self.ownership_changes.load(Ordering::Acquire),
+            routes: self.router.routes(),
+            catalog: self.broker.catalog_changes(),
+        }
+    }
+
     /// The view as of now, or `None` while some part of it is not yet backed
     /// by the control plane in this process.
     pub(crate) async fn build(&self) -> Option<View> {
@@ -260,17 +310,47 @@ impl ViewFile {
         felix_storage::controlplane_view::record(&self.root, body)
     }
 
-    /// Remove the file durably and stop the writer recording it. Blocking.
-    fn forget(&self) -> felix_storage::Result<()> {
+    /// Remove the file durably and stop the writer recording it. Returns
+    /// what [`Self::restore`] needs to put it back. Blocking.
+    fn forget(&self) -> felix_storage::Result<Forgotten> {
         let mut forgotten = self.forgotten.lock().unwrap_or_else(|err| err.into_inner());
         *forgotten = true;
-        felix_storage::controlplane_view::forget(&self.root)
+        let held = felix_storage::controlplane_view::read(&self.root);
+        let marker = self.marker();
+        felix_storage::controlplane_view::forget(&self.root)?;
+        Ok(Forgotten { held, marker })
     }
 
-    /// Put `body` back after [`Self::forget`]. Blocking.
-    fn restore(&self, body: &[u8]) -> felix_storage::Result<()> {
+    /// The replaced-storage marker's bytes, `Some(None)` without one, or
+    /// `None` when it cannot be read.
+    fn marker(&self) -> Option<Option<Vec<u8>>> {
+        match std::fs::read(self.root.join(felix_storage::run_state::REPLACED_FILE_NAME)) {
+            Ok(bytes) => Some(Some(bytes)),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Some(None),
+            Err(_) => None,
+        }
+    }
+
+    /// Put `body` back after [`Self::forget`], unless the directory was
+    /// marked replaced since (`marker` is what it held then): the view
+    /// predates that marker, and only a registration after it may write one.
+    /// An older marker, unchanged, says nothing about this view. Blocking.
+    fn restore(&self, body: &[u8], marker: Option<Option<Vec<u8>>>) -> felix_storage::Result<()> {
         let _forgotten = self.forgotten.lock().unwrap_or_else(|err| err.into_inner());
+        let now = self.marker();
+        if marker.is_none() || now != marker {
+            return Ok(());
+        }
         felix_storage::controlplane_view::record(&self.root, body)
+    }
+
+    /// Run `record`, which marks the directory replaced and removes the view,
+    /// under the lock every write and restore takes, and stop the writer
+    /// recording the view after it. Blocking.
+    pub(crate) fn forget_while_recording<R>(&self, record: impl FnOnce() -> R) -> R {
+        let mut forgotten = self.forgotten.lock().unwrap_or_else(|err| err.into_inner());
+        *forgotten = true;
+        record()
     }
 
     /// Remove the file durably and stop the writer recording it, for a broker
@@ -279,7 +359,7 @@ impl ViewFile {
     pub(crate) async fn forget_now(&self) -> bool {
         let file = self.clone();
         let forgotten = tokio::task::spawn_blocking(move || file.forget()).await;
-        let gone = matches!(forgotten, Ok(Ok(())));
+        let gone = matches!(forgotten, Ok(Ok(_)));
         if !gone {
             tracing::error!(
                 outcome = ?forgotten.map(|forgotten| forgotten.map_err(|err| err.to_string())),
@@ -289,8 +369,10 @@ impl ViewFile {
         gone
     }
 
-    /// Forget the view before deregistering, and put `last` back if the
-    /// control plane never got the request.
+    /// Forget the view before deregistering, and put it back if the control
+    /// plane never got the request: `last`, or when this process wrote none,
+    /// what the file held, so a broker that started from its view and stops
+    /// before it registered keeps it.
     ///
     /// Once the control plane has a deregistration it may move this node's
     /// shards to sets without it, so a later start must not stand or vote
@@ -307,21 +389,24 @@ impl ViewFile {
             let file = self.clone();
             tokio::task::spawn_blocking(move || file.forget()).await
         };
-        if !matches!(forgotten, Ok(Ok(()))) {
-            tracing::error!(
-                outcome = ?forgotten.map(|forgotten| forgotten.map_err(|err| err.to_string())),
-                "could not remove the control-plane view; not deregistering, so the control \
-                 plane expires this node instead",
-            );
-            return false;
-        }
+        let Forgotten { held, marker } = match forgotten {
+            Ok(Ok(forgotten)) => forgotten,
+            forgotten => {
+                tracing::error!(
+                    outcome = ?forgotten.map(|forgotten| forgotten.map_err(|err| err.to_string())),
+                    "could not remove the control-plane view; not deregistering, so the control \
+                     plane expires this node instead",
+                );
+                return false;
+            }
+        };
         if !deregister.await
-            && let Some(last) = last
+            && let Some(last) = last.or(held)
         {
             // The control plane never saw the request, so the view is as good
             // as it was.
             let file = self.clone();
-            let restored = tokio::task::spawn_blocking(move || file.restore(&last)).await;
+            let restored = tokio::task::spawn_blocking(move || file.restore(&last, marker)).await;
             if !matches!(restored, Ok(Ok(()))) {
                 tracing::warn!(
                     "could not put the control-plane view back; the next start waits for the \
@@ -331,6 +416,14 @@ impl ViewFile {
         }
         true
     }
+}
+
+/// What [`ViewFile::forget`] removed, and the replaced-storage marker as it
+/// stood then.
+#[derive(Debug)]
+struct Forgotten {
+    held: Option<Vec<u8>>,
+    marker: Option<Option<Vec<u8>>>,
 }
 
 /// The running writer.
@@ -363,11 +456,14 @@ impl ViewWriter {
 
 /// Keep the view under `root` current until it is stopped, then write it
 /// once more.
-pub(crate) fn spawn(sources: Sources, root: PathBuf) -> ViewWriter {
+pub(crate) fn spawn(sources: Sources, file: ViewFile) -> ViewWriter {
     let sources = Arc::new(sources);
     let shutdown = CancellationToken::new();
-    let file = ViewFile::new(root);
     let task = tokio::spawn(run(
+        {
+            let sources = Arc::clone(&sources);
+            move || sources.stamp()
+        },
         move || {
             let sources = Arc::clone(&sources);
             async move { sources.build().await }
@@ -382,22 +478,39 @@ pub(crate) fn spawn(sources: Sources, root: PathBuf) -> ViewWriter {
     }
 }
 
-/// The writer's loop, over any way of building the view. Returns the body
-/// it last wrote.
-async fn run<B, F>(build: B, file: ViewFile, shutdown: CancellationToken) -> Option<Vec<u8>>
+/// The writer's loop, over any way of stamping and building the view.
+/// Returns the body it last wrote.
+///
+/// No periodic rebuild backs the stamp up: every input a build reads is in
+/// it, so an unchanged stamp builds the view already on disk.
+async fn run<S, T, B, F>(
+    stamp: S,
+    build: B,
+    file: ViewFile,
+    shutdown: CancellationToken,
+) -> Option<Vec<u8>>
 where
+    S: Fn() -> T,
+    T: PartialEq,
     B: Fn() -> F,
     F: Future<Output = Option<View>>,
 {
     let mut writer = Writer::new(file);
     let mut ticker = tokio::time::interval(WRITE_EVERY);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut built: Option<T> = None;
     loop {
         tokio::select! {
             () = shutdown.cancelled() => break,
             _ = ticker.tick() => {}
         }
+        let now = stamp();
+        if built.as_ref() == Some(&now) {
+            continue;
+        }
         writer.write(build().await).await;
+        // A failed write is tried again on the next tick, unchanged or not.
+        built = (!writer.failed).then_some(now);
     }
     // A change made since the last tick would otherwise be lost to a stop
     // that is not a crash.
@@ -409,17 +522,24 @@ where
 pub(crate) struct Writer {
     file: ViewFile,
     last: Option<Vec<u8>>,
+    /// The last view could not be written.
+    failed: bool,
 }
 
 impl Writer {
     pub(crate) fn new(file: ViewFile) -> Self {
-        Self { file, last: None }
+        Self {
+            file,
+            last: None,
+            failed: false,
+        }
     }
 
     /// Record `view` if it is new. Returns whether the file was written.
     /// A failed write is logged and tried again with the next view, and the
     /// file keeps the older one.
     pub(crate) async fn write(&mut self, view: Option<View>) -> bool {
+        self.failed = false;
         let Some(view) = view else {
             return false;
         };
@@ -427,6 +547,7 @@ impl Writer {
             Ok(body) => body,
             Err(err) => {
                 tracing::error!(error = %err, "could not encode the control-plane view");
+                self.failed = true;
                 return false;
             }
         };
@@ -445,10 +566,12 @@ impl Writer {
             }
             Ok(Err(err)) => {
                 tracing::warn!(error = %err, "could not write the control-plane view; keeping the older one");
+                self.failed = true;
                 false
             }
             Err(err) => {
                 tracing::error!(error = %err, "writing the control-plane view panicked");
+                self.failed = true;
                 false
             }
         }

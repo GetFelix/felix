@@ -1,14 +1,17 @@
 ---
 title: "How Felix Is Tested"
-description: "The history checker, fault injection on a real cluster, and the TLA+ models behind the replication claims."
+description: "The history checker, fault injection on a real cluster, a deterministic simulator that runs a whole cluster on a seed, and the TLA+ models behind the replication claims."
 ---
 
 The replication rows on [What Felix Is For](/getting-started/what-felix-is-for/)
-rest on three kinds of evidence. A history checker runs clients against a real
+rest on four kinds of evidence. A history checker runs clients against a real
 three-broker cluster while it injects faults, then checks what the clients saw.
 The cluster harness runs those brokers and injects the faults, and individual
-tests use it to pin one scenario at a time. TLA+ models cover the interleavings no injected fault
-reliably reaches. This page says what each one does and where the detail lives.
+tests use it to pin one scenario at a time. A simulator runs a whole cluster
+inside one process on a seeded random number generator and a virtual clock, so
+a faulty run can be started again from its seed. TLA+ models cover the
+interleavings no injected fault reliably reaches. This page says what each one
+does and where the detail lives.
 
 ## The history checker
 
@@ -28,7 +31,7 @@ connection, `outcome_unknown`). Half the clients are idempotent producers that
 re-send under the same sequence, so the campaign also exercises deduplication
 across leader changes.
 
-It checks twelve rules:
+It checks twenty-one rules:
 
 1. No acknowledged append is missing from the final read.
 2. No value sits at two offsets.
@@ -47,9 +50,32 @@ It checks twelve rules:
     offset.
 11. Every record in the final log reaches a subscriber or shows up as a gap
     in its offsets, up to the end of the log.
-12. No two brokers open one shard for writes at the same generation. This
+12. No G0: append order alone forms no cycle.
+13. No G1c: append order and what reads saw form no cycle.
+14. No G1c-realtime: as 13, with real-time order as one of the edges.
+15. No G-single: no cycle has exactly one read that missed an append.
+16. No G-single-realtime: as 15, with real-time order as one of the edges.
+17. No G2: no cycle has two or more reads that missed an append.
+18. No G2-realtime: as 17, with real-time order as one of the edges.
+19. No G0-realtime: as 12, with real-time order as one of the edges.
+20. The puts, gets and deletes on a cache key can be put in one order that
+    respects real time and behaves like a single variable.
+21. No two brokers open one shard for writes at the same generation. This
     one is read from the broker logs, and only in the election campaign
     below.
+
+A cycle rule draws an edge from each operation that must come first to the
+one that follows it, and reports any loop, because then no single order of the
+stream explains what the clients saw. A stale read is the common case: an
+append returned, a read began afterwards, and the read stopped before it.
+Rule 20 searches for an order of a key's operations the way a linearizability
+checker does, so it also catches an anomaly that needs several operations to
+show, such as two conditional puts on an absent key that both applied. A key
+too tangled to decide within the search budget is reported as undecided, which
+is neither a pass nor a failure. The cycle rules need reads that end at the
+true end of the log. A live subscriber may drop its newest records, so the
+cluster campaigns leave the anti-dependency edges out. The simulator turns
+them on.
 
 A read that is missing records is allowed, because a subscriber may drop under
 `DropNew` and the offsets show the gap. What a read does hold has to match.
@@ -140,6 +166,78 @@ Run it a few times.
 
 Detail, including how to read a violation and how to add a fault:
 [`docs/history-checker.md`](https://github.com/GetFelix/felix/blob/main/docs/history-checker.md).
+
+## Deterministic simulation
+
+A real cluster finds bugs slowly. A failover takes seconds of wall time, and a
+fault that has to land between two particular messages can take hundreds of
+runs to hit. `crates/testing/felix-sim` runs the whole cluster in one test
+process instead: three to five real brokers and a control plane, with the
+network, the clocks and the faults under the test's control. It runs on tokio's
+virtual time, so waiting costs nothing, and the faults, the clients'
+operations and the retry jitter are all drawn from one number, the seed.
+
+```mermaid
+flowchart LR
+    seed([seed]) --> nemesis["Nemesis"]
+    seed --> clients["Clients"]
+    nemesis -->|faults| cluster["Brokers and control plane in one process, virtual clock"]
+    clients --> cluster
+    cluster --> history["History and broker state"]
+    history --> checkers["History checker and cluster checkers"]
+```
+
+The brokers are the real shard, replication and election code. Their peer
+traffic goes through an in-memory network that can partition a link, drop its
+messages in one direction or delay them. The control plane is the real router
+called in the same process, and it can be slow, paused or down. A broker can be
+crashed and restarted, which reopens its data directory, or frozen, which cuts
+it off from every peer and from the control plane while it keeps running. Each
+broker's data directory lives in an in-memory filesystem that keeps a second,
+durable copy of every file and directory, so it can rebuild what a power loss
+would have left, with unsynced pages lost, torn or zeroed. The simulator can
+build that state, but its nemesis does not cut the power yet: today a crash is
+a process crash, and the power-loss faults are in the
+[history checker](#the-history-checker) and the storage suite.
+
+A run lasts 120 seconds of virtual time. Faults go in for the first 90, then
+everything heals and the cluster has 60 seconds to serve every shard again.
+Then the clients stop, a last read takes each shard, and the checkers run. The
+history checker above judges the clients' history with `exact_tails` on. The
+simulator's reads end at the real tail of the log, never at wherever a dropped
+delivery stopped, so a read that missed a record can be told from a record that
+did not exist yet, and the rule 12 to 19 cycles can use anti-dependency edges.
+Cluster checkers, each named after an invariant in the TLA+ model, also look at
+the brokers: one leader per generation, at most one broker serving a shard at a
+time, every acknowledged append held by the leader, and every shard served
+again after the heal.
+
+Run a batch of seeds, or replay one:
+
+```bash
+cargo test -p felix-sim --test seeds -- --ignored --exact seeds
+FELIX_SIM_SEED=<n> cargo test -p felix-sim --test seeds replay -- --nocapture
+```
+
+`FELIX_SIM_SEEDS` sets how many seeds the batch runs (default 4) and
+`FELIX_SIM_SEED_START` the first (default 1). `FELIX_SIM_HISTORY=<file>` writes
+a run's history, so two runs can be diffed. A failing seed prints the replay
+command. Each seed takes three to five minutes of real time, because starting
+50 to 200 shards on every broker is CPU work no virtual clock skips, so run
+them one at a time on a busy machine. A run that stops making progress ends
+with a `stalled` finding instead of hanging.
+
+Repeatable has a limit here. A replay injects the same faults at the same
+virtual times and sends the same client operations, but the interleaving of the
+brokers' own tasks can still differ, so a failure may take a few replays to
+show again. Building with `RUSTFLAGS="--cfg tokio_unstable"` makes tokio's
+`select!` seeded as well, which closes most of that gap. It does not close all
+of it: storage still reads the host clock in a few places. CI runs the `seeds`
+test, seeds 1 to 4, in its own job on every pull request. That job does not
+block merging until the open liveness bugs it finds are fixed.
+Seeds that expose a bug are pinned as ignored tests named after their issue,
+and [`docs/simulation.md`](https://github.com/GetFelix/felix/blob/main/docs/simulation.md)
+lists the ones that fail today.
 
 ## The cluster harness
 

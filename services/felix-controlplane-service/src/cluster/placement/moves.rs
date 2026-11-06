@@ -88,6 +88,11 @@ pub(super) const MAX_STUCK_RENAMES: u32 = 4;
 /// does not land as a burst of fences on one broker.
 pub(super) const STUCK_RENAMES_PER_PASS: usize = 16;
 
+/// The most shards one pass re-admits a replaced copy into. Each is a new
+/// fenced term on its leader, so a broker that comes back wiped under many
+/// shards gets its fences over several passes, not in one burst.
+pub(super) const READMITS_PER_PASS: usize = 16;
+
 /// Past this many leaders overdue at once (or an eighth of those watched, if
 /// more), a pass renames one of them at most: that may be a fleet-wide
 /// stall, which the same leaders one generation up would share, or one
@@ -218,6 +223,8 @@ pub(super) struct Moves {
     pub(super) stream_wanted: bool,
     /// Shards this pass named again for being stuck.
     stuck_renames: usize,
+    /// Shards this pass re-admitted a replaced copy into.
+    readmits: usize,
 }
 
 impl Moves {
@@ -236,6 +243,7 @@ impl Moves {
             stream_wanted: false,
             recovering: false,
             stuck_renames: 0,
+            readmits: 0,
         };
         for assignment in existing {
             // A seat fence is `Draining` with `joining` and no successor:
@@ -280,6 +288,16 @@ impl Moves {
     /// not stop these; the limits do.
     pub(super) fn begin_requested(&mut self, from: &str, to: &str) -> Result<(), Blocked> {
         self.reserve(from, Some(to))
+    }
+
+    /// Take one of the pass's re-admissions, unless placement is paused. A
+    /// re-admission copies nothing, so it takes no move slot.
+    pub(super) fn begin_readmit(&mut self) -> Option<()> {
+        if self.policy.paused || self.readmits >= READMITS_PER_PASS {
+            return None;
+        }
+        self.readmits += 1;
+        Some(())
     }
 
     /// Take a slot for a trim's fence, which stops `leader` as a move's does.
@@ -515,13 +533,7 @@ pub(super) fn move_step<'a>(
         }
         let renamed = match existing.successor.as_deref() {
             Some(successor) => undo_staged(existing, successor, replication_factor),
-            None => ShardAssignment {
-                generation: 0,
-                fence_storage_ids: Default::default(),
-                member_storage_ids: Default::default(),
-                learners: Default::default(),
-                ..existing.clone()
-            },
+            None => existing.renamed(),
         };
         return Decision::Move(
             if refused.is_promise() {
@@ -555,16 +567,7 @@ pub(super) fn move_step<'a>(
         && majority_can_serve(key, existing, is_live, caught_up)
         && let Some(reason) = moves.stuck_due(caught_up, key, existing.generation)
     {
-        return Decision::Move(
-            MoveStep::Stuck { reason },
-            ShardAssignment {
-                generation: 0,
-                fence_storage_ids: Default::default(),
-                member_storage_ids: Default::default(),
-                learners: Default::default(),
-                ..existing.clone()
-            },
-        );
+        return Decision::Move(MoveStep::Stuck { reason }, existing.renamed());
     }
 
     // A pending set change ends on the leader's word, a failover that
@@ -578,11 +581,7 @@ pub(super) fn move_step<'a>(
                 step,
                 ShardAssignment {
                     pending_set: None,
-                    generation: 0,
-                    fence_storage_ids: Default::default(),
-                    member_storage_ids: Default::default(),
-                    learners: Default::default(),
-                    ..existing.clone()
+                    ..existing.renamed()
                 },
             )
         };
@@ -603,11 +602,7 @@ pub(super) fn move_step<'a>(
             ShardAssignment {
                 replicas: pending.replicas.clone(),
                 pending_set: None,
-                generation: 0,
-                fence_storage_ids: Default::default(),
-                member_storage_ids: Default::default(),
-                learners: Default::default(),
-                ..existing.clone()
+                ..existing.renamed()
             },
         );
     }
@@ -680,11 +675,7 @@ pub(super) fn move_step<'a>(
                     ShardAssignment {
                         successor: None,
                         replicas,
-                        generation: 0,
-                        fence_storage_ids: Default::default(),
-                        member_storage_ids: Default::default(),
-                        learners: Default::default(),
-                        ..existing.clone()
+                        ..existing.renamed()
                     },
                 );
             }
@@ -804,11 +795,7 @@ pub(super) fn move_step<'a>(
                     move_started_at_millis: None,
                     move_reason: None,
                     replicas,
-                    generation: 0,
-                    fence_storage_ids: Default::default(),
-                    member_storage_ids: Default::default(),
-                    learners: Default::default(),
-                    ..existing.clone()
+                    ..existing.renamed()
                 },
             );
         }
@@ -832,11 +819,7 @@ pub(super) fn move_step<'a>(
                 MoveStep::Fence,
                 ShardAssignment {
                     state: ShardState::Draining,
-                    generation: 0,
-                    fence_storage_ids: Default::default(),
-                    member_storage_ids: Default::default(),
-                    learners: Default::default(),
-                    ..existing.clone()
+                    ..existing.renamed()
                 },
             );
         }
@@ -1130,15 +1113,11 @@ pub(super) fn retake(existing: &ShardAssignment, replication_factor: u32) -> Sha
     };
     ShardAssignment {
         replicas,
-        generation: 0,
         state: ShardState::Assigning,
         successor: None,
         joining: None,
         move_reason: None,
-        fence_storage_ids: Default::default(),
-        member_storage_ids: Default::default(),
-        learners: Default::default(),
-        ..existing.clone()
+        ..existing.renamed()
     }
 }
 
@@ -1158,11 +1137,7 @@ pub(super) fn undo_staged(
         successor: None,
         move_reason: None,
         replicas,
-        generation: 0,
-        fence_storage_ids: Default::default(),
-        member_storage_ids: Default::default(),
-        learners: Default::default(),
-        ..existing.clone()
+        ..existing.renamed()
     }
 }
 
@@ -1216,11 +1191,7 @@ pub(super) fn undo_needs_fence(existing: &ShardAssignment, fenced: bool) -> bool
 pub(super) fn undo_fenced(existing: &ShardAssignment) -> ShardAssignment {
     ShardAssignment {
         state: ShardState::Draining,
-        generation: 0,
-        fence_storage_ids: Default::default(),
-        member_storage_ids: Default::default(),
-        learners: Default::default(),
-        ..existing.clone()
+        ..existing.renamed()
     }
 }
 
@@ -1231,13 +1202,9 @@ pub(super) fn undo_replacement(existing: &ShardAssignment, joining: &str) -> Sha
     replicas.retain(|replica| replica != joining);
     ShardAssignment {
         replicas,
-        generation: 0,
         joining: None,
         move_reason: None,
-        fence_storage_ids: Default::default(),
-        member_storage_ids: Default::default(),
-        learners: Default::default(),
-        ..existing.clone()
+        ..existing.renamed()
     }
 }
 
@@ -1303,14 +1270,10 @@ fn reseat<'a>(
         },
         ShardAssignment {
             replicas,
-            generation: 0,
             joining: Some(replacement.node_id.clone()),
             move_started_at_millis: caught_up.as_of_millis(),
             move_reason: Some(MoveReason::Replace),
-            fence_storage_ids: Default::default(),
-            member_storage_ids: Default::default(),
-            learners: Default::default(),
-            ..existing.clone()
+            ..existing.renamed()
         },
     )
 }
@@ -1421,11 +1384,7 @@ pub(super) fn seat_or_fence(
             },
             ShardAssignment {
                 state: ShardState::Draining,
-                generation: 0,
-                fence_storage_ids: Default::default(),
-                member_storage_ids: Default::default(),
-                learners: Default::default(),
-                ..existing.clone()
+                ..existing.renamed()
             },
         );
     }
@@ -1444,14 +1403,10 @@ fn seated(existing: &ShardAssignment, from: Option<&str>) -> ShardAssignment {
     replicas.retain(|replica| Some(replica.as_str()) != from);
     ShardAssignment {
         replicas,
-        generation: 0,
         joining: None,
         move_started_at_millis: None,
         move_reason: None,
-        fence_storage_ids: Default::default(),
-        member_storage_ids: Default::default(),
-        learners: Default::default(),
-        ..existing.clone()
+        ..existing.renamed()
     }
 }
 
@@ -1565,13 +1520,7 @@ fn seat_after_fence(
     if moves.fence_timed_out(caught_up, key, existing.generation) {
         return Decision::Move(
             MoveStep::FenceTimedOut { successor: None },
-            serving(ShardAssignment {
-                generation: 0,
-                fence_storage_ids: Default::default(),
-                member_storage_ids: Default::default(),
-                learners: Default::default(),
-                ..existing.clone()
-            }),
+            serving(existing.renamed()),
         );
     }
     Decision::Waiting(Blocked::LeaderStopping)
@@ -1660,11 +1609,7 @@ fn trim_fence(
         ShardAssignment {
             state: ShardState::Draining,
             successor: None,
-            generation: 0,
-            fence_storage_ids: Default::default(),
-            member_storage_ids: Default::default(),
-            learners: Default::default(),
-            ..existing.clone()
+            ..existing.renamed()
         },
     )
 }
@@ -1977,29 +1922,22 @@ fn crowded<'a>(
         })
 }
 
-/// `inner`, believed only where its report is from `generation`.
-///
-/// A move is decided on the assignment's own generation. The report the store
-/// holds may be the previous leader's, still fresh and still listing the
-/// replicas it had level -- and a fence made on that would stop a leader for
-/// a destination that may hold nothing of what it has written since.
 /// Whether a majority of `existing`'s voters (its leader and the followers
-/// that are not learners) is live and not reported halted.
+/// that are not learners) is live and not reported halted. A follower whose
+/// storage was replaced since the set named it is a learner too, though the
+/// assignment does not list it yet: it acks nothing at the next generation.
 fn majority_can_serve(
     key: &ShardKey,
     existing: &ShardAssignment,
     is_live: &dyn Fn(&str) -> bool,
     caught_up: &dyn CaughtUp,
 ) -> bool {
-    let voters: Vec<&str> = std::iter::once(existing.leader.as_str())
-        .chain(
-            existing
-                .replicas
-                .iter()
-                .map(String::as_str)
-                .filter(|node| !existing.learners.contains(*node)),
-        )
-        .collect();
+    let voters: Vec<&str> =
+        std::iter::once(existing.leader.as_str())
+            .chain(existing.replicas.iter().map(String::as_str).filter(|node| {
+                !existing.learners.contains(*node) && !caught_up.is_learner(key, node)
+            }))
+            .collect();
     let able = voters
         .iter()
         .filter(|node| {
@@ -2012,6 +1950,12 @@ fn majority_can_serve(
     able > voters.len() / 2
 }
 
+/// `inner`, believed only where its report is from `generation`.
+///
+/// A move is decided on the assignment's own generation. The report the store
+/// holds may be the previous leader's, still fresh and still listing the
+/// replicas it had level -- and a fence made on that would stop a leader for
+/// a destination that may hold nothing of what it has written since.
 pub(super) struct AtGeneration<'a> {
     inner: &'a dyn CaughtUp,
     generation: u64,
@@ -2107,5 +2051,11 @@ impl CaughtUp for AtGeneration<'_> {
 
     fn stuck_leader(&self, key: &ShardKey, generation: u64) -> Option<super::StuckLeader> {
         self.inner.stuck_leader(key, generation)
+    }
+
+    // Not held to the generation: a replaced copy is judged against the
+    // identity the assignment named, not against a report.
+    fn is_learner(&self, key: &ShardKey, node_id: &str) -> bool {
+        self.inner.is_learner(key, node_id)
     }
 }
