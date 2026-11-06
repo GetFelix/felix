@@ -562,6 +562,33 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     {
         fence.deposed(mark_key, route.generation);
     }
+    // Led by election while a copy of the set refuses to follow here, with
+    // the rest still a majority: the candidate fences one generation up
+    // once the control plane has collided with the election for long enough.
+    if elected.is_some()
+        && let Some(elections) = marks.elections()
+        && entry.followers.iter().any(|cursor| cursor.refuses_leader)
+    {
+        let answering = entry
+            .followers
+            .iter()
+            .filter(|cursor| {
+                cursor.halted.is_none()
+                    && !cursor.stalled
+                    && !cursor.learner
+                    && !cursor.refuses_leader
+            })
+            .count();
+        // Learners neither answer for the set nor count in its majority.
+        let voters = entry
+            .followers
+            .iter()
+            .filter(|cursor| !cursor.learner)
+            .count();
+        if answering + 1 >= crate::quorum::majority_of(voters) {
+            elections.note_refused_copy(key, route.generation);
+        }
+    }
     // The leader keeps its own set before shipping at it, so a fence or
     // batch from an older set is refused here too once this broker follows.
     let electing = requester.offers_election();
@@ -1143,7 +1170,10 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 // fence reaches it: a candidate's generation is in no route,
                 // and a set being left is not learned from a batch (#1009).
                 if cursor.route_behind {
-                    if let Some(candidacy) = &candidacy {
+                    // Only a fence the follower took makes the next pass
+                    // worth asking for on an append. Otherwise it catches up
+                    // from the control plane and the tick retries it (#1944).
+                    cursor.refused = if let Some(candidacy) = &candidacy {
                         crate::promotion::refence(
                             requester,
                             &cursor.node_id,
@@ -1152,7 +1182,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                             log_kind,
                             candidacy,
                         )
-                        .await;
+                        .await
                     } else if refences_kept {
                         crate::promotion::refence_kept(
                             requester,
@@ -1163,8 +1193,10 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                             log.replica_set().as_ref(),
                             set_stamp,
                         )
-                        .await;
-                    }
+                        .await
+                    } else {
+                        false
+                    };
                 }
                 // A follower level with the tail was sent nothing, so nothing
                 // vouches for a position the mark still has to count. Its

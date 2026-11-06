@@ -102,8 +102,7 @@ pub(super) fn spawn(
             let client = crate::cluster::controlplane_client::build()
                 .expect("the control-plane client built once already");
             Some(membership::spawn(
-                client,
-                base_url.clone(),
+                felix_replication::controlplane_link::HttpControlPlaneLink::new(client, base_url),
                 membership_config.clone(),
                 node_credential,
                 serving,
@@ -145,7 +144,9 @@ pub(super) async fn registered(
     ) else {
         return Ok(None);
     };
-    membership::await_registered(client, base_url, &membership.node_id, credential).await
+    let link =
+        felix_replication::controlplane_link::HttpControlPlaneLink::new(client.clone(), base_url);
+    membership::await_registered(&link, &membership.node_id, credential).await
 }
 
 /// The initial lease: conservative, and invalid until the first heartbeat.

@@ -1008,9 +1008,13 @@ impl ShardReaders {
     /// is left serving at the lapse. Its readers end instead when a follower
     /// says the control plane assigned a newer generation, or this broker took
     /// one itself ([`ShardFence::depose`]), or when no
-    /// majority has confirmed it for a lease duration. The rounds that check
-    /// run only while the lease is lapsed; while it holds, a new assignment
-    /// reaches this broker the usual way.
+    /// majority has confirmed it for a lease duration
+    /// ([`ShardFence::unheard`]). The rounds that check run only while the
+    /// lease is lapsed; while it holds, a new assignment reaches this broker
+    /// the usual way. Silence alone names no newer leader, and the shard's
+    /// `Quorum` writes go on wherever a majority answers, so rounds go on for
+    /// a shard ended for silence, lease or no lease, and the first one
+    /// confirmed admits its readers again.
     ///
     /// [`ShardFence::sessions_lease_free`]: fence::ShardFence::sessions_lease_free
     /// [`ShardFence::depose`]: fence::ShardFence::depose
@@ -1027,6 +1031,8 @@ impl ShardReaders {
         // Lease-free shards kept serving past the lapse, and when a majority
         // last confirmed each.
         let mut unleased: HashMap<ShardKey, (u64, tokio::time::Instant)> = HashMap::new();
+        // Shards ended for silence, and the generation, until heard again.
+        let mut unheard: HashMap<ShardKey, u64> = HashMap::new();
         loop {
             let probe = (lease.usable() / 4).max(std::time::Duration::from_millis(100));
             tokio::select! {
@@ -1057,44 +1063,72 @@ impl ShardReaders {
                         }
                     }
                 }
-                _ = tokio::time::sleep(probe), if !unleased.is_empty() => {
+                _ = tokio::time::sleep(probe), if !unleased.is_empty() || !unheard.is_empty() => {
+                    unheard.retain(|key, generation| {
+                        fence.is_open_at(key, *generation)
+                            && !fence.names_newer_leader(key, *generation)
+                    });
+                    // A renewed lease alone does not clear silence: the
+                    // routes it serves on may predate a promotion made while
+                    // it was cut off. Only a round says no one replaced it.
                     if lease.is_valid_now() {
                         unleased.clear();
-                        continue;
                     }
-                    self.probe(&fence, &marks, &mut unleased, lease.usable()).await;
+                    self.probe(&fence, &marks, &mut unleased, &mut unheard, lease.usable())
+                        .await;
                 }
             }
         }
     }
 
-    /// One round for each lease-free shard kept past the lapse. A shard no
-    /// majority has confirmed for `silence` is deposed, which ends its readers
-    /// on the next turn of [`Self::watch_leadership`].
+    /// One round for each lease-free shard kept past the lapse, and for each
+    /// one ended for silence. A shard no majority has confirmed for `silence`
+    /// is marked [`fence::ShardFence::unheard`], which ends its readers on the
+    /// next turn of [`Self::watch_leadership`]; one confirmed again is heard
+    /// and serves its readers again.
     async fn probe(
         &self,
         fence: &fence::ShardFence,
         marks: &felix_replication::quorum::QuorumMarks,
         unleased: &mut HashMap<ShardKey, (u64, tokio::time::Instant)>,
+        unheard: &mut HashMap<ShardKey, u64>,
         silence: std::time::Duration,
     ) {
         let check = marks.reads_by_round();
-        let rounds = unleased.iter().map(|(key, (generation, _))| async move {
+        let probed = unleased
+            .iter()
+            .map(|(key, (generation, _))| (key.clone(), *generation))
+            .chain(
+                unheard
+                    .iter()
+                    .map(|(key, generation)| (key.clone(), *generation)),
+            );
+        let rounds = probed.map(|(key, generation)| async move {
             let confirmed = match check {
-                Some(check) => check.confirm(key, *generation).await.is_ok(),
+                Some(check) => check.confirm(&key, generation).await.is_ok(),
                 None => false,
             };
-            (key.clone(), confirmed)
+            (key, generation, confirmed)
         });
         let now = tokio::time::Instant::now();
-        for (key, confirmed) in futures::future::join_all(rounds).await {
-            let Some((generation, heard)) = unleased.get_mut(&key) else {
+        for (key, generation, confirmed) in futures::future::join_all(rounds).await {
+            if unheard.get(&key) == Some(&generation) {
+                if confirmed {
+                    unheard.remove(&key);
+                    fence.heard(&key, generation);
+                    unleased.insert(key, (generation, now));
+                }
+                continue;
+            }
+            let Some((_, heard)) = unleased.get_mut(&key) else {
                 continue;
             };
             if confirmed {
                 *heard = now;
             } else if now.saturating_duration_since(*heard) >= silence {
-                fence.depose(&key, *generation);
+                unleased.remove(&key);
+                fence.unheard(&key, generation);
+                unheard.insert(key, generation);
             }
         }
     }

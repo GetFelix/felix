@@ -1,11 +1,16 @@
 //! Ingress dispatch: what a broker does with a request for each ownership state.
 use std::collections::HashMap;
 
+use felix_replication::controlplane_link::HttpControlPlaneLink;
 use felix_router::{NodeRef, RegionRouter};
 
 use super::*;
 use crate::shards::lifecycle::ShardLifecycle;
 use crate::shards::watch::ShardAssignment;
+
+fn no_catalog() -> Option<CatalogSource<HttpControlPlaneLink>> {
+    None
+}
 
 mod hold;
 mod quorum;
@@ -341,21 +346,32 @@ mod feed {
     /// A `/v1/nodes` endpoint that can be told to start failing, so the
     /// refresh-failure path is exercised without stopping a server.
     async fn nodes_endpoint(failing: Arc<AtomicBool>) -> (String, tokio::task::JoinHandle<()>) {
-        nodes_endpoint_at(failing, Arc::new(AtomicU16::new(7002))).await
+        nodes_endpoint_at(
+            failing,
+            Arc::new(AtomicU16::new(7002)),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .await
     }
 
     /// As [`nodes_endpoint`], with broker-b's port settable, as a restart that
-    /// re-registers on new ports would change it.
+    /// re-registers on new ports would change it, and an endpoint that can be
+    /// told to take requests and never answer, as a paused control plane does.
     async fn nodes_endpoint_at(
         failing: Arc<AtomicBool>,
         port: Arc<AtomicU16>,
+        hanging: Arc<AtomicBool>,
     ) -> (String, tokio::task::JoinHandle<()>) {
         let app = Router::new().route(
             "/v1/nodes",
             get(move || {
                 let failing = Arc::clone(&failing);
+                let hanging = hanging.load(Ordering::Acquire);
                 let port = port.load(Ordering::Acquire);
                 async move {
+                    if hanging {
+                        std::future::pending::<()>().await;
+                    }
                     if failing.load(Ordering::Acquire) {
                         return Err(axum::http::StatusCode::SERVICE_UNAVAILABLE);
                     }
@@ -434,7 +450,12 @@ mod feed {
         let ingress = Arc::clone(&state.ingress);
         let shutdown = CancellationToken::new();
 
-        let feed = spawn_feed(state, None, Duration::from_millis(20), shutdown.clone());
+        let feed = spawn_feed(
+            state,
+            no_catalog(),
+            Duration::from_millis(20),
+            shutdown.clone(),
+        );
         until("the shard to be served locally", || {
             matches!(ingress.dispatch(&key(0)), Dispatch::Local { .. })
         })
@@ -488,7 +509,12 @@ mod feed {
                 .count()
         };
 
-        let feed = spawn_feed(state, None, Duration::from_secs(60), shutdown.clone());
+        let feed = spawn_feed(
+            state,
+            no_catalog(),
+            Duration::from_secs(60),
+            shutdown.clone(),
+        );
         until("a shard to be served locally", || local() > 0).await;
         let first = local();
         until("every shard to be served locally", || {
@@ -517,7 +543,12 @@ mod feed {
         let ownership = Arc::clone(&state.ownership);
         let changed = Arc::clone(&state.assignments_changed);
         let shutdown = CancellationToken::new();
-        let feed = spawn_feed(state, None, Duration::from_secs(60), shutdown.clone());
+        let feed = spawn_feed(
+            state,
+            no_catalog(),
+            Duration::from_secs(60),
+            shutdown.clone(),
+        );
         until("shard 0 to be served locally", || {
             matches!(ingress.dispatch(&key(0)), Dispatch::Local { generation: 1 })
         })
@@ -568,7 +599,12 @@ mod feed {
                 .unwrap_or(0)
         };
         let shutdown = CancellationToken::new();
-        let feed = spawn_feed(state, None, Duration::from_secs(60), shutdown.clone());
+        let feed = spawn_feed(
+            state,
+            no_catalog(),
+            Duration::from_secs(60),
+            shutdown.clone(),
+        );
         for _ in 0..200 {
             if fencing().await == 1 {
                 break;
@@ -628,7 +664,12 @@ mod feed {
                 .count()
         };
         let shutdown = CancellationToken::new();
-        let feed = spawn_feed(state, None, Duration::from_secs(60), shutdown.clone());
+        let feed = spawn_feed(
+            state,
+            no_catalog(),
+            Duration::from_secs(60),
+            shutdown.clone(),
+        );
         until("shard 0 to be served locally", || {
             matches!(ingress.dispatch(&key(0)), Dispatch::Local { generation: 1 })
         })
@@ -655,6 +696,59 @@ mod feed {
         let _ = feed.await;
     }
 
+    /// **A fence finishing as the pass publishes stays published.** The pass
+    /// reads the servable set and then publishes it; a fence that lands in
+    /// between must not be overwritten by the older set.
+    #[tokio::test]
+    async fn a_fence_finishing_during_the_end_of_pass_publish_is_kept() {
+        let (state, _router) = state(&[assignment(0, "broker-a", 1)]);
+        state.lifecycle.lock().await.fence_promotions();
+        let ingress = Arc::clone(&state.ingress);
+        let lifecycle = Arc::clone(&state.lifecycle);
+        let publishes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        // A fence finishing just before the view is stored, if it can get
+        // the lock it finishes under.
+        *ingress.before_publish.lock().unwrap() = Some(Box::new({
+            let lifecycle = Arc::clone(&lifecycle);
+            let publishes = Arc::clone(&publishes);
+            move |ingress: &IngressRouter| {
+                if let Ok(mut owned) = lifecycle.try_lock()
+                    && owned.fenced(&key(0), 1)
+                {
+                    ingress.publish_servable(owned.servable());
+                }
+                publishes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }));
+        let shutdown = CancellationToken::new();
+        let feed = spawn_feed(
+            state,
+            no_catalog(),
+            Duration::from_secs(60),
+            shutdown.clone(),
+        );
+        // One interim publish for the new shard, then the end-of-pass one.
+        until("the first pass to publish", || {
+            publishes.load(std::sync::atomic::Ordering::SeqCst) >= 2
+        })
+        .await;
+        // The fence finishes after the pass, if the pass kept it out.
+        {
+            let mut owned = lifecycle.lock().await;
+            if owned.fenced(&key(0), 1) {
+                ingress.publish_servable(owned.servable());
+            }
+        }
+
+        let after = ingress.dispatch(&key(0));
+        assert!(
+            matches!(after, Dispatch::Local { generation: 1 }),
+            "the pass undid the fence's publish: {after:?}"
+        );
+        shutdown.cancel();
+        let _ = feed.await;
+    }
+
     /// A shard led elsewhere is only forwardable once the catalog supplies an
     /// address. Before that it is known and unreachable, which is the state the
     /// address book exists to leave.
@@ -669,11 +763,13 @@ mod feed {
         let feed = spawn_feed(
             state,
             Some(CatalogSource {
-                client: reqwest::Client::builder()
-                    .no_proxy()
-                    .build()
-                    .expect("client"),
-                base_url,
+                link: HttpControlPlaneLink::new(
+                    reqwest::Client::builder()
+                        .no_proxy()
+                        .build()
+                        .expect("client"),
+                    &base_url,
+                ),
                 token: Some(crate::cluster::credential::NodeCredential::new("a-token")),
             }),
             Duration::from_millis(20),
@@ -690,6 +786,40 @@ mod feed {
         server.abort();
     }
 
+    /// The feed reads the catalog through the link alone.
+    #[tokio::test]
+    async fn a_fake_link_supplies_the_catalog() {
+        let link = crate::test_support::fake_link::FakeLink::default().reply(
+            "node_catalog_page",
+            serde_json::json!({
+                "items": [{
+                    "node": {
+                        "node_id": "broker-b",
+                        "spec": { "advertise_addr": "10.0.0.4:7002", "region": "us-west-2" },
+                    },
+                    "placement": { "eligible": true },
+                }],
+            }),
+        );
+        let (state, _router) = state(&[assignment(0, "broker-b", 1)]);
+        let ingress = Arc::clone(&state.ingress);
+        let shutdown = CancellationToken::new();
+
+        let feed = spawn_feed(
+            state,
+            Some(CatalogSource { link, token: None }),
+            Duration::from_millis(20),
+            shutdown.clone(),
+        );
+        until("the remote shard to become forwardable", || {
+            matches!(ingress.dispatch(&key(0)), Dispatch::Forward { .. })
+        })
+        .await;
+
+        shutdown.cancel();
+        let _ = feed.await;
+    }
+
     /// **A control-plane blip must not erase the address book.** Dropping it
     /// would turn every remote publish into a refusal, which looks exactly like
     /// a cluster with no brokers in it.
@@ -704,11 +834,13 @@ mod feed {
         let feed = spawn_feed(
             state,
             Some(CatalogSource {
-                client: reqwest::Client::builder()
-                    .no_proxy()
-                    .build()
-                    .expect("client"),
-                base_url,
+                link: HttpControlPlaneLink::new(
+                    reqwest::Client::builder()
+                        .no_proxy()
+                        .build()
+                        .expect("client"),
+                    &base_url,
+                ),
                 token: None,
             }),
             Duration::from_millis(20),
@@ -745,7 +877,12 @@ mod feed {
         let assignments_changed = Arc::clone(&state.assignments_changed);
         let routes_changed = Arc::clone(&state.routes_changed);
         let shutdown = CancellationToken::new();
-        let feed = spawn_feed(state, None, Duration::from_secs(60), shutdown.clone());
+        let feed = spawn_feed(
+            state,
+            no_catalog(),
+            Duration::from_secs(60),
+            shutdown.clone(),
+        );
 
         // The first tick fires at once; let it pass.
         until("the first tick to publish", || {
@@ -783,8 +920,12 @@ mod feed {
     #[tokio::test]
     async fn a_wake_refreshes_the_address_of_a_node_that_moved() {
         let port = Arc::new(AtomicU16::new(7002));
-        let (base_url, server) =
-            nodes_endpoint_at(Arc::new(AtomicBool::new(false)), Arc::clone(&port)).await;
+        let (base_url, server) = nodes_endpoint_at(
+            Arc::new(AtomicBool::new(false)),
+            Arc::clone(&port),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .await;
         let (state, _router) = state(&[assignment(0, "broker-b", 1)]);
         let ingress = Arc::clone(&state.ingress);
         let ownership = Arc::clone(&state.ownership);
@@ -793,11 +934,13 @@ mod feed {
         let feed = spawn_feed(
             state,
             Some(CatalogSource {
-                client: reqwest::Client::builder()
-                    .no_proxy()
-                    .build()
-                    .expect("client"),
-                base_url,
+                link: HttpControlPlaneLink::new(
+                    reqwest::Client::builder()
+                        .no_proxy()
+                        .build()
+                        .expect("client"),
+                    &base_url,
+                ),
                 token: None,
             }),
             Duration::from_secs(60),
@@ -831,6 +974,81 @@ mod feed {
         server.abort();
     }
 
+    /// **A control plane that never answers does not hold up a route.** An
+    /// election's leader has to be published within seconds, and the catalog
+    /// read waits up to `CATALOG_FETCH_TIMEOUT` on a paused control plane. The
+    /// woken pass publishes from what it already has.
+    #[tokio::test]
+    async fn a_hung_catalog_read_does_not_delay_the_routes() {
+        let hanging = Arc::new(AtomicBool::new(false));
+        let (base_url, server) = nodes_endpoint_at(
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicU16::new(7002)),
+            Arc::clone(&hanging),
+        )
+        .await;
+        let (state, _router) = state(&[assignment(0, "broker-b", 1)]);
+        let ingress = Arc::clone(&state.ingress);
+        let ownership = Arc::clone(&state.ownership);
+        let assignments_changed = Arc::clone(&state.assignments_changed);
+        let shutdown = CancellationToken::new();
+        let feed = spawn_feed(
+            state,
+            Some(CatalogSource {
+                link: HttpControlPlaneLink::new(
+                    reqwest::Client::builder()
+                        .no_proxy()
+                        .build()
+                        .expect("client"),
+                    &base_url,
+                ),
+                token: None,
+            }),
+            Duration::from_secs(60),
+            shutdown.clone(),
+        );
+        until("the first tick to learn broker-b's address", || {
+            matches!(ingress.dispatch(&key(0)), Dispatch::Forward { .. })
+        })
+        .await;
+
+        hanging.store(true, Ordering::Release);
+        ownership
+            .write()
+            .await
+            .apply(&key(0), Some(assignment(0, "broker-a", 2)));
+        assignments_changed.notify_one();
+
+        let served = tokio::time::timeout(Duration::from_secs(1), async {
+            while ingress.dispatch(&key(0)) != (Dispatch::Local { generation: 2 }) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(
+            served.is_ok(),
+            "the route waited on the catalog read: {:?}",
+            ingress.dispatch(&key(0))
+        );
+        // The address book survives the hung read.
+        ownership
+            .write()
+            .await
+            .apply(&key(0), Some(assignment(0, "broker-b", 3)));
+        assignments_changed.notify_one();
+        until("the shard to forward to broker-b again", || {
+            matches!(
+                ingress.dispatch(&key(0)),
+                Dispatch::Forward { generation: 3, .. }
+            )
+        })
+        .await;
+
+        shutdown.cancel();
+        let _ = feed.await;
+        server.abort();
+    }
+
     /// After a surrender the lease serves again only once the feed has
     /// published routes from a watch answer that reaches the head the renewal
     /// was accepted at (#1955). The feed's publish is what confirms it.
@@ -845,7 +1063,12 @@ mod feed {
         let ownership = Arc::clone(&state.ownership);
         let changed = Arc::clone(&state.assignments_changed);
         let shutdown = CancellationToken::new();
-        let feed = spawn_feed(state, None, Duration::from_millis(20), shutdown.clone());
+        let feed = spawn_feed(
+            state,
+            no_catalog(),
+            Duration::from_millis(20),
+            shutdown.clone(),
+        );
 
         lease.renew();
         lease.surrender();
@@ -877,7 +1100,12 @@ mod feed {
     async fn the_feed_stops_when_cancelled() {
         let (state, _router) = state(&[assignment(0, "broker-a", 1)]);
         let shutdown = CancellationToken::new();
-        let feed = spawn_feed(state, None, Duration::from_millis(20), shutdown.clone());
+        let feed = spawn_feed(
+            state,
+            no_catalog(),
+            Duration::from_millis(20),
+            shutdown.clone(),
+        );
 
         shutdown.cancel();
         tokio::time::timeout(Duration::from_secs(5), feed)

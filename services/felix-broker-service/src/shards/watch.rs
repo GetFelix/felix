@@ -22,6 +22,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
+use felix_replication::controlplane_link::ControlPlaneLink;
 use serde::Deserialize;
 use tokio::sync::{Notify, RwLock};
 use tokio_util::sync::CancellationToken;
@@ -413,8 +414,7 @@ pub fn check_continuity(since: u64, first_seq: Option<u64>, next_seq: u64) -> Op
 /// next tick.
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
-    client: reqwest::Client,
-    base_url: String,
+    link: impl ControlPlaneLink,
     // Held rather than copied: this task outlives many token lifetimes, and a
     // copy taken at startup is the exact bug that drops a broker out of the
     // cluster when its first token expires.
@@ -428,7 +428,6 @@ pub async fn run(
     if let Some(lease) = &lease {
         lease.follow_routes();
     }
-    let base_url = base_url.trim_end_matches('/').to_string();
     // `None` means "no valid checkpoint": take a snapshot before polling.
     let mut checkpoint: Option<u64> = None;
     // The furthest this broker has applied. A snapshot older than that came
@@ -473,8 +472,8 @@ pub async fn run(
             }
             result = async {
                 match checkpoint {
-                    None => snapshot(&client, &base_url, token, &ownership, floor).await,
-                    Some(since) => poll(&client, &base_url, token, &ownership, since, wait).await,
+                    None => snapshot(&link, token, &ownership, floor).await,
+                    Some(since) => poll(&link, token, &ownership, since, wait).await,
                 }
             } => result,
         };
@@ -576,18 +575,15 @@ enum Progress {
 }
 
 async fn snapshot(
-    client: &reqwest::Client,
-    base_url: &str,
+    link: &impl ControlPlaneLink,
     bearer: Option<&str>,
     ownership: &Arc<RwLock<ShardOwnership>>,
     floor: u64,
 ) -> Result<Progress> {
-    let response: SnapshotResponse = get(
-        client,
-        &format!("{base_url}/v1/shard-assignments/snapshot"),
-        bearer,
+    let response: SnapshotResponse = decode(
+        link.assignment_snapshot(bearer, LONG_POLL_WAIT + LONG_POLL_SLACK)
+            .await,
     )
-    .await
     .context("shard assignment snapshot")?;
     if response.next_seq < floor {
         return Ok(Progress::Behind);
@@ -619,22 +615,16 @@ async fn snapshot(
 }
 
 async fn poll(
-    client: &reqwest::Client,
-    base_url: &str,
+    link: &impl ControlPlaneLink,
     bearer: Option<&str>,
     ownership: &Arc<RwLock<ShardOwnership>>,
     since: u64,
     wait: Duration,
 ) -> Result<Progress> {
-    let response: ChangesResponse = get(
-        client,
-        &format!(
-            "{base_url}/v1/shard-assignments/changes?since={since}&wait_ms={}",
-            wait.as_millis()
-        ),
-        bearer,
+    let response: ChangesResponse = decode(
+        link.assignment_changes(bearer, since, wait, LONG_POLL_WAIT + LONG_POLL_SLACK)
+            .await,
     )
-    .await
     .context("shard assignment changes")?;
 
     let first_seq = response.items.first().map(|change| change.seq);
@@ -657,22 +647,14 @@ async fn poll(
     })
 }
 
-async fn get<T: serde::de::DeserializeOwned>(
-    client: &reqwest::Client,
-    url: &str,
-    bearer: Option<&str>,
+fn decode<T: serde::de::DeserializeOwned>(
+    response: Result<felix_replication::controlplane_link::LinkResponse>,
 ) -> Result<T> {
-    let mut request = client.get(url).timeout(LONG_POLL_WAIT + LONG_POLL_SLACK);
-    if let Some(bearer) = bearer {
-        request = request.bearer_auth(bearer);
+    let response = response.context("send request")?;
+    if !response.status.is_success() {
+        return Err(anyhow!("{}: {}", response.status, response.text()));
     }
-    let response = request.send().await.context("send request")?;
-    let status = response.status();
-    if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
-        return Err(anyhow!("{status}: {body}"));
-    }
-    response.json().await.context("decode response")
+    response.json()
 }
 
 /// Exponential backoff, capped, so a long control-plane outage does not turn

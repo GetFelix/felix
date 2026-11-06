@@ -56,14 +56,29 @@ fetch_tools() {
   if [ -f "$JAR" ]; then return; fi
   mkdir -p "$(dirname "$JAR")"
   echo "fetching TLA+ tools ${TLA_VERSION}"
-  curl -sSL -o "$JAR.tmp" "$TLA_URL"
-  actual="$(shasum -a 256 "$JAR.tmp" | awk '{print $1}')"
-  if [ "$actual" != "$TLA_SHA256" ]; then
-    echo "tla2tools.jar checksum mismatch: $actual" >&2
+  # The release CDN has served a wrong body with a 200 now and then, so a
+  # mismatch is retried. Only a file that matches the pinned hash is kept.
+  local attempt actual delay
+  for attempt in 1 2 3 4; do
+    if curl -sSL --fail --retry 3 -o "$JAR.tmp" "$TLA_URL"; then
+      actual="$(shasum -a 256 "$JAR.tmp" | awk '{print $1}')"
+      if [ "$actual" = "$TLA_SHA256" ]; then
+        mv "$JAR.tmp" "$JAR"
+        return
+      fi
+      echo "tla2tools.jar checksum mismatch (attempt $attempt/4): $actual," \
+        "$(wc -c <"$JAR.tmp" | tr -d ' ') bytes, starts: $(head -c 200 "$JAR.tmp" | LC_ALL=C tr -cd '[:print:]')" >&2
+    else
+      echo "tla2tools.jar download failed (attempt $attempt/4)" >&2
+    fi
     rm -f "$JAR.tmp"
-    exit 1
-  fi
-  mv "$JAR.tmp" "$JAR"
+    if [ "$attempt" -lt 4 ]; then
+      delay=$((attempt == 1 ? 5 : attempt == 2 ? 15 : 30))
+      sleep "$delay"
+    fi
+  done
+  echo "tla2tools.jar could not be fetched with the pinned checksum" >&2
+  exit 1
 }
 
 # Run TLC on one configuration, printing its output; the exit code is TLC's.
@@ -311,6 +326,11 @@ expectations=(
   "FelixShardElectLiveNoBackoff violates liveness"
   "FelixShardElectLiveReissue pass"
   "FelixShardElectLiveNoReissue violates liveness"
+  "FelixShardElectRouteLag pass"
+  "FelixShardElectRouteLagNoFix violates liveness"
+  "FelixShardElectRouteLagReportOnly pass"
+  "FelixShardElectRouteLagFence pass"
+  "FelixShardElectRouteLagFenceNoFix violates liveness"
   "FelixShardElectPreVote pass"
   "FelixShardElectNoBallotAcks violates AckedHeldByLeader"
   "FelixShardElectStepDown pass"
@@ -520,6 +540,11 @@ weights=(
   "FelixShardElectReissue 1"
   "FelixShardElectReissueReplaceBatchSet 2"
   "FelixShardElectLiveReissue 8"
+  "FelixShardElectRouteLag 12"
+  "FelixShardElectRouteLagReportOnly 18"
+  "FelixShardElectRouteLagNoFix 2"
+  "FelixShardElectRouteLagFence 20"
+  "FelixShardElectRouteLagFenceNoFix 1"
   "FelixShardElectAdoptFailoverApart0Gen2 5"
   "FelixShardElectAdoptFailoverApart1Gen2 5"
   "FelixShardElectAdoptFailoverApart0StoodGen2 5"

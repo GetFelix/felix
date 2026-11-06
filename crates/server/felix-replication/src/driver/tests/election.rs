@@ -2,6 +2,9 @@
 //! batches with its set, keeping that set, and rule 5, counting nothing more
 //! once it has answered a newer fence.
 
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering::Relaxed;
+
 use felix_wire::internal::PeerCapabilities;
 
 use super::quorum::{follower_ack_marks, follower_ack_marks_adopted, quorum_leader};
@@ -506,6 +509,8 @@ async fn a_leader_opened_at_a_bump_on_the_same_members_keeps_the_new_set() {
 /// fence, and records the batches' stamps and the fences.
 struct BehindFollower {
     behind: &'static str,
+    /// What `behind` answers a batch with, `StaleRoute` when `None`.
+    refusal: Option<(felix_wire::internal::ErrorCode, &'static str)>,
     stamps: Mutex<Vec<(String, Option<u64>)>>,
     fences: Mutex<Vec<(String, felix_wire::internal::Fence)>>,
 }
@@ -542,9 +547,16 @@ impl PeerRequester for BehindFollower {
             return Ok(InternalMessage::ReplicateError(
                 felix_wire::internal::ReplicateError {
                     correlation_id: 0,
-                    code: felix_wire::internal::ErrorCode::StaleRoute,
+                    code: self
+                        .refusal
+                        .map_or(felix_wire::internal::ErrorCode::StaleRoute, |(code, _)| {
+                            code
+                        }),
                     expected_offset: 0,
-                    detail: "behind".to_string(),
+                    detail: self
+                        .refusal
+                        .map_or("behind", |(_, detail)| detail)
+                        .to_string(),
                 },
             ));
         }
@@ -629,6 +641,7 @@ async fn an_elected_leader_fences_a_follower_whose_route_is_behind_again() {
             .expect("own ballot");
         let followers = BehindFollower {
             behind: "broker-b",
+            refusal: None,
             stamps: Mutex::new(Vec::new()),
             fences: Mutex::new(Vec::new()),
         };
@@ -668,6 +681,7 @@ async fn without_replica_election_a_route_behind_follower_gets_no_fence() {
         .expect("own ballot");
     let followers = BehindFollower {
         behind: "broker-b",
+        refusal: None,
         stamps: Mutex::new(Vec::new()),
         fences: Mutex::new(Vec::new()),
     };
@@ -859,4 +873,287 @@ async fn the_running_driver_keeps_a_standing_until_its_shard_opens() {
         "an adoption must not make the open read as a plain bump"
     );
     driver.stop().await;
+}
+
+/// **An elected leader notes a copy that refuses to follow it** while the
+/// rest of the set answers: the evidence the candidate fences again on when
+/// the control plane collided with the election. A leader the control
+/// plane named notes nothing.
+#[tokio::test]
+async fn an_elected_leader_notes_a_copy_that_refuses_to_follow_it() {
+    for (leader, noted) in [(LOCAL, Some(4)), ("broker-z", None)] {
+        let (broker, _dir) = quorum_leader(3, 4).await;
+        stream_log(&broker)
+            .await
+            .accept_generation(4, Some(LOCAL))
+            .await
+            .expect("own ballot");
+        let followers = BehindFollower {
+            behind: "broker-b",
+            refusal: Some((
+                felix_wire::internal::ErrorCode::Unauthorized,
+                crate::replica::NOT_A_REPLICA,
+            )),
+            stamps: Mutex::new(Vec::new()),
+            fences: Mutex::new(Vec::new()),
+        };
+        let marks = elected_marks(leader);
+        let router = router(LOCAL, &["broker-b", "broker-c"], 4);
+        let (mut cursors, mut aux, mut busy, mut moves) = Default::default();
+        // The second pass reads the cursors the first left.
+        for _ in 0..2 {
+            replicate_once_with(
+                &followers,
+                &broker,
+                &router,
+                &Unfenced,
+                &NoGate,
+                &marks,
+                None,
+                &mut cursors,
+                &mut aux,
+                &mut busy,
+                &mut moves,
+                &Rebuilds::disabled(),
+                &MoveThrottle::unlimited(),
+            )
+            .await;
+        }
+        let elections = marks.elections().expect("elections");
+        assert_eq!(elections.refused_copy_at(&key()), noted, "led by {leader}");
+    }
+}
+
+/// Answers every batch to `broker-b` with a transport error.
+struct Unreachable;
+
+impl PeerRequester for Unreachable {
+    async fn request(
+        &self,
+        node_id: &str,
+        _addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, PeerError> {
+        match message {
+            InternalMessage::ReplicateRecords(_) | InternalMessage::ReplicateMarkedRecords(_)
+                if node_id == "broker-b" =>
+            {
+                Err(PeerError::Disconnected {
+                    node_id: node_id.to_string(),
+                })
+            }
+            InternalMessage::ReplicateRecords(batch)
+            | InternalMessage::ReplicateMarkedRecords(batch) => {
+                Ok(InternalMessage::ReplicateOk(ReplicateOk {
+                    correlation_id: 0,
+                    durable_offset: batch.first_offset + batch.payloads.len() as u64,
+                    learner: false,
+                }))
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    fn recorded_capabilities(&self, _node_id: &str) -> Option<PeerCapabilities> {
+        Some(PeerCapabilities::ELECTION)
+    }
+
+    fn offers_election(&self) -> bool {
+        true
+    }
+}
+
+/// **A refusal does not outlive an unanswered batch.** A copy that refused
+/// the leader and then went unreachable says nothing now; the leader must not
+/// keep noting a refused copy on the strength of the old answer.
+#[tokio::test]
+async fn a_copy_that_refused_then_went_unreachable_is_no_longer_noted() {
+    let (broker, _dir) = quorum_leader(3, 4).await;
+    stream_log(&broker)
+        .await
+        .accept_generation(4, Some(LOCAL))
+        .await
+        .expect("own ballot");
+    let refusing = BehindFollower {
+        behind: "broker-b",
+        refusal: Some((
+            felix_wire::internal::ErrorCode::Unauthorized,
+            crate::replica::NOT_A_REPLICA,
+        )),
+        stamps: Mutex::new(Vec::new()),
+        fences: Mutex::new(Vec::new()),
+    };
+    let router = router(LOCAL, &["broker-b", "broker-c"], 4);
+    let (mut cursors, mut aux, mut busy, mut moves) = Default::default();
+    // Passes 1 and 2 hear the refusal; pass 3 finds broker-b unreachable.
+    // Pass 4 reads what pass 3 left, in marks that have noted nothing.
+    let first = elected_marks(LOCAL);
+    for _ in 0..2 {
+        replicate_once_with(
+            &refusing,
+            &broker,
+            &router,
+            &Unfenced,
+            &NoGate,
+            &first,
+            None,
+            &mut cursors,
+            &mut aux,
+            &mut busy,
+            &mut moves,
+            &Rebuilds::disabled(),
+            &MoveThrottle::unlimited(),
+        )
+        .await;
+    }
+    let elections = first.elections().expect("elections");
+    assert_eq!(
+        elections.refused_copy_at(&key()),
+        Some(4),
+        "heard the refusal"
+    );
+    replicate_once_with(
+        &Unreachable,
+        &broker,
+        &router,
+        &Unfenced,
+        &NoGate,
+        &first,
+        None,
+        &mut cursors,
+        &mut aux,
+        &mut busy,
+        &mut moves,
+        &Rebuilds::disabled(),
+        &MoveThrottle::unlimited(),
+    )
+    .await;
+    let later = elected_marks(LOCAL);
+    replicate_once_with(
+        &Unreachable,
+        &broker,
+        &router,
+        &Unfenced,
+        &NoGate,
+        &later,
+        None,
+        &mut cursors,
+        &mut aux,
+        &mut busy,
+        &mut moves,
+        &Rebuilds::disabled(),
+        &MoveThrottle::unlimited(),
+    )
+    .await;
+    assert_eq!(
+        later
+            .elections()
+            .expect("elections")
+            .refused_copy_at(&key()),
+        None,
+        "noted a refusal that no answer backs"
+    );
+}
+
+/// Fails every fence. Once one has failed, awaits the generation above the
+/// route's when `above` is set (a broker standing as a candidate there before
+/// any route names it), and keeps awaiting the same one otherwise.
+struct ClosedAfterAFence {
+    awaiting: Mutex<Option<u64>>,
+    above: bool,
+    opens: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl crate::promotion::PromotionGate for ClosedAfterAFence {
+    fn awaiting(&self, _key: &crate::ShardKey) -> Option<u64> {
+        *self.awaiting.lock().expect("lock")
+    }
+
+    async fn open(&self, _key: &crate::ShardKey, generation: u64) -> bool {
+        self.opens.fetch_add(1, Relaxed);
+        if self.above {
+            *self.awaiting.lock().expect("lock") = Some(generation + 1);
+        }
+        false
+    }
+}
+
+/// Fails the fence at generation 4, lets `after` change the route or the
+/// gate, and checks the driver still waits between turns: on a paused clock
+/// a loop that never waits stops time, so a second of it never passes.
+fn waits_after_a_failed_fence(above: bool, after: fn(&ShardRouter)) {
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .start_paused(true)
+            .build()
+            .expect("runtime");
+        let opens = runtime.block_on(async move {
+            let (broker, _dir) = quorum_leader(3, 4).await;
+            let gate = Arc::new(ClosedAfterAFence {
+                awaiting: Mutex::new(Some(4)),
+                above,
+                opens: AtomicUsize::new(0),
+            });
+            let router = router(LOCAL, &["broker-b", "broker-c"], 4);
+            let driver = spawn(
+                Arc::new(FenceTaker),
+                Arc::clone(&broker),
+                Arc::clone(&router),
+                Arc::new(Unfenced),
+                Arc::clone(&gate) as Arc<dyn crate::promotion::PromotionGate>,
+                Published {
+                    marks: Arc::new(elected_marks(LOCAL)),
+                    halted: Arc::new(crate::halted::HaltedReplicas::new()),
+                    status: Arc::default(),
+                },
+                None,
+                Duration::from_secs(300),
+                Arc::default(),
+                RebuildPolicy::default(),
+                MoveThrottle::unlimited(),
+                CancellationToken::new(),
+            );
+            while gate.opens.load(Relaxed) == 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            after(&router);
+            // Well past the fence's backoff.
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            let opens = gate.opens.load(Relaxed);
+            driver.stop().await;
+            opens
+        });
+        let _ = done.send(opens);
+    });
+    match finished.recv_timeout(Duration::from_secs(30)) {
+        Ok(opens) => assert_eq!(opens, 1, "no fence is due at 4 any more"),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            panic!("a second of paused time did not pass: the driver never waited")
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            panic!("the driver's runtime panicked")
+        }
+    }
+}
+
+/// **A failed fence the gate now awaits above the route's generation is not
+/// retried in a loop** (#1941). Once its backoff passed, the driver answered
+/// "retry now" for it on every turn and never waited, burning a core until
+/// the route caught up.
+#[test]
+fn a_fence_awaited_above_the_route_is_not_retried_in_a_loop() {
+    waits_after_a_failed_fence(true, |_| {});
+}
+
+/// **Nor is a failed fence for a shard whose route has moved to another
+/// leader** (#1941). The gate still awaits the route's generation, so only
+/// the leadership check stops the retry.
+#[test]
+fn a_fence_for_a_shard_led_elsewhere_now_is_not_retried_in_a_loop() {
+    waits_after_a_failed_fence(false, |router| {
+        publish(router, "broker-b", &[LOCAL, "broker-c"], 4);
+    });
 }
