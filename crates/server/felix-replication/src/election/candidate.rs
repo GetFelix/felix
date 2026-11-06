@@ -446,11 +446,20 @@ async fn run<R: PeerRequester + Send + Sync + 'static>(
         // Shards of a suspected broker first: a real outage is not held up
         // behind shards suspected alone, which get a smaller share.
         let mut order: Vec<_> = snapshot.iter().collect();
-        // Drawn each round, so a bad draw does not repeat on every failover.
-        let offsets = [
-            felix_common::jitter::up_to(u64::MAX),
-            felix_common::jitter::up_to(u64::MAX),
-        ];
+        // Drawn each round with work to do, so a bad draw does not repeat on
+        // every failover and idle ticks do not move the seeded sequence.
+        let candidates = order.iter().any(|(key, route)| {
+            holds_copy(route, local)
+                && (names.contains(&route.leader.node_id) || stuck.contains(*key))
+        });
+        let offsets = if candidates {
+            [
+                felix_common::jitter::up_to(u64::MAX),
+                felix_common::jitter::up_to(u64::MAX),
+            ]
+        } else {
+            [0; 2]
+        };
         walk_order(&mut order, offsets, |(_, route)| {
             names.contains(&route.leader.node_id)
         });

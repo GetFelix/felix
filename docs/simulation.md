@@ -65,8 +65,8 @@ or under the `felix-common/sim` feature; a plain release build does not have
 them. Three changes run in every build: passes over routing tables and
 assignment sets walk in key order, the election walk starts at an offset drawn
 from the seeded source each round (the OS's randomness in a plain broker) so
-followers do not all stand on the same shards first, and the deadlines and backoffs read `tokio::time::Instant`
-instead of `std::time::Instant`.
+followers do not all stand on the same shards first, and the deadlines and
+backoffs read `tokio::time::Instant` instead of `std::time::Instant`.
 
 - **Blocking work.** Shard opens, reads, rollovers and the log's append and
   flush threads run on real threads in a broker, and finish in real time.
