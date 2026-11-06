@@ -16,6 +16,7 @@ use crate::cluster::credential::NodeCredential;
 use crate::config::BrokerConfig;
 use crate::serving::auth::BrokerAuth;
 use crate::shards::{lifecycle as shard_lifecycle, routing as shard_routing, watch as shard_watch};
+use felix_replication::controlplane_link::ControlPlaneLink;
 use felix_replication::peer::{self, PeerPool, PeerRequester, tls::PeerTls};
 use felix_replication::{self as replication, halted::HaltedReplicas, quorum::QuorumMarks};
 
@@ -141,10 +142,13 @@ pub(super) fn bind_peer_listener(
     Ok(
         match (&config.peer_transport, &config.membership, cluster) {
             (Some(peer_config), Some(membership_config), Some((router, ingress, _, _))) => {
-                let replicas = replica_handler(
-                    broker,
+                let (handler, prefetch) = peer_handler(
+                    config,
                     router,
+                    ingress,
+                    broker,
                     quorum_marks,
+                    auth,
                     storage_id,
                     unclean,
                     controlplane.map(|(client, base_url, credential)| {
@@ -154,21 +158,6 @@ pub(super) fn bind_peer_listener(
                             credential.clone(),
                         )
                     }),
-                )
-                // A leader retries a copy that refused it on its driver tick.
-                .with_leader_retry(Duration::from_millis(config.controlplane_sync_interval_ms));
-                let prefetch = replicas.confirmed_prefetch();
-                let handler = peer_dispatch::BrokerPeerHandler::new(
-                    crate::serving::forward::ForwardingHandler::new(
-                        Arc::clone(broker),
-                        Arc::clone(ingress),
-                        Arc::clone(router),
-                        membership_config.advertise_addr.clone(),
-                        Some(Arc::clone(quorum_marks)),
-                        Duration::from_millis(config.publish_quorum_timeout_ms.max(1)),
-                        Arc::clone(auth),
-                    ),
-                    replicas,
                 );
                 let handler = match clients {
                     Some(clients) => handler.serving_clients_after(clients),
@@ -221,6 +210,48 @@ pub(super) fn bind_peer_listener(
     )
 }
 
+/// What answers every request a peer sends this broker, and the handle that
+/// starts a copy's confirmed read early. The listener and the simulator's
+/// in-memory network both serve this.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn peer_handler(
+    config: &BrokerConfig,
+    router: &Arc<ShardRouter>,
+    ingress: &Arc<shard_routing::IngressRouter>,
+    broker: &Arc<Broker>,
+    quorum_marks: &Arc<QuorumMarks>,
+    auth: &Arc<BrokerAuth>,
+    storage_id: felix_storage::StorageId,
+    unclean: Option<Arc<replication::unclean::UncleanStart>>,
+    confirmed: Option<crate::shards::ControlPlaneRoutes>,
+) -> (
+    peer_dispatch::BrokerPeerHandler,
+    Option<replication::confirmed::Prefetch>,
+) {
+    let replicas = replica_handler(broker, router, quorum_marks, storage_id, unclean, confirmed)
+        // A leader retries a copy that refused it on its driver tick.
+        .with_leader_retry(Duration::from_millis(config.controlplane_sync_interval_ms));
+    let prefetch = replicas.confirmed_prefetch();
+    let advertise_addr = config
+        .membership
+        .as_ref()
+        .map(|membership| membership.advertise_addr.clone())
+        .unwrap_or_default();
+    let handler = peer_dispatch::BrokerPeerHandler::new(
+        crate::serving::forward::ForwardingHandler::new(
+            Arc::clone(broker),
+            Arc::clone(ingress),
+            Arc::clone(router),
+            advertise_addr,
+            Some(Arc::clone(quorum_marks)),
+            Duration::from_millis(config.publish_quorum_timeout_ms.max(1)),
+            Arc::clone(auth),
+        ),
+        replicas,
+    );
+    (handler, prefetch)
+}
+
 /// What answers the peer listener's replication requests.
 fn replica_handler(
     broker: &Arc<Broker>,
@@ -258,11 +289,12 @@ pub(super) struct ShardTasks {
 /// What the shard tasks read and publish to. Generic over the peer transport
 /// so a simulator can run these tasks over an in-memory network; a broker
 /// passes its [`PeerPool`].
-pub(super) struct ShardTaskDeps<'a, R> {
+pub(super) struct ShardTaskDeps<'a, R, L> {
     pub(super) config: &'a BrokerConfig,
     pub(super) cluster: &'a Option<ShardState>,
     pub(super) durable_storage: &'a Option<DurableStorage>,
-    pub(super) membership_client: &'a reqwest::Client,
+    /// The control plane, over HTTP in a broker and in-process in a simulator.
+    pub(super) link: &'a Option<L>,
     pub(super) credential: &'a Option<NodeCredential>,
     pub(super) client_endpoints: &'a Arc<ClientEndpoints>,
     pub(super) peers: &'a Option<Arc<R>>,
@@ -297,14 +329,16 @@ pub(super) struct ShardTaskDeps<'a, R> {
 /// Shard ownership: follow the control plane's assignments, and keep local
 /// state and the routing table in step with them. Also starts shipping to
 /// followers for the shards this broker leads.
-pub(super) fn spawn_shard_tasks<R: PeerRequester + Send + Sync + 'static>(
-    deps: ShardTaskDeps<'_, R>,
-) -> Option<ShardTasks> {
+pub(super) fn spawn_shard_tasks<R, L>(deps: ShardTaskDeps<'_, R, L>) -> Option<ShardTasks>
+where
+    R: PeerRequester + Send + Sync + 'static,
+    L: ControlPlaneLink + Clone,
+{
     let ShardTaskDeps {
         config,
         cluster,
         durable_storage,
-        membership_client,
+        link,
         credential,
         client_endpoints,
         peers,
@@ -323,8 +357,8 @@ pub(super) fn spawn_shard_tasks<R: PeerRequester + Send + Sync + 'static>(
         leads_after,
         sync_shutdown,
     } = deps;
-    match (cluster, &config.controlplane_url, durable_storage) {
-        (Some((router, ingress, lifecycle, ownership)), Some(base_url), storage) => {
+    match (cluster, link, durable_storage) {
+        (Some((router, ingress, lifecycle, ownership)), Some(link), storage) => {
             let readers = shard_lifecycle::ShardReaders::new(Arc::clone(broker))
                 .with_endpoints(Arc::clone(client_endpoints));
             // Ends readers on a lapsed lease, or, where they need none, once
@@ -416,10 +450,7 @@ pub(super) fn spawn_shard_tasks<R: PeerRequester + Send + Sync + 'static>(
                     elections
                 });
             let watch = tokio::spawn(shard_watch::run(
-                felix_replication::controlplane_link::HttpControlPlaneLink::new(
-                    membership_client.clone(),
-                    base_url,
-                ),
+                link.clone(),
                 // The assignment feed is cluster metadata, so it is read with
                 // the same credential the rest of membership uses.
                 credential.clone(),
@@ -444,10 +475,7 @@ pub(super) fn spawn_shard_tasks<R: PeerRequester + Send + Sync + 'static>(
                     nodes,
                 },
                 Some(shard_routing::CatalogSource {
-                    link: felix_replication::controlplane_link::HttpControlPlaneLink::new(
-                        membership_client.clone(),
-                        base_url,
-                    ),
+                    link: link.clone(),
                     token: credential.clone(),
                 }),
                 Duration::from_millis(config.controlplane_sync_interval_ms),
@@ -477,11 +505,7 @@ pub(super) fn spawn_shard_tasks<R: PeerRequester + Send + Sync + 'static>(
                     config.membership.as_ref().map(|membership| {
                         let (reporter, _task) = replication::reporter::Reporter::spawn(
                             replication::reporter::ReportTo {
-                                link:
-                                    felix_replication::controlplane_link::HttpControlPlaneLink::new(
-                                        membership_client.clone(),
-                                        base_url,
-                                    ),
+                                link: link.clone(),
                                 node_id: membership.node_id.clone(),
                                 token: credential.clone().map(|credential| {
                                     Arc::new(credential)

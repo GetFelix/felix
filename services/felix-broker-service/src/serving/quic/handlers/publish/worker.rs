@@ -11,6 +11,7 @@ use parking_lot::Mutex;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::task::TaskTracker;
 
+use super::direct::first_offset;
 use super::scheduler::{LaneGuard, PublishScheduler};
 use super::{ConnLimits, IdentityKey, PublishAdmission, PublishContext, PublishJob, PublishTarget};
 use crate::config::BrokerConfig;
@@ -340,40 +341,18 @@ impl LaneWork {
         let quorum_timeout = self.quorum_timeout;
         self.work.spawn(async move {
             let ClaimGroup { members, fences } = group;
-            // Answered before the fanout, so the acks do not queue behind
-            // the work of waking every subscriber. A `Quorum` answer waits
-            // for its quorum, so it keeps the old order.
-            if handle.consistency() != felix_broker::ConsistencyLevel::Quorum {
-                broker
-                    .complete_publish_answering(claimed, |completed| {
-                        let result = completed
-                            .map(|outcome| first_offset(&outcome))
-                            .map_err(Into::into);
-                        settle_group(members, shard.as_ref(), result);
-                    })
-                    .await;
-                drop(fences);
-                drop(slot);
-                return;
-            }
-            let completed = broker.complete_publish(claimed).await;
-            drop(fences);
-            let result = match completed {
-                // One wait for the group's last offset: the mark is
-                // monotonic, so it covers every member at once.
-                Ok(outcome) => felix_replication::quorum::await_quorum(
-                    &handle,
-                    shard.as_ref(),
-                    &outcome,
-                    marks.as_deref(),
-                    ingress.as_deref(),
-                    quorum_timeout,
-                )
-                .await
-                .map(|()| first_offset(&outcome)),
-                Err(err) => Err(err.into()),
-            };
-            settle_group(members, shard.as_ref(), result);
+            super::direct::finish_claimed(
+                &broker,
+                &handle,
+                shard.as_ref(),
+                claimed,
+                fences,
+                marks.as_deref(),
+                ingress.as_deref(),
+                quorum_timeout,
+                |result| settle_group(members, shard.as_ref(), result),
+            )
+            .await;
             drop(slot);
         });
     }
@@ -783,12 +762,6 @@ fn headers_unsupported(
         .into(),
         _ => err.into(),
     }
-}
-
-/// The offset a successful publish reports: its first record's, when the
-/// stream has a log.
-fn first_offset(outcome: &felix_broker::PublishOutcome) -> Option<u64> {
-    outcome.offsets.map(|(first, _)| first)
 }
 
 /// Run a publish executor, starting a fresh one on the same queue whenever it

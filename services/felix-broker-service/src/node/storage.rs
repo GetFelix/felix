@@ -30,7 +30,16 @@ pub(crate) fn open(
     config: &BrokerConfig,
     registered: Option<&Registered>,
 ) -> Result<(Broker, Option<DurableStorage>, StorageId, bool, bool)> {
-    let durable_config = DurableStorageConfig::from_env()?;
+    open_with(config, DurableStorageConfig::from_env()?, registered)
+}
+
+/// [`open`] with the durable settings given rather than read from the
+/// environment.
+pub(crate) fn open_with(
+    config: &BrokerConfig,
+    durable_config: Option<DurableStorageConfig>,
+    registered: Option<&Registered>,
+) -> Result<(Broker, Option<DurableStorage>, StorageId, bool, bool)> {
     // Test-only: the cluster harness's power loss. Armed before any store
     // opens, since the model takes what is already on disk as durable.
     #[cfg(debug_assertions)]

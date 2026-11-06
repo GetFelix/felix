@@ -12,8 +12,10 @@
 //! fault is in the read, not necessarily in the log.
 
 mod delivery;
+mod elle;
 
 pub(super) use delivery::dropped;
+pub use elle::check_list_append;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
@@ -33,6 +35,9 @@ pub struct Report {
     pub violations: Vec<Violation>,
     /// Copied from the history so the report can be read on its own.
     pub faults: Vec<FaultEvent>,
+    /// Cache keys the linearizability search could not decide in its budget.
+    /// Not violations: nothing was proven either way.
+    pub undecided: Vec<String>,
 }
 
 /// One broken rule, with enough to find it in the history.
@@ -78,6 +83,29 @@ pub enum Rule {
     ///     nor visibly dropped: it sat under a skip the subscriber was told
     ///     holds no event, or past where the subscriber stopped.
     MissingDelivery,
+    /// 12. Appends and reads form a dependency cycle made of append order
+    ///     and what reads saw: an append order that contradicts itself.
+    G0,
+    /// 13. A cycle of append order and reads-saw-append edges with no read
+    ///     missing an append: a read depends on an append that depends on it.
+    G1c,
+    /// 14. As 13, but real-time order is one of the edges.
+    G1cRealtime,
+    /// 15. A cycle with exactly one anti-dependency: a read missed an append
+    ///     that the cycle puts before the read.
+    GSingle,
+    /// 16. As 15, but real-time order is one of the edges: a read that began
+    ///     after an append was acknowledged did not see it.
+    GSingleRealtime,
+    /// 17. A cycle with two or more anti-dependencies.
+    G2,
+    /// 18. As 17, but real-time order is one of the edges.
+    G2Realtime,
+    /// 19. As 12, but real-time order is one of the edges.
+    G0Realtime,
+    /// 20. A cache key has no order of its operations that a register and
+    ///     real time allow.
+    NotLinearizable,
     /// The final read has a hole, so the lost-write rule cannot be trusted.
     IncompleteFinalRead,
     /// The history itself is malformed: the recorder is wrong, not the broker.
@@ -98,6 +126,9 @@ impl Report {
 
 impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for note in &self.undecided {
+            writeln!(f, "undecided: {note}")?;
+        }
         if self.violations.is_empty() {
             return write!(f, "history is valid");
         }
@@ -156,6 +187,15 @@ impl Rule {
             Rule::DeliveryOrder => "9 delivery-order",
             Rule::LostDelivery => "10 lost-delivery",
             Rule::MissingDelivery => "11 missing-delivery",
+            Rule::G0 => "12 G0",
+            Rule::G1c => "13 G1c",
+            Rule::G1cRealtime => "14 G1c-realtime",
+            Rule::GSingle => "15 G-single",
+            Rule::GSingleRealtime => "16 G-single-realtime",
+            Rule::G2 => "17 G2",
+            Rule::G2Realtime => "18 G2-realtime",
+            Rule::G0Realtime => "19 G0-realtime",
+            Rule::NotLinearizable => "20 not-linearizable",
             Rule::IncompleteFinalRead => "incomplete-final-read",
             Rule::MalformedHistory => "malformed-history",
         }
@@ -190,16 +230,18 @@ pub fn check(history: &History) -> Report {
         };
         checker.run();
     }
-    super::register::check(&history.registers, &mut violations);
+    let undecided = super::register::check(&history.registers, &mut violations);
     super::commit::check(
         &history.commit_reads,
         &history.commit_values,
         &mut violations,
     );
     delivery::check(history, &mut violations);
+    elle::check(history, &mut violations);
     Report {
         violations,
         faults: history.faults.clone(),
+        undecided,
     }
 }
 

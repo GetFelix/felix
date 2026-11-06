@@ -1,0 +1,1 @@
+A broker can be published to in-process, without a connection (`felix_broker_service::serving::direct_publish`): it resolves a target and runs the same fence, append and quorum wait as a QUIC publish, and tells a refusal that wrote nothing from an outcome that is unknown. The publish worker shares that final step (#419).

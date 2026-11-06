@@ -675,10 +675,50 @@ pub fn spawn(
     record_in: Option<std::path::PathBuf>,
     restore_check: Option<CancellationToken>,
 ) -> MembershipTask {
+    spawn_with(
+        link,
+        config,
+        credential,
+        serving,
+        shutdown,
+        lease,
+        fleet,
+        suspects,
+        incarnation,
+        registered,
+        storage_id,
+        record_in,
+        restore_check,
+        true,
+    )
+}
+
+/// [`spawn`], on a thread of its own when `own_thread`, else on the current
+/// runtime. The simulator wants the latter: its virtual clock and network live
+/// on one runtime, which a heartbeat on a real-time runtime could not reach.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn spawn_with(
+    link: impl ControlPlaneLink + Clone,
+    config: MembershipConfig,
+    credential: crate::cluster::credential::NodeCredential,
+    serving: CancellationToken,
+    shutdown: CancellationToken,
+    lease: Arc<crate::cluster::lease::LeaseState>,
+    fleet: Arc<FleetGate>,
+    suspects: Arc<felix_replication::suspicion::Suspects>,
+    incarnation: Arc<AtomicU64>,
+    registered: tokio::sync::watch::Sender<Option<u64>>,
+    storage_id: Option<StorageId>,
+    record_in: Option<std::path::PathBuf>,
+    restore_check: Option<CancellationToken>,
+    own_thread: bool,
+) -> MembershipTask {
     let fatal = CancellationToken::new();
     let consecutive_failures = Arc::new(AtomicU64::new(0));
-    let pulse = RuntimePulse::start(RUNTIME_HUNG_AFTER, shutdown.clone());
-    let handle = spawn_on_own_thread({
+    // On the current runtime the heartbeat cannot outlive a hung runtime, so
+    // there is nothing for the pulse to prove.
+    let pulse = own_thread.then(|| RuntimePulse::start(RUNTIME_HUNG_AFTER, shutdown.clone()));
+    let task = {
         let fatal = fatal.clone();
         let consecutive_failures = Arc::clone(&consecutive_failures);
         let lease = Arc::clone(&lease);
@@ -785,7 +825,7 @@ pub fn spawn(
                     Arc::clone(&lease),
                     Arc::clone(&fleet),
                     Arc::clone(&suspects),
-                    Some(Arc::clone(&pulse)),
+                    pulse.clone(),
                 )
                 .await
                 {
@@ -799,7 +839,12 @@ pub fn spawn(
                 }
             }
         }
-    });
+    };
+    let handle = if own_thread {
+        spawn_on_own_thread(task)
+    } else {
+        tokio::spawn(task)
+    };
 
     MembershipTask {
         handle,

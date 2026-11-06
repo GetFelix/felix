@@ -23,6 +23,8 @@ pub(crate) use env::quorum_reads_by_lease;
 pub use kafka::KafkaListenerConfig;
 pub use limits::{LimitsConfig, TenantQuota};
 pub use membership::MembershipConfig;
+#[cfg(feature = "sim")]
+pub(crate) use membership::cluster_features;
 pub use mqtt::{MqttListenerConfig, MqttWsConfig};
 pub use subscriber::{SubStreamMode, SubscriberLaneShard};
 pub use tls::{ClientTlsConfig, ClientTlsFiles};
