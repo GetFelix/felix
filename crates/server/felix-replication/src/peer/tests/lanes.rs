@@ -676,3 +676,15 @@ fn a_peer_limit_nobody_holds_is_dropped() {
     assert!(nodes.contains(&"held".to_string()), "{nodes:?}");
     assert!(!nodes.contains(&"gone".to_string()), "{nodes:?}");
 }
+
+/// **A limit someone holds but has not acquired from survives the sweep.**
+/// Dropping it would hand the next lookup a second semaphore for the same node.
+#[test]
+fn a_peer_limit_held_without_permits_survives_the_sweep() {
+    use crate::peer::server::{PeerBatches, peer_limit};
+
+    let peers = PeerBatches::default();
+    let held = peer_limit(&peers, Arc::from("a"));
+    drop(peer_limit(&peers, Arc::from("b")));
+    assert!(Arc::ptr_eq(&held, &peer_limit(&peers, Arc::from("a"))));
+}
