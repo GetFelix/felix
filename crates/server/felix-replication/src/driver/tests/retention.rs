@@ -30,6 +30,7 @@ fn refusal(code: ErrorCode, expected_offset: u64) -> InternalMessage {
         code,
         expected_offset,
         detail: String::new(),
+        reason: None,
     })
 }
 
