@@ -3643,7 +3643,14 @@ follower is behind it:
   led (its own ballot at the accepted generation, or, with no ballot, the
   generation it is named leader at), and a copy it followed at an older
   generation than the one it is named at, until a leader has shipped to it in
-  this process. A follower named leader that crashed before it took the
+  this process a record written at that leader's own generation. A leader
+  writes its generation's start record after every record it holds, so the
+  copy then holds everything acknowledged before the crash. A batch that
+  brings back only part of what the crash lost does not count, and the copy
+  is still read as the one it led even though the batch rewrote its ballot:
+  counted earlier, a crashed leader with half its lost suffix back could win
+  an election with an empty copy's vote
+  ([#2029](https://github.com/GetFelix/felix/issues/2029)). A follower named leader that crashed before it took the
   generation is the second case. The open refuses before it writes anything
   and the shard stays `failed`. The copy is given up on disk, as a ballot
   naming no leader, so no later start, clean or not, leads it again until a

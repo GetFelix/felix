@@ -1936,3 +1936,82 @@ async fn a_copy_that_stood_after_an_unclean_start_takes_a_newer_fence() {
 
     taken(&handler.fence(Some("broker-c"), fence(7)).await);
 }
+
+/// A batch from `leader` at `generation` whose records are labelled as
+/// written at `written`.
+fn labelled(generation: u64, written: u64, first_offset: u64, values: &[&str]) -> ReplicateRecords {
+    ReplicateRecords {
+        generations: Some(vec![felix_wire::internal::GenerationStart {
+            generation: written,
+            start_offset: first_offset,
+        }]),
+        ..batch(generation, first_offset, values)
+    }
+}
+
+/// **A batch that brings back only part of what a crashed leader lost does
+/// not vouch for its copy (#2029).** `LOCAL` led at 5 and its crash lost
+/// records it acknowledged there. The next leader ships the first of them
+/// back at 6: the copy now names that leader in its ballot but is still
+/// short, so it answers no other fence and may not stand. Counted, it and an
+/// empty third copy would elect a leader without the record it still lacks.
+/// A record of the shipping leader's generation, written after everything
+/// that leader held, vouches for it.
+#[tokio::test]
+async fn a_partly_reshipped_copy_is_not_vouched_for_until_it_holds_the_leaders_generation() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    led_before_a_crash(dir.path()).await;
+    let broker = broker_on(dir.path());
+    let start = unclean();
+    let leader = ReplicaHandler::new(
+        Arc::clone(&broker),
+        router_led_by("broker-c", &[LOCAL, "broker-a"], 6),
+    )
+    .with_unclean_start(Arc::clone(&start));
+    let next = ReplicaHandler::new(
+        Arc::clone(&broker),
+        router_led_by("broker-a", &[LOCAL, "broker-c"], 7),
+    )
+    .with_unclean_start(Arc::clone(&start));
+    let log = broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    let shard = crate::driver::watch_key(&key());
+
+    // A record it led at 5 comes back from the leader at 6.
+    let answer = leader
+        .apply(
+            Some("broker-c"),
+            labelled(6, 5, 0, &["a"]),
+            felix_broker::LogKind::Stream,
+        )
+        .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    assert_eq!(log.accepted_leader().as_deref(), Some("broker-c"));
+    assert!(start.led_before(&shard, &log, 7), "still short");
+    assert!(start.unvouched(&shard, &log, 7), "may not stand");
+    assert_eq!(
+        refusal(&next.fence(SENDER, fence(7)).await).code,
+        ErrorCode::Unavailable
+    );
+
+    // The leader's own generation arrives: everything it held came first.
+    let answer = leader
+        .apply(
+            Some("broker-c"),
+            labelled(6, 6, 1, &["start"]),
+            felix_broker::LogKind::Stream,
+        )
+        .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    assert!(!start.led_before(&shard, &log, 7));
+    assert!(!start.unvouched(&shard, &log, 7));
+    taken(&next.fence(SENDER, fence(7)).await);
+}

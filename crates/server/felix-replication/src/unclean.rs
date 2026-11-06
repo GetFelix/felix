@@ -22,6 +22,10 @@ pub struct UncleanStart {
     /// Shards a leader has shipped to this process: their copies have been
     /// compared with a leader's since the crash.
     vouched: parking_lot::Mutex<HashSet<ShardKey>>,
+    /// Copies this broker led before the crash that took a newer leader's
+    /// ballot from a batch, which has not yet brought them a record of that
+    /// leader's generation: the ballot no longer says what they lost.
+    doubted: parking_lot::Mutex<HashSet<ShardKey>>,
     /// The last ballot this process wrote standing for election on each
     /// shard, with what the copy said of the crash before its first standing.
     stood: parking_lot::Mutex<HashMap<ShardKey, Stood>>,
@@ -47,13 +51,31 @@ impl UncleanStart {
             led: parking_lot::Mutex::new(HashMap::new()),
             vouched: parking_lot::Mutex::new(HashSet::new()),
             stood: parking_lot::Mutex::new(HashMap::new()),
+            doubted: parking_lot::Mutex::new(HashSet::new()),
         }
     }
 
-    /// A leader shipped `key` to this process, so its copy has been compared
-    /// with a leader's since the crash.
+    /// A leader shipped `key` to this process, and its copy now holds a
+    /// record of that leader's generation, so it has been compared with a
+    /// leader's since the crash. The leader wrote that record after every
+    /// record it held, everything acknowledged before the crash included, so
+    /// a batch that brought back only part of what the crash lost does not
+    /// count (#2029).
     pub fn vouch(&self, key: &ShardKey) {
+        self.doubted.lock().remove(key);
         self.vouched.lock().insert(key.clone());
+    }
+
+    /// `log`, `key`'s copy, is about to take a leader's ballot at
+    /// `generation` from a batch. A copy this broker led before the crash
+    /// stays one until [`Self::vouch`], though the new ballot names another
+    /// leader.
+    pub(crate) fn accepting(&self, key: &ShardKey, log: &felix_broker::StreamLog, generation: u64) {
+        let accepted = log.accepted_generation();
+        let raises = generation > accepted || (generation == accepted && log.gave_up());
+        if raises && self.led_before(key, log, generation) {
+            self.doubted.lock().insert(key.clone());
+        }
     }
 
     /// Whether `log`, `key`'s copy, may be short of what this broker
@@ -136,7 +158,9 @@ impl UncleanStart {
     /// generation, so a broker named at a generation it accepted led it.
     ///
     /// A ballot this process wrote standing for election ([`Self::stand`])
-    /// says nothing of the crash; what the copy said before it does.
+    /// says nothing of the crash; what the copy said before it does. Nor does
+    /// a newer leader's ballot taken from a batch before the copy is vouched
+    /// for ([`Self::accepting`]).
     pub fn led_before(
         &self,
         key: &ShardKey,
@@ -146,6 +170,9 @@ impl UncleanStart {
         let accepted = log.accepted_generation();
         if !held(log) || self.leads_at(key, accepted) {
             return false;
+        }
+        if self.doubted.lock().contains(key) {
+            return true;
         }
         if let Some(stood) = self.own_ballot(key, log) {
             return stood.led_before;

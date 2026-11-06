@@ -719,6 +719,17 @@ impl ReplicaHandler {
         ) {
             return refusal;
         }
+        // Before the ballot changes: it is the evidence of a copy this
+        // broker led before an unclean start.
+        if let Some(unclean) = &self.unclean
+            && own_kind(log_kind).is_none()
+        {
+            unclean.accepting(
+                &crate::driver::watch_key(&key),
+                &log,
+                batch.shard.generation,
+            );
+        }
         if let Some(refusal) =
             accept_sender(&log, correlation_id, &key, batch.shard.generation, sender).await
         {
@@ -935,14 +946,6 @@ impl ReplicaHandler {
                 if batch.set_generation.is_some() {
                     self.heard_leader(&key);
                 }
-                if let Some(unclean) = &self.unclean
-                    && matches!(
-                        log_kind,
-                        felix_broker::LogKind::Stream | felix_broker::LogKind::Cache
-                    )
-                {
-                    unclean.vouch(&crate::driver::watch_key(&key));
-                }
                 // Not a reason to fail the batch: the offset only guards
                 // truncation, and the log writes it behind. Only what
                 // this batch left level with the leader: past the
@@ -979,6 +982,15 @@ impl ReplicaHandler {
                         error = %err,
                         "stored a replicated batch but could not record its generation",
                     );
+                }
+                // Only once the copy holds a record of this leader's
+                // generation, written after everything it held (#2029). After
+                // the labels: they say which generation wrote each record.
+                if let Some(unclean) = &self.unclean
+                    && own_kind(log_kind).is_none()
+                    && log.holds_records_of(batch.shard.generation)
+                {
+                    unclean.vouch(&crate::driver::watch_key(&key));
                 }
                 // Until the sender's own generation is recorded here, the
                 // newest one recorded is older, and `unverified_from` would

@@ -4116,8 +4116,11 @@ RefuseOpen(b) ==
 \* Under `VouchOnGeneration` only one that leaves the copy holding a record
 \* of that leader's generation: the leader writes its start record after
 \* every record it holds, so the copy then holds everything acknowledged
-\* before the crash. Without it, a batch that brings back only part of a
-\* lost suffix vouches for a copy still short of it.
+\* before the crash. `ReplicaHandler::apply` in replica.rs does this, and
+\* until then `UncleanStart` keeps reading the copy as one it led, though a
+\* batch rewrote its ballot (`accepting`). Without it, a batch that brings
+\* back only part of a lost suffix vouches for a copy still short of it
+\* (#2029).
 Vouch(b, f) ==
     doubt' = IF /\ doubt[f] = "led"
                 /\ VouchOnGeneration => \E i \in 1..Len(log'[f]) : log'[f][i].g = bgen[b]
