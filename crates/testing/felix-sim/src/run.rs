@@ -22,8 +22,8 @@
 //! (`felix_common::blocking`). Retry jitter, hash keys and ids are drawn from
 //! the seed (`felix_common::jitter`, `felix_common::random`), wall time is
 //! virtual (`felix_common::clock::system_time`), and passes over routing
-//! tables and assignment sets walk in key order (the election walk starts at a
-//! per-broker offset in that order). Built with
+//! tables and assignment sets walk in key order (the election walk starts at an
+//! offset drawn from the seed). Built with
 //! `--cfg tokio_unstable`, `select!` is seeded too. Replay is not exact
 //! yet. Known gaps are storage reading the host clock and the control plane's
 //! ids. There is at least one unknown gap: seed 59 diverges by about 2 ms
