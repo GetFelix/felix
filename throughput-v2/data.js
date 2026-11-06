@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793990567673,
+  "lastUpdate": 1793993461763,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -47528,6 +47528,58 @@ window.BENCHMARK_DATA = {
             "range": "11337.34",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 785145.91\nmean: 784346.00\nstdev: 11337.34\ncv: 1.45%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8c90863da79de61a3753fa6bfbcfa83ddc7db3d1",
+          "message": "fix(broker): quiet logs when a client closes a QUIC connection normally (#2053)\n\n* fix(broker): quiet logs when a client closes a QUIC connection normally\n\n* fix(broker): treat NO_ERROR transport close and lost streams as normal",
+          "timestamp": "2026-11-06T10:02:57-08:00",
+          "tree_id": "5323255763d7d6c67d28064fcff4682ea849ac6a",
+          "url": "https://github.com/GetFelix/felix/commit/8c90863da79de61a3753fa6bfbcfa83ddc7db3d1"
+        },
+        "date": 1793993461248,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 510951.96,
+            "range": "18268.55",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 510951.96\nmean: 504307.39\nstdev: 18268.55\ncv: 3.62%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 510951.96,
+            "range": "18268.55",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 510951.96\nmean: 504307.39\nstdev: 18268.55\ncv: 3.62%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 120798.62,
+            "range": "2004.39",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 120798.62\nmean: 120018.86\nstdev: 2004.39\ncv: 1.67%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1207986.19,
+            "range": "20043.91",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1207986.19\nmean: 1200188.61\nstdev: 20043.91\ncv: 1.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
