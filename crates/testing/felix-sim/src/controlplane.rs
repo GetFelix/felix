@@ -65,6 +65,10 @@ use serde::Serialize;
 use tokio::sync::watch;
 use tower::ServiceExt;
 
+pub use self::operator::Answer;
+
+mod operator;
+
 /// The tenant the sim's own operator token belongs to.
 const OPERATOR_TENANT: &str = "sim-operator";
 /// Long enough that no run outlives it. Tokens are checked against the real

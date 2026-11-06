@@ -125,7 +125,12 @@ impl SimOutcome {
     /// through `task sim:replay`, which builds with `--cfg tokio_unstable`:
     /// a plain `cargo test` build leaves `select!` unseeded.
     pub fn replay_command(&self) -> String {
-        format!("FELIX_SIM_SEED={} task sim:replay", self.seed)
+        let placement = if self.config.placement_faults {
+            "FELIX_SIM_PLACEMENT=1 "
+        } else {
+            ""
+        };
+        format!("{placement}FELIX_SIM_SEED={} task sim:replay", self.seed)
     }
 }
 
@@ -270,11 +275,13 @@ async fn drive(
 
     let run_start = Instant::now();
     let nemesis = Nemesis::new(cluster.clone(), recorder.clone());
-    let plan = if config.faults {
-        Plan::generate(seed, config.brokers, config.fault_window)
-    } else {
-        Plan::default()
-    };
+    let plan =
+        match (config.faults, config.placement_faults) {
+            (false, _) => Plan::default(),
+            (true, false) => Plan::generate(seed, config.brokers, config.fault_window),
+            (true, true) => Plan::generate(seed, config.brokers, config.fault_window)
+                .with_placement(seed, config.brokers, config.fault_window),
+        };
     if config.faults {
         for step in &plan.steps {
             tracing::debug!(at = ?step.at, fault = %step.fault, "planned");
@@ -372,6 +379,17 @@ async fn drive(
 
     let held = cluster.held_shards().await;
     let mut history = recorder.history();
+    let abandoned = drop_abandoned_lists(&mut history, &cluster.abandoned_shards());
+    if !abandoned.is_empty() {
+        findings.push(Finding::warning(
+            "abandoned",
+            format!(
+                "an operator abandoned the logs of {} shards, which loses their records by design; left out of the history check: {}",
+                abandoned.len(),
+                abandoned.join(", ")
+            ),
+        ));
+    }
     let unread = drop_unread_lists(&mut history, &held);
     let ctx = context(Point::End, healed_at, history.clone());
     for checker in &checkers {
@@ -430,6 +448,33 @@ fn finished(
         history,
         elapsed,
     }
+}
+
+/// Remove the lists of shards (`stream/3`) whose log an operator abandoned:
+/// their acknowledged records are gone on purpose, and the new log starts
+/// over. Returns the names of the lists removed.
+fn drop_abandoned_lists(history: &mut History, abandoned: &BTreeSet<String>) -> Vec<String> {
+    let dropped: Vec<String> = history
+        .lists
+        .keys()
+        .filter(|list| {
+            let shard = list.rsplit('/').next().and_then(|n| n.parse().ok());
+            shard.is_some_and(|shard| {
+                abandoned.contains(&crate::cluster::describe(&crate::cluster::stream_key(
+                    shard,
+                )))
+            })
+        })
+        .cloned()
+        .collect();
+    for list in &dropped {
+        history.lists.remove(list);
+        history.final_reads.remove(list);
+    }
+    history
+        .ops
+        .retain(|op| !dropped.iter().any(|list| *list == op.list()));
+    dropped
 }
 
 /// The checker's lost-write rule needs a final read of each list. A shard

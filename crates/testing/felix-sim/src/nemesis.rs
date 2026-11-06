@@ -16,6 +16,19 @@
 //! | `ControlPlane` | Slows, pauses or takes down the control plane. |
 //! | `PausedThenCrash` | Pauses the control plane, then crashes a broker that leads shards while it is paused. |
 //!
+//! With [`SimConfig::placement_faults`](crate::cluster::SimConfig::placement_faults)
+//! on, the nemesis also acts as an operator, through the control plane's
+//! operator API (see `placement.rs`):
+//!
+//! | Fault | What it does |
+//! |---|---|
+//! | `Move` | Moves a shard's leadership to another broker, and sometimes cancels the move. |
+//! | `Drain` | Drains a broker, then puts it back. Its leaderships move away and, with four or more brokers, the follower seats it holds are replaced. |
+//! | `Remove` | Takes a broker out: drains it, stops it, deregisters it and deletes its record once no shard names it. It comes back later as a new registration. |
+//! | `Abandon` | Abandons the log of each stream shard the broker holds after unclean kills (`felixctl placement abandon`). |
+//! | `KillBeforeOpen` | Kills the next broker placement names leader of a shard, before it opens the shard. |
+//! | `SeatRace` | Drains a broker so a follower seat is being replaced, kills that shard's leader, then kills the next leader named for it before it opens: seat replacement plus two promotions. |
+//!
 //! # Why `Freeze` is approximate
 //!
 //! A paused process (SIGSTOP, a long garbage collection, a VM freeze) runs
@@ -81,6 +94,39 @@ pub enum Fault {
         down_for: Duration,
         kill: bool,
     },
+    /// Move shard `shard` (an index into every shard, wrapped) to broker
+    /// `to`, or the next broker when `to` already leads it.
+    Move {
+        shard: u64,
+        to: usize,
+        cancel_after: Option<Duration>,
+    },
+    Drain {
+        node: usize,
+        lasts: Duration,
+    },
+    Remove {
+        node: usize,
+        /// How long the drain runs before the broker stops.
+        drain_for: Duration,
+        down_for: Duration,
+    },
+    /// Keep abandoning held stream shards for `within`.
+    Abandon {
+        within: Duration,
+    },
+    KillBeforeOpen {
+        /// How long to wait for a promotion.
+        watch_for: Duration,
+        down_for: Duration,
+        kill: bool,
+    },
+    SeatRace {
+        /// The broker drained, whose follower seats are replaced.
+        node: usize,
+        down_for: Duration,
+        kill: bool,
+    },
 }
 
 impl Fault {
@@ -95,7 +141,13 @@ impl Fault {
             Fault::Split { minority, .. } => minority.iter().any(|node| leaders.contains(node)),
             Fault::OneWay { from, to, .. } => leaders.contains(from) || leaders.contains(to),
             Fault::ControlPlane { fault, .. } => !matches!(fault, CpFault::Slow(_)),
-            Fault::PausedThenCrash { .. } => true,
+            Fault::PausedThenCrash { .. }
+            | Fault::Move { .. }
+            | Fault::Drain { .. }
+            | Fault::Remove { .. }
+            | Fault::Abandon { .. }
+            | Fault::KillBeforeOpen { .. }
+            | Fault::SeatRace { .. } => true,
         }
     }
 }
@@ -147,6 +199,49 @@ impl fmt::Display for Fault {
                 f,
                 "control plane paused for {cp_lasts:?}, a shard leader {} {after:?} in for {down_for:?}",
                 if *kill { "is killed" } else { "crashes" }
+            ),
+            Fault::Move {
+                shard,
+                to,
+                cancel_after,
+            } => {
+                write!(f, "move shard #{shard} to b{}", to + 1)?;
+                match cancel_after {
+                    Some(after) => write!(f, ", cancelled {after:?} in"),
+                    None => Ok(()),
+                }
+            }
+            Fault::Drain { node, lasts } => write!(f, "drain b{} for {lasts:?}", node + 1),
+            Fault::Remove {
+                node,
+                drain_for,
+                down_for,
+            } => write!(
+                f,
+                "remove b{} after a {drain_for:?} drain, back as a new node in {down_for:?}",
+                node + 1
+            ),
+            Fault::Abandon { within } => {
+                write!(f, "abandon the logs of held shards for {within:?}")
+            }
+            Fault::KillBeforeOpen {
+                watch_for,
+                down_for,
+                kill,
+            } => write!(
+                f,
+                "{} the next promoted leader before it opens (watch {watch_for:?}, down {down_for:?})",
+                if *kill { "kill" } else { "crash" }
+            ),
+            Fault::SeatRace {
+                node,
+                down_for,
+                kill,
+            } => write!(
+                f,
+                "drain b{} and, while a seat it held is replaced, {} the shard's leader and then its next leader before it opens (down {down_for:?})",
+                node + 1,
+                if *kill { "kill" } else { "crash" }
             ),
         }
     }
@@ -256,6 +351,8 @@ struct Holds {
     controlplane: BTreeMap<usize, u32>,
     /// Which control plane fault is current, so only its own end clears it.
     cp_epoch: u64,
+    /// Brokers an operator fault has drained.
+    drains: BTreeMap<usize, u32>,
 }
 
 /// Plays a [`Plan`] against a cluster.
@@ -296,13 +393,21 @@ impl Nemesis {
     /// running again.
     pub async fn heal(self: &Arc<Self>) {
         self.stopped.cancel();
-        {
+        let drained: Vec<usize> = {
             let mut holds = self.holds.lock();
             holds.links.clear();
             holds.controlplane.clear();
-        }
+            std::mem::take(&mut holds.drains).into_keys().collect()
+        };
         self.sync_links();
         self.cluster.cp().set_fault(CpFault::Healthy);
+        for node in drained {
+            let id = self.cluster.node_id(node);
+            if let Ok(answer) = self.cluster.cp().undrain(id).await {
+                self.recorder
+                    .fault(format!("heal: put {id} back to live: {}", answer.text));
+            }
+        }
         for index in 0..self.cluster.broker_count() {
             self.cluster.restart(index);
         }
@@ -411,6 +516,12 @@ impl Nemesis {
                 self.clear_controlplane(epoch);
                 self.recorder.fault(format!("end: {fault}"));
             }
+            Fault::Move { .. }
+            | Fault::Drain { .. }
+            | Fault::Remove { .. }
+            | Fault::Abandon { .. }
+            | Fault::KillBeforeOpen { .. }
+            | Fault::SeatRace { .. } => self.inject_placement(&fault).await,
         }
     }
 
@@ -543,6 +654,8 @@ impl Nemesis {
         }
     }
 }
+
+mod placement;
 
 #[cfg(test)]
 mod tests;

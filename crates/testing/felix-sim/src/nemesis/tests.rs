@@ -30,6 +30,7 @@ fn every_fault_starts_inside_the_window_and_names_real_brokers() {
                         assert!(minority.iter().all(|n| *n < brokers));
                     }
                     Fault::ControlPlane { .. } | Fault::PausedThenCrash { .. } => {}
+                    other => panic!("a placement fault without placement faults on: {other}"),
                 }
             }
         }
@@ -61,6 +62,7 @@ fn plans_cover_every_kind_of_fault() {
                 } => "cp-down",
                 Fault::ControlPlane { .. } => "cp-other",
                 Fault::PausedThenCrash { .. } => "paused-then-crash",
+                _ => "placement",
             });
         }
     }

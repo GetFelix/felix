@@ -21,6 +21,30 @@ The nemesis (`src/nemesis.rs`, `Fault`) draws these from the seed:
 - `PausedThenCrash`: the control plane pauses, then a broker that leads shards
   crashes.
 
+With placement faults on (`FELIX_SIM_PLACEMENT=1`, or
+`SimConfig::with_placement_faults`), the nemesis also acts as an operator. It
+calls the control plane's operator API, the one `felixctl` uses, so placement
+runs its real move, drain, replacement and abandon paths:
+
+- `Move`: a shard's leadership moves to another broker, and the move is
+  sometimes cancelled.
+- `Drain`: a broker is drained, then put back. Its leaderships move away and,
+  with four or more brokers, its follower seats are replaced.
+- `Remove`: a broker is drained, stopped and deregistered, and its record is
+  deleted once no shard names it. It comes back later as a new registration.
+- `Abandon`: the log of each stream shard the broker holds after unclean kills
+  is abandoned, as `felixctl placement abandon` does.
+- `KillBeforeOpen`: the next broker named or elected leader of a shard is
+  stopped before it opens the shard.
+- `SeatRace`: a broker is drained so a follower seat is being replaced, the
+  shard's leader is stopped, then the leader named next is stopped before it
+  opens. This is the seat replacement plus two promotions behind #1922 and
+  #1929.
+
+Placement faults draw from a stream of their own, so turning them on adds steps
+to a seed's schedule and keeps the ones it had. They are off by default for
+now, which keeps the seeds pinned in `tests/seeds.rs` on the run they pin.
+
 ## Checks
 
 A seed fails when any check reports a problem, except a warning.
@@ -38,7 +62,13 @@ A seed fails when any check reports a problem, except a warning.
   majority of the set with it. The broker waits for `felixctl placement
   abandon`. Every other check still covers the shard. If its final read cannot
   be taken, only the lost-write rule is skipped and a warning names it. The run
-  prints how many shards were exempt.
+  prints how many shards were exempt. A kill counts against the set and term
+  the shard had at that instant: a broker killed before it opened a shard it
+  was named to lead is not counted as its leader, a follower being copied in
+  counts in the set, and an abandoned log ends the hold.
+- A shard whose log an operator abandoned loses its records by design. It is
+  left out of the history check and `AckedHeldByLeader`, and a warning names
+  it.
 - A run that stops making progress ends with a `stalled` finding instead of
   hanging.
 
@@ -58,6 +88,7 @@ FELIX_SIM_SEED_START=100 FELIX_SIM_SEEDS=10 \
   cargo test -p felix-sim --test seeds -- --ignored --exact seeds --nocapture
 ```
 
+Add `FELIX_SIM_PLACEMENT=1` to either command to turn placement faults on.
 A failing seed prints the command that replays it. `FELIX_SIM_HISTORY=<file>`
 writes the run's history to a file so two runs can be diffed.
 
