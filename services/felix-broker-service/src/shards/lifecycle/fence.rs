@@ -53,6 +53,9 @@ pub struct ShardFence {
     /// `Active`; kept here so replication, which runs the fence, can read it
     /// without the lifecycle's lock.
     promotions: RwLock<HashMap<ShardKey, u64>>,
+    /// Shards whose fenced generation continues one this process was serving
+    /// (see [`Self::continuing`]), and that generation.
+    continuing: RwLock<HashMap<ShardKey, u64>>,
     /// Each shard's lifecycle phase, mirrored as the lifecycle sets it, for an
     /// operator's `shard_inspect`. Here for the reason `promotions` is: the
     /// lifecycle sets the phase and the fence together, and a read must not
@@ -195,6 +198,22 @@ impl ShardFence {
             .read()
             .get(key)
             .is_some_and(|gate| gate.lease_free_at.load(SeqCst) == generation)
+    }
+
+    /// Note whether the generation `key` opens at continues one this process
+    /// was serving: the next one, not draining, with no restart between.
+    pub(crate) fn set_continuing(&self, key: &ShardKey, generation: Option<u64>) {
+        match generation {
+            Some(generation) => self.continuing.write().insert(key.clone(), generation),
+            None => self.continuing.write().remove(key),
+        };
+    }
+
+    /// Whether `key`'s fence at `generation` continues a generation this
+    /// process served itself, so this broker already holds every record
+    /// acknowledged before it.
+    pub fn continuing(&self, key: &ShardKey, generation: u64) -> bool {
+        self.continuing.read().get(key) == Some(&generation)
     }
 
     /// The generation `key` waits at for the promotion fence, if it does.

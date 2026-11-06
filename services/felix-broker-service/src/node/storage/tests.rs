@@ -144,10 +144,10 @@ fn registered_as(id: Option<StorageId>) -> Registered {
 fn a_new_node_does_not_start_replaced() {
     let log = felix_storage::log::LogConfig::default();
     let root = tempfile::tempdir().expect("tempdir");
-    let (_, _, replaced) = start_run(root.path(), &log, None).expect("new node");
+    let (_, _, replaced, _) = start_run(root.path(), &log, None).expect("new node");
     assert!(!replaced);
     let root = tempfile::tempdir().expect("tempdir");
-    let (_, _, replaced) =
+    let (_, _, replaced, _) =
         start_run(root.path(), &log, Some(&registered_as(None))).expect("older registration");
     assert!(!replaced);
 }
@@ -162,13 +162,55 @@ fn a_node_registered_under_another_id_starts_replaced() {
     let log = felix_storage::log::LogConfig::default();
     let root = tempfile::tempdir().expect("tempdir");
     let other = StorageId::from_bytes([9; 16]);
-    let (id, _, replaced) =
+    let (id, _, replaced, _) =
         start_run(root.path(), &log, Some(&registered_as(Some(other)))).expect("wiped");
     assert!(replaced);
     assert_ne!(id, other);
     mark_clean_stop(root.path(), id).expect("clean stop");
-    let (again, _, replaced) =
+    let (again, _, replaced, _) =
         start_run(root.path(), &log, Some(&registered_as(Some(id)))).expect("restart");
     assert_eq!(again, id);
     assert!(replaced, "the registration of the new id ends nothing");
+}
+
+/// **Only a crash on a directory that never lost its contents keeps every
+/// promise.** Ballots are always synced, so a relaxed crash rotates the id
+/// with every ballot kept. A restored directory rolled its ballots back, and
+/// one that already replaced a lost copy may hold ballots taken after the
+/// loss: neither lets a doubted copy answer a continuing leader (#2047).
+#[test]
+fn only_a_crash_on_a_directory_that_lost_nothing_keeps_its_promises() {
+    let log = felix_storage::log::LogConfig {
+        fsync_mode: FsyncMode::None,
+        ..Default::default()
+    };
+    let root = tempfile::tempdir().expect("tempdir");
+    let (id, rotated, _, kept) = start_run(root.path(), &log, None).expect("first run");
+    assert!(!rotated && !kept, "a first run kept nothing");
+    forget_boot(root.path()).expect("forget the boot");
+    let (crashed, rotated, replaced, kept) =
+        start_run(root.path(), &log, Some(&registered_as(Some(id)))).expect("after a crash");
+    assert!(rotated && replaced && kept, "a crash keeps every ballot");
+
+    forget_boot(root.path()).expect("forget the boot");
+    let (_, rotated, _, kept) = start_run(root.path(), &log, Some(&registered_as(Some(crashed))))
+        .expect("after a second crash");
+    assert!(rotated);
+    assert!(!kept, "a directory that already replaced a copy kept them");
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let log = felix_storage::log::LogConfig {
+        fsync_mode: FsyncMode::OnCommit,
+        ..Default::default()
+    };
+    let (id, _, _, _) = start_run(root.path(), &log, None).expect("first run");
+    felix_storage::run_state::record_registration(root.path(), 2).expect("record");
+    mark_clean_stop(root.path(), id).expect("clean stop");
+    let restored = Registered {
+        incarnation: 5,
+        storage_id: Some(id.to_hex()),
+    };
+    let (_, rotated, _, kept) = start_run(root.path(), &log, Some(&restored)).expect("restored");
+    assert!(rotated);
+    assert!(!kept, "a restored directory kept its ballots");
 }

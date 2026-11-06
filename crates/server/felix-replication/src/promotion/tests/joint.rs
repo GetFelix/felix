@@ -1830,3 +1830,102 @@ async fn a_member_without_kept_sets_counts_as_not_answering() {
     assert!(why.contains("1 of 3 voters of the set being left"), "{why}");
     assert!(!replicas.sent_to("broker-c"), "asked broker-c");
 }
+
+/// broker-a's joint fence at 5, after serving 4 on {broker-a, broker-b,
+/// broker-c}, `continuing` that generation or failing over to 5. Both
+/// followers restarted after an unclean crash, so each answers from a new
+/// storage id, while the old set and the fence ids name the ones before.
+/// Each still holds its ballot naming broker-a at 4, and broker-b a record
+/// past the leader's.
+async fn fence_followers_from_new_copies(continuing: bool) -> (Outcome, Arc<Broker>, TempDir) {
+    let mut replicas = replicas_with(&[]);
+    replicas.ballots = true;
+    replicas
+        .get("broker-b")
+        .holds("broker-b", 4, 0, &["a", "b"])
+        .await;
+    replicas
+        .get("broker-c")
+        .holds("broker-c", 4, 0, &["a"])
+        .await;
+    let after_the_crash = |id: &str| storage_of(&format!("{id}-after-the-crash"));
+    for id in ["broker-b", "broker-c"] {
+        replicas
+            .get(id)
+            .broker
+            .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+            .await
+            .expect("log")
+            .accept_generation(4, Some(LEADER))
+            .await
+            .expect("ballot");
+        replicas.get_mut(id).storage = Some(after_the_crash(id));
+    }
+    let (leader, dir) = leader_holding(4, &["a"]).await;
+    kept_naming(
+        &leader,
+        &[LEADER, "broker-b", "broker-c"],
+        &[],
+        &[
+            ("broker-b", storage_of("broker-b")),
+            ("broker-c", storage_of("broker-c")),
+        ],
+    )
+    .await;
+    let named = |id_of: &dyn Fn(&str) -> StorageId| {
+        Some(Arc::new(
+            ["broker-b", "broker-c"]
+                .map(|id| (id.to_string(), id_of(id).to_hex()))
+                .into(),
+        ))
+    };
+    let route = Route {
+        fence_storage_ids: named(&storage_of),
+        member_storage_ids: named(&after_the_crash),
+        ..route()
+    };
+    let addr_of = addr_of;
+    let joint = Joint::new(&addr_of, None).with_continuing(continuing);
+
+    let outcome = fence_shard(
+        &replicas,
+        &leader,
+        LEADER,
+        &key(),
+        &route,
+        false,
+        Some(&joint),
+    )
+    .await;
+    (outcome, leader, dir)
+}
+
+/// **A continuing leader's joint fence counts followers answering from new
+/// copies.** broker-a holds every record acknowledged before generation 5,
+/// so the fence needs only their promises, and it takes no follower's tail
+/// (#2047).
+#[tokio::test]
+async fn a_continuing_joint_fence_counts_followers_answering_from_new_copies() {
+    let (outcome, leader, _dir) = fence_followers_from_new_copies(true).await;
+
+    assert_eq!(
+        outcome,
+        Outcome::Fenced {
+            caught_up_from: None
+        }
+    );
+    assert_eq!(held(&leader).await, vec!["a"]);
+}
+
+/// **The same answers do not open a failover's joint fence.** A leader that
+/// did not serve the generation before may lack what those copies lost, so
+/// the old set has only its own answer and the fence waits.
+#[tokio::test]
+async fn a_failover_joint_fence_does_not_count_followers_answering_from_new_copies() {
+    let (outcome, _leader, _dir) = fence_followers_from_new_copies(false).await;
+
+    assert!(
+        matches!(&outcome, Outcome::Pending { why, .. } if why.contains("another copy")),
+        "{outcome:?}"
+    );
+}

@@ -49,6 +49,7 @@ pub struct Joint<'a> {
     prior: Option<PriorSet>,
     local_storage: Option<StorageId>,
     replaced: bool,
+    continuing: bool,
 }
 
 impl<'a> Joint<'a> {
@@ -61,7 +62,21 @@ impl<'a> Joint<'a> {
             prior,
             local_storage: None,
             replaced: false,
+            continuing: false,
         }
+    }
+
+    /// Whether the generation fenced continues one this process served
+    /// itself ([`crate::promotion::PromotionGate::continuing`]). Its fence
+    /// then counts every promise, whichever copy made it: nothing it
+    /// acknowledged can be missing here.
+    pub fn with_continuing(mut self, continuing: bool) -> Self {
+        self.continuing = continuing;
+        self
+    }
+
+    pub(super) fn continuing(&self) -> bool {
+        self.continuing
     }
 
     /// This broker's storage identity, so a promotion can tell a copy a set
@@ -142,6 +157,9 @@ pub(super) struct JointSets {
     old_voters: Vec<OldVoters>,
     new_voters: BTreeSet<String>,
     local: String,
+    /// The leader continues its own generation, so an answer counts for a
+    /// set being left from any copy.
+    any_copy: bool,
 }
 
 /// The voters of one set being left, with the copy it names for each
@@ -167,9 +185,11 @@ impl JointSets {
     /// from a copy some set being left names. A node id given to a new,
     /// empty copy holds nothing an old set acknowledged.
     pub(super) fn same_copy(&self, node_id: &str, identity: Option<StorageId>) -> bool {
-        self.old_voters
-            .iter()
-            .any(|old| old.counts(node_id, identity))
+        self.any_copy
+            || self
+                .old_voters
+                .iter()
+                .any(|old| old.counts(node_id, identity))
     }
 
     /// The set being left as the fence to `node_id` carries it: one it
@@ -239,9 +259,9 @@ impl JointSets {
         answered: &[(&str, Option<StorageId>)],
         voter: &str,
     ) -> bool {
-        answered
-            .iter()
-            .any(|(node, identity)| *node == voter && old.counts(node, *identity))
+        answered.iter().any(|(node, identity)| {
+            *node == voter && (self.any_copy || old.counts(node, *identity))
+        })
     }
 
     fn count(&self, voters: &BTreeSet<String>, answered: impl Fn(&str) -> bool) -> usize {
@@ -755,6 +775,7 @@ pub(super) async fn across<R: PeerRequester>(
         old_voters,
         new_voters,
         local: local_node_id.to_string(),
+        any_copy: joint.continuing,
     };
     Fenced {
         before,

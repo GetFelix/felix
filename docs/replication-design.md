@@ -4838,6 +4838,26 @@ Once it is finalized on a broker that offers `ELECTION`:
   A member of the old set that no route names any more is reached
   at the address the node catalog gives, and answers even though its own
   routing view leaves it out.
+- A leader moving on to the next generation of a shard it serves (same
+  process, not draining, exactly one generation up) is a continuing leader.
+  It wrote every record acknowledged before, so its joint fence needs only
+  promises: it counts an answer from any copy of a member, whatever storage
+  id the answer comes from, and takes no tail from an answer. A copy
+  doubted after an unclean crash, a learner because its storage id rotated,
+  answers such a fence when its ballot names that leader at the generation
+  before and the crash kept every ballot. It promises and stays doubted
+  until a leader ships to it. Every other copy refuses as before. A wiped or
+  restored directory, or one that already replaced a lost copy, may have
+  promised the generation to a candidate and then lost that ballot, and a
+  ballot it took since proves nothing, so its promise now could make a
+  second leader there
+  ([#1331](https://github.com/GetFelix/felix/issues/1331)). So a set change
+  that re-admits a member after two members crashed uncleanly opens under
+  the leader that kept serving
+  ([#2047](https://github.com/GetFelix/felix/issues/2047)). A failover
+  after the same two crashes still waits, as in
+  [A leader's own crash](#a-leaders-own-crash): stop the promoted broker,
+  run `felixctl placement abandon <name> <shard> --yes`, and start it again.
 - Outside a pending cut-over, a failover can leave two sets. When the
   control plane records an election without taking the elected leader's
   set, its own set and the one the elected leader shipped with can differ,
@@ -4953,7 +4973,13 @@ acknowledgement is the one it was.
 > count. `without_joint_fence_a_set_change_fences_the_new_set_alone`: the
 > fence is unchanged when the feature is off.
 > `under_joint_fence_the_next_generation_is_refused_by_a_replica_that_promised_it`:
-> the fenced next-generation open. `a_two_member_swap_waits_for_the_old_majority`
+> the fenced next-generation open.
+> `a_continuing_joint_fence_counts_followers_answering_from_new_copies` and
+> `a_failover_joint_fence_does_not_count_followers_answering_from_new_copies`:
+> a continuing leader counts promises from any copy, a failover does not.
+> `a_learner_whose_ballot_names_the_leader_promises_its_next_generation` and
+> `a_learner_without_the_leaders_ballot_still_refuses_its_next_generation`
+> (`non_voting`): the replica's side. `a_two_member_swap_waits_for_the_old_majority`
 > (felix-cluster, `failures`): the same swap between broker processes.
 
 The control plane's side of rule 10 is built too (control-plane.md,

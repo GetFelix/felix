@@ -1620,6 +1620,11 @@ impl ReplicaHandler {
                 &opened
             }
         };
+        // The leader this copy promised the generation before, moving on to
+        // the next: it holds what this copy might have lost (#2047).
+        if self.continues_from(log, generation, sender) {
+            return None;
+        }
         let led_before = self.unclean.as_ref().is_some_and(|unclean| {
             unclean.led_before(&crate::driver::watch_key(key), log, generation)
         });
@@ -1953,6 +1958,31 @@ impl ReplicaHandler {
 
     fn joint_fence(&self) -> bool {
         self.joint_gate() == Some(true)
+    }
+
+    /// Whether `log`'s ballot names `sender`, another broker, at the
+    /// generation right before `generation`: a fence from the leader this
+    /// copy last promised, moving to its next generation. Only after an
+    /// unclean start that kept every ballot: a wiped or restored copy may
+    /// have promised the next generation to a candidate before it lost that
+    /// ballot, and a ballot it took since proves nothing. Such a copy refuses
+    /// as it would. Lets a doubted copy promise, never vouch: it stays
+    /// doubted (#2047).
+    fn continues_from(
+        &self,
+        log: &felix_broker::StreamLog,
+        generation: u64,
+        sender: Option<&str>,
+    ) -> bool {
+        let kept = self
+            .unclean
+            .as_ref()
+            .is_some_and(|unclean| unclean.kept_promises());
+        kept && sender.is_some_and(|sender| {
+            sender != self.router.local_node_id()
+                && generation.checked_sub(1) == Some(log.accepted_generation())
+                && log.accepted_leader().as_deref() == Some(sender)
+        })
     }
 
     /// Whether the fleet has `joint_fence`, or `None` while it is off here and

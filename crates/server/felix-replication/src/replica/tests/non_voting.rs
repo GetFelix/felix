@@ -1386,3 +1386,70 @@ async fn a_batch_that_is_not_stored_keeps_the_earlier_sets() {
     assert_eq!(set.current.generation, 5, "the batch raised the set");
     assert_eq!(set.earlier, vec![unopened, left]);
 }
+
+/// A learner marked on evidence of a lost copy, whose ballot is `ballot`,
+/// answering the fence of broker-a moving on to generation 6. With
+/// `kept_promises` it restarted after an unclean crash that kept every ballot;
+/// without, its directory was wiped or restored.
+async fn continuing_fence(
+    ballot: Option<(u64, &str)>,
+    kept_promises: bool,
+) -> (InternalMessage, felix_broker::StreamLog) {
+    let (broker, _dir) = broker_with_storage().await;
+    let handler = handler(&broker, 6, OWN).with_unclean_start(Arc::new(
+        crate::unclean::UncleanStart::new(LOCAL).with_kept_promises(kept_promises),
+    ));
+    wiped_at_5(&handler).await;
+    let log = log_of(&broker).await;
+    if let Some((generation, leader)) = ballot {
+        log.accept_generation(generation, Some(leader))
+            .await
+            .expect("ballot");
+    }
+    let answer = settled(|| handler.fence(SENDER, readmission(6, OWN))).await;
+    (answer, log)
+}
+
+/// **A doubted copy whose ballot names the leader at the generation before
+/// promises that leader its next one.** Its storage id rotated after an
+/// unclean crash, so it is a learner until a leader vouches for it, but the
+/// crash kept its ballot: it promised broker-a generation 5, and broker-a,
+/// moving on to 6, holds every record it might have lost. It promises, and
+/// stays marked: the promise is no vote for what it holds (#2047).
+#[tokio::test]
+async fn a_learner_whose_ballot_names_the_leader_promises_its_next_generation() {
+    let (answer, log) = continuing_fence(Some((5, "broker-a")), true).await;
+
+    assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
+    assert_eq!(log.accepted_generation(), 6);
+    assert_eq!(log.accepted_leader().as_deref(), Some("broker-a"));
+    assert!(
+        log.member_is_wiped(LOCAL),
+        "the promise vouched for the copy"
+    );
+}
+
+/// **A copy whose ballot did not survive still refuses.** Wiped, it names no
+/// leader; one whose ballot names another leader, or broker-a at an older
+/// generation, may have promised generation 6 to someone else. So may a
+/// wiped or restored copy whose ballot names broker-a at 5: it may have taken
+/// that ballot after losing a promise of 6 to a candidate, and its promise
+/// now could make a second leader there (#1331).
+#[tokio::test]
+async fn a_learner_without_the_leaders_ballot_still_refuses_its_next_generation() {
+    for (ballot, kept) in [
+        (None, true),
+        (Some((5, "broker-c")), true),
+        (Some((4, "broker-a")), true),
+        (Some((5, "broker-a")), false),
+    ] {
+        let (answer, log) = continuing_fence(ballot, kept).await;
+
+        assert_eq!(
+            refusal(&answer).code,
+            ErrorCode::Unauthorized,
+            "{ballot:?} {kept}"
+        );
+        assert_ne!(log.accepted_generation(), 6, "{ballot:?} {kept}");
+    }
+}
