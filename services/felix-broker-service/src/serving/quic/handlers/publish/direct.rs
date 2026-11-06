@@ -82,7 +82,7 @@ pub async fn resolve_publish(
     };
     let shard =
         publish_shard_at(ingress, tenant_id, namespace, stream, key, named).map_err(refuse)?;
-    let mut cache = StreamHandleCache::new();
+    let mut cache = StreamHandleCache::default();
     let mut scratch = String::new();
     let route = resolve_route(
         broker,

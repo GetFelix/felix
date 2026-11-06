@@ -92,10 +92,10 @@ async fn pass_with<R: PeerRequester + Sync>(
         &NoGate,
         marks,
         None,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
         &Rebuilds::disabled(),
         &MoveThrottle::unlimited(),
     )
@@ -557,6 +557,7 @@ impl PeerRequester for BehindFollower {
                         .refusal
                         .map_or("behind", |(_, detail)| detail)
                         .to_string(),
+                    reason: None,
                 },
             ));
         }
@@ -799,10 +800,10 @@ async fn a_standing_is_kept_until_its_shard_opens() {
         &gate,
         &marks,
         None,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
         &Rebuilds::disabled(),
         &MoveThrottle::unlimited(),
     )

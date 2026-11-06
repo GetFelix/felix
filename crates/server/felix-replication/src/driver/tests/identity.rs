@@ -59,6 +59,7 @@ impl PeerRequester for IdentifiedFollower {
                     code: felix_wire::internal::ErrorCode::Unavailable,
                     expected_offset: 0,
                     detail: "still opening".to_string(),
+                    reason: None,
                 },
             ));
         }
@@ -92,8 +93,8 @@ async fn pass<R: PeerRequester + Sync>(
         None,
         cursors,
         groups,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
         rebuilds,
         &MoveThrottle::unlimited(),
     )
@@ -110,7 +111,7 @@ async fn a_wiped_follower_on_an_idle_shard_is_not_reported_caught_up() {
     let (broker, _dir) = leader_with(3).await;
     let router = router(LOCAL, &["broker-b"], 4);
     let follower = IdentifiedFollower::with(id(1));
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
     let rebuilds = Rebuilds::disabled();
 
     let report = pass(
@@ -118,7 +119,7 @@ async fn a_wiped_follower_on_an_idle_shard_is_not_reported_caught_up() {
         &broker,
         &router,
         &mut cursors,
-        &mut HashMap::new(),
+        &mut HashMap::default(),
         &rebuilds,
     )
     .await;
@@ -131,7 +132,7 @@ async fn a_wiped_follower_on_an_idle_shard_is_not_reported_caught_up() {
         &broker,
         &router,
         &mut cursors,
-        &mut HashMap::new(),
+        &mut HashMap::default(),
         &rebuilds,
     )
     .await;
@@ -149,7 +150,7 @@ async fn a_restarted_follower_still_counts() {
     let (broker, _dir) = leader_with(3).await;
     let router = router(LOCAL, &["broker-b"], 4);
     let follower = IdentifiedFollower::with(id(1));
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
     let rebuilds = Rebuilds::disabled();
 
     pass(
@@ -157,7 +158,7 @@ async fn a_restarted_follower_still_counts() {
         &broker,
         &router,
         &mut cursors,
-        &mut HashMap::new(),
+        &mut HashMap::default(),
         &rebuilds,
     )
     .await;
@@ -167,7 +168,7 @@ async fn a_restarted_follower_still_counts() {
         &broker,
         &router,
         &mut cursors,
-        &mut HashMap::new(),
+        &mut HashMap::default(),
         &rebuilds,
     )
     .await;
@@ -203,14 +204,14 @@ async fn a_follower_that_crashed_under_periodic_fsync_is_not_counted_on_its_old_
     let router = router(LOCAL, &["broker-b"], 4);
     let first = start();
     let follower = IdentifiedFollower::with(first);
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
     let rebuilds = Rebuilds::disabled();
     let report = pass(
         &follower,
         &broker,
         &router,
         &mut cursors,
-        &mut HashMap::new(),
+        &mut HashMap::default(),
         &rebuilds,
     )
     .await;
@@ -223,7 +224,7 @@ async fn a_follower_that_crashed_under_periodic_fsync_is_not_counted_on_its_old_
         &broker,
         &router,
         &mut cursors,
-        &mut HashMap::new(),
+        &mut HashMap::default(),
         &rebuilds,
     )
     .await;
@@ -241,7 +242,7 @@ async fn a_follower_that_crashed_under_periodic_fsync_is_not_counted_on_its_old_
         &broker,
         &router,
         &mut cursors,
-        &mut HashMap::new(),
+        &mut HashMap::default(),
         &rebuilds,
     )
     .await;
@@ -269,7 +270,7 @@ async fn a_new_incarnation_without_storage_ids_starts_the_copy_over() {
         incarnation,
     };
     let follower = IdentifiedFollower::at(at(Incarnation::At(1)));
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
     let rebuilds = Rebuilds::disabled();
 
     let report = pass(
@@ -277,7 +278,7 @@ async fn a_new_incarnation_without_storage_ids_starts_the_copy_over() {
         &broker,
         &router,
         &mut cursors,
-        &mut HashMap::new(),
+        &mut HashMap::default(),
         &rebuilds,
     )
     .await;
@@ -293,7 +294,7 @@ async fn a_new_incarnation_without_storage_ids_starts_the_copy_over() {
         &broker,
         &router,
         &mut cursors,
-        &mut HashMap::new(),
+        &mut HashMap::default(),
         &rebuilds,
     )
     .await;
@@ -320,14 +321,14 @@ async fn a_new_incarnation_on_unchanged_storage_keeps_the_cursor() {
         incarnation,
     };
     let follower = IdentifiedFollower::at(at(Incarnation::At(1)));
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
     let rebuilds = Rebuilds::disabled();
     pass(
         &follower,
         &broker,
         &router,
         &mut cursors,
-        &mut HashMap::new(),
+        &mut HashMap::default(),
         &rebuilds,
     )
     .await;
@@ -338,7 +339,7 @@ async fn a_new_incarnation_on_unchanged_storage_keeps_the_cursor() {
         &broker,
         &router,
         &mut cursors,
-        &mut HashMap::new(),
+        &mut HashMap::default(),
         &rebuilds,
     )
     .await;
@@ -380,7 +381,7 @@ async fn an_identity_change_resets_ride_along_cursors_and_frees_a_rebuild_slot()
         storage_id: Some(id(1)),
         ..FollowerCursor::new("broker-b", addr, 0)
     });
-    let mut cursors = HashMap::from([(key(), entry)]);
+    let mut cursors = HashMap::from_iter([(key(), entry)]);
     let mut group = ShardCursors::at(4);
     group.followers.push(FollowerCursor {
         next_offset: 5,
@@ -389,7 +390,7 @@ async fn an_identity_change_resets_ride_along_cursors_and_frees_a_rebuild_slot()
         storage_id: Some(id(1)),
         ..FollowerCursor::new("broker-b", addr, 0)
     });
-    let mut groups = HashMap::from([(key(), group)]);
+    let mut groups = HashMap::from_iter([(key(), group)]);
     let rebuilds = Rebuilds::new(crate::RebuildPolicy {
         max_concurrent: 1,
         bytes_per_sec: 0,
@@ -427,14 +428,14 @@ async fn a_follower_without_identity_is_reported_without_one() {
     let (broker, _dir) = leader_with(3).await;
     let router = router(LOCAL, &["broker-b"], 4);
     let follower = AcceptingFollower::default();
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
 
     let report = pass(
         &follower,
         &broker,
         &router,
         &mut cursors,
-        &mut HashMap::new(),
+        &mut HashMap::default(),
         &Rebuilds::disabled(),
     )
     .await;
@@ -497,9 +498,10 @@ async fn a_wiped_followers_old_position_does_not_move_the_mark() {
     };
     let mut entry = ShardCursors::at(4);
     entry.followers = vec![at("broker-b", 2), at("broker-c", 5)];
-    let mut cursors = HashMap::from([(key(), entry)]);
+    let mut cursors = HashMap::from_iter([(key(), entry)]);
 
-    let (mut group, mut dead, mut counters) = (HashMap::new(), HashMap::new(), HashMap::new());
+    let (mut group, mut dead, mut counters) =
+        (HashMap::default(), HashMap::default(), HashMap::default());
     let pass = replicate_once(
         &WipedAndDown,
         &broker,
@@ -561,10 +563,10 @@ async fn a_wiped_followers_old_counter_position_does_not_move_the_counter_mark()
     let seeded = |held: u64| {
         let mut entry = ShardCursors::at(4);
         entry.followers = vec![at("broker-b", 0), at("broker-c", held)];
-        HashMap::from([(cache.clone(), entry)])
+        HashMap::from_iter([(cache.clone(), entry)])
     };
     let (mut cursors, mut counters) = (seeded(2), seeded(3));
-    let (mut group, mut dead) = (HashMap::new(), HashMap::new());
+    let (mut group, mut dead) = (HashMap::default(), HashMap::default());
 
     let pass = replicate_once(
         &WipedAndDown,
@@ -673,9 +675,10 @@ async fn a_stale_connections_identity_does_not_count_a_wiped_follower() {
         };
         let mut entry = ShardCursors::at(4);
         entry.followers = vec![at("broker-b", 2), at("broker-c", 5)];
-        let mut cursors = HashMap::from([(key(), entry)]);
+        let mut cursors = HashMap::from_iter([(key(), entry)]);
 
-        let (mut group, mut dead, mut counters) = (HashMap::new(), HashMap::new(), HashMap::new());
+        let (mut group, mut dead, mut counters) =
+            (HashMap::default(), HashMap::default(), HashMap::default());
         let follower = StaleConnection {
             answered_by_new_copy,
         };
@@ -784,7 +787,7 @@ fn level_cursors(key: &ShardKey, b: u64, c: u64) -> HashMap<ShardKey, ShardCurso
     };
     let mut entry = ShardCursors::at(4);
     entry.followers = vec![at("broker-b", b, true), at("broker-c", c, false)];
-    HashMap::from([(key.clone(), entry)])
+    HashMap::from_iter([(key.clone(), entry)])
 }
 
 /// **A level follower whose answer the mark needs is asked for one.**
@@ -798,7 +801,8 @@ async fn a_level_follower_the_mark_needs_is_sent_its_last_record_again() {
     let marks = super::quorum::follower_ack_marks();
     let follower = CountingFollower::new("broker-b");
     let mut cursors = level_cursors(&key(), 0, 5);
-    let (mut group, mut dead, mut counters) = (HashMap::new(), HashMap::new(), HashMap::new());
+    let (mut group, mut dead, mut counters) =
+        (HashMap::default(), HashMap::default(), HashMap::default());
 
     replicate_once(
         &follower,
@@ -833,7 +837,8 @@ async fn a_level_follower_that_cannot_raise_the_mark_is_not_sent_anything() {
     let marks = super::quorum::follower_ack_marks();
     let follower = CountingFollower::new("broker-b");
     let mut cursors = level_cursors(&key(), 0, 5);
-    let (mut group, mut dead, mut counters) = (HashMap::new(), HashMap::new(), HashMap::new());
+    let (mut group, mut dead, mut counters) =
+        (HashMap::default(), HashMap::default(), HashMap::default());
 
     for _ in 0..3 {
         replicate_once(
@@ -885,7 +890,7 @@ async fn an_idle_cache_below_quorum_resends_nothing() {
     let marks = super::quorum::fleet_marks(true);
     let follower = CountingFollower::new("broker-b");
     let (mut cursors, mut counters) = (level_cursors(&cache, 0, 2), level_cursors(&cache, 0, 3));
-    let (mut group, mut dead) = (HashMap::new(), HashMap::new());
+    let (mut group, mut dead) = (HashMap::default(), HashMap::default());
 
     for _ in 0..3 {
         replicate_once(
@@ -920,7 +925,8 @@ async fn a_drain_does_not_hand_over_to_a_wiped_successor() {
             answered_by_new_copy,
         };
         let mut cursors = level_cursors(&key(), 0, 5);
-        let (mut group, mut dead, mut counters) = (HashMap::new(), HashMap::new(), HashMap::new());
+        let (mut group, mut dead, mut counters) =
+            (HashMap::default(), HashMap::default(), HashMap::default());
 
         let pass = replicate_once(
             &follower,
@@ -957,7 +963,8 @@ async fn a_drain_on_an_idle_shard_hands_over_to_a_level_successor() {
     let marks = super::quorum::follower_ack_marks();
     let follower = CountingFollower::new("broker-b");
     let mut cursors = level_cursors(&key(), 0, 5);
-    let (mut group, mut dead, mut counters) = (HashMap::new(), HashMap::new(), HashMap::new());
+    let (mut group, mut dead, mut counters) =
+        (HashMap::default(), HashMap::default(), HashMap::default());
 
     let pass = replicate_once(
         &follower,
@@ -1090,9 +1097,10 @@ async fn mark_with_earlier_vouch_from(
     change(&mut slow);
     let mut entry = ShardCursors::at(4);
     entry.followers = vec![fresh("broker-b"), slow, fresh("broker-d")];
-    let mut cursors = HashMap::from([(key(), entry)]);
+    let mut cursors = HashMap::from_iter([(key(), entry)]);
 
-    let (mut group, mut dead, mut counters) = (HashMap::new(), HashMap::new(), HashMap::new());
+    let (mut group, mut dead, mut counters) =
+        (HashMap::default(), HashMap::default(), HashMap::default());
     let pass = replicate_once(
         requester,
         &broker,
@@ -1249,9 +1257,10 @@ async fn a_follower_wiped_since_its_answer_does_not_count_on_it() {
     };
     let mut entry = ShardCursors::at(4);
     entry.followers = vec![at("broker-b", 2), at("broker-c", 5)];
-    let mut cursors = HashMap::from([(key(), entry)]);
+    let mut cursors = HashMap::from_iter([(key(), entry)]);
 
-    let (mut group, mut dead, mut counters) = (HashMap::new(), HashMap::new(), HashMap::new());
+    let (mut group, mut dead, mut counters) =
+        (HashMap::default(), HashMap::default(), HashMap::default());
     let pass = replicate_once(
         &WipedAndDown,
         &broker,
@@ -1287,8 +1296,9 @@ async fn a_follower_answering_in_two_passes_counts_once() {
     };
     let mut entry = ShardCursors::at(4);
     entry.followers = vec![fresh("broker-b"), fresh("broker-c"), fresh("broker-d")];
-    let mut cursors = HashMap::from([(key(), entry)]);
-    let (mut group, mut dead, mut counters) = (HashMap::new(), HashMap::new(), HashMap::new());
+    let mut cursors = HashMap::from_iter([(key(), entry)]);
+    let (mut group, mut dead, mut counters) =
+        (HashMap::default(), HashMap::default(), HashMap::default());
     for _ in 0..2 {
         let pass = replicate_once(
             &AllDownBut("broker-b"),

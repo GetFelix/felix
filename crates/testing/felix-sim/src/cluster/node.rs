@@ -4,7 +4,6 @@
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -52,15 +51,21 @@ struct DataDir {
 }
 
 impl DataDir {
-    fn new() -> Self {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "felix-sim-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed),
-        ));
-        felix_storage::sim_fs::register_root(&path);
-        Self { path }
+    /// The same path every run when no other simulation in the process
+    /// holds it, so a replay hashes and orders paths as the first run did.
+    fn new(index: usize) -> Self {
+        let base = std::env::temp_dir().join("felix-sim");
+        for attempt in 0.. {
+            let name = match attempt {
+                0 => format!("b{}", index + 1),
+                n => format!("b{}-{n}", index + 1),
+            };
+            let path = base.join(name);
+            if felix_storage::sim_fs::claim_root(&path) {
+                return Self { path };
+            }
+        }
+        unreachable!("some attempt finds a free path")
     }
 
     fn path(&self) -> &Path {
@@ -88,7 +93,7 @@ impl Node {
         Ok(Self {
             id: format!("b{}", index + 1),
             advertise: SocketAddr::from(([10, 0, 0, (index + 1) as u8], 5001)),
-            dir: DataDir::new(),
+            dir: DataDir::new(index),
             cut: Cut::new(),
             state: Mutex::new(State::Down),
             index,
@@ -168,6 +173,7 @@ impl Node {
         let peer = Arc::new(net.start(SimNode {
             node_id: self.id.clone(),
             capabilities: opened.capabilities(),
+            outgoing: opened.outgoing_capabilities(),
             identity: PeerIdentity {
                 storage: Some(opened.storage_id()),
                 incarnation: Incarnation::Unregistered,

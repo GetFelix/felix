@@ -1,5 +1,5 @@
 //! Ingress dispatch: what a broker does with a request for each ownership state.
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 
 use felix_replication::controlplane_link::HttpControlPlaneLink;
 use felix_router::{NodeRef, RegionRouter};
@@ -285,7 +285,7 @@ fn shard_selection_is_deterministic() {
 
 #[test]
 fn keys_spread_across_shards() {
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = felix_common::random::HashSet::default();
     for i in 0..200u32 {
         seen.insert(shard_for(8, Some(format!("key-{i}").as_bytes())));
     }
@@ -428,7 +428,7 @@ mod feed {
                 joint_fence: None,
                 prefetch: None,
                 elections: None,
-                nodes: HashMap::new(),
+                nodes: HashMap::default(),
             },
             router,
         )
@@ -1168,7 +1168,8 @@ fn a_pending_set_change_routes_the_new_set_and_keeps_the_one_being_left() {
         replicas: vec!["broker-b".to_string(), "broker-d".to_string()],
         generation: 6,
     });
-    let owned: HashMap<ShardKey, ShardAssignment> = [(pending.key.clone(), pending)].into();
+    let owned: HashMap<ShardKey, ShardAssignment> =
+        HashMap::from_iter([(pending.key.clone(), pending)]);
     let nodes: HashMap<String, NodeRef> = ["a", "b", "c", "d"]
         .into_iter()
         .map(|id| node(&format!("broker-{id}"), 7001, true))
@@ -1195,13 +1196,14 @@ fn a_pending_set_change_routes_the_new_set_and_keeps_the_one_being_left() {
 async fn a_shard_whose_followers_have_no_address_is_still_replicated() {
     let mut led = assignment(0, "broker-a", 3);
     led.replicas = vec!["broker-b".to_string(), "broker-c".to_string()];
-    let owned: HashMap<ShardKey, ShardAssignment> = [(led.key.clone(), led.clone())].into();
+    let owned: HashMap<ShardKey, ShardAssignment> =
+        HashMap::from_iter([(led.key.clone(), led.clone())]);
     let router = Arc::new(ShardRouter::new(
         "broker-a",
         "us-west-2",
         RegionRouter::new("us-west-2".to_string()),
     ));
-    let empty = HashMap::new();
+    let empty = HashMap::default();
     router.publish(routing_table_from(&owned, &empty), &empty);
     let mut lifecycle = ShardLifecycle::new("broker-a");
     lifecycle.observe(&led.key, Some(&led));
@@ -1270,7 +1272,10 @@ fn only_newly_named_followers_are_read_early() {
         joining,
     ]);
     assert_eq!(named(&before, &after), [0, 4]);
-    assert!(named(&HashMap::new(), &after).is_empty(), "the first view");
+    assert!(
+        named(&HashMap::default(), &after).is_empty(),
+        "the first view"
+    );
     // A re-created stream is another log, so its copy is new again.
     let recreated = ShardAssignment {
         incarnation: 9,
@@ -1317,7 +1322,7 @@ fn an_elected_leadership_is_laid_over_the_assignment_until_named() {
     named.replicas = vec!["broker-b".to_string(), "broker-c".to_string()];
     named.successor = Some("broker-c".to_string());
     named.fence_storage_ids = [("broker-c".to_string(), "00".to_string())].into();
-    let assignments: HashMap<ShardKey, ShardAssignment> = [(key(0), named)].into();
+    let assignments: HashMap<ShardKey, ShardAssignment> = HashMap::from_iter([(key(0), named)]);
 
     let laid = with_elected(assignments.clone(), &elections);
     let route = &laid[&key(0)];

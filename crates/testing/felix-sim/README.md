@@ -61,6 +61,16 @@ liveness stalls are open. One seed takes a few seconds in a debug build and the
 default batch of four takes a few minutes, so run batches one at a time on a
 busy machine.
 
-The same seed injects the same faults at the same virtual times. The brokers'
-own interleaving can still differ, so a failure can take more than one replay
-to show again. `docs/simulation.md` covers making the interleaving repeat too.
+A replay repeats the same faults at the same virtual times and the same client
+operations. Built with `RUSTFLAGS="--cfg tokio_unstable"`, it is the same run,
+event for event:
+
+```bash
+RUSTFLAGS="--cfg tokio_unstable" FELIX_SIM_SEED=<n> FELIX_SIM_HISTORY=run1.txt \
+  cargo test -p felix-sim --release --test seeds replay
+```
+
+Without the flag the interleaving under the faults can differ, so a
+timing-sensitive failure may take a few replays to show again.
+`task sim:determinism` checks that replay is exact, and CI runs it on every pull
+request. `docs/simulation.md` has the details.

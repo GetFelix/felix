@@ -95,7 +95,7 @@ async fn an_unacked_batch_routed_by_a_stale_width_is_not_written() {
             publish_ctx.ingress = Some(Arc::new(ingress_for("broker-a", true)));
             handle_binary_publish_batch_control(
                 broker,
-                &mut HashMap::new(),
+                &mut HashMap::default(),
                 &mut String::new(),
                 &publish_ctx,
                 frame,
@@ -138,7 +138,7 @@ async fn an_acked_batch_routed_by_a_stale_width_is_told_stale_width() {
         &broker,
         &publish_ctx,
         Some(&stale),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
         &mut String::new(),
         false,
         false,

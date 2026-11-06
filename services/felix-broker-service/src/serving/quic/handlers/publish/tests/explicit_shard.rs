@@ -85,7 +85,7 @@ async fn a_named_shard_skips_the_declared_width() {
 async fn an_acked_publish_out_of_range_is_answered_and_not_written() {
     let broker = broker_with_stream().await;
     let (publish_ctx, mut rx, _tx) = make_publish_context(1);
-    let mut cache = HashMap::new();
+    let mut cache = HashMap::default();
     let mut key = String::new();
     let (out_ack_tx, mut out_ack_rx) = mpsc::channel(4);
     let out_ack_depth = Arc::new(AtomicUsize::new(0));

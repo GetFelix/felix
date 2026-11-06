@@ -2,7 +2,8 @@
 //! when nobody here may write, and forwarding to the owner, against an owner
 //! that answers from a script.
 
-use std::collections::{HashMap, VecDeque};
+use felix_common::random::HashMap;
+use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::Mutex;
 
@@ -84,7 +85,7 @@ fn show(ingress: &IngressRouter, leader: &str, generation: u64) {
         ingress.fence().open(&shard(), generation);
         [(shard(), generation)].into_iter().collect()
     } else {
-        HashMap::new()
+        HashMap::default()
     };
     ingress.publish(routing_table_from(&assignments, &nodes), &nodes, servable);
 }
@@ -356,7 +357,7 @@ async fn a_shard_not_open_here_is_refused_as_not_owner() {
     let broker = broker(true, dir.path()).await;
     broker.record_headers_when(|| true);
     let ingress = ingress(LOCAL);
-    ingress.publish_servable(HashMap::new());
+    ingress.publish_servable(HashMap::default());
     let writes = BrokerWrites::new(
         Arc::clone(&broker),
         Some(ingress),

@@ -984,6 +984,37 @@ impl ControlPlaneStore for RaftStore {
         }
     }
 
+    async fn confirmed_shard_assignments(
+        &self,
+        keys: &[ShardKey],
+    ) -> StoreResult<Vec<crate::store::ConfirmedAssignment>> {
+        let asked = self
+            .ask_leader(LeaderRequest::ShardAssignments {
+                keys: keys.to_vec(),
+            })
+            .await?;
+        match asked {
+            Some(MetaResponse::Assignments { assignments }) if assignments.len() == keys.len() => {
+                Ok(assignments
+                    .into_iter()
+                    .map(|assignment| match assignment {
+                        Some(assignment) => crate::store::ConfirmedAssignment::Assigned(assignment),
+                        None => crate::store::ConfirmedAssignment::Unassigned,
+                    })
+                    .collect())
+            }
+            Some(_) => Err(unexpected_shape("assignments")),
+            // A leader that predates the batch: one read each.
+            None => {
+                let mut confirmed = Vec::with_capacity(keys.len());
+                for key in keys {
+                    confirmed.push(self.confirmed_shard_assignment(key).await?);
+                }
+                Ok(confirmed)
+            }
+        }
+    }
+
     async fn confirmed_shard_assignment_head(&self) -> StoreResult<Option<u64>> {
         match self.ask_leader(LeaderRequest::ShardAssignmentHead).await? {
             Some(MetaResponse::AssignmentHead { next_seq }) => Ok(Some(next_seq)),

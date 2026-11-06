@@ -1,5 +1,5 @@
 //! Which broker a cache key resolves to, and what happens when it is not this one.
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 

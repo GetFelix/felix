@@ -548,6 +548,18 @@ pub struct ConfirmedShardAssignmentResponse {
     pub assignment: Option<RoutedShardAssignment>,
 }
 
+/// Several shards to read as `GET /v1/shard-assignments/confirmed` reads one.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ConfirmedShardAssignmentsRequest {
+    pub keys: Vec<crate::model::ShardKey>,
+}
+
+/// One answer per requested shard, in the request's order.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ConfirmedShardAssignmentsResponse {
+    pub items: Vec<ConfirmedShardAssignmentResponse>,
+}
+
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ShardAssignmentChangesResponse {
     pub items: Vec<RoutedShardAssignmentChange>,

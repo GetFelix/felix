@@ -2199,8 +2199,16 @@ write acknowledged before the request. 503 means no leader confirmed it in
 time, 501 that the Raft leader predates it. A broker asks here only for a
 copy with no election promise on disk, before it takes a leader
 ([#1332](https://github.com/GetFelix/felix/issues/1332)). It asks from a
-background task, one read per shard at a time and at most 16 at once, never
-while a peer request waits. A new shard's copy asks nothing once its
+background task, one read per shard at a time and at most 16 requests at
+once, never while a peer request waits. Reads that wait for a request go
+together: `POST /v1/shard-assignments/confirmed` with
+`{"keys": [{"tenant_id", "namespace", "stream", "shard", "kind"}, ...]}`
+answers `{"items": [{"assignment": ...}, ...]}` in the same order, read on
+the Raft leader after one read-index, for up to 256 shards (a 400 past that).
+Each answer is as fresh as a single read. A control plane without the form
+answers 404 or 405, and the broker reads one shard per request, asking for
+a batch again 10 s later. A Raft leader that predates the batch is asked
+one shard at a time by the member that took the request. A new shard's copy asks nothing once its
 routing view holds the creation set of the shard's incarnation naming it
 (a shard with no incarnation still reads); a learner under
 elections is refreshed about twice a second while it takes batches

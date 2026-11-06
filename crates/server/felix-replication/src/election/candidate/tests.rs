@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::net::SocketAddr;
 use std::sync::Mutex;
 
@@ -1843,11 +1843,7 @@ async fn a_leader_the_control_plane_collided_with_fences_again_one_generation_up
     let InternalMessage::ReplicateError(refused) = answer else {
         panic!("broker-a stored a batch from the leader it collided with: {answer:?}");
     };
-    assert!(crate::replica::refuses_leader(
-        refused.code,
-        &refused.detail,
-        4
-    ));
+    assert!(crate::replica::refuses_leader(&refused, 4));
 
     let shutdown = CancellationToken::new();
     let task = tokio::spawn(run(Arc::clone(&ctx), shutdown.clone()));
@@ -2164,4 +2160,95 @@ fn the_same_seed_gives_the_same_walk() {
     let mut sorted = order;
     sorted.sort();
     assert_eq!(sorted, (0..600).collect::<Vec<_>>());
+}
+
+/// **The stuck scan opens no cache log.** A quiet cache shard whose log is
+/// not open cannot be stuck; opening it here would recover it on the
+/// candidate's loop, and every quiet one with it after a restart.
+#[tokio::test(start_paused = true)]
+async fn the_stuck_scan_opens_no_cache_log() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = LogConfig {
+        fsync_mode: FsyncMode::None,
+        preallocate_segments: false,
+        ..LogConfig::default()
+    };
+    let broker = Arc::new(Broker::new(Box::new(
+        felix_storage::LogCache::open(dir.path().join("caches"), config).expect("cache"),
+    )));
+    broker.register_tenant(TENANT).await.expect("tenant");
+    broker
+        .register_namespace(TENANT, NAMESPACE)
+        .await
+        .expect("namespace");
+    broker
+        .register_cache(
+            TENANT,
+            NAMESPACE,
+            "sessions",
+            felix_broker::CacheMetadata {
+                consistency: ConsistencyLevel::Quorum,
+                incarnation: 0,
+            },
+        )
+        .await
+        .expect("cache");
+    let cache_key = ShardKey {
+        stream: "sessions".into(),
+        kind: ShardKind::Cache,
+        ..key()
+    };
+    let router = Arc::new(ShardRouter::new(
+        LOCAL,
+        "us-west-2",
+        RegionRouter::new("us-west-2".to_string()),
+    ));
+    let nodes: HashMap<String, NodeRef> = [("broker-a", 7001), (LOCAL, 7002), ("broker-c", 7003)]
+        .into_iter()
+        .map(|(id, port)| (id.to_string(), node(id, port)))
+        .collect();
+    let table = RoutingTable::build(
+        [(
+            cache_key.clone(),
+            "broker-a".to_string(),
+            vec![LOCAL.to_string(), "broker-c".to_string()],
+            3,
+        )],
+        &nodes,
+    );
+    router.publish(table, &nodes);
+    let mut ctx = ctx(&broker, voters(None));
+    ctx.router = router;
+
+    ctx.scan_stuck(&BTreeSet::new()).await;
+    assert!(
+        broker.cache().open_shards().is_empty(),
+        "the scan opened it"
+    );
+}
+
+/// **A round that panics does not hold its shard forever.** Its shard is
+/// cleared from the loop's bookkeeping as a failed round's is, so the
+/// candidate stands again after the backoff.
+#[tokio::test(start_paused = true)]
+async fn a_round_that_panics_is_stood_again() {
+    let (broker, _dir) = follower().await;
+    let voters = voters(None);
+    *voters.on_ask.lock().expect("lock") =
+        Some((0, Box::pin(async { panic!("the first ask panics") })));
+    let ctx = Arc::new(ctx(&broker, voters));
+    let shutdown = CancellationToken::new();
+    let task = tokio::spawn(run(Arc::clone(&ctx), shutdown.clone()));
+
+    let stood = async {
+        while ctx.elections.get(&key()).is_none() {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(120), stood)
+        .await
+        .expect("never stood again after the panic");
+    assert!(ctx.requester.asked.lock().expect("lock").len() > 1);
+    shutdown.cancel();
+    task.await.expect("run");
 }

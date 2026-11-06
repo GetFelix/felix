@@ -39,8 +39,8 @@ pub use header::{
 };
 pub use message::{InternalMessage, ShardRef};
 pub use replicate::{
-    GenerationStart, ProducerMark, ReplicaLog, ReplicateBootstrap, ReplicateError, ReplicateOk,
-    ReplicateRebuild, ReplicateRecords, batch_checksum,
+    GenerationStart, ProducerMark, RefusalReason, ReplicaLog, ReplicateBootstrap, ReplicateError,
+    ReplicateOk, ReplicateRebuild, ReplicateRecords, batch_checksum,
 };
 
 /// Longest identifier (tenant, namespace, stream, node id) accepted.

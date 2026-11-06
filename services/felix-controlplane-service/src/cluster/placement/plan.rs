@@ -1,5 +1,5 @@
 //! One pass of placement over a metadata snapshot, as a pure function.
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::sync::Arc;
 
 use super::leadership::{Leadership, Owner, Shares};
@@ -253,7 +253,7 @@ fn plan_once(
 
     // Load counts every assignment we intend to exist after this pass, so a
     // cap is respected across kept and newly placed shards alike.
-    let mut load: HashMap<&str, u32> = HashMap::new();
+    let mut load: HashMap<&str, u32> = HashMap::default();
     // Leaders per live node as they will stand once every move in flight
     // completes: a staged successor already counts. Otherwise an over-share
     // node stages more moves than it needs and the destination ends up over.

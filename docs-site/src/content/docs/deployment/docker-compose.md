@@ -85,18 +85,32 @@ docker compose run --rm felixctl pub orders 'hello'
 ```
 
 The subscriber prints `hello`. That `felixctl` runs inside the stack, with the
-settings already in its environment. To use one installed on your machine
-instead, copy the token and the broker's certificate out and add a context:
+settings already in its environment. To use a `felixctl` installed on your
+machine instead, do these three steps in order. Step 1 matters: the context
+points at those files, so `felixctl` fails with a "does not exist" error if you
+skip it.
 
-```bash
-docker compose exec -T felix-broker cat /var/lib/felix/client.jwt > felix-dev.jwt
-docker compose exec -T felix-broker cat /var/lib/felix/controlplane.jwt > felix-dev-cp.jwt
-docker compose exec -T felix-broker cat /var/lib/felix/broker-cert.pem > felix-dev.pem
-felixctl context add felix-dev --brokers 127.0.0.1:5000 --tenant dev \
-  --token-file felix-dev.jwt --ca-file felix-dev.pem \
-  --controlplane-url http://127.0.0.1:8443 --controlplane-token-file felix-dev-cp.jwt --use
-felixctl pub orders 'hello'
-```
+1. Copy the development credentials out of the broker:
+
+   ```bash
+   docker compose exec -T felix-broker cat /var/lib/felix/client.jwt > felix-dev.jwt
+   docker compose exec -T felix-broker cat /var/lib/felix/controlplane.jwt > felix-dev-cp.jwt
+   docker compose exec -T felix-broker cat /var/lib/felix/broker-cert.pem > felix-dev.pem
+   ```
+
+2. Add a context that uses them:
+
+   ```bash
+   felixctl context add felix-dev --brokers 127.0.0.1:5000 --tenant dev \
+     --token-file felix-dev.jwt --ca-file felix-dev.pem \
+     --controlplane-url http://127.0.0.1:8443 --controlplane-token-file felix-dev-cp.jwt --use
+   ```
+
+3. Subscribe:
+
+   ```bash
+   felixctl sub orders
+   ```
 
 The broker makes a new certificate every time it starts, so copy
 `broker-cert.pem` again after a restart.

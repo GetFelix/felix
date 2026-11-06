@@ -12,7 +12,7 @@
 //! They run at every [`Point`], so a state that lasts only seconds during the
 //! faults is seen. A violation is reported once, with a census of the shard.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::{CheckContext, Checker, Digest, Finding, Point, Seen, seen_by_all};
 use crate::cluster::{SimCluster, describe};
@@ -31,14 +31,14 @@ type Violation = (String, String);
 /// same broker opening a generation again after a restart is not two leaders.
 #[derive(Debug)]
 pub struct OneLeaderPerGeneration {
-    led: HashMap<(String, u64), BTreeSet<String>>,
+    led: BTreeMap<(String, u64), BTreeSet<String>>,
     digest: Digest,
 }
 
 impl Default for OneLeaderPerGeneration {
     fn default() -> Self {
         Self {
-            led: HashMap::new(),
+            led: BTreeMap::new(),
             digest: Digest::new(SHOW),
         }
     }

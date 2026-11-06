@@ -161,6 +161,7 @@ pub struct OpenedBroker<L> {
     handler: Arc<dyn PeerRequestHandler>,
     prefetch: Option<replication::confirmed::Prefetch>,
     capabilities: PeerCapabilities,
+    outgoing: PeerCapabilities,
     registered: tokio::sync::watch::Sender<Option<u64>>,
     registered_watch: tokio::sync::watch::Receiver<Option<u64>>,
 }
@@ -288,12 +289,20 @@ impl SimBroker {
             &auth,
             storage_id,
             unclean.clone(),
-            None,
+            // Through the same link as every other control-plane call, so a
+            // learner is backed here as in a broker.
+            link.clone().map(|link| {
+                Arc::new(crate::shards::ControlPlaneRoutes::new(
+                    link,
+                    credential.clone(),
+                )) as Arc<dyn replication::confirmed::ConfirmedRoutes>
+            }),
         );
         let handler = Arc::new(handler);
         let (registered, registered_watch) = tokio::sync::watch::channel(None);
         Ok(OpenedBroker {
             capabilities: peer.capabilities(),
+            outgoing: peer.outgoing_capabilities(),
             config: broker_config,
             link,
             credential,
@@ -324,6 +333,11 @@ impl<L: ControlPlaneLink + Clone> OpenedBroker<L> {
     /// election included.
     pub fn capabilities(&self) -> PeerCapabilities {
         self.capabilities
+    }
+
+    /// What this broker offers when it dials a peer.
+    pub fn outgoing_capabilities(&self) -> PeerCapabilities {
+        self.outgoing
     }
 
     /// The storage identity a peer handshake announces.
@@ -361,6 +375,7 @@ impl<L: ControlPlaneLink + Clone> OpenedBroker<L> {
             registered_watch,
             handler: _,
             capabilities: _,
+            outgoing: _,
         } = self;
         let peers = Some(peers);
         let shutdown = CancellationToken::new();

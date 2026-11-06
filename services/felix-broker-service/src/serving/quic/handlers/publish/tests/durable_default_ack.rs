@@ -48,7 +48,7 @@ async fn answered_while_queued(durable: bool, ack_durable_on_commit: bool) -> bo
     handle_publish_message(
         &broker,
         &ctx,
-        &mut HashMap::new(),
+        &mut HashMap::default(),
         &mut String::new(),
         false,
         false,

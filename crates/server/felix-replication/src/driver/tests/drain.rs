@@ -40,9 +40,9 @@ async fn drain_pass(
         &QuorumMarks::new(),
         None,
         cursors,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
         &Rebuilds::disabled(),
         &MoveThrottle::unlimited(),
     )
@@ -59,7 +59,7 @@ async fn a_draining_shard_reports_drained_once_its_fence_is_quiet() {
     let router = draining_router(LOCAL, &["broker-b"], 4);
     let follower = AcceptingFollower::default();
     let fence = ClosedWithWriteInside::default();
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
 
     // The tail is not moving, and that is not enough: a write is inside.
     for _ in 0..3 {
@@ -101,7 +101,14 @@ async fn a_draining_shard_never_served_here_drains_on_its_first_pass() {
     let router = draining_router(LOCAL, &["broker-b"], 4);
     let follower = AcceptingFollower::default();
 
-    let pass = drain_pass(&follower, &broker, &router, &Unfenced, &mut HashMap::new()).await;
+    let pass = drain_pass(
+        &follower,
+        &broker,
+        &router,
+        &Unfenced,
+        &mut HashMap::default(),
+    )
+    .await;
     let report = pass
         .reports
         .into_iter()
@@ -392,7 +399,7 @@ async fn a_draining_shard_with_no_replicas_reports_drained() {
     let (broker, _dir) = leader_with(3).await;
     let router = draining_router(LOCAL, &[], 4);
     let follower = AcceptingFollower::default();
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
 
     let pass = drain_pass(&follower, &broker, &router, &Unfenced, &mut cursors).await;
     let report = pass
@@ -430,6 +437,7 @@ impl PeerRequester for BehindFollower {
                     code: felix_wire::internal::ErrorCode::StaleRoute,
                     expected_offset: 0,
                     detail: "behind".to_string(),
+                    reason: None,
                 },
             ));
         }

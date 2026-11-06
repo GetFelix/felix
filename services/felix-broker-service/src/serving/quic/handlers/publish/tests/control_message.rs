@@ -6,7 +6,7 @@ use super::*;
 async fn handle_publish_message_throttled_sends_error() {
     let broker = Broker::new(EphemeralCache::new().into());
     let (publish_ctx, _rx, _tx) = make_publish_context(1);
-    let mut cache = HashMap::new();
+    let mut cache = HashMap::default();
     let mut key = String::new();
     let (out_tx, mut out_rx) = mpsc::channel(1);
     let out_depth = Arc::new(AtomicUsize::new(0));
@@ -61,7 +61,7 @@ async fn handle_publish_message_throttled_sends_error() {
 async fn handle_publish_message_throttled_without_request_id_sends_error() {
     let broker = Broker::new(EphemeralCache::new().into());
     let (publish_ctx, _rx, _tx) = make_publish_context(1);
-    let mut cache = HashMap::new();
+    let mut cache = HashMap::default();
     let mut key = String::new();
     let (out_tx, mut out_rx) = mpsc::channel(1);
     let out_depth = Arc::new(AtomicUsize::new(0));
@@ -113,7 +113,7 @@ async fn handle_publish_message_throttled_without_request_id_sends_error() {
 async fn handle_publish_message_missing_request_id_returns_error() {
     let broker = Broker::new(EphemeralCache::new().into());
     let (publish_ctx, _rx, _tx) = make_publish_context(1);
-    let mut cache = HashMap::new();
+    let mut cache = HashMap::default();
     let mut key = String::new();
     let (out_tx, mut out_rx) = mpsc::channel(1);
     let out_depth = Arc::new(AtomicUsize::new(0));
@@ -179,7 +179,7 @@ async fn handle_publish_message_drop_when_queue_full_and_ack_none() {
 
     let (publish_ctx, _rx, tx) = make_publish_context(1);
     tx.try_send(make_job()).expect("fill queue");
-    let mut cache = HashMap::new();
+    let mut cache = HashMap::default();
     let mut key = String::new();
     let (out_tx, mut out_rx) = mpsc::channel(1);
     let out_depth = Arc::new(AtomicUsize::new(0));
@@ -242,7 +242,7 @@ async fn handle_publish_message_enqueue_error_reports_publish_error() {
 
     let (publish_ctx, _rx, tx) = make_publish_context(1);
     tx.try_send(make_job()).expect("fill queue");
-    let mut cache = HashMap::new();
+    let mut cache = HashMap::default();
     let mut key = String::new();
     let (out_tx, mut out_rx) = mpsc::channel(1);
     let out_depth = Arc::new(AtomicUsize::new(0));
@@ -299,7 +299,7 @@ async fn handle_publish_message_enqueue_error_reports_publish_error() {
 async fn handle_publish_message_stream_not_found_sends_error() {
     let broker = Broker::new(EphemeralCache::new().into());
     let (publish_ctx, _rx, _tx) = make_publish_context(1);
-    let mut cache = HashMap::new();
+    let mut cache = HashMap::default();
     let mut key = String::new();
     let (out_tx, mut out_rx) = mpsc::channel(1);
     let out_depth = Arc::new(AtomicUsize::new(0));
@@ -368,7 +368,7 @@ async fn handle_publish_message_ack_sends_ok() {
         .await
         .expect("stream");
     let (publish_ctx, _rx, _tx) = make_publish_context(8);
-    let mut cache = HashMap::new();
+    let mut cache = HashMap::default();
     let mut key = String::new();
     let (out_tx, mut out_rx) = mpsc::channel(1);
     let out_depth = Arc::new(AtomicUsize::new(0));
@@ -434,7 +434,7 @@ async fn handle_publish_message_ack_waiters_exhausted() {
         .await
         .expect("stream");
     let (publish_ctx, mut rx, _tx) = make_publish_context(8);
-    let mut cache = HashMap::new();
+    let mut cache = HashMap::default();
     let mut key = String::new();
     let (out_tx, mut out_rx) = mpsc::channel(1);
     let out_depth = Arc::new(AtomicUsize::new(0));
@@ -496,7 +496,7 @@ async fn handle_publish_message_unservable_shard_is_shard_unavailable() {
     let broker = broker_with_stream().await;
     let (mut publish_ctx, _rx, _tx) = make_publish_context(1);
     publish_ctx.ingress = Some(Arc::new(ingress_for("broker-a", false)));
-    let mut cache = HashMap::new();
+    let mut cache = HashMap::default();
     let mut key = String::new();
     let (out_tx, mut out_rx) = mpsc::channel(1);
     let out_depth = Arc::new(AtomicUsize::new(0));

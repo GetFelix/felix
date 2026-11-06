@@ -89,6 +89,7 @@ impl PeerRequester for Follower {
                     code,
                     expected_offset: 0,
                     detail: "behind".to_string(),
+                    reason: None,
                 },
             ));
         }

@@ -6,7 +6,7 @@
 //! write-fence test is about: admission still says the shard is served here,
 //! and only the fence can refuse the write.
 
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 

@@ -27,7 +27,7 @@ struct Leading {
 }
 
 async fn leading(replicas: &[&str], successor: Option<&str>, generation: u64) -> Leading {
-    use std::collections::HashMap;
+    use felix_common::random::HashMap;
     use std::sync::Arc;
 
     use felix_router::{NodeRef, RegionRouter, ShardRouter};

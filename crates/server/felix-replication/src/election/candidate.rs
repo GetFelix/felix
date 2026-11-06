@@ -8,7 +8,8 @@
 //! generation, and the shard opens through the promotion path with a
 //! candidate's fence.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use felix_common::random::{HashMap, HashSet};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -170,11 +171,7 @@ impl<R> Ctx<R> {
                     .get(key)
                     .is_none_or(|elected| elected.generation < accepted)
         } else {
-            let started = log
-                .generations()
-                .iter()
-                .any(|epoch| epoch.generation == accepted);
-            accepted >= route.generation && !started
+            accepted >= route.generation && !opened(log, accepted)
         };
         // A ballot the control plane named this broker at holds it off while
         // the routes catch up, as in `stand`. Asked on every scan so that
@@ -217,8 +214,8 @@ impl<R> Ctx<R> {
     async fn scan_stuck(&self, suspected: &BTreeSet<String>) {
         let local = self.router.local_node_id();
         let now = Instant::now();
-        let mut followed = HashSet::new();
-        let mut stuck = HashSet::new();
+        let mut followed = HashSet::default();
+        let mut stuck = HashSet::default();
         for (key, route) in self.router.snapshot().iter() {
             if !holds_copy(route, local) {
                 continue;
@@ -243,7 +240,18 @@ impl<R> Ctx<R> {
                 ShardKind::Stream => self.broker.durable_storage().and_then(|storage| {
                     storage.opened_stream(&key.tenant_id, &key.namespace, &key.stream, key.shard)
                 }),
-                ShardKind::Cache => shard_log(&self.broker, key).await,
+                ShardKind::Cache => {
+                    self.broker
+                        .opened_log(
+                            LogKind::Cache,
+                            &key.tenant_id,
+                            &key.namespace,
+                            &key.stream,
+                            key.shard,
+                            None,
+                        )
+                        .await
+                }
             };
             let Some(log) = log else {
                 continue;
@@ -387,67 +395,65 @@ async fn run<R: PeerRequester + Send + Sync + 'static>(
     let mut suspected = ctx.suspects.subscribe();
     let mut ticker = tokio::time::interval(TICK);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let mut rounds: JoinSet<(ShardKey, Round)> = JoinSet::new();
+    let mut rounds: ShardTasks<Round> = ShardTasks::default();
     // By whether the round stands on the shard's suspicion alone.
-    let mut in_flight: HashMap<ShardKey, bool> = HashMap::new();
-    let mut backoff: HashMap<ShardKey, Backoff> = HashMap::new();
+    let mut in_flight: HashMap<ShardKey, bool> = HashMap::default();
+    let mut backoff: HashMap<ShardKey, Backoff> = HashMap::default();
     // Shards whose standing from before this broker started was looked for.
-    let mut looked_at: HashSet<ShardKey> = HashSet::new();
-    let mut lookups: JoinSet<(ShardKey, Found)> = JoinSet::new();
+    let mut looked_at: HashSet<ShardKey> = HashSet::default();
+    let mut lookups: ShardTasks<Found> = ShardTasks::default();
     // Shards looked at or being put back.
-    let mut restoring: HashSet<ShardKey> = HashSet::new();
+    let mut restoring: HashSet<ShardKey> = HashSet::default();
     let mut scanned: Option<Instant> = None;
     // The generation each shard was last fenced again from, so it is once.
-    let mut restood: HashMap<ShardKey, u64> = HashMap::new();
+    let mut restood: HashMap<ShardKey, u64> = HashMap::default();
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => return,
             _ = suspected.changed() => {}
             _ = ticker.tick() => {}
-            Some(done) = rounds.join_next() => {
-                if let Ok((key, round)) = done {
-                    restoring.remove(&key);
-                    let shard_only = in_flight.remove(&key).unwrap_or(false);
-                    match round {
-                        Round::Opened => {
-                            backoff.remove(&key);
-                            ctx.held_back.lock().expect("held_back lock").remove(&key);
-                        }
-                        Round::Failed | Round::SetMoved => {
-                            if matches!(round, Round::SetMoved) {
-                                restood.remove(&key);
-                            }
-                            let backoff = backoff.entry(key).or_default();
-                            backoff.failed();
-                            if shard_only {
-                                backoff.at_least(SHARD_RETRY);
-                            }
-                        }
-                        Round::Ineligible => backoff.entry(key).or_default().wait(INELIGIBLE_FOR),
+            Some((key, round)) = rounds.join_next() => {
+                // A round that panicked failed.
+                let round = round.unwrap_or(Round::Failed);
+                restoring.remove(&key);
+                let shard_only = in_flight.remove(&key).unwrap_or(false);
+                match round {
+                    Round::Opened => {
+                        backoff.remove(&key);
+                        ctx.held_back.lock().expect("held_back lock").remove(&key);
                     }
+                    Round::Failed | Round::SetMoved => {
+                        if matches!(round, Round::SetMoved) {
+                            restood.remove(&key);
+                        }
+                        let backoff = backoff.entry(key).or_default();
+                        backoff.failed();
+                        if shard_only {
+                            backoff.at_least(SHARD_RETRY);
+                        }
+                    }
+                    Round::Ineligible => backoff.entry(key).or_default().wait(INELIGIBLE_FOR),
                 }
                 continue;
             }
-            Some(done) = lookups.join_next() => {
-                if let Ok((key, found)) = done {
-                    match found {
-                        Ok(Some((log, elected))) => {
-                            // Still in flight: the restore round has it now.
-                            let ctx = Arc::clone(&ctx);
-                            rounds.spawn(async move {
-                                let round = restore(&ctx, &key, &log, elected).await;
-                                (key, round)
-                            });
-                        }
-                        Ok(None) => {
-                            restoring.remove(&key);
-                            in_flight.remove(&key);
-                        }
-                        Err(NotYet) => {
-                            restoring.remove(&key);
-                            in_flight.remove(&key);
-                            looked_at.remove(&key);
-                        }
+            Some((key, found)) = lookups.join_next() => {
+                // A lookup that panicked is looked at again.
+                match found.unwrap_or(Err(NotYet)) {
+                    Ok(Some((log, elected))) => {
+                        // Still in flight: the restore round has it now.
+                        let ctx = Arc::clone(&ctx);
+                        rounds.spawn(key.clone(), async move {
+                            restore(&ctx, &key, &log, elected).await
+                        });
+                    }
+                    Ok(None) => {
+                        restoring.remove(&key);
+                        in_flight.remove(&key);
+                    }
+                    Err(NotYet) => {
+                        restoring.remove(&key);
+                        in_flight.remove(&key);
+                        looked_at.remove(&key);
                     }
                 }
                 continue;
@@ -481,10 +487,10 @@ async fn run<R: PeerRequester + Send + Sync + 'static>(
             in_flight.insert(key.clone(), false);
             let ctx = Arc::clone(&ctx);
             let (key, route) = (key.clone(), route.clone());
-            lookups.spawn(async move {
-                let found = restorable(&ctx, &key, &route).await;
-                (key, found)
-            });
+            lookups.spawn(
+                key.clone(),
+                async move { restorable(&ctx, &key, &route).await },
+            );
         }
         let names = ctx.suspects.current();
         let now = Instant::now();
@@ -507,10 +513,10 @@ async fn run<R: PeerRequester + Send + Sync + 'static>(
                 restood.insert(key.clone(), generation);
                 in_flight.insert(key.clone(), true);
                 let ctx = Arc::clone(&ctx);
-                rounds.spawn(async move {
-                    let round = restand(&ctx, &key, generation).await;
-                    (key, round)
-                });
+                rounds.spawn(
+                    key.clone(),
+                    async move { restand(&ctx, &key, generation).await },
+                );
             }
         }
         let stuck = ctx.stuck.lock().expect("stuck lock").clone();
@@ -565,11 +571,51 @@ async fn run<R: PeerRequester + Send + Sync + 'static>(
             let ctx = Arc::clone(&ctx);
             let key = key.clone();
             let route = route.clone();
-            rounds.spawn(async move {
-                let round = stand(&ctx, &key, &route).await;
-                (key, round)
-            });
+            rounds.spawn(key.clone(), async move { stand(&ctx, &key, &route).await });
         }
+    }
+}
+
+/// Tasks of the candidate loop, each for one shard. A task that panics
+/// still names its shard, so the loop clears what it holds for it instead of
+/// keeping the shard in flight forever.
+struct ShardTasks<T> {
+    set: JoinSet<T>,
+    keys: HashMap<tokio::task::Id, ShardKey>,
+}
+
+impl<T> Default for ShardTasks<T> {
+    fn default() -> Self {
+        Self {
+            set: JoinSet::new(),
+            keys: HashMap::default(),
+        }
+    }
+}
+
+impl<T: Send + 'static> ShardTasks<T> {
+    fn spawn(&mut self, key: ShardKey, task: impl Future<Output = T> + Send + 'static) {
+        let id = self.set.spawn(task).id();
+        self.keys.insert(id, key);
+    }
+
+    /// The next task to end, with its shard, and `None` for its output when
+    /// it panicked.
+    async fn join_next(&mut self) -> Option<(ShardKey, Option<T>)> {
+        let (id, output, failed) = match self.set.join_next_with_id().await? {
+            Ok((id, output)) => (id, Some(output), None),
+            Err(err) => (err.id(), None, Some(err)),
+        };
+        let key = self.keys.remove(&id)?;
+        if let Some(err) = &failed {
+            tracing::error!(
+                stream = %key.stream,
+                shard = key.shard,
+                error = %err,
+                "an election task for the shard panicked",
+            );
+        }
+        Some((key, output))
     }
 }
 
@@ -659,13 +705,7 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
                 && !ctx.suspects.current().contains(&**leader)
         })
         .map(|leader| leader.to_string());
-    let follows_newer = follows_newer.filter(|_| {
-        let started = log
-            .generations()
-            .iter()
-            .any(|epoch| epoch.generation == accepted);
-        ctx.defers(key, accepted, started)
-    });
+    let follows_newer = follows_newer.filter(|_| ctx.defers(key, accepted, opened(&log, accepted)));
     let Standing {
         kept,
         read,
@@ -1125,11 +1165,10 @@ fn standing_sets<R>(
     // majority of it. Fencing that set again would need its dead members too.
     // A later start proves less: a leader the control plane named may have
     // fenced the kept set alone.
-    let leaving = kept.leaving.clone().filter(|_| {
-        !log.generations()
-            .iter()
-            .any(|epoch| epoch.generation == kept.current.generation)
-    });
+    let leaving = kept
+        .leaving
+        .clone()
+        .filter(|_| !opened(log, kept.current.generation));
     // Its fence would stay pending, after the ballot took a generation.
     if leaving.is_some() && !ctx.marks.fleet_supports(felix_common::fleet::JOINT_FENCE) {
         return Err("a set is kept beside this one and joint fences are off");

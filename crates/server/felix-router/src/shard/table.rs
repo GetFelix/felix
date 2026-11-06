@@ -1,6 +1,7 @@
 //! The routing table: an immutable snapshot of where every shard is served.
 
 use std::collections::{BTreeMap, HashMap};
+use std::hash::BuildHasher;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -34,9 +35,9 @@ impl RoutingTable {
     /// carrying [`Unavailable::LeaderUnknown`](crate::Unavailable::LeaderUnknown) at lookup time. Dropping it here
     /// instead would make a missing address indistinguishable from a missing
     /// assignment, and those are different problems.
-    pub fn build(
+    pub fn build<S: BuildHasher>(
         assignments: impl IntoIterator<Item = (ShardKey, String, Vec<String>, u64)>,
-        nodes: &HashMap<String, NodeRef>,
+        nodes: &HashMap<String, NodeRef, S>,
     ) -> Self {
         Self::build_with(
             assignments
@@ -59,9 +60,9 @@ impl RoutingTable {
     }
 
     /// [`RoutingTable::build`], with each assignment's draining flag.
-    pub fn build_with(
+    pub fn build_with<S: BuildHasher>(
         assignments: impl IntoIterator<Item = Placed>,
-        nodes: &HashMap<String, NodeRef>,
+        nodes: &HashMap<String, NodeRef, S>,
     ) -> Self {
         let mut routes = HashMap::new();
         let mut placements: HashMap<String, StreamPlacement> = HashMap::new();
@@ -139,8 +140,8 @@ impl RoutingTable {
 
     /// This table with what came before each route, as the shard watch saw
     /// the control plane's assignments change.
-    pub fn with_priors(mut self, priors: HashMap<ShardKey, PriorSet>) -> Self {
-        self.priors = priors;
+    pub fn with_priors(mut self, priors: impl IntoIterator<Item = (ShardKey, PriorSet)>) -> Self {
+        self.priors = priors.into_iter().collect();
         self
     }
 

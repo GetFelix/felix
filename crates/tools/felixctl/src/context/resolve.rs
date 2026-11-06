@@ -4,7 +4,7 @@
 //! the chosen context. A token and its file count as one setting, so a
 //! `--token-file` flag beats a token saved in the context.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::{ConfigFile, Profile};
 use crate::cli::ConnectionFlags;
@@ -65,7 +65,7 @@ impl Settings {
         self.token
             .as_ref()
             .ok_or_else(|| missing("a broker token", "--token or --token-file", ENV_TOKEN))?
-            .read()
+            .read("--token-file")
     }
 
     pub(crate) fn controlplane_url(&self) -> anyhow::Result<&str> {
@@ -83,9 +83,29 @@ impl Settings {
     pub(crate) fn controlplane_token(&self) -> anyhow::Result<Option<String>> {
         self.controlplane_token
             .as_ref()
-            .map(Secret::read)
+            .map(|secret| secret.read("--controlplane-token-file"))
             .transpose()
     }
+}
+
+/// The error text for a file option that could not be read. A missing file
+/// gets a hint, because the usual cause is skipping the step that creates it.
+pub(crate) fn read_file_message(flag: &str, path: &Path) -> String {
+    if path.exists() {
+        return format!("read {flag} {}", path.display());
+    }
+    let dev_file = match flag {
+        "--token-file" => "client.jwt",
+        "--controlplane-token-file" => "controlplane.jwt",
+        _ => "broker-cert.pem",
+    };
+    format!(
+        "{flag} {} does not exist. The file must exist before felixctl can use it. \
+         For the dev compose stack, copy it out of the broker first: \
+         docker compose exec -T felix-broker cat /var/lib/felix/{dev_file} > {}",
+        path.display(),
+        path.display(),
+    )
 }
 
 /// A token given inline or as a file to read when it is needed.
@@ -96,12 +116,13 @@ pub(crate) enum Secret {
 }
 
 impl Secret {
-    pub(crate) fn read(&self) -> anyhow::Result<String> {
+    /// `flag` names the option the file came from, for the error message.
+    pub(crate) fn read(&self, flag: &str) -> anyhow::Result<String> {
         match self {
             Secret::Inline(token) => Ok(token.clone()),
             Secret::File(path) => std::fs::read_to_string(path)
                 .map(|token| token.trim().to_string())
-                .mark(Exit::Usage, format!("read token file {}", path.display())),
+                .mark(Exit::Usage, read_file_message(flag, path)),
         }
     }
 

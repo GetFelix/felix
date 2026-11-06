@@ -439,7 +439,7 @@ async fn ship_batch<R: PeerRequester>(
     cursor.refuses_leader = matches!(
         &answer,
         InternalMessage::ReplicateError(err)
-            if crate::replica::refuses_leader(err.code, &err.detail, shard.generation)
+            if crate::replica::refuses_leader(err, shard.generation)
     );
     // Not a refusal such as a full disk or a credential: passes on every
     // append could not move those, and would take slots from other shards.
@@ -479,14 +479,14 @@ async fn ship_batch<R: PeerRequester>(
             cursor.fenced_by = fenced_by(&answer, shard.generation);
             cursor.superseded_by = match &answer {
                 InternalMessage::ReplicateError(err) if err.code == ErrorCode::FencedEpoch => {
-                    crate::replica::superseded_by(&err.detail, shard.generation)
+                    crate::replica::superseded_by(err, shard.generation)
                 }
                 _ => None,
             };
             cursor.assigned_newer = matches!(
                 &answer,
                 InternalMessage::ReplicateError(err) if err.code == ErrorCode::FencedEpoch
-                    && crate::replica::assigned_newer(&err.detail, shard.generation)
+                    && crate::replica::assigned_newer(err, shard.generation)
             );
             tracing::error!(
                 node_id = %cursor.node_id,
@@ -558,9 +558,8 @@ pub fn read_answer(answer: &InternalMessage) -> Progress {
 fn fenced_by(answer: &InternalMessage, generation: u64) -> Option<u64> {
     match answer {
         InternalMessage::ReplicateError(err) if err.code == ErrorCode::FencedEpoch => {
-            crate::replica::superseded_by(&err.detail, generation).or_else(|| {
-                crate::replica::promised_to(&err.detail, generation).map(|_| generation)
-            })
+            crate::replica::superseded_by(err, generation)
+                .or_else(|| crate::replica::promised_to(err, generation).map(|_| generation))
         }
         _ => None,
     }
@@ -707,7 +706,7 @@ const LOG_LIMIT_KEYS: usize = 1024;
 /// follower does not hide another. Remembers at most `LOG_LIMIT_KEYS` keys.
 pub(crate) struct LogLimit {
     every: std::time::Duration,
-    last: std::sync::Mutex<Option<std::collections::HashMap<String, std::time::Instant>>>,
+    last: std::sync::Mutex<Option<felix_common::random::HashMap<String, std::time::Instant>>>,
 }
 
 impl LogLimit {
