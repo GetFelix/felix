@@ -8,7 +8,7 @@
 //!
 //! A lease token also ends what it opened at its `exp`, unlike any other
 //! token, or an open stream would outlive the lease (see "Lease tokens").
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -30,7 +30,7 @@ pub struct Revocations {
 impl Default for Revocations {
     fn default() -> Self {
         Self {
-            cutoffs: RwLock::new(HashMap::new()),
+            cutoffs: RwLock::new(HashMap::default()),
             changed: watch::channel(0).0,
         }
     }

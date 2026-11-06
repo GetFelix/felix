@@ -38,7 +38,7 @@
 mod connection;
 mod state;
 
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -113,7 +113,7 @@ impl PeerPool {
             config,
             local_node_id,
             client,
-            peers: Mutex::new(HashMap::new()),
+            peers: Mutex::new(HashMap::default()),
             shutdown,
             authenticated,
             known: KnownCapabilities::default(),

@@ -1050,7 +1050,7 @@ impl ByRound {
 
     /// One replication pass against this leader's real fence.
     async fn pass(&self) {
-        use std::collections::HashMap;
+        use felix_common::random::HashMap;
         felix_replication::driver::replicate_once_with(
             &Accepting,
             &self.leader.broker,
@@ -1059,10 +1059,10 @@ impl ByRound {
             &felix_replication::promotion::NoGate,
             &self.marks,
             None,
-            &mut HashMap::new(),
-            &mut HashMap::new(),
-            &mut HashMap::new(),
-            &mut HashMap::new(),
+            &mut HashMap::default(),
+            &mut HashMap::default(),
+            &mut HashMap::default(),
+            &mut HashMap::default(),
             &felix_replication::Rebuilds::disabled(),
             &felix_replication::MoveThrottle::unlimited(),
         )

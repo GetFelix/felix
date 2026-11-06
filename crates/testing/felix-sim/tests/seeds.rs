@@ -12,27 +12,48 @@
 //! | Variable | Meaning | Default |
 //! |---|---|---|
 //! | `FELIX_SIM_SEED` | the seed `replay` runs | unset: `replay` is skipped |
-//! | `FELIX_SIM_SEEDS` | how many seeds `seeds` runs | 4 |
-//! | `FELIX_SIM_SEED_START` | the first seed `seeds` runs | 1 |
-//! | `FELIX_SIM_HISTORY` | a file `replay` writes the run's history to, for diffing two runs | unset |
+//! | `FELIX_SIM_SEEDS` | how many seeds `seeds` and `each_seed_runs_the_same_twice` run | 4 |
+//! | `FELIX_SIM_SEED_START` | the first seed they run | 1 |
+//! | `FELIX_SIM_HISTORY` | a file `replay` writes the run's trace to, for diffing two runs | unset |
 //! | `RUST_LOG` | broker and harness logs | none |
 //!
-//! A run is repeatable to the extent described in `felix_sim::run`: the same
-//! seed injects the same faults at the same virtual times, but the brokers'
-//! own interleaving can still differ (hash map order), so a failure may take
-//! more than one replay to show again.
+//! Built with `RUSTFLAGS="--cfg tokio_unstable"` a replay is the same run,
+//! event for event, and `each_seed_runs_the_same_twice` checks that (`task
+//! sim:determinism`). Without the flag `select!` is unseeded: the faults and
+//! operations repeat, but the interleaving under them can differ, so a
+//! failure may take more than one replay to show again.
 //!
-//! A seed that exposed a bug is pinned below with `#[ignore = "#<issue>"]`,
-//! and runs with `cargo test -p felix-sim --test seeds -- --ignored`.
+//! A seed that exposed a bug is pinned below as a test that asserts only the
+//! finding its issue is about. Some pins are skipped without `--cfg
+//! tokio_unstable`, so they check the one run the seed gives rather than
+//! whichever interleaving a build happens to take; `task sim:determinism`
+//! runs them.
+//! A seed whose bug is still open is pinned with `#[ignore = "#<issue>"]` and
+//! runs with `cargo test -p felix-sim --test seeds -- --ignored`.
 
 use felix_sim::cluster::SimConfig;
-use felix_sim::run::{SimOutcome, run_seed};
+use felix_sim::run::{SimOutcome, first_difference, run_seed};
 
 fn log() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_timer(VirtualTime)
         .with_test_writer()
         .try_init();
+}
+
+/// Stamps each log line with the run's virtual time, so the logs of two runs
+/// of a seed can be diffed.
+struct VirtualTime;
+
+impl tracing_subscriber::fmt::time::FormatTime for VirtualTime {
+    fn format_time(&self, w: &mut tracing_subscriber::fmt::format::Writer<'_>) -> std::fmt::Result {
+        write!(
+            w,
+            "{:>10.3}s",
+            felix_common::clock::boottime().as_secs_f64()
+        )
+    }
 }
 
 fn env_u64(name: &str) -> Option<u64> {
@@ -49,7 +70,7 @@ fn check(seed: u64) -> SimOutcome {
     log();
     let outcome = run_seed(seed, SimConfig::for_seed(seed));
     if let Ok(path) = std::env::var("FELIX_SIM_HISTORY") {
-        std::fs::write(&path, format!("{:#?}\n", outcome.history))
+        std::fs::write(&path, outcome.trace().join("\n") + "\n")
             .unwrap_or_else(|err| panic!("write the history to {path}: {err}"));
     }
     println!("{outcome}");
@@ -68,6 +89,36 @@ fn replay() {
         return;
     };
     check(seed);
+}
+
+/// Each seed `seeds` would run, run twice in one process, must be the same
+/// run event for event. Tokio seeds `select!` only under `--cfg
+/// tokio_unstable`, so without it this is skipped; `task sim:determinism`
+/// runs it with the flag, and CI runs that.
+#[test]
+#[cfg_attr(
+    not(tokio_unstable),
+    ignore = "needs RUSTFLAGS=\"--cfg tokio_unstable\" for a seeded select!"
+)]
+fn each_seed_runs_the_same_twice() {
+    let count = env_u64("FELIX_SIM_SEEDS").unwrap_or(4);
+    let start = env_u64("FELIX_SIM_SEED_START").unwrap_or(1);
+    let mut differed = Vec::new();
+    for seed in start..start + count {
+        log();
+        let first = run_seed(seed, SimConfig::for_seed(seed));
+        let second = run_seed(seed, SimConfig::for_seed(seed));
+        match first_difference(&first.trace(), &second.trace()) {
+            Some(difference) => differed.push(format!("seed {seed}: {difference}")),
+            None => println!("seed {seed}: the same twice, passed: {}", first.passed()),
+        }
+    }
+    assert!(
+        differed.is_empty(),
+        "{} of {count} seeds ran differently the second time:\n{}",
+        differed.len(),
+        differed.join("\n")
+    );
 }
 
 #[test]
@@ -126,7 +177,10 @@ fn seed_3_replication_driver_does_not_spin() {
 }
 
 #[test]
-#[ignore = "seed 4 still stalls after #1959; under triage"]
+#[cfg_attr(
+    not(tokio_unstable),
+    ignore = "replays this seed's run only under --cfg tokio_unstable"
+)]
 fn seed_4_replication_driver_does_not_spin() {
     log();
     let outcome = run_seed(4, SimConfig::for_seed(4));
@@ -148,7 +202,10 @@ fn found(outcome: &SimOutcome, checker: &str) -> bool {
 /// The control plane pauses and a shard leader crashes; once everything heals
 /// a restarted leader stays in `fencing` and its shard is never served.
 #[test]
-#[ignore = "#1948"]
+#[cfg_attr(
+    not(tokio_unstable),
+    ignore = "replays this seed's run only under --cfg tokio_unstable"
+)]
 fn seed_6_every_shard_is_served_after_a_paused_control_plane_and_a_leader_crash() {
     log();
     let outcome = run_seed(6, SimConfig::for_seed(6));
@@ -159,7 +216,10 @@ fn seed_6_every_shard_is_served_after_a_paused_control_plane_and_a_leader_crash(
 /// A leader's committed mark stays below its log tail after the faults heal,
 /// so the shard cannot be read to its tail.
 #[test]
-#[ignore = "#1949"]
+#[cfg_attr(
+    not(tokio_unstable),
+    ignore = "replays this seed's run only under --cfg tokio_unstable"
+)]
 fn seed_6_every_shard_can_be_read_after_the_faults_heal() {
     log();
     let outcome = run_seed(6, SimConfig::for_seed(6));
@@ -170,7 +230,10 @@ fn seed_6_every_shard_can_be_read_after_the_faults_heal() {
 /// A broker frozen while its cache shards moved serves them again at the old
 /// generation, next to the new leader, once it thaws.
 #[test]
-#[ignore = "#1955, and seed 4 still stalls after #1959"]
+#[cfg_attr(
+    not(tokio_unstable),
+    ignore = "replays this seed's run only under --cfg tokio_unstable"
+)]
 fn seed_4_a_thawed_broker_does_not_serve_shards_that_moved() {
     log();
     let outcome = run_seed(4, SimConfig::for_seed(4));

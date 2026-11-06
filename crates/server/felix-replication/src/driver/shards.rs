@@ -10,7 +10,8 @@
 //! still answering only until the shard's next pass is wanted. Then it hands
 //! their exchanges back, and the driver waits for them instead.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use felix_common::random::{HashMap, HashSet};
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use felix_broker::{Appended, AppendedShards, Broker};
@@ -434,17 +435,17 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         Self {
             cx,
             scan: 0,
-            streams: HashMap::new(),
-            group: HashMap::new(),
-            dead_letters: HashMap::new(),
-            counters: HashMap::new(),
-            states: HashMap::new(),
-            busy: HashMap::new(),
+            streams: HashMap::default(),
+            group: HashMap::default(),
+            dead_letters: HashMap::default(),
+            counters: HashMap::default(),
+            states: HashMap::default(),
+            busy: HashMap::default(),
             passes: FuturesUnordered::new(),
             fences: FuturesUnordered::new(),
             exchanges: FuturesUnordered::new(),
-            alone: HashMap::new(),
-            probed: HashMap::new(),
+            alone: HashMap::default(),
+            probed: HashMap::default(),
             reports: FuturesUnordered::new(),
             appended: VecDeque::new(),
             urgent: VecDeque::new(),
@@ -456,9 +457,9 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             refresh_passed_over: 0,
             urgent_passed_over: 0,
             scanned_table: None,
-            led_slots: HashMap::new(),
+            led_slots: HashMap::default(),
             moving: Vec::new(),
-            not_led: HashSet::new(),
+            not_led: HashSet::default(),
             metrics: DriverMetrics::new(),
         }
     }
@@ -558,7 +559,8 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                 .filter(|key| !self.states.contains_key(*key))
                 .cloned(),
         );
-        let mut asked: HashSet<ShardKey> = HashSet::with_capacity(visit.len());
+        let mut asked: HashSet<ShardKey> =
+            HashSet::with_capacity_and_hasher(visit.len(), Default::default());
         for key in visit {
             if asked.contains(&key) {
                 continue;

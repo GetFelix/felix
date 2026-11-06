@@ -51,7 +51,7 @@ pub struct LogCache {
     observer: Observer,
     /// Whether each cache's logs are held at the commit offset, keyed by
     /// tenant, namespace and cache. See [`StorageApi::set_retention_hold`].
-    holds: SyncMutex<std::collections::HashMap<(String, String, String), bool>>,
+    holds: SyncMutex<felix_common::random::HashMap<(String, String, String), bool>>,
     /// Which incarnation of each name to open: a cache's own, or for
     /// consumer-group state and dead letters, their stream's.
     incarnations: crate::incarnation::Incarnations,
@@ -81,7 +81,7 @@ impl LogCache {
             dirs: Default::default(),
             compactor: Arc::new(Compactor::from_env()),
             observer: Arc::new(SyncMutex::new(None)),
-            holds: SyncMutex::new(std::collections::HashMap::new()),
+            holds: SyncMutex::new(felix_common::random::HashMap::default()),
         })
     }
 

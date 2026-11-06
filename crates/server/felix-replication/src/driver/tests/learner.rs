@@ -72,10 +72,10 @@ struct Cursors {
 impl Cursors {
     fn new() -> Self {
         Self {
-            streams: HashMap::new(),
-            group: HashMap::new(),
-            dead: HashMap::new(),
-            counters: HashMap::new(),
+            streams: HashMap::default(),
+            group: HashMap::default(),
+            dead: HashMap::default(),
+            counters: HashMap::default(),
         }
     }
 
@@ -342,7 +342,7 @@ fn with_others(cursor: FollowerCursor) -> Vec<FollowerCursor> {
 fn a_halted_follower_with_an_earlier_vouch_is_not_reported_holding_the_start() {
     let mut halted = vouched_follower("broker-b");
     halted.halted = Some(crate::follower::Halt::Diverged);
-    let view = vouched_only(&with_others(halted), 5, &HashSet::new());
+    let view = vouched_only(&with_others(halted), 5, &HashSet::default());
     assert!(crate::reporter::holders_of_start(&view, 0, None).is_empty());
     assert_eq!(crate::quorum::quorum_offset(VOUCHED, &view), 0);
 }
@@ -353,7 +353,7 @@ fn a_halted_follower_with_an_earlier_vouch_is_not_reported_holding_the_start() {
 fn a_learner_with_an_earlier_vouch_is_reported_holding_the_start_but_not_counted() {
     let mut learner = vouched_follower("broker-b");
     learner.learner = true;
-    let view = vouched_only(&with_others(learner), 5, &HashSet::new());
+    let view = vouched_only(&with_others(learner), 5, &HashSet::default());
     assert_eq!(
         crate::reporter::holders_of_start(&view, 0, None),
         vec!["broker-b".to_string()]

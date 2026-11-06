@@ -5,7 +5,7 @@
 //! Kept beside the ring under its lock, so a commit's event and its state
 //! become visible at the same instant.
 
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 
 use bytes::Bytes;
 

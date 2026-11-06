@@ -50,7 +50,7 @@ fn a_leader_silent_for_the_window_is_suspected_until_it_answers() {
 fn a_newly_watched_leader_gets_a_whole_window() {
     let start = Instant::now();
     let mut silence = Silence::new(WINDOW);
-    let none = HashSet::new();
+    let none = HashSet::default();
     assert!(silence.round(&set(&["broker-b"]), &none, start).is_empty());
     let later = start + WINDOW * 3;
     assert_eq!(
@@ -66,11 +66,11 @@ fn a_newly_watched_leader_gets_a_whole_window() {
 fn a_leader_no_longer_followed_is_forgotten() {
     let start = Instant::now();
     let mut silence = Silence::new(WINDOW);
-    let none = HashSet::new();
+    let none = HashSet::default();
     silence.round(&set(&["broker-b"]), &none, start);
     assert!(
         silence
-            .round(&HashSet::new(), &none, start + WINDOW)
+            .round(&HashSet::default(), &none, start + WINDOW)
             .is_empty()
     );
     assert!(

@@ -585,7 +585,7 @@ impl DiskLog {
                     replica_state::store(&operation.dir, &state)?;
                     operation.commit_offset.store(offset, Ordering::Release);
                     operation.commit_persisted.store(offset, Ordering::Release);
-                    *persisted = (state, Some(std::time::Instant::now()));
+                    *persisted = (state, Some(tokio::time::Instant::now()));
                 }
             }
             if offset == tail {
@@ -1392,7 +1392,8 @@ struct LogInner {
     #[cfg(test)]
     replica_writes: AtomicU64,
     /// What `replica_state` last wrote, and when. Held only by the writer.
-    replica_persisted: Mutex<(replica_state::ReplicaState, Option<std::time::Instant>)>,
+    /// Tokio's clock, so a simulation decides when to persist on virtual time.
+    replica_persisted: Mutex<(replica_state::ReplicaState, Option<tokio::time::Instant>)>,
     /// Each idempotent producer's place in the log. Written only under the
     /// `segments` write lock, in offset order, so it always matches the tail.
     producers: Mutex<producers::ProducerState>,
@@ -1750,7 +1751,7 @@ async fn persist_replica_state(inner: Arc<LogInner>) -> Result<()> {
         inner
             .commit_persisted
             .store(state.commit_offset, Ordering::Release);
-        *persisted = (state, Some(std::time::Instant::now()));
+        *persisted = (state, Some(tokio::time::Instant::now()));
         Ok(())
     })
     .await
@@ -1827,8 +1828,9 @@ fn retry_replica_state(inner: &Arc<LogInner>) {
     });
 }
 
+/// Wall-clock microseconds for retention; virtual time under a simulator.
 fn now_micros() -> u64 {
-    std::time::SystemTime::now()
+    felix_common::clock::system_time()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_micros().min(u128::from(u64::MAX)) as u64)
         .unwrap_or(0)

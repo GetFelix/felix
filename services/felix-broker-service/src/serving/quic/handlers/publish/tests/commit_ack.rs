@@ -71,7 +71,7 @@ async fn a_commit_ack_is_not_sent_before_the_flush() {
     handle_publish_message(
         &broker,
         &ctx,
-        &mut HashMap::new(),
+        &mut HashMap::default(),
         &mut String::new(),
         false,
         // Acknowledged on commit.

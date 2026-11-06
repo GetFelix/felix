@@ -23,7 +23,7 @@
 //! group state does too once the fleet reads by round, confirmed by a round
 //! instead ([`ShardFence::sessions_lease_free`]).
 
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering::SeqCst};
 use std::sync::{Arc, OnceLock};
 
@@ -76,7 +76,7 @@ pub struct ShardFence {
     /// broker's copy, and the generation they were given up at.
     reclaimable: RwLock<HashMap<ShardKey, u64>>,
     /// Shards whose failed open was reported refused since they last opened.
-    failed_reported: parking_lot::Mutex<std::collections::HashSet<ShardKey>>,
+    failed_reported: parking_lot::Mutex<felix_common::random::HashSet<ShardKey>>,
 }
 
 impl ShardFence {

@@ -498,7 +498,7 @@ mod driver {
         reconcile(
             &own,
             &store,
-            &HashMap::from([
+            &HashMap::from_iter([
                 with_roles(1, "broker-b", &["broker-a"], None, 1),
                 with_roles(2, "broker-b", &["broker-c"], None, 1),
             ]),
@@ -506,7 +506,7 @@ mod driver {
         .await;
         assert!(store.take_teardown().is_empty());
 
-        reconcile(&own, &store, &HashMap::new()).await;
+        reconcile(&own, &store, &HashMap::default()).await;
         assert_eq!(store.take_teardown(), [("close", 1)]);
     }
 
@@ -528,7 +528,7 @@ mod driver {
             .collect();
         assert_eq!(opened, (0..40).collect::<Vec<_>>());
 
-        reconcile(&own, &store, &HashMap::new()).await;
+        reconcile(&own, &store, &HashMap::default()).await;
         let closed: Vec<u32> = store
             .take_teardown()
             .into_iter()
@@ -560,7 +560,7 @@ mod driver {
             let own = &own;
             let store = &store;
             async move {
-                reconcile(own, store, &HashMap::from([(key(0), assignment)])).await;
+                reconcile(own, store, &HashMap::from_iter([(key(0), assignment)])).await;
                 std::mem::take(&mut *store.calls.lock().expect("lock"))
             }
         };
@@ -632,7 +632,7 @@ mod driver {
         reconcile(&own, &store, &assignments(&[(0, "broker-a", 1)])).await;
         assert!(own.lock().await.may_serve(&key(0)));
 
-        reconcile(&own, &store, &HashMap::new()).await;
+        reconcile(&own, &store, &HashMap::default()).await;
 
         assert_eq!(store.released.lock().expect("lock").len(), 1);
         let own = own.lock().await;
@@ -648,10 +648,10 @@ mod driver {
     async fn a_renewed_shard_reopens_at_a_lower_generation() {
         let own = Mutex::new(lifecycle());
         let store = RecordingStore::default();
-        let none = HashMap::new();
+        let none = HashMap::default();
         reconcile_renewed(&own, &store, &assignments(&[(0, "broker-a", 2)]), &none).await;
 
-        let renewed = HashMap::from([(key(0), 1)]);
+        let renewed = HashMap::from_iter([(key(0), 1)]);
         let recreated = assignments(&[(0, "broker-a", 0)]);
         reconcile_renewed(&own, &store, &recreated, &renewed).await;
         assert_eq!(store.opened.lock().expect("lock").len(), 2);
@@ -930,8 +930,9 @@ mod recording_where_a_leadership_begins {
         let (storage, _dir) = storage(3).await;
         let store = DurableShardStore::new(std::sync::Arc::clone(&storage));
         let own = tokio::sync::Mutex::new(lifecycle());
-        let led_by =
-            |leader: &str, generation| HashMap::from([(key(0), assigned_to(leader, generation))]);
+        let led_by = |leader: &str, generation| {
+            HashMap::from_iter([(key(0), assigned_to(leader, generation))])
+        };
         let open = || {
             storage
                 .open_stream(&key(0).tenant_id, &key(0).namespace, &key(0).stream, 0)
@@ -1287,7 +1288,7 @@ fn a_moving_shard_names_where_it_is_headed() {
 #[test]
 fn a_close_carries_the_handoff_while_the_shard_is_assigned() {
     let mut own = lifecycle();
-    let mine = HashMap::from([
+    let mine = HashMap::from_iter([
         (key(0), assigned_to("broker-a", 1)),
         (key(1), {
             let mut assignment = assigned_to("broker-a", 1);
@@ -1297,7 +1298,7 @@ fn a_close_carries_the_handoff_while_the_shard_is_assigned() {
     ]);
     assert!(own.relinquished(&mine).is_empty());
 
-    let elsewhere = HashMap::from([(key(0), assigned_to("broker-b", 4))]);
+    let elsewhere = HashMap::from_iter([(key(0), assigned_to("broker-b", 4))]);
     let mut closes = own.relinquished(&elsewhere);
     closes.sort_by_key(|action| match action {
         Action::Close { key, .. } => key.shard,
