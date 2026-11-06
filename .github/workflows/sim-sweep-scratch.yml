@@ -1,0 +1,42 @@
+name: sim-sweep-scratch
+on:
+  push:
+    branches: [scratch/int-sweep]
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        batch: [0, 1, 2, 3, 4, 5, 6, 7]
+    env:
+      CARGO_TERM_COLOR: never
+      RUSTFLAGS: "--cfg tokio_unstable"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.99.1"
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Seeds
+        continue-on-error: true
+        run: |
+          mkdir -p out
+          export FELIX_SIM_SEEDS=25
+          export FELIX_SIM_SEED_START=$(( ${{ matrix.batch }} * 25 + 1 ))
+          cargo test -p felix-sim --test seeds -- --ignored --exact seeds --nocapture 2>&1 | tee out/batch-${{ matrix.batch }}.log
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "batch ${{ matrix.batch }} start $(( ${{ matrix.batch }} * 25 + 1 ))"
+            grep -E '^(seed [0-9]+:|.*violat|.*HISTORY|election-settles|history checker|[0-9]+ of [0-9]+ seeds failed|    FELIX_SIM_SEED=)' out/batch-${{ matrix.batch }}.log || true
+          } > out/summary-${{ matrix.batch }}.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sweep-${{ matrix.batch }}
+          path: out/
