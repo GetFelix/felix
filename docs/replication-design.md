@@ -293,7 +293,7 @@ in a fleet that reads by round it refuses group writes, the one thing it would
 acknowledge on the lease alone, until a replication pass has passed over the
 shard at its generation with that set. Replication starts before registration,
 so an earlier pass can see an empty set; it decides nothing and does not count
-(`Serving::adopted` in `quorum.rs`). Its writes wait for a mark its followers
+(`Serving::decided` in `quorum.rs`). Its writes wait for a mark its followers
 decide and its `Quorum` reads for a round, and a promotion's fence ends both.
 
 Changing a stream's consistency bumps no generation, and a report at that
@@ -1988,9 +1988,22 @@ code. The report and the lease leave the write's path:
   has. An old leader no longer stops at its lease, so a new one must fence.
   A broker that has not yet taken the enabled set from its registration
   answer does not know whether it is in such a fleet, so it fences nothing
-  and opens nothing until it has (`Serving::adopted`;
+  and opens nothing until it has (`Serving::decided`;
   `a_promotion_waits_for_the_fleet_view_before_the_lease`). It costs no
   availability: until registration answers there is no lease to open on either.
+  The one exception is a gate seeded with features an earlier registration
+  answered (`FleetGate::seeded`). Finalizing is one-way, so until registration
+  answers a seeded feature is trusted as on. If a control plane that lost its
+  state answers without it, the gate turns it off as it would for any
+  registration. A gate holding every prerequisite of `replica_election` (and
+  `fenced_caches`, for a cache shard) holds every feature a pass needs on;
+  the others it reads, such as `replica_election` itself, only stop it doing
+  something when read as off. Such a pass fences and decides before registration
+  (`a_seeded_gate_fences_before_registration_only_with_what_it_reads`). A
+  feature missing from the seed may have been finalized since, so
+  `fleet_decides` reports it as undecided rather than off. Nothing seeds a
+  gate yet: that is how a broker restarted during a control-plane outage will
+  rejoin elections (#1196).
 
 Why this is safe without a clock: a newer leader serves only after a majority
 took its generation, and every majority the old leader could count shares a

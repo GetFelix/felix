@@ -176,18 +176,13 @@ fn reported_features() -> std::collections::BTreeSet<String> {
     features
 }
 
-/// What a broker offering `ELECTION` adds to its report: that it offers it,
-/// that it fences set changes jointly once `joint_fence` is finalized, and
-/// that it stands for election once `replica_election` is. A broker uses a
-/// finalized feature only if it reported it.
+/// What a broker offering `ELECTION` adds to its report
+/// ([`felix_common::fleet::ELECTION_REPORTED`]). A broker uses a finalized
+/// feature only if it reported it.
 fn election_features() -> impl Iterator<Item = String> {
-    [
-        felix_common::fleet::PEER_ELECTION,
-        felix_common::fleet::JOINT_FENCE,
-        felix_common::fleet::REPLICA_ELECTION,
-    ]
-    .into_iter()
-    .map(|feature| feature.name().to_string())
+    felix_common::fleet::ELECTION_REPORTED
+        .iter()
+        .map(|feature| feature.name().to_string())
 }
 
 /// The features a broker can honestly report, given whether it fences what
