@@ -168,8 +168,8 @@ async fn two_current_brokers_learn_each_others_capabilities() {
     assert_eq!(theirs, offered);
     assert_eq!(pool.known_capabilities().get(PEER), Some(offered));
     // A caller reads an identity whether or not it gives one, replaces
-    // streams it gets no answer on, and reads a learner's answer and a
-    // refusal's reason.
+    // streams it gets no answer on, and reads a learner's answer, a
+    // refusal's reason and a kept ballot.
     assert_eq!(
         noted.get("broker-a"),
         Some(
@@ -179,6 +179,7 @@ async fn two_current_brokers_learn_each_others_capabilities() {
                 .union(PeerCapabilities::LANE_RENEWAL)
                 .union(PeerCapabilities::LEARNER_ACKS)
                 .union(PeerCapabilities::REFUSAL_REASONS)
+                .union(PeerCapabilities::KEPT_BALLOTS)
         )
     );
 
@@ -551,6 +552,7 @@ impl PeerRequestHandler for SlowForwards {
                     log_end: 0,
                     commit_offset: 0,
                     last_generation: 0,
+                    kept_ballot: false,
                 })
             }
             other => {
@@ -635,6 +637,7 @@ impl PeerRequestHandler for SlowPromotions {
             log_end: fence.shard.shard.into(),
             commit_offset: 0,
             last_generation: 0,
+            kept_ballot: false,
         })
     }
 }

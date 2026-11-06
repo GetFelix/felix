@@ -910,6 +910,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             state.running = Some(Arc::default());
             let cx = self.cx;
             let (key, route) = (key.clone(), route.clone());
+            let continuing = cx.gate.continuing(&watch_key(&key), route.generation);
             let local = cx.router.local_node_id();
             let replicas: Vec<String> = route
                 .replicas
@@ -919,8 +920,16 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                 .collect();
             self.fences.push(Box::pin(async move {
                 // Held until the shard has opened.
-                let (key, generation, outcome, fencing) =
-                    fence_one(cx.requester, cx.broker, cx.router, key, route, cx.marks).await;
+                let (key, generation, outcome, fencing) = fence_one(
+                    cx.requester,
+                    cx.broker,
+                    cx.router,
+                    key,
+                    route,
+                    cx.marks,
+                    continuing,
+                )
+                .await;
                 let (took, why) = match &outcome {
                     Outcome::Pending { why, took } | Outcome::Refused { why, took, .. } => {
                         (Some(took.clone()), Some(why.clone()))

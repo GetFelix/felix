@@ -65,6 +65,12 @@ pub const REQUIRED_FOR_CACHES: PeerCapabilities = REQUIRED.union(PeerCapabilitie
 pub trait PromotionGate: Send + Sync {
     /// The generation `key` is waiting at to be opened for writes, if it is.
     fn awaiting(&self, key: &crate::ShardKey) -> Option<u64>;
+    /// Whether `key`'s fence at `generation` continues a generation this
+    /// process served itself: the next one, not draining, with no restart
+    /// between. Its log then holds every record acknowledged before it.
+    fn continuing(&self, _key: &crate::ShardKey, _generation: u64) -> bool {
+        false
+    }
     /// Open `key` for writes at `generation`.
     ///
     /// Once the fleet has finalized `generation_start`, the broker writes its
@@ -189,6 +195,9 @@ pub(crate) async fn fence_shard_as<R: PeerRequester>(
     candidacy: Option<&crate::election::Candidacy>,
 ) -> Outcome {
     let joint_fence = joint.is_some();
+    // A continuing leader holds every record acknowledged before this
+    // generation, so its fence needs only promises (#2047).
+    let continuing = candidacy.is_none() && joint.is_some_and(Joint::continuing);
     let replicas: Vec<_> = route
         .replicas
         .iter()
@@ -386,6 +395,7 @@ pub(crate) async fn fence_shard_as<R: PeerRequester>(
                 set,
                 joint,
                 candidacy.is_some(),
+                continuing,
             )
             .await;
             caught_up_from = caught_up_from.or(fenced?);
@@ -572,6 +582,7 @@ async fn fence_log<R: PeerRequester>(
     set: Option<&ReplicaSetView>,
     joint: Option<&JointSets>,
     candidate: bool,
+    continuing: bool,
 ) -> Result<Option<String>, Outcome> {
     // Answers until a majority, this broker included, has taken the fence.
     // Later answers are not waited for: the model opens on the first majority.
@@ -583,11 +594,15 @@ async fn fence_log<R: PeerRequester>(
         answered.iter().map(|(node, _, _)| node.clone()).collect()
     };
     // Each answer's node with the copy its handshake named, which a joint
-    // fence counts per set being left.
-    let mut seen: Vec<(String, Option<StorageId>)> = Vec::new();
-    let settled = |seen: &[(String, Option<StorageId>)]| match joint {
+    // fence counts per set being left, and whether a continuing leader may
+    // count it from any copy.
+    let mut seen: Vec<(String, Option<StorageId>, bool)> = Vec::new();
+    let settled = |seen: &[(String, Option<StorageId>, bool)]| match joint {
         None => seen.len() + 1 >= needed,
-        Some(joint) => joint.has_majorities(seen.iter().map(|(node, id)| (node.as_str(), *id))),
+        Some(joint) => joint.has_majorities(
+            seen.iter()
+                .map(|(node, id, kept)| (node.as_str(), *id, *kept)),
+        ),
     };
     // Answers from a copy the report did not name: they took the promise,
     // which still refuses the old leader, but count for nothing here.
@@ -686,16 +701,24 @@ async fn fence_log<R: PeerRequester>(
             Some(Refusal::Newer(why)) => return Err(Outcome::pending(why, took(&answered))),
             None => {}
         }
+        // A continuing leader holds what any copy could, so a copy whose kept
+        // ballot shows it promised this leader nothing older than the
+        // generation before counts whatever its identity. Without that, a
+        // restored copy could have promised this generation to another
+        // leader and lost the ballot.
+        let kept =
+            continuing && matches!(&answer, Ok(InternalMessage::FenceOk(ok)) if ok.kept_ballot);
         match answer {
             Ok(InternalMessage::FenceOk(_))
-                if !reported_copy(reported_ids, &node_id, identity)
-                    || joint.is_some_and(|joint| !joint.same_copy(&node_id, identity)) =>
+                if !kept
+                    && (!reported_copy(reported_ids, &node_id, identity)
+                        || joint.is_some_and(|joint| !joint.same_copy(&node_id, identity))) =>
             {
                 other_copies += 1;
                 uncounted(key, kind, &node_id, reported_ids, identity);
             }
             Ok(InternalMessage::FenceOk(ok)) => {
-                seen.push((node_id.clone(), identity));
+                seen.push((node_id.clone(), identity, kept));
                 answered.push((node_id, addr, ok));
             }
             Err(PeerError::Unsupported { .. }) if lease_fallback => {
@@ -743,7 +766,10 @@ async fn fence_log<R: PeerRequester>(
             ),
             Some(joint) => format!(
                 "on the {kind:?} log, {}",
-                joint.shortfall(seen.iter().map(|(node, id)| (node.as_str(), *id)))
+                joint.shortfall(
+                    seen.iter()
+                        .map(|(node, id, kept)| (node.as_str(), *id, *kept))
+                )
             ),
         };
         if other_copies > 0 {
@@ -772,6 +798,11 @@ async fn fence_log<R: PeerRequester>(
         return Err(Outcome::pending(why, took(&answered)));
     }
 
+    // Nothing to take: this leader wrote every record acknowledged before
+    // this generation, and a doubted copy's tail past it is one to drop.
+    if continuing {
+        return Ok(None);
+    }
     // The tail that wins, by the order promotion by log order uses (`Ahead`).
     let own_end = log.tail_offset().await.map_err(|err| {
         Outcome::pending(
