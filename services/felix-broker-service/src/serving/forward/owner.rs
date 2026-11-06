@@ -402,10 +402,14 @@ impl ForwardingHandler {
             None
         };
         let at = if writes {
-            Some(
-                felix_replication::quorum::cache_write_at(&self.broker, &key, op.shard.generation)
-                    .await,
+            felix_replication::quorum::cache_write_at(
+                &self.broker,
+                &key,
+                op.shard.generation,
+                self.marks.as_deref(),
+                Some(self.ingress.as_ref()),
             )
+            .await
         } else {
             None
         };

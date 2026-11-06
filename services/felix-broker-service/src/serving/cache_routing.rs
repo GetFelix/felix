@@ -276,7 +276,10 @@ pub(crate) async fn apply_cache_local(
             let ttl = (ttl_ms > 0).then(|| std::time::Duration::from_millis(ttl_ms));
             let fenced = fence::enter_or_keep(&mut fenced, ingress, Some(&written), generation)
                 .map_err(ClientError::from)?;
-            let at = felix_replication::quorum::cache_write_at(broker, &written, generation).await;
+            let at = felix_replication::quorum::cache_write_at(
+                broker, &written, generation, marks, ingress,
+            )
+            .await;
             // A put the store refused is never acknowledged: the
             // quorum wait below would pass on the old tail and ack a
             // value no read can see.
@@ -292,7 +295,7 @@ pub(crate) async fn apply_cache_local(
                 ingress,
                 quorum_timeout,
                 felix_replication::quorum::Access::Write,
-                Some(at),
+                at,
             )
             .await?;
             CacheAnswer::default()
@@ -328,7 +331,10 @@ pub(crate) async fn apply_cache_local(
         CacheRequest::Delete => {
             let fenced = fence::enter_or_keep(&mut fenced, ingress, Some(&written), generation)
                 .map_err(ClientError::from)?;
-            let at = felix_replication::quorum::cache_write_at(broker, &written, generation).await;
+            let at = felix_replication::quorum::cache_write_at(
+                broker, &written, generation, marks, ingress,
+            )
+            .await;
             let removed = cache_store
                 .delete(tenant_id, namespace, cache, shard, key)
                 .await
@@ -341,7 +347,7 @@ pub(crate) async fn apply_cache_local(
                 ingress,
                 quorum_timeout,
                 felix_replication::quorum::Access::Write,
-                Some(at),
+                at,
             )
             .await?;
             CacheAnswer {
@@ -360,7 +366,10 @@ pub(crate) async fn apply_cache_local(
             // entry the store expires from its own later clock.
             let entry_expires_at = ttl.map(|ttl| felix_common::clock::system_time() + ttl);
             let fenced = write(&mut fenced)?;
-            let at = felix_replication::quorum::cache_write_at(broker, &written, generation).await;
+            let at = felix_replication::quorum::cache_write_at(
+                broker, &written, generation, marks, ingress,
+            )
+            .await;
             let written_if = cache_store
                 .put_if(
                     tenant_id, namespace, cache, shard, key, value, ttl, condition,
@@ -377,7 +386,7 @@ pub(crate) async fn apply_cache_local(
                 ingress,
                 quorum_timeout,
                 felix_replication::quorum::Access::Write,
-                Some(at),
+                at,
             )
             .await?;
             let lease = lease.map(|mint| match written_if {
@@ -395,7 +404,10 @@ pub(crate) async fn apply_cache_local(
         }
         CacheRequest::DeleteIf { version } => {
             let fenced = write(&mut fenced)?;
-            let at = felix_replication::quorum::cache_write_at(broker, &written, generation).await;
+            let at = felix_replication::quorum::cache_write_at(
+                broker, &written, generation, marks, ingress,
+            )
+            .await;
             let deleted = cache_store
                 .delete_if(tenant_id, namespace, cache, shard, key, version)
                 .await
@@ -408,7 +420,7 @@ pub(crate) async fn apply_cache_local(
                 ingress,
                 quorum_timeout,
                 felix_replication::quorum::Access::Write,
-                Some(at),
+                at,
             )
             .await?;
             CacheAnswer {

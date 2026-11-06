@@ -954,7 +954,9 @@ fn wake_pass(broker: &felix_broker::Broker, shard: &crate::ShardKey) {
 /// leader can have acknowledged a write the value lacks.
 ///
 /// `written` is where a write landed ([`cache_write_at`]); a read passes
-/// `None`.
+/// `None`, and so does a write it answered `None` for, which waits for no
+/// quorum. A write that does wait with `None` is not acknowledged across a
+/// generation change.
 pub async fn await_cache_quorum<S: ShardServing + ?Sized>(
     broker: &felix_broker::Broker,
     shard: &crate::ShardKey,
@@ -1483,15 +1485,29 @@ pub struct CacheWrite {
     pub from: u64,
 }
 
-/// A [`CacheWrite`] at `generation` for `shard`'s cache log as it stands now.
-/// Call it inside the write's fence, right before the write. A cache with no
-/// log has nothing to wait for, and an unreadable tail counts as zero, which
-/// only asks the wait to check more.
-pub async fn cache_write_at(
+/// A [`CacheWrite`] at `generation` for `shard`'s cache log as it stands now,
+/// or `None` when the write will not wait for a replicated quorum: a broker
+/// with no replica set, a shard placed with none, or a cache that is not
+/// `Quorum`. Call it inside the write's fence, right before the write. An
+/// unreadable tail counts as zero, which only asks the wait to check more.
+pub async fn cache_write_at<S: ShardServing + ?Sized>(
     broker: &felix_broker::Broker,
     shard: &crate::ShardKey,
     generation: u64,
-) -> CacheWrite {
+    marks: Option<&QuorumMarks>,
+    ingress: Option<&S>,
+) -> Option<CacheWrite> {
+    // Cheapest first: this runs on every cache write.
+    let ingress = ingress.filter(|_| marks.is_some())?;
+    if !ingress.replicated(shard) {
+        return None;
+    }
+    let consistency = broker
+        .cache_consistency(&shard.tenant_id, &shard.namespace, &shard.stream)
+        .await;
+    if consistency != Some(felix_broker::ConsistencyLevel::Quorum) {
+        return None;
+    }
     let log = broker
         .shard_log(
             felix_broker::LogKind::Cache,
@@ -1500,12 +1516,11 @@ pub async fn cache_write_at(
             &shard.stream,
             shard.shard,
         )
-        .await;
-    let from = match log {
-        Some(log) => log.tail_offset().await.unwrap_or(0),
-        None => 0,
-    };
-    CacheWrite { generation, from }
+        .await?;
+    Some(CacheWrite {
+        generation,
+        from: log.tail_offset().await.unwrap_or(0),
+    })
 }
 
 /// A cache write's wait that reached its mark: a mark the followers decided

@@ -938,12 +938,14 @@ async fn a_cache_put_cut_before_its_wait_reads_the_tail_is_not_acknowledged() {
         .await
         .expect("log");
     log.record_generation(3, 0).expect("generation");
-    let at = cache_write_at(&broker, &cache, 3).await;
+    let marks = QuorumMarks::new();
+    let at = cache_write_at(&broker, &cache, 3, Some(&marks), Some(&LeadsAt(5)))
+        .await
+        .expect("a quorum write");
     put("k").await.expect("put");
     assert!(log.tail_offset().await.expect("tail") > at.from);
     log.truncate(at.from).await.expect("truncate");
 
-    let marks = QuorumMarks::new();
     marks.publish(&cache, 5, 1 << 20);
     let err = await_cache_quorum(
         &broker,
@@ -962,6 +964,66 @@ async fn a_cache_put_cut_before_its_wait_reads_the_tail_is_not_acknowledged() {
             Some(QuorumError::LeadershipLost { .. })
         ),
         "{err:?}"
+    );
+}
+
+/// A cache write that waits for no replicated quorum reads no tail: a broker
+/// with no replica set, a shard placed with none, or a `Leader` cache.
+#[tokio::test]
+async fn a_cache_write_with_no_quorum_to_wait_for_reads_no_tail() {
+    struct Unreplicated;
+    impl ShardServing for Unreplicated {
+        fn replicated(&self, _key: &ShardKey) -> bool {
+            false
+        }
+        fn generation(&self, _key: &ShardKey) -> Option<u64> {
+            Some(3)
+        }
+        fn lease_valid(&self) -> bool {
+            true
+        }
+        fn record_ack_refusal(&self) {}
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let broker = quorum_cache_broker(dir.path()).await;
+    broker
+        .register_cache(
+            "t1",
+            "ns",
+            "plain",
+            felix_broker::CacheMetadata {
+                consistency: felix_broker::ConsistencyLevel::Leader,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("cache");
+    let quorum = ShardKey {
+        kind: crate::ShardKind::Cache,
+        ..key("sessions")
+    };
+    let leader = ShardKey {
+        kind: crate::ShardKind::Cache,
+        ..key("plain")
+    };
+    let marks = QuorumMarks::new();
+    assert_eq!(
+        cache_write_at::<LeadsAt>(&broker, &quorum, 3, None, None).await,
+        None
+    );
+    assert_eq!(
+        cache_write_at(&broker, &quorum, 3, Some(&marks), Some(&Unreplicated)).await,
+        None
+    );
+    assert_eq!(
+        cache_write_at(&broker, &leader, 3, Some(&marks), Some(&LeadsAt(3))).await,
+        None
+    );
+    assert!(
+        cache_write_at(&broker, &quorum, 3, Some(&marks), Some(&LeadsAt(3)))
+            .await
+            .is_some()
     );
 }
 
