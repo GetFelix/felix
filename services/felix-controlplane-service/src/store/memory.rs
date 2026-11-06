@@ -654,6 +654,7 @@ impl ControlPlaneStore for InMemoryStore {
             Some(fence),
             true,
             at_least,
+            true,
         )
         .await
     }
@@ -734,6 +735,10 @@ impl ControlPlaneStore for InMemoryStore {
 
     async fn first_shard_assignments(&self) -> StoreResult<Vec<(ShardKey, u64, u64)>> {
         shards::first_shard_assignments(self).await
+    }
+
+    async fn previous_shard_assignments(&self) -> StoreResult<Vec<ShardAssignment>> {
+        shards::previous_shard_assignments(self).await
     }
 
     async fn shard_assignment_changes(

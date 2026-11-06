@@ -885,6 +885,15 @@ StandBehindBounded == FALSE
 CatchAllRename == FALSE
 Withdraws == FALSE
 Restarts == FALSE
+\* `PriorMayBeUnknown`: under `Restarts`, a restarted leader may find no set
+\* before its generation in the snapshot it reseeds from: the control plane's
+\* change log no longer holds the change before it (`previous` on a snapshot
+\* item is read from the retained log, #2024). Its fence then waits unless its
+\* log keeps the set at the generation before, as before #2024 (#1989).
+PriorMayBeUnknown == FALSE
+\* `Stops`: under `Restarts`, how many brokers may stop in a behaviour. The
+\* default is no bound with three brokers.
+Stops == 3
 SupersededRefused == TRUE
 OwnBallotRefused == FALSE
 AboveReported == FALSE
@@ -2792,6 +2801,7 @@ FailStop(b) ==
     /\ Cardinality(halted) < FailStops
     /\ b \notin halted
     /\ Restarts => inc[b] = 0
+    /\ Cardinality({m \in Brokers : inc[m] > 0}) < Stops
     /\ halted' = halted \cup {b}
     /\ bgen' = [bgen EXCEPT ![b] = 0]
     /\ fencing' = [fencing EXCEPT ![b] = FALSE]
@@ -2855,15 +2865,19 @@ Restart(b) ==
             /\ Promise(b, b, gen)
             \* Its fence carries the assignment's set at the assignment's
             \* generation (`replica_set::view` in `fence_shard`, promotion.rs).
-            \* Under `JointFence` only when its log keeps the set right before
-            \* (`set_before` in promotion/joint.rs): a set kept at the
-            \* generation is reported unknown, and an older one leaves the
-            \* fence pending for good (`Skipped`), unreported (#1989).
-            /\ IF SetCheck /\ setGen[b] < gen /\ (JointFence => setGen[b] = gen - 1)
-               THEN /\ mine' = [mine EXCEPT ![b] = IF cpNext = {} THEN CpSet ELSE cpNext]
-                    /\ setGen' = [setGen EXCEPT ![b] = gen]
-                    /\ oldSet' = [oldSet EXCEPT ![b] = IF cpNext = {} THEN {} ELSE {CpSet}]
-               ELSE UNCHANGED << mine, setGen, oldSet >>
+            \* Under `JointFence` it learns the set right before from the
+            \* snapshot its watch reseeds from, which carries the control
+            \* plane's assignment before the current one (`previous` on a
+            \* snapshot item, #2024), so an older kept set no longer leaves
+            \* the fence pending (#1989). Under `PriorMayBeUnknown` the
+            \* snapshot may lack it, and then only a log keeping the set right
+            \* before will do. A set kept at the generation is reported unknown.
+            /\ \E known \in IF PriorMayBeUnknown THEN {TRUE, FALSE} ELSE {TRUE} :
+                 IF SetCheck /\ setGen[b] < gen /\ (JointFence /\ ~known => setGen[b] = gen - 1)
+                 THEN /\ mine' = [mine EXCEPT ![b] = IF cpNext = {} THEN CpSet ELSE cpNext]
+                      /\ setGen' = [setGen EXCEPT ![b] = gen]
+                      /\ oldSet' = [oldSet EXCEPT ![b] = IF cpNext = {} THEN {} ELSE {CpSet}]
+                 ELSE UNCHANGED << mine, setGen, oldSet >>
        ELSE UNCHANGED << bgen, bexpiry, fencing, answered, confirmed, promised, ballot,
                          mine, setGen, oldSet >>
     /\ stopped' = [stopped EXCEPT ![b] = FALSE]
@@ -3904,7 +3918,10 @@ RenameGen ==
 \* reopens it fenced (`begin_open_renewed` in lifecycle.rs), on the set the
 \* assignment names, and while a change is pending, jointly with the set
 \* being left. Each one follows a stand, a restart or a promotion, and stands
-\* stop at `Adopt`, so those bound them.
+\* stop at `Adopt`, so those bound them. A rename past a ballot skips
+\* generations, and the leader still takes `CpSet` as the set it leaves: the
+\* control plane recorded nothing in between and names the generation it
+\* replaced (`previous_generation`, #2024), which the broker's watch reads.
 CpRename(v, views) ==
     /\ RenameDue
     /\ ~v.draining

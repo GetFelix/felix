@@ -4810,7 +4810,19 @@ Once it is finalized on a broker that offers `ELECTION`:
   when it names none; such a fence does not stay pending. For other changes the broker learns
   the set from the assignment its watch saw at that generation,
   from the set the leader before shipped with at it, or from what this
-  leader kept beside its own set. When none of those knows it, the fence
+  leader kept beside its own set. The watch knows that assignment only when
+  the route's generation is one above it, or when the control plane names it:
+  a rename past a ballot (`set_unknown` with a floor) lands more than one
+  generation up, records nothing in between, and stores the generation it
+  replaced on the assignment (`previous_generation`, #2024). An adoption also
+  skips generations but names none, since the set before an elected
+  generation is not the control plane's. The control plane records it under
+  Raft only at metadata level 29, so a group with an older member names
+  nothing and such a fence stays pending as below. A broker that reseeds its
+  watch from a snapshot, after a restart, holds no assignment before; each
+  snapshot item carries the set right before it (`previous`), read from the
+  control plane's retained change log, and the broker takes it as a watching
+  broker would. An item whose earlier change has left the log carries none. When none of those knows it, the fence
   does not fence the new set alone. What it does depends on what the log
   keeps, and it acts only on evidence that no earlier set can still hold
   acknowledged records:
@@ -4855,7 +4867,10 @@ Once it is finalized on a broker that offers `ELECTION`:
     fence pending.
   - Otherwise, the log keeps an older set than the one before: the leader
     skipped a generation it never opened, and a rename would leave that
-    generation's set unfenced. The fence stays pending.
+    generation's set unfenced. The fence stays pending. A leader the control
+    plane renamed past a withdrawn standing's ballot lands here only when
+    neither its watch nor its snapshot holds the assignment the rename
+    names.
   - The log keeps no set, above generation 0: this may be a failover's new leader whose watch
     started from a snapshot, while the old leader, cut off, still
     acknowledges on a majority of the old set. The fence stays pending.

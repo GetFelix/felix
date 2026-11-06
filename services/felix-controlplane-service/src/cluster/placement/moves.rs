@@ -760,6 +760,7 @@ pub(super) fn move_step<'a>(
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
+            previous_generation: None,
         };
         return Decision::Move(
             MoveStep::CutOver {
@@ -1087,6 +1088,7 @@ pub(super) fn start(
         member_storage_ids: Default::default(),
         learners: Default::default(),
         pending_set: None,
+        previous_generation: None,
     };
     if already_a_replica && moves.ready_to_fence(caught_up, &existing.key, destination) {
         // The copy is already there: straight to the fence.
