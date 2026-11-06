@@ -561,12 +561,15 @@ impl StreamState {
     ///
     /// Skipped while batches are held: they are released in order and pin
     /// their own offsets. Only before the leader serves, as for
-    /// `skip_generation_start`.
-    pub(crate) fn lead_from(&self, tail: u64, run: u64) {
+    /// `skip_generation_start`. Subscribers still registered are ended as
+    /// for a move to `to()`, as in `advance_to`.
+    pub(crate) fn lead_from(&self, tail: u64, run: u64, to: impl FnOnce() -> ShardHandoff) {
         let mut state = self.log_state.lock();
         if state.next_seq >= tail || self.held.is_busy() {
             return;
         }
+        // Readers still registered were never offered the records it passes.
+        self.end_passed_over(&state, to);
         state.forget_view_across(tail, run);
         // The ring would end below records a reader from it then never gets.
         state.log.clear();

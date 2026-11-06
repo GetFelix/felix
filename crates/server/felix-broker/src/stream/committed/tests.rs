@@ -725,11 +725,17 @@ async fn a_dropped_commit_is_in_the_state_when_led_again_without_a_start_record(
     bounds.set(ReadBound::Committed(1));
     commit(&broker, "state", b"held").await;
     assert_eq!(broker.discard_uncommitted("t1", "ns", "quorum", 0).await, 1);
+    let mut live = broker
+        .subscribe("t1", "ns", "quorum", 0)
+        .await
+        .expect("subscribe");
 
     broker
         .lead_from_tail("t1", "ns", "quorum", 0)
         .await
         .expect("lead from tail");
+    // A reader at the old sequence was never offered the dropped commit.
+    assert_eq!(resumes_at(&mut live).await, Some(1));
     let handle = broker
         .resolve_stream_handle("t1", "ns", "quorum", 0)
         .await
@@ -769,10 +775,17 @@ async fn a_hold_carried_across_a_generation_start_keeps_the_state_view() {
             .expect("generation start"),
         2
     );
+    let handle = broker
+        .resolve_stream_handle("t1", "ns", "quorum", 0)
+        .await
+        .expect("handle");
+    let below_hold = handle.tail_seq();
     broker
         .lead_from_tail("t1", "ns", "quorum", 0)
         .await
         .expect("lead from tail");
+    // A busy hold keeps the sequence where readers resume and its readers.
+    assert_eq!(handle.tail_seq(), below_hold);
     bounds.set(ReadBound::Unbounded);
     commit(&broker, "other", b"after").await;
     assert_eq!(&next(&mut live).await[..], b"held");

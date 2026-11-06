@@ -116,7 +116,7 @@ impl Broker {
             return Ok(());
         }
         let run = tail - log.event_end(0, tail).await?;
-        state.lead_from(tail, run);
+        state.lead_from(tail, run, || super::shard_logs::accepted_leader(&state));
         Ok(())
     }
 
@@ -438,6 +438,12 @@ pub struct StreamHandle {
 }
 
 impl StreamHandle {
+    /// The stream's sequence, for tests outside `broker`.
+    #[cfg(test)]
+    pub(crate) fn tail_seq(&self) -> u64 {
+        self.state.tail_seq()
+    }
+
     /// What an acknowledgement of a publish through this handle means.
     pub fn consistency(&self) -> ConsistencyLevel {
         self.state.consistency()
