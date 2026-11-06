@@ -6,13 +6,24 @@ name: Instructions per message
 # per-message cost of a few percent shows up on the PR that adds it. See CONTRIBUTING.md.
 #
 # Not part of `CI ok`: whether it blocks merges is a repository setting.
+# A pull request runs it only when it touches the broker's hot-path code.
+# Otherwise it runs on workflow_dispatch only; there is no main or schedule run.
 
 on:
   pull_request:
-    paths-ignore:
-      - "docs/**"
-      - "docs-site/**"
-      - "**/*.md"
+    paths:
+      - "crates/server/**"
+      - "crates/protocol/**"
+      - "crates/sdk/felix-client/**"
+      - "crates/testing/felix-cluster/**"
+      - "crates/testing/felix-loadgen/**"
+      - "services/felix-broker-service/**"
+      - "scripts/perf/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".cargo/config.toml"
+      - "rust-toolchain.toml"
+      - ".github/workflows/ipm-gate.yml"
   workflow_dispatch:
 
 concurrency:

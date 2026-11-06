@@ -147,7 +147,15 @@ pub struct IngressRouter {
     /// Woken on every new view, for writes held while their shard moves.
     changed: tokio::sync::Notify,
     hold: MoveHold,
+    /// Runs inside [`IngressRouter::publish`] just before the view is stored,
+    /// so a test can land a change between the read and the store. Held while
+    /// the hook runs, so a hook must not call `publish` itself.
+    #[cfg(test)]
+    before_publish: std::sync::Mutex<Option<PublishHook>>,
 }
+
+#[cfg(test)]
+type PublishHook = Box<dyn FnMut(&IngressRouter) + Send>;
 
 /// Routes and the servable set, published as one value.
 ///
@@ -173,6 +181,8 @@ impl IngressRouter {
             fence,
             changed: tokio::sync::Notify::new(),
             hold: MoveHold::disabled(),
+            #[cfg(test)]
+            before_publish: std::sync::Mutex::new(None),
         }
     }
 
@@ -204,6 +214,10 @@ impl IngressRouter {
         servable: ServableShards,
     ) {
         let routes = self.router.publish(table, nodes);
+        #[cfg(test)]
+        if let Some(hook) = self.before_publish.lock().unwrap().as_mut() {
+            hook(self);
+        }
         self.store(View { routes, servable });
     }
 
@@ -934,13 +948,15 @@ pub fn spawn_feed<L: ControlPlaneLink>(
 
             // Read after reconcile, so an open that just finished is included:
             // publishing the routes first would advertise this node as the
-            // owner of a shard it has not opened.
-            let servable = lifecycle.lock().await.servable();
-            ingress.publish(
-                routing_table_from(&assignments, &catalog.nodes).with_priors(priors.clone()),
-                &catalog.nodes,
-                servable,
-            );
+            // owner of a shard it has not opened. Held through the publish: a
+            // fence publishes under this lock too, and one finishing between
+            // the read and the publish would be undone until the next pass.
+            let table =
+                routing_table_from(&assignments, &catalog.nodes).with_priors(priors.clone());
+            {
+                let owned = lifecycle.lock().await;
+                ingress.publish(table, &catalog.nodes, owned.servable());
+            }
             published_priors = priors;
             crate::shards::watch::metrics::set_catalog_nodes(catalog.nodes.len());
             // After the publish, so a lease held back for the routes serves
