@@ -1017,6 +1017,12 @@ sets it; a caller's value is ignored. Postgres keeps it only
 for the generation that wrote it (migration 0045), and the Raft store writes it
 only at metadata level 29.
 
+A snapshot item also carries `previous`, the set of the assignment the change
+log holds right before it (the generation below, or the one
+`previous_generation` names). A broker that reseeds from the snapshot takes it
+as the set its fence leaves. It is read from the retained change log, so an
+item whose earlier change has been evicted carries none.
+
 ##### Re-admitting a replaced copy
 
 A broker whose disk was wiped registers again under a new storage id. The
