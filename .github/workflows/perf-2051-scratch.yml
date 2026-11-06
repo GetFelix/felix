@@ -58,9 +58,9 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4, 5, 6]
-        payload: [1024, 65536]
+        payload: [65536]
     env:
-      ROUNDS: "5"
+      ROUNDS: "10"
       BENCH_PAYLOAD: ${{ matrix.payload }}
     steps:
       - uses: actions/download-artifact@v7
