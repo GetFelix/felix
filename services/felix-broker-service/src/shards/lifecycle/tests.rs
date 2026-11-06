@@ -509,6 +509,34 @@ mod driver {
         assert_eq!(store.take_teardown(), [("close", 1)]);
     }
 
+    /// A pass opens and closes shards in key order, so a simulated run and
+    /// its replay do the same work in the same order.
+    #[tokio::test]
+    async fn a_pass_opens_and_closes_shards_in_key_order() {
+        let own = Mutex::new(lifecycle());
+        let store = RecordingStore::default();
+        let pairs: Vec<_> = (0..40).map(|shard| (shard, "broker-a", 1)).collect();
+
+        reconcile(&own, &store, &assignments(&pairs)).await;
+        let opened: Vec<u32> = store
+            .opened
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|k| k.shard)
+            .collect();
+        assert_eq!(opened, (0..40).collect::<Vec<_>>());
+
+        reconcile(&own, &store, &HashMap::new()).await;
+        let closed: Vec<u32> = store
+            .take_teardown()
+            .into_iter()
+            .filter(|(what, _)| *what == "close")
+            .map(|(_, shard)| shard)
+            .collect();
+        assert_eq!(closed, (0..40).collect::<Vec<_>>());
+    }
+
     fn assignments(pairs: &[(u32, &str, u64)]) -> HashMap<ShardKey, ShardAssignment> {
         pairs
             .iter()
