@@ -3662,3 +3662,14 @@ async fn adoption_waits_for_every_member() {
         adopted
     );
 }
+
+/// At the level that records a skipped generation the floor is carried,
+/// with or without `joint_fence`; below it only without.
+#[test]
+fn a_ballot_floor_is_carried_from_the_level_its_fence_needs() {
+    use super::honoured_at_least;
+    assert_eq!(honoured_at_least(8, PREVIOUS_GENERATION_LEVEL, true), 8);
+    assert_eq!(honoured_at_least(8, PREVIOUS_GENERATION_LEVEL - 1, true), 0);
+    assert_eq!(honoured_at_least(8, REFUSED_BALLOT_LEVEL, false), 8);
+    assert_eq!(honoured_at_least(8, REFUSED_BALLOT_LEVEL - 1, false), 0);
+}

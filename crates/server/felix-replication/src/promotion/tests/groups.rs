@@ -855,11 +855,12 @@ async fn a_promise_away_and_silence_refuse_the_group_fence() {
     assert_eq!(promised_to, "broker-d");
 }
 
-/// **A promise away with the other replica declining keeps the group fence
-/// pending**, as on the records' fence: the decline may clear on a retry.
-/// Serving the leader's own pair would leave a replica refusing it.
+/// **A promise away with the other replica answering from a copy the route
+/// pins rule out refuses the group fence**, as on the records' fence: the
+/// pins stay across renames until a fenced open, so that answer counts no
+/// more one generation up (#2046).
 #[tokio::test]
-async fn a_promise_away_and_a_decline_keep_the_group_fence_pending() {
+async fn a_promise_away_and_a_pinned_out_copy_refuse_the_group_fence() {
     let mut replicas = group_replicas(3, WITH_GROUPS);
     replicas.ballots = true;
     group_ballot(&replicas, "broker-b", PROMOTED, "broker-d").await;
@@ -878,7 +879,10 @@ async fn a_promise_away_and_a_decline_keep_the_group_fence_pending() {
 
     let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route, true, None).await;
 
-    assert!(matches!(outcome, Outcome::Pending { .. }), "{outcome:?}");
+    let Outcome::Refused { promised_to, .. } = outcome else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!(promised_to, "broker-d");
 }
 
 /// **A wiped leader's group fence is refused on one promise away**: its own

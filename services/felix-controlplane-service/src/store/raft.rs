@@ -209,6 +209,15 @@ impl RaftStore {
         assignment.previous_generation = None;
     }
 
+    /// Whether the fleet has finalized `joint_fence`.
+    async fn joint_fence(&self) -> StoreResult<bool> {
+        Ok(self
+            .local()
+            .enabled_fleet_features()
+            .await?
+            .contains(felix_common::fleet::JOINT_FENCE.name()))
+    }
+
     /// Whether a delete takes the deleted resources' shard assignments and
     /// replica reports. Only once every member applies the delete that way;
     /// before then the entry leaves them, on every member, as older members
@@ -897,6 +906,8 @@ impl ControlPlaneStore for RaftStore {
         // below 21 instead.
         self.drop_unstorable_fence_ids(&mut assignment).await;
         let level = self.group_level().await;
+        let joint_fence = at_least > 0 && self.joint_fence().await?;
+        let at_least = honoured_at_least(at_least, level, joint_fence);
         match self
             .propose_at(
                 level,
@@ -905,13 +916,7 @@ impl ControlPlaneStore for RaftStore {
                     expected_generation,
                     fence,
                     seq_generation: level >= SHARD_RENEWAL_LEVEL,
-                    // Below its level every member takes the next
-                    // generation, as before.
-                    at_least: if level >= REFUSED_BALLOT_LEVEL {
-                        at_least
-                    } else {
-                        0
-                    },
+                    at_least,
                     // Only a floor can skip generations; other writes keep
                     // the level they had.
                     record_previous: at_least > 0 && level >= PREVIOUS_GENERATION_LEVEL,
@@ -1751,6 +1756,21 @@ impl AuthStore for RaftStore {
             }
         }
     }
+}
+
+/// The floor a rename past a refusal's ballot is written with at `level`; 0,
+/// the next generation, below the level a skip needs. Under `joint_fence` a
+/// broker that missed the generation a skip replaced has no set before the
+/// new one, and its joint fence waits forever, so the skip waits for members
+/// that record that generation. The constant is #2027's, which brings that
+/// level.
+fn honoured_at_least(at_least: u64, level: u16, joint_fence: bool) -> u64 {
+    let needed = if joint_fence {
+        PREVIOUS_GENERATION_LEVEL
+    } else {
+        REFUSED_BALLOT_LEVEL
+    };
+    if level >= needed { at_least } else { 0 }
 }
 
 /// The command answered with a payload its own definition rules out — a

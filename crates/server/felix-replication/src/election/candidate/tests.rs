@@ -856,6 +856,23 @@ async fn a_candidate_stands_above_the_routes_generation() {
     assert_eq!(elected.generation, 6);
 }
 
+/// **A candidate stands above the ballot its copy accepted when that is
+/// past the route's generation** (#2046). broker-c stood at 6 and gave up,
+/// leaving this copy's ballot there while the control plane still names 3.
+/// Standing at 4, or at 6, would meet replicas that promised those
+/// generations, so it stands at 7.
+#[tokio::test(start_paused = true)]
+async fn a_candidate_stands_above_a_ballot_a_withdrawn_standing_left() {
+    let (broker, _dir) = follower().await;
+    let log = shard_log(&broker, &key()).await.expect("log");
+    log.accept_generation(6, Some("broker-c"))
+        .await
+        .expect("ballot");
+
+    let elected = stand_and_watch(&ctx(&broker, voters(None))).await;
+    assert_eq!(elected.generation, 7);
+}
+
 /// **A candidate does not stand past the control plane's adoption window**:
 /// the control plane would refuse to adopt the leadership, so its route would
 /// never drop. At the edge of the window it still stands.

@@ -346,6 +346,11 @@ expectations=(
   "FelixShardCpLiveNoHaltReported violates liveness"
   "FelixShardCpLiveNoAboveReported violates liveness"
   "FelixShardCpLiveSkippedGenerationUnknownPrior violates liveness"
+  "FelixShardCpLiveRefusalsCopyExcluded violates liveness"
+  "FelixShardCpLiveRefusalsPinsForever violates liveness"
+  "FelixShardElectRefusals pass"
+  "FelixShardElectRefusalsPinsCleared violates AckedHeldByLeader"
+  "FelixShardElectRenameMinorityDrop violates OneLeaderPerGeneration"
   "FelixShardCpDownNoSelfSuspicion violates liveness"
   "FelixShardCpDownBrokerSuspicion violates liveness"
   "FelixShardCpDownDegraded violates liveness"
@@ -486,6 +491,8 @@ fi
 # FelixShardCpLiveSkippedGeneration, FelixShardCpLive cut down to the #2024
 # scenario, runs past it too and is checked nightly (tla-walk.yml); its
 # violating twin stays registered.
+# FelixShardCpLiveRefusals does not finish on a laptop either, and its twin
+# FelixShardCpLiveRefusalsUnknownNoBallot has found no violation yet.
 # FelixShardElectSwap is not registered: it does not finish in one run, so
 # it is checked in pieces split at the cut-over. The eleven that take under 45
 # minutes are registered above; FelixShardElectSwapKeep0, the four
@@ -659,6 +666,9 @@ weights=(
   "FelixShardCpLiveNoHaltReported 5"
   "FelixShardCpLiveNoAboveReported 6"
   "FelixShardCpLiveSkippedGenerationUnknownPrior 20"
+  "FelixShardCpLiveRefusalsCopyExcluded 2"
+  "FelixShardCpLiveRefusalsPinsForever 2"
+  "FelixShardElectRefusals 3"
   "FelixShardCpDownNoSelfSuspicion 15"
 )
 
