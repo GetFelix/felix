@@ -333,6 +333,12 @@ expectations=(
   "FelixShardElectLiveNoBackoff violates liveness"
   "FelixShardElectLiveReissue pass"
   "FelixShardElectLiveNoReissue violates liveness"
+  "FelixShardElectLiveUnclean pass"
+  "FelixShardElectLiveUncleanOwnBallot violates liveness"
+  "FelixShardElectLiveUncleanLed pass"
+  "FelixShardElectUnclean pass"
+  "FelixShardElectUncleanVouchOnShip violates AckedHeldByLeader"
+  "FelixShardElectUncleanForgetsLed violates AckedHeldByLeader"
   "FelixShardCpLiveMain violates liveness"
   "FelixShardCpLiveNoOwnBallotRefused violates liveness"
   "FelixShardCpLiveNoOverlayRefused violates liveness"
@@ -512,6 +518,9 @@ fi
 # A configuration missing here weighs one, so it is never left to
 # `--plan-heavy`: give a new heavy one its weight.
 weights=(
+  "FelixShardElectUnclean 12"
+  "FelixShardElectUncleanVouchOnShip 2"
+  "FelixShardElectLiveUncleanLed 2"
   "FelixShardFencedAckMoveShort 31"
   "FelixShardWipeStripped 29"
   "FelixShardFencedAckMoveCancelShort 45"

@@ -129,6 +129,8 @@ struct Ctx<R> {
     /// standing. Peers suspect a broker that cannot serve clients yet, so a
     /// standing it won would be taken from it a few seconds later.
     leads_after: Option<CancellationToken>,
+    /// Set after a start that rotated the storage id. See [`crate::unclean`].
+    unclean: Option<Arc<crate::unclean::UncleanStart>>,
 }
 
 /// What a shard's quiet clock started on. Any change restarts it: a new
@@ -303,6 +305,14 @@ impl<R> Ctx<R> {
         now.saturating_duration_since(since) < self.elections.defer_for()
     }
 
+    /// Before this broker's own ballot for `key` at `generation`: after an
+    /// unclean start the ballot it replaces is the evidence of the crash.
+    fn stand(&self, key: &ShardKey, log: &StreamLog, generation: u64) {
+        if let Some(unclean) = &self.unclean {
+            unclean.stand(&crate::driver::watch_key(key), log, generation);
+        }
+    }
+
     /// Whether this copy's ballot at `accepted` names this broker without a
     /// standing here having written it, so the control plane named this
     /// broker leader there and it is opening the shard. Bounded by
@@ -358,6 +368,7 @@ pub fn spawn<R: PeerRequester + Send + Sync + 'static>(
     suspects: Arc<Suspects>,
     config: SuspicionConfig,
     leads_after: Option<CancellationToken>,
+    unclean: Option<Arc<crate::unclean::UncleanStart>>,
     shutdown: CancellationToken,
 ) -> Option<tokio::task::JoinHandle<()>> {
     if config.suspect_after.is_zero() || !requester.offers_election() {
@@ -384,6 +395,7 @@ pub fn spawn<R: PeerRequester + Send + Sync + 'static>(
         named_here: Default::default(),
         pre_vote_gate: pre_vote_gate(),
         leads_after,
+        unclean,
     });
     Some(tokio::spawn(run(ctx, shutdown)))
 }
@@ -715,6 +727,18 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
         Ok(standing) => standing,
         Err(round) => return round,
     };
+    // `may_lead` would give up what this standing won, and the given-up copy
+    // then refuses every other candidate's fence too.
+    if ctx
+        .unclean
+        .as_ref()
+        .is_some_and(|unclean| unclean.unvouched(&crate::driver::watch_key(key), &log, generation))
+    {
+        return ctx.ineligible(
+            key,
+            "this copy may be short of what this broker acknowledged before its crash",
+        );
+    }
     // The control plane named this broker leader above the route this round
     // read, and the lifecycle took that ballot before the routes caught up.
     // The shard is led here: standing would raise this copy's own ballot past
@@ -793,6 +817,7 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
     // only on the set they read, under the lock every set raise takes. A
     // learner flip from `admit_member` fails the round on purpose: the
     // tally's voting members changed.
+    ctx.stand(key, &log, generation);
     match log.accept_generation_on_set(generation, local, read).await {
         Ok(Some(GenerationCheck::Raised)) => {}
         Ok(None) => {
@@ -862,6 +887,7 @@ async fn restand<R>(ctx: &Ctx<R>, key: &ShardKey, generation: u64) -> Round {
         Err(round) => return round,
     };
     // As in `stand`: the ballot only on the set `standing_on` checked.
+    ctx.stand(key, &log, next);
     match log.accept_generation_on_set(next, local, read).await {
         Ok(Some(GenerationCheck::Raised)) => {}
         Ok(None) => {

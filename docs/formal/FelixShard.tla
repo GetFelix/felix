@@ -776,6 +776,31 @@ CatchUpFromDeposed == TRUE
 \* copy, the fix #1635 proposed. Unsafe beside a leader that counts that copy
 \* (FelixShardShortCopyStagedVotesSetOnly.cfg).
 RefuseShortCopy == FALSE
+\* `UncleanCrashes`: under `Elections`, how many brokers may restart once,
+\* while following, after a crash that rotated their storage identity
+\* (`UncleanRestart`). Such a process remembers the unclean start for as long
+\* as it runs (`doubt`, `felix_replication::unclean`, #1295): it answers no
+\* fence from a copy it may have led (`refuse_short_copy` in replica.rs),
+\* stands for none (`stand` in election/candidate.rs) and opens none
+\* (`may_lead` in services/felix-broker-service/src/shards/lifecycle.rs).
+\* An open it refuses gives the copy up, which then refuses every fence
+\* until a leader ships to it.
+\* `OwnBallotLedBefore`: as before #2025, a ballot naming this broker that
+\* this process did not open at counts as one it led, its own candidacy's
+\* included.
+\* `UncleanLeads`: the restart may also hit a broker whose ballot names
+\* itself: one that led, or stood, with or without opening, or crashed with
+\* its candidacy recorded in memory but before its ballot was on disk (that
+\* restart is a follower's, as nothing of it reached disk). Its machine crash
+\* may cost it any suffix of its log. Its new process reads the ballot as a
+\* copy it led (`led_before`) and refuses until a leader ships to it.
+\* `UncleanForgetsLed`: that process does not, the unsafe rule.
+UncleanCrashes == 0
+OwnBallotLedBefore == FALSE
+UncleanLeads == FALSE
+UncleanForgetsLed == FALSE
+\* `VouchOnGeneration`: see `Vouch`.
+VouchOnGeneration == FALSE
 ShortCopyChecksSet == TRUE
 ShortCopyChecksKeys == TRUE
 FenceIdsSetOnly == FALSE
@@ -1132,6 +1157,7 @@ VARIABLES
     inherited,  \* history, per leader: the replicas its promotion named by inheritance
     leftDirty,  \* how much of its log a crashed process left to the page cache, until a clean stop
     gaveUp,     \* under `RefuseShortCopy`, the generation each broker gave its copy up at: 0 for none
+    doubt,      \* under `UncleanCrashes`, what each broker's process knows of its copy: "clean" start, "vouched", or "led"
     fenceIds,   \* under `RefuseShortCopy`, per leader, the members its promotion's fence ids name
     named,      \* under `RefuseShortCopy`, the members the last report the control plane stored named
     wipedAt,    \* per broker, 0 for never wiped or re-admitted; else the control plane's generation at the wipe
@@ -1153,8 +1179,9 @@ setVars == << setGen, oldSet, installed, nextVars >>
 
 \* Storage identities and registrations: only a wipe, a crash, a leader
 \* learning one, a registration and a promotion change them.
-idVars == << sid, seen, seenInc, wipes, checked, registered, inc, restarting, expect, inherited,
-             leftDirty, gaveUp, fenceIds >>
+idVarsButDoubt == << sid, seen, seenInc, wipes, checked, registered, inc, restarting, expect,
+                     inherited, leftDirty, gaveUp, fenceIds >>
+idVars == << idVarsButDoubt, doubt >>
 \* The refusal the control plane last stored, and what each broker's reporter
 \* repeats.
 refusalVars == << cpRefused, refusedAt >>
@@ -1162,7 +1189,7 @@ refusalVars == << cpRefused, refusedAt >>
 wipeVars == << wipedAt, readmit, learner, marked, cpLearner >>
 \* All of them but `expect`, `inherited` and the promoted leader's `seen`
 \* and `seenInc`, which a promotion sets.
-decideIdVars == << sid, wipes, checked, registered, inc, restarting, leftDirty, gaveUp, wipeVars >>
+decideIdVars == << sid, wipes, checked, registered, inc, restarting, leftDirty, gaveUp, doubt, wipeVars >>
 
 vars == << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
            hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit,
@@ -1518,6 +1545,7 @@ IdInit ==
     /\ inherited = [m \in Brokers |-> {}]
     /\ leftDirty = [b \in Brokers |-> 0]
     /\ gaveUp = [b \in Brokers |-> 0]
+    /\ doubt = [b \in Brokers |-> "clean"]
     /\ fenceIds = [b \in Brokers |-> {}]
     /\ named = {}
     /\ cpRefused = {}
@@ -2442,6 +2470,17 @@ AckedByTwo(b, f) ==
 
 ShortCopyRefuses(b, f) == RefuseShortCopy /\ ShortCopy(f) /\ ~AckedByTwo(b, f)
 
+\* Under `UncleanCrashes`, whether `f`'s process takes its copy for one that
+\* may be short of what it acknowledged before its crash, with no leader
+\* having shipped to it since (`UncleanStart::unvouched`): it gave the copy
+\* up. A ballot it wrote standing for election since its start is not
+\* evidence of having led (#2025), unless `OwnBallotLedBefore`.
+Unvouched(f) ==
+    /\ UncleanCrashes > 0
+    /\ \/ doubt[f] = "led"
+       \/ /\ OwnBallotLedBefore /\ doubt[f] /= "clean"
+          /\ ballot[f] = {f} /\ <<promised[f], f>> \notin opened
+
 \* Whether `b` fences as a leader the control plane named at its generation,
 \* on a set written at it, with no change pending: the flip's leader
 \* (`CpFlipNamed`), and a promotion that keeps the set, which the flip
@@ -2480,6 +2519,7 @@ AnswerFence(b, f) ==
             \/ NamedFenceSkipsBallot /\ FlipFence(b) /\ promised[f] <= bgen[b]
        ELSE promised[f] < bgen[b]
     /\ ~ShortCopyRefuses(b, f)
+    /\ ~Unvouched(f)
     \* Stickiness: a replica that still hears its leader refuses a candidate.
     /\ PreVote /\ Candidate(b) => ~Hears(f)
     /\ WipeWaits(f) => ~Candidate(b) /\ WipedTakesNamed
@@ -2579,6 +2619,7 @@ OpenForWrites(b) ==
     /\ LeaderMajority(b, answered[b] \cup {b})
     /\ JointFence => MajorityOfOld(answered[b] \cup {b}, b)
     /\ OpenChecksOwnBallot /\ ~Candidate(b) => promised[b] = bgen[b] /\ ballot[b] \subseteq {b}
+    /\ ~Unvouched(b)
     \* A re-admission counts the old set's majority without the wiped replica.
     /\ \A r \in readmit : r[2] = bgen[b] /\ r[3] = b /\ ~ReadmitCountsWiped =>
            MajorityOfOld((answered[b] \cup {b}) \ {r[1]}, b)
@@ -2640,7 +2681,8 @@ Followed(f) == IF ballot[f] \subseteq {f} THEN {leader} ELSE ballot[f]
 \* still take its generation.
 FenceStuck(b) ==
     LET can == { m \in FenceMembers(b) \ halted :
-                   IF m = b THEN promised[m] <= bgen[b] ELSE MayPromise(m, b, bgen[b]) }
+                   IF m = b THEN promised[m] <= bgen[b]
+                   ELSE MayPromise(m, b, bgen[b]) /\ ~Unvouched(m) }
     IN \/ ~LeaderMajority(b, can)
        \/ JointFence /\ ~MajorityOfOld(can, b)
 
@@ -2713,6 +2755,7 @@ ElectStep(f) ==
     /\ SetCheck => StandsOnPendingSet \/ oldSet[f] \subseteq {mine[f]}
     /\ StandsAboveKeptSet => setGen[f] <= promised[f] + 1
     /\ ~WipeWaits(f) /\ WipeFloor(f, f, promised[f] + 1) /\ ~NonVoter(f)
+    /\ ~Unvouched(f)
     /\ PreVoteWon(f)
     /\ Backoff /\ StandsBeside(f) => splits < Splits
     /\ splits' = IF Backoff /\ StandsBeside(f) THEN splits + 1 ELSE splits
@@ -2739,13 +2782,14 @@ Elect(f) == ElectBound(f) /\ ElectStep(f)
 \* Under `Backoff`, a candidate whose round failed gives it up and waits: the
 \* answers it has and those still possible make no majority. A member can no
 \* longer answer once it is down, promised past the candidate or hears a
-\* leader. It keeps what it promised.
+\* leader, or refuses from a copy its unclean start doubts (`Unvouched`). It
+\* keeps what it promised.
 GiveUpRound(b) ==
     /\ Backoff
     /\ fencing[b] /\ bgen[b] > 0 /\ Candidate(b)
     /\ LET can == answered[b] \cup {b} \cup
                   { m \in FenceMembers(b) \ halted :
-                      MayPromise(m, b, bgen[b]) /\ ~(PreVote /\ Hears(m)) }
+                      MayPromise(m, b, bgen[b]) /\ ~(PreVote /\ Hears(m)) /\ ~Unvouched(m) }
        IN \/ ~LeaderMajority(b, can)
           \/ JointFence /\ ~MajorityOfOld(can, b)
     /\ bgen' = [bgen EXCEPT ![b] = 0]
@@ -2887,7 +2931,7 @@ Restart(b) ==
     /\ UNCHANGED << draining, successor, moves, ver, cpView, staged, out, joining, leaving,
                     joinedAt >>
     /\ UNCHANGED << sid, seen, seenInc, wipes, checked, registered, restarting, expect, inherited,
-                    leftDirty, gaveUp, fenceIds >>
+                    leftDirty, gaveUp, doubt, fenceIds >>
 
 -----------------------------------------------------------------------------
 (* The counter log of a cache shard, under `Counters`. A counter update is   *)
@@ -4000,7 +4044,7 @@ Wipe(f) ==
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, fenceVars, seen, seenInc, checked, expect, inherited, leftDirty,
-                    gaveUp, fenceIds, wipeVars >>
+                    gaveUp, doubt, fenceIds, wipeVars >>
 
 \* A follower crashes under `FsyncMode::Periodic` or `None` and restarts
 \* without a suffix it had not synced, which it may already have answered
@@ -4064,6 +4108,76 @@ Crash(f) ==
                     hbOut, hbAt, halted, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, promised, answered, ballot, opened, setVars, ackGen, waits,
                     seen, seenInc, expect, inherited, fenceIds, wipeVars >>
+    /\ UNCHANGED << handoffVars, promised, answered, ballot, opened, setVars, ackGen,
+                    seen, seenInc, expect, inherited, fenceIds, wipeVars, doubt >>
+
+\* Under `UncleanCrashes`, `f` restarts after a crash under a new storage
+\* identity while it follows. A copy whose kept set names its old identity
+\* answers no election fence (`names_other_in_view` in replica/election.rs,
+\* `NamesOther`), and with the control plane down nothing names the new one,
+\* so this is the start that votes again: the control plane re-admitted the
+\* copy under its new identity and a leader caught it up, which vouches for
+\* it, before the control plane stopped. Its log is the one it had, and its
+\* ballot names the leader that shipped. The process still knows it started
+\* uncleanly. Under `UncleanLeads` it may instead be a broker whose ballot
+\* names itself, which leads nothing, answers nothing and stands for nothing
+\* until a leader ships to it, so no re-admission is needed first.
+UncleanRestart(f) ==
+    /\ Elections > 0
+    /\ Cardinality({ m \in Brokers : doubt[m] /= "clean" }) < UncleanCrashes
+    /\ doubt[f] = "clean" /\ f \notin halted
+    /\ IF ballot[f] = {f}
+       THEN \* Led or stood: the ballot on disk names it, which its new
+            \* process reads as the copy it led.
+            /\ UncleanLeads
+            /\ \E k \in 0..Len(log[f]) :
+                  /\ log' = [log EXCEPT ![f] = SubSeq(@, 1, k)]
+                  /\ hwm' = [hwm EXCEPT ![f] = IF @ > k THEN k ELSE @]
+            /\ bgen' = [bgen EXCEPT ![f] = 0]
+            /\ fencing' = [fencing EXCEPT ![f] = FALSE]
+            /\ queued' = [queued EXCEPT ![f] = 0]
+            /\ pending' = [pending EXCEPT ![f] = 0]
+            /\ doubt' = [doubt EXCEPT ![f] = IF UncleanForgetsLed THEN "vouched" ELSE "led"]
+       ELSE /\ bgen[f] = 0
+            /\ doubt' = [doubt EXCEPT ![f] = "vouched"]
+            /\ UNCHANGED << log, hwm, bgen, fencing, queued, pending >>
+    /\ sid' = [sid EXCEPT ![f] = @ + 1]
+    /\ registered' = [registered EXCEPT ![f] = sid[f] + 2]
+    /\ inc' = [inc EXCEPT ![f] = @ + 1]
+    /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bexpiry,
+                    hbOut, hbAt, halted, acked, writes, staleCommit >>
+    /\ UNCHANGED << handoffVars, fenceVars, seen, seenInc, wipes, checked, restarting,
+                    expect, inherited, leftDirty, gaveUp, fenceIds >>
+
+\* Under `UncleanCrashes`, a candidate whose fence won a majority on a copy
+\* that may be short does not open, and gives the copy up (`may_lead`).
+RefuseOpen(b) ==
+    /\ fencing[b] /\ Unvouched(b)
+    /\ LeaderMajority(b, answered[b] \cup {b})
+    /\ JointFence => MajorityOfOld(answered[b] \cup {b}, b)
+    /\ bgen' = [bgen EXCEPT ![b] = 0]
+    /\ fencing' = [fencing EXCEPT ![b] = FALSE]
+    /\ queued' = [queued EXCEPT ![b] = 0]
+    /\ pending' = [pending EXCEPT ![b] = 0]
+    /\ doubt' = [doubt EXCEPT ![b] = "led"]
+    /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bexpiry, hbOut, hbAt,
+                    log, hwm, halted, acked, writes, staleCommit, promised, answered,
+                    confirmed, ballot, opened, setVars, ackGen, idVarsButDoubt >>
+    /\ UNCHANGED handoffVars
+
+\* A batch stored from a leader vouches for the copy (`UncleanStart::vouch`).
+\* Under `VouchOnGeneration` only one that leaves the copy holding a record
+\* of that leader's generation: the leader writes its start record after
+\* every record it holds, so the copy then holds everything acknowledged
+\* before the crash. Without it, a batch that brings back only part of a
+\* lost suffix vouches for a copy still short of it.
+Vouch(b, f) ==
+    doubt' = IF /\ doubt[f] = "led"
+                /\ VouchOnGeneration => \E i \in 1..Len(log'[f]) : log'[f][i].g = bgen[b]
+             THEN [doubt EXCEPT ![f] = "vouched"]
+             ELSE doubt
+ShipStep(b, f) ==
+    Ship(b, f) /\ Vouch(b, f) /\ UNCHANGED << counterVars, heard, idVarsButDoubt, named, refusalVars, wipeVars >>
 
 \* `f`, back from a process crash that kept its identity, stops cleanly and
 \* starts again in the same boot. The stop syncs what this run wrote and
@@ -4084,7 +4198,7 @@ CleanStop(f) ==
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, fenceVars, sid, seen, seenInc, wipes, checked, registered,
-                    restarting, expect, inherited, gaveUp, fenceIds, wipeVars >>
+                    restarting, expect, inherited, gaveUp, doubt, fenceIds, wipeVars >>
 
 \* Under `StripIds`, the wiped broker registers again without an identity;
 \* otherwise registering with one is the wipe's own step. Nothing orders the
@@ -4099,7 +4213,7 @@ Register(f) ==
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, fenceVars >>
-    /\ UNCHANGED << sid, seen, seenInc, wipes, checked, expect, inherited, leftDirty, gaveUp,
+    /\ UNCHANGED << sid, seen, seenInc, wipes, checked, expect, inherited, leftDirty, gaveUp, doubt,
                     fenceIds, wipeVars >>
 
 \* `f` loses its data directory, and with it the generation and ballot it
@@ -4162,7 +4276,7 @@ Forget(f) ==
                     hbOut, hbAt, halted, acked, writes, staleCommit >>
     /\ UNCHANGED << placeVars, answered, confirmed, opened, installed, nextVars, ackGen, waits >>
     /\ UNCHANGED << sid, seen, seenInc, checked, registered, inc, restarting, expect, inherited,
-                    leftDirty, gaveUp, fenceIds >>
+                    leftDirty, gaveUp, doubt, fenceIds >>
     /\ OneNonVoter => NonVoterCredit'
 
 \* Under `WipedLearnsSet`, a wiped replica the guard holds back still learns
@@ -4359,6 +4473,8 @@ Probe(b, f) ==
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, promised, fencing, answered, ballot, opened, setVars, ackGen, waits >>
     /\ UNCHANGED << sid, wipes, registered, inc, restarting, expect, inherited, leftDirty, gaveUp,
+    /\ UNCHANGED << handoffVars, promised, fencing, answered, ballot, opened, setVars, ackGen >>
+    /\ UNCHANGED << sid, wipes, registered, inc, restarting, expect, inherited, leftDirty, gaveUp, doubt,
                     fenceIds, wipeVars >>
 
 \* `f` answers one of `b`'s requests over a connection from the copy `b`
@@ -4376,7 +4492,7 @@ Answer(b, f) ==
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, fenceVars, sid, seen, seenInc, wipes, registered, inc, restarting,
-                    expect, inherited, leftDirty, gaveUp, fenceIds, wipeVars >>
+                    expect, inherited, leftDirty, gaveUp, doubt, fenceIds, wipeVars >>
 
 \* A report ends `b`'s pass: what it heard before counts toward no later
 \* mark.
@@ -4415,7 +4531,7 @@ Steps ==
         \/ AckQuorum(b) /\ UNCHANGED quietVars
         \/ Report(b) /\ EndPass(b)
            /\ UNCHANGED << counterVars, heard, sid, seen, seenInc, wipes, registered, inc, restarting,
-                           expect, inherited, leftDirty, gaveUp, fenceIds, wipeVars, named, refusalVars >>
+                           expect, inherited, leftDirty, gaveUp, doubt, fenceIds, wipeVars, named, refusalVars >>
         \/ ObserveFence(b) /\ UNCHANGED quietVars
         \/ Elect(b) /\ UNCHANGED << clog, chwm, cacked, heard, idVars, named, refusalVars, wipeVars >>
         \/ GiveUpRound(b) /\ UNCHANGED quietVars
@@ -4429,7 +4545,7 @@ Steps ==
         \/ FinishChange(b) /\ UNCHANGED quietVars
         \/ ForgetSet(b) /\ UNCHANGED quietVars
         \/ \E f \in Brokers :
-            \/ Ship(b, f) /\ UNCHANGED quietVars
+            \/ ShipStep(b, f)
             \/ LearnHwm(b, f) /\ UNCHANGED quietVars
             \/ AnswerFence(b, f) /\ UNCHANGED quietVars
             \/ RefuseStaleSet(b, f) /\ UNCHANGED quietVars
@@ -4452,13 +4568,15 @@ Steps ==
         \/ Crash(b) /\ refusedAt' = [refusedAt EXCEPT ![b] = 0]
            /\ UNCHANGED << counterVars, named, cpRefused >>
         \/ CleanStop(b) /\ UNCHANGED << counterVars, heard, named, refusalVars >>
+        \/ UncleanRestart(b) /\ UNCHANGED << counterVars, heard, named, refusalVars, wipeVars >>
+        \/ RefuseOpen(b) /\ UNCHANGED << counterVars, heard, named, refusalVars, wipeVars >>
         \/ Register(b) /\ UNCHANGED << counterVars, heard, named, refusalVars >>
         \/ OpenForWrites(b) /\ UNCHANGED loudVars
         \/ CpUp /\ Decide(Now, b, cpView) /\ UNCHANGED << heard, decideIdVars, named, refusalVars >>
         \/ /\ CpUp /\ WriteDropsLearners
            /\ Decide(Now, b, cpView)
            /\ cpLearner' = {}
-           /\ UNCHANGED << heard, sid, wipes, checked, registered, inc, restarting, leftDirty, gaveUp,
+           /\ UNCHANGED << heard, sid, wipes, checked, registered, inc, restarting, leftDirty, gaveUp, doubt,
                           wipedAt, readmit, learner, marked, named, refusalVars >>
         \/ /\ CpUp
            /\ \E p \in Planners : \E v \in cpView[p] : Decide(v, b, [cpView EXCEPT ![p] = {}])
@@ -4497,10 +4615,11 @@ Fairness ==
         /\ WF_vars(Elect(b) /\ UNCHANGED << quietVars, cpGone >>)
         /\ WF_vars(GiveUpRound(b) /\ UNCHANGED << quietVars, cpGone >>)
         /\ WF_vars(OpenForWrites(b) /\ UNCHANGED << loudVars, cpGone >>)
+        /\ WF_vars(RefuseOpen(b) /\ UNCHANGED << counterVars, heard, named, refusalVars, wipeVars, cpGone >>)
     /\ \A b, f \in Brokers :
         /\ WF_vars(AnswerFence(b, f) /\ UNCHANGED << quietVars, cpGone >>)
         /\ WF_vars(RefuseStaleSet(b, f) /\ UNCHANGED << quietVars, cpGone >>)
-        /\ WF_vars(Ship(b, f) /\ UNCHANGED << quietVars, cpGone >>)
+        /\ WF_vars(ShipStep(b, f) /\ UNCHANGED cpGone)
 
 LiveSpec == Spec /\ Fairness
 
@@ -4927,6 +5046,7 @@ TypeOK ==
     /\ expect \in [Brokers -> [Brokers -> Nat]]
     /\ inherited \in [Brokers -> SUBSET Brokers]
     /\ leftDirty \in [Brokers -> Nat]
+    /\ doubt \in [Brokers -> {"clean", "vouched", "led"}]
     /\ gaveUp \in [Brokers -> Nat] /\ fenceIds \in [Brokers -> SUBSET Brokers] /\ named \subseteq Brokers
     /\ cpRefused \subseteq (Nat \X Brokers) /\ refusedAt \in [Brokers -> Nat]
     /\ wipedAt \in [Brokers -> Nat] /\ learner \in [Brokers -> BOOLEAN] /\ cpLearner \subseteq Brokers
@@ -4934,4 +5054,3 @@ TypeOK ==
     /\ \A r \in readmit : r[1] \in Brokers /\ r[2] \in Nat /\ r[3] \in Brokers
     /\ wipes \in 0..(IF LosePromises THEN Forgets ELSE Wipes)
 
-=============================================================================
