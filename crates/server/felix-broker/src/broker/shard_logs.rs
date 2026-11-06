@@ -96,6 +96,20 @@ impl Broker {
         Arc::clone(&self.catalog_wanted)
     }
 
+    /// A count that moves after every change to a registered stream's or
+    /// cache's metadata, so a reader can tell nothing changed without reading
+    /// the registry. Read it before the metadata: a change after the read
+    /// then shows on the next one.
+    pub fn catalog_changes(&self) -> u64 {
+        self.catalog_changes
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub(super) fn catalog_changed(&self) {
+        self.catalog_changes
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+    }
+
     /// Whether a stream's logs open only once it is registered.
     pub fn registration_required(&self) -> bool {
         self.registration_required

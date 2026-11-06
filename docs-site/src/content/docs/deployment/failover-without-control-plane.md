@@ -221,7 +221,7 @@ You need:
   pick it up. It works only with `FELIX_INTERNAL_FENCE` left on (the default),
   and with `FELIX_LEADER_SUSPECT_AFTER_MS` not `0`;
 - every control-plane member on 0.7.0. Under Raft the control plane checks
-  this: `joint_fence` needs metadata level 23 on every member, and
+  this: `joint_fence` needs metadata level 25 on every member, and
   `replica_election` level 26. Under Postgres it cannot see other instances'
   versions, so finish the control-plane upgrade before you start.
 

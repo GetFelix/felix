@@ -437,6 +437,9 @@ impl<L: ControlPlaneLink + Clone> OpenedBroker<L> {
             registered,
             storage_id,
             durable_storage.as_ref().map(DurableStorage::root),
+            durable_storage.as_ref().map(|storage| {
+                crate::cluster::controlplane_view::ViewFile::new(storage.root().to_path_buf())
+            }),
             None,
             &shutdown,
         );

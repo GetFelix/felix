@@ -450,6 +450,7 @@ impl Broker {
     /// Its logs and data are the caller's to close or delete.
     pub(super) async fn drop_cache(&self, key: &CacheKey) -> Option<CacheMetadata> {
         let metadata = self.caches.write().await.remove(key)?;
+        self.catalog_changed();
         if let Some(hub) = &self.cache_watches {
             for (tenant_id, namespace, cache, shard) in self.cache.open_shards() {
                 if tenant_id == key.tenant_id && namespace == key.namespace && cache == key.cache {

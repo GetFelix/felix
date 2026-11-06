@@ -162,7 +162,7 @@ which is the authority for what each one runs:
 [deny.toml](https://github.com/GetFelix/felix/blob/main/deny.toml), then checks
 the upstream versions of the crates under `vendor/` for advisories.
 
-Other workflows:
+Other workflows, among others:
 
 - `coverage.yml`: `task coverage`, the coverage gate, and on pull requests the workspace tests.
 - `pages.yml`: builds and deploys this docs site.

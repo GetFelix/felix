@@ -141,14 +141,10 @@ pub(super) fn restore<'a>(
         },
         ShardAssignment {
             replicas,
-            generation: 0,
             joining: Some(to.node_id.clone()),
             move_started_at_millis: caught_up.as_of_millis(),
             move_reason: Some(MoveReason::Restore),
-            fence_storage_ids: Default::default(),
-            member_storage_ids: Default::default(),
-            learners: Default::default(),
-            ..existing.clone()
+            ..existing.renamed()
         },
     ))
 }

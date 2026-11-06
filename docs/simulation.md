@@ -20,7 +20,7 @@ minutes of real time, not seconds (see [Running it](#running-it)).
 Run a batch of seeds:
 
 ```bash
-cargo test -p felix-sim --test seeds seeds
+cargo test -p felix-sim --test seeds -- --ignored --exact seeds
 ```
 
 `FELIX_SIM_SEEDS` sets how many seeds (default 4) and `FELIX_SIM_SEED_START`
@@ -95,7 +95,7 @@ backoffs read `tokio::time::Instant` instead of `std::time::Instant`.
   timing-sensitive failure may need a few replays to show again.
 
 Replay is not exact yet. Known gaps: storage reads the host clock in a few
-places and does real file I/O, and the control plane draws a few ids from the
+places, and the control plane draws a few ids from the
 OS. There is at least one more gap nobody has found: seed 59 still diverges by
 about 2 ms around 10.5 s of virtual time, and the cause is unknown. A replay
 can differ from the original run, so a failure may need a few replays to show
@@ -116,7 +116,7 @@ cargo test -p felix-cluster --lib history::
 
 1. **Start.** The control plane gets a tenant, a durable stream with 50 to 200
    shards and a cache, all replicated three ways with quorum acknowledgement.
-   Each broker opens a real durable log in its own temporary directory, waits
+   Each broker opens a real durable log in its own in-memory data directory, waits
    for the stream catalog (the `seeded` gate a real broker has), registers, and
    starts its shard tasks. Once every broker has registered, the run finalizes
    replica election, so brokers elect a new leader themselves when one is lost.
@@ -239,7 +239,8 @@ it with `#[ignore = "#<issue>"]` in `tests/seeds.rs`.
 These seeds fail today. Each is pinned in `tests/seeds.rs` as an ignored test
 named after its issue, which passes when the bug is fixed; run them with
 `cargo test -p felix-sim --test seeds -- --ignored`. The default batch
-is seeds 1 to 4, so it fails until these are fixed.
+is seeds 1 to 4. It is ignored in the workspace tests and runs in its own CI
+job on every pull request, which does not block merging until these are fixed.
 
 | Seed | What it finds | Issue |
 | --- | --- | --- |
