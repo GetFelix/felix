@@ -2362,3 +2362,118 @@ async fn a_ship_refusal_below_the_own_copys_other_ballot_reports_the_own() {
     );
     assert_eq!(refused.last(), Some(&RefusedGeneration::above(4, 9)));
 }
+
+/// What a broker the control plane names leader at 4 reports after its copy
+/// took `broker-b`'s fence at 5 and the elected route laid over the control
+/// plane's released the shard here. `named` is the leader the control plane
+/// names; `started` writes `broker-b`'s start record at 5 into this copy.
+async fn released_refusal(
+    named: &str,
+    started: bool,
+    within: Duration,
+) -> Option<ShardReplicaStatus> {
+    let (broker, _dir) = leader_with(3).await;
+    let log = broker
+        .shard_log_for(
+            felix_broker::LogKind::Stream,
+            TENANT,
+            NAMESPACE,
+            STREAM,
+            0,
+            None,
+            None,
+        )
+        .await
+        .expect("log");
+    log.accept_generation(5, Some("broker-b"))
+        .await
+        .expect("ballot");
+    if started {
+        let start = log.append_generation_start(5).await.expect("start record");
+        log.record_generation(5, start).expect("generation");
+    }
+    let published = published();
+    let elections = Arc::new(crate::election::Elections::new(
+        LOCAL,
+        Arc::new(tokio::sync::Notify::new()),
+    ));
+    elections.record(
+        key(),
+        crate::election::Elected {
+            leader: "broker-b".to_string(),
+            generation: 5,
+            set: felix_storage::disk_log::Membership {
+                generation: 3,
+                members: Vec::new(),
+            },
+            leaving: None,
+            incarnation: 0,
+        },
+    );
+    elections.note_recorded(
+        key(),
+        crate::election::Recorded {
+            generation: 4,
+            leader: named.to_string(),
+            ..Default::default()
+        },
+    );
+    published.marks.set_elections(elections);
+    let (control_plane, received) = recording_control_plane().await;
+    let shutdown = CancellationToken::new();
+    let driver = spawn(
+        Arc::new(AcceptingFollower::default()),
+        broker,
+        router("broker-b", &[LOCAL, "broker-c"], 5),
+        Arc::new(Unfenced),
+        Arc::new(crate::promotion::NoGate),
+        published,
+        Some(control_plane.reporter(shutdown.clone())),
+        Duration::from_millis(50),
+        Arc::default(),
+        RebuildPolicy::default(),
+        MoveThrottle::unlimited(),
+        shutdown.clone(),
+    );
+    let refusal = tokio::time::timeout(within, async {
+        loop {
+            let found = received
+                .lock()
+                .expect("lock")
+                .iter()
+                .find(|report| report.refused.is_some())
+                .cloned();
+            if let Some(report) = found {
+                return report;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .ok();
+    shutdown.cancel();
+    driver.stop().await;
+    refusal
+}
+
+/// **A leader that released its shard to a candidate whose fence it took
+/// reports its generation refused, with that ballot, once the candidate's
+/// generation has not started for [`BALLOT_ELSEWHERE_FOR`].** The elected
+/// route laid over the control plane's no longer names this broker, so if
+/// the candidate withdraws nothing else reports the shard, and the control
+/// plane waits out its stuck bound before renaming it. Not before the wait,
+/// not once the candidate's start record reached this copy, and not when the
+/// control plane names another leader.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_leader_released_to_a_candidate_that_never_opened_reports_the_refusal() {
+    let early = BALLOT_ELSEWHERE_FOR - Duration::from_millis(500);
+    assert_eq!(released_refusal(LOCAL, false, early).await, None);
+    let report = released_refusal(LOCAL, false, BALLOT_ELSEWHERE_FOR * 2)
+        .await
+        .expect("no report of the generation a released leader promised away");
+    assert_eq!(report.generation, 4);
+    assert_eq!(report.refused, Some(RefusedGeneration::above(4, 5)));
+    let late = BALLOT_ELSEWHERE_FOR + Duration::from_secs(2);
+    assert_eq!(released_refusal(LOCAL, true, late).await, None);
+    assert_eq!(released_refusal("broker-c", false, late).await, None);
+}

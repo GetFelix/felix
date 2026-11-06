@@ -5183,6 +5183,17 @@ Five rules keep an election from getting stuck:
   the control plane was down for longer than those 10 s, the rename's fence
   deposes it like any newer generation would. That costs a leader change
   but loses no acknowledged write (issue #1951).
+  The leader that answered usually does not stay open to report this. Its
+  copy records the candidate's elected route, which the broker lays over the
+  control plane's, so the broker releases the shard and its replication
+  driver stops leading it. The driver still checks such a shard on every
+  tick: the control plane names this broker at a generation below the
+  ballot, this copy's ballot names the candidate, and the candidate's
+  generation has not started in this copy. Once that has held for the same
+  10 s, the broker reports the control plane's generation refused with the
+  ballot, and the control plane names it past the ballot. The broker does
+  not serve again until then; it only reports. Without the report the
+  control plane waited for its stuck bound, 70 s.
   That rule is for an open leader. A leader still fencing can never open
   if its own copy already holds a newer ballot, whoever it names: the open
   takes the generation's ballot on its own copy, which refuses it. So its

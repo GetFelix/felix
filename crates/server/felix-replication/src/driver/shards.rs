@@ -426,6 +426,11 @@ pub(super) struct Shards<'a, R> {
     /// Of those, the ones this broker does not lead yet (withheld, or an
     /// open refused). Each append wake checks them again.
     not_led: HashSet<ShardKey>,
+    /// Shards released to a candidate whose fence this copy took, while the
+    /// control plane still names this broker below that ballot: the ballot,
+    /// the control plane's generation, and since when. See
+    /// [`Self::note_released`].
+    released: HashMap<ShardKey, (u64, u64, tokio::time::Instant)>,
     metrics: DriverMetrics,
 }
 
@@ -459,6 +464,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             led_slots: HashMap::new(),
             moving: Vec::new(),
             not_led: HashSet::new(),
+            released: HashMap::new(),
             metrics: DriverMetrics::new(),
         }
     }
@@ -504,6 +510,97 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                         && route.leader.node_id == self.cx.router.local_node_id()
                 })
         })
+    }
+
+    /// Note the shards this broker released to a candidate whose fence its
+    /// own copy took, while the control plane still names this broker at the
+    /// generation below that ballot.
+    ///
+    /// The release came from the elected route laid over the control plane's
+    /// (`crate::election`), so if the candidate withdraws, this broker no
+    /// longer leads the shard and reports nothing for it, and the control
+    /// plane waits out its stuck bound before naming anyone (#1951's shape,
+    /// after the release). The evidence is this copy's: its ballot names that
+    /// candidate, and the candidate's generation never started here. Once
+    /// that holds for [`super::BALLOT_ELSEWHERE_FOR`], longer than a standing
+    /// has to open, the generation is reported refused with the ballot, so
+    /// placement names this broker above it. Nothing here serves again: the
+    /// report only lets the control plane move on.
+    pub(super) async fn note_released(&mut self) {
+        let Some(elections) = self.cx.marks.elections() else {
+            self.released.clear();
+            return;
+        };
+        let local = self.cx.router.local_node_id();
+        let table = self.cx.router.snapshot();
+        let mut found = Vec::new();
+        for (key, route) in table.iter() {
+            if route.leader.node_id == local {
+                continue;
+            }
+            let Some(elected) = elections.get(key) else {
+                continue;
+            };
+            let Some(named) = elections.recorded(key) else {
+                continue;
+            };
+            if elected.leader == local
+                || *elected.leader != *route.leader.node_id
+                || elected.generation != route.generation
+                || named.leader != local
+                || named.generation >= elected.generation
+            {
+                continue;
+            }
+            found.push((
+                key.clone(),
+                elected.leader,
+                elected.generation,
+                named.generation,
+            ));
+        }
+        let keys: Vec<ShardKey> = found.iter().map(|(key, ..)| key.clone()).collect();
+        let open_caches = super::open_caches(self.cx.broker, &keys);
+        let now = tokio::time::Instant::now();
+        let mut released = HashMap::new();
+        for (key, candidate, ballot, generation) in found {
+            let Some(log) = super::opened_log(self.cx.broker, &key, &open_caches).await else {
+                continue;
+            };
+            let promised = log.accepted_generation() == ballot
+                && log
+                    .accepted_leader()
+                    .is_some_and(|leader| *leader == *candidate);
+            let started = log
+                .generations()
+                .iter()
+                .any(|epoch| epoch.generation >= ballot);
+            if !promised || started {
+                continue;
+            }
+            let since = match self.released.get(&key) {
+                Some(&(at, named, since)) if at == ballot && named == generation => since,
+                _ => now,
+            };
+            released.insert(key, (ballot, generation, since));
+        }
+        self.released = released;
+    }
+
+    /// The refusals [`Self::note_released`] found due.
+    fn released_refusals(&self) -> Vec<(ShardKey, RefusedGeneration)> {
+        let now = tokio::time::Instant::now();
+        let mut due: Vec<_> = self
+            .released
+            .iter()
+            .filter(|(_, (_, _, since))| now.duration_since(*since) >= super::BALLOT_ELSEWHERE_FOR)
+            .map(|(key, &(ballot, generation, _))| {
+                (key.clone(), RefusedGeneration::above(generation, ballot))
+            })
+            .collect();
+        // Reported in key order, so a simulated run matches its replay.
+        due.sort_by(|a, b| a.0.cmp(&b.0));
+        due
     }
 
     /// Give the shards led here that want one a pass, and forget the ones no
@@ -627,11 +724,12 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             })
             .map(|(key, route)| (key.clone(), route.clone()))
             .collect();
-        let refused: Vec<(ShardKey, RefusedGeneration)> = entries
+        let mut refused: Vec<(ShardKey, RefusedGeneration)> = entries
             .iter()
             .copied()
             .filter_map(|(key, route)| Some((key.clone(), self.refusal(key, route)?)))
             .collect();
+        refused.extend(self.released_refusals());
         self.probed.retain(|key, _| {
             given_up.iter().any(|(given, _)| given == key)
                 || refused.iter().any(|(refused, _)| refused == key)

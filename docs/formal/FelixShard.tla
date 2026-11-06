@@ -897,8 +897,11 @@ WithdrawsStuck == FALSE
 \* plane's leader that is not open at its generation and whose own log holds
 \* a newer one it does not stand at (it answered a candidate's fence, or
 \* stood and withdrew, after opening there) reports the generation refused.
-\* Not in the code yet (#1951): such a leader reports nothing, and only a new
-\* standing moves the shard on. `RenamePastBallot`: a refusal carries the
+\* Off, such a leader reports nothing, and only a new standing moves the
+\* shard on. The code reports from an open leader (#1951) and from one that
+\* released the shard to the candidate's elected route (`note_released` in
+\* driver/shards.rs); answering the fence sets `bgen` to 0 here, which is that
+\* release. `RenamePastBallot`: a refusal carries the
 \* ballot the leader lost to and placement renames above it, not at the next
 \* generation, which may be that ballot's (#1951). The leader then also no
 \* longer reports a generation its own copy promised away (#1872's wait).
