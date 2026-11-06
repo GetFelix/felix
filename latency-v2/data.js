@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793940360833,
+  "lastUpdate": 1793942961250,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -59466,6 +59466,72 @@ window.BENCHMARK_DATA = {
             "range": "227.55",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1087.00\nmean: 993.40\nstdev: 227.55\ncv: 22.91%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a72715b53f4a19a0cbec9529a13321e709a1113a",
+          "message": "felixctl is the one operator CLI: fold felix-controlplane admin into it (#2008)\n\n* felixctl is the one operator CLI: move felix-controlplane admin into it and run the server tools through it\n\nshard moves, placement plan|replication, features ls|finalize and backup-point join felixctl; felix-controlplane admin is deleted. data inspect, data restore-point and controlplane migrate run felix-broker and felix-controlplane and pass their exit status through.\n\n* felix-controlplane refuses the removed admin subcommand; clarify abandon prompt wording\n\n* felixctl hands every argument after data/controlplane subcommands to the server binary\n\n* test(cluster): build felixctl before the cluster suites, the backup tests run it\n\nSpec-Unaffected: build step only.\n\n* test(controlplane): the removed admin subcommand exits instead of starting a server\n\nSpec-Unaffected: test only.",
+          "timestamp": "2026-11-06T05:16:44Z",
+          "tree_id": "2f1dfe399d64393dfbfe54b4c2ec1ef33b6a7286",
+          "url": "https://github.com/GetFelix/felix/commit/a72715b53f4a19a0cbec9529a13321e709a1113a"
+        },
+        "date": 1793942953687,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 152,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 152.00\nmean: 151.60\nstdev: 1.14\ncv: 0.75%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 209,
+            "range": "5.81",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 209.00\nmean: 209.60\nstdev: 5.81\ncv: 2.77%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 264,
+            "range": "160.33",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 264.00\nmean: 332.40\nstdev: 160.33\ncv: 48.23%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 199,
+            "range": "6.61",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 199.00\nmean: 202.20\nstdev: 6.61\ncv: 3.27%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 400,
+            "range": "144.26",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 400.00\nmean: 464.00\nstdev: 144.26\ncv: 31.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 999,
+            "range": "600.77",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 999.00\nmean: 1116.40\nstdev: 600.77\ncv: 53.81%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
