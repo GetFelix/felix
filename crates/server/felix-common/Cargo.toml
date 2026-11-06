@@ -54,6 +54,9 @@ tls = ["dep:rustls", "dep:arc-swap", "dep:tokio", "dep:tracing"]
 # The test-only clock faults in `clock::fault`. Debug builds have them
 # regardless; this puts them in an optimised build for a fault-testing run.
 fault-injection = []
+# `clock::sim`, which lets a simulator drive the clocks, in an optimised build.
+# Debug builds have it regardless.
+sim = []
 # The config-file YAML rules in `yaml`, for the service binaries.
 yaml = ["dep:serde-saphyr"]
 

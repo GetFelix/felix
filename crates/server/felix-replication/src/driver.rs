@@ -795,6 +795,12 @@ async fn opened(
     let opened = gate.open(&watch_key(key), generation).await;
     if opened {
         metrics::record_promotion_opened(path);
+        tracing::info!(
+            stream = %key.stream,
+            shard = key.shard,
+            generation,
+            "the shard is open for writes",
+        );
     }
     opened
 }

@@ -439,3 +439,84 @@ async fn a_departed_node_is_fenced_for_as_long_as_a_silent_one_stays_live() {
         );
     }
 }
+
+/// Only a gap well past the interval is a stall. It runs from the end of the
+/// last sweep, so a sweep that is slow is not one.
+#[test]
+fn a_stall_is_a_gap_past_twice_the_interval() {
+    let interval = Duration::from_millis(500);
+    let mut stalls = StallWatch::new(interval);
+    let start = tokio::time::Instant::now();
+    assert_eq!(stalls.tick(start), None);
+    stalls.finished(start);
+    assert_eq!(stalls.tick(start + interval * 2), None);
+    // A sweep that took ten intervals, then the next tick on time.
+    let slow_end = start + interval * 12;
+    stalls.finished(slow_end);
+    assert_eq!(stalls.tick(slow_end + interval), None);
+    let resumed = slow_end + Duration::from_secs(60);
+    assert_eq!(
+        stalls.tick(resumed),
+        Some(Duration::from_secs(60) - interval)
+    );
+}
+
+/// **A control plane that was paused does not mark live brokers down when it
+/// resumes.** The broker's heartbeats from the pause are still queued, so the
+/// first sweep after it sees a stamp as old as the pause. The stall is not
+/// counted as silence; a broker that stays silent after it is expired as usual.
+#[tokio::test(start_paused = true)]
+async fn a_stalled_sweep_does_not_expire_a_broker_whose_heartbeats_are_queued() {
+    let store = Arc::new(InMemoryStore::new(StoreConfig {
+        changes_limit: 100,
+        change_retention_max_rows: Some(1_000),
+    }));
+    // The store's clock is the wall clock, which a paused test does not move,
+    // so the stamps start a minute back, as they would after a minute's pause.
+    let stamp = store.now_millis().await.expect("clock") - 60_000;
+    let mut broker = node("broker-a", 7001);
+    broker.status.last_heartbeat_at_millis = stamp;
+    store.register_node(broker).await.expect("register");
+    let lifecycle = || async {
+        store
+            .get_node("broker-a")
+            .await
+            .expect("get")
+            .status
+            .lifecycle
+    };
+
+    let shutdown = CancellationToken::new();
+    let sweep = spawn_expiry_sweep(
+        Arc::clone(&store) as Arc<dyn ControlPlaneStore + Send + Sync>,
+        liveness(),
+        crate::raft::LeadershipGate::Always,
+        shutdown.clone(),
+    );
+    // Heartbeating through the startup grace and past it.
+    for beat in 1..=10 {
+        store
+            .record_node_heartbeat("broker-a", 0, stamp + beat)
+            .await
+            .expect("beat");
+        tokio::time::sleep(Duration::from_millis(INTERVAL_MS)).await;
+    }
+    assert_eq!(lifecycle().await, NodeLifecycle::Live);
+
+    // The whole process stops for a minute: no sweep runs and no heartbeat is
+    // read. Then its first sweep.
+    tokio::time::advance(Duration::from_secs(60)).await;
+    tokio::time::sleep(Duration::from_millis(1)).await;
+    assert_eq!(
+        lifecycle().await,
+        NodeLifecycle::Live,
+        "a broker was marked down for the control plane's own stall"
+    );
+
+    // Silent for a whole window after it: down.
+    tokio::time::sleep(Duration::from_millis(DOWN_AFTER_MS + 1_000)).await;
+    assert_eq!(lifecycle().await, NodeLifecycle::Down);
+
+    shutdown.cancel();
+    sweep.await.expect("sweep");
+}

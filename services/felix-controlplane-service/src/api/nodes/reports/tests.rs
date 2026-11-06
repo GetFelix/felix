@@ -1043,3 +1043,121 @@ async fn an_election_on_another_set_is_adopted_on_it() {
         .expect("get");
     assert_named_on_x_z(&assignment, at + 1);
 }
+
+/// The shard named to broker-x on {x, y}, one generation past `named_y`.
+async fn named_x_beside_z() -> (
+    Arc<crate::store::memory::InMemoryStore>,
+    crate::auth::felix_token::TenantSigningKeys,
+    ShardAssignment,
+) {
+    let (store, keys, named_y) = named_y_beside_z().await;
+    let named_x = store
+        .put_shard_assignment(ShardAssignment {
+            leader: "broker-x".to_string(),
+            replicas: vec!["broker-y".to_string()],
+            ..named_y
+        })
+        .await
+        .expect("assign");
+    (store, keys, named_x)
+}
+
+/// **The control plane's own leader elected on another set is named on it.**
+/// broker-x, named on {x, y}, stood on a stale route and opened on {x, z}.
+/// Taking only the generation would keep x on {x, y}, and a failover could
+/// then promote y without what x acknowledged on {x, z} (#1929).
+#[tokio::test]
+async fn its_own_leader_elected_on_another_set_is_named_on_it() {
+    let (store, keys, named_x) = named_x_beside_z().await;
+    let at = named_x.generation + 2;
+    let state = app_state_ready(Arc::clone(&store) as _);
+    let _ = post_report(
+        state,
+        &keys,
+        serde_json::json!([elected_on_x_z(at, named_x.generation)]),
+    )
+    .await;
+    let assignment = store
+        .get_shard_assignment(&shard_zero())
+        .await
+        .expect("get");
+    assert_named_on_x_z(&assignment, at + 1);
+}
+
+/// **Below the own-leader-set level one report still moves the shard past
+/// the election.** Those members take only the generation of the control
+/// plane's own leader elected on another set, so the leader is named at the
+/// elected generation on the wrong set. The same report reissues it on the
+/// elected set (#1929), instead of leaving that to the next one.
+#[tokio::test]
+async fn below_the_own_leader_set_level_one_report_moves_on() {
+    let (store, keys, named_x) = named_x_beside_z().await;
+    store
+        .faults
+        .keep_own_leader
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let at = named_x.generation + 2;
+    let state = app_state_ready(Arc::clone(&store) as _);
+    let _ = post_report(
+        state,
+        &keys,
+        serde_json::json!([elected_on_x_z(at, named_x.generation)]),
+    )
+    .await;
+    let assignment = store
+        .get_shard_assignment(&shard_zero())
+        .await
+        .expect("get");
+    assert_named_on_x_z(&assignment, at + 1);
+}
+
+/// **The same leader on another set at the same generation is a collision.**
+/// The control plane named broker-x on {x, y} at the generation x was elected
+/// at on {x, z}. The record is not the set x opened on, so the shard moves on
+/// with the elected set, and the same report again moves nothing.
+#[tokio::test]
+async fn its_own_leader_elected_on_another_set_at_its_generation_moves_on() {
+    let (store, keys, named_x) = named_x_beside_z().await;
+    let at = named_x.generation;
+    let state = app_state_ready(Arc::clone(&store) as _);
+    let report = serde_json::json!([elected_on_x_z(at, at)]);
+    let _ = post_report(state.clone(), &keys, report.clone()).await;
+    let assignment = store
+        .get_shard_assignment(&shard_zero())
+        .await
+        .expect("get");
+    assert_named_on_x_z(&assignment, at + 1);
+
+    let _ = post_report(state, &keys, report).await;
+    assert_eq!(
+        store
+            .get_shard_assignment(&shard_zero())
+            .await
+            .expect("get"),
+        assignment
+    );
+}
+
+/// **The same leader on its recorded set is no collision.** A report at the
+/// generation that named it is judged as is.
+#[tokio::test]
+async fn its_own_leader_elected_on_its_set_is_left_alone() {
+    let (store, keys, named_x) = named_x_beside_z().await;
+    let at = named_x.generation;
+    let mut shard = shard_json(0, at, 10, &["broker-y"]);
+    shard["elected"] = serde_json::json!({
+        "leader": "broker-x",
+        "generation": at,
+        "replicas": ["broker-y"],
+        "set_generation": at,
+    });
+    let state = app_state_ready(Arc::clone(&store) as _);
+    let _ = post_report(state, &keys, serde_json::json!([shard])).await;
+    assert_eq!(
+        store
+            .get_shard_assignment(&shard_zero())
+            .await
+            .expect("get"),
+        named_x
+    );
+}

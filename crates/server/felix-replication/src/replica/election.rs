@@ -10,13 +10,12 @@
 //! never offered `ELECTION` behaves as it did. Under `joint_fence` a learner
 //! still refuses such a fence.
 
-use std::time::Instant;
-
 use felix_storage::disk_log::{Membership, ReplicaSet, SetCheck};
 use felix_wire::internal::{
     ErrorCode, Fence, FenceElection, InternalMessage, PreVote, PreVoteAnswer, PreVoteRefusal,
     ReplicaSetView,
 };
+use tokio::time::Instant;
 
 use super::{ReplicaHandler, refused};
 use crate::peer::metrics;
@@ -33,6 +32,7 @@ impl ReplicaHandler {
         log: &felix_broker::StreamLog,
         election: &FenceElection,
         generation: u64,
+        sender: Option<&str>,
     ) -> Option<InternalMessage> {
         // A set is stamped with a route generation no newer than the fence's
         // own. One ahead is a sender running ahead of itself; taking it would
@@ -78,7 +78,14 @@ impl ReplicaHandler {
         // A candidate replaces a leader only when the leader has gone quiet.
         // Refusing while it still ships keeps a replica that merely lost
         // touch with it from deposing a working leader.
-        if election.candidate && self.heard_leader_within(key) {
+        // Except from the broker holding this copy's newest ballot: the
+        // leader it hears, fencing itself one generation up, or a candidate
+        // it already voted for. Neither deposes anyone this copy follows.
+        let from_heard = sender.is_some_and(|sender| {
+            log.accepted_leader()
+                .is_some_and(|leader| *leader == *sender)
+        });
+        if election.candidate && !from_heard && self.heard_leader_within(key) {
             metrics::record_replicated(metrics::OUTCOME_REFUSED);
             return Some(refused(
                 correlation_id,
@@ -639,7 +646,18 @@ impl ReplicaHandler {
     /// check. Called only for fences and batches that carry a set, so a
     /// broker without `ELECTION` takes no lock here.
     pub(super) fn heard_leader(&self, key: &felix_router::ShardKey) {
-        self.heard.lock().insert(key.clone(), Instant::now());
+        let now = Instant::now();
+        let mut heard = self.heard.lock();
+        match heard.get_mut(key) {
+            Some(at) => *at = now,
+            None => {
+                heard.insert(key.clone(), now);
+            }
+        }
+        drop(heard);
+        if let Some(elections) = self.fleet.as_ref().and_then(|marks| marks.elections()) {
+            elections.heard_leader(key);
+        }
     }
 
     /// Whether this broker's route names it leader of `key`, its log has

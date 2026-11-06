@@ -56,6 +56,7 @@ pub(super) async fn adopt_elected_leader(
     expected_generation: u64,
     elected: &ElectedLeader,
     elected_set: bool,
+    own_leader_set: bool,
 ) -> StoreResult<AssignmentWrite> {
     let current = get_shard_assignment(store, key).await?;
     if current.generation != expected_generation {
@@ -65,7 +66,12 @@ pub(super) async fn adopt_elected_leader(
     }
     let adopted = if elected_set {
         let nodes = store.nodes.read().await;
-        current.adopting_elected_set(elected, &|node| nodes.records.contains_key(node))
+        let known = |node: &str| nodes.records.contains_key(node);
+        if own_leader_set {
+            current.adopting_elected_set(elected, &known)
+        } else {
+            current.adopting_elected_set_keeping_own_leader(elected, &known)
+        }
     } else {
         current.adopting(elected)
     };

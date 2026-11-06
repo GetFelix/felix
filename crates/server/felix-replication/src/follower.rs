@@ -51,6 +51,12 @@ pub struct FollowerCursor {
     /// A new cursor starts stalled, since its offset is only where shipping
     /// will start and says nothing about what the follower holds.
     pub stalled: bool,
+    /// The follower's last answer to a batch was that its routing view is
+    /// behind, and it took the fence the pass sent it again, so the next
+    /// pass resolves it. Stalled, but up and answering, unlike a follower
+    /// the request never reached or one refusing for a reason a pass cannot
+    /// fix.
+    pub(crate) refused: bool,
     /// The follower refused the frame kind that carries a commit offset, so
     /// it is shipped without one.
     pub legacy_frames: bool,
@@ -84,6 +90,9 @@ pub struct FollowerCursor {
     /// The fenced halt's refusal said the control plane assigned a newer
     /// generation. See [`crate::replica::assigned_newer`].
     pub(crate) assigned_newer: bool,
+    /// The follower's last answer said its copy does not follow this leader
+    /// at this generation. See [`crate::replica::refuses_leader`].
+    pub(crate) refuses_leader: bool,
 }
 
 /// A follower's answer that came from the copy its cursor describes.
@@ -107,6 +116,7 @@ impl FollowerCursor {
             rebuild_refused: None,
             shipped_bytes: 0,
             stalled: true,
+            refused: false,
             legacy_frames: false,
             storage_id: None,
             incarnation: Incarnation::Unsent,
@@ -115,6 +125,7 @@ impl FollowerCursor {
             vouched: None,
             superseded_by: None,
             assigned_newer: false,
+            refuses_leader: false,
         }
     }
 

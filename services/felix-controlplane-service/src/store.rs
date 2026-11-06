@@ -377,6 +377,10 @@ pub trait ControlPlaneStore: Send + Sync {
     /// acknowledged before the call. [`Self::get_shard_assignment`] on a
     /// Raft member answers from what that member has applied, which can lag.
     async fn confirmed_shard_assignment(&self, key: &ShardKey) -> StoreResult<ConfirmedAssignment>;
+    /// The shard-assignment feed's `next_seq`, read no earlier than every
+    /// write acknowledged before the call, so every change committed by then
+    /// has a lower seq. `None` from a Raft leader that predates the read.
+    async fn confirmed_shard_assignment_head(&self) -> StoreResult<Option<u64>>;
     /// Every assignment, ordered by stream then shard.
     async fn list_shard_assignments(&self) -> StoreResult<Vec<ShardAssignment>>;
     /// Assignments ordered by tenant, namespace, kind, name, then shard, one

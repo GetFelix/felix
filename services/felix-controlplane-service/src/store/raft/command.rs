@@ -261,6 +261,10 @@ pub enum MetaCommand {
         /// generation alone being taken.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         elected_set: bool,
+        /// Level 27: so is this set's own leader elected on another set,
+        /// instead of only its generation being taken (#1929).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        own_leader_set: bool,
     },
     /// The placement lease goes to `holder`, advancing the token if it
     /// changes hands. Proposed only by a confirmed leader, so no expiry.
@@ -632,6 +636,11 @@ pub enum MetaResponse {
     },
     Assignment {
         assignment: ShardAssignment,
+    },
+    /// The leader's shard-assignment feed `next_seq`, for
+    /// `LeaderRequest::ShardAssignmentHead`. Never the answer to a command.
+    AssignmentHead {
+        next_seq: u64,
     },
     /// `PutShardAssignmentIf` found another generation and wrote nothing.
     StaleAssignment {

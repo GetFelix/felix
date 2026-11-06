@@ -15,9 +15,10 @@
 //! so healing is a delete and injecting is a write.
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use parking_lot::Mutex;
+use tokio::time::Instant;
 
 /// How long a reading of the file is reused.
 ///

@@ -183,6 +183,8 @@ pub struct PeerServer {
     identity: Option<StorageId>,
     /// This process's node incarnation, `None` until it registers.
     incarnation: Option<tokio::sync::watch::Receiver<Option<u64>>>,
+    /// Cancelled once this broker serves clients. `None` serves from the start.
+    serving: Option<CancellationToken>,
 }
 
 impl PeerServer {
@@ -229,6 +231,7 @@ impl PeerServer {
             known: KnownCapabilities::default(),
             identity: None,
             incarnation: None,
+            serving: None,
         })
     }
 
@@ -258,6 +261,16 @@ impl PeerServer {
         incarnation: tokio::sync::watch::Receiver<Option<u64>>,
     ) -> Self {
         self.incarnation = Some(incarnation);
+        self
+    }
+
+    /// Refuse pings until `serving` is cancelled, so a broker that cannot serve
+    /// clients yet reads as down to the followers that watch it. A follower
+    /// stands for a shard only while it suspects the leader, and a restarted
+    /// leader that answered pings before it could serve would hold its shards
+    /// with nobody serving them.
+    pub fn with_serving(mut self, serving: CancellationToken) -> Self {
+        self.serving = Some(serving);
         self
     }
 
@@ -346,6 +359,7 @@ impl PeerServer {
                 known: self.known.clone(),
                 identity: self.identity,
                 incarnation: self.incarnation.clone(),
+                serving: self.serving.clone(),
                 handler_timeout: self.handler_timeout,
                 served_forwards: Arc::clone(&self.served_forwards),
             };
@@ -367,6 +381,7 @@ struct Offered {
     known: KnownCapabilities,
     identity: Option<StorageId>,
     incarnation: Option<tokio::sync::watch::Receiver<Option<u64>>>,
+    serving: Option<CancellationToken>,
     /// How long a request answered in turn may hold its stream: the
     /// requester's own timeout, after which no one is waiting for the answer.
     handler_timeout: std::time::Duration,
@@ -607,10 +622,24 @@ async fn serve_connection(
                     // behind a slow fence: that would read as a dead leader.
                     InternalMessage::Ping(ping) => {
                         let send = Arc::clone(&send);
+                        // Anything but a `Pong` is silence to a pinger, an
+                        // older one included.
+                        let serving = offered
+                            .serving
+                            .as_ref()
+                            .is_none_or(CancellationToken::is_cancelled);
                         app.spawn(async move {
-                            let pong = InternalMessage::Pong(Pong {
-                                correlation_id: ping.correlation_id,
-                            });
+                            let pong = if serving {
+                                InternalMessage::Pong(Pong {
+                                    correlation_id: ping.correlation_id,
+                                })
+                            } else {
+                                InternalMessage::ForwardPublishError(ForwardPublishError {
+                                    correlation_id: ping.correlation_id,
+                                    code: ErrorCode::Unavailable,
+                                    detail: "this broker is not serving yet".to_string(),
+                                })
+                            };
                             answer_out_of_order(&send, async { pong }).await;
                         });
                         continue;
@@ -759,7 +788,7 @@ async fn serve_connection(
 /// `response` as the caller reads it: a learner's answer to a caller that
 /// did not offer [`PeerCapabilities::LEARNER_ACKS`] goes as the original
 /// kind, which such a caller counts as it always has.
-fn for_caller(response: InternalMessage, learner_acks: bool) -> InternalMessage {
+pub fn for_caller(response: InternalMessage, learner_acks: bool) -> InternalMessage {
     match response {
         InternalMessage::ReplicateOk(ok) if ok.learner && !learner_acks => {
             InternalMessage::ReplicateOk(felix_wire::internal::ReplicateOk {
