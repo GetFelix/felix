@@ -548,6 +548,35 @@ impl StreamState {
         state.generation_start_run = Some((next, run));
     }
 
+    /// Move `next_seq` up to `tail`, the log's end, for a broker about to
+    /// lead the shard, whether or not it writes a generation-start record.
+    /// The `run` offsets just below `tail` are generation-start or trim
+    /// records.
+    ///
+    /// A hold dropped when the shard was given up leaves its records on disk
+    /// past `next_seq`, and the new generation commits them. Left there, the
+    /// state view would answer without them, and a rebuild would stop at
+    /// `next_seq` too. Moved here, the view is dropped and a read rebuilds
+    /// it to `tail`, which waits until the read bound covers `tail`.
+    ///
+    /// Skipped while batches are held: they are released in order and pin
+    /// their own offsets. Only before the leader serves, as for
+    /// `skip_generation_start`.
+    pub(crate) fn lead_from(&self, tail: u64, run: u64) {
+        let mut state = self.log_state.lock();
+        if state.next_seq >= tail || self.held.is_busy() {
+            return;
+        }
+        state.forget_view_across(tail, run);
+        // The ring would end below records a reader from it then never gets.
+        state.log.clear();
+        state.next_seq = tail;
+        state.generation_start_run = (run > 0).then_some((tail, run));
+        if self.commit_sequencer.next_offset() < tail {
+            self.commit_sequencer.reset(tail);
+        }
+    }
+
     /// The `run` offsets just below `next_offset` hold generation-start
     /// records; a publish at `next_offset` reports them as skipped. For a
     /// recovered log whose tail is one.

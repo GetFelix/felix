@@ -86,6 +86,40 @@ impl Broker {
             .map_or(0, |state| state.discard_held())
     }
 
+    /// Bring a durable stream shard's tail up to its log's, for a broker
+    /// about to lead it. A hold dropped by [`Self::discard_uncommitted`]
+    /// leaves records on disk that the stream never took in; the next
+    /// generation commits them, and a state read has to include them once
+    /// readers can see them. A no-op for a shard not opened here yet, which
+    /// starts from its log's tail when it is.
+    pub async fn lead_from_tail(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+    ) -> Result<()> {
+        let state = self
+            .topics
+            .read()
+            .await
+            .get(&TopicKeyRef::new(tenant_id, namespace, stream, shard))
+            .cloned();
+        let Some(state) = state else {
+            return Ok(());
+        };
+        let Some(log) = &state.durable else {
+            return Ok(());
+        };
+        let tail = log.tail_offset().await?;
+        if tail <= state.tail_seq() {
+            return Ok(());
+        }
+        let run = tail - log.event_end(0, tail).await?;
+        state.lead_from(tail, run);
+        Ok(())
+    }
+
     pub(super) async fn get_stream_state(
         &self,
         tenant_id: &str,

@@ -709,3 +709,83 @@ async fn a_commit_past_a_dropped_hold_keeps_the_dropped_commit_in_the_state() {
     assert_eq!(read.version, Some(1));
     assert_eq!(state(&broker, "a").await.version, Some(2));
 }
+
+/// **A broker that leads again without a generation-start record still
+/// rebuilds its state with the commit it dropped.** Before the fleet writes
+/// start records, nothing moves `next_seq` past the dropped batch, so without
+/// `lead_from_tail` the old view answers, and a rebuild would stop below it.
+/// The rebuild waits for the mark to cover the tail.
+#[tokio::test]
+async fn a_dropped_commit_is_in_the_state_when_led_again_without_a_start_record() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (broker, bounds) = broker_with(dir.path(), ReadBound::Unbounded).await;
+    commit(&broker, "state", b"first").await;
+    assert_eq!(state(&broker, "state").await.version, Some(0));
+
+    bounds.set(ReadBound::Committed(1));
+    commit(&broker, "state", b"held").await;
+    assert_eq!(broker.discard_uncommitted("t1", "ns", "quorum", 0).await, 1);
+
+    broker
+        .lead_from_tail("t1", "ns", "quorum", 0)
+        .await
+        .expect("lead from tail");
+    let handle = broker
+        .resolve_stream_handle("t1", "ns", "quorum", 0)
+        .await
+        .expect("handle");
+    assert!(matches!(
+        broker.state_get(&handle, "state").await,
+        Err(BrokerError::StateNotReadable(NotReadable::Settling))
+    ));
+
+    bounds.set(ReadBound::Committed(2));
+    assert_eq!(readable(&broker).await, vec![0, 1]);
+    let read = state(&broker, "state").await;
+    assert_eq!(read.value, Some(Bytes::from_static(b"held")));
+    assert_eq!(read.version, Some(1));
+}
+
+/// **A hold carried across a generation start keeps the state view.** The
+/// held commit is released in order and applied to the view, and the publish
+/// after the start record counts it as skipped, so nothing forces a rebuild.
+#[tokio::test]
+async fn a_hold_carried_across_a_generation_start_keeps_the_state_view() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (broker, bounds) = broker_with(dir.path(), ReadBound::Unbounded).await;
+    commit(&broker, "state", b"first").await;
+    assert_eq!(state(&broker, "state").await.version, Some(0));
+    let mut live = broker
+        .subscribe("t1", "ns", "quorum", 0)
+        .await
+        .expect("subscribe");
+
+    bounds.set(ReadBound::Committed(1));
+    commit(&broker, "state", b"held").await;
+    assert_eq!(
+        broker
+            .append_generation_start("t1", "ns", "quorum", 0, 2)
+            .await
+            .expect("generation start"),
+        2
+    );
+    broker
+        .lead_from_tail("t1", "ns", "quorum", 0)
+        .await
+        .expect("lead from tail");
+    bounds.set(ReadBound::Unbounded);
+    commit(&broker, "other", b"after").await;
+    assert_eq!(&next(&mut live).await[..], b"held");
+    assert_eq!(&next(&mut live).await[..], b"after");
+
+    // A rebuild asks for the read bound; a kept view answers without it.
+    let asked = bounds.asked.load(Ordering::SeqCst);
+    let read = state(&broker, "state").await;
+    assert_eq!(read.value, Some(Bytes::from_static(b"held")));
+    assert_eq!(read.version, Some(1));
+    assert_eq!(
+        bounds.asked.load(Ordering::SeqCst),
+        asked,
+        "the view was rebuilt"
+    );
+}
