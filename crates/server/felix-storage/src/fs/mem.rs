@@ -39,12 +39,15 @@ struct Structure {
     /// Renames no flush has covered yet, oldest first. A rename is one change
     /// to the device, so a crash keeps all of it or none of it.
     pending: Vec<crash::Rename>,
+    /// Whether the cap on `pending` was already reported.
+    warned: bool,
 }
 
 /// How many unflushed renames are remembered. Past it the oldest is taken as
 /// flushed, which keeps a tree nobody syncs from holding on to every file it
-/// ever replaced.
-const MAX_PENDING_RENAMES: usize = 1024;
+/// ever replaced. Hitting it means a directory is not being synced after
+/// renames, so it is reported once.
+const MAX_PENDING_RENAMES: usize = 65_536;
 
 /// Something with a name in a directory.
 #[derive(Clone)]
@@ -67,6 +70,9 @@ struct FileData {
     /// The furthest end of any preallocation. Reserving never changes the
     /// length: recovery reads "valid bytes end at EOF".
     reserved: u64,
+    /// The file lost its last name. A crash that brings the name back brings
+    /// back the bytes of its last flush only.
+    unlinked: bool,
 }
 
 /// A directory: its entries now and as of the last flush of the directory.
@@ -93,6 +99,7 @@ impl Tree {
             structure: Mutex::new(Structure {
                 root: Arc::new(DirNode::default()),
                 pending: Vec::new(),
+                warned: false,
             }),
         }
     }
@@ -189,7 +196,8 @@ impl Tree {
         let (parent, name) = parent_of(&state.root, &names)?;
         let mut entries = parent.data.lock();
         match entries.current.get(name) {
-            Some(Node::File(_)) => {
+            Some(Node::File(file)) => {
+                file.data.lock().unlinked = true;
                 entries.current.remove(name);
                 Ok(())
             }
@@ -232,6 +240,9 @@ impl Tree {
         }
         let (from_parent, from_name) = parent_of(&state.root, &from_names)?;
         let (to_parent, to_name) = parent_of(&state.root, &to_names)?;
+        // A journal commits the mkdir of a directory before a rename into it.
+        let mut chains = chain(&state.root, &from_names[..from_names.len() - 1]);
+        chains.extend(chain(&state.root, &to_names[..to_names.len() - 1]));
         let same = Arc::ptr_eq(&from_parent, &to_parent);
         let mut source = from_parent.data.lock();
         let mut other = (!same).then(|| to_parent.data.lock());
@@ -258,6 +269,10 @@ impl Tree {
             }
             _ => {}
         }
+        let replaced = target.cloned();
+        if let Some(Node::File(file)) = &replaced {
+            file.data.lock().unlinked = true;
+        }
         source.current.remove(from_name);
         let destination = other.as_deref_mut().unwrap_or(&mut source);
         destination
@@ -270,8 +285,17 @@ impl Tree {
             to_dir: to_parent,
             to_name: to_name.to_owned(),
             node: moving,
+            replaced,
+            chains,
         });
         if state.pending.len() > MAX_PENDING_RENAMES {
+            if !state.warned {
+                state.warned = true;
+                tracing::warn!(
+                    "the simulated filesystem has {MAX_PENDING_RENAMES} renames no directory sync covered; \
+                     treating the oldest as flushed"
+                );
+            }
             crash::commit(&mut state.pending, 1);
         }
         Ok(())
@@ -339,6 +363,7 @@ impl FileNode {
                 durable: bytes,
                 dirty_from: usize::MAX,
                 reserved: 0,
+                unlinked: false,
             }),
         }
     }
@@ -377,6 +402,22 @@ impl FileData {
     }
 }
 
+/// Each directory on the way down `names` with its entry in its parent, for
+/// as far as the path exists.
+fn chain(root: &Arc<DirNode>, names: &[&OsStr]) -> Vec<(Arc<DirNode>, OsString, Node)> {
+    let mut out = Vec::new();
+    let mut dir = Arc::clone(root);
+    for name in names {
+        let Some(child) = dir.data.lock().current.get(*name).cloned() else {
+            break;
+        };
+        out.push((Arc::clone(&dir), (*name).to_owned(), child.clone()));
+        let Node::Dir(next) = child else { break };
+        dir = next;
+    }
+    out
+}
+
 /// Unlink everything below `dir` from the leaves up.
 fn unlink_all(dir: &Arc<DirNode>) {
     let children: Vec<(OsString, Node)> = dir
@@ -387,8 +428,9 @@ fn unlink_all(dir: &Arc<DirNode>) {
         .map(|(name, node)| (name.clone(), node.clone()))
         .collect();
     for (name, node) in children {
-        if let Node::Dir(child) = &node {
-            unlink_all(child);
+        match &node {
+            Node::Dir(child) => unlink_all(child),
+            Node::File(file) => file.data.lock().unlinked = true,
         }
         dir.data.lock().current.remove(&name);
     }

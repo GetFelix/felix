@@ -329,6 +329,92 @@ fn a_rename_over_a_file_leaves_the_old_or_the_new_one() {
     assert!(old > 0 && new > 0, "{old} {new}");
 }
 
+/// `write_atomically` creates `x.tmp`, flushes it and renames it over `x`,
+/// then flushes the directory. A crash before that last step can keep the
+/// create and lose the rename.
+#[test]
+fn an_unsynced_create_can_outlive_the_rename_that_followed_it() {
+    let mut outcomes = std::collections::BTreeSet::new();
+    for seed in 0..128 {
+        let sim = Sim::new("write-atomically");
+        durable_file(&sim.path("x"), b"old");
+        let tmp = create(&sim.path("x.tmp"));
+        io::write_all(&tmp, b"new").expect("write");
+        io::sync_data(&tmp).expect("sync");
+        fs::rename(sim.path("x.tmp"), sim.path("x")).expect("rename");
+        sim.crash(seed);
+        let after = names(&sim.root);
+        let x = fs::read(sim.path("x")).expect("x is never missing");
+        assert!(x == b"old" || x == b"new", "seed {seed}: {x:?}");
+        if after.len() == 2 {
+            assert_eq!(x, b"old", "seed {seed}: the rename was lost");
+        }
+        outcomes.insert(after);
+    }
+    let both = vec!["x".to_string(), "x.tmp".to_string()];
+    assert!(outcomes.contains(&both), "{outcomes:?}");
+    assert!(outcomes.contains(&vec!["x".to_string()]), "{outcomes:?}");
+}
+
+#[test]
+fn an_unlink_after_a_kept_rename_can_stick() {
+    let mut outcomes = std::collections::BTreeSet::new();
+    for seed in 0..128 {
+        let sim = Sim::new("rename-unlink");
+        durable_file(&sim.path("a"), b"x");
+        fs::rename(sim.path("a"), sim.path("b")).expect("rename");
+        fs::remove_file(sim.path("b")).expect("unlink");
+        sim.crash(seed);
+        outcomes.insert(names(&sim.root));
+    }
+    for expected in [vec![], vec!["a".to_string()], vec!["b".to_string()]] {
+        assert!(outcomes.contains(&expected), "{outcomes:?}");
+    }
+}
+
+#[test]
+fn a_rename_commits_the_directory_it_moved_into() {
+    for seed in 0..64 {
+        let sim = Sim::new("rename-into-new");
+        fs::create_dir_all(sim.path("x")).expect("dir");
+        durable_file(&sim.path("x/f"), b"data");
+        io::sync_dir(&sim.root).expect("sync");
+        fs::create_dir_all(sim.path("y")).expect("dir");
+        fs::rename(sim.path("x/f"), sim.path("y/f")).expect("rename");
+        io::sync_dir(&sim.path("x")).expect("sync");
+        sim.crash(seed);
+        assert_eq!(
+            fs::read(sim.path("y/f")).expect("the file is under neither name"),
+            b"data",
+            "seed {seed}"
+        );
+    }
+}
+
+#[test]
+fn a_kept_rename_in_a_chain_keeps_the_unsynced_pages() {
+    let mut longest = 0;
+    for seed in 0..128 {
+        let sim = Sim::new("chain-pages");
+        durable_file(&sim.path("a"), &bytes(PAGE, 1));
+        let file = OpenOptions::new()
+            .write(true)
+            .open(sim.path("a"))
+            .expect("open");
+        io::write_at(&file, &bytes(3 * PAGE, 2), PAGE as u64).expect("write");
+        fs::rename(sim.path("a"), sim.path("b")).expect("rename");
+        fs::rename(sim.path("b"), sim.path("c")).expect("rename");
+        sim.crash(seed);
+        if let Ok(after) = fs::read(sim.path("b")) {
+            longest = longest.max(after.len());
+        }
+    }
+    assert!(
+        longest > PAGE,
+        "the file under the middle name lost every unsynced page"
+    );
+}
+
 #[test]
 fn a_path_cannot_climb_out_of_a_registered_root() {
     let sim = Sim::new("dotdot");

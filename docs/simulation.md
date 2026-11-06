@@ -278,9 +278,15 @@ observer used by the storage tests (`io/power_loss.rs`):
 - A directory change that was not synced may or may not stick, per name.
 - A rename is one change: its two names, even in different directories, come
   back together, either as before the rename or as after it, and unsynced
-  renames are kept oldest first. Syncing either directory commits it, as a
-  filesystem journal does. A file replaced by a rename comes back with the
-  bytes of its last flush.
+  renames are kept oldest first. Syncing either directory commits it, along
+  with the directories it moved into, as a filesystem journal does. A file
+  replaced by a rename comes back with the bytes of its last flush. A create
+  made before a rename that is lost can still stay (a temporary file next to
+  the old file), and a create or unlink of a name after a kept rename gets its
+  own choice. The Linux observer pairs renames within one directory only.
+- Renames are kept in order, but creates and unlinks of different names are
+  not ordered against each other. POSIX allows that. ext4 and xfs journal all
+  metadata in order, so the model can leave states those filesystems would not.
 - A tree where everything was synced comes back unchanged.
 
 The same seed gives the same result: listings are in name order and the model

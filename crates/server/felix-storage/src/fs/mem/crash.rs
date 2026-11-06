@@ -8,7 +8,13 @@
 //! A rename is the exception to "per name". It is one change, so its two
 //! names come back together: the source and target of an unflushed rename
 //! are either both as before it or both as after it, and renames that were
-//! not flushed are kept as a prefix, oldest first.
+//! not flushed are kept as a prefix, oldest first. A change to one of those
+//! names after the rename, or an earlier unflushed create of it, still gets
+//! its own choice.
+//!
+//! Creates and unlinks are not ordered against each other here, which POSIX
+//! allows. ext4 and xfs journal all metadata in order, so they can leave
+//! fewer states than this model does.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -24,6 +30,12 @@ pub(super) struct Rename {
     pub(super) to_dir: Arc<DirNode>,
     pub(super) to_name: OsString,
     pub(super) node: Node,
+    /// What the target name held before, if anything.
+    pub(super) replaced: Option<Node>,
+    /// Each directory on the way to both parents with its entry in its own
+    /// parent. Committing the rename commits those too, since the journal
+    /// made the directories before it moved a file into them.
+    pub(super) chains: Vec<(Arc<DirNode>, OsString, Node)>,
 }
 
 impl Rename {
@@ -48,14 +60,26 @@ pub(super) fn commit(pending: &mut Vec<Rename>, count: usize) {
             .lock()
             .durable
             .insert(rename.to_name, rename.node);
+        for (parent, name, child) in rename.chains {
+            parent.data.lock().durable.insert(name, child);
+        }
     }
 }
 
 /// What the unflushed renames decide, before any name is looked at.
 pub(super) struct Plan {
-    /// For each name a rename touched, what it holds after the crash. `None`
-    /// inside means the durable listing's entry stands.
-    touched: BTreeMap<(usize, OsString), Option<Option<Node>>>,
+    touched: BTreeMap<(usize, OsString), Touch>,
+}
+
+/// What the renames that touched one name say about it.
+#[derive(Default)]
+struct Touch {
+    /// The entry after the last rename that was kept. `None`: no rename that
+    /// touched the name was kept, so the durable listing stands.
+    kept: Option<Option<Node>>,
+    /// The entry just before the first rename that was dropped. `None`: every
+    /// rename that touched the name was kept.
+    before_dropped: Option<Option<Node>>,
 }
 
 impl Plan {
@@ -63,18 +87,30 @@ impl Plan {
         // A prefix of the renames made it. The rest left their names as the
         // last flush had them.
         let kept = rng.below(pending.len() as u64 + 1) as usize;
-        let mut touched = BTreeMap::new();
+        let mut touched: BTreeMap<(usize, OsString), Touch> = BTreeMap::new();
         for (index, rename) in pending.iter().enumerate() {
             let applied = index < kept;
-            for (dir, name, now) in [
-                (&rename.from_dir, &rename.from_name, None),
-                (&rename.to_dir, &rename.to_name, Some(rename.node.clone())),
+            for (dir, name, after, before) in [
+                (
+                    &rename.from_dir,
+                    &rename.from_name,
+                    None,
+                    Some(rename.node.clone()),
+                ),
+                (
+                    &rename.to_dir,
+                    &rename.to_name,
+                    Some(rename.node.clone()),
+                    rename.replaced.clone(),
+                ),
             ] {
-                let entry = touched
+                let touch = touched
                     .entry((Arc::as_ptr(dir) as usize, name.clone()))
-                    .or_insert(None);
+                    .or_default();
                 if applied {
-                    *entry = Some(now);
+                    touch.kept = Some(after);
+                } else if touch.before_dropped.is_none() {
+                    touch.before_dropped = Some(before);
                 }
             }
         }
@@ -91,7 +127,7 @@ impl Plan {
             .map(|((_, name), _)| name)
     }
 
-    fn get(&self, dir: &Arc<DirNode>, name: &OsString) -> Option<&Option<Option<Node>>> {
+    fn get(&self, dir: &Arc<DirNode>, name: &OsString) -> Option<&Touch> {
         self.touched.get(&(Arc::as_ptr(dir) as usize, name.clone()))
     }
 }
@@ -113,8 +149,21 @@ pub(super) fn dir(
     let mut kept = DirData::default();
     for name in names {
         let chosen = match plan.get(old, name) {
-            Some(Some(after)) => after.as_ref(),
-            Some(None) => data.durable.get(name),
+            Some(touch) => {
+                let base = match &touch.kept {
+                    Some(after) => after.as_ref(),
+                    None => data.durable.get(name),
+                };
+                // Dropped: the name may still show what it held just before
+                // the rename, such as a temporary file created without a
+                // directory flush. Kept: a later create or unlink of the
+                // name is its own change.
+                let other = match &touch.before_dropped {
+                    Some(before) => before.as_ref(),
+                    None => data.current.get(name),
+                };
+                pick(base, other, rng)
+            }
             None => match (data.current.get(name), data.durable.get(name)) {
                 (Some(now), Some(then)) if same(now, then) => Some(now),
                 (Some(now), Some(then)) => Some(if rng.coin() { now } else { then }),
@@ -126,15 +175,9 @@ pub(super) fn dir(
         let node = match chosen {
             None => continue,
             Some(Node::Dir(child)) => Node::Dir(dir(child, plan, rng, writeback)),
-            Some(Node::File(file)) => {
-                // Only the file the name holds now has bytes beyond its last
-                // flush; one that was replaced or unlinked comes back as it
-                // was flushed.
-                let holds_it = matches!(data.current.get(name), Some(Node::File(live)) if Arc::ptr_eq(live, file));
-                Node::File(Arc::new(FileNode::with_bytes(contents(
-                    file, holds_it, rng, writeback,
-                ))))
-            }
+            Some(Node::File(file)) => Node::File(Arc::new(FileNode::with_bytes(contents(
+                file, rng, writeback,
+            )))),
         };
         kept.current.insert(name.clone(), node);
     }
@@ -144,13 +187,29 @@ pub(super) fn dir(
     })
 }
 
-fn contents(file: &FileNode, live: bool, rng: &mut SplitMix64, writeback: Writeback) -> Vec<u8> {
+/// What the file reads back as. One with no name left only has the bytes of
+/// its last flush.
+fn contents(file: &FileNode, rng: &mut SplitMix64, writeback: Writeback) -> Vec<u8> {
     let data = file.data.lock();
-    if live {
+    if !data.unlinked {
         crash_contents(&data.durable, &data.current, rng, writeback)
     } else {
         data.durable.clone()
     }
+}
+
+/// `base`, or `other` if it differs and a coin says so.
+fn pick<'a>(
+    base: Option<&'a Node>,
+    other: Option<&'a Node>,
+    rng: &mut SplitMix64,
+) -> Option<&'a Node> {
+    let alike = match (base, other) {
+        (Some(a), Some(b)) => same(a, b),
+        (None, None) => true,
+        _ => false,
+    };
+    if alike || !rng.coin() { base } else { other }
 }
 
 fn same(a: &Node, b: &Node) -> bool {
