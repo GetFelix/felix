@@ -453,7 +453,8 @@ impl StreamState {
             (Some(first), Some((at, run))) if first == at => run,
             _ => 0,
         };
-        let mut seq = first_seq.unwrap_or(state.next_seq);
+        let start = first_seq.unwrap_or(state.next_seq);
+        let mut seq = start;
         let bytes = payloads.iter().map(Bytes::len).sum::<usize>()
             + headers.map_or(0, |headers| {
                 headers.iter().flatten().map(Bytes::len).sum::<usize>()
@@ -479,6 +480,7 @@ impl StreamState {
         // A pinned batch may start beyond `next_seq` when an earlier publish
         // consumed offsets without reaching the ring; the tail is what the next
         // cursor must point at either way.
+        state.forget_view_across(start, skipped_before);
         state.next_seq = state.next_seq.max(seq);
         if let (Some(ops), Some(first), Some(view)) = (commit, first_seq, state.state_view.as_mut())
         {
@@ -538,6 +540,7 @@ impl StreamState {
         let next = offset + 1;
         if state.next_seq < next {
             if !self.held.is_busy() {
+                state.forget_view_across(next, run);
                 state.next_seq = next;
             }
             self.commit_sequencer.reset(next);
@@ -918,6 +921,20 @@ pub(crate) struct LogState {
     /// The keyed state of every commit below `next_seq`, once built. `None`
     /// until a reader asks, and again whenever the ring is reset.
     pub(crate) state_view: Option<StateView>,
+}
+
+impl LogState {
+    /// Drop the state view if moving `next_seq` up to `start` passes records
+    /// it never applied: ones that reached the log without the ring, such as
+    /// a hold dropped when the shard was given up and committed by a later
+    /// generation. The `skipped` offsets just below `start` are
+    /// generation-start or trim records, which change no state. A read
+    /// rebuilds the view from the log.
+    fn forget_view_across(&mut self, start: u64, skipped: u64) {
+        if start > self.next_seq.saturating_add(skipped) {
+            self.state_view = None;
+        }
+    }
 }
 
 #[cfg(test)]
