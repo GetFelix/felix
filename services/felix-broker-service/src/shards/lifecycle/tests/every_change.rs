@@ -8,7 +8,7 @@
 //! leader, so the replica is part of every majority the fence can get, and it
 //! refuses the batch. Without the fence it would still take it.
 
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -166,7 +166,7 @@ impl Change {
         own.fence_promotions();
         Self {
             own,
-            assignments: HashMap::new(),
+            assignments: HashMap::default(),
             leader,
             replicas,
             _dirs: dirs,

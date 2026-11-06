@@ -16,6 +16,13 @@ pub fn register_root(root: &Path) {
     crate::fs::register(root);
 }
 
+/// [`register_root`], unless a live simulation holds `root` already. Returns
+/// whether it was free. A simulation that wants the same path every run (so
+/// that maps keyed by path lay out the same) tries a fixed name first.
+pub fn claim_root(root: &Path) -> bool {
+    crate::fs::claim(root)
+}
+
 /// Forget `root` and drop every file under it.
 pub fn unregister_root(root: &Path) {
     crate::fs::unregister(root);

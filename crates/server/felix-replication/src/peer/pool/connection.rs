@@ -1,7 +1,7 @@
 //! One connection to a peer: its streams, the requests waiting on it, and
 //! failing every one of them the moment it drops.
 
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;

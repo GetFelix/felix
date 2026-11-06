@@ -34,12 +34,29 @@ pub mod sim {
 
     thread_local! {
         static STATE: Cell<Option<u64>> = const { Cell::new(None) };
+        static SEED: Cell<Option<u64>> = const { Cell::new(None) };
     }
 
     /// Draw this thread's jitter from `seed` from now on. A simulation runs on
     /// one thread, so parallel runs on other threads keep their own sequences.
     pub fn seed(seed: u64) {
         STATE.with(|state| state.set(Some(seed)));
+        SEED.with(|kept| kept.set(Some(seed)));
+    }
+
+    /// Hash keys for this thread's seed, the same for every map. Not drawn
+    /// from the jitter sequence: a map built once per process (a static)
+    /// would otherwise shift every later draw of the first run only.
+    #[cfg_attr(not(feature = "hasher"), allow(dead_code))]
+    pub(crate) fn hash_keys() -> Option<[u64; 4]> {
+        let seed = SEED.with(Cell::get)?;
+        Some(std::array::from_fn(|i| {
+            let mut z = (seed ^ 0x6861_7368_6b65_7973)
+                .wrapping_add((i as u64 + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15));
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            z ^ (z >> 31)
+        }))
     }
 
     /// Whether this thread draws from a seeded generator.

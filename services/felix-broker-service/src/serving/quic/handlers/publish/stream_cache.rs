@@ -1,6 +1,6 @@
 //! The per-connection cache of resolved stream handles, and its key.
 
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::time::Instant;
 
 use felix_broker::StreamHandle;

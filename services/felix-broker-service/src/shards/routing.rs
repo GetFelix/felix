@@ -20,7 +20,7 @@ pub use felix_wire::routing::shard_for;
 
 pub mod hold;
 
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -173,7 +173,7 @@ impl IngressRouter {
     pub fn new(router: Arc<ShardRouter>, fence: Arc<ShardFence>) -> Self {
         let view = ArcSwap::from_pointee(View {
             routes: router.routes(),
-            servable: ServableShards::new(),
+            servable: ServableShards::default(),
         });
         Self {
             router,
@@ -628,9 +628,9 @@ pub(crate) fn to_router_kind(kind: ShardKind) -> felix_router::ShardKind {
 /// Lives here rather than in the watch because it is the point where two
 /// separate views -- ownership and node addresses -- are joined into the one
 /// the hot path reads.
-pub fn routing_table_from(
-    assignments: &std::collections::HashMap<ShardKey, crate::shards::watch::ShardAssignment>,
-    nodes: &std::collections::HashMap<String, felix_router::NodeRef>,
+pub fn routing_table_from<A: std::hash::BuildHasher, N: std::hash::BuildHasher>(
+    assignments: &std::collections::HashMap<ShardKey, crate::shards::watch::ShardAssignment, A>,
+    nodes: &std::collections::HashMap<String, felix_router::NodeRef, N>,
 ) -> felix_router::RoutingTable {
     felix_router::RoutingTable::build_with(
         assignments.values().map(|assignment| felix_router::Placed {
@@ -671,9 +671,9 @@ pub fn routing_table_from(
 /// batches to it. Each stands until the control plane names its generation
 /// or a newer one.
 fn with_elected(
-    mut assignments: std::collections::HashMap<ShardKey, crate::shards::watch::ShardAssignment>,
+    mut assignments: felix_common::random::HashMap<ShardKey, crate::shards::watch::ShardAssignment>,
     elections: &felix_replication::election::Elections,
-) -> std::collections::HashMap<ShardKey, crate::shards::watch::ShardAssignment> {
+) -> felix_common::random::HashMap<ShardKey, crate::shards::watch::ShardAssignment> {
     if elections.is_empty() {
         return assignments;
     }
@@ -746,8 +746,8 @@ fn with_elected(
 /// nothing. A shard's creation naming `local` is left out too, since that
 /// copy skips the read (`ReplicaHandler::created_here`).
 fn newly_named<'a>(
-    before: &'a std::collections::HashMap<ShardKey, crate::shards::watch::ShardAssignment>,
-    after: &'a std::collections::HashMap<ShardKey, crate::shards::watch::ShardAssignment>,
+    before: &'a felix_common::random::HashMap<ShardKey, crate::shards::watch::ShardAssignment>,
+    after: &'a felix_common::random::HashMap<ShardKey, crate::shards::watch::ShardAssignment>,
     local: &'a str,
 ) -> impl Iterator<Item = (felix_router::ShardKey, u64)> + 'a {
     let follows = move |assignment: &crate::shards::watch::ShardAssignment| {
@@ -884,8 +884,8 @@ pub fn spawn_feed<L: ControlPlaneLink>(
         let mut ticker = tokio::time::interval(interval);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         // The assignments the last pass applied, to tell which are new.
-        let mut applied = HashMap::new();
-        let mut published_priors = HashMap::new();
+        let mut applied = HashMap::default();
+        let mut published_priors = HashMap::default();
         loop {
             // Ends with an error once there is no refresher, which disables
             // the branch rather than waking the loop.
@@ -910,7 +910,7 @@ pub fn spawn_feed<L: ControlPlaneLink>(
                     if joint {
                         owned.priors()
                     } else {
-                        HashMap::new()
+                        HashMap::default()
                     },
                     owned.as_of(),
                     owned.checkpoint(),

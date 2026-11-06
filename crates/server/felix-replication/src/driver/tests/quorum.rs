@@ -62,10 +62,10 @@ async fn the_mark_advances_at_the_majority_not_at_the_slowest_follower() {
     };
 
     let (mut cursors, mut group, mut dead, mut counters) = (
-        HashMap::new(),
-        HashMap::new(),
-        HashMap::new(),
-        HashMap::new(),
+        HashMap::default(),
+        HashMap::default(),
+        HashMap::default(),
+        HashMap::default(),
     );
     let (_, reached) = tokio::join!(
         replicate_once(
@@ -108,10 +108,10 @@ async fn the_slower_follower_is_still_caught_up_by_the_end_of_the_pass() {
         &router,
         &marks,
         None,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
 
@@ -150,10 +150,10 @@ async fn a_quorum_mark_does_not_pass_a_record_the_follower_disagrees_with() {
         &router,
         &marks,
         None,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
 
@@ -233,10 +233,10 @@ async fn inherited_records_count_only_once_the_start_record_is_on_a_majority() {
     let marks = finalized_marks();
     let watched = watch_key(&key());
     let (mut cursors, mut group, mut dead, mut counters) = (
-        HashMap::new(),
-        HashMap::new(),
-        HashMap::new(),
-        HashMap::new(),
+        HashMap::default(),
+        HashMap::default(),
+        HashMap::default(),
+        HashMap::default(),
     );
 
     replicate_once(
@@ -325,10 +325,10 @@ async fn a_promoted_leader_with_no_majority_yet_refuses_reads() {
             held: std::sync::atomic::AtomicU64::new(3),
         };
         let (mut cursors, mut group, mut dead, mut counters) = (
-            HashMap::new(),
-            HashMap::new(),
-            HashMap::new(),
-            HashMap::new(),
+            HashMap::default(),
+            HashMap::default(),
+            HashMap::default(),
+            HashMap::default(),
         );
         let read = async || {
             broker
@@ -389,10 +389,10 @@ async fn a_finalized_leader_without_a_start_record_counts_only_its_own_records()
     let marks = finalized_marks();
     let watched = watch_key(&key());
     let (mut cursors, mut group, mut dead, mut counters) = (
-        HashMap::new(),
-        HashMap::new(),
-        HashMap::new(),
-        HashMap::new(),
+        HashMap::default(),
+        HashMap::default(),
+        HashMap::default(),
+        HashMap::default(),
     );
 
     replicate_once(
@@ -450,10 +450,10 @@ async fn before_finalize_inherited_records_count_as_before() {
         &router,
         &marks,
         None,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
     assert_eq!(marks.offset(&watch_key(&key()), 4), Some(3));
@@ -567,10 +567,10 @@ async fn pass_with_reporter<R: PeerRequester + Sync>(
     reporter: &crate::reporter::Reporter,
 ) {
     let (mut cursors, mut group, mut dead, mut counters) = (
-        HashMap::new(),
-        HashMap::new(),
-        HashMap::new(),
-        HashMap::new(),
+        HashMap::default(),
+        HashMap::default(),
+        HashMap::default(),
+        HashMap::default(),
     );
     replicate_once(
         followers,
@@ -710,10 +710,10 @@ async fn a_report_says_by_round_only_off_the_lease() {
             &router,
             &marks,
             Some(&reporter),
-            &mut HashMap::new(),
-            &mut HashMap::new(),
-            &mut HashMap::new(),
-            &mut HashMap::new(),
+            &mut HashMap::default(),
+            &mut HashMap::default(),
+            &mut HashMap::default(),
+            &mut HashMap::default(),
         )
         .await;
         let report = pass.reports.last().expect("a report");
@@ -943,10 +943,10 @@ async fn a_recreate_at_the_same_generation_does_not_inherit_the_mark() {
     let router = router(LOCAL, &["broker-b"], 4);
     let marks = QuorumMarks::new();
     let (mut cursors, mut group, mut dead, mut counters) = (
-        HashMap::new(),
-        HashMap::new(),
-        HashMap::new(),
-        HashMap::new(),
+        HashMap::default(),
+        HashMap::default(),
+        HashMap::default(),
+        HashMap::default(),
     );
     let pass = replicate_once(
         &AcceptingFollower::default(),
@@ -1150,10 +1150,10 @@ async fn a_leader_on_an_emptied_log_is_not_left_settling() {
         &router,
         &marks,
         None,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
     let page = broker
@@ -1210,10 +1210,10 @@ async fn a_learners_answer_does_not_move_the_mark_until_it_is_readmitted() {
     let marks = QuorumMarks::new();
     let watched = watch_key(&key());
     let (mut cursors, mut group, mut dead, mut counters) = (
-        HashMap::new(),
-        HashMap::new(),
-        HashMap::new(),
-        HashMap::new(),
+        HashMap::default(),
+        HashMap::default(),
+        HashMap::default(),
+        HashMap::default(),
     );
 
     let pass = replicate_once(

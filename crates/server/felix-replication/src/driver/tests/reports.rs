@@ -11,7 +11,7 @@ async fn a_pass_reports_who_could_take_the_shard_over() {
     let router = router(LOCAL, &["broker-b"], 4);
     let follower = AcceptingFollower::default();
     let marks = QuorumMarks::new();
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
 
     let pass = replicate_once(
         &follower,
@@ -20,9 +20,9 @@ async fn a_pass_reports_who_could_take_the_shard_over() {
         &marks,
         None,
         &mut cursors,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
 
@@ -46,7 +46,7 @@ async fn a_follower_of_an_empty_shard_is_reported_level() {
     let router = router(LOCAL, &["broker-b"], 4);
     let follower = AcceptingFollower::default();
     let marks = QuorumMarks::new();
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
 
     let pass = replicate_once(
         &follower,
@@ -55,9 +55,9 @@ async fn a_follower_of_an_empty_shard_is_reported_level() {
         &marks,
         None,
         &mut cursors,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
 
@@ -77,7 +77,7 @@ async fn a_follower_that_refused_is_not_reported_as_able_to_lead() {
     let router = router(LOCAL, &["broker-b"], 4);
     let follower = RefusingFollower;
     let marks = QuorumMarks::new();
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
 
     let pass = replicate_once(
         &follower,
@@ -86,9 +86,9 @@ async fn a_follower_that_refused_is_not_reported_as_able_to_lead() {
         &marks,
         None,
         &mut cursors,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
 
@@ -107,7 +107,7 @@ async fn a_shard_led_elsewhere_is_not_reported() {
     let router = router("broker-b", &[LOCAL], 4);
     let follower = AcceptingFollower::default();
     let marks = QuorumMarks::new();
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
 
     let pass = replicate_once(
         &follower,
@@ -116,9 +116,9 @@ async fn a_shard_led_elsewhere_is_not_reported() {
         &marks,
         None,
         &mut cursors,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
 
@@ -135,7 +135,7 @@ async fn a_shard_led_alone_reports_its_generation() {
     let router = router(LOCAL, &[], 4);
     let follower = AcceptingFollower::default();
     let marks = QuorumMarks::new();
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
 
     let pass = replicate_once(
         &follower,
@@ -144,9 +144,9 @@ async fn a_shard_led_alone_reports_its_generation() {
         &marks,
         None,
         &mut cursors,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
 
@@ -411,7 +411,7 @@ async fn a_failed_replica_report_holds_the_quorum_mark_back() {
     let router = router(LOCAL, &["broker-b"], 4);
     let follower = AcceptingFollower::default();
     let marks = QuorumMarks::new();
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
 
     // A control plane that refuses every report.
     let app = axum::Router::new().route(
@@ -449,9 +449,9 @@ async fn a_failed_replica_report_holds_the_quorum_mark_back() {
         &marks,
         Some(&reporter),
         &mut cursors,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
 
@@ -643,10 +643,10 @@ async fn a_slow_control_plane_does_not_stall_the_remaining_followers() {
         &router,
         &marks,
         Some(&reporter),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
 
@@ -751,10 +751,10 @@ async fn pass_with_a_publish_behind_the_report(
         &router(LOCAL, &["broker-b"], 4),
         marks,
         Some(&reporter),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
     server.abort();
@@ -842,10 +842,10 @@ async fn a_new_leader_names_no_follower_before_it_answers() {
         &router(LOCAL, &["broker-b", "broker-c"], 4),
         &QuorumMarks::new(),
         None,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
 
@@ -869,10 +869,10 @@ async fn a_new_leader_names_a_follower_holding_what_it_inherited() {
         &router(LOCAL, &["broker-b"], 4),
         &QuorumMarks::new(),
         None,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
 

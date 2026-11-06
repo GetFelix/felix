@@ -294,7 +294,7 @@ async fn the_tracker_waits_for_queued_publishes_and_their_completions() -> Resul
 /// the queue, and then lets it be claimed -- which must refuse it and write
 /// nothing, since the drained report may already have gone out.
 mod fence {
-    use std::collections::HashMap;
+    use felix_common::random::HashMap;
 
     use super::*;
     use crate::serving::quic::handlers::publish::route::{
@@ -325,7 +325,7 @@ mod fence {
                 ingress: Some(&leader.ingress),
                 lease: None,
             },
-            &mut HashMap::new(),
+            &mut HashMap::default(),
             &mut String::new(),
             TENANT,
             NAMESPACE,
@@ -426,7 +426,7 @@ mod fence {
                 ingress: Some(&leader.ingress),
                 lease: None,
             },
-            &mut HashMap::new(),
+            &mut HashMap::default(),
             &mut String::new(),
             TENANT,
             NAMESPACE,

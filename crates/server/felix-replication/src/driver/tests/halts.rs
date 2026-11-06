@@ -22,10 +22,10 @@ async fn a_halted_follower_is_named_with_its_shard_and_reason() {
         &router,
         &marks,
         None,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
 
@@ -58,10 +58,10 @@ async fn a_shipping_follower_is_not_listed_as_halted() {
         &router,
         &marks,
         None,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
 

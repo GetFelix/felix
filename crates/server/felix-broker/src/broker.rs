@@ -258,7 +258,7 @@ impl Broker {
             headers_marked: std::sync::atomic::AtomicBool::new(false),
             headers_marking: tokio::sync::Mutex::new(()),
             trim_wait: crate::broker::trim::TRIM_WAIT,
-            producer_ids: felix_common::random::hash_state(),
+            producer_ids: felix_common::random::id_state(),
             producer_id_counter: std::sync::atomic::AtomicU64::new(0),
             record_publishers: std::sync::OnceLock::new(),
             record_headers: std::sync::OnceLock::new(),

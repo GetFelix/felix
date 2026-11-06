@@ -12,8 +12,8 @@ seed, so a failing seed can be run again.
 It lives in `crates/testing/felix-sim`. A run starts a small cluster (three
 to five brokers and a control plane), drives clients against it, injects faults
 for most of two virtual minutes, heals everything, and then checks what the
-clients saw and what the brokers ended up holding. Two virtual minutes take
-minutes of real time, not seconds (see [Running it](#running-it)).
+clients saw and what the brokers ended up holding. Two virtual minutes take a
+few seconds of real time in a release build (see [Running it](#running-it)).
 
 ## Running it
 
@@ -24,8 +24,9 @@ cargo test -p felix-sim --test seeds -- --ignored --exact seeds
 ```
 
 `FELIX_SIM_SEEDS` sets how many seeds (default 4) and `FELIX_SIM_SEED_START`
-the first one. Each seed is 120 seconds of virtual time and takes three to five
-minutes of real time with faults. The clock is paused, so waiting costs
+the first one. Each seed is 120 seconds of virtual time and takes one to ten
+seconds of real time in a release build (`--release`), and longer in a debug
+one. The clock is paused, so waiting costs
 nothing, but real work does not: starting a cluster opens a durable log for
 each of 50 to 200 shards on every broker, and every crash restart opens them
 again. The data directories are in memory, so that is CPU work and no disk
@@ -46,34 +47,46 @@ FELIX_SIM_SEED=<n> cargo test -p felix-sim --test seeds replay
 ```
 
 A replay runs the same cluster, the same faults at the same virtual times and
-the same client operations. For the interleaving beneath them to repeat too,
-build with tokio's seeded `select!`:
+the same client operations. Built with tokio's seeded `select!`, it is the
+same run, event for event:
 
 ```bash
 RUSTFLAGS="--cfg tokio_unstable" FELIX_SIM_SEED=<n> FELIX_SIM_HISTORY=run1.txt \
   cargo test -p felix-sim --release --test seeds replay
 ```
 
-`FELIX_SIM_HISTORY` writes the run's history (every operation, fault and final
-read) to a file, so two runs can be diffed.
+`FELIX_SIM_HISTORY` writes the run's trace (every fault, operation, final
+read, opened generation and finding, one per line) to a file, so two runs can
+be diffed. Without the flag the faults and operations still repeat, but tokio
+picks among ready `select!` branches at random, so the interleaving under them
+does not, and a timing-sensitive failure may need a few replays to show again.
+
+`task sim:determinism` checks that replay is exact. It runs each seed twice in
+one process and fails on the first event where the two traces differ. It
+builds with the flag in a target directory of its own, since the flag changes
+every crate's build. CI runs it on seeds 1 to 20 in the `Simulator
+determinism` job. A plain `cargo test` skips that test, because it cannot
+pass without the flag.
 
 Several things the brokers do would otherwise make two runs differ, and under
 the simulator each is held to the run's one thread and its seed. Only some of
 this is gated. The seeded randomness (`felix_common::random`), the retry
 jitter, the blocking-work runner and the clock hook exist only in debug builds
 or under the `felix-common/sim` feature; a plain release build does not have
-them. Three changes run in every build: passes over routing tables and
+them. Some changes run in every build: passes over routing tables and
 assignment sets walk in key order, the election walk starts at an offset drawn
 from the seeded source each round (the OS's randomness in a plain broker) so
-followers do not all stand on the same shards first, and the deadlines and
-backoffs read `tokio::time::Instant` instead of `std::time::Instant`.
+followers do not all stand on the same shards first, the deadlines and
+backoffs read `tokio::time::Instant` instead of `std::time::Instant`, and the
+maps hash with `ahash` instead of std's SipHash (see Map order below).
 
-- **Blocking work.** Shard opens, reads, rollovers and the log's append and
-  flush threads run on real threads in a broker, and finish in real time.
+- **Blocking work.** Shard opens, reads, rollovers, the log's append and
+  flush threads, and the membership task's checks of the data directory run
+  on real threads in a broker, and finish in real time.
   `felix_common::blocking` runs that work as a task on the simulated runtime
-  instead, once the simulator has installed its clock. Real flushes are
-  skipped too: the simulator never cuts the power, so they would only cost
-  real time.
+  instead, once the simulator has installed its clock. Flushes run too, against
+  the in-memory filesystem (see [The filesystem](#the-filesystem)),
+  where they cost no real time.
 - **Retry jitter.** Election backoff, the peer redial backoff and the
   membership report delay draw from `felix_common::jitter`, which the
   simulator seeds.
@@ -81,25 +94,35 @@ backoffs read `tokio::time::Instant` instead of `std::time::Instant`.
   replication confirmed-read slots use `felix_common::random::hash_state`,
   and storage ids, node ids and lease ids use `felix_common::random::uuid_v4`.
   Both draw from the seeded generator, so map layouts and ids repeat.
+- **Map order.** A std `HashMap` takes its hash keys from the OS, so the
+  order it is walked in, and the order it drops its entries in, differs from
+  run to run. Both decide what runs next: a `retain` that drops a quorum mark
+  wakes its waiters, a crash drops a broker's maps whole, and a pass over a map
+  starts work entry by entry. So storage, the broker, the broker service,
+  replication and the control plane take `HashMap` and `HashSet` from
+  `felix_common::random`. Those are std's maps with an `ahash` hasher whose
+  keys come from the seeded generator, even when the map is built by `collect`
+  or `Default`; outside a simulator each map gets random keys, as std's do.
+  The harness's own maps are `BTreeMap`s. A cache shard's compaction copies
+  live entries forward in log order rather than in its index's order.
 - **Wall time.** Expiry stamps and deadlines read `felix_common::clock::system_time`,
-  which is virtual time counted from the fixed simulated epoch.
+  which is virtual time counted from the fixed simulated epoch. That includes
+  the control plane's stream and cache incarnations, the cache's expiry
+  stamps and versions, retention's clock, counter timestamps and the names
+  of retired shard directories.
 - **Real-time deadlines.** The peer pool's backoff, the forward budget, the
-  routing hold and the shard lifecycle's fence timers read tokio's clock, so
-  they follow the paused clock instead of the host's.
+  routing hold, the shard lifecycle's fence timers and the log's "persist the
+  commit offset at most this often" clock read tokio's clock, so they follow
+  the paused clock instead of the host's.
 - **Walk order.** A pass over a routing table, an assignment set or the shards
   a broker stands for visits them in key order, because hash order changes
   from process to process and these passes start work shard by shard.
+- **Data directories.** Each broker's directory is named after the broker
+  (`felix-sim/b1`), not after the process, so paths hash and sort the same
+  way every run. A second simulation running at the same time in the process
+  gets a suffixed name.
 - **`select!`.** Tokio picks among ready branches at random unless the runtime
-  is given a seed, which tokio allows only under `--cfg tokio_unstable`. Without
-  that flag a replay still has the same faults and operations, but a
-  timing-sensitive failure may need a few replays to show again.
-
-Replay is not exact yet. Known gaps: storage reads the host clock in a few
-places, and the control plane draws a few ids from the
-OS. There is at least one more gap nobody has found: seed 59 still diverges by
-about 2 ms around 10.5 s of virtual time, and the cause is unknown. A replay
-can differ from the original run, so a failure may need a few replays to show
-again.
+  is given a seed, which tokio allows only under `--cfg tokio_unstable`.
 
 Seeds known to fail are kept as ignored tests named after the issue that
 tracks them.
@@ -243,24 +266,28 @@ it with `#[ignore = "#<issue>"]` in `tests/seeds.rs`.
 
 ### Known failing seeds
 
-These seeds fail today. Each is pinned in `tests/seeds.rs` as an ignored test
-named after its issue, which passes when the bug is fixed; run them with
-`cargo test -p felix-sim --test seeds -- --ignored`. The default batch
-is seeds 1 to 4. It is ignored in the workspace tests and runs in its own CI
-job on every pull request, which does not block merging until these are fixed.
+The bugs the earlier seeds found (#1941, #1943, #1948, #1949, #1955) are
+fixed, and the tests that pin them in `tests/seeds.rs` pass. Those pins check
+the one run their seed gives, so they run only with `--cfg tokio_unstable`, in
+`task sim:determinism`. The default batch of `seeds` (seeds 1 to 4) still hits
+liveness stalls (#2024, #2032, #2033), so it is ignored in the workspace tests
+and runs with `cargo test -p felix-sim --test seeds -- --ignored --exact seeds`.
+It runs in its own CI job on every pull request, which does not block merging
+until those are fixed. A seed whose bug is still open is pinned with
+`#[ignore = "#<issue>"]`; none is pinned today.
 
-| Seed | What it finds | Issue |
+Seeds 1 to 20, built with the flag, as of the change that made replay exact:
+
+| Seeds | What fails | Issue |
 | --- | --- | --- |
-| 1 | The replication driver spins on a retry with no delay and the virtual clock stops (a `stalled` finding). | [#1941](https://github.com/GetFelix/felix/issues/1941) |
-| 1, 5 | A cache get or delete after a failover or restart misses a put that a quorum acknowledged. | [#1943](https://github.com/GetFelix/felix/issues/1943) |
-| 2, 3, 4 | The same stall as seed 1, within the first minute of faults. Seeds that stall give the cluster checkers little to look at. | [#1941](https://github.com/GetFelix/felix/issues/1941) |
-| 6 | The run can stall about 55 virtual seconds in, after the control plane pause and crash: the same driver spin as seed 1. | [#1941](https://github.com/GetFelix/felix/issues/1941) |
-| 2, 6 | With the driver spin worked around: the control plane pauses, a shard leader crashes, and after the heal the restarted leader stays in `fencing`, so `ElectionSettles` reports the shard unserved. | [#1948](https://github.com/GetFelix/felix/issues/1948) |
-| 2, 6 | With the driver spin worked around: after the heal a leader's committed mark stays below its log tail, so the shard cannot be read (`final-reads`). | [#1949](https://github.com/GetFelix/felix/issues/1949) |
-| 4 | With the driver spin worked around: a broker frozen while its cache shards moved serves them again at the old generation next to the new leader (`AtMostOneServing`). | [#1955](https://github.com/GetFelix/felix/issues/1955) |
+| 1, 3, 4, 5, 6, 13, 14, 19 | Nothing: they pass. | |
+| 7, 8, 10, 12, 15, 16, 17, 18, 20 | After the heal some shards are served by nobody (`ElectionSettles`), so they cannot be read (`final-reads`). The census shows the control plane still naming the old leader while the brokers route to an elected one. | not filed yet |
+| 2, 11 | A shard cannot be read to its tail after the heal (`final-reads`). | not filed yet |
+| 9 | The history checker finds a read that misses an append acknowledged before it began (rule 16, G-single-realtime). | not filed yet |
 
-A stalled run may not stall on another replay: the brokers' interleaving
-differs, and seed 2 ran to the end the first time and stalled the second.
+Any change to the code a run executes can move a seed from one row to
+another, because the run takes a different path from the first difference
+on. Rerun the seeds rather than trusting this table.
 
 ## What runs for real and what is simulated
 

@@ -54,7 +54,7 @@
 //!
 //! [`run_seed_with`]: crate::run::run_seed_with
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::BTreeSet;
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
@@ -205,7 +205,7 @@ pub fn seen_by_all(cluster: &SimCluster, key: &ShardKey) -> Vec<Seen> {
 #[derive(Debug)]
 pub(crate) struct Digest {
     show: usize,
-    seen: HashSet<String>,
+    seen: BTreeSet<String>,
     shown: usize,
     hidden: usize,
 }
@@ -214,7 +214,7 @@ impl Digest {
     pub(crate) fn new(show: usize) -> Self {
         Self {
             show,
-            seen: HashSet::new(),
+            seen: BTreeSet::new(),
             shown: 0,
             hidden: 0,
         }

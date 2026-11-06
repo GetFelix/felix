@@ -4,7 +4,7 @@
 //! data directory), one [`SimControlPlane`] and one [`SimNet`], all in one
 //! process on a paused, single-threaded tokio runtime. Nothing here touches a
 //! socket, and waiting costs no real time, but opening each shard's log does,
-//! so a run takes minutes of real time for two minutes of cluster time.
+//! so a run takes seconds of real time (release) for two minutes of cluster time.
 //!
 //! [`SimCluster::start`] builds the cluster and waits until it works:
 //!
