@@ -1396,6 +1396,31 @@ the same report named for it, so a follower back under a new id after a crash
 or a wipe does not vote with the copy it has now (#1335; see
 `docs/replication-design.md`, "Fencing a promotion").
 
+### The control-plane view
+
+A cluster member also keeps `<root>/controlplane.view`: a copy of what the
+control plane last told it about its own shards. That is the fleet's
+finalized features, the assignment of every shard the node is in, the
+addresses of the nodes those assignments name, and the catalog entries those
+shards open at. It is there so that a broker restarted while the control
+plane is down can start from it
+([#1196](https://github.com/GetFelix/felix/issues/1196)). Nothing reads it
+yet.
+
+A background task builds the view from what the broker holds in memory and
+rewrites the file when the view changed, at most once a second and once more
+at a clean stop. It writes nothing until the broker has registered in this
+process and taken a routes snapshot and a catalog snapshot, so every part of
+a view on disk is an answer the control plane gave this broker. The parts
+are read one after another, so they can differ by as much as the routes and
+catalog feeds differ at any moment on a running broker. The file is replaced
+whole by a synced rename, so a crash leaves the older view or the newer one.
+Losing the last second of changes leaves an older view.
+
+A file that is damaged, cut short, from another format version, or another
+node's reads as absent, and the broker then waits for the control plane as
+before. The format is in `docs/storage-format.md`, "`controlplane.view`".
+
 ## Restoring to a backup point
 
 A backup point (see

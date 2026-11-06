@@ -483,6 +483,7 @@ where
     // The same, for the peer listener's handshake, which must tell "not
     // registered yet" from incarnation 0 and learn when it changes.
     let (registered, registered_watch) = tokio::sync::watch::channel(None);
+    let view_registered = registered_watch.clone();
     let membership = membership::spawn(
         &config,
         gate_readiness_on_sync,
@@ -541,6 +542,30 @@ where
         sync_shutdown: &sync_shutdown,
     });
 
+    // Only where a restart could start from it: a cluster member with a data
+    // directory whose routes come from the shard watch.
+    // Its own token, so its last write comes after the feeds have stopped.
+    let view_shutdown = CancellationToken::new();
+    let controlplane_view = match (&config.membership, &cluster, &durable_storage, &shard_tasks) {
+        (Some(membership), Some((router, _, _, ownership)), Some(storage), Some(_)) => {
+            Some(crate::cluster::controlplane_view::spawn(
+                crate::cluster::controlplane_view::Sources {
+                    node_id: membership.node_id.clone(),
+                    storage_id,
+                    registered: view_registered,
+                    fleet: Arc::clone(&fleet),
+                    catalog_seeded: catalog_seeded.clone(),
+                    ownership: Arc::clone(ownership),
+                    router: Arc::clone(router),
+                    broker: Arc::clone(&broker),
+                },
+                storage.root().to_path_buf(),
+                view_shutdown.clone(),
+            ))
+        }
+        _ => None,
+    };
+
     // After the last bind: anything bound below here could fail after ready.
     listening.cancel();
 
@@ -569,6 +594,7 @@ where
         shard_tasks,
         sync_shutdown,
         controlplane_task,
+        controlplane_view: controlplane_view.map(|task| (task, view_shutdown)),
         storage: shutdown::Storage {
             broker: Arc::clone(&broker),
             run: durable_storage
