@@ -422,7 +422,8 @@ async fn a_round_trip_does_not_wait_behind_other_shards_batches() {
         );
     }
     // Generous: in turn this is BATCHES * STORE = 1.6 s.
-    assert!(took < 8 * STORE, "{BATCHES} batches took {took:?}");
+    // Two waves at the stream's limit is 2 x STORE; in turn it would be 32 x.
+    assert!(took < 16 * STORE, "{BATCHES} batches took {took:?}");
 
     pool.shutdown().await;
     listener.stop().await;
@@ -501,6 +502,69 @@ async fn record_batches_stored_at_once_are_bounded_across_streams() {
     let answer = tokio::time::timeout(Duration::from_secs(2), read_frame(&mut recv))
         .await
         .expect("answered once the held batches finish");
+    assert!(
+        matches!(answer, Ok(Incoming::Message(InternalMessage::ReplicateOk(ref ok))) if ok.correlation_id == 4)
+    );
+
+    connection.close(0u32.into(), b"done");
+    listener.stop().await;
+}
+
+/// **A batch that overran still counts against the broker-wide limit.** Its
+/// stream is given up, but the handler runs on with the batch in memory, so
+/// the batches a requester sends on fresh streams wait for it to finish.
+#[tokio::test]
+async fn an_overrun_batch_keeps_its_place_in_the_broker_wide_limit() {
+    use crate::peer::server::{MAX_CONCURRENT_BATCHES_PER_STREAM, MAX_SERVED_BATCHES};
+
+    let open = Arc::new(tokio::sync::Semaphore::new(0));
+    let gated = Arc::new(Gated {
+        open: Arc::clone(&open),
+        held: AtomicUsize::new(0),
+    });
+    let listener = Listener::start_on(
+        PEER,
+        Arc::clone(&gated) as _,
+        PeerTransportConfig {
+            request_timeout: Duration::from_millis(300),
+            ..config()
+        },
+    )
+    .await;
+    let connection = connect(&listener).await;
+    let mut streams = vec![greet(&connection, Some(PeerCapabilities::LANE_RENEWAL)).await];
+    while streams.len() < MAX_SERVED_BATCHES / MAX_CONCURRENT_BATCHES_PER_STREAM {
+        streams.push(connection.open_bi().await.expect("open"));
+    }
+    let mut id = 10;
+    for (send, _recv) in &mut streams {
+        for _ in 0..MAX_CONCURRENT_BATCHES_PER_STREAM {
+            write_frame(send, &record(id, STALL)).await.expect("stall");
+            id += 1;
+        }
+    }
+    // Every one of those streams is given up once its batches overrun.
+    for (_send, recv) in &mut streams {
+        let ended = tokio::time::timeout(Duration::from_secs(5), read_frame(recv))
+            .await
+            .expect("the stream was given up");
+        assert!(!matches!(ended, Ok(Incoming::Message(_))));
+    }
+    assert_eq!(gated.held.load(Ordering::SeqCst), MAX_SERVED_BATCHES);
+
+    let (mut send, mut recv) = connection.open_bi().await.expect("open another");
+    write_frame(&mut send, &record(4, 1)).await.expect("record");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), read_frame(&mut recv))
+            .await
+            .is_err(),
+        "a batch was stored while the overrun ones still held their batches"
+    );
+
+    open.add_permits(MAX_SERVED_BATCHES);
+    let answer = tokio::time::timeout(Duration::from_secs(2), read_frame(&mut recv))
+        .await
+        .expect("answered once the overrun batches finish");
     assert!(
         matches!(answer, Ok(Incoming::Message(InternalMessage::ReplicateOk(ref ok))) if ok.correlation_id == 4)
     );

@@ -247,10 +247,12 @@ would only send it again. So one stream holds at most 17 batches in memory: 16
 being stored and one read. Across every connection a broker stores at most 256
 batches at once, each about the leader's 1 MiB batch budget plus one record,
 so a follower holds roughly 256 MiB of batches however many peers and streams
-it serves. A stream that finds that limit taken also stops reading. A batch whose handler overruns the requester's
-timeout ends its stream, as an overrun request answered in turn does. Every
-other request on a stream, bootstraps and rebuilds
-included, is answered in turn. Requesters have always matched by correlation
+it serves. A stream that finds that limit taken also stops reading. A batch whose handler overruns this broker's peer
+request timeout ends its stream, as an overrun request answered in turn does,
+but only for a requester that offered stream renewal; an older requester's
+stream waits for it. The overrun handler runs on and keeps its place in the
+broker-wide limit until it finishes. Every other request on a stream,
+bootstraps and rebuilds included, is answered in turn. Requesters have always matched by correlation
 id alone, so this needs no capability bit.
 
 Record batches are not answered in turn because a leader ships many shards at

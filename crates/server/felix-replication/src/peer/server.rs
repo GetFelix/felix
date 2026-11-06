@@ -779,10 +779,14 @@ async fn serve_connection(
                         let learner_acks = Arc::clone(&learner_acks);
                         let given_up = given_up.clone();
                         let bound = handler_bound(&renews, &offered);
-                        let handling =
-                            app.spawn(async move { handler.handle_from(peer, request).await });
+                        // The broker-wide permit goes with the handler, which
+                        // runs on after an overrun and still holds its batch.
+                        let handling = app.spawn(async move {
+                            let _served = served;
+                            handler.handle_from(peer, request).await
+                        });
                         app.spawn(async move {
-                            let _permits = (permit, served);
+                            let _permit = permit;
                             let handled = tokio::time::timeout(bound, handling).await;
                             let Ok(Ok(response)) = handled else {
                                 // As for a request answered in turn: the

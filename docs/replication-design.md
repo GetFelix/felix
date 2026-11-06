@@ -2368,7 +2368,8 @@ replace a log, so they are still answered in turn.
 > `record_batches_on_one_stream_are_stored_side_by_side`,
 > `a_round_trip_does_not_wait_behind_other_shards_batches`,
 > `the_listener_gives_up_a_stream_whose_record_batches_overran`,
-> `record_batches_stored_at_once_are_bounded_across_streams`, and in the cluster suite
+> `record_batches_stored_at_once_are_bounded_across_streams`,
+> `an_overrun_batch_keeps_its_place_in_the_broker_wide_limit`, and in the cluster suite
 > `forwarded_quorum_publishes_from_every_broker_do_not_time_out`.
 
 **A slow fence does not hold up a read round or a ping.** Fences, tail
