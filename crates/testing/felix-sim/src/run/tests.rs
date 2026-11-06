@@ -54,3 +54,11 @@ fn first_difference_names_the_first_event_that_differs() {
         "{found}"
     );
 }
+
+/// A replay must build with the seeded `select!`; without it the run under
+/// the same faults can differ.
+#[test]
+fn the_replay_command_builds_with_a_seeded_select() {
+    let outcome = failed_start(7, small(), String::new(), Duration::ZERO);
+    assert_eq!(outcome.replay_command(), "FELIX_SIM_SEED=7 task sim:replay");
+}
