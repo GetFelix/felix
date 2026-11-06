@@ -59,6 +59,17 @@ pub(super) const MAX_CONCURRENT_BATCHES_PER_STREAM: usize = 16;
 /// this many, each about the leader's 1 MiB batch budget plus one record.
 pub(super) const MAX_SERVED_BATCHES: usize = 256;
 
+/// Record batches one peer node may have being stored at once, on any of its
+/// connections. A peer whose stores stall would otherwise take every
+/// broker-wide permit and stop all other peers' streams reading. 64 is four
+/// streams at their own limit, and about three times the depth a leader
+/// reached on one lane at failover scale (mean 16 to 23).
+pub(super) const MAX_SERVED_BATCHES_PER_PEER: usize = 64;
+
+/// Per-peer batch limits by the peer's node id, so a reconnect does not
+/// reset one. One entry per node that ever greeted this broker.
+type PeerBatches = Arc<parking_lot::Mutex<std::collections::HashMap<Arc<str>, Arc<Semaphore>>>>;
+
 /// What answers a peer's request.
 ///
 /// The broker implements it with `BrokerPeerHandler` (#106). A listener built
@@ -181,6 +192,7 @@ pub struct PeerServer {
     handler_timeout: std::time::Duration,
     served_forwards: Arc<Semaphore>,
     served_batches: Arc<Semaphore>,
+    peer_batches: PeerBatches,
     /// `Some` when peers must present a certificate, and the name a peer
     /// claims in `Hello` is held to it.
     tls: Option<Arc<tls::PeerTls>>,
@@ -239,6 +251,7 @@ impl PeerServer {
             handler_timeout: config.request_timeout,
             served_forwards: Arc::new(Semaphore::new(config.max_served_forwards.max(1))),
             served_batches: Arc::new(Semaphore::new(MAX_SERVED_BATCHES)),
+            peer_batches: PeerBatches::default(),
             tls,
             app,
             capabilities: config.capabilities(),
@@ -377,6 +390,7 @@ impl PeerServer {
                 handler_timeout: self.handler_timeout,
                 served_forwards: Arc::clone(&self.served_forwards),
                 served_batches: Arc::clone(&self.served_batches),
+                peer_batches: Arc::clone(&self.peer_batches),
             };
             connection.spawn_pump(async move {
                 // The guard lives as long as the connection is served, and
@@ -404,6 +418,8 @@ struct Offered {
     served_forwards: Arc<Semaphore>,
     /// Record batches being stored across every connection.
     served_batches: Arc<Semaphore>,
+    /// Record batches being stored, by the node that sent them.
+    peer_batches: PeerBatches,
 }
 
 /// Serve every stream a peer opens on one connection.
@@ -422,6 +438,7 @@ async fn serve_connection(
     // The pool waits for `HelloOk` before it sends anything else, so no
     // request on this connection arrives before this is set.
     let identity: Arc<parking_lot::Mutex<Option<Arc<str>>>> = Arc::default();
+    let connection_batches = Arc::new(Semaphore::new(MAX_SERVED_BATCHES_PER_PEER));
     // Whether the peer replaces a stream it gets no answer on, from its
     // `Hello`. Until it says so, a stream is never dropped under it.
     let renews = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -447,6 +464,7 @@ async fn serve_connection(
         let app = app.clone();
         let offered = offered.clone();
         let identity = Arc::clone(&identity);
+        let connection_batches = Arc::clone(&connection_batches);
         let renews = Arc::clone(&renews);
         let learner_acks = Arc::clone(&learner_acks);
         connection.spawn_pump(async move {
@@ -766,6 +784,16 @@ async fn serve_connection(
                                 permit.expect("the batch semaphore is never closed")
                             }
                         };
+                        // Then the peer's, so a peer past its share waits here
+                        // without holding a broker-wide permit.
+                        let of_peer = peer_batch_limit(&offered, &identity, &connection_batches);
+                        let of_peer = tokio::select! {
+                            _ = shutdown.cancelled() => break,
+                            _ = given_up.cancelled() => break,
+                            permit = of_peer.acquire_owned() => {
+                                permit.expect("the batch semaphore is never closed")
+                            }
+                        };
                         let served = tokio::select! {
                             _ = shutdown.cancelled() => break,
                             _ = given_up.cancelled() => break,
@@ -779,10 +807,10 @@ async fn serve_connection(
                         let learner_acks = Arc::clone(&learner_acks);
                         let given_up = given_up.clone();
                         let bound = handler_bound(&renews, &offered);
-                        // The broker-wide permit goes with the handler, which
-                        // runs on after an overrun and still holds its batch.
+                        // The peer and broker-wide permits go with the handler,
+                        // which runs on after an overrun and still holds its batch.
                         let handling = app.spawn(async move {
-                            let _served = served;
+                            let _served = (of_peer, served);
                             handler.handle_from(peer, request).await
                         });
                         app.spawn(async move {
@@ -941,6 +969,24 @@ fn overloaded(request: &InternalMessage) -> InternalMessage {
 /// Who the peer said it is, for a handler that keeps ballots. Ballots name a
 /// leader by this identity, so it goes to the handler only when this broker
 /// keeps them.
+/// The limit for the peer a stream belongs to. A stream that has not said
+/// hello has no node id yet, so its connection gets a limit of its own.
+fn peer_batch_limit(
+    offered: &Offered,
+    identity: &parking_lot::Mutex<Option<Arc<str>>>,
+    connection_limit: &Arc<Semaphore>,
+) -> Arc<Semaphore> {
+    let Some(node) = identity.lock().clone() else {
+        return Arc::clone(connection_limit);
+    };
+    let mut peers = offered.peer_batches.lock();
+    Arc::clone(
+        peers
+            .entry(node)
+            .or_insert_with(|| Arc::new(Semaphore::new(MAX_SERVED_BATCHES_PER_PEER))),
+    )
+}
+
 fn ballot_identity(
     offered: &Offered,
     identity: &parking_lot::Mutex<Option<Arc<str>>>,

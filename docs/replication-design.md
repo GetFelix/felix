@@ -2354,8 +2354,8 @@ timing out for as long as it lives. Per-shard order is the driver's,
 not the stream's: it has at most one exchange outstanding per follower and log.
 
 **A batch does not wait behind other shards' batches.** A follower stores the
-record batches on one stream side by side, up to 16 at once per stream and 256
-across the broker, and answers each as it finishes. Stored in turn, a leader shipping many shards over a few
+record batches on one stream side by side, up to 16 at once per stream, 64 per peer
+node and 256 across the broker, and answers each as it finishes. Stored in turn, a leader shipping many shards over a few
 streams saw each round trip grow with the batches queued ahead of it on the
 stream, while the store itself stayed fast (#1968). Bootstraps and rebuilds
 replace a log, so they are still answered in turn.

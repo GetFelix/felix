@@ -120,10 +120,18 @@ pub(super) async fn greet(
     connection: &felix_transport::QuicConnection,
     capabilities: Option<PeerCapabilities>,
 ) -> (quinn::SendStream, quinn::RecvStream) {
+    greet_as(connection, "broker-a", capabilities).await
+}
+
+async fn greet_as(
+    connection: &felix_transport::QuicConnection,
+    node_id: &str,
+    capabilities: Option<PeerCapabilities>,
+) -> (quinn::SendStream, quinn::RecvStream) {
     let (mut send, mut recv) = connection.open_bi().await.expect("open");
     let hello = InternalMessage::Hello(Hello {
         correlation_id: 1,
-        node_id: "broker-a".to_string(),
+        node_id: node_id.to_string(),
         capabilities,
     });
     write_frame(&mut send, &hello).await.expect("hello");
@@ -453,6 +461,39 @@ impl PeerRequestHandler for Gated {
     }
 }
 
+/// Stalls batches from enough peers to hold every broker-wide permit, each
+/// peer at its own limit. Returns the first peer's connection and every stream.
+async fn fill_broker(
+    listener: &Listener,
+    capabilities: Option<PeerCapabilities>,
+) -> (
+    felix_transport::QuicConnection,
+    Vec<(quinn::SendStream, quinn::RecvStream)>,
+) {
+    use crate::peer::server::{
+        MAX_CONCURRENT_BATCHES_PER_STREAM, MAX_SERVED_BATCHES, MAX_SERVED_BATCHES_PER_PEER,
+    };
+    let mut first = None;
+    let mut streams = Vec::new();
+    let mut id = 10;
+    for peer in 0..MAX_SERVED_BATCHES / MAX_SERVED_BATCHES_PER_PEER {
+        let connection = connect(listener).await;
+        let mut mine = vec![greet_as(&connection, &format!("peer-{peer}"), capabilities).await];
+        while mine.len() < MAX_SERVED_BATCHES_PER_PEER / MAX_CONCURRENT_BATCHES_PER_STREAM {
+            mine.push(connection.open_bi().await.expect("open"));
+        }
+        for (send, _recv) in &mut mine {
+            for _ in 0..MAX_CONCURRENT_BATCHES_PER_STREAM {
+                write_frame(send, &record(id, STALL)).await.expect("stall");
+                id += 1;
+            }
+        }
+        streams.extend(mine);
+        first.get_or_insert(connection);
+    }
+    (first.expect("a peer"), streams)
+}
+
 /// **The batches a follower stores at once are bounded across streams.**
 /// Each stream holds up to its own limit, so without a broker-wide one the
 /// batches in memory grow with every stream a peer opens. Once the
@@ -460,7 +501,7 @@ impl PeerRequestHandler for Gated {
 /// of them to finish.
 #[tokio::test]
 async fn record_batches_stored_at_once_are_bounded_across_streams() {
-    use crate::peer::server::{MAX_CONCURRENT_BATCHES_PER_STREAM, MAX_SERVED_BATCHES};
+    use crate::peer::server::MAX_SERVED_BATCHES;
 
     let open = Arc::new(tokio::sync::Semaphore::new(0));
     let gated = Arc::new(Gated {
@@ -468,19 +509,8 @@ async fn record_batches_stored_at_once_are_bounded_across_streams() {
         held: AtomicUsize::new(0),
     });
     let listener = Listener::start_on(PEER, Arc::clone(&gated) as _, config()).await;
-    let connection = connect(&listener).await;
     // An older requester, so nothing is given up while the batches wait.
-    let mut streams = vec![greet(&connection, None).await];
-    while streams.len() < MAX_SERVED_BATCHES / MAX_CONCURRENT_BATCHES_PER_STREAM {
-        streams.push(connection.open_bi().await.expect("open"));
-    }
-    let mut id = 10;
-    for (send, _recv) in &mut streams {
-        for _ in 0..MAX_CONCURRENT_BATCHES_PER_STREAM {
-            write_frame(send, &record(id, STALL)).await.expect("stall");
-            id += 1;
-        }
-    }
+    let (connection, _streams) = fill_broker(&listener, None).await;
     tokio::time::timeout(Duration::from_secs(5), async {
         while gated.held.load(Ordering::SeqCst) < MAX_SERVED_BATCHES {
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -515,7 +545,7 @@ async fn record_batches_stored_at_once_are_bounded_across_streams() {
 /// the batches a requester sends on fresh streams wait for it to finish.
 #[tokio::test]
 async fn an_overrun_batch_keeps_its_place_in_the_broker_wide_limit() {
-    use crate::peer::server::{MAX_CONCURRENT_BATCHES_PER_STREAM, MAX_SERVED_BATCHES};
+    use crate::peer::server::MAX_SERVED_BATCHES;
 
     let open = Arc::new(tokio::sync::Semaphore::new(0));
     let gated = Arc::new(Gated {
@@ -531,18 +561,8 @@ async fn an_overrun_batch_keeps_its_place_in_the_broker_wide_limit() {
         },
     )
     .await;
-    let connection = connect(&listener).await;
-    let mut streams = vec![greet(&connection, Some(PeerCapabilities::LANE_RENEWAL)).await];
-    while streams.len() < MAX_SERVED_BATCHES / MAX_CONCURRENT_BATCHES_PER_STREAM {
-        streams.push(connection.open_bi().await.expect("open"));
-    }
-    let mut id = 10;
-    for (send, _recv) in &mut streams {
-        for _ in 0..MAX_CONCURRENT_BATCHES_PER_STREAM {
-            write_frame(send, &record(id, STALL)).await.expect("stall");
-            id += 1;
-        }
-    }
+    let (connection, mut streams) =
+        fill_broker(&listener, Some(PeerCapabilities::LANE_RENEWAL)).await;
     // Every one of those streams is given up once its batches overrun.
     for (_send, recv) in &mut streams {
         let ended = tokio::time::timeout(Duration::from_secs(5), read_frame(recv))
@@ -570,5 +590,64 @@ async fn an_overrun_batch_keeps_its_place_in_the_broker_wide_limit() {
     );
 
     connection.close(0u32.into(), b"done");
+    listener.stop().await;
+}
+
+/// **One peer cannot take the broker-wide limit.** A peer whose stores stall
+/// holds at most its own share, across connections and reconnects, and
+/// another peer's batch is still stored.
+#[tokio::test]
+async fn one_stalled_peer_holds_only_its_share_of_the_broker() {
+    use crate::peer::server::{MAX_CONCURRENT_BATCHES_PER_STREAM, MAX_SERVED_BATCHES_PER_PEER};
+
+    let open = Arc::new(tokio::sync::Semaphore::new(0));
+    let gated = Arc::new(Gated {
+        open: Arc::clone(&open),
+        held: AtomicUsize::new(0),
+    });
+    let listener = Listener::start_on(PEER, Arc::clone(&gated) as _, config()).await;
+    // Two connections from one node: the limit follows the node.
+    let mut stalled = Vec::new();
+    let mut id = 10;
+    for _ in 0..2 {
+        let connection = connect(&listener).await;
+        let mut streams = vec![greet_as(&connection, "stalled", None).await];
+        while streams.len() < MAX_SERVED_BATCHES_PER_PEER / MAX_CONCURRENT_BATCHES_PER_STREAM {
+            streams.push(connection.open_bi().await.expect("open"));
+        }
+        for (send, _recv) in &mut streams {
+            for _ in 0..MAX_CONCURRENT_BATCHES_PER_STREAM {
+                write_frame(send, &record(id, STALL)).await.expect("stall");
+                id += 1;
+            }
+        }
+        stalled.push((connection, streams));
+    }
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while gated.held.load(Ordering::SeqCst) < MAX_SERVED_BATCHES_PER_PEER {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the peer's batches are being stored");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        gated.held.load(Ordering::SeqCst),
+        MAX_SERVED_BATCHES_PER_PEER,
+        "one peer stored past its share"
+    );
+
+    let other = connect(&listener).await;
+    let (mut send, mut recv) = greet_as(&other, "healthy", None).await;
+    write_frame(&mut send, &record(4, 1)).await.expect("record");
+    let answer = tokio::time::timeout(Duration::from_secs(2), read_frame(&mut recv))
+        .await
+        .expect("another peer's batch is stored");
+    assert!(
+        matches!(answer, Ok(Incoming::Message(InternalMessage::ReplicateOk(ref ok))) if ok.correlation_id == 4)
+    );
+
+    open.add_permits(2 * MAX_SERVED_BATCHES_PER_PEER);
+    other.close(0u32.into(), b"done");
     listener.stop().await;
 }

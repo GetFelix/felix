@@ -247,7 +247,9 @@ would only send it again. So one stream holds at most 17 batches in memory: 16
 being stored and one read. Across every connection a broker stores at most 256
 batches at once, each about the leader's 1 MiB batch budget plus one record,
 so a follower holds roughly 256 MiB of batches however many peers and streams
-it serves. A stream that finds that limit taken also stops reading. A batch whose handler overruns this broker's peer
+it serves. One peer node, on any of its connections, holds at most 64 of those
+256, so a peer whose stores stall cannot starve the others. A stream that
+finds either limit taken also stops reading. A batch whose handler overruns this broker's peer
 request timeout ends its stream, as an overrun request answered in turn does,
 but only for a requester that offered stream renewal; an older requester's
 stream waits for it. The overrun handler runs on and keeps its place in the
