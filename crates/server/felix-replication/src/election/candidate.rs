@@ -524,6 +524,7 @@ async fn run<R: PeerRequester + Send + Sync + 'static>(
         // Shards of a suspected broker first: a real outage is not held up
         // behind shards suspected alone, which get a smaller share.
         let mut order: Vec<_> = snapshot.iter().collect();
+        rotate_by_node(&mut order, local);
         order.sort_by_key(|(_, route)| !names.contains(&route.leader.node_id));
         for (key, route) in order {
             if in_flight.len() >= STANDING_AT_ONCE {
@@ -555,6 +556,23 @@ async fn run<R: PeerRequester + Send + Sync + 'static>(
             });
         }
     }
+}
+
+/// Start a key-ordered walk at an offset taken from `node_id`, wrapping
+/// around. Every broker sees the same order, and only `STANDING_AT_ONCE`
+/// shards stand per tick, so without this the followers of a dead leader all
+/// fill their slots with the same lowest-keyed shards. FNV-1a, not a seeded
+/// hasher, so the offset is the same on every run of the simulator.
+fn rotate_by_node<T>(order: &mut [T], node_id: &str) {
+    if order.is_empty() {
+        return;
+    }
+    let hash = node_id
+        .bytes()
+        .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+        });
+    order.rotate_left((hash % order.len() as u64) as usize);
 }
 
 /// Whether this broker holds a copy of `route`'s shard: a follower, or the
