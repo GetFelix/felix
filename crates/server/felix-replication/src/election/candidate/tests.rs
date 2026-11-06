@@ -607,6 +607,78 @@ async fn a_set_keeping_earlier_sets_is_not_stood_on() {
     assert_eq!(log.accepted_generation(), 3, "no ballot");
 }
 
+/// **A shard the control plane moved is stood on once its last set opened**
+/// (#2012). A follower's raises through a move (staged at 5, fenced at 6, cut
+/// over to broker-a at 7) carry an older set it holds no record of, here one
+/// naming no copies, as earlier sets. Batches at 7 raise nothing, so they
+/// stay. Once its log holds a record of 7, that fence opened and the
+/// candidate fences 7's set alone. Without one it still does not stand.
+#[tokio::test(start_paused = true)]
+async fn a_moved_shard_is_stood_on_once_its_set_opened() {
+    use felix_storage::StorageId;
+
+    let named = |generation: u64, learner: Option<&str>| {
+        let mut set = set(generation);
+        for (i, member) in set.members.iter_mut().enumerate() {
+            member.storage = Some(StorageId::from_bytes([i as u8 + 1; 16]));
+            member.learner = Some(member.node.as_str()) == learner;
+        }
+        set
+    };
+    for opened in [true, false] {
+        let (broker, _dir) = registered().await;
+        let log = shard_log(&broker, &key()).await.expect("log");
+        log.accept_generation(4, Some("broker-c"))
+            .await
+            .expect("ballot");
+        log.accept_set(ReplicaSet {
+            current: set(4),
+            leaving: None,
+            earlier: Vec::new(),
+        })
+        .await
+        .expect("set");
+        let staged = Some("broker-a");
+        for (current, leaving) in [
+            (named(5, staged), named(4, None)),
+            (named(6, staged), named(5, staged)),
+            (named(7, None), named(6, staged)),
+        ] {
+            log.accept_generation(current.generation, Some("broker-a"))
+                .await
+                .expect("ballot");
+            log.accept_set_keeping_earlier(ReplicaSet {
+                current,
+                leaving: Some(leaving),
+                earlier: Vec::new(),
+            })
+            .await
+            .expect("set");
+        }
+        let kept = log.replica_set().expect("kept");
+        assert_eq!(kept.current.generation, 7);
+        assert_eq!(kept.earlier, vec![set(4)]);
+
+        let mut ctx = ctx(&broker, voters(None));
+        ctx.router = router(7);
+        if !opened {
+            assert_eq!(
+                stand(&ctx, &key(), &route_of(&ctx)).await,
+                Round::Ineligible
+            );
+            assert_eq!(log.accepted_generation(), 7, "no ballot");
+            continue;
+        }
+        open_at(&log, 7).await;
+        let elected = tokio::time::timeout(Duration::from_secs(30), stand_and_watch(&ctx))
+            .await
+            .expect("never stood");
+        assert_eq!(elected.generation, 8);
+        assert_eq!(elected.set, named(7, None));
+        assert_eq!(elected.leaving, None, "the move's sets are past");
+    }
+}
+
 /// The place counts voters with a log ahead and granting voters with a
 /// lower node id.
 #[tokio::test]

@@ -1078,7 +1078,12 @@ fn standing_sets<R>(
     // Earlier sets are kept only while a fence leaving them never opened, so a
     // majority of one may hold an acknowledged write no later set does. The
     // candidate's fence leaves one set, so it is left to the control plane.
-    if !kept.earlier.is_empty() {
+    // A record at the kept set's generation says that fence opened, and this
+    // log holds everything its leader inherited, up to that record. A
+    // failover reads it the same way (`unopened_sets`, `KeepsUnopened` in the
+    // model). The file drops those sets only at its next raise, so without
+    // this a moved shard could never elect (#2012).
+    if !kept.earlier.is_empty() && !log.holds_records_of(kept.current.generation) {
         return Err("the kept replica set keeps earlier sets");
     }
     // A start record at the kept set's generation is written only by the
