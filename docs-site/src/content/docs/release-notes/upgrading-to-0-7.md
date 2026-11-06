@@ -189,8 +189,9 @@ Later control-plane changes are on `main`:
 - A leader that answered another candidate's fence, when the control plane
   never adopted that candidate, reports the candidate's ballot with its refusal, and
   placement names it again one past that ballot (#1951): migration `0043`,
-  level 28. Below it the leader is named one generation up, as before, and
-  can stay stuck until something else moves the shard.
+  level 28. Below it the leader is named one generation up, as before, each
+  rename waits the same 10 s, and it can take several renames to get past
+  the ballot.
 
 In short, Postgres runs migrations `0037` to `0043` on start (`0039` to
 `0043` are on `main` only), and under Raft these features wait for metadata

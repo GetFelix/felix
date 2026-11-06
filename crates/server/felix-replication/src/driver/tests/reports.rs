@@ -1984,8 +1984,8 @@ async fn a_leader_standing_at_its_ballot_reports_no_refusal() {
 /// **An open leader that answered another node's higher fence reports its
 /// generation refused once that node has had time to open** (#1951). It
 /// stepped down when its copy took the ballot; if the candidate withdraws,
-/// nobody suspects this live broker and nobody stands again, so without the
-/// report the shard is never served. Not before [`BALLOT_ELSEWHERE_FOR`]: a
+/// this live broker is not suspected, and only per-shard suspicion would
+/// stand again, minutes later. Not before [`BALLOT_ELSEWHERE_FOR`]: a
 /// candidate that opens moves the route on first.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_leader_past_its_generation_by_another_ballot_reports_the_refusal() {
