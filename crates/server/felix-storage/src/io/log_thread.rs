@@ -104,12 +104,19 @@ impl LogThread {
             let _ = reply.send(result);
             then(after);
         });
-        if let Err(job) = self.submit(job) {
+        // Under a simulator the job runs on the simulated runtime, as if no
+        // thread could be started.
+        let submitted = if felix_common::blocking::on_runtime() {
+            Err(job)
+        } else {
+            self.submit(job)
+        };
+        if let Err(job) = submitted {
             // Off the thread, jobs keep their order only through whatever
             // locks they take: the append lock, for appends. Callers that
             // need submission order (a shard's claims) are serialised above.
             let pending = Arc::clone(&self.pending);
-            tokio::task::spawn_blocking(move || job(&pending))
+            felix_common::blocking::spawn(move || job(&pending))
                 .await
                 .map_err(io::Error::other)?;
         }

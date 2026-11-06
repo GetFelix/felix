@@ -409,10 +409,7 @@ impl IngressRouter {
                 }
             }
             let deadline = held.as_ref().map(hold::Held::deadline).expect("held");
-            if tokio::time::timeout_at(deadline.into(), changed)
-                .await
-                .is_err()
-            {
+            if tokio::time::timeout_at(deadline, changed).await.is_err() {
                 if let Some(hold) = held.take() {
                     hold.timed_out();
                 }
@@ -466,10 +463,7 @@ impl IngressRouter {
                 }
             }
             let deadline = held.as_ref().map(hold::Held::deadline).expect("held");
-            if tokio::time::timeout_at(deadline.into(), changed)
-                .await
-                .is_err()
-            {
+            if tokio::time::timeout_at(deadline, changed).await.is_err() {
                 if let Some(hold) = held.take() {
                     hold.timed_out();
                 }
@@ -1093,7 +1087,7 @@ struct EarlyRoutes<'a> {
         HashMap<ShardKey, crate::shards::watch::ShardAssignment>,
         HashMap<felix_router::ShardKey, felix_router::PriorSet>,
     )>,
-    last: Option<std::time::Instant>,
+    last: Option<tokio::time::Instant>,
 }
 
 /// How often a pass republishes while it opens shards. Each publish rebuilds
@@ -1114,7 +1108,7 @@ impl crate::shards::lifecycle::PassProgress for EarlyRoutes<'_> {
         let Some((routes, added_priors)) = &self.assignments else {
             return;
         };
-        self.last = Some(std::time::Instant::now());
+        self.last = Some(tokio::time::Instant::now());
         // Start from what is live, not from the last end-of-pass publish: a
         // fence finishing mid-pass publishes the servable set on its own, and
         // that adds and removes shards. Add every shard now serving at the

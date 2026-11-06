@@ -280,12 +280,17 @@ impl Elections {
     /// The shards this broker stands for or leads by election, with the
     /// generation of each.
     pub(crate) fn standing(&self) -> Vec<(ShardKey, u64)> {
-        self.entries
+        let mut standing: Vec<_> = self
+            .entries
             .lock()
             .iter()
             .filter(|(_, elected)| elected.leader == self.local_node_id)
             .map(|(key, elected)| (key.clone(), elected.generation))
-            .collect()
+            .collect();
+        // Callers act on these one after another; hash order would make a
+        // simulated run differ from its replay.
+        standing.sort();
+        standing
     }
 
     /// This broker's own standing for `key` at `generation`, if that is what

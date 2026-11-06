@@ -1076,6 +1076,7 @@ dependencies = [
  "ahash",
  "arc-swap",
  "bytes",
+ "felix-common",
  "felix-storage",
  "felix-wire",
  "hashbrown 0.17.1",
@@ -1226,6 +1227,7 @@ dependencies = [
 name = "felix-common"
 version = "0.7.0-preview.3"
 dependencies = [
+ "ahash",
  "arc-swap",
  "libc",
  "metrics",
@@ -1464,6 +1466,7 @@ dependencies = [
  "bytes",
  "crc",
  "crc32fast",
+ "felix-common",
  "io-uring",
  "libc",
  "metrics",

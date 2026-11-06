@@ -358,8 +358,9 @@ impl ForwardingHandler {
             None
         };
         // Taken before the write, as on the local path.
-        let entry_expires_at = (op.ttl_ms > 0)
-            .then(|| std::time::SystemTime::now() + std::time::Duration::from_millis(op.ttl_ms));
+        let entry_expires_at = (op.ttl_ms > 0).then(|| {
+            felix_common::clock::system_time() + std::time::Duration::from_millis(op.ttl_ms)
+        });
 
         // A read follows the lease as a write does: another broker may be
         // leading the shard by now, with writes this one never saw. A fleet

@@ -30,7 +30,8 @@ pub mod owner;
 pub use owner::ForwardingHandler;
 
 use std::net::SocketAddr;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tokio::time::Instant;
 
 use bytes::Bytes;
 use felix_wire::internal::{

@@ -145,7 +145,7 @@ impl DiskLog {
         }
         let inner = Arc::clone(&self.inner);
         let leader: Option<Arc<str>> = leader.map(Arc::from);
-        tokio::task::spawn_blocking(move || {
+        felix_common::blocking::spawn(move || {
             let mut persisted = inner.replica_persisted.lock();
             if let Some(kept) = &kept
                 && inner.replica_set.read().as_ref() != Some(kept)
@@ -206,7 +206,7 @@ impl DiskLog {
     /// to lead the generation too.
     pub async fn give_up_generation(&self) -> Result<u64> {
         let inner = Arc::clone(&self.inner);
-        tokio::task::spawn_blocking(move || {
+        felix_common::blocking::spawn(move || {
             // The writer's lock, so a raise cannot land between the read and
             // the write and be given up unseen.
             let _persisted = inner.replica_persisted.lock();

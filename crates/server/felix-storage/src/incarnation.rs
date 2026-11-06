@@ -295,6 +295,11 @@ pub(crate) fn purge_in_background(root: PathBuf) {
     }
     workers.insert(deleted.clone(), false);
     drop(workers);
+    if felix_common::blocking::on_runtime() {
+        // A simulator keeps every thread's work on its own runtime.
+        purge_until_idle(&deleted);
+        return;
+    }
     let dir = deleted.clone();
     let spawned = std::thread::Builder::new()
         .name("felix-purge-deleted".into())

@@ -45,11 +45,63 @@ FELIX_SIM_SEED=<n> cargo test -p felix-sim --test seeds replay
 ```
 
 A replay runs the same cluster, the same faults at the same virtual times and
-the same client operations. It is close to exact but not guaranteed: some of
-the code under test still draws its own randomness (election backoff jitter,
-hash map order) from the process, so a timing-sensitive failure may need a few
-replays to show again. Seeds known to fail are kept as ignored tests named
-after the issue that tracks them.
+the same client operations. For the interleaving beneath them to repeat too,
+build with tokio's seeded `select!`:
+
+```bash
+RUSTFLAGS="--cfg tokio_unstable" FELIX_SIM_SEED=<n> FELIX_SIM_HISTORY=run1.txt \
+  cargo test -p felix-sim --release --test seeds replay
+```
+
+`FELIX_SIM_HISTORY` writes the run's history (every operation, fault and final
+read) to a file, so two runs can be diffed.
+
+Several things the brokers do would otherwise make two runs differ, and under
+the simulator each is held to the run's one thread and its seed. Only some of
+this is gated. The seeded randomness (`felix_common::random`), the retry
+jitter, the blocking-work runner and the clock hook exist only in debug builds
+or under the `felix-common/sim` feature; a plain release build does not have
+them. Three changes run in every build: passes over routing tables and
+assignment sets walk in key order, the election walk starts at an offset drawn
+from the seeded source each round (the OS's randomness in a plain broker) so
+followers do not all stand on the same shards first, and the deadlines and
+backoffs read `tokio::time::Instant` instead of `std::time::Instant`.
+
+- **Blocking work.** Shard opens, reads, rollovers and the log's append and
+  flush threads run on real threads in a broker, and finish in real time.
+  `felix_common::blocking` runs that work as a task on the simulated runtime
+  instead, once the simulator has installed its clock. Real flushes are
+  skipped too: the simulator never cuts the power, so they would only cost
+  real time.
+- **Retry jitter.** Election backoff, the peer redial backoff and the
+  membership report delay draw from `felix_common::jitter`, which the
+  simulator seeds.
+- **Hash keys and ids.** The broker's maps, its producer ids and the
+  replication confirmed-read slots use `felix_common::random::hash_state`,
+  and storage ids, node ids and lease ids use `felix_common::random::uuid_v4`.
+  Both draw from the seeded generator, so map layouts and ids repeat.
+- **Wall time.** Expiry stamps and deadlines read `felix_common::clock::system_time`,
+  which is virtual time counted from the fixed simulated epoch.
+- **Real-time deadlines.** The peer pool's backoff, the forward budget, the
+  routing hold and the shard lifecycle's fence timers read tokio's clock, so
+  they follow the paused clock instead of the host's.
+- **Walk order.** A pass over a routing table, an assignment set or the shards
+  a broker stands for visits them in key order, because hash order changes
+  from process to process and these passes start work shard by shard.
+- **`select!`.** Tokio picks among ready branches at random unless the runtime
+  is given a seed, which tokio allows only under `--cfg tokio_unstable`. Without
+  that flag a replay still has the same faults and operations, but a
+  timing-sensitive failure may need a few replays to show again.
+
+Replay is not exact yet. Known gaps: storage reads the host clock in a few
+places and does real file I/O, and the control plane draws a few ids from the
+OS. There is at least one more gap nobody has found: seed 59 still diverges by
+about 2 ms around 10.5 s of virtual time, and the cause is unknown. A replay
+can differ from the original run, so a failure may need a few replays to show
+again.
+
+Seeds known to fail are kept as ignored tests named after the issue that
+tracks them.
 
 The unit tests of the network, the control plane and the checkers run with the
 rest of the crate:
@@ -287,9 +339,8 @@ process does; a pause keeps it. A fault applies to every call:
 
 The deadlines, backoffs and stickiness windows the simulator runs read
 `tokio::time::Instant`, so pausing tokio's clock pauses them. A few readings
-in `felix-replication` still use the host clock, all on paths `SimNet` replaces
-or that decide nothing: the pool's dial backoff, the shipping log's
-rate limiter, and the reconnect jitter in `peer/config.rs`. With a
+in `felix-replication` still use the host clock, all on paths that decide
+nothing, such as the shipping log's rate limiter. With a
 paused runtime, tokio jumps the clock forward whenever every task is waiting,
 so a test that waits out minutes of timeouts takes far less real time.
 

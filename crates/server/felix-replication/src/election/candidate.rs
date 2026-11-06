@@ -9,7 +9,6 @@
 //! candidate's fence.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::hash::{BuildHasher, Hasher};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -525,7 +524,23 @@ async fn run<R: PeerRequester + Send + Sync + 'static>(
         // Shards of a suspected broker first: a real outage is not held up
         // behind shards suspected alone, which get a smaller share.
         let mut order: Vec<_> = snapshot.iter().collect();
-        order.sort_by_key(|(_, route)| !names.contains(&route.leader.node_id));
+        // Drawn each round with work to do, so a bad draw does not repeat on
+        // every failover and idle ticks do not move the seeded sequence.
+        let candidates = order.iter().any(|(key, route)| {
+            holds_copy(route, local)
+                && (names.contains(&route.leader.node_id) || stuck.contains(*key))
+        });
+        let offsets = if candidates {
+            [
+                felix_common::jitter::up_to(u64::MAX),
+                felix_common::jitter::up_to(u64::MAX),
+            ]
+        } else {
+            [0; 2]
+        };
+        walk_order(&mut order, offsets, |(_, route)| {
+            names.contains(&route.leader.node_id)
+        });
         for (key, route) in order {
             if in_flight.len() >= STANDING_AT_ONCE {
                 break;
@@ -554,6 +569,25 @@ async fn run<R: PeerRequester + Send + Sync + 'static>(
                 let round = stand(&ctx, &key, &route).await;
                 (key, round)
             });
+        }
+    }
+}
+
+/// Put the suspected shards first, then start each group's key-ordered walk
+/// at its offset (`offsets[0]` for suspected shards, `offsets[1]` for the
+/// rest, each modulo the group's length), wrapping around. Every broker sees
+/// the same order and only `STANDING_AT_ONCE` shards stand per tick, so
+/// without a different start per broker the followers of a dead leader all
+/// fill their slots with the same lowest-keyed shards. Rotating each group, not
+/// the whole table, keeps the offsets spread when a dead leader's shards sort
+/// together.
+fn walk_order<T>(order: &mut [T], offsets: [u64; 2], suspected: impl Fn(&T) -> bool) {
+    order.sort_by_key(|item| !suspected(item));
+    let split = order.partition_point(|item| suspected(item));
+    let (suspected, shard_only) = order.split_at_mut(split);
+    for (group, offset) in [(suspected, offsets[0]), (shard_only, offsets[1])] {
+        if !group.is_empty() {
+            group.rotate_left((offset % group.len() as u64) as usize);
         }
     }
 }
@@ -1351,10 +1385,7 @@ impl Backoff {
             .min(BACKOFF_TOP);
         self.failures += 1;
         let span = top.saturating_sub(BACKOFF_FLOOR).as_millis() as u64;
-        let jitter = std::collections::hash_map::RandomState::new()
-            .build_hasher()
-            .finish()
-            % (span + 1);
+        let jitter = felix_common::jitter::up_to(span);
         self.until = Instant::now() + BACKOFF_FLOOR + Duration::from_millis(jitter);
     }
 

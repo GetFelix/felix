@@ -1104,7 +1104,7 @@ impl RuntimePulse {
 /// the directory as older and rotates its id, which is safe.
 async fn record_registration(root: &std::path::Path, incarnation: u64) {
     let root = root.to_path_buf();
-    let written = tokio::task::spawn_blocking(move || {
+    let written = felix_common::blocking::spawn(move || {
         felix_storage::run_state::record_registration(&root, incarnation)
     })
     .await;
@@ -1157,7 +1157,7 @@ pub(crate) async fn join_refusal(
         }
         let root = root.to_path_buf();
         let found =
-            tokio::task::spawn_blocking(move || marker(&root).map_err(|err| err.to_string()))
+            felix_common::blocking::spawn(move || marker(&root).map_err(|err| err.to_string()))
                 .await
                 .unwrap_or_else(|err| Err(err.to_string()));
         let name = feature.name();
@@ -1309,13 +1309,7 @@ fn jittered(delay: Duration) -> Duration {
     if spread <= 0.0 {
         return delay;
     }
-    // Cheap and adequate: this only needs to decorrelate brokers, not resist
-    // prediction, so it avoids pulling in an RNG on the shutdown path.
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos())
-        .unwrap_or(0);
-    let fraction = f64::from(nanos) / f64::from(u32::MAX);
+    let fraction = felix_common::jitter::up_to(u64::from(u32::MAX)) as f64 / f64::from(u32::MAX);
     delay + Duration::from_secs_f64(spread * fraction)
 }
 
