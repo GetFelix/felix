@@ -85,6 +85,7 @@ async fn leading(replicas: &[&str], successor: Option<&str>, generation: u64) ->
             fence_storage_ids: Default::default(),
             member_storage_ids: Default::default(),
             pending_set: None,
+            previous_generation: None,
         },
     )]
     .into_iter()
@@ -139,6 +140,7 @@ async fn an_unreplicated_quorum_shard_is_acknowledged_by_its_leader() {
         &shard.handle,
         Some(&key("orders")),
         &shard.outcome,
+        4,
         Some(&marks),
         Some(&shard.ingress),
         QUICK,
@@ -164,6 +166,7 @@ async fn a_quorum_publish_before_a_new_generations_first_mark_waits_for_it() {
                 &shard.handle,
                 Some(&key("orders")),
                 &shard.outcome,
+                5,
                 Some(&marks),
                 Some(&shard.ingress),
                 Duration::from_secs(5),

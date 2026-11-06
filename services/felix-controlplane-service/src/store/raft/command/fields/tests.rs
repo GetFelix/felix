@@ -189,6 +189,7 @@ fn assignment() -> ShardAssignment {
             replicas: vec![s("d")],
             generation: 1,
         }),
+        previous_generation: Some(1),
     }
 }
 
@@ -484,6 +485,7 @@ fn commands() -> Vec<MetaCommand> {
             expected_generation: Some(1),
             fence: 1,
             at_least: 3,
+            record_previous: true,
         },
         MetaCommand::AdoptElectedLeader {
             key: shard_key(),

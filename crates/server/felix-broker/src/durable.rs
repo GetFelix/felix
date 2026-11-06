@@ -1009,6 +1009,12 @@ impl StreamLog {
         self.log.generations()
     }
 
+    /// Whether [`Self::generations`] labels every record in `first..=last`.
+    /// See `DiskLog::labels_known`.
+    pub fn labels_known(&self, first: Offset, last: Offset) -> bool {
+        self.log.labels_known(first, last)
+    }
+
     /// Where the oldest segment starts. Replication ships from here; a
     /// reader starts at [`Self::readable_base`].
     pub fn physical_base(&self) -> Offset {

@@ -228,6 +228,7 @@ where
         &handle,
         publish_ctx.ingress.as_ref().map(|_| key),
         &outcome,
+        generation,
         publish_ctx.marks.as_deref(),
         publish_ctx.ingress.as_deref(),
         publish_ctx.quorum_timeout,

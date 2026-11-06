@@ -116,6 +116,7 @@ impl Cluster for FakeCluster {
         _shard: &ShardRef<'_>,
         _handle: &StreamHandle,
         _outcome: &PublishOutcome,
+        _generation: u64,
     ) -> Result<(), WriteError> {
         self.consistency_waits.fetch_add(1, Ordering::SeqCst);
         match self.consistency_error.lock().expect("lock").take() {

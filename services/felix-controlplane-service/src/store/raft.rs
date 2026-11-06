@@ -114,6 +114,10 @@ const OWN_LEADER_SET_LEVEL: u16 = 27;
 /// carries and name it past that ballot (#1951).
 const REFUSED_BALLOT_LEVEL: u16 = 28;
 
+/// The metadata level whose members record the generation a write past the
+/// next one replaced (#2024).
+const PREVIOUS_GENERATION_LEVEL: u16 = 29;
+
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
     MetaCommand, MetaError, MetaResponse, decode_result, encode_command,
@@ -200,6 +204,9 @@ impl RaftStore {
         if !assignment.learners.is_empty() && self.group_level().await < LEARNER_LEVEL {
             assignment.learners.clear();
         }
+        // Store-owned: the apply decides it, and a value copied from the
+        // assignment being replaced would only raise the entry's level.
+        assignment.previous_generation = None;
     }
 
     /// Whether a delete takes the deleted resources' shard assignments and
@@ -905,6 +912,9 @@ impl ControlPlaneStore for RaftStore {
                     } else {
                         0
                     },
+                    // Only a floor can skip generations; other writes keep
+                    // the level they had.
+                    record_previous: at_least > 0 && level >= PREVIOUS_GENERATION_LEVEL,
                 },
             )
             .await?
@@ -1044,6 +1054,10 @@ impl ControlPlaneStore for RaftStore {
 
     async fn first_shard_assignments(&self) -> StoreResult<Vec<(ShardKey, u64, u64)>> {
         self.local().first_shard_assignments().await
+    }
+
+    async fn previous_shard_assignments(&self) -> StoreResult<Vec<ShardAssignment>> {
+        self.local().previous_shard_assignments().await
     }
 
     async fn shard_assignment_changes(

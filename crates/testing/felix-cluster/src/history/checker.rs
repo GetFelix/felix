@@ -302,16 +302,44 @@ enum Source {
 
 impl ListCheck<'_> {
     fn run(&mut self) {
-        let Some(final_read) = self.history.final_reads.get(self.list) else {
-            self.out.push(malformed(self.list, "no final read"));
-            return;
+        let seen;
+        let unread = self.history.unread_lists.contains(self.list);
+        let final_read = match self.history.final_reads.get(self.list) {
+            Some(read) => read,
+            None if unread => {
+                seen = self.seen_in_reads();
+                &seen
+            }
+            None => {
+                self.out.push(malformed(self.list, "no final read"));
+                return;
+            }
         };
-        self.final_read_is_whole(final_read);
+        if !unread {
+            self.final_read_is_whole(final_read);
+        }
         let positions = self.reads_agree(final_read);
-        if self.spec.consistency == Consistency::Quorum {
+        if self.spec.consistency == Consistency::Quorum && !unread {
             self.acknowledged_appends_survive(final_read, &positions);
         }
         self.real_time_order(&positions);
+    }
+
+    /// Stands in for a final read that could not be taken: every offset a read
+    /// saw, the first sighting winning. Reads then agree with it unless they
+    /// disagree with each other.
+    fn seen_in_reads(&self) -> Vec<Element> {
+        let mut seen: BTreeMap<u64, Element> = BTreeMap::new();
+        for op in &self.history.ops {
+            if let Action::Read { list, observed } = &op.action
+                && list == self.list
+            {
+                for element in observed.iter().filter(|e| e.offset >= self.spec.base) {
+                    seen.entry(element.offset).or_insert(*element);
+                }
+            }
+        }
+        seen.into_values().collect()
     }
 
     /// The final read starts at the base and has no holes, or nothing that

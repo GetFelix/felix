@@ -776,6 +776,7 @@ async fn shard_renewal_waits_for_every_member() {
                     member_storage_ids: Default::default(),
                     learners: Default::default(),
                     pending_set: None,
+                    previous_generation: None,
                 })
                 .await
                 .expect("assign");
@@ -862,6 +863,7 @@ async fn deletes_take_shard_state_only_once_every_member_does() {
                     member_storage_ids: Default::default(),
                     learners: Default::default(),
                     pending_set: None,
+                    previous_generation: None,
                 })
                 .await
                 .expect("assign");
@@ -1060,6 +1062,7 @@ async fn halted_copies_wait_for_every_member_and_the_report_does_not() {
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
+            previous_generation: None,
         })
         .await
         .expect("assign");
@@ -1178,6 +1181,7 @@ async fn a_refused_ballot_waits_for_every_member() {
         member_storage_ids: Default::default(),
         learners: Default::default(),
         pending_set: None,
+        previous_generation: None,
     };
     let assigned = store
         .put_shard_assignment(assignment.clone())
@@ -1270,6 +1274,96 @@ async fn a_refused_ballot_waits_for_every_member() {
     assert_eq!(rename(one_up).await, one_up + 4);
 }
 
+/// A member before level 29 would not record the generation a rename past a
+/// ballot replaced, and its copy of the assignment would differ from the
+/// others' (#2024). So while one is in the group nothing is recorded; once
+/// every member has the level, the rename names it.
+#[tokio::test]
+async fn a_previous_generation_waits_for_every_member() {
+    use crate::model::{ShardAssignment, ShardKey, ShardKind, ShardState};
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), PREVIOUS_GENERATION_LEVEL - 1).await;
+    store
+        .create_stream(routed_stream("orders", Default::default()))
+        .await
+        .expect("stream");
+    for (id, port) in [("broker-x", 7101), ("broker-y", 7102)] {
+        store
+            .register_node(crate::store::contract::nodes::node(id, port))
+            .await
+            .expect("register");
+    }
+    let assignment = ShardAssignment {
+        key: ShardKey {
+            tenant_id: "t1".to_string(),
+            namespace: "ns".to_string(),
+            stream: "orders".to_string(),
+            shard: 0,
+            kind: ShardKind::Stream,
+        },
+        leader: "broker-x".to_string(),
+        replicas: vec!["broker-y".to_string()],
+        generation: 0,
+        state: ShardState::Active,
+        successor: None,
+        joining: None,
+        move_started_at_millis: None,
+        move_reason: None,
+        incarnation: 0,
+        fence_storage_ids: Default::default(),
+        member_storage_ids: Default::default(),
+        learners: Default::default(),
+        pending_set: None,
+        previous_generation: None,
+    };
+    let assigned = store
+        .put_shard_assignment(assignment.clone())
+        .await
+        .expect("assign");
+    let rename = |expected: u64| {
+        let store = Arc::clone(&store);
+        let assignment = assignment.clone();
+        async move {
+            let fence = store.placement_token().await.expect("token");
+            match store
+                .put_shard_assignment_at_least(assignment, Some(expected), fence, expected + 4)
+                .await
+                .expect("rename")
+            {
+                AssignmentWrite::Written(written) => written,
+                other => panic!("{other:?}"),
+            }
+        }
+    };
+
+    let below = rename(assigned.generation).await;
+    assert_eq!(below.generation, assigned.generation + 4);
+    assert_eq!(
+        below.previous_generation, None,
+        "not recorded below its level"
+    );
+
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut at = below.generation;
+    loop {
+        let renamed = rename(at).await;
+        if renamed.previous_generation == Some(at) {
+            break;
+        }
+        assert_eq!(renamed.previous_generation, None);
+        at = renamed.generation;
+        assert!(
+            std::time::Instant::now() < deadline,
+            "still not recorded after every member reported the level"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 /// A member before the fence identities would drop them from an assignment it
 /// applies and diverge from the others. So until every member has the level
 /// the assignment is written without them; once it does, they are kept.
@@ -1309,6 +1403,7 @@ async fn fence_storage_ids_wait_for_every_member() {
         member_storage_ids: Default::default(),
         learners: Default::default(),
         pending_set: None,
+        previous_generation: None,
     };
 
     let written = store
@@ -1386,6 +1481,7 @@ async fn by_round_waits_for_every_member_and_the_rest_of_the_report_does_not() {
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
+            previous_generation: None,
         })
         .await
         .expect("assign");
@@ -1514,6 +1610,7 @@ async fn pending_sets_wait_for_every_member() {
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
+            previous_generation: None,
         })
         .await
         .expect("assign");
@@ -1681,6 +1778,7 @@ async fn an_adoption_on_another_set_waits_for_every_member() {
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
+            previous_generation: None,
         })
         .await
         .expect("assign");
@@ -1782,6 +1880,7 @@ async fn its_own_leader_on_another_set_waits_for_every_member() {
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
+            previous_generation: None,
         })
         .await
         .expect("assign");
@@ -1884,6 +1983,7 @@ async fn inherited_storage_waits_for_every_member() {
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
+            previous_generation: None,
         })
         .await
         .expect("assign");
@@ -1999,6 +2099,7 @@ async fn learners_wait_for_every_member() {
         member_storage_ids: [("broker-y".to_string(), id.clone())].into(),
         learners: ["broker-y".to_string()].into(),
         pending_set: None,
+        previous_generation: None,
     };
     let assigned = store
         .put_shard_assignment(learning.clone())
@@ -2144,6 +2245,7 @@ async fn a_refusal_waits_for_every_member() {
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
+            previous_generation: None,
         })
         .await
         .expect("assign");
@@ -2278,6 +2380,7 @@ async fn storage_ids_wait_for_every_member() {
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
+            previous_generation: None,
         })
         .await
         .expect("assign");
@@ -2602,6 +2705,7 @@ async fn confirmed_shard_assignments_are_read_on_the_leader() {
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
+            previous_generation: None,
         })
         .await
         .expect("assign");
@@ -3511,6 +3615,7 @@ async fn adoption_waits_for_every_member() {
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
+            previous_generation: None,
         })
         .await
         .expect("assign");

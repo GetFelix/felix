@@ -208,6 +208,7 @@ async fn write(
             written = Some((written.map_or(first, |(start, _)| start), last));
         }
     }
+    let generation = permit.generation();
     // Held until the records are durable, so a move waits for them.
     drop(permit);
 
@@ -218,7 +219,7 @@ async fn write(
         };
         shared
             .cluster
-            .await_consistency(&located.shard_ref(), &handle, &outcome)
+            .await_consistency(&located.shard_ref(), &handle, &outcome, generation)
             .await?;
     }
     Ok(Written {

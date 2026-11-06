@@ -181,6 +181,7 @@ pub struct SimBroker {
     incarnation: Arc<AtomicU64>,
     registered_watch: tokio::sync::watch::Receiver<Option<u64>>,
     storage_id: felix_storage::StorageId,
+    started_unclean: bool,
     membership: Option<MembershipTask>,
     shutdown: CancellationToken,
     tasks: Vec<JoinHandle<()>>,
@@ -377,6 +378,7 @@ impl<L: ControlPlaneLink + Clone> OpenedBroker<L> {
             capabilities: _,
             outgoing: _,
         } = self;
+        let started_unclean = unclean.is_some();
         let peers = Some(peers);
         let shutdown = CancellationToken::new();
         let seeded = CancellationToken::new();
@@ -495,6 +497,7 @@ impl<L: ControlPlaneLink + Clone> OpenedBroker<L> {
             incarnation,
             registered_watch,
             storage_id,
+            started_unclean,
             membership,
             shutdown,
             tasks,
@@ -553,6 +556,12 @@ impl SimBroker {
 
     pub fn storage_id(&self) -> felix_storage::StorageId {
         self.storage_id
+    }
+
+    /// Whether this start followed a stop that may have cost acknowledged
+    /// records, so the broker runs with its unclean-start handling.
+    pub fn started_unclean(&self) -> bool {
+        self.started_unclean
     }
 
     /// The membership task, `None` only if the config named no cluster.

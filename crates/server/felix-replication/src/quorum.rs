@@ -682,9 +682,13 @@ impl MarkTable {
     /// generation this broker leads but has no mark for yet is waited out:
     /// a new generation has none until its first replication pass reports,
     /// and a move staging a destination starts one under the same leader.
-    /// Neither is leadership moving. A write taken at an older generation is
-    /// covered by the newer one's mark too, since that counts a majority of
-    /// the newer replica set holding the log up to it.
+    /// Neither is leadership moving.
+    ///
+    /// Reaching a newer generation's mark says a majority holds this broker's
+    /// log as it is now, up to `offset`. That covers a write taken at an older
+    /// generation only if the log still holds it: a promotion's catch-up can
+    /// replace it with another leader's records at the same offsets. The
+    /// callers check that with `still_holds` before they acknowledge.
     pub async fn wait_while_leading(
         &self,
         key: &ShardKey,
@@ -827,10 +831,15 @@ pub trait ShardServing: Send + Sync {
 /// cannot say that it succeeded", which is the honest answer and the one a
 /// client can act on. Reporting success instead would make an acknowledgement
 /// mean less than the stream promises.
+///
+/// `generation` is the one the batch was written at: the generation its write
+/// fence was entered at.
+#[allow(clippy::too_many_arguments)]
 pub async fn await_quorum<S: ShardServing + ?Sized>(
     handle: &felix_broker::StreamHandle,
     shard: Option<&crate::ShardKey>,
     outcome: &felix_broker::PublishOutcome,
+    generation: u64,
     marks: Option<&crate::quorum::QuorumMarks>,
     ingress: Option<&S>,
     timeout: std::time::Duration,
@@ -846,7 +855,7 @@ pub async fn await_quorum<S: ShardServing + ?Sized>(
     };
     // An ephemeral stream has no offsets, so there is nothing to replicate and
     // nothing to wait for.
-    let Some((_, last_offset)) = outcome.offsets else {
+    let Some((first_offset, last_offset)) = outcome.offsets else {
         return Ok(());
     };
     if ingress.generation(shard).is_none() {
@@ -877,20 +886,27 @@ pub async fn await_quorum<S: ShardServing + ?Sized>(
         .wait_while_leading(shard, leading, last_offset + 1, timeout)
         .await;
     crate::metrics::record_quorum_wait(started.elapsed());
+    let reached_at = waited_at.load(Ordering::Relaxed);
     match waited {
+        // Reached at a newer generation: its mark counts the log as it is
+        // now, which may no longer hold the batch.
+        crate::quorum::QuorumWait::Reached
+            if reached_at != generation
+                && !still_holds(handle.log(), generation, first_offset, last_offset).await =>
+        {
+            replaced("batch")
+        }
         // A mark the followers decided holds without the lease: any newer
         // leader fenced a majority before it served, and every copy counted
         // either answered for the batch before it took that fence or was
         // not counted.
-        crate::quorum::QuorumWait::Reached
-            if marks.decided_by_followers(shard, waited_at.load(Ordering::Relaxed)) =>
-        {
+        crate::quorum::QuorumWait::Reached if marks.decided_by_followers(shard, reached_at) => {
             Ok(())
         }
         crate::quorum::QuorumWait::Reached => release(ingress, "batch"),
         crate::quorum::QuorumWait::TimedOut => {
             crate::metrics::record_quorum(crate::metrics::QUORUM_TIMED_OUT);
-            let _ = marks.log_timeout(shard, waited_at.load(Ordering::Relaxed), last_offset + 1);
+            let _ = marks.log_timeout(shard, reached_at, last_offset + 1);
             Err(QuorumError::TimedOut {
                 what: "batch",
                 timeout,
@@ -936,6 +952,11 @@ fn wake_pass(broker: &felix_broker::Broker, shard: &crate::ShardKey) {
 /// so the answer is never one a failover could take back. It then confirms
 /// this broker still leads ([`confirm_read`]), after the value, so no newer
 /// leader can have acknowledged a write the value lacks.
+///
+/// `written` is where a write landed ([`cache_write_at`]); a read passes
+/// `None`, and so does a write it answered `None` for, which waits for no
+/// quorum. A write that does wait with `None` is not acknowledged across a
+/// generation change.
 pub async fn await_cache_quorum<S: ShardServing + ?Sized>(
     broker: &felix_broker::Broker,
     shard: &crate::ShardKey,
@@ -943,6 +964,7 @@ pub async fn await_cache_quorum<S: ShardServing + ?Sized>(
     ingress: Option<&S>,
     timeout: std::time::Duration,
     access: Access,
+    written: Option<CacheWrite>,
 ) -> Result<(), anyhow::Error> {
     let what = match access {
         Access::Write => "write",
@@ -993,19 +1015,28 @@ pub async fn await_cache_quorum<S: ShardServing + ?Sized>(
         waited_at.store(generation.unwrap_or(0), Ordering::Relaxed);
         generation
     };
-    match marks
+    let waited = marks
         .wait_while_leading(shard, leading, tail, timeout)
-        .await
-    {
+        .await;
+    let reached_at = waited_at.load(Ordering::Relaxed);
+    match waited {
         QuorumWait::Reached if access == Access::Read => confirm_read(shard, marks, ingress).await,
-        // As for a stream: a mark the followers decided holds without the
-        // lease, since every newer leader fences a majority first.
-        QuorumWait::Reached
-            if marks.decided_by_followers(shard, waited_at.load(Ordering::Relaxed)) =>
-        {
-            Ok(())
+        // As for a stream. The write does not report its offset, but it sits
+        // between the tails read before and after it, so the log must still
+        // hold all of that at the write's generation.
+        QuorumWait::Reached if written.is_none_or(|written| reached_at != written.generation) => {
+            match written {
+                Some(written)
+                    if tail > written.from
+                        && still_holds(Some(&log), written.generation, written.from, tail - 1)
+                            .await =>
+                {
+                    released(shard, marks, ingress, reached_at, what)
+                }
+                _ => replaced(what),
+            }
         }
-        QuorumWait::Reached => release(ingress, what),
+        QuorumWait::Reached => released(shard, marks, ingress, reached_at, what),
         QuorumWait::TimedOut => {
             crate::metrics::record_quorum(crate::metrics::QUORUM_TIMED_OUT);
             Err(QuorumError::TimedOut { what, timeout }.into())
@@ -1077,6 +1108,9 @@ pub enum Unreadable {
 /// Counters ride the cache shard's replica set in their own log, with their
 /// own mark in [`QuorumMarks::counters`], published only after a report the
 /// control plane stored names no follower missing them as caught up.
+///
+/// `generation` is the one an add was taken at, as for [`await_quorum`]. A
+/// read does not use it.
 #[allow(clippy::too_many_arguments)]
 pub async fn await_counter_quorum<S: ShardServing + ?Sized>(
     broker: &felix_broker::Broker,
@@ -1085,6 +1119,7 @@ pub async fn await_counter_quorum<S: ShardServing + ?Sized>(
     ingress: Option<&S>,
     timeout: std::time::Duration,
     end: Option<u64>,
+    generation: u64,
     what: &'static str,
 ) -> Result<(), anyhow::Error> {
     let consistency = broker
@@ -1101,19 +1136,19 @@ pub async fn await_counter_quorum<S: ShardServing + ?Sized>(
     } else {
         Access::Read
     };
+    let counter_log = || {
+        broker.shard_log(
+            felix_broker::LogKind::Counters,
+            &shard.tenant_id,
+            &shard.namespace,
+            &shard.stream,
+            shard.shard,
+        )
+    };
     let end = match end {
         Some(end) => end,
         None => {
-            let Some(log) = broker
-                .shard_log(
-                    felix_broker::LogKind::Counters,
-                    &shard.tenant_id,
-                    &shard.namespace,
-                    &shard.stream,
-                    shard.shard,
-                )
-                .await
-            else {
+            let Some(log) = counter_log().await else {
                 return unreplicated(marks, ingress, access);
             };
             log.tail_offset().await?
@@ -1138,19 +1173,27 @@ pub async fn await_counter_quorum<S: ShardServing + ?Sized>(
         waited_at.store(generation.unwrap_or(0), Ordering::Relaxed);
         generation
     };
-    match marks
+    let waited = marks
         .counters()
         .wait_while_leading(shard, leading, end, timeout)
-        .await
-    {
+        .await;
+    let reached_at = waited_at.load(Ordering::Relaxed);
+    match waited {
         QuorumWait::Reached if access == Access::Read => confirm_read(shard, marks, ingress).await,
+        // As for a stream: the add is the record just below `end`.
         QuorumWait::Reached
-            if marks
-                .counters()
-                .decided_by_followers(shard, waited_at.load(Ordering::Relaxed)) =>
+            if reached_at != generation
+                && !still_holds(
+                    counter_log().await.as_ref(),
+                    generation,
+                    end.saturating_sub(1),
+                    end.saturating_sub(1),
+                )
+                .await =>
         {
-            Ok(())
+            replaced(what)
         }
+        QuorumWait::Reached if marks.counters().decided_by_followers(shard, reached_at) => Ok(()),
         QuorumWait::Reached => release(ingress, what),
         QuorumWait::TimedOut => {
             crate::metrics::record_quorum(crate::metrics::QUORUM_TIMED_OUT);
@@ -1396,6 +1439,118 @@ fn unreplicated<S: ShardServing + ?Sized>(
 /// acknowledgement from a broker that may no longer lead is the one the model
 /// (`AckQuorum` requires `LeaseValid`) forbids. The write is on a majority or
 /// may yet be, so the answer is "unknown", never "failed".
+/// Whether `log` still holds `first..=last` as written at `generation`.
+///
+/// One generation has one leader, so a record at the same offset and
+/// generation is the same record. Records at those offsets labelled with any
+/// other generation are another leader's, copied in by a promotion's catch-up
+/// after it dropped this broker's own. A log with no generation history,
+/// or records taken unlabelled after a cut, cannot say, and answers no.
+async fn still_holds(
+    log: Option<&felix_broker::StreamLog>,
+    generation: u64,
+    first: u64,
+    last: u64,
+) -> bool {
+    let Some(log) = log else {
+        return false;
+    };
+    let Ok(tail) = log.tail_offset().await else {
+        return false;
+    };
+    let history = log.generations();
+    let label = |offset: u64| {
+        history
+            .iter()
+            .rev()
+            .find(|epoch| epoch.start_offset <= offset)
+            .map(|epoch| epoch.generation)
+    };
+    // Labels only rise with the offset, so both ends at `generation` puts
+    // everything between there too. A record taken with no label after a cut
+    // would wear the label of the entry before the cut, so those refuse.
+    last < tail
+        && log.labels_known(first, last)
+        && label(first) == Some(generation)
+        && label(last) == Some(generation)
+}
+
+/// Where a cache write landed: the generation its fence was entered at, and
+/// the cache log's tail read inside that fence before the write. A cache
+/// write does not report its offset, so the tail stands in for where it
+/// starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CacheWrite {
+    pub generation: u64,
+    pub from: u64,
+}
+
+/// A [`CacheWrite`] at `generation` for `shard`'s cache log as it stands now,
+/// or `None` when the write will not wait for a replicated quorum: a broker
+/// with no replica set, a shard placed with none, or a cache that is not
+/// `Quorum`. Call it inside the write's fence, right before the write. An
+/// unreadable tail counts as zero, which only asks the wait to check more.
+pub async fn cache_write_at<S: ShardServing + ?Sized>(
+    broker: &felix_broker::Broker,
+    shard: &crate::ShardKey,
+    generation: u64,
+    marks: Option<&QuorumMarks>,
+    ingress: Option<&S>,
+) -> Option<CacheWrite> {
+    // Cheapest first: this runs on every cache write.
+    let ingress = ingress.filter(|_| marks.is_some())?;
+    if !ingress.replicated(shard) {
+        return None;
+    }
+    let consistency = broker
+        .cache_consistency(&shard.tenant_id, &shard.namespace, &shard.stream)
+        .await;
+    if consistency != Some(felix_broker::ConsistencyLevel::Quorum) {
+        return None;
+    }
+    let log = broker
+        .shard_log(
+            felix_broker::LogKind::Cache,
+            &shard.tenant_id,
+            &shard.namespace,
+            &shard.stream,
+            shard.shard,
+        )
+        .await?;
+    Some(CacheWrite {
+        generation,
+        from: log.tail_offset().await.unwrap_or(0),
+    })
+}
+
+/// A cache write's wait that reached its mark: a mark the followers decided
+/// holds without the lease, as for a stream, since every newer leader fences
+/// a majority first.
+fn released<S: ShardServing + ?Sized>(
+    shard: &crate::ShardKey,
+    marks: &QuorumMarks,
+    ingress: &S,
+    reached_at: u64,
+    what: &'static str,
+) -> Result<(), anyhow::Error> {
+    if marks.decided_by_followers(shard, reached_at) {
+        Ok(())
+    } else {
+        release(ingress, what)
+    }
+}
+
+/// A write whose records a newer leader's log replaced while it waited. The
+/// client is told the outcome is unknown, never that it succeeded.
+fn replaced(what: &'static str) -> Result<(), anyhow::Error> {
+    crate::metrics::record_quorum(crate::metrics::QUORUM_NOT_LEADING);
+    Err(QuorumError::LeadershipLost {
+        what,
+        detail: "a newer leader's log replaced its records",
+    }
+    .into())
+}
+
 fn release<S: ShardServing + ?Sized>(ingress: &S, what: &'static str) -> Result<(), anyhow::Error> {
     if ingress.lease_valid() {
         return Ok(());
