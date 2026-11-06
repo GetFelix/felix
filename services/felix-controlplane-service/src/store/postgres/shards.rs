@@ -621,6 +621,9 @@ pub(super) async fn first_shard_assignments(
         .collect()
 }
 
+/// A shard's key as [`previous_shard_assignments`] reads it.
+type RowKey = (String, String, String, i32, String);
+
 pub(super) async fn previous_shard_assignments(
     store: &PostgresStore,
 ) -> StoreResult<Vec<ShardAssignment>> {
@@ -652,7 +655,7 @@ pub(super) async fn previous_shard_assignments(
     .fetch_all(&store.pool)
     .await?;
     let mut previous = Vec::new();
-    let mut newest: Option<((String, String, String, i32, String), bool)> = None;
+    let mut newest: Option<(RowKey, bool)> = None;
     for (tenant_id, namespace, stream, shard, kind, generation, payload) in rows {
         let key = (tenant_id, namespace, stream, shard, kind);
         let written: Option<ShardAssignment> = payload.map(serde_json::from_value).transpose()?;
