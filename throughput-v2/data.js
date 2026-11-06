@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793944581120,
+  "lastUpdate": 1793944986427,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -46956,6 +46956,58 @@ window.BENCHMARK_DATA = {
             "range": "13798.93",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 868657.70\nmean: 876422.55\nstdev: 13798.93\ncv: 1.57%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f31af08baedb9e19c584f3dec627abc69fbe5f53",
+          "message": "fix(replication): a moved shard elects once its kept set opened (#2012) (#2013)\n\n* fix(replication): a moved shard elects once its kept set opened (#2012)\n\nA follower's set file keeps earlier sets when it is raised past a\ngeneration it holds no record of, and drops them only at the next raise.\nA control plane move walks the shard through generations nobody writes\nat, so every follower reaches the cut-over's generation with earlier\nsets, and `standing_sets` refused them for as long as that generation\nlasted. With the control plane down the shard never elected.\n\nThe candidate now ignores earlier sets once its log holds a record of\nthe kept set's generation, the evidence a failover already uses for the\nsame sets (`unopened_sets`) and the candidate already uses for the set\nbeing left. That fence opened, and this log holds everything its leader\ninherited up to that record.\n\nSpec-Unaffected: FelixShard.tla's Elect does not model the \"keeps earlier sets\" refusal (its comment says so); no configuration combines Elections > 0 with kept earlier sets (LogDropsSets). The change reads earlier sets by the record rule the modelled failover uses (KeepsUnopened, HoldsRecordOf). Modelling elections with LogDropsSets is proposed in #2012.\n\n* test(replication): the unopened moved shard is refused for its earlier sets\n\nSpec-Unaffected: test-only; the spec follow-up is tracked in #2014",
+          "timestamp": "2026-11-05T21:55:59-08:00",
+          "tree_id": "a63b7b814441bbd981856e77152c7b05f555caa8",
+          "url": "https://github.com/GetFelix/felix/commit/f31af08baedb9e19c584f3dec627abc69fbe5f53"
+        },
+        "date": 1793944985683,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 358769.43,
+            "range": "13243.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 358769.43\nmean: 353450.32\nstdev: 13243.89\ncv: 3.75%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 358769.43,
+            "range": "13243.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 358769.43\nmean: 353450.32\nstdev: 13243.89\ncv: 3.75%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80013.85,
+            "range": "5834.72",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80013.85\nmean: 77906.81\nstdev: 5834.72\ncv: 7.49%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 800138.47,
+            "range": "58347.15",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 800138.47\nmean: 779068.06\nstdev: 58347.15\ncv: 7.49%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
