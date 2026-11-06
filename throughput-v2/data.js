@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793994422576,
+  "lastUpdate": 1793995142364,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -47632,6 +47632,58 @@ window.BENCHMARK_DATA = {
             "range": "47433.44",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1174454.81\nmean: 1156132.64\nstdev: 47433.44\ncv: 4.10%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ed4f9afb0ad8eb3a21940221fe71c662c48144a9",
+          "message": "test(sim): a copy that missed its leader's first fence takes it once the control plane confirms (#2028) (#2054)\n\nAdds a sim regression test for #2028: a copy that missed its leader's first fence takes the leader once the control plane confirms the route.",
+          "timestamp": "2026-11-06T19:49:05Z",
+          "tree_id": "bad92368cc82d8b71221bcb16827f2e0a1375dfd",
+          "url": "https://github.com/GetFelix/felix/commit/ed4f9afb0ad8eb3a21940221fe71c662c48144a9"
+        },
+        "date": 1793995141486,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 516644.34,
+            "range": "29249.07",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 516644.34\nmean: 501501.10\nstdev: 29249.07\ncv: 5.83%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 516644.34,
+            "range": "29249.07",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 516644.34\nmean: 501501.10\nstdev: 29249.07\ncv: 5.83%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 121873.17,
+            "range": "1100.39",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 121873.17\nmean: 121903.82\nstdev: 1100.39\ncv: 0.90%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1218731.71,
+            "range": "11003.93",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1218731.71\nmean: 1219038.21\nstdev: 11003.93\ncv: 0.90%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
