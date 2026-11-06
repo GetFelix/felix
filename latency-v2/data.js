@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793942961250,
+  "lastUpdate": 1793944577379,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -59532,6 +59532,72 @@ window.BENCHMARK_DATA = {
             "range": "600.77",
             "unit": "us",
             "extra": "trials: 5\nmedian: 999.00\nmean: 1116.40\nstdev: 600.77\ncv: 53.81%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a3ef48b8eb2d14c7124dcbb769a79792c6cb194e",
+          "message": "fix(replication): an open leader that answered a newer candidate's fence reports its generation refused once the candidate gives up (#1951) (#1954)\n\n* fix(replication): an open leader never stands against itself, and one past its generation by its own ballot reports it (#1933)\n\nThe control plane named broker-1 leader of wl-0069 at generation 70 while a\nround of its candidate still held the route naming broker-2. The lifecycle\ntakes the ballot before the routes catch up, so the round stood at 71 on\nthe leader's own copy and withdrew. The leader then no longer counted its\nown copy at 70 and every quorum wait timed out while the followers\nconfirmed.\n\nA round now does not stand when its copy's ballot names this broker and no\nstanding here wrote it (bounded at 30 s, for a ballot a restart forgot),\nand writes no ballot once the routes stop naming the leader it suspected.\nA leader whose own ballot is past the generation it leads, with no standing\nunder way, reports that generation refused so placement names it one up.\n\nSpec-Unaffected: the model's Elect already requires bgen[f] = 0, so an open leader never stands there; the refusal report is the existing set_unknown path.\n\n* fix(replication): report a leader's own ballot past its generation only once it outlasts a promotion (#1933)\n\nA promotion takes the new ballot before the routes name it, so every\nlifecycle-led promotion briefly looked like a withdrawn standing and logged\na warning. The report now waits until the ballot has stayed past the led\ngeneration for 3 s. Adds a test that a standing under way at the ballot\nreports nothing, and names the stepping-down rule in the docs.\n\nSpec-Unaffected: timing of an existing refusal report; no protocol state changes.\n\n* fix(replication): a leader still fencing below its own ballot reports its generation refused (#1940)\n\nA standing given up while the leader was still fencing left its own copy's\nballot above the generation the control plane named. The fence's open takes\nthat generation's ballot on its own copy, which refuses it, so the fence\nstayed pending for good and nothing was reported. The fence now returns\nRefused at once, as it does for a replica's newer ballot (#1914), and the\ncontrol plane names the broker again one generation up.\n\n* fix(replication): the own-ballot fence check covers any ballot leader and runs after the learner check (#1940)\n\nReview follow-up. The test now covers a newer ballot naming another node.\nA ballot at the fence's own generation naming another node still waits,\nas keep_own_set does (#1872).\n\n* fix(replication): an open leader that answered a newer candidate's fence reports its generation refused once the candidate gives up (#1951)\n\nThe leader's copy takes the candidate's ballot and it steps down. If the\ncandidate withdraws, nobody stands against the live leader and nothing\nreported it, so the shard was never served again. The ballot-above report\nfrom #1933 now covers a ballot naming another node too, after 10 s instead\nof 3 s so a candidate that opens moves the route first.\n\nSpec: FelixShard.tla AboveReported (#1952); FelixShardCpLiveNoAboveReported.cfg is the twin.\n\n* fix(replication): the refusal of a leader that answered another node's newer fence carries that ballot (#1951)\n\nPlacement has to name the leader above the ballot: at the ballot's own\ngeneration the leader's copy has promised it away and the fence waits.\nRefusedGeneration gains an optional ballot (omitted when 0, so older peers\nexchange the same JSON). Placement and the stores do not read it yet.\n\n* fix(controlplane): placement names a leader refused above another node's ballot one past that ballot (#1951)\n\nThe refusal's ballot is stored (Postgres migration 0043, Raft level 28) and\nplacement writes the rename at max(gen + 1, ballot + 1) within the election\nwindow. Below level 28 the ballot is dropped and the write takes the next\ngeneration on every member, as before.\n\n* fix(controlplane): a ballot at the edge of the election window is passed too (#1951)\n\nReview: a candidate may stand at gen + 16, so the rename goes to gen + 17 there\ninstead of stepping one generation at a time. Doc and test-message fixes.\n\n* fix(replication): a leader still fencing below another node's ballot carries it in its refusal (#1951)\n\nWithout it placement names the leader one up, which its own copy refuses\nagain, so it climbs one generation per report.\n\n* fix(replication): a fence below another node's ballot reports it after the same 10 s an open leader waits (#1951)\n\nReported at once, the rename past the ballot deposed a candidate that could\nstill open whenever placement and an election raced.\n\n* docs(replication): the own-ballot fence check refuses before any replica is asked\n\n* fix(replication): stuck-leader test fixture carries the ballot; per-shard suspicion is the only other standing (#1951)\n\n* fix(controlplane): #1985's departed-leader fixture carries the ballot (#1951)\n\n* fix(replication): #1980's set-checked refusals carry the ballot field (#1951)",
+          "timestamp": "2026-11-05T21:46:06-08:00",
+          "tree_id": "ce16cb993632393d7b24b2a7641e4f5de6057917",
+          "url": "https://github.com/GetFelix/felix/commit/a3ef48b8eb2d14c7124dcbb769a79792c6cb194e"
+        },
+        "date": 1793944566368,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 116,
+            "range": "3.16",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 116.00\nmean: 117.00\nstdev: 3.16\ncv: 2.70%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 161,
+            "range": "31.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 161.00\nmean: 174.60\nstdev: 31.10\ncv: 17.81%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 211,
+            "range": "238.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 211.00\nmean: 326.20\nstdev: 238.45\ncv: 73.10%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 149,
+            "range": "1.82",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 149.00\nmean: 149.40\nstdev: 1.82\ncv: 1.22%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 315,
+            "range": "74.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 315.00\nmean: 345.40\nstdev: 74.84\ncv: 21.67%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1396,
+            "range": "932.54",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1396.00\nmean: 1371.00\nstdev: 932.54\ncv: 68.02%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
