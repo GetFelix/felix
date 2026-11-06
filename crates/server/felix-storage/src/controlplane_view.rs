@@ -34,7 +34,7 @@ pub fn record(root: &Path, body: &[u8]) -> Result<()> {
 /// broker deregisters: the control plane may then move its shards to sets
 /// without it, and a view of the old sets must not let it stand or vote.
 pub fn forget(root: &Path) -> Result<()> {
-    match std::fs::remove_file(root.join(FILE_NAME)) {
+    match crate::fs::remove_file(root.join(FILE_NAME)) {
         Ok(()) => {}
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
         Err(err) => return Err(err.into()),
@@ -48,7 +48,7 @@ pub fn forget(root: &Path) -> Result<()> {
 /// caller then waits for the control plane, which is always safe.
 pub fn read(root: &Path) -> Option<Vec<u8>> {
     let path = root.join(FILE_NAME);
-    let bytes = match std::fs::read(&path) {
+    let bytes = match crate::fs::read(&path) {
         Ok(bytes) => bytes,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
         Err(err) => {

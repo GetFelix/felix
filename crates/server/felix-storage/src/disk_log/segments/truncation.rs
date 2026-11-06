@@ -168,7 +168,7 @@ impl SegmentSet {
         record_count: u64,
     ) -> Result<()> {
         let path = self.dir.join(segment_file_name(id));
-        self.active = if path.exists() {
+        self.active = if crate::fs::exists(&path) {
             let index = SparseIndex::load(&self.dir.join(index_file_name(id)), base_offset)
                 .unwrap_or_else(|| SparseIndex::new(base_offset));
             SegmentWriter::reopen(

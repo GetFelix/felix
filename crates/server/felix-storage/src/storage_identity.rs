@@ -100,7 +100,7 @@ pub fn load_or_create(
     fresh: impl FnOnce() -> [u8; 16],
 ) -> Result<(StorageId, Origin)> {
     let path = path_in(root);
-    let origin = match std::fs::read(&path) {
+    let origin = match crate::fs::read(&path) {
         Ok(bytes) => match StorageId::decode(&bytes) {
             Some(id) => return Ok((id, Origin::Loaded)),
             None => Origin::ReplacedCorrupt,
@@ -152,11 +152,11 @@ fn store(root: &Path, id: &StorageId) -> Result<()> {
     let path = path_in(root);
     let temporary = path.with_extension("tmp");
     {
-        let mut file = std::fs::File::create(&temporary).map_err(StorageError::Io)?;
+        let mut file = crate::fs::File::create(&temporary).map_err(StorageError::Io)?;
         file.write_all(&id.encode()).map_err(StorageError::Io)?;
         crate::io::sync_all(&file).map_err(StorageError::Io)?;
     }
-    std::fs::rename(&temporary, &path).map_err(StorageError::Io)?;
+    crate::fs::rename(&temporary, &path).map_err(StorageError::Io)?;
     sync_dir(root).map_err(StorageError::Io)?;
     Ok(())
 }

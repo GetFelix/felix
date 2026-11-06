@@ -225,7 +225,7 @@ impl DirIndex {
 
 fn read_root(root: &Path) -> Result<HashMap<String, std::collections::BTreeSet<String>>> {
     let mut index: HashMap<String, std::collections::BTreeSet<String>> = HashMap::new();
-    let entries = match std::fs::read_dir(root) {
+    let entries = match crate::fs::read_dir(root) {
         Ok(entries) => entries,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(index),
         Err(err) => return Err(StorageError::Io(err)),
@@ -247,7 +247,7 @@ pub(crate) fn retire_dir(root: &Path, dir: &Path) -> Result<bool> {
     let Some(name) = dir.file_name() else {
         return Ok(false);
     };
-    if !dir.exists() {
+    if !crate::fs::exists(dir) {
         return Ok(false);
     }
     let deleted = root.join(DELETED_DIR);
@@ -264,7 +264,7 @@ pub(crate) fn retire_dir(root: &Path, dir: &Path) -> Result<bool> {
         name.to_string_lossy(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
-    std::fs::rename(dir, &target).map_err(StorageError::Io)?;
+    crate::fs::rename(dir, &target).map_err(StorageError::Io)?;
     sync_dir(root).map_err(StorageError::Io)?;
     sync_dir(&deleted).map_err(StorageError::Io)?;
     purge_in_background(root.to_path_buf());
@@ -290,7 +290,7 @@ pub(crate) fn purge_in_background(root: PathBuf) {
         *again = true;
         return;
     }
-    if !deleted.exists() {
+    if !crate::fs::exists(&deleted) {
         return;
     }
     workers.insert(deleted.clone(), false);
@@ -344,12 +344,12 @@ impl Drop for WorkerSlot<'_> {
 }
 
 fn purge(deleted: &Path) {
-    let Ok(entries) = std::fs::read_dir(deleted) else {
+    let Ok(entries) = crate::fs::read_dir(deleted) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        match std::fs::remove_dir_all(&path) {
+        match crate::fs::remove_dir_all(&path) {
             Ok(()) => {}
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
             Err(err) => {

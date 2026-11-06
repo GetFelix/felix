@@ -22,6 +22,8 @@ mod reservation;
 mod restore;
 mod retention;
 mod rollover;
+#[cfg(feature = "sim")]
+mod simulated_fs;
 mod stalled_write;
 mod trim;
 mod truncation;

@@ -60,7 +60,7 @@ pub(crate) fn read(root: &Path, tenant: &str, namespace: &str, stream: &str) -> 
 }
 
 fn read_path(path: &Path) -> Result<MarkerRead> {
-    let bytes = match std::fs::read(path) {
+    let bytes = match crate::fs::read(path) {
         Ok(bytes) => bytes,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(MarkerRead::Absent),
         Err(err) => return Err(StorageError::Io(err)),
@@ -104,7 +104,7 @@ pub(crate) type Floors = std::collections::HashMap<(String, String, String), u64
 /// damage, and a floor only ever refuses a registration.
 pub(crate) fn read_floors(root: &Path) -> Result<Floors> {
     let path = root.join(STREAMS_DIR).join(FLOORS);
-    let text = match std::fs::read_to_string(&path) {
+    let text = match crate::fs::read_to_string(&path) {
         Ok(text) => text,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Floors::new()),
         Err(err) => return Err(StorageError::Io(err)),
@@ -162,11 +162,11 @@ fn write_file(root: &Path, path: &Path, contents: &[u8]) -> Result<()> {
     create_dir_all_durable(&dir).map_err(StorageError::Io)?;
     let temporary = path.with_extension("tmp");
     {
-        let mut file = std::fs::File::create(&temporary).map_err(StorageError::Io)?;
+        let mut file = crate::fs::File::create(&temporary).map_err(StorageError::Io)?;
         file.write_all(contents).map_err(StorageError::Io)?;
         crate::io::sync_all(&file).map_err(StorageError::Io)?;
     }
-    std::fs::rename(&temporary, path).map_err(StorageError::Io)?;
+    crate::fs::rename(&temporary, path).map_err(StorageError::Io)?;
     sync_dir(&dir).map_err(StorageError::Io)
 }
 
@@ -177,7 +177,7 @@ const IN_PLAY: &str = ".incarnations";
 /// Record, durably, that streams here carry incarnations.
 pub(crate) fn record_in_play(root: &Path) -> Result<()> {
     let path = root.join(STREAMS_DIR).join(IN_PLAY);
-    if path.exists() {
+    if crate::fs::exists(&path) {
         return Ok(());
     }
     write_file(root, &path, b"felix-stream-incarnations 1\n")
@@ -187,10 +187,10 @@ pub(crate) fn record_in_play(root: &Path) -> Result<()> {
 /// it, or a marker naming one.
 pub(crate) fn in_play(root: &Path) -> Result<bool> {
     let dir = root.join(STREAMS_DIR);
-    if dir.join(IN_PLAY).exists() {
+    if crate::fs::exists(dir.join(IN_PLAY)) {
         return Ok(true);
     }
-    let entries = match std::fs::read_dir(&dir) {
+    let entries = match crate::fs::read_dir(&dir) {
         Ok(entries) => entries,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(err) => return Err(StorageError::Io(err)),
@@ -215,7 +215,7 @@ pub(crate) fn in_play(root: &Path) -> Result<bool> {
 
 pub(crate) fn remove(root: &Path, tenant: &str, namespace: &str, stream: &str) -> Result<()> {
     let path = path(root, tenant, namespace, stream);
-    match std::fs::remove_file(&path) {
+    match crate::fs::remove_file(&path) {
         Ok(()) => sync_dir(&root.join(STREAMS_DIR)).map_err(StorageError::Io),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(StorageError::Io(err)),
@@ -233,7 +233,7 @@ pub(crate) fn all(root: &Path) -> Result<Vec<StreamMarker>> {
 }
 
 fn markers(root: &Path, wanted: impl Fn(&StreamMarker) -> bool) -> Result<Vec<StreamMarker>> {
-    let entries = match std::fs::read_dir(root.join(STREAMS_DIR)) {
+    let entries = match crate::fs::read_dir(root.join(STREAMS_DIR)) {
         Ok(entries) => entries,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(err) => return Err(StorageError::Io(err)),

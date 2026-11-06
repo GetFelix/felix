@@ -286,9 +286,7 @@ pub fn record_head_trimmed(root: &Path) -> Result<()> {
 /// Whether a log under `root` may hold a head trim. Only the file's presence
 /// counts: it is renamed into place whole, and it is never removed.
 pub fn head_trimmed(root: &Path) -> Result<bool> {
-    root.join(HEAD_TRIMMED_FILE_NAME)
-        .try_exists()
-        .map_err(StorageError::Io)
+    crate::fs::try_exists(root.join(HEAD_TRIMMED_FILE_NAME)).map_err(StorageError::Io)
 }
 
 /// The record-headers marker's name under the durable root. Not a directory,
@@ -306,9 +304,7 @@ pub fn record_headers_stored(root: &Path) -> Result<()> {
 /// Whether a log under `root` may hold a record with headers. Only the
 /// file's presence counts: it is renamed into place whole, and never removed.
 pub fn has_record_headers(root: &Path) -> Result<bool> {
-    root.join(RECORD_HEADERS_FILE_NAME)
-        .try_exists()
-        .map_err(StorageError::Io)
+    crate::fs::try_exists(root.join(RECORD_HEADERS_FILE_NAME)).map_err(StorageError::Io)
 }
 
 /// The replaced-storage marker's name under the durable root.
@@ -325,15 +321,13 @@ pub fn record_replaced(root: &Path) -> Result<()> {
 
 /// Whether [`record_replaced`] ran on `root`.
 pub fn replaced(root: &Path) -> Result<bool> {
-    root.join(REPLACED_FILE_NAME)
-        .try_exists()
-        .map_err(StorageError::Io)
+    crate::fs::try_exists(root.join(REPLACED_FILE_NAME)).map_err(StorageError::Io)
 }
 
 /// The node incarnation recorded under `root`.
 pub fn read_registration(root: &Path) -> Result<Recorded> {
     let path = root.join(REGISTRATION_FILE_NAME);
-    let bytes = match std::fs::read(&path) {
+    let bytes = match crate::fs::read(&path) {
         Ok(bytes) => bytes,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Recorded::Unrecorded),
         Err(err) => return Err(StorageError::Io(err)),
@@ -394,7 +388,7 @@ pub fn mark_clean(root: &Path, id: StorageId) -> Result<()> {
 /// keeps it for that; a crash of the machine rotates anyway. Syncing could
 /// also fail on the very device that just failed a sync.
 pub fn forget_boot(root: &Path) -> Result<()> {
-    let bytes = match std::fs::read(path_in(root)) {
+    let bytes = match crate::fs::read(path_in(root)) {
         Ok(bytes) => bytes,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(err) => return Err(StorageError::Io(err)),
@@ -433,7 +427,7 @@ pub(crate) fn forget_watched() {
 /// What the record under `root` says, judged against the id now there.
 pub fn read(root: &Path, id: StorageId) -> Result<LastRun> {
     let path = path_in(root);
-    let bytes = match std::fs::read(&path) {
+    let bytes = match crate::fs::read(&path) {
         Ok(bytes) => bytes,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(LastRun::Unrecorded),
         Err(err) => return Err(StorageError::Io(err)),
@@ -549,13 +543,13 @@ pub(crate) fn write_atomically(root: &Path, name: &str, bytes: &[u8], durable: b
     let path = root.join(name);
     let temporary = path.with_extension("tmp");
     {
-        let mut file = std::fs::File::create(&temporary).map_err(StorageError::Io)?;
+        let mut file = crate::fs::File::create(&temporary).map_err(StorageError::Io)?;
         file.write_all(bytes).map_err(StorageError::Io)?;
         if durable {
             crate::io::sync_all(&file).map_err(StorageError::Io)?;
         }
     }
-    std::fs::rename(&temporary, &path).map_err(StorageError::Io)?;
+    crate::fs::rename(&temporary, &path).map_err(StorageError::Io)?;
     if durable {
         sync_dir(root).map_err(StorageError::Io)?;
     }

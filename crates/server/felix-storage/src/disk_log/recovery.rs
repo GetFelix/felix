@@ -197,7 +197,7 @@ fn apply_step(dir: &Path, label: &str, step: Step) -> Result<()> {
                 remove_segment_files(dir, next)?;
                 sync_dir(dir)?;
             }
-            let file = std::fs::OpenOptions::new()
+            let file = crate::fs::OpenOptions::new()
                 .write(true)
                 .open(dir.join(segment_file_name(id)))?;
             file.set_len(valid_bytes)?;
@@ -310,7 +310,7 @@ pub(super) fn place_empty_shard(
 /// make the log look shuffled.
 pub(super) fn discover_segment_ids(dir: &Path) -> Result<Vec<SegmentId>> {
     let mut ids = Vec::new();
-    for entry in std::fs::read_dir(dir)? {
+    for entry in crate::fs::read_dir(dir)? {
         let entry = entry?;
         if !entry.file_type()?.is_file() {
             continue;
@@ -336,7 +336,7 @@ fn remove_segment_files(dir: &Path, id: SegmentId) -> Result<()> {
         dir.join(segment_file_name(id)),
         dir.join(index_file_name(id)),
     ] {
-        match std::fs::remove_file(&path) {
+        match crate::fs::remove_file(&path) {
             Ok(()) => {}
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
             Err(err) => return Err(StorageError::Io(err)),

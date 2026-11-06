@@ -5,7 +5,7 @@
 //! plus one record — never the segment size — and lets a single descriptor
 //! serve concurrent readers, because `pread` does not touch the file cursor.
 
-use std::fs::File;
+use crate::fs::File;
 use std::io;
 
 use crate::io::read_at;

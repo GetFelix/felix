@@ -486,7 +486,7 @@ impl ConsumerGroups {
                 stream: stream.to_string(),
                 shard,
             };
-            if !felix_storage::disk_log::layout::shard_dir(self.cursors.root(), &key).is_dir() {
+            if !felix_storage::disk_log::layout::shard_dir_exists(self.cursors.root(), &key) {
                 continue;
             }
             for entry in self

@@ -19,7 +19,7 @@
 //! * **The staging buffer is never freed.** Steady-state appends do no
 //!   allocation at all beyond growing it once to the high-water batch size.
 
-use std::fs::{File, OpenOptions};
+use crate::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -360,7 +360,7 @@ impl SegmentWriter {
     }
 
     /// A second descriptor for the same file, for flushing off the write path.
-    pub fn sync_handle(&self) -> Arc<File> {
+    pub(crate) fn sync_handle(&self) -> Arc<File> {
         Arc::clone(&self.sync_handle)
     }
 
@@ -750,7 +750,7 @@ impl BlankSegment {
         drop(file);
         let dir = path.parent().map(Path::to_path_buf);
         for path in [path, index_path] {
-            match std::fs::remove_file(&path) {
+            match crate::fs::remove_file(&path) {
                 Ok(()) => {}
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
                 Err(err) => return Err(StorageError::Io(err)),
@@ -772,7 +772,7 @@ fn remove_unused_segment(dir: &Path, id: SegmentId) {
         dir.join(segment_file_name(id)),
         dir.join(index_file_name(id)),
     ] {
-        let _ = std::fs::remove_file(path);
+        let _ = crate::fs::remove_file(path);
     }
 }
 
