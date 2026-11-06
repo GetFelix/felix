@@ -432,7 +432,7 @@ impl Broker {
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         );
         hasher.write_u128(
-            std::time::SystemTime::now()
+            felix_common::clock::system_time()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|since| since.as_nanos())
                 .unwrap_or(0),

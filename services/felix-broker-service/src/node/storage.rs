@@ -286,7 +286,7 @@ pub(crate) fn rotate_storage_id(root: &Path) -> Result<StorageId> {
 }
 
 fn fresh_storage_id() -> [u8; 16] {
-    uuid::Uuid::new_v4().into_bytes()
+    felix_common::random::uuid_v4().into_bytes()
 }
 
 /// How stream and cache logs treat a retention hold they saved.

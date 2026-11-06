@@ -22,3 +22,11 @@ fn a_shift_is_floored_at_zero() {
     assert_eq!(shift(raw, 1_000_000_000), Duration::from_secs(11));
     assert_eq!(shift(raw, -20_000_000_000), Duration::ZERO);
 }
+
+#[test]
+fn system_time_follows_the_host_clock_without_a_simulator() {
+    let before = std::time::SystemTime::now();
+    let read = system_time();
+    let after = std::time::SystemTime::now();
+    assert!(before <= read && read <= after);
+}

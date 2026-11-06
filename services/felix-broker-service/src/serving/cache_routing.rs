@@ -353,7 +353,7 @@ pub(crate) async fn apply_cache_local(
             let ttl = (ttl_ms > 0).then(|| std::time::Duration::from_millis(ttl_ms));
             // Taken before the write, so a token never outlives the
             // entry the store expires from its own later clock.
-            let entry_expires_at = ttl.map(|ttl| std::time::SystemTime::now() + ttl);
+            let entry_expires_at = ttl.map(|ttl| felix_common::clock::system_time() + ttl);
             let fenced = write(&mut fenced)?;
             let written_if = cache_store
                 .put_if(
