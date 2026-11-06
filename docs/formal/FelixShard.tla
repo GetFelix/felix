@@ -2388,7 +2388,8 @@ Elect(f) ==
     \* Not while a change to its kept set is pending: a set it is leaving may
     \* differ from it in learner flags only (`stand` in crates/server/
     \* felix-replication/src/election/candidate.rs refuses "the kept replica
-    \* set has a change pending" and "keeps earlier sets"). Across a change
+    \* set has a change pending"; its "keeps earlier sets" refusal is not
+    \* modelled, as no configuration keeps earlier sets). Across a change
     \* the control plane names the leader. The code takes the ballot only on
     \* the set those checks read (`accept_generation_on_set`), so the guard
     \* and the promise are one step, as here. Its further check, that the

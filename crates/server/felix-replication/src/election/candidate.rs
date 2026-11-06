@@ -77,6 +77,9 @@ enum Round {
     Opened,
     /// Refused, split, or never opened: back off and try again.
     Failed,
+    /// The kept set moved between the checks and the ballot: as `Failed`,
+    /// and a fence-again round may run again at the same generation.
+    SetMoved,
     /// Not a shard this broker may stand for right now.
     Ineligible,
 }
@@ -383,7 +386,10 @@ async fn run<R: PeerRequester + Send + Sync + 'static>(
                             backoff.remove(&key);
                             ctx.held_back.lock().expect("held_back lock").remove(&key);
                         }
-                        Round::Failed => {
+                        Round::Failed | Round::SetMoved => {
+                            if matches!(round, Round::SetMoved) {
+                                restood.remove(&key);
+                            }
                             let backoff = backoff.entry(key).or_default();
                             backoff.failed();
                             if shard_only {
@@ -636,7 +642,7 @@ async fn stand<R: PeerRequester + Send + Sync + 'static>(
         Ok(Some(GenerationCheck::Raised)) => {}
         Ok(None) => {
             ctx.held_back(key, "the kept replica set changed while the round ran", "");
-            return Round::Failed;
+            return Round::SetMoved;
         }
         _ => return Round::Failed,
     }
@@ -702,7 +708,7 @@ async fn restand<R>(ctx: &Ctx<R>, key: &ShardKey, generation: u64) -> Round {
         Ok(Some(GenerationCheck::Raised)) => {}
         Ok(None) => {
             ctx.held_back(key, "the kept replica set changed while the round ran", "");
-            return Round::Failed;
+            return Round::SetMoved;
         }
         _ => return Round::Failed,
     }

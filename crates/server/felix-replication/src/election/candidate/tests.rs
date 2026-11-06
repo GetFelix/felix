@@ -1622,7 +1622,11 @@ async fn set_changes_during_the_round(when: ChangesIn, with_ballot: bool) {
     ctx.router = router(5);
     let route = ctx.router.snapshot().get(&key()).expect("route").clone();
 
-    assert_eq!(stand(&ctx, &key(), &route).await, Round::Failed);
+    let round = stand(&ctx, &key(), &route).await;
+    assert!(
+        matches!(round, Round::Failed | Round::SetMoved),
+        "{round:?}"
+    );
     let ballot = if with_ballot { 4 } else { 3 };
     assert_eq!(log.accepted_generation(), ballot, "no ballot at 6");
     assert!(ctx.elections.get(&key()).is_none(), "nothing recorded");
