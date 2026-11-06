@@ -313,6 +313,10 @@ async fn replicas_elect_a_leader_while_the_control_plane_is_down() {
         elected >= healed,
         "seed {seed}: {healed} kill(s) healed but only {elected} election(s) seen"
     );
+    assert!(
+        !history.opens.is_empty(),
+        "seed {seed}: no open was read from the broker logs, so rule 12 checked nothing"
+    );
     println!("{healed} election fault(s) healed, {skipped} skipped, {elected} shard(s) elected");
 }
 

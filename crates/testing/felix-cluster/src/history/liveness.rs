@@ -123,8 +123,8 @@ pub(super) async fn ready_to_elect(
 }
 
 /// Wait until each shard in `led`, which `killed` led until it was killed,
-/// has a new leader that opened it at a later generation and serves a probe,
-/// all while the control plane stays down. Returns one line per shard naming
+/// has a new leader that stood for it, opened it at a later generation and
+/// serves a probe, all while the control plane stays down. Returns one line per shard naming
 /// who serves it and how soon. The opens it reads go into `opens` for rule
 /// 12.
 pub(super) async fn await_election(
@@ -142,22 +142,24 @@ pub(super) async fn await_election(
     let mut lines = Vec::new();
     let mut pending: Vec<&ShardStatus> = led.iter().collect();
     let mut last_refusal = std::collections::BTreeMap::new();
+    let mut stood = BTreeSet::new();
     while !pending.is_empty() {
         if cluster.control_plane_running() {
             bail!("the control plane came back before the election was checked");
         }
-        super::leaders::read(cluster, opens);
+        // Nothing restarts while this waits, so the current runs hold every
+        // new open.
+        super::leaders::read_current(cluster, opens, &mut stood);
         let mut still = Vec::new();
         for status in pending {
-            let elected = opens
-                .iter()
-                .filter(|open| {
-                    open.name == status.name
-                        && open.shard == status.shard
-                        && open.generation > status.generation
-                        && open.node != killed
-                })
-                .max_by_key(|open| open.generation);
+            let elected = super::leaders::elected(
+                opens,
+                &stood,
+                &status.name,
+                status.shard,
+                status.generation,
+                killed,
+            );
             let shard = format!("{} {}/{}", status.kind, status.name, status.shard);
             let Some(open) = elected else {
                 still.push(status);
@@ -208,7 +210,7 @@ pub(super) async fn await_election(
                         // one never started.
                         let stood = super::leaders::stood(cluster, &status.name, status.shard);
                         format!(
-                            "no broker opened it at a later generation; stood: {}",
+                            "no broker that stood opened it at a later generation; stood: {}",
                             if stood.is_empty() {
                                 "nobody".to_string()
                             } else {

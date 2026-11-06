@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use super::{check, parse};
+use super::{EVERY_RUN, check, elected, parse, parse_stood, scan_dir};
 use crate::history::checker::Rule;
 use crate::history::model::Opened;
 
@@ -64,4 +64,57 @@ fn one_broker_opening_several_generations_is_not() {
     let mut out = Vec::new();
     check(&opens, &mut out);
     assert!(out.is_empty(), "{out:?}");
+}
+
+const STOOD_LINE: &str = "INFO felix_replication::election::candidate: standing for election: the \
+    leader is unreachable or stuck and a majority agreed stream=history-1 shard=0 generation=8 \
+    leader=broker-0 broker_suspected=true";
+
+#[test]
+fn a_candidacy_is_read_from_its_log_line() {
+    assert_eq!(
+        parse_stood(STOOD_LINE, "broker-2"),
+        Some(opened("history-1", 8, "broker-2"))
+    );
+    let held_back = "INFO felix_replication::election::candidate: not standing for election \
+                     stream=history-1 shard=0 why=quorum answers=1";
+    assert_eq!(parse_stood(held_back, "broker-2"), None);
+    assert_eq!(parse_stood(COLOURED, "broker-2"), None);
+}
+
+#[test]
+fn an_open_nobody_stood_for_is_not_an_election() {
+    // broker-1 opened at 9 after a control-plane move; broker-2 won an
+    // election at 8.
+    let opens: BTreeSet<Opened> = [
+        opened("history-1", 8, "broker-2"),
+        opened("history-1", 9, "broker-1"),
+    ]
+    .into_iter()
+    .collect();
+    let stood: BTreeSet<Opened> = [opened("history-1", 8, "broker-2")].into_iter().collect();
+    assert_eq!(
+        elected(&opens, &stood, "history-1", 0, 7, "broker-0"),
+        Some(&opened("history-1", 8, "broker-2"))
+    );
+    assert_eq!(
+        elected(&opens, &BTreeSet::new(), "history-1", 0, 7, "broker-0"),
+        None
+    );
+}
+
+#[test]
+fn every_run_of_a_broker_is_read() {
+    // A heal that restarts a broker twice pushes the first run past
+    // `broker.log.previous`, into `broker.log.earlier` only.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("broker.log.earlier"), COLOURED).unwrap();
+    std::fs::write(dir.path().join("broker.log.previous"), "nothing opened\n").unwrap();
+    std::fs::write(dir.path().join("broker.log"), "nothing opened\n").unwrap();
+    let mut opens = BTreeSet::new();
+    scan_dir(dir.path(), "broker-2", &EVERY_RUN, parse, &mut opens);
+    assert_eq!(
+        opens.into_iter().collect::<Vec<_>>(),
+        vec![opened("history-1", 7, "broker-2")]
+    );
 }

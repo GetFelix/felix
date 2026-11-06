@@ -92,12 +92,13 @@ Rule 12 is `OneLeaderPerGeneration` from the TLA+ shard model
 ([`FelixShard.tla`](formal/FelixShard.tla)). No client can see which
 broker opened a shard, so it is read from the broker logs instead of the
 operations: each broker logs "a majority took the fence; opening the shard
-for writes" with the shard and the generation. That is the lease-free open;
-the lease path logs a different line, which this rule does not read. The campaign collects those
-lines only when the brokers elect leaders themselves (see "Elections without
-the control plane"), and reads the logs after every fault, because the
-harness keeps only a broker's current log and the one before its last
-restart.
+for writes" with the shard and the generation. That is the lease-free open.
+The lease path logs a different line, which this rule does not read.
+
+The campaign collects those lines only when the brokers elect leaders
+themselves (see "Elections without the control plane"). It reads them after
+every fault, from each broker's current log and from `broker.log.earlier`,
+where the harness appends every earlier run at each restart.
 
 Rule 5 covers cache gets too: a get that returns a value no put to that key
 wrote, or returns it before its put began, is a phantom.
@@ -165,6 +166,10 @@ violation.
 > `one_broker_opening_several_generations_is_not`: rule 12.
 > `an_open_is_read_from_a_coloured_log_line`: the log line is read as the
 > broker writes it, colours and all.
+> `a_candidacy_is_read_from_its_log_line`,
+> `an_open_nobody_stood_for_is_not_an_election` and
+> `every_run_of_a_broker_is_read`: an election counts only an open its broker
+> stood for, and every earlier run's log is read.
 
 ## The campaign
 
@@ -402,8 +407,8 @@ sequenceDiagram
 2. It crashes the control plane and kills the leader.
 3. Within 20s (times `FELIX_TEST_TIMEOUT_SCALE`), each of the killed
    leader's shards must have been opened at a later generation by another
-   broker, as its log says, and that broker must take a probe: an append
-   for a list, a get for the cache. The control plane must still be down.
+   broker that stood for election at that generation, as its log says, and
+   that broker must take a probe: an append for a list, a get for the cache. The control plane must still be down.
    If not, the run fails, naming each shard and the last refusal. Each
    shard that passes adds a line to the fault timeline naming the elected
    broker, its generation, and how long it took.
