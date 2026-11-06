@@ -38,7 +38,6 @@
 mod connection;
 mod state;
 
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -46,6 +45,7 @@ use tokio::time::Instant;
 
 use crate::peer::identity::PeerIdentity;
 use anyhow::{Context, Result};
+use felix_common::random::Map;
 use felix_transport::QuicClient;
 use felix_wire::internal::{InternalMessage, PeerCapabilities, ReplicaLog};
 use parking_lot::Mutex;
@@ -66,7 +66,7 @@ pub struct PeerPool {
     partition: Option<super::PartitionInjector>,
     local_node_id: String,
     client: QuicClient,
-    peers: Mutex<HashMap<String, Arc<Peer>>>,
+    peers: Mutex<Map<String, Arc<Peer>>>,
     shutdown: CancellationToken,
     /// Whether this broker presents a certificate and verifies each peer's
     /// against the node id it dials.
@@ -113,7 +113,7 @@ impl PeerPool {
             config,
             local_node_id,
             client,
-            peers: Mutex::new(HashMap::new()),
+            peers: Mutex::new(Map::default()),
             shutdown,
             authenticated,
             known: KnownCapabilities::default(),
