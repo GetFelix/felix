@@ -2067,3 +2067,119 @@ async fn an_unlabelled_batch_does_not_vouch_for_a_copy_led_before_the_crash() {
         ErrorCode::Unavailable
     );
 }
+
+/// Records nothing about a peer until something dials it, as the pool does.
+struct FirstContact {
+    handler: ReplicaHandler,
+    dialled: std::sync::atomic::AtomicBool,
+}
+
+impl FirstContact {
+    const OFFERED: felix_wire::internal::PeerCapabilities =
+        felix_wire::internal::PeerCapabilities::GENERATION_LABELS
+            .union(felix_wire::internal::PeerCapabilities::RECORD_TIMES)
+            .union(felix_wire::internal::PeerCapabilities::RECORD_HEADERS);
+}
+
+impl crate::peer::PeerRequester for FirstContact {
+    async fn request(
+        &self,
+        _node_id: &str,
+        _addr: std::net::SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, crate::peer::PeerError> {
+        self.dialled
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        match message {
+            InternalMessage::ReplicateRecords(batch)
+            | InternalMessage::ReplicateMarkedRecords(batch) => Ok(self
+                .handler
+                .apply(Some("broker-c"), batch, felix_broker::LogKind::Stream)
+                .await),
+            other => panic!("unexpected {:?}", other.kind()),
+        }
+    }
+
+    async fn capabilities(
+        &self,
+        _node_id: &str,
+        _addr: std::net::SocketAddr,
+    ) -> std::result::Result<felix_wire::internal::PeerCapabilities, crate::peer::PeerError> {
+        self.dialled
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(Self::OFFERED)
+    }
+
+    fn recorded_capabilities(
+        &self,
+        _node_id: &str,
+    ) -> Option<felix_wire::internal::PeerCapabilities> {
+        self.dialled
+            .load(std::sync::atomic::Ordering::SeqCst)
+            .then_some(Self::OFFERED)
+    }
+}
+
+/// **A new leader's first batch to a crashed leader's copy is labelled**, so
+/// it vouches for the copy even when the shard goes idle after it. Unlabelled,
+/// it could not, and with no further records to ship the copy would stay
+/// doubted and refuse every fence.
+#[tokio::test]
+async fn a_first_contact_batch_vouches_for_the_copy_on_an_idle_shard() {
+    let follower_dir = tempfile::tempdir().expect("tempdir");
+    led_before_a_crash(follower_dir.path()).await;
+    let follower = broker_on(follower_dir.path());
+    let start = unclean();
+    let requester = FirstContact {
+        handler: ReplicaHandler::new(
+            Arc::clone(&follower),
+            router_led_by("broker-c", &[LOCAL, "broker-c"], 6),
+        )
+        .with_unclean_start(Arc::clone(&start)),
+        dialled: std::sync::atomic::AtomicBool::new(false),
+    };
+
+    let leader_dir = tempfile::tempdir().expect("tempdir");
+    let leader = broker_on(leader_dir.path());
+    ReplicaHandler::new(Arc::clone(&leader), router_with(&[LOCAL], 4))
+        .apply(SENDER, batch(4, 0, &["a"]), felix_broker::LogKind::Stream)
+        .await;
+    let leader_log = leader
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    leader_log
+        .accept_generation(6, Some("broker-c"))
+        .await
+        .expect("lead");
+    leader_log.record_generation(6, 1).expect("record");
+    leader_log.append_generation_start(6).await.expect("start");
+
+    let mut shard = batch(6, 0, &[]).shard;
+    shard.generation = 6;
+    let mut cursor =
+        crate::follower::FollowerCursor::new(LOCAL, "10.0.0.4:7002".parse().expect("addr"), 0);
+    // One batch, accepted, then nothing more to ship.
+    for _ in 0..4 {
+        crate::ship::ship_once(
+            &requester,
+            &leader_log,
+            &shard,
+            felix_broker::LogKind::Stream,
+            &mut cursor,
+            1 << 20,
+            &crate::rebuild::Rebuilds::disabled(),
+        )
+        .await;
+    }
+
+    let log = follower
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    assert_eq!(log.tail_offset().await.expect("tail"), 2, "shipped");
+    assert!(
+        !start.unvouched(&crate::driver::watch_key(&key()), &log, 7),
+        "vouched on first contact"
+    );
+}
