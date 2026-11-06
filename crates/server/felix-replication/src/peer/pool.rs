@@ -41,7 +41,8 @@ mod state;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tokio::time::Instant;
 
 use crate::peer::identity::PeerIdentity;
 use anyhow::{Context, Result};

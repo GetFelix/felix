@@ -235,12 +235,17 @@ impl RoutingTable {
         self.routes.get(key)
     }
 
-    /// Every route in the table.
+    /// Every route in the table, in key order.
     ///
     /// For a caller that has to visit shards rather than look one up -- the
     /// replication driver walks the table to find the shards this node leads.
+    /// The order is fixed, not the map's, so what a caller does shard by shard
+    /// happens in the same order every run of a simulated seed. Not for a
+    /// per-request path: it sorts.
     pub fn iter(&self) -> impl Iterator<Item = (&ShardKey, &Route)> {
-        self.routes.iter()
+        let mut entries: Vec<_> = self.routes.iter().collect();
+        entries.sort_unstable_by(|a, b| a.0.cmp(b.0));
+        entries.into_iter()
     }
 
     pub fn len(&self) -> usize {
