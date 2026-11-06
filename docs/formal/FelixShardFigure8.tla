@@ -54,6 +54,7 @@ SeededInit ==
     /\ joining = {}
     /\ leaving = {}
     /\ joinedAt = 0
+    /\ cpGone = FALSE
     /\ CounterInit
     \* Seeded histories are checked without self-election.
     /\ opened = {}
@@ -112,6 +113,7 @@ SeededCutOverInit ==
     /\ joining = {}
     /\ leaving = {}
     /\ joinedAt = 0
+    /\ cpGone = FALSE
     /\ CounterInit
     \* Seeded histories are checked without self-election.
     /\ opened = {}
