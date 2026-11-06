@@ -2,6 +2,7 @@
 //! it holding the start of the generation that names its new copy
 //! (`FelixShard.tla`, the non-voting rejoin; docs/control-plane.md,
 //! "Re-admitting a replaced copy").
+use super::super::moves::READMITS_PER_PASS;
 use super::reconciler::shard_zero;
 use super::*;
 use crate::model::{Namespace, ReplicaReport, Tenant};
@@ -549,4 +550,57 @@ fn a_readmission_needs_the_new_copy_caught_up_and_nothing_else_in_progress() {
     };
     assert_eq!(written.replicas, wiped.replicas);
     assert_eq!(written.leader, wiped.leader);
+}
+
+/// Every shard has broker-c caught up under a new identity.
+struct AllReadmittable;
+
+impl CaughtUp for AllReadmittable {
+    fn is_caught_up(&self, _key: &ShardKey, _node_id: &str) -> bool {
+        true
+    }
+
+    fn readmittable(&self, _key: &ShardKey, _generation: u64, _leader: &str) -> Option<String> {
+        Some("broker-c".to_string())
+    }
+}
+
+/// **Re-admissions are paced.** Each is a new fenced term on its leader, so
+/// a broker that comes back wiped under many shards is re-admitted into a
+/// bounded number a pass, and into none while placement is paused.
+#[test]
+fn one_pass_readmits_a_bounded_number_and_none_while_paused() {
+    let nodes = live(&["broker-a", "broker-b", "broker-c"]);
+    let shards = 3 * READMITS_PER_PASS as u32;
+    let existing: Vec<ShardAssignment> = (0..shards)
+        .map(|n| {
+            let mut assignment = named("broker-b", &["broker-a", "broker-c"], &[]);
+            assignment.key.shard = n;
+            assignment
+        })
+        .collect();
+    let stream = Stream {
+        consistency: ConsistencyLevel::Quorum,
+        ..replicated_stream("orders", shards, 3)
+    };
+    let readmitted = |paused: bool| {
+        let policy = MovePolicy {
+            joint_fence: true,
+            paused,
+            ..MovePolicy::default()
+        };
+        plan_with(
+            std::slice::from_ref(&stream),
+            &[],
+            &nodes,
+            &existing,
+            &AllReadmittable,
+            policy,
+        )
+        .moves()
+        .filter(|(_, step, _)| matches!(step, MoveStep::Readmit { .. }))
+        .count()
+    };
+    assert_eq!(readmitted(false), READMITS_PER_PASS);
+    assert_eq!(readmitted(true), 0);
 }

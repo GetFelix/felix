@@ -102,7 +102,7 @@ The important architectural boundary is:
 | `crates/server/felix-storage` | Segment log, commit sequencer, log-backed and in-memory caches, counters | `crates/server/felix-storage/src/lib.rs` |
 | `crates/server/felix-replication` | Broker-to-broker transport and log replication | `crates/server/felix-replication/src/lib.rs` |
 | `crates/server/felix-router` | Which node serves a shard, from the control plane's assignments | `crates/server/felix-router/src/lib.rs` |
-| `crates/server/felix-kafka` | The read-only Kafka listener | `crates/server/felix-kafka/src/lib.rs` |
+| `crates/server/felix-kafka` | The Kafka listener | `crates/server/felix-kafka/src/lib.rs` |
 | `crates/server/felix-mqtt` | The MQTT listener and its mounts | `crates/server/felix-mqtt/src/lib.rs` |
 | `crates/server/felix-common` | What broker and control plane must agree on: membership, clock, TLS, ids, the env registry | `crates/server/felix-common/src/lib.rs` |
 | `crates/sdk/felix-capi` | C ABI over the Rust client, for the Go and C# SDKs | `crates/sdk/felix-capi/src/lib.rs` |

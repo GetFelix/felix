@@ -332,11 +332,7 @@ pub fn cancel_move(catalog: &Catalog<'_>, key: &ShardKey) -> Result<OperatorStep
             step: MoveStep::PendingSetCancelled,
             assignment: ShardAssignment {
                 pending_set: None,
-                generation: 0,
-                fence_storage_ids: Default::default(),
-                member_storage_ids: Default::default(),
-                learners: Default::default(),
-                ..existing.clone()
+                ..existing.renamed()
             },
             expected_generation: existing.generation,
             zones: None,
