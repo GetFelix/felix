@@ -1586,7 +1586,36 @@ async fn a_leader_that_promised_its_generation_away_reports_the_refusal() {
 struct RefusedAfterOpen {
     detail: fn(u64) -> String,
     c_answers: bool,
+    /// `broker-c` answers once a second and is down in between, as a stalled
+    /// follower that gets one batch through now and then.
+    c_flaps: bool,
+    c_answered: std::sync::Mutex<Option<std::time::Instant>>,
     accepting: AcceptingFollower,
+}
+
+impl RefusedAfterOpen {
+    fn new(detail: fn(u64) -> String, c_answers: bool) -> Self {
+        Self {
+            detail,
+            c_answers,
+            c_flaps: false,
+            c_answered: std::sync::Mutex::default(),
+            accepting: AcceptingFollower::default(),
+        }
+    }
+
+    fn c_answers_now(&self) -> bool {
+        if !self.c_flaps {
+            return self.c_answers;
+        }
+        let mut answered = self.c_answered.lock().expect("lock");
+        let now = std::time::Instant::now();
+        let due = answered.is_none_or(|at| now.duration_since(at) >= Duration::from_secs(1));
+        if due {
+            *answered = Some(now);
+        }
+        due
+    }
 }
 
 impl PeerRequester for RefusedAfterOpen {
@@ -1605,7 +1634,7 @@ impl PeerRequester for RefusedAfterOpen {
                     detail: (self.detail)(4),
                 },
             )),
-            _ if self.c_answers => self.accepting.request(node_id, addr, message).await,
+            _ if self.c_answers_now() => self.accepting.request(node_id, addr, message).await,
             _ => Err(PeerError::Unavailable {
                 node_id: node_id.to_string(),
                 detail: "down".to_string(),
@@ -1614,21 +1643,18 @@ impl PeerRequester for RefusedAfterOpen {
     }
 }
 
-/// The refusal an open leader at generation 4 reports within two seconds, if
-/// any, when broker-b refuses it with `detail`.
+/// The first refusal an open leader at generation 4 reports within `within`,
+/// if any, when broker-b refuses it with `detail`.
 async fn refusal_after_open(
     detail: fn(u64) -> String,
     c_answers: bool,
+    within: Duration,
 ) -> Option<RefusedGeneration> {
     let (broker, _dir) = leader_with(3).await;
     let (control_plane, received) = recording_control_plane().await;
     let shutdown = CancellationToken::new();
     let driver = spawn(
-        Arc::new(RefusedAfterOpen {
-            detail,
-            c_answers,
-            accepting: AcceptingFollower::default(),
-        }),
+        Arc::new(RefusedAfterOpen::new(detail, c_answers)),
         broker,
         router(LOCAL, &["broker-b", "broker-c"], 4),
         Arc::new(Unfenced),
@@ -1641,7 +1667,7 @@ async fn refusal_after_open(
         MoveThrottle::unlimited(),
         shutdown.clone(),
     );
-    let refused = tokio::time::timeout(Duration::from_secs(2), async {
+    let refused = tokio::time::timeout(within, async {
         loop {
             let refused = received
                 .lock()
@@ -1662,16 +1688,15 @@ async fn refusal_after_open(
 }
 
 /// Every report an open leader at generation 4 sends within `within`, when
-/// broker-b refuses it for a newer ballot and broker-c is down.
-async fn reports_after_open(within: Duration) -> Vec<ShardReplicaStatus> {
+/// broker-b refuses it for a newer ballot and broker-c is down, or flaps.
+async fn reports_after_open(c_flaps: bool, within: Duration) -> Vec<ShardReplicaStatus> {
     let (broker, _dir) = leader_with(3).await;
     let (control_plane, received) = recording_control_plane().await;
     let shutdown = CancellationToken::new();
     let driver = spawn(
         Arc::new(RefusedAfterOpen {
-            detail: |g| crate::replica::superseded_detail(g + 1, g),
-            c_answers: false,
-            accepting: AcceptingFollower::default(),
+            c_flaps,
+            ..RefusedAfterOpen::new(|g| crate::replica::superseded_detail(g + 1, g), false)
         }),
         broker,
         router(LOCAL, &["broker-b", "broker-c"], 4),
@@ -1697,7 +1722,7 @@ async fn reports_after_open(within: Duration) -> Vec<ShardReplicaStatus> {
 /// never be renamed.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_refusal_stays_on_every_later_report() {
-    let reports = reports_after_open(Duration::from_millis(1500)).await;
+    let reports = reports_after_open(false, BALLOT_ELSEWHERE_FOR + Duration::from_secs(2)).await;
     let first = reports
         .iter()
         .position(|report| report.refused.is_some())
@@ -1724,45 +1749,74 @@ async fn a_refusal_stays_on_every_later_report() {
 /// majority left without it, reports the generation refused** (#1914). The
 /// ballot came after the fence, so no fence reports it, and a live leader's
 /// followers never suspect it: without the report nothing renames the shard.
-/// At first without the ballot (see the next test).
+/// The report carries the ballot, so the leader is named past it (#1949).
 #[tokio::test(flavor = "multi_thread")]
 async fn a_ballot_taken_after_the_fence_reports_the_refusal() {
-    let refused = refusal_after_open(|g| crate::replica::superseded_detail(g + 1, g), false).await;
-    assert_eq!(refused, Some(RefusedGeneration::set_unknown(4)));
+    let refused = refusal_after_open(
+        |g| crate::replica::superseded_detail(g + 1, g),
+        false,
+        BALLOT_ELSEWHERE_FOR * 2,
+    )
+    .await;
+    assert_eq!(refused, Some(RefusedGeneration::above(4, 5)));
 }
 
-/// **The ship refusal carries the followers' ballot only once it has stayed
-/// for [`BALLOT_ELSEWHERE_FOR`]** (#1949). A candidate standing there may
-/// still hold a majority and open; naming this leader past its ballot at
-/// once would depose it.
+/// **That refusal is held back whole until the ballot has stayed for
+/// [`BALLOT_ELSEWHERE_FOR`]** (#1949). A candidate standing there may still
+/// hold a majority and open, and any rename of the leader, one up or past
+/// the ballot, would depose it. The leader acknowledges nothing meanwhile.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_ship_refusal_carries_the_ballot_only_once_it_stays() {
-    let reports = reports_after_open(BALLOT_ELSEWHERE_FOR + Duration::from_secs(3)).await;
-    let refused: Vec<_> = reports
-        .iter()
-        .filter_map(|report| report.refused.clone())
-        .collect();
-    assert_eq!(
-        refused.first(),
-        Some(&RefusedGeneration::set_unknown(4)),
-        "the first refusal carries the ballot before it has stayed"
+async fn a_ship_refusal_is_held_while_its_ballot_may_open() {
+    let early = BALLOT_ELSEWHERE_FOR - Duration::from_millis(500);
+    let refused = refusal_after_open(
+        |g| crate::replica::superseded_detail(g + 1, g),
+        false,
+        early,
+    )
+    .await;
+    assert_eq!(refused, None);
+}
+
+/// **A follower that gets a batch through now and then does not hold the
+/// refusal back forever.** A guard: the ship refusal keeps its clock across
+/// such a pass, and the follower's ballot is also reported on its own, so
+/// this passes with either alone.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_flapping_follower_does_not_hold_the_ship_refusal_forever() {
+    let reports = reports_after_open(true, BALLOT_ELSEWHERE_FOR + Duration::from_secs(4)).await;
+    assert!(
+        reports
+            .iter()
+            .any(|report| report.refused == Some(RefusedGeneration::above(4, 5))),
+        "the ballot was never carried"
     );
-    assert_eq!(refused.last(), Some(&RefusedGeneration::above(4, 5)));
 }
 
 /// The same, when the follower answers from a routing view laid over by a
 /// candidate's fence rather than from its ballot.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_newer_routing_view_after_the_fence_reports_the_refusal() {
-    let refused = refusal_after_open(|g| crate::replica::view_detail(g + 1, g), false).await;
-    assert_eq!(refused, Some(RefusedGeneration::set_unknown(4)));
+    let refused = refusal_after_open(
+        |g| crate::replica::view_detail(g + 1, g),
+        false,
+        BALLOT_ELSEWHERE_FOR * 2,
+    )
+    .await;
+    assert_eq!(refused, Some(RefusedGeneration::above(4, 5)));
 }
 
 /// **Not while a majority is left**: broker-c still answers, so the leader
-/// acknowledges at its generation and a rename would only churn.
+/// acknowledges at its generation and a rename would only churn. Later the
+/// follower's ballot is reported for its own sake, as in
+/// `a_leader_a_follower_fenced_for_a_newer_ballot_reports_the_refusal`.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_newer_ballot_with_a_majority_left_reports_nothing() {
-    let refused = refusal_after_open(|g| crate::replica::superseded_detail(g + 1, g), true).await;
+    let refused = refusal_after_open(
+        |g| crate::replica::superseded_detail(g + 1, g),
+        true,
+        Duration::from_secs(2),
+    )
+    .await;
     assert_eq!(refused, None);
 }
 
@@ -1770,7 +1824,12 @@ async fn a_newer_ballot_with_a_majority_left_reports_nothing() {
 /// view the follower holds is evidence the generation cannot come back.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_refusal_naming_no_newer_generation_reports_nothing() {
-    let refused = refusal_after_open(|_| "this broker is busy".to_string(), false).await;
+    let refused = refusal_after_open(
+        |_| "this broker is busy".to_string(),
+        false,
+        NO_REPORT_WITHIN,
+    )
+    .await;
     assert_eq!(refused, None);
 }
 
@@ -1825,11 +1884,7 @@ async fn deposed_after_refusal(detail: fn(u64) -> String) -> bool {
     let deposals = Arc::new(Deposals::default());
     let shutdown = CancellationToken::new();
     let driver = spawn(
-        Arc::new(RefusedAfterOpen {
-            detail,
-            c_answers: true,
-            accepting: AcceptingFollower::default(),
-        }),
+        Arc::new(RefusedAfterOpen::new(detail, true)),
         broker,
         router(LOCAL, &["broker-b", "broker-c"], 4),
         Arc::clone(&deposals) as Arc<dyn WriteFence>,

@@ -101,6 +101,10 @@ const BALLOT_ABOVE_FOR: Duration = Duration::from_secs(3);
 /// the control plane adopting it: a standing that opens moves the route on
 /// first, and one that was withdrawn leaves this leader stopped for good.
 const BALLOT_ELSEWHERE_FOR: Duration = Duration::from_secs(10);
+/// How long a ship refusal's ballot may go unseen and still count as the same
+/// one. A stalled follower that answers once leaves a majority for a pass; that
+/// must not restart the wait for [`BALLOT_ELSEWHERE_FOR`].
+const SHIP_BALLOT_GAP: Duration = Duration::from_secs(3);
 
 /// The running driver, as a stopping broker needs it.
 pub struct Replication {

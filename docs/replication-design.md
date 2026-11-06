@@ -1558,13 +1558,17 @@ elected leader waits for the lease until the control plane is back (issue
     another candidate's fence, once the leader has opened. That follower
     then refuses every batch. If the leader has no majority left without
     it, no write can be acknowledged at that generation again, so the
-    leader reports the generation refused at once, naming no ballot. Once
-    the newest ballot its followers named has stayed for 10 s, the report
-    carries it, so the control plane names the leader past that ballot in
-    one step. Not sooner: a candidate standing there may still hold a
-    majority and open. When the leader's own copy holds a higher ballot,
-    the report carries that one instead, so one rename gets past both
-    (issue #1949). A follower whose
+    leader reports the generation refused, carrying the newest ballot its
+    followers named, so the control plane names it past that ballot in one
+    step. It holds the report until that ballot has stayed for 10 s: a
+    candidate standing there may still hold a majority and open, and any
+    rename of the leader would depose it. The leader acknowledges nothing
+    meanwhile, so the wait costs no writes. A follower that gets one batch
+    through during the wait does not restart it. If the leader's own copy
+    holds a higher ballot, the report carries that one instead, so one
+    rename gets past both. A refusal at the leader's own generation, which
+    a follower promised to another node, is reported at once naming no
+    ballot (issue #1949). A follower whose
     last batch did not get through does not count toward that majority,
     and only a refusal that names a newer generation counts, because a
     replica's generation never goes back. A
@@ -1578,7 +1582,7 @@ elected leader waits for the lease until the control plane is back (issue
     a follower saying the control plane assigned a newer generation does,
     since an election may leave a ballot behind with no leader. With a
     majority still answering the leader serves; with none, it reports the
-    generation refused at once, and its rounds fail, so its readers end
+    generation refused as above, and its rounds fail, so its readers end
     once no majority has confirmed it for a lease duration. A leader whose open fails
     for any other reason, an I/O error say, reports the generation refused
     too, once until the shard next opens, since the same assignment never
@@ -4986,11 +4990,11 @@ Five rules keep an election from getting stuck:
   rejoins. The leader therefore also reports its generation refused after
   10 s, carrying the follower's ballot. Placement names the same leader past
   that ballot and the follower takes batches again (issue #1949). When the
-  followers' newer ballots leave no majority, the leader reports at once
-  but carries their ballot only after the same 10 s, so a candidate that
-  can still open is not deposed. Until then it names no ballot and is
-  named one up. If its own copy holds a higher ballot, the report carries
-  that one, so a single rename gets past both.
+  followers' newer ballots leave no majority, the leader holds its report
+  for the same 10 s, so a candidate that can still open is not deposed,
+  and then reports the generation refused carrying their ballot. If its
+  own copy holds a higher ballot, the report carries that one, so a single
+  rename gets past both.
 
 Elections need `joint_fence` finalized first, which the control plane allows
 once every serving broker offers `ELECTION`, names start holders and keeps a
