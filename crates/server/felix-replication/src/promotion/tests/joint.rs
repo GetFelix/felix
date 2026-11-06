@@ -1843,6 +1843,16 @@ async fn fence_followers_from_new_copies(
     continuing: bool,
     kept: bool,
 ) -> (Outcome, Arc<Broker>, TempDir) {
+    fence_followers_promised_at(continuing, kept, 4).await
+}
+
+/// [`fence_followers_from_new_copies`], with each follower's ballot naming
+/// broker-a at `promised`.
+async fn fence_followers_promised_at(
+    continuing: bool,
+    kept: bool,
+    promised: u64,
+) -> (Outcome, Arc<Broker>, TempDir) {
     let mut replicas = replicas_with(&[]);
     replicas.ballots = true;
     replicas
@@ -1861,7 +1871,7 @@ async fn fence_followers_from_new_copies(
             .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
             .await
             .expect("log")
-            .accept_generation(4, Some(LEADER))
+            .accept_generation(promised, Some(LEADER))
             .await
             .expect("ballot");
         let replica = replicas.get_mut(id);
@@ -1955,5 +1965,22 @@ async fn a_continuing_joint_fence_does_not_count_new_copies_that_attest_no_kept_
     assert!(
         matches!(&outcome, Outcome::Pending { why, .. } if why.contains("another copy")),
         "{outcome:?}"
+    );
+}
+
+/// **A retried continuing fence still counts copies that kept their
+/// ballots.** The first round reached both followers, so each ballot already
+/// names broker-a at 5, but their answers were lost. Each round fences
+/// afresh, so the retry must be attested again: a kept ballot naming the
+/// leader at the generation itself promised it to no one else (#2047).
+#[tokio::test]
+async fn a_retried_continuing_fence_counts_copies_whose_ballot_names_it_already() {
+    let (outcome, _leader, _dir) = fence_followers_promised_at(true, true, PROMOTED).await;
+
+    assert_eq!(
+        outcome,
+        Outcome::Fenced {
+            caught_up_from: None
+        }
     );
 }

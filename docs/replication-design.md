@@ -4845,14 +4845,15 @@ Once it is finalized on a broker that offers `ELECTION`:
   the copy the sets expect, as any fence does. It also counts an answer
   from another copy of a member when the answer attests a kept ballot
   (`FenceKeptOk`, negotiated with `KEPT_BALLOTS`): the copy's ballot, before
-  this fence, named that leader at the generation before, and its directory
-  kept every ballot it took. Without the attestation the answer still
+  this fence, named that leader at the generation before or at this one (a
+  retried fence finds it there, and it promised this generation to no one
+  else), and its directory kept every ballot it took. Without the attestation the answer still
   refuses older leaders but counts for nothing. A restored directory can
   pass every refusal and answer from a new storage id, though before the
   restore it may have promised this generation to another leader.
 - A copy doubted after an unclean crash, a learner because its storage id
   rotated, answers a continuing leader's fence, and attests, only when its
-  ballot names that leader at the generation before and the crash kept
+  ballot names that leader at the generation before or at this one, and the crash kept
   every ballot. It promises and stays doubted until a leader ships to it.
   Every other copy refuses as before. A broker knows the crash kept every
   ballot only when the control plane's record of the node names the storage

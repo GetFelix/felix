@@ -1967,7 +1967,9 @@ impl ReplicaHandler {
 
     /// Whether `log`'s ballot names `sender`, another broker, at the
     /// generation right before `generation`: a fence from the leader this
-    /// copy last promised, moving to its next generation. Only after an
+    /// copy last promised, moving to its next generation. Or at `generation`
+    /// itself, as a retried fence finds it: that kept ballot promised the
+    /// generation to no one else either. Only after an
     /// unclean start that kept every ballot: a wiped or restored copy may
     /// have promised the next generation to a candidate before it lost that
     /// ballot, and a ballot it took since proves nothing. Such a copy refuses
@@ -1986,7 +1988,8 @@ impl ReplicaHandler {
             .is_some_and(|unclean| unclean.kept_promises());
         kept && sender.is_some_and(|sender| {
             sender != self.router.local_node_id()
-                && generation.checked_sub(1) == Some(log.accepted_generation())
+                && (generation.checked_sub(1) == Some(log.accepted_generation())
+                    || generation == log.accepted_generation())
                 && log.accepted_leader().as_deref() == Some(sender)
         })
     }
