@@ -1560,7 +1560,17 @@ elected leader waits for the lease until the control plane is back (issue
     another candidate's fence, once the leader has opened. That follower
     then refuses every batch. If the leader has no majority left without
     it, no write can be acknowledged at that generation again, so the
-    leader reports the generation refused the same way. A follower whose
+    leader reports the generation refused, carrying the newest ballot its
+    followers named, so the control plane names it past that ballot in one
+    step. It holds the report until that ballot has stayed for 10 s: a
+    candidate standing there may still hold a majority and open, and any
+    rename of the leader would depose it. The leader acknowledges nothing
+    meanwhile, so the wait costs no writes. The wait restarts only when the
+    ballot or the generation changes. If the leader's own copy
+    holds a higher ballot, the report carries that one instead, so one
+    rename gets past both. A refusal at the leader's own generation, which
+    a follower promised to another node, is reported at once naming no
+    ballot (issue #1949). A follower whose
     last batch did not get through does not count toward that majority,
     and only a refusal that names a newer generation counts, because a
     replica's generation never goes back. A
@@ -1574,7 +1584,7 @@ elected leader waits for the lease until the control plane is back (issue
     a follower saying the control plane assigned a newer generation does,
     since an election may leave a ballot behind with no leader. With a
     majority still answering the leader serves; with none, it reports the
-    generation refused at once, and its rounds fail, so its readers end
+    generation refused as above, and its rounds fail, so its readers end
     once no majority has confirmed it for a lease duration. A leader whose open fails
     for any other reason, an I/O error say, reports the generation refused
     too, once until the shard next opens, since the same assignment never
@@ -5093,6 +5103,18 @@ Five rules keep an election from getting stuck:
   same 10 s before reporting, so a candidate that can still open is not
   deposed, and the report carries the ballot, so the leader is named past
   it in one step rather than one generation per report.
+  A follower can hold that ballot instead of the leader. It then refuses
+  every batch from the leader for the rest of the generation, so the shard
+  runs one copy short and has one less failure to spare. If the
+  candidate withdrew, nothing renames the shard, so that copy never
+  rejoins. The leader therefore also reports its generation refused after
+  10 s, carrying the follower's ballot. Placement names the same leader past
+  that ballot and the follower takes batches again (issue #1949). When the
+  followers' newer ballots leave no majority, the leader holds its report
+  for the same 10 s, so a candidate that can still open is not deposed,
+  and then reports the generation refused carrying their ballot. If its
+  own copy holds a higher ballot, the report carries that one, so a single
+  rename gets past both.
 
 Elections need `joint_fence` finalized first, which the control plane allows
 once every serving broker offers `ELECTION`, names start holders and keeps a
@@ -5112,6 +5134,8 @@ the kept set alone never reaches.
 > `a_leader_past_its_generation_by_another_ballot_reports_the_refusal`,
 > `a_leader_standing_at_its_ballot_reports_no_refusal`,
 > `a_fence_below_its_own_ballot_reports_the_refusal`,
+> `a_leader_a_follower_fenced_for_a_newer_ballot_reports_the_refusal`,
+> `a_leader_a_follower_fenced_at_its_own_generation_reports_the_refusal`,
 > `a_granted_pre_vote_puts_the_ballot_on_disk_then_records_the_standing`,
 > `a_refused_pre_vote_writes_nothing`,
 > `a_set_the_control_plane_does_not_record_is_not_stood_on`,

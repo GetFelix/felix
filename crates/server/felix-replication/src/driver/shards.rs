@@ -282,8 +282,13 @@ struct ShardState {
     /// and no majority is left without it
     /// ([`crate::follower::refused_without_majority`]). Reported each tick.
     ship_refused: Option<RefusedGeneration>,
-    /// The last pass found this broker's own copy holding a ballot past the
-    /// generation it leads. Reported each tick, as a refused open is.
+    /// The followers' ballot behind the last ship refusal. One past the
+    /// generation is reported only once it outlasts
+    /// [`super::BALLOT_ELSEWHERE_FOR`].
+    ship_ballot: Option<ShipBallot>,
+    /// The last pass found this broker's own copy, or a follower that fenced
+    /// it, holding a ballot past the generation it leads. Reported each
+    /// tick, as a refused open is.
     ballot_refused: Option<RefusedGeneration>,
     /// The ballot past the led generation the passes have seen, whether it
     /// names this broker, and since when. Reported only once it outlasts
@@ -292,6 +297,53 @@ struct ShardState {
     ballot_above_since: Option<((u64, bool), tokio::time::Instant)>,
     /// What its last pass left.
     last: Option<LastPass>,
+}
+
+/// A ballot the followers refused an open leader for, while no majority is
+/// left without them.
+pub(super) struct ShipBallot {
+    /// The generation led and the ballot.
+    at: (u64, u64),
+    /// First seen. Kept while the generation and ballot stay the same.
+    since: tokio::time::Instant,
+    /// The refusal was logged.
+    warned: bool,
+}
+
+impl ShipBallot {
+    /// Notes one pass's ship refusal, as `(generation, ballot)`. A pass with
+    /// none leaves the kept ballot alone, so a follower that gets one batch
+    /// through does not restart the wait; a new generation or ballot does.
+    pub(super) fn note(
+        kept: &mut Option<Self>,
+        refused: Option<(u64, u64)>,
+        now: tokio::time::Instant,
+    ) {
+        let Some(at) = refused else { return };
+        if kept.as_ref().is_none_or(|kept| kept.at != at) {
+            *kept = Some(Self {
+                at,
+                since: now,
+                warned: false,
+            });
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn since(&self) -> tokio::time::Instant {
+        self.since
+    }
+}
+
+impl ShardState {
+    /// A refusal an open leader reports from its followers or its own copy.
+    /// The higher ballot wins, so one rename gets past both.
+    fn standing_refusal(&self) -> Option<RefusedGeneration> {
+        match (self.ship_refused.clone(), self.ballot_refused.clone()) {
+            (Some(ship), Some(ballot)) if ballot.ballot > ship.ballot => Some(ballot),
+            (ship, ballot) => ship.or(ballot),
+        }
+    }
 }
 
 /// What a shard's last pass left, for the driver's summary.
@@ -446,8 +498,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             state
                 .fence_refused
                 .clone()
-                .or_else(|| state.ship_refused.clone())
-                .or_else(|| state.ballot_refused.clone())
+                .or_else(|| state.standing_refusal())
                 .filter(|refused| {
                     refused.generation == route.generation
                         && route.leader.node_id == self.cx.router.local_node_id()
@@ -1302,6 +1353,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             drain_pending,
             behind,
             ballot_above,
+            follower_ballot,
             ..
         } = pass;
         // Busy from earlier passes too: a follower this pass launched nobody
@@ -1376,21 +1428,49 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             state.held.append(&mut next.answered.lock());
         }
         state.owed = owed;
-        let report = ship_refused.is_some() && state.ship_refused.is_none();
-        state.ship_refused = ship_refused.map(|ballot| {
-            if report {
-                tracing::warn!(
-                    stream = %key.stream,
-                    shard = key.shard,
-                    generation,
-                    ballot,
-                    "a follower took a newer generation and no majority is left without it; \
-                     reporting the generation refused",
-                );
-            }
-            RefusedGeneration::set_unknown(generation)
-        });
         let now = tokio::time::Instant::now();
+        ShipBallot::note(
+            &mut state.ship_ballot,
+            ship_refused.map(|ballot| (generation, ballot)),
+            now,
+        );
+        // A ballot past the generation is held back whole: a candidate
+        // standing there may still hold a majority and open, and any rename
+        // of this broker would depose it. Without a majority this leader
+        // acknowledges nothing meanwhile anyway. Once it stays, the refusal
+        // names this broker past it, since at the ballot's own generation the
+        // fence finds it promised away and waits.
+        state.ship_refused = ship_refused.and_then(|ballot| {
+            if ballot <= generation {
+                return Some(RefusedGeneration::set_unknown(generation));
+            }
+            let kept = state.ship_ballot.as_ref()?;
+            (now.duration_since(kept.since) >= super::BALLOT_ELSEWHERE_FOR)
+                .then(|| RefusedGeneration::above(generation, ballot))
+        });
+        if let (Some(refused), Some(kept)) = (&state.ship_refused, &mut state.ship_ballot)
+            && !kept.warned
+        {
+            kept.warned = true;
+            tracing::warn!(
+                stream = %key.stream,
+                shard = key.shard,
+                generation,
+                ballot = refused.ballot,
+                "a follower took a newer generation and no majority is left without it; \
+                 reporting the generation refused",
+            );
+        }
+        // A follower's ballot is another node's, so it waits as long as one
+        // this broker answered; the higher of two such ballots wins, so one
+        // rename gets past both.
+        let (ballot_above, from_follower) = match (ballot_above, follower_ballot) {
+            (None, Some(theirs)) => (Some((theirs, false)), true),
+            (Some((own_ballot, _)), Some(theirs)) if theirs > own_ballot => {
+                (Some((theirs, false)), true)
+            }
+            (ballot_above, _) => (ballot_above, false),
+        };
         state.ballot_above_since = ballot_above.map(|ballot| match state.ballot_above_since {
             Some((seen, since)) if seen == ballot => (ballot, since),
             _ => (ballot, now),
@@ -1410,6 +1490,18 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             })
             .map(|(ballot, _)| ballot);
         if let Some((ballot, _)) = ballot_above
+            && state.ballot_refused.is_none()
+            && from_follower
+        {
+            tracing::warn!(
+                stream = %key.stream,
+                shard = key.shard,
+                generation,
+                ballot,
+                "a follower fenced this leader for a ballot that never opened, so it refuses \
+                 every batch; reporting the generation refused",
+            );
+        } else if let Some((ballot, _)) = ballot_above
             && state.ballot_refused.is_none()
         {
             tracing::warn!(
@@ -1465,7 +1557,12 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         if again {
             self.enqueue(&key, Queue::of(appended, urgent));
         }
-        if let Some(refused) = self.states.get(&key).and_then(|s| s.ship_refused.clone()) {
+        if let Some(refused) = self
+            .states
+            .get(&key)
+            .filter(|s| s.ship_refused.is_some())
+            .and_then(ShardState::standing_refusal)
+        {
             self.report_refusal(key, refused);
         }
         self.fill();

@@ -323,6 +323,10 @@ pub(super) struct ShardPass<'a> {
     /// count a mark at the pass's generation, and whether its ballot names
     /// this broker.
     pub(super) ballot_above: Option<(u64, bool)>,
+    /// The newest ballot a follower named when it fenced this leader, at or
+    /// past the pass's generation. That follower refuses every batch until
+    /// the route moves past the ballot, so the set runs a copy short.
+    pub(super) follower_ballot: Option<u64>,
 }
 
 impl ShardPass<'_> {
@@ -347,6 +351,7 @@ impl ShardPass<'_> {
             drain_pending: false,
             behind: false,
             ballot_above: None,
+            follower_ballot: None,
         }
     }
 }
@@ -709,6 +714,21 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 .is_none_or(|elections| elections.candidacy(key, accepted).is_none()))
         .then_some((accepted, own))
     };
+    // A follower fenced for a candidate's ballot refuses this leader for the
+    // rest of the generation. If the candidate withdrew, nothing moves the
+    // route on, so it is reported refused like a ballot in its own copy (#1949).
+    let follower_ballot = entry
+        .followers
+        .iter()
+        .filter(|cursor| cursor.halted == Some(crate::Halt::Fenced))
+        .filter_map(|cursor| cursor.fenced_by)
+        .filter(|&ballot| ballot >= route.generation)
+        .max()
+        .filter(|&ballot| {
+            marks
+                .elections()
+                .is_none_or(|elections| elections.candidacy(key, ballot).is_none())
+        });
     // A set change the control plane has not taken yet: a record is held
     // only when a majority of the set being left holds it too (rule 8).
     let pending = route
@@ -1884,6 +1904,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         drain_pending: route.draining && !drained,
         behind,
         ballot_above,
+        follower_ballot,
     }
 }
 
@@ -2775,6 +2796,7 @@ pub(super) fn follow_storage(
     let fenced = cursor.halted.filter(|halt| *halt == crate::Halt::Fenced);
     *cursor = FollowerCursor {
         halted: fenced,
+        fenced_by: fenced.and(cursor.fenced_by),
         storage_id: seen.storage,
         incarnation: seen.incarnation,
         ..FollowerCursor::new(cursor.node_id.clone(), cursor.addr, base)
