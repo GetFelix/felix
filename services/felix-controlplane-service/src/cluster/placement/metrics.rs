@@ -129,6 +129,7 @@ impl MoveClock {
             | MoveStep::SetUnknown { .. }
             | MoveStep::Stuck { .. }
             | MoveStep::PendingSetTimedOut
+            | MoveStep::PendingSetMemberReplaced { .. }
             | MoveStep::PendingSetDropped
             | MoveStep::PendingSetCancelled
             | MoveStep::Readmit { .. } => None,
