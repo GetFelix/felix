@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794062943799,
+  "lastUpdate": 1794067835781,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -48984,6 +48984,58 @@ window.BENCHMARK_DATA = {
             "range": "4993.52",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 800874.23\nmean: 801174.02\nstdev: 4993.52\ncv: 0.62%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3bfd00b2b64c3565e87f2ca653e1840a46c0917d",
+          "message": "fix(broker): a start from the view attests once its restore check passes (#2103)\n\n* fix(broker): a start from the view attests once its restore check passes\n\nA broker started from its control-plane view while the control plane was\ndown set kept_ballots=false at startup, and QuorumMarks keeps the first\nvalue for the process lifetime. Once the control plane answered and the\ndeferred restore check passed, nothing re-evaluated it, so under the\nunified fence the copy never counted toward a promotion and a shard whose\nleader died stayed unelected (replica_election\na_broker_restarted_while_the_control_plane_is_down_waits_for_it_under_the_unified_fence).\n\nA start that keeps its view now leaves kept_ballots unset until the\ndeferred check finds the directory current, then sets what a start that\nasked first would: the run's own kept ballots, false under a record\nwithout a storage id. A failed check sets nothing and stops the broker.\n\nSpec-Unaffected: the spec already models the attestation as gated on the restore check (CountsForgotten, TrustsRegistered); this makes the code release it after the check, as modelled.\n\n* fix(broker): name the deferred check's callback type for clippy",
+          "timestamp": "2026-11-07T08:05:31-08:00",
+          "tree_id": "c9789a46500ecce1c331296c774ac32c5882d009",
+          "url": "https://github.com/GetFelix/felix/commit/3bfd00b2b64c3565e87f2ca653e1840a46c0917d"
+        },
+        "date": 1794067835058,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 334365.26,
+            "range": "15463.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 334365.26\nmean: 337388.06\nstdev: 15463.05\ncv: 4.58%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 334365.26,
+            "range": "15463.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 334365.26\nmean: 337388.06\nstdev: 15463.05\ncv: 4.58%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80909.04,
+            "range": "4741.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80909.04\nmean: 78722.47\nstdev: 4741.58\ncv: 6.02%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 809090.38,
+            "range": "47415.75",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 809090.38\nmean: 787224.68\nstdev: 47415.75\ncv: 6.02%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
