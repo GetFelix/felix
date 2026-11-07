@@ -729,7 +729,8 @@ generation. A control plane below level 30 sends no records, and the fence
 then trusts on the answer alone. A broker that starts without the control plane
 attests neither kept nor trusted until the restore check has run, because a
 restored directory looks clean until then (`CountsForgotten`,
-`TrustsRegistered`). For now that is the whole run. A failed flush poisons the
+`TrustsRegistered`). Once the check passes, it attests kept ballots and
+readmissions as a start that asked first would. A failed flush poisons the
 log and may have dropped acknowledged pages, so from then on the process
 attests no trusted copy, without waiting for the next start.
 
@@ -1555,7 +1556,10 @@ on it starts from what the control plane last told it and takes part again;
 see [Rejoining without the control plane](#rejoining-without-the-control-plane).
 With the unified fence on, the default, that broker does not vote or count
 toward a promotion until it reaches the control plane, so a failover that
-needs its vote waits for the control plane. `FELIX_UNIFIED_FENCE=0` restores
+needs its vote waits for the control plane. Once the control plane answers
+and the restore check finds the directory is the one it registered, the
+broker attests its copies, readmissions included, as a start that asked
+first would. `FELIX_UNIFIED_FENCE=0` restores
 the pin-based rule, under which its vote counts.
 
 **Which shards.** The ones failover on the followers' word already covers: a

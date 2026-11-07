@@ -1315,13 +1315,26 @@ async fn join_from_view(
     calls: &Shared,
     data: &std::path::Path,
     id: StorageId,
-) -> (MembershipTask, CancellationToken, ViewFile) {
+) -> (
+    MembershipTask,
+    CancellationToken,
+    ViewFile,
+    Arc<Mutex<Vec<Option<Registered>>>>,
+) {
     let (base_url, stop, handle) = serve(Arc::clone(calls)).await;
     let view = ViewFile::new(data.to_path_buf());
     let serving = CancellationToken::new();
     serving.cancel();
     let shutdown = CancellationToken::new();
     let checked = CancellationToken::new();
+    let passed = Arc::new(Mutex::new(Vec::new()));
+    let check = DeferredCheck {
+        checked: checked.clone(),
+        passed: Box::new({
+            let passed = Arc::clone(&passed);
+            move |registered| passed.lock().expect("lock").push(registered.cloned())
+        }),
+    };
     let task = spawn_with(
         link(&build_test_client().expect("client"), &base_url),
         config(),
@@ -1338,7 +1351,7 @@ async fn join_from_view(
         Some(id),
         Some(data.to_path_buf()),
         Some(view.clone()),
-        Some(checked.clone()),
+        Some(check),
         true,
     );
     for _ in 0..500 {
@@ -1350,7 +1363,7 @@ async fn join_from_view(
     shutdown.cancel();
     let _ = stop.send(());
     let _ = handle.await;
-    (task, checked, view)
+    (task, checked, view, passed)
 }
 
 /// **A restored directory that started from its view stops before it
@@ -1365,9 +1378,13 @@ async fn a_restore_found_after_a_start_from_the_view_stops_before_registering() 
     let calls = Shared::default();
     calls.lock().expect("lock").lookup = Some((5, id.to_hex()));
 
-    let (task, checked, _) = join_from_view(&calls, dir.path(), id).await;
+    let (task, checked, _, passed) = join_from_view(&calls, dir.path(), id).await;
 
     assert!(task.fatal.is_cancelled(), "the broker stops");
+    assert!(
+        passed.lock().expect("lock").is_empty(),
+        "a restored copy never attests"
+    );
     assert!(felix_storage::controlplane_view::read(dir.path()).is_none());
     assert!(
         !checked.is_cancelled(),
@@ -1391,10 +1408,18 @@ async fn a_current_directory_registers_once_the_check_passes() {
     let calls = Shared::default();
     calls.lock().expect("lock").lookup = Some((5, id.to_hex()));
 
-    let (task, checked, _) = join_from_view(&calls, dir.path(), id).await;
+    let (task, checked, _, passed) = join_from_view(&calls, dir.path(), id).await;
 
     assert!(!task.fatal.is_cancelled());
     assert!(checked.is_cancelled());
+    assert_eq!(
+        *passed.lock().expect("lock"),
+        vec![Some(Registered {
+            incarnation: 5,
+            storage_id: Some(id.to_hex()),
+        })],
+        "the pass hands on the record it judged, once"
+    );
     let calls = calls.lock().expect("lock");
     assert_eq!(calls.registrations.len(), 1);
     assert_eq!(calls.registrations[0]["storage_id"], json!(id.to_hex()));
@@ -1411,9 +1436,13 @@ async fn a_replaced_directory_found_after_a_start_from_the_view_forgets_its_view
     let calls = Shared::default();
     calls.lock().expect("lock").lookup = Some((5, LOOKUP_STORAGE_ID.to_string()));
 
-    let (task, checked, view) = join_from_view(&calls, dir.path(), id).await;
+    let (task, checked, view, passed) = join_from_view(&calls, dir.path(), id).await;
 
     assert!(task.fatal.is_cancelled(), "the broker stops");
+    assert!(
+        passed.lock().expect("lock").is_empty(),
+        "a replaced copy never attests"
+    );
     assert!(!checked.is_cancelled());
     assert!(calls.lock().expect("lock").registrations.is_empty());
     assert!(felix_storage::run_state::replaced(dir.path()).expect("marker"));

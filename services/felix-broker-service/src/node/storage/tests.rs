@@ -348,6 +348,7 @@ fn a_start_from_the_view_attests_no_kept_ballot() {
         ballots: true,
         readmits: true,
         minted: true,
+        deferred: false,
     };
     assert!(kept.attested(false).ballots && kept.attested(false).readmits);
     assert!(!kept.attested(true).ballots);
@@ -391,6 +392,77 @@ fn only_a_new_or_rotated_id_is_minted() {
     assert_eq!(again, id);
     assert!(!rotated && !kept.ballots, "lost without a rotation");
     assert!(!kept.minted, "a swapped-back directory keeps an older id");
+}
+
+/// **A start from the view attests what an asked start would once its
+/// restore check passes**: kept per its own run, except under a record from
+/// before storage ids, which cannot tell the directory from a wiped one.
+#[test]
+fn a_checked_start_from_the_view_attests_its_own_kept_ballots() {
+    let kept = Kept {
+        promises: false,
+        ballots: true,
+        readmits: false,
+        minted: false,
+        deferred: true,
+    };
+    let record = |storage_id: Option<&str>| Registered {
+        incarnation: 5,
+        storage_id: storage_id.map(str::to_owned),
+    };
+    assert!(
+        kept.checked(None).ballots,
+        "a node the control plane never registered"
+    );
+    assert!(kept.checked(Some(&record(Some("00ff")))).ballots);
+    assert!(
+        !kept.checked(Some(&record(None))).ballots,
+        "a record without a storage id"
+    );
+    assert!(
+        !Kept::default().checked(None).ballots,
+        "a run that lost a copy"
+    );
+    assert!(kept.checked(Some(&record(Some("00ff")))).readmits);
+    assert!(!kept.checked(Some(&record(None))).readmits);
+    assert!(!kept.checked(None).readmits);
+    assert!(!kept.checked(None).deferred);
+}
+
+/// **A start from the view readmits nothing until its restore check passes,
+/// then exactly as a start that asked first would.** Once the check found the
+/// directory current the run is a normal start, so it gets the asked start's
+/// kept ballots, readmission and minted id, no more and no less.
+#[test]
+fn a_passed_check_readmits_as_an_asked_start_would() {
+    let relaxed = felix_storage::log::LogConfig {
+        fsync_mode: FsyncMode::None,
+        ..Default::default()
+    };
+    let root = tempfile::tempdir().expect("tempdir");
+    let (id, _, _, _) = start_run(root.path(), &relaxed, None, None).expect("first start");
+    mark_clean_stop(root.path(), id).expect("clean stop");
+    let (again, rotated, _, own) =
+        start_run(root.path(), &relaxed, None, None).expect("start from the view");
+    assert!(again == id && !rotated);
+    let before = own.attested(true);
+    assert!(!before.ballots && !before.readmits, "before the check");
+
+    let record = registered_as(Some(id));
+    let checked = own.checked(Some(&record));
+    mark_clean_stop(root.path(), id).expect("clean stop");
+    let (_, _, _, asked) =
+        start_run(root.path(), &relaxed, Some(&record), None).expect("asked start");
+    assert_eq!(
+        (
+            checked.ballots,
+            checked.readmits,
+            checked.minted,
+            checked.promises
+        ),
+        (asked.ballots, asked.readmits, asked.minted, asked.promises)
+    );
+    assert!(checked.ballots && checked.readmits && !checked.minted);
 }
 
 /// **Every run witnesses its directory anew**, with the control plane's

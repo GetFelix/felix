@@ -387,3 +387,48 @@ fn a_departed_leader_keeps_a_timed_out_staged_move() {
         Decision::Waiting(Blocked::LeaderDeparted),
     );
 }
+
+/// A drain move fences its shard at a new generation under the leader, so a
+/// leader that deregistered before its shard moved gets no move: its shard
+/// waits for the lease and fails over. Fenced, it would keep its caught-up
+/// follower as the destination, which a failover never promotes, and could
+/// be left with no copy to promote at all.
+#[test]
+fn a_departed_leader_starts_no_drain_move() {
+    let serving = ShardAssignment {
+        state: ShardState::Active,
+        ..assigned("orders", "broker-a", &["broker-b", "broker-c"])
+    };
+    let reports = Fenced {
+        caught_up: &["broker-b"],
+        ..Fenced::default()
+    };
+    let draining = decide_on(serving.clone(), &reports, false, false);
+    assert!(
+        matches!(&draining, Decision::Move(MoveStep::Fence, a) if a.leader == "broker-a" && a.successor.is_some()),
+        "{draining:?}"
+    );
+    assert_eq!(
+        decide_on(serving, &reports, true, false),
+        Decision::Waiting(Blocked::LeaderDeparted),
+    );
+}
+
+/// A staged move's fence names the leader at a new generation too, so a
+/// departed leader's caught-up destination is not fenced to.
+#[test]
+fn a_departed_leader_does_not_fence_a_staged_move() {
+    let reports = Fenced {
+        caught_up: &["broker-b"],
+        ..Fenced::default()
+    };
+    let fenced = decide_on(staged_move(), &reports, false, false);
+    assert!(
+        matches!(&fenced, Decision::Move(MoveStep::Fence, a) if a.leader == "broker-a"),
+        "{fenced:?}"
+    );
+    assert_eq!(
+        decide_on(staged_move(), &reports, true, false),
+        Decision::Waiting(Blocked::LeaderDeparted),
+    );
+}
