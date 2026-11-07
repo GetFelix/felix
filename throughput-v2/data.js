@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794037397434,
+  "lastUpdate": 1794039528468,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -48516,6 +48516,58 @@ window.BENCHMARK_DATA = {
             "range": "4471.58",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 811485.63\nmean: 810755.54\nstdev: 4471.58\ncv: 0.55%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1f8a011cb8147581256df277ef6c755364e9a901",
+          "message": "feat(controlplane): durable readmitted evidence on shard assignments at metadata level 30 (#2095)\n\nWhen the leader of an assignment's generation reports a learner caught up under the storage id the assignment names, the control plane records readmitted{node, storage_id, generation, offset}. Raft metadata level 30, Postgres migration 0046. Nothing reads it yet; the broker side follows the leader-side fence counting.\n\nSpec-Unaffected: FelixShardUnified.tla's Readmits/Ship already models the readmitting leader's vouch; this is the control plane's durable record of it, and no fence counts it yet.",
+          "timestamp": "2026-11-07T08:14:54Z",
+          "tree_id": "29f8ec25e3161b142a4e0958d7e3f264a0b24604",
+          "url": "https://github.com/GetFelix/felix/commit/1f8a011cb8147581256df277ef6c755364e9a901"
+        },
+        "date": 1794039527940,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 516221.68,
+            "range": "51959.14",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 516221.68\nmean: 511652.38\nstdev: 51959.14\ncv: 10.16%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 516221.68,
+            "range": "51959.14",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 516221.68\nmean: 511652.38\nstdev: 51959.14\ncv: 10.16%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 119480.77,
+            "range": "1382.82",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 119480.77\nmean: 118979.35\nstdev: 1382.82\ncv: 1.16%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1194807.65,
+            "range": "13828.15",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1194807.65\nmean: 1189793.48\nstdev: 13828.15\ncv: 1.16%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
