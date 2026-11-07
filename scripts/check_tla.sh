@@ -619,7 +619,7 @@ weights=(
   "FelixShardUnifiedMixed 11"
   "FelixShardUnifiedCpLiveReadmitUnopened 10"
   "FelixShardUnifiedLearnerBlockingTwo 70"
-  "FelixShardUnifiedLearnerBlocking BLOCKING_WEIGHT"
+  "FelixShardUnifiedLearnerBlocking 8"
   "FelixShardUnifiedLearnerVariantDropped 2"
   "FelixShardRealMargins 6"
   "FelixShardRealMarginsLease 4"

@@ -535,7 +535,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardUnifiedCpLiveReadmitUnopened.cfg` | a readmission whose leader crashes uncleanly before it opens | pass `EventuallyServes` |
 | `FelixShardUnifiedCpLiveReadmitUnopenedLegacy.cfg` | the same under today's rules | violate `EventuallyServes` |
 | `FelixShardUnifiedCpLiveMoveDoubted.cfg` | a move to two voters, one back from an unclean crash | pass `EventuallyServes` |
-| `FelixShardUnifiedLearnerBlocking.cfg` | four seats, a set change staging one learner, an unclean crash; a fence needs a majority of the voters and half of the set with its learner | pass (BLOCKING_STATS) |
+| `FelixShardUnifiedLearnerBlocking.cfg` | four seats, a set change staging one learner, an unclean crash; a fence needs a majority of the voters and half of the set with its learner | pass (6.4M distinct states, 4 min with four workers) |
 | `FelixShardUnifiedLearnerBlockingTwo.cfg` | five seats and two learners, where a majority of the voters is short of half the whole set | pass (41.3M distinct states, 41 min with four workers) |
 | `FelixShardUnifiedLearnerVariantDropped.cfg` | the same with only the voters fenced: an acknowledgement on one voter and both learners slips past | violate `AckedHeldByLeader` |
 
