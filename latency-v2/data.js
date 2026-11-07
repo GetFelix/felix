@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794055117429,
+  "lastUpdate": 1794059779065,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -61974,6 +61974,72 @@ window.BENCHMARK_DATA = {
             "range": "1027.02",
             "unit": "us",
             "extra": "trials: 5\nmedian: 506.00\nmean: 1180.80\nstdev: 1027.02\ncv: 86.98%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "76d662e7a7e0f8791ea84fe4bb997452faed0699",
+          "message": "test(sim): pin the promotion-to-open kill shape to seed 7 (#2100)\n\n#2097 fixed the simulator's storage id read, so seed 3 no longer reaches the shape this test pins (an elected leader of stream/* killed before it opens). Seed 7 is the lowest seed that logs both marks.\n\nSpec-Unaffected: simulator test pin only.",
+          "timestamp": "2026-11-07T13:52:26Z",
+          "tree_id": "60f050b712b6d97f56b2170672c85a84d0506aaa",
+          "url": "https://github.com/GetFelix/felix/commit/76d662e7a7e0f8791ea84fe4bb997452faed0699"
+        },
+        "date": 1794059772575,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 70,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 70.00\nmean: 70.20\nstdev: 0.84\ncv: 1.19%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 94,
+            "range": "1.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 94.00\nmean: 94.00\nstdev: 1.00\ncv: 1.06%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 124,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 124.00\nmean: 124.00\nstdev: 0.71\ncv: 0.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 90,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 90.00\nmean: 89.80\nstdev: 0.84\ncv: 0.93%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 190,
+            "range": "3.78",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 190.00\nmean: 190.60\nstdev: 3.78\ncv: 1.98%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 276,
+            "range": "18.68",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 276.00\nmean: 287.60\nstdev: 18.68\ncv: 6.49%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
