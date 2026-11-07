@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794049301737,
+  "lastUpdate": 1794049807761,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -48724,6 +48724,58 @@ window.BENCHMARK_DATA = {
             "range": "95967.67",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1645190.08\nmean: 1603502.49\nstdev: 95967.67\ncv: 5.98%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8b65dddc7f3a850b51a10eba4f4f7c3abc21c655",
+          "message": "fix(storage): read the storage id through the fs seam so the simulator keeps it across restarts (#2097)\n\nstorage_identity::load and the replaced-marker read used std::fs, so under the sim feature they never saw the in-memory data directory: every restarted broker was marked lost and every copy read as untrusted. Production is unchanged (crate::fs is std::fs there).\n\nSpec-Unaffected: simulator I/O seam only.",
+          "timestamp": "2026-11-07T11:05:23Z",
+          "tree_id": "d11ddc3daaafd1e7e044e89d8d4b96dd2df557aa",
+          "url": "https://github.com/GetFelix/felix/commit/8b65dddc7f3a850b51a10eba4f4f7c3abc21c655"
+        },
+        "date": 1794049806889,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 372370.99,
+            "range": "14306.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 372370.99\nmean: 368476.12\nstdev: 14306.00\ncv: 3.88%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 372370.99,
+            "range": "14306.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 372370.99\nmean: 368476.12\nstdev: 14306.00\ncv: 3.88%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81413.58,
+            "range": "5055.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81413.58\nmean: 78362.52\nstdev: 5055.31\ncv: 6.45%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 814135.79,
+            "range": "50553.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 814135.79\nmean: 783625.21\nstdev: 50553.12\ncv: 6.45%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
