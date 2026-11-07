@@ -121,9 +121,7 @@ impl UncleanStart {
     /// stays one until [`Self::vouch`], though the new ballot names another
     /// leader.
     pub(crate) fn accepting(&self, key: &ShardKey, log: &felix_broker::StreamLog, generation: u64) {
-        let accepted = log.accepted_generation();
-        let raises = generation > accepted || (generation == accepted && log.gave_up());
-        if raises && self.led_before(key, log, generation) {
+        if self.would_doubt(key, log, generation) {
             if let Some(trust) = &self.copy_trust
                 && let Err(err) = trust.doubt(&copy_key(key))
             {
@@ -138,6 +136,20 @@ impl UncleanStart {
             }
             self.doubted.lock().insert(key.clone());
         }
+    }
+
+    /// Whether [`Self::accepting`] marks `log`, `key`'s copy, as doubted
+    /// before a ballot at `generation`: the copy this broker led before the
+    /// crash, taking a ballot that replaces the one saying so.
+    pub(crate) fn would_doubt(
+        &self,
+        key: &ShardKey,
+        log: &felix_broker::StreamLog,
+        generation: u64,
+    ) -> bool {
+        let accepted = log.accepted_generation();
+        let raises = generation > accepted || (generation == accepted && log.gave_up());
+        raises && self.led_before(key, log, generation)
     }
 
     /// Whether `log`, `key`'s copy, may be short of what this broker

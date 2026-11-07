@@ -239,13 +239,15 @@ async fn a_crashed_leaders_unified_answer_stays_untrusted_after_a_clean_restart(
     led_before_a_crash(dir.path()).await;
     {
         let broker = broker_on(dir.path());
+        // One record shared, as a broker's start wires it.
+        let trust = Arc::new(CopyTrust::open(trust_dir.path()).expect("open"));
+        let marks = kept_marks();
+        marks.set_copy_trust(Arc::clone(&trust));
         let handler =
             ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL, "broker-c"], 6))
-                .with_fleet(marks_on(trust_dir.path()))
+                .with_fleet(marks)
                 .with_unclean_start(Arc::new(
-                    crate::unclean::UncleanStart::new(LOCAL).with_copy_trust(Arc::new(
-                        CopyTrust::open(trust_dir.path()).expect("open"),
-                    )),
+                    crate::unclean::UncleanStart::new(LOCAL).with_copy_trust(trust),
                 ));
         let ok = taken(
             &handler
@@ -266,4 +268,45 @@ async fn a_crashed_leaders_unified_answer_stays_untrusted_after_a_clean_restart(
         refusal(&next.fence(SENDER, fence(7)).await).code,
         ErrorCode::Unavailable
     );
+}
+
+/// **A crashed leader's copy refuses a unified fence it cannot record as
+/// doubted.** Its ballot would erase the given-up mark, so a clean restart
+/// would trust the copy.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_crashed_leaders_copy_refuses_a_unified_fence_when_the_doubt_is_not_recorded() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let trust_dir = tempfile::tempdir().expect("tempdir");
+    led_before_a_crash(dir.path()).await;
+    let broker = broker_on(dir.path());
+    let trust = Arc::new(CopyTrust::open(trust_dir.path()).expect("open"));
+    let marks = kept_marks();
+    marks.set_copy_trust(Arc::clone(&trust));
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL, "broker-c"], 6))
+        .with_fleet(marks)
+        .with_unclean_start(Arc::new(
+            crate::unclean::UncleanStart::new(LOCAL).with_copy_trust(trust),
+        ));
+    let log = broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    let before = log.accepted_generation();
+    std::fs::set_permissions(trust_dir.path(), std::fs::Permissions::from_mode(0o500))
+        .expect("read-only");
+
+    let answer = handler
+        .fence_from(SENDER, PeerCapabilities::UNIFIED_FENCE, fence(6))
+        .await;
+    std::fs::set_permissions(trust_dir.path(), std::fs::Permissions::from_mode(0o700))
+        .expect("writable");
+    assert_eq!(
+        refusal(&answer).code,
+        ErrorCode::StorageFailed,
+        "{answer:?}"
+    );
+    assert_eq!(log.accepted_generation(), before);
 }

@@ -736,7 +736,8 @@ records the copy as unkept in the directory's copy-trust record, so after a
 crash that keeps the ballot an older caller still does not count it, until a
 batch readmits the copy. A copy this broker led before an unclean crash
 answers untrusted. Before it takes the new ballot the replica records the copy
-as doubted, in the process and in the copy-trust record, so after a clean
+as doubted, in the process and in the copy-trust record (refusing the fence
+if it cannot write it), so after a clean
 restart the copy still attests untrusted and an older leader's fence is still
 refused. A copy given up on disk before a clean restart still refuses, as it
 does an older caller. Group and counter logs carry no

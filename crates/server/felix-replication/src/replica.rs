@@ -1447,7 +1447,17 @@ impl ReplicaHandler {
         // in this process and, through the copy-trust record, after a clean
         // restart.
         if let Some(unclean) = tracked {
-            unclean.accepting(&crate::driver::watch_key(&key), &log, generation);
+            let shard = crate::driver::watch_key(&key);
+            // The refusal this answer replaces gave the copy up on disk; the
+            // ballot erases that, so without this record a clean restart
+            // would trust the copy.
+            if unclean.would_doubt(&shard, &log, generation)
+                && let Err(err) = self.record_doubt(&shard).await
+            {
+                metrics::record_replicated(metrics::OUTCOME_ERROR);
+                return refused(correlation_id, ErrorCode::StorageFailed, 0, err.to_string());
+            }
+            unclean.accepting(&shard, &log, generation);
         }
         // A ballot taken as no voter would read, after a crash that keeps
         // it, as a promise kept: record first that it is not one.
@@ -1584,6 +1594,25 @@ impl ReplicaHandler {
         }
         let trust = Arc::clone(trust);
         tokio::task::spawn_blocking(move || trust.unkeep(&name))
+            .await
+            .unwrap_or_else(|err| Err(felix_storage::StorageError::Io(std::io::Error::other(err))))
+    }
+
+    /// Record, durably, that `shard`'s copy is the one this broker led before
+    /// its crash. An error means the ballot must not be taken.
+    async fn record_doubt(
+        &self,
+        shard: &crate::ShardKey,
+    ) -> Result<(), felix_storage::StorageError> {
+        let Some(trust) = self.copy_trust() else {
+            return Ok(());
+        };
+        let name = crate::unclean::copy_key(shard);
+        if trust.doubted(&name) {
+            return Ok(());
+        }
+        let trust = Arc::clone(trust);
+        tokio::task::spawn_blocking(move || trust.doubt(&name))
             .await
             .unwrap_or_else(|err| Err(felix_storage::StorageError::Io(std::io::Error::other(err))))
     }
