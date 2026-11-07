@@ -2972,7 +2972,10 @@ wrong with either broker.
 
 Finding it is the easy half and is done: a batch's overlap with what a follower
 already holds is compared byte for byte, and a mismatch is
-`Divergence::Conflict`. A follower answers with the end of the batch it was sent
+`Divergence::Conflict`. Every overlapping offset is compared. The follower's
+copy can be larger than the leader's, so it reads on until the whole overlap is
+covered, and a record it cannot read refuses the batch for a retry rather than
+counting as agreement (#2062). A follower answers with the end of the batch it was sent
 rather than its own tail, so the leader cannot resume past records neither side
 has compared (#406).
 

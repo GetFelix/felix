@@ -58,6 +58,7 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
+use crate::clock::{self, Owner};
 use crate::cluster::{CACHE, NAMESPACE, NodeHandles, STREAM, SimCluster, TENANT};
 
 /// How long a client keeps trying to find a broker that will take a request.
@@ -77,6 +78,8 @@ pub struct Recorder {
     started: Instant,
     history: Mutex<History>,
     values: AtomicU64,
+    /// When an operator abandoned each list's log, on the history's clock.
+    abandoned: Mutex<BTreeMap<String, u64>>,
 }
 
 impl Recorder {
@@ -102,6 +105,7 @@ impl Recorder {
                 ..History::default()
             }),
             values: AtomicU64::new(0),
+            abandoned: Mutex::new(BTreeMap::new()),
         })
     }
 
@@ -139,11 +143,49 @@ impl Recorder {
             .insert(list_name(shard), elements);
     }
 
-    /// The history so far. Lists with no final read are left declared; use
+    /// An operator abandoned `shard`'s log just now.
+    pub fn abandoned(&self, shard: u32) {
+        let at = self.now();
+        self.abandoned.lock().insert(list_name(shard), at);
+    }
+
+    /// The lists whose log an operator abandoned, with when.
+    pub fn abandoned_lists(&self) -> BTreeMap<String, u64> {
+        self.abandoned.lock().clone()
+    }
+
+    /// The history so far, with what each abandon gave up forgotten (see
+    /// [`forget_abandoned`]). Lists with no final read are left declared; use
     /// [`History::lists`] to drop them before checking.
     pub fn history(&self) -> History {
-        self.history.lock().clone()
+        let mut history = self.history.lock().clone();
+        forget_abandoned(&mut history, &self.abandoned.lock());
+        history
     }
+}
+
+/// An abandoned log loses what it acknowledged by design, so for each list in
+/// `abandoned` (list, when) an append acknowledged before the abandon becomes
+/// unknown (it may or may not be on the new log) and a read started before it
+/// is dropped (it may have read the log that was given up). An append still
+/// retrying at the abandon can only be acknowledged by the new leader, since
+/// the old one is stopped first, so it is held to the new log. Everything started after
+/// the abandon is checked as usual, so a write the new log loses still fails.
+pub fn forget_abandoned(history: &mut History, abandoned: &BTreeMap<String, u64>) {
+    history.ops.retain_mut(|op| {
+        let (invoke, complete) = (op.invoke, op.complete);
+        match &mut op.action {
+            Action::Append { list, outcome, .. } => {
+                if abandoned.get(list).is_some_and(|at| complete < *at)
+                    && matches!(outcome, AppendOutcome::Ok { .. })
+                {
+                    *outcome = AppendOutcome::Info;
+                }
+                true
+            }
+            Action::Read { list, .. } => abandoned.get(list).is_none_or(|at| invoke >= *at),
+        }
+    });
 }
 
 /// A seeded logical client.
@@ -280,7 +322,7 @@ impl SimClient {
         tracing::debug!(client = self.id, shard, value, node = %handles.node_id, "append sent");
         let payloads = [Bytes::copy_from_slice(&value.to_le_bytes())];
         let quorum_timeout = quorum_timeout();
-        let task = spawn_on(&handles.crashed, {
+        let task = spawn_on(&handles, {
             let handles = handles.clone();
             async move {
                 publish_direct(
@@ -397,7 +439,7 @@ impl SimClient {
         };
         let key = key.to_string();
         let quorum_timeout = quorum_timeout();
-        let task = spawn_on(&handles.crashed, {
+        let task = spawn_on(&handles, {
             let handles = handles.clone();
             async move {
                 apply_direct(
@@ -455,7 +497,7 @@ impl SimClient {
             })
             .await?;
         self.hints.insert(shard, handles.index);
-        let task = spawn_on(&handles.crashed, {
+        let task = spawn_on(&handles, {
             let handles = handles.clone();
             async move {
                 let elements = read_all(&handles, shard).await?;
@@ -502,7 +544,7 @@ impl SimClient {
                 continue;
             };
             let step = tokio::select! {
-                step = resolve(handles.clone()) => step,
+                step = clock::on(Owner::Broker(handles.index), resolve(handles.clone())) => step,
                 () = handles.crashed.cancelled() => Step::Refused,
             };
             match step {
@@ -535,18 +577,20 @@ impl SimClient {
 
 /// Spawn `work` as a task of its own, as the broker's request worker would
 /// run it: it finishes even if the client stops waiting, and ends only if the
-/// broker crashes, when it gives `None`.
+/// broker crashes, when it gives `None`. It runs as the broker's code, on its
+/// clocks.
 fn spawn_on<T: Send + 'static>(
-    crashed: &CancellationToken,
+    handles: &NodeHandles,
     work: impl Future<Output = T> + Send + 'static,
 ) -> JoinHandle<Option<T>> {
-    let crashed = crashed.clone();
-    tokio::spawn(async move {
+    let crashed = handles.crashed.clone();
+    let owner = Owner::Broker(handles.index);
+    tokio::spawn(clock::on(owner, async move {
         tokio::select! {
             out = work => Some(out),
             () = crashed.cancelled() => None,
         }
-    })
+    }))
 }
 
 /// Read `shard` on this broker from its first record to its tail, the way a
@@ -585,7 +629,7 @@ async fn confirm_leader(handles: &NodeHandles, shard: u32, generation: u64) -> b
 /// `None` if the broker does not serve it, the read took over [`READ_WITHIN`]
 /// or the broker crashed meanwhile.
 pub(crate) async fn read_log(handles: &NodeHandles, shard: u32) -> Option<Vec<Element>> {
-    let task = spawn_on(&handles.crashed, {
+    let task = spawn_on(handles, {
         let handles = handles.clone();
         async move { read_pages(&handles, shard, false).await }
     });

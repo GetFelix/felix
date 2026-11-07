@@ -164,6 +164,7 @@ expectations=(
   "FelixShardReplacedPendingLeftKeptLogBatchDrops violates AckedHeldByLeader"
   "FelixShardReplacedPendingLeftTwice violates AckedHeldByLeader"
   "FelixShardReplacedPendingLeftTwiceAll violates AckedHeldByLeader"
+  "FelixShardReplacedPendingLeftTwiceAllLog violates AckedHeldByLeader"
   "FelixShardReplacedPendingLeftTwiceAllLogBatchDrops violates AckedHeldByLeader"
   "FelixShardReplacedPendingLeftTwiceAllLogReportNoFloor violates AckedHeldByLeader"
   "FelixShardFencedAckSeat pass"

@@ -8,6 +8,7 @@
 //! The pieces, bottom up:
 //!
 //! - [`net`]: the in-memory peer network.
+//! - [`clock`]: each node's clocks over the shared virtual time.
 //! - [`controlplane`]: the real control plane in process, with faults.
 //! - [`link`]: one broker's path to the control plane, which a fault can cut.
 //! - [`cluster`]: three to five real brokers, the control plane and the
@@ -20,7 +21,7 @@
 
 pub mod check;
 pub mod client;
-mod clock;
+pub mod clock;
 pub mod cluster;
 pub mod controlplane;
 pub mod link;

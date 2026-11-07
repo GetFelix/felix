@@ -2618,7 +2618,7 @@ RetryContinuingFence(b) ==
     /\ contAt' = [contAt EXCEPT ![b] = <<@[1], @[2], 1>>]
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit,
-                    promised, fencing, confirmed, ballot, opened, setVars, ackGen >>
+                    promised, fencing, confirmed, ballot, opened, setVars, ackGen, waits >>
     /\ UNCHANGED handoffVars
 
 \* Whether `b` fences as a leader the control plane named at its generation,
