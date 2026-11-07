@@ -83,16 +83,18 @@ pub trait PeerRequestHandler: Send + Sync + 'static {
     /// to wait out its timeout.
     async fn handle(&self, request: InternalMessage) -> InternalMessage;
 
-    /// Answer one request from `peer`, the node id it gave in its `Hello`.
-    /// `None` when this broker does not keep ballots, or the peer has not
-    /// said who it is. Handlers that do not care who asked need not
-    /// implement it.
+    /// Answer one request from `peer`, the node id it gave in its `Hello`,
+    /// which offered `caller`. `peer` is `None` when this broker does not
+    /// keep ballots, or the peer has not said who it is; `caller` is empty
+    /// before the `Hello` and for a peer that predates the bits. Handlers
+    /// that do not care who asked need not implement it.
     async fn handle_from(
         &self,
         peer: Option<Arc<str>>,
+        caller: PeerCapabilities,
         request: InternalMessage,
     ) -> InternalMessage {
-        let _ = peer;
+        let _ = (peer, caller);
         self.handle(request).await
     }
 }
@@ -728,7 +730,7 @@ async fn serve_connection(
                                 Some(fetches) => fetches.acquire_owned().await.ok(),
                                 None => None,
                             };
-                            answer_out_of_order(&send, offered_by, handler.handle_from(peer, request)).await;
+                            answer_out_of_order(&send, offered_by, handler.handle_from(peer, offered_by, request)).await;
                         });
                         continue;
                     }
@@ -762,7 +764,7 @@ async fn serve_connection(
                         let send = Arc::clone(&send);
                         app.spawn(async move {
                             let _permit = permit;
-                            answer_out_of_order(&send, offered_by, handler.handle_from(peer, request)).await;
+                            answer_out_of_order(&send, offered_by, handler.handle_from(peer, offered_by, request)).await;
                         });
                         continue;
                     }
@@ -815,7 +817,7 @@ async fn serve_connection(
                         // which runs on after an overrun and still holds its batch.
                         let handling = app.spawn(async move {
                             let _served = (of_peer, served);
-                            handler.handle_from(peer, request).await
+                            handler.handle_from(peer, offered_by, request).await
                         });
                         app.spawn(async move {
                             let _permit = permit;
@@ -852,7 +854,7 @@ async fn serve_connection(
                         let handler = Arc::clone(&handler);
                         let peer = ballot_identity(&offered, &identity);
                         let handling =
-                            app.spawn(async move { handler.handle_from(peer, request).await });
+                            app.spawn(async move { handler.handle_from(peer, offered_by, request).await });
                         let bound = handler_bound(&renews, &offered);
                         let handled = tokio::time::timeout(bound, handling).await.ok();
                         match handled.and_then(|joined| joined.ok()).ok_or(()) {

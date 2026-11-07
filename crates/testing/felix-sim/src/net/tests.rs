@@ -20,12 +20,14 @@ struct Echo {
 #[async_trait::async_trait]
 impl PeerRequestHandler for Echo {
     async fn handle(&self, request: InternalMessage) -> InternalMessage {
-        self.handle_from(None, request).await
+        self.handle_from(None, PeerCapabilities::NONE, request)
+            .await
     }
 
     async fn handle_from(
         &self,
         peer: Option<Arc<str>>,
+        _caller: PeerCapabilities,
         request: InternalMessage,
     ) -> InternalMessage {
         tokio::time::sleep(self.takes).await;

@@ -9,7 +9,9 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use felix_wire::internal::{ErrorCode, ForwardCacheError, ForwardPublishError, InternalMessage};
+use felix_wire::internal::{
+    ErrorCode, ForwardCacheError, ForwardPublishError, InternalMessage, PeerCapabilities,
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::serving::forward::owner::ForwardingHandler;
@@ -56,12 +58,14 @@ const NOT_REGISTERED: &str = "this broker has not registered with the control pl
 #[async_trait]
 impl PeerRequestHandler for BrokerPeerHandler {
     async fn handle(&self, request: InternalMessage) -> InternalMessage {
-        self.handle_from(None, request).await
+        self.handle_from(None, PeerCapabilities::NONE, request)
+            .await
     }
 
     async fn handle_from(
         &self,
         peer: Option<Arc<str>>,
+        caller: PeerCapabilities,
         request: InternalMessage,
     ) -> InternalMessage {
         // The replica's ballot names a leader by this; forwarding does not
@@ -143,7 +147,9 @@ impl PeerRequestHandler for BrokerPeerHandler {
             InternalMessage::ReplicateRebuild(request) => {
                 self.replica.rebuild(sender, request).await
             }
-            InternalMessage::Fence(request) => self.replica.fence(sender, request).await,
+            InternalMessage::Fence(request) => {
+                self.replica.fence_from(sender, caller, request).await
+            }
             InternalMessage::ReplicateFetch(request) => self.replica.fetch(sender, request).await,
             InternalMessage::PreVote(request) => self.replica.pre_vote(request).await,
             // Responses have no business arriving as requests, and a broker that

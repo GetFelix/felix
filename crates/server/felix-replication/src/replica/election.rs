@@ -24,15 +24,16 @@ impl ReplicaHandler {
     /// Checks a fence's set before its ballot is taken: an older set is
     /// refused naming the newer one, a broker that does not vote in the set
     /// refuses, and so does one that still hears its leader when a candidate
-    /// asks. Writes nothing.
+    /// asks. Writes nothing. With `attested`, a learner the set lists answers:
+    /// its attestation counts it for nothing.
     pub(super) fn check_fence_set(
         &self,
         correlation_id: u64,
         key: &felix_router::ShardKey,
         log: &felix_broker::StreamLog,
         election: &FenceElection,
-        generation: u64,
-        sender: Option<&str>,
+        (generation, sender): (u64, Option<&str>),
+        attested: bool,
     ) -> Option<InternalMessage> {
         // A set is stamped with a route generation no newer than the fence's
         // own. One ahead is a sender running ahead of itself; taking it would
@@ -58,7 +59,7 @@ impl ReplicaHandler {
         let votes_in = |set: &ReplicaSetView| {
             set.members
                 .iter()
-                .any(|member| member.node_id == local && !member.learner)
+                .any(|member| member.node_id == local && (attested || !member.learner))
         };
         // Learners never vote (#1331), and a broker outside the set has no
         // say in it. Unauthorized rather than FencedEpoch: the sender is not
@@ -377,6 +378,50 @@ impl ReplicaHandler {
             .then(|| undecided(correlation_id, key))
     }
 
+    /// Whether [`Self::refuse_non_voter_fence`] counts this copy, the shard's
+    /// own log, as no voter: a learner, a copy the fence's set lists only as
+    /// one, or one with evidence of a wipe under `joint_fence`. Its answer to
+    /// a caller that counts by attestation keeps no promise. With the gate
+    /// unread, evidence is refused retryably as for any caller: whether it
+    /// makes the copy a learner, and so what the kept set marks, is the
+    /// gate's answer.
+    pub(super) fn fences_as_non_voter(
+        &self,
+        correlation_id: u64,
+        key: &felix_router::ShardKey,
+        own: &felix_broker::StreamLog,
+        request: &Fence,
+    ) -> Result<bool, Box<InternalMessage>> {
+        let local = self.router.local_node_id();
+        let listed_as_learner = request.election.as_ref().is_some_and(|election| {
+            let mut listed = std::iter::once(&election.set)
+                .chain(&election.leaving)
+                .flat_map(|set| &set.members)
+                .filter(|member| member.node_id == local)
+                .peekable();
+            listed.peek().is_some() && listed.all(|member| member.learner)
+        });
+        if self.is_learner(own) || listed_as_learner {
+            return Ok(true);
+        }
+        let gate = self.joint_gate();
+        let evidence = gate != Some(false) && self.fence_evidence(own, request);
+        if evidence && gate.is_none() {
+            return Err(Box::new(undecided(correlation_id, key)));
+        }
+        Ok(evidence)
+    }
+
+    /// Whether `own` holds evidence of a wipe for `request`'s fence: its set
+    /// names another storage id for this copy, or, with no set, this copy may
+    /// be a replaced one ([`Self::replaced_copy_of`]).
+    fn fence_evidence(&self, own: &felix_broker::StreamLog, request: &Fence) -> bool {
+        match &request.election {
+            Some(election) => self.names_other_in_view(own, &election.set),
+            None => self.replaced_copy_of(own, request.shard.generation, false),
+        }
+    }
+
     /// Refuse a fence from a learner, after learning the set the fence
     /// carries. It promises nothing: its answer would count toward a
     /// majority it may hold none of the acknowledged records for. That
@@ -429,10 +474,7 @@ impl ReplicaHandler {
             return None;
         }
         let learner = self.is_learner(own) || (group && self.is_wiped(own));
-        let evidence = match &request.election {
-            Some(election) => self.names_other_in_view(own, &election.set),
-            None => self.replaced_copy_of(own, request.shard.generation, false),
-        };
+        let evidence = self.fence_evidence(own, request);
         match self.joint_gate() {
             _ if !learner && !evidence => return None,
             None if !learner => return Some(undecided(correlation_id, key)),

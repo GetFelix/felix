@@ -473,17 +473,19 @@ struct OverTheWire(ReplicaHandler);
 #[async_trait::async_trait]
 impl crate::peer::PeerRequestHandler for OverTheWire {
     async fn handle(&self, request: InternalMessage) -> InternalMessage {
-        self.handle_from(None, request).await
+        self.handle_from(None, PeerCapabilities::NONE, request)
+            .await
     }
 
     async fn handle_from(
         &self,
         peer: Option<Arc<str>>,
+        caller: PeerCapabilities,
         request: InternalMessage,
     ) -> InternalMessage {
         let sender = peer.as_deref();
         match request {
-            InternalMessage::Fence(fence) => self.0.fence(sender, fence).await,
+            InternalMessage::Fence(fence) => self.0.fence_from(sender, caller, fence).await,
             InternalMessage::ReplicateFetch(fetch) => self.0.fetch(sender, fetch).await,
             other => panic!("unexpected {:?}", other.kind()),
         }
@@ -2456,7 +2458,7 @@ async fn an_unclean_copy_is_trusted_only_level_through_the_start_and_the_mark() 
         ..batch(6, first_offset, values)
     };
     assert_eq!(
-        leader.attestation(&key()),
+        leader.attestation(&key(), true, false),
         attested(0, false).expect("some")
     );
 
@@ -2483,5 +2485,203 @@ async fn an_unclean_copy_is_trusted_only_level_through_the_start_and_the_mark() 
     // Through both.
     ship(from_six(3, &["x"], Some(4))).await;
     assert!(start.trusted(&shard));
-    assert_eq!(leader.attestation(&key()), attested(0, true).expect("some"));
+    assert_eq!(
+        leader.attestation(&key(), true, false),
+        attested(0, true).expect("some")
+    );
+}
+
+/// A fence from a caller that offered `UNIFIED_FENCE`.
+async fn unified_fence(
+    handler: &ReplicaHandler,
+    sender: Option<&str>,
+    fence: Fence,
+) -> InternalMessage {
+    handler
+        .fence_from(sender, PeerCapabilities::UNIFIED_FENCE, fence)
+        .await
+}
+
+/// **To a caller that counts by attestation, a crashed leader's copy answers
+/// untrusted (#1295).** Its ballots survived, so its promise counts; its log
+/// may be short, so it covers nothing. Without the bit it refuses as before.
+/// The doubt goes with the ballot the copy takes, so a later fence from an
+/// older leader is still refused, and every ballot refusal stands.
+#[tokio::test]
+async fn a_crashed_leaders_copy_answers_a_unified_fence_untrusted() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    led_before_a_crash(dir.path()).await;
+    let broker = broker_on(dir.path());
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL, "broker-c"], 6))
+        .with_fleet(kept_marks())
+        .with_unclean_start(unclean());
+    assert_eq!(
+        refusal(&handler.fence(SENDER, fence(6)).await).code,
+        ErrorCode::Unavailable
+    );
+
+    let ok = taken(&unified_fence(&handler, SENDER, fence(6)).await);
+    assert_eq!(ok.attestation, attested(0, false));
+    let log = broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    assert_eq!(log.accepted_generation(), 6);
+
+    assert_eq!(
+        refusal(&handler.fence(SENDER, fence(7)).await).code,
+        ErrorCode::Unavailable,
+        "the copy took a ballot and no batch: it is still the one led before"
+    );
+    let ok = taken(&unified_fence(&handler, SENDER, fence(7)).await);
+    assert_eq!(ok.attestation, attested(0, false));
+    assert_eq!(
+        refusal(&unified_fence(&handler, SENDER, fence(6)).await).code,
+        ErrorCode::FencedEpoch
+    );
+    assert_eq!(
+        refusal(&unified_fence(&handler, Some("broker-c"), fence(7)).await).code,
+        ErrorCode::FencedEpoch
+    );
+}
+
+/// **A copy given up before a clean restart refuses a unified fence too.**
+/// Nothing in this process tracks its doubt, and taking a ballot would
+/// overwrite the one record of it.
+#[tokio::test]
+async fn a_given_up_copy_after_a_clean_restart_refuses_a_unified_fence() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    led_before_a_crash(dir.path()).await;
+    {
+        let broker = broker_on(dir.path());
+        let handler =
+            ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL, "broker-c"], 6))
+                .with_unclean_start(unclean());
+        assert_eq!(
+            refusal(&handler.fence(SENDER, fence(6)).await).code,
+            ErrorCode::Unavailable
+        );
+    }
+    let broker = broker_on(dir.path());
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL, "broker-c"], 6))
+        .with_fleet(kept_marks());
+    assert_eq!(
+        refusal(&unified_fence(&handler, SENDER, fence(6)).await).code,
+        ErrorCode::Unavailable
+    );
+}
+
+/// **The set-of-two exception does not decide a unified fence (#1336).** A
+/// crashed leader of a set that shrank to two refuses an older caller, since
+/// the record it lost may be on the dropped copy alone. A caller that counts
+/// by attestation gets an untrusted answer instead.
+#[tokio::test]
+async fn a_crashed_leader_of_a_shrunk_set_answers_a_unified_fence_untrusted() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    led_with_its_start_record(dir.path()).await;
+    let broker = broker_on(dir.path());
+    let handler = ReplicaHandler::new(
+        Arc::clone(&broker),
+        failover_router(&[LOCAL], 6, &["broker-a", LOCAL, "broker-c"]),
+    )
+    .with_fleet(kept_marks())
+    .with_unclean_start(unclean());
+    assert_eq!(
+        refusal(&handler.fence(SENDER, fence(6)).await).code,
+        ErrorCode::Unavailable
+    );
+    let ok = taken(&unified_fence(&handler, SENDER, fence(6)).await);
+    assert_eq!(ok.attestation, attested(0, false));
+}
+
+/// **A copy given up on disk is never trusted.** After a clean restart the
+/// set of two still lets this crashed leader's copy answer, but its log may
+/// be short of what it acknowledged before the crash.
+#[tokio::test]
+async fn a_given_up_copy_of_a_set_of_two_answers_untrusted() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    led_with_its_start_record(dir.path()).await;
+    {
+        let broker = broker_on(dir.path());
+        let handler = ReplicaHandler::new(
+            Arc::clone(&broker),
+            failover_router(&[LOCAL], 6, &["broker-a", LOCAL, "broker-c"]),
+        )
+        .with_unclean_start(unclean());
+        assert_eq!(
+            refusal(&handler.fence(SENDER, fence(6)).await).code,
+            ErrorCode::Unavailable
+        );
+    }
+    let broker = broker_on(dir.path());
+    let handler = ReplicaHandler::new(
+        Arc::clone(&broker),
+        failover_router(&[LOCAL], 6, &["broker-a", LOCAL]),
+    )
+    .with_fleet(kept_marks());
+    let ok = taken(&unified_fence(&handler, SENDER, fence(6)).await);
+    assert_eq!(ok.attestation, attested(0, false));
+}
+
+/// **No broker offers `UNIFIED_FENCE` yet, so over the wire a crashed
+/// leader's copy refuses as before.** Its answer in place of a refusal is
+/// safe only facing a leader that counts by the attestation.
+#[tokio::test]
+async fn over_the_wire_a_crashed_leaders_copy_still_refuses() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    led_before_a_crash(dir.path()).await;
+    let broker = broker_on(dir.path());
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL, "broker-c"], 6))
+        .with_fleet(kept_marks())
+        .with_unclean_start(unclean());
+    let config = crate::peer::PeerTransportConfig {
+        bind: "127.0.0.1:0".parse().expect("addr"),
+        ..Default::default()
+    };
+    let server =
+        crate::peer::PeerServer::bind(LOCAL.to_string(), &config, Arc::new(OverTheWire(handler)))
+            .expect("bind");
+    let addr = server.local_addr().expect("addr");
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    tokio::spawn(server.serve(shutdown.clone()));
+    let pool =
+        crate::peer::PeerPool::new("broker-a".to_string(), config, shutdown.clone()).expect("pool");
+    let answer = pool
+        .request(LOCAL, addr, InternalMessage::Fence(fence(6)))
+        .await
+        .expect("fence");
+    assert_eq!(refusal(&answer).code, ErrorCode::Unavailable, "{answer:?}");
+    shutdown.cancel();
+}
+
+/// **A unified fence the ballot refuses leaves the crashed leader's copy as
+/// it was.** The doubt is noted before the ballot is taken; a refused ballot
+/// must not move the copy or what it attests.
+#[tokio::test]
+async fn a_refused_unified_fence_leaves_a_crashed_leaders_copy_unchanged() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    led_before_a_crash(dir.path()).await;
+    let broker = broker_on(dir.path());
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL, "broker-c"], 6))
+        .with_fleet(kept_marks())
+        .with_unclean_start(unclean());
+    taken(&unified_fence(&handler, SENDER, fence(6)).await);
+
+    assert_eq!(
+        refusal(&unified_fence(&handler, Some("broker-c"), fence(6)).await).code,
+        ErrorCode::FencedEpoch
+    );
+    let log = broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    assert_eq!(log.accepted_generation(), 6);
+    assert_eq!(log.accepted_leader().as_deref(), SENDER);
+    assert_eq!(
+        refusal(&handler.fence(SENDER, fence(7)).await).code,
+        ErrorCode::Unavailable,
+        "still the copy led before"
+    );
+    let ok = taken(&unified_fence(&handler, SENDER, fence(7)).await);
+    assert_eq!(ok.attestation, attested(0, false));
 }
