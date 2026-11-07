@@ -405,14 +405,16 @@ fn seed_1_power_cuts_run_the_same_twice_and_are_repaired() {
 // listed in docs/simulation.md.
 
 /// Run `seed` with placement faults twice, and fail unless both runs logged
-/// every one of `marks` and are the same event for event.
+/// every one of `marks` and are the same event for event. A `*` in a mark
+/// stands for any text, so a mark can name a shape without the shard and
+/// generation that any change to the broker's code may move.
 fn placement_shape_runs_the_same_twice(seed: u64, marks: &[&str]) {
     log();
     let config = SimConfig::for_seed(seed).with_placement_faults();
     let first = run_seed(seed, config.clone());
     for mark in marks {
         assert!(
-            first.history.faults.iter().any(|f| f.what.contains(mark)),
+            first.history.faults.iter().any(|f| logged(&f.what, mark)),
             "seed {seed} never logged `{mark}`:\n{first}"
         );
     }
@@ -420,6 +422,27 @@ fn placement_shape_runs_the_same_twice(seed: u64, marks: &[&str]) {
     if let Some(difference) = first_difference(&first.trace(), &second.trace()) {
         panic!("seed {seed} ran differently the second time: {difference}");
     }
+}
+
+/// Whether `what` holds each `*`-separated part of `mark`, in order.
+fn logged(what: &str, mark: &str) -> bool {
+    let mut rest = what;
+    mark.split('*').all(|part| match rest.find(part) {
+        Some(at) => {
+            rest = &rest[at + part.len()..];
+            true
+        }
+        None => false,
+    })
+}
+
+#[test]
+fn a_mark_matches_its_parts_in_order() {
+    let what = "kill b2, named leader of stream/4 at generation 5, before it opens";
+    assert!(logged(what, "named leader of stream/4 at generation 5"));
+    assert!(logged(what, "named leader of stream/*, before it opens"));
+    assert!(!logged(what, "elected leader of stream/*, before it opens"));
+    assert!(!logged(what, "before it opens*named leader"));
 }
 
 #[test]
@@ -467,8 +490,8 @@ fn seed_3_kills_between_promotion_and_open_replay_the_same_twice() {
     placement_shape_runs_the_same_twice(
         3,
         &[
-            "named leader of stream/4 at generation 5, before it opens",
-            "elected leader of stream/5 at generation 7, before it opens",
+            "named leader of stream/*, before it opens",
+            "elected leader of stream/*, before it opens",
         ],
     );
 }
