@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794074972595,
+  "lastUpdate": 1794075261188,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -62502,6 +62502,72 @@ window.BENCHMARK_DATA = {
             "range": "323.63",
             "unit": "us",
             "extra": "trials: 5\nmedian: 278.00\nmean: 471.80\nstdev: 323.63\ncv: 68.59%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "87afa408cee9d9c3688bfad54e4a6494c75c58f6",
+          "message": "fix(replication): an idle shard's follower is sent the mark so it can be trusted (#2109)\n\n* fix(replication): an idle shard's follower is sent the mark so it can be trusted\n\nA follower back from an unclean restart is trusted again only by a batch\nthat leaves it level through the leader's start and a commit offset above\nzero. The batch that catches it up goes before its own answer raises the\nmark, so it carries zero, and a level follower of an idle shard is sent\nnothing more. The copy stayed untrusted, and one more failure left fences\nthat could never cover (felix-sim seed 3: 65 stalled shards).\n\nThe leader now sends a level follower its last record again with the\ncurrent mark until one stored batch carried a mark above zero\n(FollowerCursor::mark_carried), and again for each new process on the\nfollower. The replica's vouch rule is unchanged.\n\nModel: FelixShardUnified gains the IdleVouch knob (default on: Ship\nalready allowed a batch to a level follower), ShipSpec and the liveness\nproperty FollowerTrusted. FelixShardUnifiedIdleVouch passes and its\nLegacy twin violates FollowerTrusted.\n\n* fix(replication): review fixes for the idle-shard mark resend\n\nA batch unlabelled only because the follower's offer was unknown no longer\ncounts as carrying the mark. A leader with no start for its own generation\nowes nobody a resend, and the resend runs apart from the counter ping so\none that cannot land holds that ping back no longer.\n\n* fix(replication): resend the mark only to a follower at the tail\n\nA follower still catching up gets the mark with its next batch, paced\nlike the rest, so the resend no longer adds an unthrottled batch to a\npaced move or a cut catch-up. The generation history is read once per\nbatch.\n\n* test(replication): pass the record flag main added to attestation\n\nSpec-Unaffected: test call only.",
+          "timestamp": "2026-11-07T10:09:32-08:00",
+          "tree_id": "0d7044ed750dc06e5bf370b09fdeea0e00996259",
+          "url": "https://github.com/GetFelix/felix/commit/87afa408cee9d9c3688bfad54e4a6494c75c58f6"
+        },
+        "date": 1794075252726,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 150,
+            "range": "1.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 150.00\nmean: 150.00\nstdev: 1.00\ncv: 0.67%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 205,
+            "range": "7.23",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 205.00\nmean: 204.40\nstdev: 7.23\ncv: 3.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 256,
+            "range": "6.72",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 256.00\nmean: 255.20\nstdev: 6.72\ncv: 2.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 195,
+            "range": "6.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 195.00\nmean: 198.00\nstdev: 6.71\ncv: 3.39%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 386,
+            "range": "77.38",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 386.00\nmean: 419.60\nstdev: 77.38\ncv: 18.44%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 545,
+            "range": "812.48",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 545.00\nmean: 867.40\nstdev: 812.48\ncv: 93.67%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
