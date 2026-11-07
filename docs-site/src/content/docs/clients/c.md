@@ -1740,10 +1740,12 @@ static void on_page(void *user_data, FelixStatus status, const char *message,
         return; /* the last page */
     }
     /* The cursor is valid only in this callback; the library copies it during the call. */
-    char *cursor = strdup(next_cursor);
+    size_t cursor_len = strlen(next_cursor) + 1;
+    char *cursor = malloc(cursor_len);
     if (cursor == NULL) {
         return;
     }
+    memcpy(cursor, next_cursor, cursor_len);
     FelixStatus next = felix_client_list_subscriptions(paging->ops, &paging->filter, 100,
                                                        cursor, NULL, on_page, paging);
     free(cursor);
