@@ -338,9 +338,13 @@ pub(crate) async fn fence_shard_as<R: PeerRequester>(
             // stays pending rather than fence the new set alone. A candidate
             // fences the set it keeps, and jointly the one kept beside it.
             let leaving = candidacy.and_then(|candidacy| candidacy.leaving.as_ref());
+            // The counter log carries no attestation, so it counts as before.
+            let attested = unified.is_some() && kind != LogKind::Counters;
             let under_joint = match (joint, set, candidacy) {
                 (Some(joint), Some(set), None) => {
-                    match joint::sets(requester, &log, local_node_id, route, set, joint).await {
+                    match joint::sets(requester, &log, local_node_id, route, set, joint, attested)
+                        .await
+                    {
                         Ok(fenced) => Some(fenced),
                         Err(why @ joint::NoSetBefore::Unknown(_)) => {
                             return Err(Outcome::SetUnknown {
@@ -381,6 +385,7 @@ pub(crate) async fn fence_shard_as<R: PeerRequester>(
                             leaving.clone(),
                             Vec::new(),
                             joint,
+                            attested,
                         )
                         .await,
                     ),
@@ -399,7 +404,9 @@ pub(crate) async fn fence_shard_as<R: PeerRequester>(
             let joint = under_joint
                 .as_ref()
                 .and_then(|fenced| fenced.joint.as_ref());
-            // The counter log carries no attestation, so it counts as before.
+            // Read after the round trip above, so a flush that failed during
+            // it is seen. The counter log carries no attestation, so it
+            // counts as before.
             let own = match unified.filter(|_| kind != LogKind::Counters) {
                 Some(marks) => Some(own_copy(marks, key, &log, local_node_id, route).await),
                 None => None,

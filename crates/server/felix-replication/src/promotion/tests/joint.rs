@@ -15,7 +15,7 @@ fn electing() -> PeerCapabilities {
         .union(PeerCapabilities::KEPT_SETS)
 }
 
-fn addr_of(node_id: &str) -> Option<SocketAddr> {
+pub(super) fn addr_of(node_id: &str) -> Option<SocketAddr> {
     let port = 7100 + node_id.bytes().last().map_or(0, u16::from);
     Some(SocketAddr::from(([10, 0, 0, 2], port)))
 }
@@ -38,7 +38,7 @@ fn swapped() -> Route {
 
 /// Every replica `ids` names, offering `ELECTION`, beside broker-b and
 /// broker-c.
-fn replicas_with(ids: &[&str]) -> Replicas {
+pub(super) fn replicas_with(ids: &[&str]) -> Replicas {
     let mut replicas = Replicas::new();
     replicas.electing = true;
     for id in ids {
@@ -52,7 +52,7 @@ fn replicas_with(ids: &[&str]) -> Replicas {
 
 /// The leader's log keeps `members` as the set of generation 4, with the
 /// ones in `learners` listed but not voting.
-async fn kept_before(leader: &Broker, members: &[&str], learners: &[&str]) {
+pub(super) async fn kept_before(leader: &Broker, members: &[&str], learners: &[&str]) {
     kept_naming(leader, members, learners, &[]).await;
 }
 
@@ -2325,9 +2325,10 @@ async fn the_sets_a_failover_fences_are_the_unopened_chain() {
         let addr_of = addr_of;
         let joint = Joint::new(&addr_of, Some(prior_xbc()));
 
-        let fenced = crate::promotion::joint::sets(&replicas, &log, LEADER, &route, &set, &joint)
-            .await
-            .expect("sets");
+        let fenced =
+            crate::promotion::joint::sets(&replicas, &log, LEADER, &route, &set, &joint, false)
+                .await
+                .expect("sets");
 
         let sets = fenced.joint.expect("a joint fence");
         let outside = "broker-q";
