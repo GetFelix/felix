@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794062649691,
+  "lastUpdate": 1794062943799,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -48932,6 +48932,58 @@ window.BENCHMARK_DATA = {
             "range": "4330.22",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 993119.58\nmean: 992096.07\nstdev: 4330.22\ncv: 0.44%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3f578af1aad293f6a6f68d5e0a68a165d4dfa666",
+          "message": "spec(shard): cut FelixShardCpLiveReleased down so it finishes in CI (#2099)\n\n* spec(shard): cut FelixShardCpLiveReleased down so it finishes in CI\n\nThe released-leader liveness check never finished in six hours. The\nregistered configuration now allows two generations past the control\nplane, adoption up to 3, one stop, and fixes the first leader with a\nstate constraint (FirstLeaderFixed; brokers are interchangeable and\nopened only grows, so it drops whole renamed behaviours). It passes in\n15 min locally (5.7M distinct states). Its new twin without\nAboveReported violates CpLeaderServes in about a minute through the\nrelease. The old bound moves to the nightly job as\nFelixShardCpLiveReleasedFull.\n\nSpec-Unaffected: no code change; the spec's actions and properties are unchanged, only a state-constraint operator and configurations are added\n\n* ci(formal): leave FelixShardCpLiveReleasedFull out of the nightly job\n\nIt ran past the six-hour hosted-runner limit twice, so the nightly job could\nonly ever time out on it. Say it is unchecked instead.\n\nSpec-Unaffected: CI wiring and a comment only.",
+          "timestamp": "2026-11-07T06:39:55-08:00",
+          "tree_id": "b174cef5f541027532f786f39791c13108182912",
+          "url": "https://github.com/GetFelix/felix/commit/3f578af1aad293f6a6f68d5e0a68a165d4dfa666"
+        },
+        "date": 1794062942868,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 345020.14,
+            "range": "11418.44",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 345020.14\nmean: 345539.33\nstdev: 11418.44\ncv: 3.30%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 345020.14,
+            "range": "11418.44",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 345020.14\nmean: 345539.33\nstdev: 11418.44\ncv: 3.30%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80087.42,
+            "range": "499.35",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80087.42\nmean: 80117.40\nstdev: 499.35\ncv: 0.62%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 800874.23,
+            "range": "4993.52",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 800874.23\nmean: 801174.02\nstdev: 4993.52\ncv: 0.62%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
