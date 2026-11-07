@@ -27,7 +27,11 @@ fn counter() -> impl FnMut() -> [u8; 16] {
 }
 
 fn marks(trust: &CopyTrust, key: &[u8]) -> (bool, bool, bool) {
-    (trust.trusted(key), trust.doubted(key), trust.unkept(key))
+    (
+        trust.trusted(key),
+        trust.doubted(key),
+        trust.unkept(key).is_some(),
+    )
 }
 
 #[test]
@@ -94,12 +98,15 @@ fn doubts_and_unkept_ballots_outlive_restarts_until_cleared() {
     let begun = start(root, 1, &mut fresh);
     let trust = CopyTrust::open(root).expect("open");
     trust.doubt(A).expect("doubt");
-    trust.unkeep(B).expect("unkeep");
+    trust.unkeep(B, 4).expect("unkeep");
+    trust.unkeep(B, 6).expect("unkeep");
+    trust.unkeep(B, 5).expect("unkeep");
     mark_clean(root, begun.id).expect("clean stop");
     start(root, 1, &mut fresh);
     let trust = CopyTrust::open(root).expect("open");
     assert_eq!(marks(&trust, A), (true, true, false));
     assert_eq!(marks(&trust, B), (true, false, true));
+    assert_eq!(trust.unkept(B), Some(6), "the newest ballot");
     start(root, 2, &mut fresh);
     let trust = CopyTrust::open(root).expect("open");
     assert_eq!(
@@ -191,16 +198,54 @@ fn records_round_trip() {
             except: [B.to_vec()].into_iter().collect(),
         },
         unkept: Marks::everyone(),
+        unkept_since: [(B.to_vec(), 7)].into_iter().collect(),
     };
-    assert_eq!(decode(&encode(&state)), Some(state));
-    assert_eq!(decode(HEADER.as_bytes()), Some(State::default()));
+    let id = Some(crate::storage_identity::StorageId::from_bytes([5; 16]));
+    assert_eq!(decode(&encode(&state, id)), Some((state.clone(), id)));
+    assert_eq!(decode(&encode(&state, None)), Some((state, None)));
+    assert_eq!(decode(HEADER.as_bytes()), Some((State::default(), None)));
     for damaged in [
         &b"copy_trust\nuntrusted 0"[..],
         b"copy_trust\nother all\n",
         b"copy_trust\ndoubted except 00\n",
         b"copy_trust\nuntrusted all\nuntrusted 00\n",
+        b"copy_trust\nstorage_id 00\n",
         b"junk",
     ] {
         assert_eq!(decode(damaged), None, "{damaged:?}");
     }
+}
+
+/// **A record written under another storage id reads as unknown, and stays
+/// so until each copy clears.** An older release may rotate the id after a
+/// crash without touching the record, and stop cleanly after: a vouch from
+/// before then says nothing of the copy now.
+#[test]
+fn a_record_from_before_another_releases_rotation_marks_every_copy() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let mut fresh = counter();
+    start(root, 1, &mut fresh);
+    start(root, 2, &mut fresh);
+    let trust = CopyTrust::open(root).expect("open");
+    trust.vouch(A, true).expect("vouch");
+    trust.vouch(B, true).expect("vouch");
+    // The older release's crash, rotation and clean stop.
+    let id = crate::storage_identity::replace(root, [99; 16]).expect("replace");
+    mark_clean(root, id).expect("clean stop");
+
+    let begun = start(root, 2, &mut fresh);
+    assert!(!begun.rotated);
+    let trust = CopyTrust::open(root).expect("open");
+    assert_eq!(marks(&trust, A), (false, true, true));
+    trust.vouch(A, true).expect("vouch");
+    mark_clean(root, begun.id).expect("clean stop");
+    start(root, 2, &mut fresh);
+    let trust = CopyTrust::open(root).expect("open");
+    assert_eq!(marks(&trust, A), (true, false, true));
+    assert_eq!(
+        marks(&trust, B),
+        (false, true, true),
+        "sticky until cleared"
+    );
 }

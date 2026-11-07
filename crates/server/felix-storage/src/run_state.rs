@@ -191,8 +191,9 @@ pub fn begin(
     let id = if rotate {
         // Before the new id: a crash in between must not leave a rotated
         // directory whose copies a later clean start still trusts.
-        copy_trust::distrust_all(root)?;
-        let id = storage_identity::replace(root, fresh())?;
+        let next = fresh();
+        copy_trust::distrust_all(root, StorageId::from_bytes(next))?;
+        let id = storage_identity::replace(root, next)?;
         if restored {
             tracing::warn!(
                 previous = %loaded,

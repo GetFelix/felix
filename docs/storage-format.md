@@ -1262,13 +1262,20 @@ synced, renamed and the directory synced.
 
 ```text
 copy_trust
+storage_id <the directory's storage id, 32 hex digits>
 untrusted all
 untrusted except <key>
 doubted <key>
 unkept <key>
+unkept_since <key> <generation>
 ```
 
-The first line is fixed. Each later line names one of three marks and either
+The first line is fixed. `storage_id` names the id the file was written
+under. A file that names another id than `storage-id` holds, or none, reads
+as every mark on every copy: an older release may have rotated the id after
+a crash without touching this file, so after a downgrade and an upgrade its
+vouches say nothing. A rotation writes the file under the id it is about to
+take, before it takes it. Each later line names one of three marks and either
 `all`, or a key. After `<mark> all`, `<mark> except <key>` names a copy
 without the mark. Without `all`, `<mark> <key>` names a copy with it. A key
 is the shard's replication key (tenant, namespace, stream, shard and kind) as
@@ -1287,7 +1294,11 @@ JSON, in lowercase hex. Lines are sorted.
   generation start.
 - **unkept**: a copy that took a ballot while its promises counted for
   nothing, as a learner answering a unified fence does. Written before that
-  ballot. Cleared when a batch finds the copy readmitted. Such a ballot is no
+  ballot, with `unkept_since` naming the newest generation such a ballot was
+  taken at (absent reads as 0). Cleared only by a readmission: the copy's log
+  counts a set newer than that generation naming it, under its own storage
+  id, as a voter, and holds that set's generation start, shipped by that
+  set's leader or a later one. A batch alone does not clear it. Such a ballot is no
   kept promise, even after a crash that keeps it.
 
 A rotation keeps `doubted` and `unkept`. A file that does not decode reads as

@@ -1101,7 +1101,7 @@ impl ReplicaHandler {
                 }
                 let learner = self.admit_when_caught_up(&key, log_kind, &log).await;
                 if !learner && own_kind(log_kind).is_none() {
-                    self.record_readmitted(&crate::driver::watch_key(&key))
+                    self.record_readmitted(&key, &log, batch.shard.generation)
                         .await;
                 }
                 metrics::record_replicated(metrics::OUTCOME_OK);
@@ -1509,7 +1509,9 @@ impl ReplicaHandler {
     /// nothing and has not been readmitted since ([`Self::unkeep`]).
     fn unkept(&self, key: &felix_router::ShardKey) -> bool {
         self.copy_trust().is_some_and(|trust| {
-            trust.unkept(&crate::unclean::copy_key(&crate::driver::watch_key(key)))
+            trust
+                .unkept(&crate::unclean::copy_key(&crate::driver::watch_key(key)))
+                .is_some()
         })
     }
 
@@ -1518,40 +1520,53 @@ impl ReplicaHandler {
     /// does. Call before the ballot is written. Afterwards the ballot reads
     /// as a promise kept through any crash, so without this record an older
     /// caller's fence would count it ([`Self::continues_from`]). An error
-    /// means the ballot must not be taken.
+    /// means the ballot must not be taken. `generation` is the ballot's: only
+    /// a set newer than it readmits the copy ([`Self::readmitted_since`]).
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) async fn unkeep(
         &self,
         key: &felix_router::ShardKey,
+        generation: u64,
     ) -> Result<(), felix_storage::StorageError> {
         let Some(trust) = self.copy_trust() else {
             return Ok(());
         };
         let name = crate::unclean::copy_key(&crate::driver::watch_key(key));
-        if trust.unkept(&name) {
+        if trust.unkept(&name).is_some_and(|since| since >= generation) {
             return Ok(());
         }
         let trust = Arc::clone(trust);
-        tokio::task::spawn_blocking(move || trust.unkeep(&name))
+        tokio::task::spawn_blocking(move || trust.unkeep(&name, generation))
             .await
             .unwrap_or_else(|err| Err(felix_storage::StorageError::Io(std::io::Error::other(err))))
     }
 
-    /// The copy of `shard` is no learner after a batch: readmitted, its
-    /// promises count again.
-    async fn record_readmitted(&self, shard: &crate::ShardKey) {
+    /// After a batch from the leader of `sent_at`: an unkept copy that is now
+    /// readmitted, a voter in a set newer than its unkept ballot, counts its
+    /// promises again. A batch alone, or wipe evidence without a set, is no
+    /// readmission (the design's "Wipe" row).
+    async fn record_readmitted(
+        &self,
+        key: &felix_router::ShardKey,
+        log: &felix_broker::StreamLog,
+        sent_at: u64,
+    ) {
         let Some(trust) = self.copy_trust() else {
             return;
         };
-        let name = crate::unclean::copy_key(shard);
-        if !trust.unkept(&name) {
+        let shard = crate::driver::watch_key(key);
+        let name = crate::unclean::copy_key(&shard);
+        let Some(since) = trust.unkept(&name) else {
+            return;
+        };
+        if !self.readmitted_since(log, since, sent_at).await {
             return;
         }
         let trust = Arc::clone(trust);
         if let Ok(Err(err)) = tokio::task::spawn_blocking(move || trust.clear_unkept(&name)).await {
             tracing::warn!(
-                stream = %shard.stream,
-                shard = shard.shard,
+                stream = %key.stream,
+                shard = key.shard,
                 error = %err,
                 "could not record that this copy was readmitted; its promises count for nothing \
                  until the next batch records it",

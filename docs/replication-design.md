@@ -707,7 +707,8 @@ same file names the copies this broker led before the crash, written before
 such a copy takes a newer leader's ballot, so the refusal in "A leader's own
 crash" also survives that ballot and a clean restart. It also names a copy that took a
 ballot while its promises counted for nothing, such as a learner answering a
-unified fence. Until it is readmitted that copy attests no kept ballot, and an
+unified fence. Until a set newer than that ballot readmits it, that copy
+attests no kept ballot, and an
 older caller continuing from that ballot is refused as before, even after a
 crash that kept the ballot. A memory-only broker has
 no file and attests no kept ballot, so it never attests trusted.

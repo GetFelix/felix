@@ -25,8 +25,9 @@ use std::path::{Path, PathBuf};
 
 use parking_lot::Mutex;
 
+use crate::storage_identity::{self, StorageId};
 use crate::{Result, StorageError};
-use felix_common::random::HashSet;
+use felix_common::random::{HashMap, HashSet};
 
 /// The file's name under the durable root. Not a directory, so shard
 /// discovery passes over it.
@@ -36,6 +37,8 @@ const HEADER: &str = "copy_trust\n";
 const UNTRUSTED: &str = "untrusted";
 const DOUBTED: &str = "doubted";
 const UNKEPT: &str = "unkept";
+const STORAGE_ID: &str = "storage_id";
+const UNKEPT_SINCE: &str = "unkept_since";
 
 /// Which copies carry one mark: every copy but `except`, or only `except`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -74,6 +77,9 @@ struct State {
     untrusted: Marks,
     doubted: Marks,
     unkept: Marks,
+    /// For an unkept copy, the newest generation it took a ballot at while
+    /// unkept: only a set newer than that readmits it. 0 when not known.
+    unkept_since: HashMap<Vec<u8>, u64>,
 }
 
 impl State {
@@ -84,6 +90,7 @@ impl State {
             untrusted: Marks::everyone(),
             doubted: Marks::everyone(),
             unkept: Marks::everyone(),
+            unkept_since: HashMap::default(),
         }
     }
 }
@@ -95,11 +102,16 @@ impl State {
 /// broker led before a crash, doubting every one would refuse every older
 /// caller's fence on an idle shard, and the ballots still say what they said
 /// before the file existed.
+///
+/// A file written under another storage id than the directory's now reads as
+/// unknown, and is rewritten so under the current id, so its marks stay on
+/// until each copy clears them: an older release may have rotated the id
+/// after a crash without touching this file.
 pub(crate) fn ensure(root: &Path, created: bool) -> Result<()> {
-    if crate::fs::try_exists(root.join(FILE_NAME)).map_err(StorageError::Io)? {
-        return Ok(());
-    }
-    let state = if created {
+    let id = storage_identity::load(root)?;
+    let state = if crate::fs::try_exists(root.join(FILE_NAME)).map_err(StorageError::Io)? {
+        read(root)?
+    } else if created {
         State::default()
     } else {
         tracing::warn!(
@@ -111,33 +123,54 @@ pub(crate) fn ensure(root: &Path, created: bool) -> Result<()> {
             untrusted: Marks::everyone(),
             doubted: Marks::default(),
             unkept: Marks::everyone(),
+            unkept_since: HashMap::default(),
         }
     };
-    super::write_atomically(root, FILE_NAME, &encode(&state), true)
+    super::write_atomically(root, FILE_NAME, &encode(&state, id), true)
 }
 
 /// Record, durably, that every copy on `root` may have lost acknowledged
 /// records: no copy is trusted until [`CopyTrust::vouch`] names it again.
-/// Doubted and unkept copies stay so.
-pub(crate) fn distrust_all(root: &Path) -> Result<()> {
+/// Doubted and unkept copies stay so. Written under `next`, the id the
+/// directory is about to take: a crash before it does leaves a file that
+/// names another id, which reads as unknown.
+pub(crate) fn distrust_all(root: &Path, next: StorageId) -> Result<()> {
     let mut state = read(root)?;
     state.untrusted = Marks::everyone();
-    super::write_atomically(root, FILE_NAME, &encode(&state), true)
+    super::write_atomically(root, FILE_NAME, &encode(&state, Some(next)), true)
 }
 
 /// The file under `root`. Missing reads as a new directory's: [`ensure`],
 /// at the start of every run, decides otherwise.
+///
+/// A file that names another storage id than the directory's, or none on a
+/// directory that has one, reads as unknown too.
 fn read(root: &Path) -> Result<State> {
     let path = root.join(FILE_NAME);
     match crate::fs::read(&path) {
-        Ok(bytes) => Ok(decode(&bytes).unwrap_or_else(|| {
-            tracing::error!(
-                path = %path.display(),
-                "the copy-trust record does not decode; taking every copy as untrusted, \
-                 doubted and unkept until a leader vouches for it"
-            );
-            State::unknown()
-        })),
+        Ok(bytes) => {
+            let current = storage_identity::load(root)?;
+            Ok(match decode(&bytes) {
+                Some((state, written)) if written == current => state,
+                Some(_) => {
+                    tracing::error!(
+                        path = %path.display(),
+                        "the copy-trust record was written under another storage id, as \
+                         after a downgrade that rotated it; taking every copy as untrusted, \
+                         doubted and unkept until a leader vouches for it"
+                    );
+                    State::unknown()
+                }
+                None => {
+                    tracing::error!(
+                        path = %path.display(),
+                        "the copy-trust record does not decode; taking every copy as \
+                         untrusted, doubted and unkept until a leader vouches for it"
+                    );
+                    State::unknown()
+                }
+            })
+        }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(State::default()),
         Err(err) => Err(StorageError::Io(err)),
     }
@@ -151,6 +184,8 @@ fn read(root: &Path) -> Result<State> {
 #[derive(Debug)]
 pub struct CopyTrust {
     root: PathBuf,
+    /// The directory's storage id, which every write names.
+    id: Option<StorageId>,
     /// What is on disk. Readers see only this.
     durable: Mutex<State>,
     /// Every change made, with the count of changes so far.
@@ -167,6 +202,7 @@ impl CopyTrust {
         let state = read(root)?;
         Ok(Self {
             root: root.to_path_buf(),
+            id: storage_identity::load(root)?,
             durable: Mutex::new(state.clone()),
             wanted: Mutex::new((state, 0)),
             writer: Mutex::new(0),
@@ -188,9 +224,14 @@ impl CopyTrust {
     }
 
     /// Whether the copy named `key` took a ballot while its promises counted
-    /// for nothing and has not been readmitted since.
-    pub fn unkept(&self, key: &[u8]) -> bool {
-        self.durable.lock().unkept.marked(key)
+    /// for nothing and has not been readmitted since: the newest generation
+    /// it took one at, or 0 when that is not known.
+    pub fn unkept(&self, key: &[u8]) -> Option<u64> {
+        let state = self.durable.lock();
+        state
+            .unkept
+            .marked(key)
+            .then(|| state.unkept_since.get(key).copied().unwrap_or(0))
     }
 
     /// Record, durably, that a newer leader shipped the copy named `key`
@@ -215,15 +256,26 @@ impl CopyTrust {
     /// Record, durably, that the copy named `key` is about to take a ballot
     /// while its promises count for nothing, as a learner does. That ballot
     /// is no kept promise, even after a crash that keeps it. Call before the
-    /// ballot is written, and take none on an error. Blocks on the sync.
-    pub fn unkeep(&self, key: &[u8]) -> Result<()> {
-        self.update(|state| state.unkept.set(key, true))
+    /// ballot is written, and take none on an error. `generation` is the
+    /// ballot's. Blocks on the sync.
+    pub fn unkeep(&self, key: &[u8], generation: u64) -> Result<()> {
+        self.update(|state| {
+            let marked = state.unkept.set(key, true);
+            let since = state.unkept_since.entry(key.to_vec()).or_insert(0);
+            let raised = generation > *since;
+            *since = (*since).max(generation);
+            marked || raised
+        })
     }
 
-    /// Record, durably, that the copy named `key` was readmitted: its
-    /// promises count again. Blocks on the sync.
+    /// Record, durably, that the copy named `key` was readmitted, into a set
+    /// newer than [`Self::unkept`] says: its promises count again. Blocks on
+    /// the sync.
     pub fn clear_unkept(&self, key: &[u8]) -> Result<()> {
-        self.update(|state| state.unkept.set(key, false))
+        self.update(|state| {
+            let removed = state.unkept_since.remove(key).is_some();
+            state.unkept.set(key, false) || removed
+        })
     }
 
     /// Apply `change`, then return once it is on disk, written by this call
@@ -242,7 +294,7 @@ impl CopyTrust {
             return Ok(());
         }
         let (state, count) = self.wanted.lock().clone();
-        super::write_atomically(&self.root, FILE_NAME, &encode(&state), true)?;
+        super::write_atomically(&self.root, FILE_NAME, &encode(&state, self.id), true)?;
         #[cfg(test)]
         self.writes
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -252,13 +304,17 @@ impl CopyTrust {
     }
 }
 
-/// The header, then for each mark either `<mark> all` and one
+/// The header, `storage_id <hex>` naming the directory's id, then for each
+/// mark either `<mark> all` and one
 /// `<mark> except <key>` line per copy without it, or one `<mark> <key>`
 /// line per copy with it. Keys are lowercase hex, sorted.
-fn encode(state: &State) -> Vec<u8> {
+fn encode(state: &State, id: Option<StorageId>) -> Vec<u8> {
     use std::fmt::Write;
 
     let mut out = String::from(HEADER);
+    if let Some(id) = id {
+        let _ = writeln!(out, "{STORAGE_ID} {}", id.to_hex());
+    }
     for (name, marks) in [
         (UNTRUSTED, &state.untrusted),
         (DOUBTED, &state.doubted),
@@ -278,15 +334,37 @@ fn encode(state: &State) -> Vec<u8> {
             out.push('\n');
         }
     }
+    let mut since: Vec<_> = state.unkept_since.iter().collect();
+    since.sort_unstable();
+    for (key, generation) in since {
+        out.push_str(UNKEPT_SINCE);
+        out.push(' ');
+        for byte in key {
+            let _ = write!(out, "{byte:02x}");
+        }
+        let _ = writeln!(out, " {generation}");
+    }
     out.into_bytes()
 }
 
-fn decode(bytes: &[u8]) -> Option<State> {
+fn decode(bytes: &[u8]) -> Option<(State, Option<StorageId>)> {
     let body = std::str::from_utf8(bytes).ok()?.strip_prefix(HEADER)?;
     let mut state = State::default();
+    let mut id = None;
     let mut named = Vec::new();
     for line in body.lines() {
         let (name, rest) = line.split_once(' ')?;
+        if name == STORAGE_ID && id.is_none() {
+            id = Some(StorageId::from_bytes(unhex(rest)?.try_into().ok()?));
+            continue;
+        }
+        if name == UNKEPT_SINCE {
+            let (hex, generation) = rest.split_once(' ')?;
+            state
+                .unkept_since
+                .insert(unhex(hex)?, generation.parse().ok()?);
+            continue;
+        }
         let marks = marks_of(&mut state, name)?;
         if rest == "all" {
             marks.all = true;
@@ -304,7 +382,7 @@ fn decode(bytes: &[u8]) -> Option<State> {
         }
         marks.except.insert(key);
     }
-    Some(state)
+    Some((state, id))
 }
 
 fn marks_of<'a>(state: &'a mut State, name: &str) -> Option<&'a mut Marks> {
