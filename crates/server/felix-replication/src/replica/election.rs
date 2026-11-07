@@ -619,19 +619,15 @@ impl ReplicaHandler {
     /// its own storage id as a voter, not wiped, and it holds that set's
     /// generation start, shipped by that set's leader or a later one
     /// (`sent_at`). Neither a batch alone nor a set that names no copy here
-    /// is one.
+    /// is one. The generation of that set when it is.
     pub(super) async fn readmitted_since(
         &self,
         own: &felix_broker::StreamLog,
         since: u64,
         sent_at: u64,
-    ) -> bool {
-        let Some(own_id) = self.local_storage else {
-            return false;
-        };
-        let Some(set) = own.replica_set() else {
-            return false;
-        };
+    ) -> Option<u64> {
+        let own_id = self.local_storage?;
+        let set = own.replica_set()?;
         let generation = set.current.generation;
         let local = self.router.local_node_id();
         let voter = set.current.members.iter().any(|member| {
@@ -640,12 +636,13 @@ impl ReplicaHandler {
                 && !member.learner
                 && !member.wiped
         });
-        generation > since
+        (generation > since
             && sent_at >= generation
             && voter
             && !self.is_learner(own)
             && !self.is_wiped(own)
-            && holds_start(own, generation).await
+            && holds_start(own, generation).await)
+            .then_some(generation)
     }
 
     /// Whether a cache shard's counter log holds the start record of

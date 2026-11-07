@@ -1124,3 +1124,30 @@ fn an_unreported_feature_is_decided_off_before_registration() {
     fleet.restart([JOINT_FENCE.name()]);
     assert_eq!(with.fleet_decides(JOINT_FENCE), Some(true));
 }
+
+/// **A readmission counts only on a broker that knows the fleet has not
+/// finalized `replica_election`**: not before a registration answers, and not
+/// once it is finalized.
+#[test]
+fn a_readmission_counts_only_while_the_fleet_rules_out_elections() {
+    use felix_common::fleet::{FleetGate, REPLICA_ELECTION};
+    assert!(QuorumMarks::new().readmission_counts(), "no fleet");
+    let unregistered = FleetGate::new([REPLICA_ELECTION.name()]);
+    let unregistered = QuorumMarks::with_fleet(Arc::new(unregistered));
+    assert!(
+        !unregistered.readmission_counts(),
+        "no registration answer yet"
+    );
+    let off = FleetGate::new([REPLICA_ELECTION.name()]);
+    off.restart([]);
+    assert!(
+        QuorumMarks::with_fleet(Arc::new(off)).readmission_counts(),
+        "not finalized"
+    );
+    let on = FleetGate::new([REPLICA_ELECTION.name()]);
+    on.restart([REPLICA_ELECTION.name()]);
+    assert!(
+        !QuorumMarks::with_fleet(Arc::new(on)).readmission_counts(),
+        "finalized"
+    );
+}

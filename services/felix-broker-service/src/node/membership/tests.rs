@@ -290,11 +290,18 @@ fn a_passed_deferred_check_attests_the_runs_kept_ballots() {
     let own_kept = super::super::storage::Kept {
         promises: false,
         ballots: true,
+        readmits: false,
+        minted: false,
         deferred: true,
     };
     let check = deferred_check(&checked, own_kept, {
         let attested = Arc::clone(&attested);
-        move |kept| attested.lock().expect("lock").push(kept)
+        move |kept: super::super::storage::Kept| {
+            attested
+                .lock()
+                .expect("lock")
+                .push((kept.ballots, kept.readmits))
+        }
     });
     assert!(attested.lock().expect("lock").is_empty());
     let record = membership::Registered {
@@ -302,7 +309,7 @@ fn a_passed_deferred_check_attests_the_runs_kept_ballots() {
         storage_id: Some("00ff".to_owned()),
     };
     (check.passed)(Some(&record));
-    assert_eq!(*attested.lock().expect("lock"), vec![true]);
+    assert_eq!(*attested.lock().expect("lock"), vec![(true, true)]);
     assert!(
         !checked.is_cancelled(),
         "membership cancels it after the pass"

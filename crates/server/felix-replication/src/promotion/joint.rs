@@ -290,7 +290,7 @@ impl JointSets {
             let mut covered = 0;
             for voter in voters {
                 if *voter == self.local {
-                    promised += usize::from(own.kept);
+                    promised += usize::from(own.promises(generation));
                     covered += usize::from(own.trusted);
                     continue;
                 }

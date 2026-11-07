@@ -217,7 +217,11 @@ impl InternalMessage {
                 // Without an attestation, `kept_ballot` is the kind, not the body.
                 if let Some(attestation) = m.attestation {
                     body.put_u64(attestation.kept_from);
-                    body.put_u8(u8::from(attestation.trusted) | (u8::from(m.kept_ballot) << 1));
+                    body.put_u8(
+                        u8::from(attestation.trusted)
+                            | (u8::from(m.kept_ballot) << 1)
+                            | (u8::from(attestation.by_record) << 2),
+                    );
                 }
             }
             Self::ReplicateRecords(m)
@@ -806,13 +810,14 @@ impl InternalMessage {
                     let flags = take_u8(&mut body)?;
                     // A bit this build does not know may change what the
                     // answer means, so it is refused rather than dropped.
-                    if flags & !3 != 0 {
+                    if flags & !7 != 0 {
                         return Err(Error::Incomplete);
                     }
                     message.kept_ballot = flags & 2 != 0;
                     message.attestation = Some(FenceAttestation {
                         kept_from,
                         trusted: flags & 1 != 0,
+                        by_record: flags & 4 != 0,
                     });
                 }
                 expect_empty(&body)?;

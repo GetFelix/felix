@@ -256,13 +256,13 @@ pub(super) async fn keep_view_if_opened_under(
 }
 
 /// The restore check a start from the view deferred: once it passes, `attest`
-/// is told what a start that asked first would attest as kept from
-/// `own_kept`, the run's own [`super::storage::Kept`], and `checked` is
-/// cancelled. A failed check tells it nothing, so the copy never attests.
+/// is told what a start that asked first would attest from `own_kept`, the
+/// run's own [`super::storage::Kept`], and `checked` is cancelled. A failed
+/// check tells it nothing, so the copy never attests.
 pub(super) fn deferred_check(
     checked: &CancellationToken,
     own_kept: super::storage::Kept,
-    attest: impl FnOnce(bool) + Send + 'static,
+    attest: impl FnOnce(super::storage::Kept) + Send + 'static,
 ) -> membership::DeferredCheck {
     membership::DeferredCheck {
         checked: checked.clone(),

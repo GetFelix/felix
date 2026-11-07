@@ -93,6 +93,7 @@ fn route(replicas: &[&str], leaving: Option<&[&str]>) -> Arc<ShardRouter> {
                 generation: 5,
                 leaving: leaving.iter().map(|node| node.to_string()).collect(),
             }),
+            readmitted: Default::default(),
         }],
         &nodes,
     );
@@ -364,6 +365,7 @@ fn cache_route(replicas: &[&str], generation: u64, leaving: Option<&[&str]>) -> 
                 generation,
                 leaving: leaving.iter().map(|node| node.to_string()).collect(),
             }),
+            readmitted: Default::default(),
         }],
         &nodes,
     );

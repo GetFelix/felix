@@ -102,6 +102,7 @@ fn route() -> Route {
         fence_storage_ids: None,
         member_storage_ids: None,
         pending: None,
+        readmitted: Default::default(),
     }
 }
 

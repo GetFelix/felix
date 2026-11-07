@@ -1089,7 +1089,12 @@ member by another id or leaves it out. Recording an entry does not change
 the generation and writes no change: brokers see it in the next assignment
 write or a snapshot. Postgres stores it from migration `0046`; under Raft it
 is recorded only once every member is at metadata level 30, and below that
-nothing is written. No broker reads it yet.
+nothing is written. A report from a leader that elected itself records
+nothing: it may have opened before the copy was replaced, at a generation
+adopted later for a set naming the new id. The copy itself reads the
+entries when it answers a fence, and only while the fleet has not
+finalized `replica_election`: see `docs/replication-design.md`, "One fence rule for
+every change of leader" and "Readmission and elections".
 
 Every placement write works out `learners` from the assignment it replaces:
 a member that assignment named under another id than the one registered now,

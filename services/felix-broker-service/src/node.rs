@@ -236,7 +236,7 @@ where
     };
     let mut stored = startup::open_storage(&config, durable_config, registered.as_ref())?;
     let own_kept = stored.kept;
-    stored.kept.ballots = stored.kept.attested(view.is_some());
+    stored.kept = stored.kept.attested(view.is_some());
     let storage_id = stored.storage_id;
     // Beginning the run may have rotated the id the view was registered
     // under, and a new id registers before it acts: wait for the control
@@ -520,7 +520,10 @@ where
         view.as_ref().map(|_| {
             let marks = Arc::clone(&quorum_marks);
             membership::deferred_check(&restore_checked, own_kept, move |kept| {
-                marks.set_kept_ballots(kept);
+                // Readmits first: setting kept is what lets a readmission
+                // count (`QuorumMarks::knows_kept_ballots`).
+                marks.set_readmits(kept.readmits);
+                marks.set_kept_ballots(kept.ballots);
             })
         }),
         &sync_shutdown,
