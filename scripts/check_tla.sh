@@ -541,7 +541,8 @@ fi
 # WipesLeader,Setless,Groups}: each runs well over an hour on a four-core runner. Their
 # violating twins and witnesses stay registered.
 # So is FelixShardCpLiveReleasedFull, the registered FelixShardCpLiveReleased
-# with every first leader, any number of stops and adoption up to 2.
+# with every first leader, any number of stops and adoption up to 2. It ran
+# past six hours twice, so nothing checks it yet, not even the nightly job.
 # So are FelixShardUnifiedReadmitFull and FelixShardUnifiedDropEvidencedFull,
 # the registered Readmit and DropEvidenced with one client write.
 # So is FelixShardElectRename, which is checked in pieces
