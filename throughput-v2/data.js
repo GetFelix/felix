@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794018462345,
+  "lastUpdate": 1794020333769,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -48100,6 +48100,58 @@ window.BENCHMARK_DATA = {
             "range": "148359.98",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1585045.70\nmean: 1526975.81\nstdev: 148359.98\ncv: 9.72%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3bcb99e765faab09ad10a48e9994217a43d5b99f",
+          "message": "feat(sim): power-loss nemesis under FsyncMode::OnCommit (#2038) (#2060)\n\n* feat(sim): cut the power to a broker under FsyncMode::OnCommit (#2038)\n\nOne seed in three runs its brokers with FsyncMode::OnCommit, and there a\ncrash that would be a kill cuts the power instead. The cut lands inside the\nnext clean append to a log segment, which comes back torn on a sector\nboundary with its length on the disk; every other unsynced byte follows the\nin-memory filesystem's crash model. The broker stops in the same instant and\nrestarts on what the device held. A new TornTailRepaired checker fails a seed\nunless recovery repaired each torn append, read from a repair count the\nsimulated filesystem keeps. A restart that doubts its copy after a power loss\ncounts towards the double-crash exemption like a kill.\n\n* test(sim): keep the power-cut seed test out of the replay filter; record seed results\n\n* fix(sim): widen the power cut, tear by sectors, match repairs to the torn segment (#2038)\n\nThe cut now lands on any append to a segment past what the device holds,\nso group-commit batches and a new segment's unsynced header are covered.\nThe file follows crash_contents, and the append in flight comes back short\nor with any subset of its sectors missing, at least one, so a lost sector\ncan precede one that arrived. Recovery records which segment it repaired,\nthe power loss records which segment it tore, and TornTailRepaired matches\nthe two. The snapshot reads each file's durable bytes once; under the\nsimulator every sync runs on the run's runtime, so it is deterministic.\n\n* fix(sim): no false misses in TornTailRepaired; pad power-seed payloads to 1-4 KiB (#2038)\n\nA torn append now always keeps at least one byte past where it began.\nRecovery also records a segment it removes as unfinished, and a cut whose\nsegment came back without its name or with nothing past the append is not\nheld to a repair. Power seeds pad each record to 1-4 KiB, checked on read,\nso appends span sectors and a lost sector can precede one that arrived.\n\n* refactor(storage): name the power-cut callback type for clippy\n\n* docs(sim): state the power-loss seed results as replayed\n\n* fix(sim): placement cuts the power with power loss on; restart after a heal only for power cuts\n\nPlacement faults killed OnCommit brokers under FELIX_SIM_POWER_LOSS=1,\nwhich made them forget a boot whose records were synced; they now cut the\npower as the planned faults do. A crash task that wakes after the heal\nrestarts its broker only when it was a power cut, so runs without power\nloss replay as on main. Drop the docs' unpinned seed results.",
+          "timestamp": "2026-11-07T02:49:50Z",
+          "tree_id": "bca770451e07d8804c25c515f80415b9457a2eac",
+          "url": "https://github.com/GetFelix/felix/commit/3bcb99e765faab09ad10a48e9994217a43d5b99f"
+        },
+        "date": 1794020333142,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 354923.03,
+            "range": "10062.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 354923.03\nmean: 357044.58\nstdev: 10062.88\ncv: 2.82%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 354923.03,
+            "range": "10062.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 354923.03\nmean: 357044.58\nstdev: 10062.88\ncv: 2.82%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81602.53,
+            "range": "919.03",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81602.53\nmean: 81163.67\nstdev: 919.03\ncv: 1.13%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 816025.34,
+            "range": "9190.35",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 816025.34\nmean: 811636.69\nstdev: 9190.35\ncv: 1.13%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
