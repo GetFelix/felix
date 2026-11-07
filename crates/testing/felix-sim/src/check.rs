@@ -286,6 +286,9 @@ impl Checker for ElectionSettles {
             cluster.shard_keys().count(),
         );
         loop {
+            // Read again each pass: a copy a leader vouches meanwhile stops
+            // being doubted, and its shard stops being exempt.
+            let held = cluster.held_shards().await;
             let stuck = without_held(cluster.unserved().await, &held);
             if stuck.is_empty() {
                 return Vec::new();

@@ -81,6 +81,12 @@ impl UncleanStart {
         self.vouched.lock().insert(key.clone());
     }
 
+    /// Whether a leader has shipped `key` to this process since the crash and
+    /// nothing has put the copy in doubt again.
+    pub fn is_vouched(&self, key: &ShardKey) -> bool {
+        !self.doubted.lock().contains(key) && self.vouched.lock().contains(key)
+    }
+
     /// `log`, `key`'s copy, is about to take a leader's ballot at
     /// `generation` from a batch. A copy this broker led before the crash
     /// stays one until [`Self::vouch`], though the new ballot names another

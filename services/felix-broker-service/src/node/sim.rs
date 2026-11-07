@@ -182,6 +182,7 @@ pub struct SimBroker {
     registered_watch: tokio::sync::watch::Receiver<Option<u64>>,
     storage_id: felix_storage::StorageId,
     started_unclean: bool,
+    unclean: Option<Arc<replication::unclean::UncleanStart>>,
     membership: Option<MembershipTask>,
     shutdown: CancellationToken,
     tasks: Vec<JoinHandle<()>>,
@@ -379,6 +380,7 @@ impl<L: ControlPlaneLink + Clone> OpenedBroker<L> {
             outgoing: _,
         } = self;
         let started_unclean = unclean.is_some();
+        let unclean_start = unclean.clone();
         let peers = Some(peers);
         let shutdown = CancellationToken::new();
         let seeded = CancellationToken::new();
@@ -498,6 +500,7 @@ impl<L: ControlPlaneLink + Clone> OpenedBroker<L> {
             registered_watch,
             storage_id,
             started_unclean,
+            unclean: unclean_start,
             membership,
             shutdown,
             tasks,
@@ -562,6 +565,14 @@ impl SimBroker {
     /// records, so the broker runs with its unclean-start handling.
     pub fn started_unclean(&self) -> bool {
         self.started_unclean
+    }
+
+    /// Whether this broker trusts its copy of `key`: it did not start after an
+    /// unclean stop, or a leader has shipped the copy since it did.
+    pub fn copy_trusted(&self, key: &ShardKey) -> bool {
+        self.unclean
+            .as_ref()
+            .is_none_or(|unclean| unclean.is_vouched(key))
     }
 
     /// The membership task, `None` only if the config named no cluster.

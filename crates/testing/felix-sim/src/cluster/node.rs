@@ -354,6 +354,12 @@ impl Node {
         })
     }
 
+    /// Whether the running broker trusts its copy of `key`. `None` if it is
+    /// not running.
+    pub(crate) fn copy_trusted(&self, key: &ShardKey) -> Option<bool> {
+        Some(self.broker()?.copy_trusted(key))
+    }
+
     /// What the running broker believes about `key`, read at one instant.
     pub(crate) fn stand(&self, key: &ShardKey) -> Option<ShardStand> {
         let broker = self.broker()?;

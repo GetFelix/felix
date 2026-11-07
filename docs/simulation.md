@@ -302,12 +302,12 @@ instant:
   again.
 
 The exemption also reads the last set a leader opened the shard for. A copy is
-doubted when its broker was killed uncleanly after that open and no opened
-leader has been up with it since it restarted. A named leader killed before it
+doubted when its broker was killed uncleanly after that open and the broker
+itself still doubts the copy: no leader has shipped it since the restart. A named leader killed before it
 opened counts as a doubted follower. The shard is held when the doubted copies
 are a majority of that set, even if the members were not down together. A
 shard whose copies are trusted but whose fence cannot open is not held, so the
-check still fails it. The run samples opens once a second to see this.
+check still fails it. The run samples the brokers' own state once a second to see this.
 
 An abandoned shard loses what it acknowledged by design. Appends
 acknowledged before the abandon count as unknown (they may or may not be on

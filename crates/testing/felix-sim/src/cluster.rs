@@ -547,21 +547,10 @@ impl SimCluster {
             {
                 kills.opened(&shard, view, at);
             }
-            // The leader keeps its open generation while a fence for the next
-            // one is running, so read it against the recorded open.
-            let Some((leader, generation)) = kills.last_open(&shard) else {
-                continue;
-            };
-            let leads = self.nodes.iter().any(|n| {
-                n.id == leader
-                    && n.stand(&key)
-                        .is_some_and(|stand| stand.opened_generation == Some(generation))
-            });
-            if !leads {
-                continue;
-            }
+            // The broker's own record: a copy is trusted once a leader has
+            // shipped it since the crash.
             for node in &self.nodes {
-                if node.id != leader && node.stand(&key).is_some() {
+                if node.copy_trusted(&key) == Some(true) {
                     kills.shipped(&shard, &node.id, at);
                 }
             }

@@ -58,10 +58,9 @@ pub(crate) fn leave_out_unopened(view: &mut Views, node: &str, unopened: &BTreeS
 }
 
 /// The last set a leader opened a shard for, and which members an opened
-/// leader has shipped to since they restarted.
+/// member's broker has trusted its copy since the restart.
 #[derive(Debug, Clone)]
 struct Opened {
-    leader: String,
     generation: u64,
     members: BTreeSet<String>,
     at: Duration,
@@ -95,7 +94,6 @@ impl KillLog {
         self.opened.insert(
             shard.to_string(),
             Opened {
-                leader: view.leader.clone(),
                 generation: view.generation,
                 members,
                 at,
@@ -104,14 +102,8 @@ impl KillLog {
         );
     }
 
-    /// The leader and generation `shard` was last opened at.
-    pub(crate) fn last_open(&self, shard: &str) -> Option<(String, u64)> {
-        let open = self.opened.get(shard)?;
-        Some((open.leader.clone(), open.generation))
-    }
-
-    /// The opened leader of `shard` is up and so is `member`, so it has been
-    /// shipping to the copy since the member's restart.
+    /// `member`'s broker trusts its copy of `shard` at `at`: it is running and
+    /// a leader has shipped the copy since its restart.
     pub(crate) fn shipped(&mut self, shard: &str, member: &str, at: Duration) {
         if let Some(opened) = self.opened.get_mut(shard) {
             opened.shipped.insert(member.to_string(), at);
@@ -207,7 +199,7 @@ impl KillLog {
 impl KillLog {
     /// Shards whose last opened set has a majority of doubted copies. A copy
     /// is doubted when its broker was killed uncleanly after the open and no
-    /// opened leader has shipped to it since it restarted. A named leader
+    /// leader has shipped its copy since it restarted, as the broker records it. A named leader
     /// killed before it opened counts as a doubted follower, since its kill
     /// is in the log either way. Shards whose copies are trusted but whose
     /// fence cannot open are not held, so they still fail the check.
