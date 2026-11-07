@@ -24,6 +24,53 @@ export interface Event {
    * offset; `0n` from a broker that predates it.
    */
   skippedBefore: bigint;
+  /**
+   * The principal that published the record. `null` unless `publishers` was set
+   * on `connect`, and for a record the broker has no principal for. It says
+   * which principal the broker accepted the write from, not who wrote the
+   * payload's contents.
+   */
+  publisher: string | null;
+  /**
+   * When the broker appended the record, in microseconds since the Unix epoch,
+   * by the clock of the broker that led the shard. `null` unless `timestamps`
+   * was set on `connect`, and on an in-memory stream.
+   */
+  timestampMicros: bigint | null;
+  /**
+   * The key and headers the publisher gave the record. `null` for a record
+   * published without either, and when `recordHeaders` is off or the broker
+   * did not accept the extension.
+   */
+  headers: RecordHeaders | null;
+}
+
+/** One named header value. A name may repeat, and order is kept. */
+export interface HeaderField {
+  name: string;
+  value: Buffer;
+}
+
+/** The key and headers a record carried, as `Event.headers` hands them back. */
+export interface RecordHeaders {
+  /** The record's key. It belongs to the record and does not route it. */
+  key: Buffer | null;
+  headers: HeaderField[];
+}
+
+/**
+ * The key and headers to publish a record with. A name must not be empty or
+ * start with `felix.`, which the broker reserves.
+ */
+export interface RecordHeadersInput {
+  key?: Buffer | null;
+  headers?: HeaderField[];
+}
+
+/** One record of `publishBatchWithHeaders`. */
+export interface HeaderedRecord {
+  headers: RecordHeadersInput;
+  payload: Buffer;
 }
 
 /** The delivery `groupNack` hands back. A `GroupRecord` is one. */
@@ -49,6 +96,13 @@ export interface GroupRecord {
    * count will not fill. `0n` from a broker that predates it.
    */
   skippedBefore: bigint;
+  /** The principal that published the record. `null` unless `publishers` was set on `connect`. */
+  publisher: string | null;
+  /**
+   * When the record was appended, in microseconds since the Unix epoch. `null`
+   * unless `timestamps` was set on `connect`.
+   */
+  timestampMicros: bigint | null;
 }
 
 /** One change observed by a cache watch. */
@@ -323,6 +377,23 @@ export interface CacheConditionResult {
   version: bigint | null;
 }
 
+/** A token for whoever holds a lease. A bearer secret: keep it out of logs. */
+export interface LeaseToken {
+  /** Pass this as `token` to `Client.withIdentity`. */
+  token: string;
+  /** When the token stops working, in seconds since the Unix epoch. */
+  expiresAt: bigint;
+}
+
+/** The answer to `cachePutIfLease`. */
+export interface LeaseWrite {
+  result: CacheConditionResult;
+  /** Present when the write applied and the broker minted a token. */
+  token: LeaseToken | null;
+  /** Why an applied write came back without a token. The write stands. */
+  tokenRefused: string | null;
+}
+
 /**
  * The answer to `publishIf`, `commitIf` or their `OnShard` forms. A refusal is
  * not an error: nothing was written and no offset was consumed.
@@ -464,6 +535,10 @@ export interface ShardedGroupRecord {
   /** How many times this record has been handed out, this delivery included. */
   attempts: number;
   skippedBefore: bigint;
+  /** The principal that published the record. `null` unless `publishers` was set on `connect`. */
+  publisher: string | null;
+  /** When the record was appended, in microseconds since the Unix epoch. `null` unless `timestamps` was set on `connect`. */
+  timestampMicros: bigint | null;
 }
 
 /** What settling a sharded group record needs. A `ShardedGroupRecord` is one. */
@@ -471,6 +546,179 @@ export interface ShardedGroupDelivery {
   shard: number;
   offset: bigint;
   attempts: number;
+}
+
+/** Whether a shard question is about a stream or a cache. */
+export type ShardKind = "stream" | "cache";
+
+/** A shard's assignment: who leads it, who holds copies, and where a move is taking it. */
+export interface InspectedAssignment {
+  generation: bigint;
+  leader: string;
+  /** Every replica other than the leader. */
+  replicas: string[];
+  /** The leader has been told to stop serving so the shard can move. */
+  draining: boolean;
+  /** The broker a move in progress is handing the shard to. */
+  successor: string | null;
+}
+
+/** A promoted leader's fence: which replicas took its generation in the latest attempt. */
+export interface InspectedFence {
+  took: string[];
+  pending: string[];
+  /** Attempts in a row at this generation that left the shard closed. */
+  attempts: number;
+  /** When the next attempt starts. */
+  retryInMs: bigint | null;
+}
+
+/** The broker's lease, which a leader needs to serve writes. */
+export interface InspectedLease {
+  held: boolean;
+  remainingMs: bigint;
+}
+
+/** One replica as the leader sees it. */
+export interface InspectedReplica {
+  nodeId: string;
+  /** `follower`, or `learner` for a move's destination still copying. */
+  role: string;
+  /** The next offset the leader will ship to it. */
+  nextOffset: bigint | null;
+  /** Records it is behind the leader's tail. */
+  lag: bigint | null;
+  /** Whether it took the fence, while the leader is fencing. */
+  fence: boolean | null;
+  /** `shipping`, `stalled`, `copying`, `rebuilding`, `halted` or `fencing`. */
+  state: string;
+  /** Why replication to it stopped, when `state` is `halted`. */
+  halted: string | null;
+}
+
+/** One broker's view of one shard, from `inspectShard`. */
+export interface ShardInspection {
+  /** The broker that answered. Empty when it is not in a cluster. */
+  nodeId: string;
+  /** How many shards the stream or cache has, as this broker sees it. `0` when it knows nothing of it. */
+  shards: number;
+  /** `leader`, `follower` or `none`. */
+  role: string;
+  /** `unassigned`, `opening`, `fencing`, `active`, `draining`, `closed` or `failed`. */
+  phase: string;
+  /** Whether this broker takes writes for the shard right now. */
+  serving: boolean;
+  /** Why not, when `serving` is false. */
+  reason: string | null;
+  detail: string | null;
+  generation: bigint | null;
+  assignment: InspectedAssignment | null;
+  fence: InspectedFence | null;
+  lease: InspectedLease | null;
+  /** One past the last record in this broker's copy of the log. */
+  tail: bigint | null;
+  /** The leader's commit mark. Only a leader of a quorum shard has one. */
+  committed: bigint | null;
+  acceptedGeneration: bigint | null;
+  /** The leader's view of every other replica. Empty from a follower. */
+  replicas: InspectedReplica[];
+}
+
+/** Which subscriptions `listSubscriptions` returns. Every field set narrows the list. */
+export interface SubscriptionFilter {
+  tenantId?: string;
+  namespace?: string;
+  stream?: string;
+  shard?: number;
+  /** Only subscriptions made under this principal. */
+  principal?: string;
+  /** Only subscriptions whose queue has dropped records. */
+  dropping?: boolean;
+}
+
+/** Where a page of `listSubscriptions` ended. Pass `nextCursor` back as it is. */
+export interface SubscriptionCursor {
+  tenantId: string;
+  namespace: string;
+  stream: string;
+  shard: number;
+  subscriberId: bigint;
+}
+
+/** One subscription as the broker serving it sees it. */
+export interface InspectedSubscription {
+  tenantId: string;
+  namespace: string;
+  stream: string;
+  shard: number;
+  subscriberId: bigint;
+  subscriptionId: bigint | null;
+  /** The broker's connection id the subscription is delivered on. */
+  connection: bigint | null;
+  /** The connection's remote address. */
+  peer: string | null;
+  /** The principal the connection authenticated as. */
+  principal: string | null;
+  /** What a publish does when the queue is full: `block`, `drop_new` or `drop_old`. */
+  policy: string;
+  /** Batches waiting in the queue. */
+  depth: bigint;
+  /** Batches the queue holds at most. */
+  capacity: bigint;
+  /** Records the queue has dropped since the subscription started. */
+  dropped: bigint;
+  /** One past the last offset taken from the queue for delivery. */
+  position: bigint | null;
+  /** The shard's next offset. */
+  tail: bigint;
+  /** How long ago it subscribed, in milliseconds. */
+  ageMs: bigint;
+}
+
+/** One page of `listSubscriptions`. */
+export interface SubscriptionsPage {
+  /** The broker that answered. Empty when it is not in a cluster. */
+  nodeId: string;
+  subscriptions: InspectedSubscription[];
+  /** Pass this back for the next page. `null` on the last one. */
+  nextCursor: SubscriptionCursor | null;
+}
+
+/** A broker a client may connect to, from `topology`. */
+export interface BrokerEndpoint {
+  nodeId: string;
+  /** `host:port`, as the broker advertises it to clients. */
+  addr: string;
+}
+
+/** How a stream maps routing keys onto its shards, from `streamRouting`. */
+export interface StreamRouting {
+  /** `0` means the broker knows nothing of the stream. */
+  shards: number;
+  routing: "modulo" | "jump_hash";
+}
+
+/** Who owns one shard, as one broker's routing snapshot sees it. */
+export interface ShardOwner {
+  shard: number;
+  /** `null` when no broker can serve the shard right now (see `unavailable`), or the broker is not in a cluster. */
+  nodeId: string | null;
+  /** `host:port` the owner serves clients on, when the cluster publishes one. */
+  addr: string | null;
+  /** The ownership epoch this describes. `0n` from a broker not in a cluster. */
+  generation: bigint;
+  /** Why no broker can serve the shard, as the `reason` of a `shard_unavailable` error. */
+  unavailable: string | null;
+}
+
+/** What the broker in use advertised, from `supports`. */
+export interface Supports {
+  inspect: boolean;
+  topology: boolean;
+  ackOnCommit: boolean;
+  streamShards: boolean;
+  cacheShards: boolean;
+  shardOwners: boolean;
 }
 
 /** A key in a stream shard's state. */
@@ -492,6 +740,20 @@ export declare class SubscriptionHandle {
   readonly startOffset: bigint | null;
   /** The offset live delivery began at when it opened, or `null` for an in-memory stream. */
   readonly liveOffset: bigint | null;
+  /**
+   * The queue capacity the broker granted, in published batches, when
+   * `brokerSubQueueCapacity` asked for one. `null` means the stream's default.
+   */
+  readonly queueCapacity: number | null;
+  /** How many times the subscription followed its shard to another broker. Updated as reads return. */
+  readonly moves: bigint;
+  /** How many times it resubscribed after losing its connection. Updated as reads return. */
+  readonly reconnects: bigint;
+  /**
+   * Whether the subscription ended because its stream was deleted. Check it
+   * once `nextEvent` returns `null`; there is nothing to resubscribe to.
+   */
+  readonly streamDeleted: boolean;
   /**
    * The next record, or `null` once the subscription has ended.
    *
@@ -524,6 +786,21 @@ export declare class ShardedSubscriptionHandle {
   close(): Promise<void>;
   readonly closed: boolean;
   [Symbol.asyncDispose](): Promise<void>;
+}
+
+/**
+ * A batch the producer has taken and not yet had answered, from its `handOff*`
+ * methods. Read its outcome once, with `offset` or `done`; dropping it does not
+ * stop the batch.
+ */
+export declare class Handed {
+  /**
+   * Resolves to the log offset of the batch's first record, or `null` as
+   * `publishBatch` does. Rejects when it failed; the batch is then in doubt.
+   */
+  offset(): Promise<bigint | null>;
+  /** Resolves once the call has been answered, rejecting when it failed. */
+  done(): Promise<void>;
 }
 
 /**
@@ -571,6 +848,28 @@ export declare class Producer {
     stream: string,
     batches: Buffer[][],
   ): Promise<void>;
+  /**
+   * Like `publishBatch`, but resolves as soon as the producer has the batch,
+   * with a `Handed` to read the answer from. The batch has then taken its place
+   * in the stream's sequence, so many can be queued without waiting on each
+   * leader's answer and still go out in the order handed over.
+   */
+  handOffBatch(
+    tenantId: string,
+    namespace: string,
+    stream: string,
+    payloads: Buffer[],
+    key?: Buffer,
+  ): Promise<Handed>;
+  /** `publishBatches` handed over. Read the `Handed` with `done`. */
+  handOffBatches(
+    tenantId: string,
+    namespace: string,
+    stream: string,
+    batches: Buffer[][],
+  ): Promise<Handed>;
+  /** `abandonInDoubt` handed over. **A batch given up may land twice.** Read the `Handed` with `done`. */
+  handOffAbandon(tenantId: string, namespace: string, stream: string): Promise<Handed>;
   /**
    * Give up on the stream's batches in doubt and number the stream from 0 under
    * a fresh producer id. **A batch given up may land twice.**
@@ -712,6 +1011,74 @@ export interface ConnectOptions {
   clientKeyFile?: string;
   /** Offer the `felix/1` ALPN. */
   offerAlpn?: boolean;
+  /** Ask brokers to say who published each event: `Event.publisher` and `GroupRecord.publisher`. Default off. */
+  publishers?: boolean;
+  /** Ask brokers for each record's append time: `Event.timestampMicros` and `GroupRecord.timestampMicros`. Default off. */
+  timestamps?: boolean;
+  /** Offer brokers record headers. On by default; it costs nothing on a record without headers. */
+  recordHeaders?: boolean;
+  /**
+   * What a subscription does when its client-side queue is full: `"block"`
+   * stops reading the event stream until the application catches up,
+   * `"drop_new"` (the default) drops the arriving record, and `"drop_old"` is
+   * meant to drop the oldest but currently drops the arriving one too.
+   */
+  clientSubQueuePolicy?: "block" | "drop_new" | "drop_old";
+  /** Capacity of each subscription's client-side queues. At least 1. */
+  clientSubQueueCapacity?: number;
+  /**
+   * Published batches each subscription's queue on the broker should hold,
+   * instead of the stream's default. The broker clamps it, and
+   * `SubscriptionHandle.queueCapacity` reports what was granted.
+   */
+  brokerSubQueueCapacity?: number;
+  /** Publish connections per client. */
+  publishConnPool?: number;
+  /** Publish streams per publish connection. */
+  publishStreamsPerConn?: number;
+  /** Publishes queued per publish stream before the next one waits for room. */
+  publishQueueDepth?: number;
+  /** Bytes of publishes sent but not yet answered, across the whole client. */
+  publishInflightBytes?: number;
+  /**
+   * How publishes spread across publish streams. `"hash_stream"` (default)
+   * keeps each stream's publishes in order; `"round_robin"` does not.
+   */
+  publishSharding?: "round_robin" | "hash_stream";
+  /** Most publish streams opened per broker for one shard each. `0` puts every publish on the pool. */
+  publishShardStreams?: number;
+  /** Cache connections per client. */
+  cacheConnPool?: number;
+  /** Cache streams per cache connection. */
+  cacheStreamsPerConn?: number;
+  /** Connections that carry subscriptions and cache watches. */
+  eventConnPool?: number;
+  /** Most connections opened to one broker. */
+  clusterConnPool?: number;
+  /** Streams one connection carries before another is opened beside it. */
+  clusterStreamsPerConn?: number;
+  /** QUIC receive window per event connection, in bytes. */
+  eventConnRecvWindow?: number;
+  /** QUIC receive window per event stream, in bytes. */
+  eventStreamRecvWindow?: number;
+  /** QUIC send window per event connection, in bytes. */
+  eventSendWindow?: number;
+  /** QUIC receive window per cache connection, in bytes. */
+  cacheConnRecvWindow?: number;
+  /** QUIC receive window per cache stream, in bytes. */
+  cacheStreamRecvWindow?: number;
+  /** QUIC send window per cache connection, in bytes. */
+  cacheSendWindow?: number;
+  /** How many registrations and unclaimed event streams one event connection holds before refusing more. */
+  eventRouterMaxPending?: number;
+  /** The largest frame the client will read, in bytes. */
+  maxFrameBytes?: number;
+  /** Ask brokers to answer acknowledged publishes after the write, with the offset. Slower per publish. */
+  ackOnCommit?: boolean;
+  /** The longest a connect to one broker may take, in milliseconds. Default 10000. */
+  connectTimeout?: number;
+  /** The longest `Producer.close` and flushes wait for queued publishes, in milliseconds. Default 60000. */
+  finishTimeout?: number;
   /**
    * How many times a call tries to reach a broker before it gives up; each
    * attempt tries every known endpoint. A whole number of at least 1. Default 5.
@@ -823,6 +1190,35 @@ export declare class Client {
     key?: Buffer,
     ack?: AckMode,
     atLeastOnce?: boolean,
+  ): Promise<bigint | null>;
+
+  /**
+   * Publish one record with a key and headers. The key in `headers` belongs to
+   * the record and does not route: the record goes where `publish` sends it.
+   * Subscribers read both back on `Event.headers`. Rejects with
+   * `InvalidArgumentError` and sends nothing when a header name is empty or
+   * starts with `felix.`, or the broker did not accept record headers.
+   */
+  publishWithHeaders(
+    tenantId: string,
+    namespace: string,
+    stream: string,
+    headers: RecordHeadersInput,
+    payload: Buffer,
+    ack?: AckMode,
+  ): Promise<bigint | null>;
+
+  /**
+   * Publish `records` (at least one) as one batch to shard 0, each with its own
+   * key and headers; a record with empty `headers` stays plain. Resolves to the
+   * first record's log offset, or `null` as `publish` does.
+   */
+  publishBatchWithHeaders(
+    tenantId: string,
+    namespace: string,
+    stream: string,
+    records: HeaderedRecord[],
+    ack?: AckMode,
   ): Promise<bigint | null>;
 
   /**
@@ -971,6 +1367,22 @@ export declare class Client {
     condition: CacheCondition,
     ttlSeconds?: number,
   ): Promise<CacheConditionResult>;
+
+  /**
+   * `cachePutIf` that also asks for a lease token. When the write applies the
+   * broker may mint a token for whoever holds the lease; pass its `token` to
+   * `withIdentity` to act under it. `tokenRefused` says why an applied write
+   * came back without one. The write stands either way.
+   */
+  cachePutIfLease(
+    tenantId: string,
+    namespace: string,
+    cache: string,
+    key: string,
+    value: Buffer,
+    condition: CacheCondition,
+    ttlSeconds?: number,
+  ): Promise<LeaseWrite>;
 
   /** Remove a key only if its version is `version`. */
   cacheDeleteIf(
@@ -1468,6 +1880,61 @@ export declare class Client {
    * saturated.
    */
   connectionsPerNode(): Promise<ConnectionCount[]>;
+
+  /**
+   * Which of the cluster questions below the broker in use will answer. Asking
+   * one it did not advertise rejects without sending anything.
+   */
+  supports(): Promise<Supports>;
+
+  /**
+   * The broker in use, view of one shard: phase, generation, fence, lease, tail
+   * and, where it leads, every replica's position. `name` is the stream or
+   * cache. It is not forwarded: ask each broker for its own, by connecting to
+   * it. Needs `node.view:cluster:*`.
+   */
+  inspectShard(
+    kind: ShardKind,
+    tenantId: string,
+    namespace: string,
+    name: string,
+    shard: number,
+  ): Promise<ShardInspection>;
+
+  /**
+   * One page of the subscriptions the broker in use serves. `limit` defaults to
+   * 100 and the broker caps it at 1000; pass `nextCursor` back as `cursor` for
+   * the next page. Not forwarded. Needs `node.view:cluster:*`.
+   */
+  listSubscriptions(
+    filter?: SubscriptionFilter,
+    limit?: number,
+    cursor?: SubscriptionCursor,
+  ): Promise<SubscriptionsPage>;
+
+  /**
+   * The brokers the cluster says a client may connect to. Empty for a broker
+   * with no cluster behind it. `refreshTopology` adds them to the endpoints
+   * this client tries.
+   */
+  topology(): Promise<BrokerEndpoint[]>;
+
+  /** How many shards a stream has and how its keys map onto them. */
+  streamRouting(tenantId: string, namespace: string, stream: string): Promise<StreamRouting>;
+
+  /**
+   * Which broker owns each shard of a stream or cache, in shard order, as the
+   * broker in use sees it. A snapshot that can be stale.
+   */
+  shardOwners(
+    kind: ShardKind,
+    tenantId: string,
+    namespace: string,
+    name: string,
+  ): Promise<ShardOwner[]>;
+
+  /** How many shards a cache was placed with. `0` means the broker knows nothing of it. */
+  cacheShards(tenantId: string, namespace: string, cache: string): Promise<number>;
 
   /**
    * Release the client. Idempotent.

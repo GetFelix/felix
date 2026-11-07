@@ -16,6 +16,7 @@ use crate::args::{
 use crate::cache_watch::CacheWatchHandle;
 use crate::errors::{classify, invalid};
 use crate::group_admin::{GroupInfo, GroupPosition, delivery};
+use crate::headers::{HeaderedRecord, RecordHeadersInput};
 use crate::producer::Producer;
 use crate::sharded_cache_watch::ShardedCacheWatchHandle;
 use crate::sharded_group::ShardedGroupHandle;
@@ -24,6 +25,7 @@ use crate::stream_read::{BatchReport, ConnectionCount, KeyedRecord, StreamPage};
 use crate::subscription::SubscriptionHandle;
 use crate::tls;
 use crate::token;
+use crate::tuning::ClientTuning;
 use crate::types::{GroupDelivery, GroupRecord};
 
 /// A connected Felix client.
@@ -37,7 +39,7 @@ pub struct Client {
 
 impl Client {
     /// The cluster client, or an error if this one has been closed.
-    fn cluster(&self) -> Result<Arc<felix_client::Client>> {
+    pub(crate) fn cluster(&self) -> Result<Arc<felix_client::Client>> {
         self.inner
             .lock()
             .expect("the client lock is only ever held across a clone")
@@ -84,7 +86,7 @@ impl Client {
     /// be below it. Each wait is a random fraction of its ceiling. All apply to
     /// `withIdentity` clients too.
     #[napi(
-        ts_args_type = "addrs: string | string[], tenantId: string, token?: string | null, serverName?: string, caFile?: string, offerAlpn?: boolean, tokenProvider?: (signal: AbortSignal) => Promise<string>, reconnectAttempts?: number, reconnectDeadline?: number, reconnectBackoff?: number, reconnectMaxBackoff?: number, clientCertFile?: string, clientKeyFile?: string",
+        ts_args_type = "addrs: string | string[], tenantId: string, token?: string | null, serverName?: string, caFile?: string, offerAlpn?: boolean, tokenProvider?: (signal: AbortSignal) => Promise<string>, reconnectAttempts?: number, reconnectDeadline?: number, reconnectBackoff?: number, reconnectMaxBackoff?: number, clientCertFile?: string, clientKeyFile?: string, tuning?: ClientTuning",
         ts_return_type = "Promise<Client>"
     )]
     pub fn connect(
@@ -102,6 +104,7 @@ impl Client {
         reconnect_max_backoff: Option<f64>,
         client_cert_file: Option<String>,
         client_key_file: Option<String>,
+        tuning: Option<ClientTuning>,
     ) -> Result<JsObject> {
         let policy = reconnect_policy(
             reconnect_attempts,
@@ -124,6 +127,9 @@ impl Client {
             offer_alpn.unwrap_or(false),
         )?;
         let mut config = ClientConfig::optimized_defaults(quinn);
+        if let Some(tuning) = tuning {
+            tuning.apply(&mut config)?;
+        }
         config.auth_tenant_id = Some(tenant_id);
         match token_provider {
             Some(callback) => {
@@ -280,6 +286,67 @@ impl Client {
         }
         .map(|offset| offset.map(BigInt::from))
         .map_err(classify)
+    }
+
+    /// Publish one record with a key and headers.
+    ///
+    /// The key in `headers` belongs to the record and does not route: the
+    /// record goes where `publish` sends it. Subscribers read both back on
+    /// `Event.headers`. Rejects with `InvalidArgumentError` and sends nothing
+    /// when a header name is empty or starts with `felix.` (reserved for the
+    /// broker), or the broker did not accept record headers. Resolves to the
+    /// log offset as `publish` does.
+    #[napi]
+    pub async fn publish_with_headers(
+        &self,
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        headers: RecordHeadersInput,
+        payload: Buffer,
+        ack: Option<String>,
+    ) -> Result<Option<BigInt>> {
+        let ack = parse_ack(ack.as_deref().unwrap_or("per_message"))?;
+        self.cluster()?
+            .publish_with_headers(
+                &tenant_id,
+                &namespace,
+                &stream,
+                headers.into_client(),
+                payload.to_vec(),
+                ack,
+            )
+            .await
+            .map(|offset| offset.map(BigInt::from))
+            .map_err(classify)
+    }
+
+    /// Publish `records` (at least one) as one batch to shard 0, each with its
+    /// own key and headers; a record with an empty `headers` stays plain.
+    /// Errors and the result are those of `publishWithHeaders`, with the first
+    /// record's offset.
+    #[napi]
+    pub async fn publish_batch_with_headers(
+        &self,
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        records: Vec<HeaderedRecord>,
+        ack: Option<String>,
+    ) -> Result<Option<BigInt>> {
+        let ack = parse_ack(ack.as_deref().unwrap_or("per_message"))?;
+        if records.is_empty() {
+            return Err(invalid("a batch needs at least one record"));
+        }
+        let records = records
+            .into_iter()
+            .map(|r| (r.headers.into_client(), r.payload.to_vec()))
+            .collect();
+        self.cluster()?
+            .publish_batch_with_headers(&tenant_id, &namespace, &stream, records, ack)
+            .await
+            .map(|offset| offset.map(BigInt::from))
+            .map_err(classify)
     }
 
     /// Publish `payloads` (at least one) as one batch to the named shard,
@@ -572,6 +639,36 @@ impl Client {
             .await
             .map_err(classify)?;
         Ok(result.into())
+    }
+
+    /// `cachePutIf` that also asks for a lease token. When the write applies,
+    /// the broker may mint a token for whoever holds the lease, granting what
+    /// the caller's lease templates name for the key; pass it to
+    /// `withIdentity` to act under it. `token` is null when the write did not
+    /// apply, and `tokenRefused` says why an applied write came back without
+    /// one: the write stands either way. The token is a bearer secret.
+    #[napi]
+    pub async fn cache_put_if_lease(
+        &self,
+        tenant_id: String,
+        namespace: String,
+        cache: String,
+        key: String,
+        value: Buffer,
+        condition: crate::conditional::CacheCondition,
+        ttl_seconds: Option<f64>,
+    ) -> Result<crate::conditional::LeaseWrite> {
+        let condition = condition.into_client()?;
+        let ttl_ms = ttl_seconds.map(|s| (s.max(0.0) * 1000.0) as u64);
+        let value = Bytes::copy_from_slice(&value);
+        let written = self
+            .cluster()?
+            .cache_put_if_lease(
+                &tenant_id, &namespace, &cache, &key, value, ttl_ms, condition,
+            )
+            .await
+            .map_err(classify)?;
+        Ok(written.into())
     }
 
     /// Remove a key only if its version is `version`. A refusal resolves with
@@ -918,15 +1015,7 @@ impl Client {
             )
             .await
             .map_err(classify)?;
-        Ok(records
-            .into_iter()
-            .map(|r| GroupRecord {
-                offset: BigInt::from(r.offset),
-                payload: r.payload.to_vec().into(),
-                attempts: r.attempts,
-                skipped_before: BigInt::from(r.skipped_before),
-            })
-            .collect())
+        Ok(records.into_iter().map(GroupRecord::from).collect())
     }
 
     /// Finish a record: it will not be handed out again.

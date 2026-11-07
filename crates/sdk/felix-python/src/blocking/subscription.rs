@@ -4,18 +4,19 @@ use std::sync::Arc;
 
 use felix_client::ClusterSubscription;
 use pyo3::prelude::*;
-use pyo3::types::PyBytes;
 
 use crate::closable::Closable;
 use crate::errors::to_py_err;
 use crate::producer::timeout_of;
 use crate::runtime::block_on;
-use crate::types::Event;
+use crate::types::OwnedEvent;
+use crate::watch_progress::SubscriptionProgress;
 
 /// A live subscription. Iterate it, or call `next_event()`.
 #[pyclass(module = "felix")]
 pub struct SubscriptionHandle {
     inner: Arc<Closable<ClusterSubscription>>,
+    progress: Arc<SubscriptionProgress>,
     /// Where the subscription began, as of when it opened.
     #[pyo3(get)]
     start_offset: Option<u64>,
@@ -29,6 +30,7 @@ impl SubscriptionHandle {
         Self {
             start_offset: subscription.start_offset(),
             live_offset: subscription.live_offset(),
+            progress: Arc::new(SubscriptionProgress::of(&subscription)),
             inner: Arc::new(Closable::new(subscription)),
         }
     }
@@ -42,8 +44,9 @@ impl SubscriptionHandle {
     /// a timeout returns `None`, which is *not* the same as the stream ending
     /// — check `closed` to tell them apart.
     #[pyo3(signature = (timeout=None))]
-    fn next_event(&self, py: Python<'_>, timeout: Option<f64>) -> PyResult<Option<Event>> {
+    fn next_event(&self, py: Python<'_>, timeout: Option<f64>) -> PyResult<Option<Py<PyAny>>> {
         let inner = Arc::clone(&self.inner);
+        let progress = Arc::clone(&self.progress);
         let timeout = timeout_of(timeout)?;
         let event = block_on(py, async move {
             let Some(mut guard) = inner.lock().await else {
@@ -61,7 +64,9 @@ impl SubscriptionHandle {
                     None => Ok(subscription.next_event().await),
                 }
             };
-            let next = match inner.until_closed(read).await {
+            let outcome = inner.until_closed(read).await;
+            progress.record(subscription);
+            let next = match outcome {
                 Some(Ok(result)) => result.map_err(to_py_err)?,
                 // A timeout is a "nothing yet", not an end: the subscription
                 // stays usable and the caller may ask again. A close is the
@@ -76,14 +81,41 @@ impl SubscriptionHandle {
             Ok(next)
         })?;
 
-        Ok(event.map(|event| Event {
-            tenant_id: event.tenant_id.to_string(),
-            namespace: event.namespace.to_string(),
-            stream: event.stream.to_string(),
-            payload: PyBytes::new(py, &event.payload).unbind(),
-            offset: event.offset,
-            skipped_before: event.skipped_before,
-        }))
+        event
+            .map(|event| {
+                OwnedEvent::from(event)
+                    .into_pyobject(py)
+                    .map(|b| b.into_any().unbind())
+            })
+            .transpose()
+    }
+
+    /// How many times this subscription has followed its shard to a new
+    /// owner. Readable while a read is in flight.
+    #[getter]
+    fn moves(&self) -> u64 {
+        self.progress.moves()
+    }
+
+    /// How many times this subscription was reopened after losing its
+    /// connection.
+    #[getter]
+    fn reconnects(&self) -> u64 {
+        self.progress.reconnects()
+    }
+
+    /// True once the broker said the stream was deleted. The subscription
+    /// then ends rather than following it.
+    #[getter]
+    fn stream_deleted(&self) -> bool {
+        self.progress.stream_deleted()
+    }
+
+    /// How many published batches the broker queues for this subscription,
+    /// as granted; `None` when it did not say.
+    #[getter]
+    fn queue_capacity(&self) -> Option<u32> {
+        self.progress.queue_capacity()
     }
 
     /// Stop receiving. Idempotent.
@@ -100,7 +132,7 @@ impl SubscriptionHandle {
         slf
     }
 
-    fn __next__(&self, py: Python<'_>) -> PyResult<Option<Event>> {
+    fn __next__(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
         self.next_event(py, None)
     }
 

@@ -10,11 +10,13 @@ use crate::closable::Closable;
 use crate::errors::to_py_err;
 use crate::producer::timeout_of;
 use crate::types::OwnedEvent;
+use crate::watch_progress::SubscriptionProgress;
 
 /// A subscription consumed with `async for`.
 #[pyclass(module = "felix", name = "AsyncSubscription")]
 pub struct AsyncSubscription {
     inner: Arc<Closable<ClusterSubscription>>,
+    progress: Arc<SubscriptionProgress>,
     /// Where the subscription began, as of when it opened.
     #[pyo3(get)]
     start_offset: Option<u64>,
@@ -28,6 +30,7 @@ impl AsyncSubscription {
         Self {
             start_offset: subscription.start_offset(),
             live_offset: subscription.live_offset(),
+            progress: Arc::new(SubscriptionProgress::of(&subscription)),
             inner: Arc::new(Closable::new(subscription)),
         }
     }
@@ -47,6 +50,7 @@ impl AsyncSubscription {
         timeout: Option<f64>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
+        let progress = Arc::clone(&self.progress);
         let timeout = timeout_of(timeout)?;
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let Some(mut guard) = inner.lock().await else {
@@ -63,7 +67,9 @@ impl AsyncSubscription {
                     None => Ok(subscription.next_event().await),
                 }
             };
-            let next = match inner.until_closed(read).await {
+            let outcome = inner.until_closed(read).await;
+            progress.record(subscription);
+            let next = match outcome {
                 Some(Ok(result)) => result.map_err(to_py_err)?,
                 Some(Err(_)) | None => return Ok(None),
             };
@@ -74,6 +80,33 @@ impl AsyncSubscription {
             }
             Ok(next.map(OwnedEvent::from))
         })
+    }
+
+    /// How many times this subscription has followed its shard to a new
+    /// owner.
+    #[getter]
+    fn moves(&self) -> u64 {
+        self.progress.moves()
+    }
+
+    /// How many times this subscription was reopened after losing its
+    /// connection.
+    #[getter]
+    fn reconnects(&self) -> u64 {
+        self.progress.reconnects()
+    }
+
+    /// True once the broker said the stream was deleted.
+    #[getter]
+    fn stream_deleted(&self) -> bool {
+        self.progress.stream_deleted()
+    }
+
+    /// How many published batches the broker queues for this subscription,
+    /// as granted; `None` when it did not say.
+    #[getter]
+    fn queue_capacity(&self) -> Option<u32> {
+        self.progress.queue_capacity()
     }
 
     fn close<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
@@ -99,6 +132,7 @@ impl AsyncSubscription {
     /// the way Python expects instead of the caller testing for a sentinel.
     fn __anext__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
+        let progress = Arc::clone(&self.progress);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let Some(mut guard) = inner.lock().await else {
                 return Err(PyStopAsyncIteration::new_err("subscription closed"));
@@ -106,7 +140,9 @@ impl AsyncSubscription {
             let Some(subscription) = guard.as_mut() else {
                 return Err(PyStopAsyncIteration::new_err("subscription closed"));
             };
-            match inner.until_closed(subscription.next_event()).await {
+            let outcome = inner.until_closed(subscription.next_event()).await;
+            progress.record(subscription);
+            match outcome {
                 Some(result) => match result.map_err(to_py_err)? {
                     Some(event) => Ok(OwnedEvent::from(event)),
                     None => {

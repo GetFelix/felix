@@ -36,6 +36,7 @@ import registerProducer from "./scenarios/producer.mjs";
 import registerToken from "./scenarios/token.mjs";
 import registerTrim from "./scenarios/trim.mjs";
 import registerMtls from "./scenarios/mtls.mjs";
+import registerParity from "./scenarios/parity.mjs";
 
 // Filled in by `before`, read by the tests at run time. The tests cannot close
 // over a fixture that does not exist yet, so they close over this instead.
@@ -88,3 +89,4 @@ skipScenarios(
   "no way to trim the fixture's log from a client, so a discarded offset " +
     "cannot be produced to assert against",
 );
+describe("parity with the Rust client", () => registerParity(ctx));

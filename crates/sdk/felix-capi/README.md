@@ -178,7 +178,9 @@ To run it you need a running broker, a token for tenant `t1`, and the stream `t1
 - Consumer groups: poll, acknowledge, retry later, dead letters
 - Cache, counters and cache watches
 - Atomic commits, conditional writes and head trims
-- Idempotent producers
+- Idempotent producers, and hand-offs that queue batches in order without waiting for each answer
+- Inspecting the cluster: what a broker supports, shard owners and routing, one shard's state, and the subscriptions a broker serves
+- Subscription counters: moves, reconnects, stream deletion and the broker's granted queue size
 - Record headers, page reads by offset range, lease-token writes and per-principal identities
 - Token refresh, cluster discovery, failover and following a shard that moves
 
@@ -199,6 +201,8 @@ A publish with a null key puts every record on shard 0. A record's own key and h
 | Client certificate | `client_cert_file` and `client_key_file` in `FelixConnectOptions`: PEM files. |
 | Record headers | `disable_record_headers` in `FelixConnectOptions`: stop offering them to brokers. Off by default. |
 | Reconnect policy | `reconnect_attempts`, `reconnect_deadline_ms`, `reconnect_backoff_ms` and `reconnect_max_backoff_ms` in `FelixConnectOptions`. Times are in milliseconds. Zero is the default. |
+| Subscription queues | `client_sub_queue_policy` (`FELIX_QUEUE_*`), `client_sub_queue_capacity` and `broker_sub_queue_capacity` in `FelixConnectOptions`. Zero is the default. |
+| Transport tuning | Pool sizes, QUIC windows, `max_frame_bytes`, `publish_sharding`, `ack_on_commit`, `connect_timeout_ms` and `finish_timeout_ms` in `FelixConnectOptions`. Zero is the default. The [C client guide](https://docs.getfelix.dev/clients/c/#queue-and-transport-options) lists them all. |
 
 TLS is always on, and there is no switch to skip verification. A broker started with `FELIX_TLS_CLIENT_CA` also requires a client certificate. Give the certificate and its key as two PEM files, both or neither.
 

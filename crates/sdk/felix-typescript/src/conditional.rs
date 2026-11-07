@@ -52,6 +52,38 @@ impl From<felix_client::CacheConditionResult> for CacheConditionResult {
     }
 }
 
+/// A token for whoever holds a lease. A bearer secret: keep it out of logs.
+#[napi(object)]
+pub struct LeaseToken {
+    /// Pass this as `token` to `withIdentity`.
+    pub token: String,
+    /// When the token stops working, in seconds since the Unix epoch.
+    pub expires_at: BigInt,
+}
+
+/// The answer to `cachePutIfLease`.
+#[napi(object)]
+pub struct LeaseWrite {
+    pub result: CacheConditionResult,
+    /// Present when the write applied and the broker minted a token.
+    pub token: Either<LeaseToken, Null>,
+    /// Why an applied write came back without a token. The write stands.
+    pub token_refused: Either<String, Null>,
+}
+
+impl From<felix_client::LeaseWrite> for LeaseWrite {
+    fn from(written: felix_client::LeaseWrite) -> Self {
+        Self {
+            result: written.result.into(),
+            token: or_null(written.token.map(|t| LeaseToken {
+                token: t.token,
+                expires_at: BigInt::from(t.expires_at),
+            })),
+            token_refused: or_null(written.token_refused),
+        }
+    }
+}
+
 /// A cache value and the version a conditional write compares against.
 #[napi(object)]
 pub struct VersionedValue {

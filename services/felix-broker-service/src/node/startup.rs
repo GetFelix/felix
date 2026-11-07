@@ -57,6 +57,7 @@ pub(super) fn open_storage(
 
 /// [`open_storage`] then [`wire_broker`], for a start that has nothing to
 /// decide in between.
+#[cfg(feature = "sim")]
 pub(super) async fn open_broker(
     config: &BrokerConfig,
     durable: Option<DurableStorageConfig>,
