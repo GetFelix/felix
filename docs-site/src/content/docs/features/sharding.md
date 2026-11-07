@@ -37,11 +37,9 @@ an order id. Felix turns the key into a shard number in three steps:
 3. Send the record to the broker that leads that shard.
 
 ```mermaid
-flowchart LR
-    K["key: user-42"] --> H["hash<br/>FNV-1a + mix"]
-    H --> M["mapping<br/>jump hash, 4 shards"]
-    M --> S["shard 3"]
-    S --> L["leader of shard 3<br/>broker-2"]
+flowchart TB
+    K["key: user-42"] -- "hash, then map onto 4 shards" --> S["shard 3"]
+    S -- "send to its leader" --> L["broker-2"]
 ```
 
 The function is fixed and shared. It lives in one place in the wire protocol
@@ -61,8 +59,8 @@ Take a stream with 4 shards. These are the real answers for a few keys:
 | `user-7` | 3 | 2 |
 | `user-8` | 1 | 0 |
 
-> `the_sharding_page_examples_hold` checks every number in this table and in
-> the growth example below against the routing function.
+A test checks every number in this table, and in the growth example below,
+against Felix's routing function.
 
 The two mappings give different answers for the same key, which is why a
 stream's mapping is fixed when the stream is created. Also, a handful of keys
@@ -197,17 +195,19 @@ Here are twelve keys, `user-0` to `user-11`, going from 4 to 5 shards:
 | `user-10` | 1 → 1 | 2 → **1** |
 | `user-11` | 0 → 0 | 3 → **1** |
 
+Under jump hash, 2 of the 12 keys move, and both go to the new shard:
+
 ```mermaid
 flowchart LR
-    subgraph J["jump hash: 2 of 12 keys move, both to the new shard"]
-        direction LR
-        J2["shard 2"] -- "user-4" --> J4["shard 4 (new)"]
-        J1["shard 1"] -- "user-8" --> J4
-    end
-    subgraph M["modulo: all 12 keys move"]
-        direction LR
-        Mold["shards 0 to 3"] -- "every key" --> Mnew["shards 0 to 4,<br/>reshuffled"]
-    end
+    J2["shard 2"] -- "user-4" --> J4["shard 4 (new)"]
+    J1["shard 1"] -- "user-8" --> J4
+```
+
+Under modulo, all 12 keys move, and five of them move between old shards:
+
+```mermaid
+flowchart LR
+    Mold["4 shards"] -- "all 12 keys" --> Mnew["5 shards, reshuffled"]
 ```
 
 Over 10,000 keys the same growth moves 1,941 keys under jump hash (about one in
