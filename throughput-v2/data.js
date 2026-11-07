@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794045455092,
+  "lastUpdate": 1794049301737,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -48672,6 +48672,58 @@ window.BENCHMARK_DATA = {
             "range": "5397.98",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 819951.75\nmean: 819656.54\nstdev: 5397.98\ncv: 0.66%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "eb007c55b3b12ab597dc5ec59e103ffc8355b607",
+          "message": "fix(replication): keep copy trust and crashed-leader doubt across clean restarts (#2094)\n\nA durable copy-trust record (stamped with the storage id, beside a copy-trust-kept marker) keeps an unclean copy untrusted, a crashed leader's copy doubted, and a learner's ballot unkept across clean restarts, until a leader vouches or a newer set readmits the copy. Writes are synced before the ballot they guard, fail closed, group commit, and go through the blocking seam so the simulator stays deterministic. A lost or unreadable record marks every copy; every storage-id rotation distrusts all copies first.\n\nSpec-Unaffected: storage and failure handling of FelixShardUnified's existing trusted and kept; the model's rules are unchanged.",
+          "timestamp": "2026-11-07T10:58:05Z",
+          "tree_id": "7db52f7998a48db39d5afde71f6ba6b18e2193e0",
+          "url": "https://github.com/GetFelix/felix/commit/eb007c55b3b12ab597dc5ec59e103ffc8355b607"
+        },
+        "date": 1794049301081,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 669063.05,
+            "range": "65136.64",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 669063.05\nmean: 647271.05\nstdev: 65136.64\ncv: 10.06%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 669063.05,
+            "range": "65136.64",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 669063.05\nmean: 647271.05\nstdev: 65136.64\ncv: 10.06%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 164519.01,
+            "range": "9596.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 164519.01\nmean: 160350.25\nstdev: 9596.76\ncv: 5.98%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1645190.08,
+            "range": "95967.67",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1645190.08\nmean: 1603502.49\nstdev: 95967.67\ncv: 5.98%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
