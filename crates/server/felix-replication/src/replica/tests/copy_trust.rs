@@ -87,7 +87,12 @@ async fn an_unclean_copy_stays_untrusted_across_clean_restarts_until_vouched_thr
             .with_fleet(marks_on(trust_dir.path()))
             .with_unclean_start(Arc::new(crate::unclean::UncleanStart::new(LOCAL)));
         assert_eq!(
-            taken(&handler.fence(SENDER, fence(5)).await).attestation,
+            taken(
+                &handler
+                    .fence_from(SENDER, PeerCapabilities::UNIFIED_FENCE, fence(5))
+                    .await,
+            )
+            .attestation,
             attested(0, false)
         );
     }
@@ -98,7 +103,12 @@ async fn an_unclean_copy_stays_untrusted_across_clean_restarts_until_vouched_thr
         let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], generation))
             .with_fleet(marks_on(trust_dir.path()));
         assert_eq!(
-            taken(&handler.fence(SENDER, fence(generation)).await).attestation,
+            taken(
+                &handler
+                    .fence_from(SENDER, PeerCapabilities::UNIFIED_FENCE, fence(generation))
+                    .await,
+            )
+            .attestation,
             attested(0, false),
             "a clean restart at {generation}"
         );
@@ -132,7 +142,12 @@ async fn an_unclean_copy_stays_untrusted_across_clean_restarts_until_vouched_thr
         let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 10))
             .with_fleet(marks_on(trust_dir.path()));
         assert_eq!(
-            taken(&handler.fence(SENDER, fence(10)).await).attestation,
+            taken(
+                &handler
+                    .fence_from(SENDER, PeerCapabilities::UNIFIED_FENCE, fence(10))
+                    .await,
+            )
+            .attestation,
             attested(0, true),
             "the vouch is on disk"
         );

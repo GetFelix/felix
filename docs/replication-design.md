@@ -415,10 +415,29 @@ withdraws the offer.
 shard opens its log, persists its own generation, and then waits in a
 `fencing` phase: the shard is routed to it but not servable, so writes are
 refused retryably and nothing ships. Replication sends `Fence` to every
-replica at once and opens the shard on the first majority, the leader
-counted. Before it opens, the leader takes the log of the answer furthest
-ahead by (generation of the last record, length), when that is ahead of its
-own: it reads it with `ReplicateFetch` from where the two may disagree (the
+replica at once and opens the shard as soon as the answers, the leader's own
+copy counted, prove two things:
+
+- **Exclusion.** A majority of every set the fence must cover promised the
+  generation, so no older leader can still acknowledge and no second leader
+  opens at it. A promise counts only from a copy that kept its ballots.
+- **Coverage.** The leader holds every acknowledged record. A leader
+  continuing its own generation already does. Any other needs answers from
+  trusted copies, ones that hold everything they acknowledged, that meet every
+  majority of each set: `2 * trusted >= voters`, so one of two and two of
+  three.
+
+Each replica says in its answer whether its copy kept its ballots and whether
+it is trusted (its attestation). The rule and what earns each mark are in
+[One fence rule for every change of leader](#one-fence-rule-for-every-change-of-leader).
+An answer without an attestation, from a broker that predates the rule,
+counts for both when it passes today's copy pins, described below. A
+memory-only broker, which keeps nothing to attest, and one with
+`FELIX_UNIFIED_FENCE=0` count every answer that way.
+
+Before it opens, a leader that is not continuing takes the log of the answer
+furthest ahead by (generation of the last record, length), when that is ahead
+of its own: it reads it with `ReplicateFetch` from where the two may disagree (the
 later of its commit offset and the start of its own last generation), drops
 its own records past the first disagreement and any past the end of that log,
 and appends the rest. Its requests have a stream of their own on each peer
@@ -446,7 +465,9 @@ the newest catalog it has. A control plane that takes the request and never
 answers would otherwise hold every route behind a 5 s timeout, longer than
 a candidate waits to open (3 s), and no election would settle.
 
-**An answer counts only from the copy the failover's report named.** A
+**Without an attestation, an answer counts only from the copy the failover's
+report named.** The pins below are how a fence counts an older broker's
+answer, and every answer of a leader not counting by attestation. A
 follower that crashed under `FsyncMode::Periodic` or `None` comes back under a
 new storage identity without the tail it had not synced, and it may already
 have answered for that tail: under `majority_ack` the old leader acknowledged
@@ -651,12 +672,11 @@ sees, so its deposed leader is kept out by the lease alone either way.
 
 #### One fence rule for every change of leader
 
-This is the rule the broker is moving to. Only the replica's side is in the
-code so far: the attestation, and the answer in place of a refusal described
-below. No leader offers `UNIFIED_FENCE` or reads the attestation yet, so today
-each kind of change (failover, election, rename, set change, readmission, a continuing
-leader) has its own counting, with special cases for copies doubted after an
-unclean crash. `docs/formal/FelixShardUnified.tla` checks the rule.
+A leader that offers `UNIFIED_FENCE` counts every change of leader (failover,
+election, rename, set change, readmission, a continuing leader) by one rule, instead of
+a counting of its own for each with special cases for copies doubted after an
+unclean crash. It offers it unless `FELIX_UNIFIED_FENCE=0`, and only with a
+durable directory. `docs/formal/FelixShardUnified.tla` checks the rule.
 
 A fence has to prove two separate things before the new leader at generation G
 opens.
@@ -669,8 +689,9 @@ opens.
   only for a set introduced after the loss, once that set's leader has shipped
   to it (it was readmitted).
 - **Coverage.** The new leader holds every acknowledged record. Only logs
-  matter here. A continuing leader (it opened G-1 in the same process and its
-  ballot still says so) has it already. Any other leader needs answers from
+  matter here. A continuing leader (it served G-1 in the same process, its
+  ballot still names it at G-1 or G, and no flush failed since) has it
+  already. Any other leader needs answers from
   **trusted** copies that meet every majority of each set it must fence
   (`2 * trusted >= members`), and takes the log furthest ahead by (last
   generation, length).
@@ -734,9 +755,11 @@ broker's record included, before the new id is written. A memory-only broker has
 no file and attests no kept ballot, so it never attests trusted.
 
 The sets a fence must cover are its own and the set of every start from an
-**anchor** up to G. The anchor is a generation with evidence it opened: its
-start record reached a majority, or a trusted answer holds a record of it. A set
-in between is never dropped because nobody mentions it (`DropUnopenedLeaving`).
+**anchor** up to G. The anchor is a generation with evidence it opened. In the
+code that is the leader's own log holding a record written at its kept set's
+generation; without one, every set the log kept as left across fences that
+never opened is fenced too (`unopened_sets` in `promotion/joint.rs`). A set in
+between is never dropped because nobody mentions it (`DropUnopenedLeaving`).
 
 A replica answering a fence refuses only on ballots and sets: a newer ballot, the
 same ballot for another node, or a newer set than the fence carries. A copy that
@@ -744,6 +767,15 @@ is doubted, led before or a learner answers, and says in the answer whether it
 kept its ballots and whether it is trusted. The leader decides what the answer
 counts for. An answer from a peer that predates the rule counts as it does
 today.
+
+On the leader's side the counting is `Counted` in
+`crates/server/felix-replication/src/promotion.rs`: an attested answer is a
+promise for a set when its `kept_from` is at or below that set's generation,
+and coverage when it is trusted, whatever copy the route pins. Its own copy
+counts by the attestation it would give another leader (`OwnCopy`). A joint
+fence counts both per set. An attested answer that promises nothing still
+takes the ballot, and its log may still be the one taken, but the fence
+waits rather than report a refusal, since a later generation might count it.
 
 In the code the replica answers this way only to a caller that offered
 `UNIFIED_FENCE`, since only such a caller gets the attestation, and only for
@@ -763,9 +795,10 @@ refused. A copy given up on disk before a clean restart still refuses, as it
 does an older caller. Group and counter logs carry no
 attestation and refuse as before. Every other caller gets today's refusals.
 
-What this replaces: the short-copy refusal, the two-member acknowledgement
-check, the learner's refusal, the continuing leader's ballot window and the
-storage-id pins on a fence. A lone trusted copy with every other member doubted
+For a leader and replicas that both use the rule, it replaces the short-copy
+refusal, the learner's refusal, the continuing leader's ballot window and the
+storage-id pins on a fence. The group and counter logs carry no attestation
+and still count by the pins. A lone trusted copy with every other member doubted
 or down still waits for the operator, as it does today.
 
 #### Group state at promotion
@@ -1460,6 +1493,10 @@ control plane is back, and a shard is elected during an outage only while a
 majority of its copies kept running. With `FELIX_START_WITHOUT_CONTROLPLANE`
 on it starts from what the control plane last told it and takes part again;
 see [Rejoining without the control plane](#rejoining-without-the-control-plane).
+With the unified fence on, the default, that broker does not vote or count
+toward a promotion until it reaches the control plane, so a failover that
+needs its vote waits for the control plane. `FELIX_UNIFIED_FENCE=0` restores
+the pin-based rule, under which its vote counts.
 
 **Which shards.** The ones failover on the followers' word already covers: a
 durable `Quorum` stream with `majority_ack` and `lease_free_reads` finalized,

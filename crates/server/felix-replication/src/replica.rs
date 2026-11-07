@@ -1204,7 +1204,10 @@ impl ReplicaHandler {
         } else {
             self.fence_turn(sender).await
         };
-        let unified = caller.contains(PeerCapabilities::UNIFIED_FENCE);
+        // A broker with nothing durable to attest from answers as an older one,
+        // under the refusals that caller's counting relies on.
+        let unified = caller.contains(PeerCapabilities::UNIFIED_FENCE)
+            && self.fleet.as_ref().is_none_or(|fleet| fleet.attests());
         let answer = self.fence_in_turn(sender, unified, request).await;
         if matches!(answer, InternalMessage::FenceOk(_)) {
             let mut fenced_at = self.fenced_at.lock();
@@ -1513,9 +1516,7 @@ impl ReplicaHandler {
             commit_offset: log.commit_offset(),
             last_generation: last_generation(&log.generations(), log_end),
             kept_ballot,
-            attestation: own_kind(log_kind)
-                .is_none()
-                .then(|| self.attestation(&key, voter, given_up)),
+            attestation: attested.then(|| self.attestation(&key, voter, given_up)),
         })
     }
 
@@ -1542,31 +1543,14 @@ impl ReplicaHandler {
         voter: bool,
         given_up: bool,
     ) -> felix_wire::internal::FenceAttestation {
-        let kept = voter
-            && self
-                .fleet
-                .as_ref()
-                .is_some_and(|fleet| fleet.kept_ballots())
-            && !self.unkept(key);
-        let shard = crate::driver::watch_key(key);
-        let doubted = self
-            .copy_trust()
-            .is_some_and(|trust| trust.doubted(&crate::unclean::copy_key(&shard)));
-        let trusted = kept
-            && !given_up
-            && !doubted
-            && !(self.poisoned)()
-            && self
-                .unclean
-                .as_ref()
-                .is_none_or(|unclean| unclean.trusted(&shard))
-            && self
-                .copy_trust()
-                .is_none_or(|trust| trust.trusted(&crate::unclean::copy_key(&shard)));
-        felix_wire::internal::FenceAttestation {
-            kept_from: if kept { 0 } else { u64::MAX },
-            trusted,
-        }
+        attest_copy(
+            self.fleet.as_deref(),
+            self.unclean.as_deref(),
+            (self.poisoned)(),
+            key,
+            voter,
+            given_up,
+        )
     }
 
     fn copy_trust(&self) -> Option<&Arc<felix_storage::run_state::copy_trust::CopyTrust>> {
@@ -2970,6 +2954,35 @@ fn divergence_outcome(divergence: &Divergence) -> &'static str {
         Divergence::Gap { .. } => metrics::OUTCOME_GAP,
         Divergence::Conflict { .. } => metrics::OUTCOME_CONFLICT,
         Divergence::Corrupt { .. } => metrics::OUTCOME_CORRUPT,
+    }
+}
+
+/// What a copy of `key`'s log attests in a fence answer, for this broker's
+/// copy whether it answers as a replica or fences as a promoted leader. See
+/// [`ReplicaHandler::attestation`].
+pub(crate) fn attest_copy(
+    fleet: Option<&crate::quorum::QuorumMarks>,
+    unclean: Option<&crate::unclean::UncleanStart>,
+    poisoned: bool,
+    key: &felix_router::ShardKey,
+    voter: bool,
+    given_up: bool,
+) -> felix_wire::internal::FenceAttestation {
+    let shard = crate::driver::watch_key(key);
+    let name = crate::unclean::copy_key(&shard);
+    let trust = fleet.and_then(crate::quorum::QuorumMarks::copy_trust);
+    let kept = voter
+        && fleet.is_some_and(crate::quorum::QuorumMarks::kept_ballots)
+        && !trust.is_some_and(|trust| trust.unkept(&name).is_some());
+    let trusted = kept
+        && !given_up
+        && !trust.is_some_and(|trust| trust.doubted(&name))
+        && !poisoned
+        && unclean.is_none_or(|unclean| unclean.trusted(&shard))
+        && trust.is_none_or(|trust| trust.trusted(&name));
+    felix_wire::internal::FenceAttestation {
+        kept_from: if kept { 0 } else { u64::MAX },
+        trusted,
     }
 }
 

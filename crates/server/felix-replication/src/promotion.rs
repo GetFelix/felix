@@ -35,8 +35,8 @@ use felix_broker::{Broker, LogKind};
 use felix_router::{Route, ShardKey, ShardKind};
 use felix_storage::StorageId;
 use felix_wire::internal::{
-    ErrorCode, Fence, FenceElection, FenceOk, InternalMessage, PeerCapabilities, ReplicaLog,
-    ReplicaSetView, ReplicateFetch, ShardRef,
+    ErrorCode, Fence, FenceAttestation, FenceElection, FenceOk, InternalMessage, PeerCapabilities,
+    ReplicaLog, ReplicaSetView, ReplicateFetch, ShardRef,
 };
 use futures::StreamExt;
 
@@ -182,6 +182,7 @@ pub async fn fence_shard<R: PeerRequester>(
         lease_fallback,
         joint,
         None,
+        None,
     )
     .await
 }
@@ -190,6 +191,12 @@ pub async fn fence_shard<R: PeerRequester>(
 /// given: the fence says so, and carries the set the candidate keeps, with
 /// its own generation, rather than the route's. Standing changes no set, so
 /// the kept set is not rewritten either.
+///
+/// With `unified`, this broker offered `UNIFIED_FENCE`, and an answer that
+/// carries an attestation counts by it: a promise when the copy kept its
+/// ballots, coverage when it holds what it acknowledged ([`Counted`]). This
+/// broker's own copy counts the same way. An answer without one, from an
+/// older replica, counts as it always has.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn fence_shard_as<R: PeerRequester>(
     requester: &R,
@@ -200,6 +207,7 @@ pub(crate) async fn fence_shard_as<R: PeerRequester>(
     lease_fallback: bool,
     joint: Option<&Joint<'_>>,
     candidacy: Option<&crate::election::Candidacy>,
+    unified: Option<&crate::quorum::QuorumMarks>,
 ) -> Outcome {
     let joint_fence = joint.is_some();
     // A continuing leader holds every record acknowledged before this
@@ -391,6 +399,22 @@ pub(crate) async fn fence_shard_as<R: PeerRequester>(
             let joint = under_joint
                 .as_ref()
                 .and_then(|fenced| fenced.joint.as_ref());
+            // The counter log carries no attestation, so it counts as before.
+            let own = unified
+                .filter(|_| kind != LogKind::Counters)
+                .map(|marks| own_copy(marks, key, &log, local_node_id));
+            // Under the unified rule, continuing only while this copy's
+            // ballot is still this leader's at the generation before or this
+            // one: any other means another leader reached it in between. And
+            // not after a failed flush, which may have dropped acknowledged
+            // pages from this process. Without it the rule is unchanged.
+            let continuing = continuing
+                && (unified.is_none()
+                    || (log.accepted_leader().as_deref() == Some(local_node_id)
+                        && (log.accepted_generation() == route.generation
+                            || Some(log.accepted_generation())
+                                == route.generation.checked_sub(1))
+                        && !felix_storage::disk_log::any_log_poisoned()));
             let asked: Vec<&felix_router::NodeRef>;
             let fenced_on = match joint {
                 Some(joint) => {
@@ -413,6 +437,7 @@ pub(crate) async fn fence_shard_as<R: PeerRequester>(
                 joint,
                 candidacy.is_some(),
                 continuing,
+                own,
             )
             .await;
             caught_up_from = caught_up_from.or(fenced?);
@@ -658,26 +683,38 @@ async fn fence_log<R: PeerRequester>(
     joint: Option<&JointSets>,
     candidate: bool,
     continuing: bool,
+    own: Option<OwnCopy>,
 ) -> Result<Option<String>, Outcome> {
     // Answers until a majority, this broker included, has taken the fence.
     // Later answers are not waited for: the model opens on the first majority.
     // A majority of the replicas and this broker, which counts itself.
     let voters = replicas.len() + 1;
     let needed = voters / 2 + 1;
+    let own = own.unwrap_or(OwnCopy::UNATTESTED);
+    let set_generation = set.map_or(shard.generation, |set| set.generation);
     let mut answered: Vec<(String, std::net::SocketAddr, FenceOk)> = Vec::new();
     let took = |answered: &[(String, std::net::SocketAddr, FenceOk)]| {
         answered.iter().map(|(node, _, _)| node.clone()).collect()
     };
     // Each answer's node with the copy its handshake named, which a joint
-    // fence counts per set being left, and whether a continuing leader may
-    // count it from any copy.
-    let mut seen: Vec<(String, Option<StorageId>, bool)> = Vec::new();
-    let settled = |seen: &[(String, Option<StorageId>, bool)]| match joint {
-        None => seen.len() + 1 >= needed,
-        Some(joint) => joint.has_majorities(
-            seen.iter()
-                .map(|(node, id, kept)| (node.as_str(), *id, *kept)),
-        ),
+    // fence counts per set being left, whether a continuing leader may count
+    // it from any copy, and what it attested.
+    let mut seen: Vec<Seen> = Vec::new();
+    let settled = |seen: &[Seen]| match joint {
+        None => {
+            let promised = usize::from(own.kept)
+                + seen
+                    .iter()
+                    .filter(|(.., attested)| Counted::of(*attested).promises(set_generation))
+                    .count();
+            let covered = usize::from(own.trusted)
+                + seen
+                    .iter()
+                    .filter(|(.., attested)| Counted::of(*attested).covers())
+                    .count();
+            promised >= needed && (continuing || 2 * covered >= voters)
+        }
+        Some(joint) => joint.has_majorities(seen.iter().map(as_answered), own, continuing),
     };
     // Answers from a copy the report did not name: they took the promise,
     // which still refuses the old leader, but count for nothing here.
@@ -786,10 +823,32 @@ async fn fence_log<R: PeerRequester>(
         // ballot shows it promised this leader nothing older than the
         // generation before counts whatever its identity. Without that, a
         // restored copy could have promised this generation to another
-        // leader and lost the ballot.
+        // leader and lost the ballot. An attested answer counts by what it
+        // attests instead, whatever its copy.
         let kept =
             continuing && matches!(&answer, Ok(InternalMessage::FenceOk(ok)) if ok.kept_ballot);
         match answer {
+            Ok(InternalMessage::FenceOk(ok)) if ok.attestation.is_some() => {
+                // An answer given in place of a refusal counts only for a
+                // leader that counts by attestation; to any other it is
+                // neither a promise nor coverage.
+                let attested = if own.attested {
+                    ok.attestation
+                } else {
+                    Some(FenceAttestation {
+                        kept_from: u64::MAX,
+                        trusted: false,
+                    })
+                };
+                // Its ballot still refuses an older leader, and its log may
+                // still be the one taken, but a copy whose promises count for
+                // no set here is one a later generation might count.
+                if !Counted::of(attested).promises(set_generation) {
+                    declined += 1;
+                }
+                seen.push((node_id.clone(), identity, false, attested));
+                answered.push((node_id, addr, ok));
+            }
             Ok(InternalMessage::FenceOk(_))
                 if !kept
                     && (!reported_copy(reported_ids, &node_id, identity)
@@ -810,7 +869,7 @@ async fn fence_log<R: PeerRequester>(
                 }
             }
             Ok(InternalMessage::FenceOk(ok)) => {
-                seen.push((node_id.clone(), identity, kept));
+                seen.push((node_id.clone(), identity, kept, None));
                 answered.push((node_id, addr, ok));
             }
             Err(PeerError::Unsupported { .. }) if lease_fallback => {
@@ -858,12 +917,20 @@ async fn fence_log<R: PeerRequester>(
             ),
             Some(joint) => format!(
                 "on the {kind:?} log, {}",
-                joint.shortfall(
-                    seen.iter()
-                        .map(|(node, id, kept)| (node.as_str(), *id, *kept))
-                )
+                joint.shortfall(seen.iter().map(as_answered), own)
             ),
         };
+        if own.attested && joint.is_none() {
+            let covered = usize::from(own.trusted)
+                + seen
+                    .iter()
+                    .filter(|(.., attested)| Counted::of(*attested).covers())
+                    .count();
+            why.push_str(&format!(
+                "; {covered} of {voters} copies attest they hold what they acknowledged, \
+                 half needed"
+            ));
+        }
         if other_copies > 0 {
             why.push_str(&format!(
                 "; {other_copies} answered from another copy than the failover's report named"
@@ -919,6 +986,84 @@ async fn fence_log<R: PeerRequester>(
         .await
         .map_err(|why| Outcome::pending(why, took(&answered)))?;
     Ok(Some(node_id.clone()))
+}
+
+/// One answer a fence counts: the node, the copy its handshake named,
+/// whether a continuing leader counts it from any copy, and its attestation.
+type Seen = (String, Option<StorageId>, bool, Option<FenceAttestation>);
+
+fn as_answered(seen: &Seen) -> joint::Answered<'_> {
+    let (node, identity, kept, attested) = seen;
+    (node.as_str(), *identity, *kept, *attested)
+}
+
+/// What this broker's own copy counts for in its fence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OwnCopy {
+    /// Counted by attestation, rather than as a fence counted without one.
+    pub(crate) attested: bool,
+    /// Its promises count: its directory kept every ballot it took.
+    pub(crate) kept: bool,
+    /// It holds everything its seat acknowledged.
+    pub(crate) trusted: bool,
+}
+
+impl OwnCopy {
+    /// A leader that counts without attestations counts itself.
+    pub(crate) const UNATTESTED: Self = Self {
+        attested: false,
+        kept: true,
+        trusted: true,
+    };
+}
+
+/// What this broker attests of its copy `log` of `key`, as it would answer
+/// a fence from another leader.
+fn own_copy(
+    marks: &crate::quorum::QuorumMarks,
+    key: &ShardKey,
+    log: &felix_broker::StreamLog,
+    local_node_id: &str,
+) -> OwnCopy {
+    let voter = log.member_is_learner(local_node_id) != Some(true);
+    let attested = crate::replica::attest_copy(
+        Some(marks),
+        marks.unclean_start().map(|unclean| &**unclean),
+        felix_storage::disk_log::any_log_poisoned(),
+        key,
+        voter,
+        log.gave_up(),
+    );
+    OwnCopy {
+        attested: true,
+        kept: attested.kept_from == 0,
+        trusted: attested.trusted,
+    }
+}
+
+/// How one fence answer counts. An attested answer counts as a promise for
+/// a set when its copy's promises count from that set's generation or
+/// earlier (exclusion), and as coverage when it holds what its seat
+/// acknowledged. An answer without one, which an older replica gives, was
+/// already held to that replica's refusals and to the copy pins, and counts
+/// for both, as it always has. See "Fencing a promotion" in
+/// `docs/replication-design.md`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Counted(Option<FenceAttestation>);
+
+impl Counted {
+    pub(crate) fn of(attested: Option<FenceAttestation>) -> Self {
+        Self(attested)
+    }
+
+    pub(crate) fn promises(self, set_generation: u64) -> bool {
+        self.0
+            .is_none_or(|attested| attested.kept_from <= set_generation)
+    }
+
+    pub(crate) fn covers(self) -> bool {
+        self.0.is_none_or(|attested| attested.trusted)
+    }
 }
 
 /// A majority's answers to a stream shard's group-log fence, and this

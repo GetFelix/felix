@@ -118,6 +118,8 @@ pub(super) fn group_replicas(size: usize, capabilities: PeerCapabilities) -> Rep
                 refuses: None,
                 refuses_with: ErrorCode::Unavailable,
                 recorded: true,
+                attests: None,
+                unified: false,
                 _dir: dir,
             },
         );

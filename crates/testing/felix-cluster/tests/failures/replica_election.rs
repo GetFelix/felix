@@ -1016,12 +1016,48 @@ async fn the_control_plane_stays_down_across_a_leader_kill_under_load() {
     cluster.shutdown().await;
 }
 
+/// Wait until a leader above `before`'s generation, other than its old leader,
+/// serves a publish, and return it with its generation.
+async fn served_again(cluster: &Cluster, before: &felix_cluster::Assignment) -> (String, u64) {
+    let last = Mutex::new(None);
+    felix_cluster::wait::until_some(ELECTED_WITHIN * 3, "the shard to serve again", || {
+        let last = &last;
+        async move {
+            let now = cluster.shard_assignments().await.ok().and_then(|mut all| {
+                all.remove(&format!(
+                    "{}/{}/{STREAM}/0",
+                    cluster.tenant_id, cluster.namespace
+                ))
+            });
+            *last.lock().expect("lock") = now.clone();
+            let now = now?;
+            if now.generation <= before.generation || now.leader == before.leader {
+                return None;
+            }
+            cluster
+                .publish_via(&now.leader, STREAM, b"probe".to_vec())
+                .await
+                .ok()?;
+            Some((now.leader, now.generation))
+        }
+    })
+    .await
+    .unwrap_or_else(|err| {
+        panic!(
+            "no leader serves above generation {} after the control plane returned: \
+                 {err:#}; the control plane names {:?}",
+            before.generation,
+            last.lock().expect("lock")
+        )
+    })
+}
+
 /// **A broker restarted while the control plane is down does not vote**, with
 /// `FELIX_START_WITHOUT_CONTROLPLANE` off, the default. Three brokers, RF 3.
 /// A broker starts only once the control plane answers, so a follower
 /// restarted during the outage neither votes nor stands, and with the leader
 /// also dead only one copy is serving: no majority, no new generation until
-/// the control plane returns. With the switch on it votes: see
+/// the control plane returns. With the switch on it votes under `FELIX_UNIFIED_FENCE=0` only: see
 /// [`a_broker_restarted_while_the_control_plane_is_down_votes`].
 #[serial]
 #[tokio::test]
@@ -1066,40 +1102,7 @@ async fn a_broker_restarted_while_the_control_plane_is_down_does_not_vote() {
         .await_node_ready(&restarted)
         .await
         .expect("the restarted follower comes up once the control plane answers");
-    let last = Mutex::new(None);
-    let (leader, generation) =
-        felix_cluster::wait::until_some(ELECTED_WITHIN * 3, "the shard to serve again", || {
-            let last = &last;
-            let cluster = &cluster;
-            let before = &before;
-            async move {
-                let now = cluster.shard_assignments().await.ok().and_then(|mut all| {
-                    all.remove(&format!(
-                        "{}/{}/{STREAM}/0",
-                        cluster.tenant_id, cluster.namespace
-                    ))
-                });
-                *last.lock().expect("lock") = now.clone();
-                let now = now?;
-                if now.generation <= before.generation || now.leader == before.leader {
-                    return None;
-                }
-                cluster
-                    .publish_via(&now.leader, STREAM, b"probe".to_vec())
-                    .await
-                    .ok()?;
-                Some((now.leader, now.generation))
-            }
-        })
-        .await
-        .unwrap_or_else(|err| {
-            panic!(
-                "no leader serves above generation {} after the control plane returned: \
-                 {err:#}; the control plane names {:?}",
-                before.generation,
-                last.lock().expect("lock")
-            )
-        });
+    let (leader, generation) = served_again(&cluster, &before).await;
     assert!(generation > before.generation, "{generation}");
     acked.extend(publish_acked(&cluster, &leader, "after", 5).await);
     let missing = missing_on(&cluster, &leader, &acked).await;
@@ -1148,7 +1151,8 @@ async fn view_written(cluster: &Cluster, node: &str, generation: u64) {
 }
 
 /// **A broker restarted while the control plane is down votes**, with
-/// `FELIX_START_WITHOUT_CONTROLPLANE` on. Three brokers, RF 3. With the
+/// `FELIX_START_WITHOUT_CONTROLPLANE` on and `FELIX_UNIFIED_FENCE=0`, the
+/// pin-based rule. Three brokers, RF 3. With the
 /// control plane stopped a follower restarts, starts from its control-plane
 /// view, and then the leader is killed: the two live copies elect a leader,
 /// which needs the restarted one's vote. The restarted broker serves no
@@ -1171,6 +1175,7 @@ async fn a_broker_restarted_while_the_control_plane_is_down_votes() {
                 "FELIX_CONTROLPLANE_STARTUP_WAIT_MS".to_string(),
                 "1000".to_string(),
             ),
+            ("FELIX_UNIFIED_FENCE".to_string(), "0".to_string()),
         ],
     )
     .await;
@@ -1257,6 +1262,88 @@ async fn a_broker_restarted_while_the_control_plane_is_down_votes() {
         "{elected} lost acknowledged records: {missing:?}"
     );
     caught_up(&cluster, &[restarted], generation).await;
+    read_logged(&cluster, OPENED, &mut opened);
+    assert_one_leader_per_generation(&opened, before.generation);
+    cluster.shutdown().await;
+}
+
+/// **With the unified fence a broker restarted while the control plane is
+/// down does not vote**, even with `FELIX_START_WITHOUT_CONTROLPLANE` on. It
+/// attests nothing until the control plane answers and its restore check has
+/// run, so the two live copies cannot promote while the control plane is down.
+/// When it returns, the restarted broker registers, a leader is elected and
+/// adopted, and no acknowledged record is lost.
+#[serial]
+#[tokio::test]
+async fn a_broker_restarted_while_the_control_plane_is_down_waits_for_it_under_the_unified_fence() {
+    let mut cluster = start_with(
+        3,
+        3,
+        false,
+        vec![
+            (
+                "FELIX_START_WITHOUT_CONTROLPLANE".to_string(),
+                "true".to_string(),
+            ),
+            (
+                "FELIX_CONTROLPLANE_STARTUP_WAIT_MS".to_string(),
+                "1000".to_string(),
+            ),
+        ],
+    )
+    .await;
+    let before = assignment(&cluster).await;
+    let mut acked = publish_acked(&cluster, &before.leader, "before", 20).await;
+    let restarted = before.replicas.first().expect("a follower").clone();
+    view_written(&cluster, &restarted, before.generation).await;
+
+    cluster
+        .crash_control_plane()
+        .await
+        .expect("crash the control plane");
+    cluster.kill_node(&restarted).expect("kill a follower");
+    cluster
+        .start_node_unready_in_place(&restarted)
+        .expect("start the follower again without waiting for it");
+    felix_cluster::wait::until(
+        Duration::from_secs(30),
+        "the restarted follower to start from its view",
+        || async { node_logged(&cluster, &restarted, FROM_VIEW) },
+    )
+    .await
+    .expect("the restarted follower starts from its control-plane view");
+    cluster.kill_node(&before.leader).expect("kill the leader");
+
+    // Long enough for an election to show up if the restarted copy counted.
+    let mut opened = BTreeMap::new();
+    let deadline = tokio::time::Instant::now() + ELECTED_WITHIN * 3;
+    while tokio::time::Instant::now() < deadline {
+        read_logged(&cluster, OPENED, &mut opened);
+        assert!(
+            opened.range(before.generation + 1..).next().is_none(),
+            "a leader opened above generation {} counting the restarted {restarted} \
+             while the control plane was down: {opened:?}",
+            before.generation
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+
+    cluster
+        .recover_control_plane()
+        .await
+        .expect("recover the control plane");
+    cluster
+        .await_node_ready(&restarted)
+        .await
+        .expect("the restarted follower registers once the control plane answers");
+    let (leader, generation) = served_again(&cluster, &before).await;
+    assert!(generation > before.generation, "{generation}");
+    acked.extend(publish_acked(&cluster, &leader, "after", 5).await);
+    let missing = missing_on(&cluster, &leader, &acked).await;
+    assert!(
+        missing.is_empty(),
+        "{leader} lost acknowledged records: {missing:?}"
+    );
     read_logged(&cluster, OPENED, &mut opened);
     assert_one_leader_per_generation(&opened, before.generation);
     cluster.shutdown().await;
