@@ -3678,7 +3678,7 @@ follower is behind it:
   `RefusalReason::NotVoter`) has no position, and its offset and identity are
   left out. Unless the followers that do have one meet every majority of the
   replicas (twice their count is at least the replicas, the given-up leader
-  included), the report is **held**: nobody is named caught up and the copy is
+  included) and of the set a pending change leaves, the report is **held**: nobody is named caught up and the copy is
   not reclaimable, because the missing copy may hold a record the others
   lack. Copies are compared by (last generation, end). When the
   furthest follower is level with this broker or ahead, the followers at that

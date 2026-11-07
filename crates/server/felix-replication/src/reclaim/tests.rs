@@ -321,6 +321,40 @@ async fn followers_that_meet_every_majority_still_name_the_furthest() {
     assert_eq!(probe.report.caught_up, vec!["broker-b".to_string()]);
 }
 
+/// **A pending change's old set must be met too.** Both followers answer,
+/// and they meet every majority of the new set, but none belongs to the set
+/// being left, which could hold acknowledged records alone: the report is
+/// held. Without the pending change the furthest is named.
+#[tokio::test]
+async fn followers_must_meet_the_set_a_pending_change_leaves() {
+    let (broker, _dir) = holding(5).await;
+    let followers = Followers(HashMap::from([
+        ("broker-b", Some(8)),
+        ("broker-c", Some(6)),
+    ]));
+    let settled = probe(&followers, &broker, LOCAL, &key(), &route())
+        .await
+        .expect("every follower answered");
+    assert_eq!(settled.report.caught_up, vec!["broker-b".to_string()]);
+
+    let mut joint = route();
+    joint.pending = Some(Arc::new(felix_router::PendingChange {
+        generation: 3,
+        leaving: ["broker-a", "broker-d", "broker-e", "broker-f"]
+            .map(String::from)
+            .to_vec(),
+    }));
+    let held = probe(&followers, &broker, LOCAL, &key(), &joint)
+        .await
+        .expect("every follower answered");
+    assert!(held.report.given_up && !held.reclaimable);
+    assert!(
+        held.report.caught_up.is_empty(),
+        "{:?}",
+        held.report.caught_up
+    );
+}
+
 fn at(not_behind: bool, furthest: &[&str]) -> LogPosition {
     LogPosition {
         not_behind,

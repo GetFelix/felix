@@ -57,8 +57,13 @@ struct LogPosition {
 type Answer = (String, felix_wire::internal::FenceOk, StorageId, u64);
 
 /// Probe every follower `route` names for the shard this broker gave up at
-/// `route.generation`. `None` when the shard has no followers, or any of
-/// them did not answer with its copy and identity.
+/// `route.generation`. `None` when the shard has no followers, or while a
+/// follower that did not answer could still change the verdict.
+///
+/// A follower that answers but does not vote has no position. Unless the
+/// followers that do have one meet every majority of the route's set, and of
+/// the set a pending change leaves, the probe is a held report: nobody is
+/// named caught up and the copy is not reclaimable.
 pub async fn probe<R: PeerRequester>(
     requester: &R,
     broker: &Arc<Broker>,
@@ -79,7 +84,13 @@ pub async fn probe<R: PeerRequester>(
         ShardKind::Cache => &[LogKind::Cache, LogKind::Counters],
     };
     let shard = crate::incarnation::shard_ref(broker, key, route.generation);
-    let voters = route.replicas.len();
+    // A pending change leaves a set whose majority could hold acknowledged
+    // records too, as the acknowledgement path counts it (`held_by_both`).
+    let mut sets: Vec<Vec<&str>> =
+        vec![route.replicas.iter().map(|r| r.node_id.as_str()).collect()];
+    if let Some(pending) = &route.pending {
+        sets.push(pending.leaving.iter().map(String::as_str).collect());
+    }
     let mut holds = true;
     let mut reclaimable = true;
     let mut report: Option<ShardReport> = None;
@@ -107,6 +118,7 @@ pub async fn probe<R: PeerRequester>(
         let own = (last_generation(&log.generations(), tail), tail);
         let mut answers = Vec::with_capacity(followers.len());
         let mut silent = 0;
+        let mut refused: Vec<&str> = Vec::new();
         for follower in &followers {
             let request = InternalMessage::Fence(Fence {
                 correlation_id: 0,
@@ -132,16 +144,26 @@ pub async fn probe<R: PeerRequester>(
                     answers.push((follower.node_id.clone(), ok, storage, incarnation));
                 }
                 // It answered, but does not vote: its position counts for nothing.
-                InternalMessage::ReplicateError(err) if not_a_voter(&err) => {}
+                InternalMessage::ReplicateError(err) if not_a_voter(&err) => {
+                    refused.push(follower.node_id.as_str());
+                }
                 _ => return None,
             }
         }
         // Silence decides nothing: wait while the silent members, counted,
         // could still let a claim hold.
-        if silent > 0 && meets_every_majority(answers.len() + silent, voters) {
+        let counted: Vec<&str> = answers.iter().map(|(node, ..)| node.as_str()).collect();
+        let mut possible = counted.clone();
+        possible.extend(
+            followers
+                .iter()
+                .map(|follower| follower.node_id.as_str())
+                .filter(|node| !counted.contains(node) && !refused.contains(node)),
+        );
+        if silent > 0 && meets_every_majority(&possible, &sets) {
             return None;
         }
-        holds &= meets_every_majority(answers.len(), voters);
+        holds &= meets_every_majority(&counted, &sets);
         let furthest = answers
             .iter()
             .map(|(_, ok, _, _)| (ok.last_generation, ok.log_end))
@@ -183,10 +205,13 @@ pub async fn probe<R: PeerRequester>(
     })
 }
 
-/// Whether `counted` followers, out of `voters` replicas counting the leader
-/// that gave up, share a member with every majority of them.
-fn meets_every_majority(counted: usize, voters: usize) -> bool {
-    2 * counted >= voters
+/// Whether `trusted` followers share a member with every majority of each of
+/// `sets`, the leader that gave up counted in each set it belongs to.
+fn meets_every_majority(trusted: &[&str], sets: &[Vec<&str>]) -> bool {
+    sets.iter().all(|set| {
+        let held = set.iter().filter(|node| trusted.contains(node)).count();
+        2 * held >= set.len()
+    })
 }
 
 /// Who the probe names caught up, from each of the shard's logs, the
