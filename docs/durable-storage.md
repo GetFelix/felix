@@ -1481,13 +1481,20 @@ directory's last start.
 A start from the view goes ahead only when the witness names this directory,
 this boot and the token on disk. So:
 
-- **A process or container restart on the same machine** finds the witness
-  its last run wrote and starts from the view.
+- **A process restart on the same Linux machine, in the same boot,** finds
+  the witness its last run wrote and starts from the view. So does a
+  container restart inside a live Kubernetes pod, since the pod owns
+  `/dev/shm`.
+- **A fresh container** (`docker restart`, a Compose restart, a new pod) gets
+  a new `/dev/shm` with no witness, and the broker waits.
 - **A copy put back from before the last start** holds an older token, and the
   broker waits for the control plane.
 - **After a reboot, on a new machine or pod, or at another path,** there is no
   witness, and the broker waits. Nothing local can tell a restore apart then.
 - **Platforms without `/dev/shm`**, macOS included, never start from the view.
+- **Brokers under different users** keep separate witnesses: the file name
+  carries the user id, since `/dev/shm` is sticky and a start could not
+  remove another user's file.
 
 A copy taken during the last run and put back before the next start holds
 the current token. The control plane's check cannot see that case either,

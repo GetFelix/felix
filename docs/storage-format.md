@@ -1259,8 +1259,8 @@ each start writes, through `run-token.tmp`, synced, renamed and the directory
 synced, before any store opens. No newline.
 
 The token pairs the directory with the **run witness**, a file outside the
-directory in `/dev/shm` named `felix-run-<crc32 of the directory's absolute
-path, 8 hex digits>`:
+directory in `/dev/shm` named `felix-run-<effective uid>-<crc32 of the
+directory's absolute path, 8 hex digits>`:
 
 ```text
 felix-run

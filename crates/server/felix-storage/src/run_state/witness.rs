@@ -98,12 +98,30 @@ pub fn witnessed(root: &Path, dir: Option<&Path>, boot: Option<BootId>) -> bool 
     std::fs::read(path).is_ok_and(|found| found == expected.as_bytes())
 }
 
-/// The witness for `root` under `dir`. The name only spreads directories over
-/// files; the body names the directory in full.
+/// The witness for `root` under `dir`, for this process's user.
 fn witness_path(root: &Path, dir: &Path) -> Result<PathBuf> {
+    witness_path_for(root, dir, user())
+}
+
+/// The name carries `uid` because `/dev/shm` is sticky: a witness another
+/// user left under the same name could not be removed, and the start would
+/// fail. The hash only spreads directories over files; the body names the
+/// directory in full.
+fn witness_path_for(root: &Path, dir: &Path, uid: u32) -> Result<PathBuf> {
     let root = std::path::absolute(root).map_err(StorageError::Io)?;
     let hash = crc32fast::hash(root.as_os_str().as_encoded_bytes());
-    Ok(dir.join(format!("felix-run-{hash:08x}")))
+    Ok(dir.join(format!("felix-run-{uid}-{hash:08x}")))
+}
+
+#[cfg(unix)]
+fn user() -> u32 {
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    unsafe { libc::geteuid() }
+}
+
+#[cfg(not(unix))]
+fn user() -> u32 {
+    0
 }
 
 fn render(root: &Path, boot: BootId, token: &str) -> Result<String> {

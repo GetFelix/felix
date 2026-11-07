@@ -103,3 +103,21 @@ fn an_unreadable_token_is_not_witnessed() {
     std::fs::remove_file(dirs.root.path().join(TOKEN_FILE_NAME)).expect("remove");
     assert!(!dirs.witnessed_in(BOOT));
 }
+
+/// Another user's witness for the same directory has a name of its own, so
+/// a start never has to remove one it may not own, and never reads it.
+#[test]
+fn another_users_witness_is_left_alone() {
+    let dirs = Dirs::new();
+    let ours = witness_path(dirs.root.path(), dirs.shm.path()).expect("ours");
+    let theirs = witness_path_for(dirs.root.path(), dirs.shm.path(), user().wrapping_add(1))
+        .expect("theirs");
+    assert_ne!(ours, theirs);
+    std::fs::write(&theirs, b"another user's witness").expect("theirs");
+    assert!(dirs.run(1));
+    assert!(dirs.witnessed_in(BOOT));
+    assert_eq!(
+        std::fs::read(&theirs).expect("still there"),
+        b"another user's witness"
+    );
+}
