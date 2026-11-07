@@ -137,7 +137,8 @@ to different streams may be observed in either order.
 On a multi-shard stream, ordering is per routing key. A stream maps a key to a
 shard by `hash(key) % shards`, or, for streams created with jump-hash routing,
 by jump consistent hashing of the same hash; an unkeyed publish goes to shard
-0. See the [wire protocol](/architecture/wire-protocol/) page.
+0. [Sharding](/features/sharding/) explains keys, shard counts and the two
+mappings with worked examples.
 
 ## Conditional publishes
 
