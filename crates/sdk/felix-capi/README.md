@@ -1,439 +1,231 @@
-# felix-capi
+# libfelix
 
-A C ABI over the Felix Rust client, and the base the C# SDK binds. Like the Python and Node bindings it wraps `felix-client`, so
-reconnection, redirect-following and error classification are the Rust
-client's.
+[Felix](https://github.com/GetFelix/felix) is a broker that serves streams, work queues and a cache from one replicated log, over QUIC. This is the C client: a C ABI over the Rust client, built as a shared library, a static library and the header `felix.h`. Reconnection, redirects, retry classification and offsets behave as they do in the Rust client. The C# client binds this library, and any language with a C FFI can.
 
-It builds `libfelix` as a shared library (`.so`, `.dylib`, `.dll`) and a
-static one (`.a`), with the header in [`include/felix.h`](include/felix.h).
+It is not published to crates.io. It ships as a native library with its header.
+
+Each call returns at once and its result arrives in a callback. These are the calls, taken from the full program under [Quick start](#quick-start):
+
+```c
+felix_client_connect("127.0.0.1:5000", "t1", token, "localhost", NULL, NULL, on_connect, &w);
+felix_client_publish(client, "t1", "default", "events", payload, sizeof payload - 1,
+                     NULL, 0, FELIX_ACK_PER_MESSAGE, FELIX_DELIVERY_AT_MOST_ONCE,
+                     NULL, on_publish, &w);
+felix_subscription_next(sub, 5000 /* ms */, NULL, on_event, &w);
+```
+
+## Install
+
+Every GitHub release attaches an archive per platform, with a `.sha256` file beside it. With the GitHub CLI, for Linux x64:
+
+```bash
+gh release download -R GetFelix/felix -p 'libfelix-*-linux-x64.*'
+```
+
+The platforms are `linux-x64`, `linux-arm64`, `osx-x64`, `osx-arm64` (`.tar.gz`) and `win-x64`, `win-arm64` (`.zip`). Check the checksum, unpack, and from the unpacked directory link:
+
+```bash
+cc -I include app.c -L lib -lfelix -Wl,-rpath,"$PWD/lib"
+```
+
+The archive's `LINKING.txt` has the exact commands for your platform, including static linking and `cl /MD` on Windows. To build the library from this repository instead:
 
 ```bash
 cargo build --release -p felix-capi
-cc app.c -I crates/sdk/felix-capi/include target/release/libfelix.a <native libs>
 ```
 
-`cargo rustc -p felix-capi --crate-type staticlib -- --print native-static-libs`
-prints the system libraries a static link needs on your platform.
+## Quick start
 
-## The API
-
-Every call that talks to the broker is asynchronous: it returns at once and
-reports its result to a callback. The C# SDK completes a `Task` from that
-callback, so no thread waits on a pending publish or read.
+Connect, subscribe, publish one record and read it back. Every call that talks to the broker returns at once and reports its result to a callback, so this program wraps each one in a small `waiter` that blocks until the callback runs:
 
 ```c
-static void on_published(void *user_data, FelixStatus status, const char *message,
-                         bool has_offset, uint64_t offset) {
-    /* runs on a library thread */
+#include <pthread.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "felix.h"
+
+struct waiter {
+    pthread_mutex_t mu;
+    pthread_cond_t cv;
+    bool done;
+    FelixStatus status;
+    void *handle;      /* the new client, subscription or event */
+    char message[256]; /* copied: the callback's message dies with the callback */
+};
+
+static void finish(struct waiter *w, FelixStatus status, const char *message, void *handle) {
+    pthread_mutex_lock(&w->mu);
+    w->done = true;
+    w->status = status;
+    w->handle = handle;
+    snprintf(w->message, sizeof w->message, "%s", message ? message : "");
+    pthread_cond_signal(&w->cv);
+    pthread_mutex_unlock(&w->mu);
 }
 
-FelixClient *client = /* from felix_client_connect's callback */;
-felix_client_publish(client, "t1", "default", "events",
-                     (const uint8_t *)"hello", 5, NULL, 0, FELIX_ACK_PER_MESSAGE,
-                     FELIX_DELIVERY_AT_MOST_ONCE, NULL, on_published, my_state);
+/* Waits for the callback of a call that returned `started`. A refused call
+   never runs its callback, so its error is taken from the thread instead. */
+static FelixStatus wait_for(struct waiter *w, FelixStatus started) {
+    if (started != FELIX_STATUS_OK) {
+        snprintf(w->message, sizeof w->message, "%s", felix_last_error_message());
+        return started;
+    }
+    pthread_mutex_lock(&w->mu);
+    while (!w->done) pthread_cond_wait(&w->cv, &w->mu);
+    w->done = false;
+    FelixStatus status = w->status;
+    pthread_mutex_unlock(&w->mu);
+    return status;
+}
+
+static void on_connect(void *user_data, FelixStatus status, const char *message,
+                       FelixClient *client) {
+    finish(user_data, status, message, client);
+}
+static void on_subscribe(void *user_data, FelixStatus status, const char *message,
+                         FelixSubscription *subscription) {
+    finish(user_data, status, message, subscription);
+}
+static void on_publish(void *user_data, FelixStatus status, const char *message,
+                       bool has_offset, uint64_t offset) {
+    (void)has_offset;
+    (void)offset;
+    finish(user_data, status, message, NULL);
+}
+static void on_event(void *user_data, FelixStatus status, const char *message,
+                     FelixEvent *event) {
+    finish(user_data, status, message, event);
+}
+
+int main(void) {
+    const char *token = getenv("FELIX_TOKEN");
+    if (!token || !*token) {
+        fprintf(stderr, "set FELIX_TOKEN\n");
+        return 1;
+    }
+
+    struct waiter w = {.done = false};
+    pthread_mutex_init(&w.mu, NULL);
+    pthread_cond_init(&w.cv, NULL);
+    FelixClient *client = NULL;
+    FelixSubscription *sub = NULL;
+    FelixEvent *event = NULL;
+    const uint8_t *data = NULL;
+    size_t len = 0;
+    int exit_code = 1;
+    FelixStatus status;
+
+    status = felix_client_connect("127.0.0.1:5000", "t1", token, "localhost",
+                                  NULL /* system CAs */, NULL, on_connect, &w);
+    if (wait_for(&w, status) != FELIX_STATUS_OK) {
+        fprintf(stderr, "connect: %s\n", w.message);
+        goto cleanup;
+    }
+    client = w.handle;
+
+    /* Subscribe first, so the publish below is not missed. */
+    status = felix_client_subscribe(client, "t1", "default", "events", 0,
+                                    FELIX_START_LATEST, 0, NULL, on_subscribe, &w);
+    if (wait_for(&w, status) != FELIX_STATUS_OK) {
+        fprintf(stderr, "subscribe: %s\n", w.message);
+        goto cleanup;
+    }
+    sub = w.handle;
+
+    static const uint8_t payload[] = "hello";
+    status = felix_client_publish(client, "t1", "default", "events", payload,
+                                  sizeof payload - 1, NULL, 0, FELIX_ACK_PER_MESSAGE,
+                                  FELIX_DELIVERY_AT_MOST_ONCE, NULL, on_publish, &w);
+    if (wait_for(&w, status) != FELIX_STATUS_OK) {
+        fprintf(stderr, "publish: %s\n", w.message);
+        goto cleanup;
+    }
+
+    status = felix_subscription_next(sub, 5000 /* ms */, NULL, on_event, &w);
+    status = wait_for(&w, status);
+    if (status != FELIX_STATUS_OK) {
+        fprintf(stderr, "read: %s\n", status == FELIX_STATUS_TIMEOUT ? "timed out" : w.message);
+        goto cleanup;
+    }
+    event = w.handle;
+    if (felix_event_payload(event, &data, &len) != FELIX_STATUS_OK) {
+        fprintf(stderr, "payload: %s\n", felix_last_error_message());
+        goto cleanup;
+    }
+    printf("%.*s\n", (int)len, (const char *)data);
+    exit_code = 0;
+
+cleanup:
+    /* Every call has completed by here, so no callback still holds &w. */
+    felix_event_free(event);
+    felix_subscription_free(sub);
+    felix_client_free(client);
+    pthread_cond_destroy(&w.cv);
+    pthread_mutex_destroy(&w.mu);
+    return exit_code;
+}
 ```
 
-The calls are `felix_client_connect` (and `felix_client_connect_with`, which takes options) and `felix_client_endpoints` (the brokers a client would try), the publishes (`felix_client_publish`,
-`felix_client_publish_batch`, `felix_client_publish_on_shard` and
-`felix_client_publish_records`), the subscribes (`felix_client_subscribe` for one
-shard and `felix_client_subscribe_sharded` for all of them),
-`felix_subscription_next`, `felix_sharded_next` and
-`felix_client_offset_for_time`, the group calls (`felix_client_group_*` and
-`felix_client_stream_shards`), and the cache calls (`felix_client_cache_*`,
-`felix_client_counter_*`, `felix_client_watch_cache*` and `felix_cache_watch_*`), the commit calls (`felix_client_commit*`,
-`felix_client_publish_if*` and `felix_client_state_get*`), `felix_client_trim_before`, and the producer calls
-(`felix_client_idempotent_producer` and `felix_producer_*`). Each takes a callback, a `void *user_data`
-passed back to it untouched, and an optional `FelixCancelToken`.
+To run it you need a running broker, a token for tenant `t1`, and the stream `t1/default/events`. The [quick start](https://docs.getfelix.dev/getting-started/quickstart/) shows how to start a broker, [Auth and TLS](https://docs.getfelix.dev/clients/auth-and-tls/) covers tokens, and [`felixctl stream create`](https://docs.getfelix.dev/getting-started/felixctl/) makes the stream.
 
-The rules are the same for every function:
+## What it covers
 
-- Handles (`FelixClient`, `FelixSubscription`,
-  `FelixShardedSubscription`, `FelixCacheWatch`, `FelixProducer`, `FelixEvent`, `FelixCancelToken`) are opaque. Everything the library hands out has a
-  `*_free` function, which accepts null. A handle may be used from several
-  threads, but never freed while another thread is using it, a callback
-  included.
-- A call returns a `FelixStatus` for the call itself. `FELIX_STATUS_OK`
-  means it was accepted and its callback will run exactly once. Anything
-  else means it was refused before starting (a null pointer, bad UTF-8, an
-  out-of-range value), the callback will not run, and
-  `felix_last_error_message()` says why. That message is per thread and valid
-  until the next Felix call on that thread.
-- The callback gets the result's status and, for a failure (status 10 and
-  above), a message valid only while the callback runs. On success it may
-  own a new handle, such as the client or the event.
-- The error classes match the other SDKs: `FELIX_STATUS_CONNECTION` and
-  `FELIX_STATUS_SHARD_UNAVAILABLE` are worth retrying, `FELIX_STATUS_AUTH`
-  is not, and `FELIX_STATUS_OUTCOME_UNKNOWN` means a write may have landed.
-- Callbacks run on one of the client's two library threads, and may run
-  before the call that started them returns. Keep them short: a callback that
-  blocks stalls the client. A callback may call any Felix function, including
-  freeing the handle it was called for. It must not unwind or throw back into
-  the library.
-- Calls in flight at the same time run concurrently and may reach the broker
-  in any order, as concurrent futures do in the Rust client. To keep records
-  in order, start each publish from the previous one's callback.
-- Cancelling a token, or freeing the client or subscription a call was made
-  on, completes the call with `FELIX_STATUS_CANCELLED`, unless it already
-  finished. A cancelled connect or subscribe never hands out a handle. A
-  publish cancelled after it may have been sent completes with
-  `FELIX_STATUS_OUTCOME_UNKNOWN`. A token can be freed while calls hold it.
-- Callbacks for calls cancelled by a free may run after the free returns, so
-  `user_data` must stay valid until they do. Freeing the last handle on a
-  client's runtime waits up to a few seconds for them, except from a callback
-  or another async runtime, where a library thread finishes the teardown
-  after the free returns; do not unload the library before those callbacks
-  arrive. A process that exits with handles still live gets no callbacks for
-  their pending calls.
-- A panic inside the library becomes `FELIX_STATUS_PANIC`, from the call or
-  through the callback.
-- Each client owns a small Tokio runtime, so the caller needs no async
-  runtime of its own.
-- A subscription is read one event at a time with `felix_subscription_next`,
-  which takes a timeout in milliseconds (negative waits indefinitely) and
-  completes with an event, `FELIX_STATUS_TIMEOUT`, or `FELIX_STATUS_CLOSED`
-  once the broker ends the stream. One read may be pending; a second is
-  refused. A timed-out or cancelled read loses no event. Events reach
-  callbacks in order when each read starts from the previous one's callback
-  or after it ran.
+- Publish and subscribe, with a log offset on every event of a durable stream
+- Sharded streams: routing keys, named shards, and subscribing to every shard
+- Consumer groups: poll, acknowledge, retry later, dead letters
+- Cache, counters and cache watches
+- Atomic commits, conditional writes and head trims
+- Idempotent producers
+- Token refresh, cluster discovery, failover and following a shard that moves
 
-### Publishing
+Record headers are available in the Rust client only. A publish with a null key puts every record on shard 0.
 
-`felix_client_publish` sends one record. A non-null `key` routes it, so
-records sharing a key share a shard and stay in order; a null key sends it to
-shard 0. `FELIX_DELIVERY_AT_MOST_ONCE` reports a lost connection rather than
-risk writing the record twice; `FELIX_DELIVERY_AT_LEAST_ONCE` reconnects and
-sends it again.
+## Configuration
 
-The batch calls take the payloads end to end in one buffer with an array of
-lengths, so a managed caller pins one byte array and one length array instead
-of a pointer per record:
+`felix_client_connect` takes the settings as arguments. `felix_client_connect_with` also takes a `FelixConnectOptions`, whose `size` field is `sizeof(FelixConnectOptions)`.
 
-```c
-const uint8_t data[] = "onetwothree";
-const size_t lens[] = {3, 3, 5};
-felix_client_publish_batch(client, "t1", "default", "events", data, lens, 3,
-                           NULL, 0, FELIX_ACK_PER_BATCH, NULL, on_batch, my_state);
-```
+| Setting | Where |
+| --- | --- |
+| Broker addresses | `addrs`: one `host:port` or several separated by commas. Any reachable one is enough. |
+| Tenant | `tenant_id` |
+| Token | `token` |
+| Token provider | `token_fetch`, `token_user_data` and `token_release` in `FelixConnectOptions`. `token` is then optional. |
+| CA file | `ca_file`: a PEM file of CAs to trust. The system store when null. |
+| Server name | `server_name`: the name the broker's certificate carries. `localhost` when null. |
+| Client certificate | `client_cert_file` and `client_key_file` in `FelixConnectOptions`: PEM files. |
+| Reconnect policy | `reconnect_attempts`, `reconnect_deadline_ms`, `reconnect_backoff_ms` and `reconnect_max_backoff_ms` in `FelixConnectOptions`. Times are in milliseconds. Zero is the default. |
 
-`felix_client_publish_batch` sends the batch to one shard, by key or to
-shard 0, and `felix_client_publish_on_shard` to a shard the caller names.
-Either is one frame the broker appends contiguously and accepts or refuses
-whole. `felix_client_publish_records` takes a key per record (laid out the
-same way), splits the records by shard and sends each shard's share to its
-owner; some shards can succeed while others fail. It can resend with
-`FELIX_DELIVERY_AT_LEAST_ONCE`; the two single-shard batch calls never
-resend a batch that may have been written.
+TLS is always on, and there is no switch to skip verification. A broker started with `FELIX_TLS_CLIENT_CA` also requires a client certificate. Give the certificate and its key as two PEM files, both or neither.
 
-A batch callback gets a `FelixRecordResult` per record, in the order passed:
-its status, its log offset when the broker reported one, and the failure's
-message. The callback's own status is `FELIX_STATUS_OK` only when every
-record was accepted. The results are null when no record has an outcome of
-its own: the batch was empty, or the call was cancelled or panicked.
+A token lasts 15 minutes by default. A process that runs longer sets `token_fetch` so the client can get a new one. [Auth and TLS](https://docs.getfelix.dev/clients/auth-and-tls/) lists the same options for every client.
 
-For a C# binding: `bool` in a callback or in `FelixRecordResult` is one
-byte, so declare it `byte` in an `[UnmanagedCallersOnly]` signature or a
-`[StructLayout(LayoutKind.Sequential)]` struct; `size_t` is `nuint`. A
-`fixed` empty array is a null pointer, which `felix_client_publish` reads as
-no key, so pass the empty key from a non-empty buffer. Catch every exception inside the
-callback, since one that escapes ends the process.
+## Errors
 
-### Subscribing
+A call returns a `FelixStatus` for the call itself. `FELIX_STATUS_OK` means the callback will run exactly once. Anything else means the call was refused before it started, the callback will not run, and `felix_last_error_message()` says why. The callback then gets the result's status.
 
-`felix_client_subscribe` reads one shard, named by `shard`; a shard past the
-stream's width is refused by the broker. The subscription follows the shard
-to its owner and resubscribes after the last event when it falls behind, so
-no lag item reaches C. `felix_subscription_start_offset` returns where it
-began, for counting a drop before the first event as
-`offset - start_offset - skipped_before`. Once a read reports
-`FELIX_STATUS_CLOSED`, `felix_subscription_close_reason` says whether the
-broker ended the stream (`FELIX_CLOSE_ENDED`) or it was deleted
-(`FELIX_CLOSE_STREAM_DELETED`); a live one is `FELIX_CLOSE_OPEN`.
+- `FELIX_STATUS_CONNECTION` and `FELIX_STATUS_SHARD_UNAVAILABLE`: nothing was applied. Send it again. `FELIX_STATUS_OVERLOADED` is the same after a pause.
+- `FELIX_STATUS_AUTH`: the token was refused. Retrying will not help.
+- `FELIX_STATUS_OUTCOME_UNKNOWN`: a write may have landed. Reconcile before sending it again.
 
-`felix_client_subscribe_sharded` opens every shard and merges them, failing
-if any cannot be opened. `felix_sharded_next` completes with an item: a
-record (`FELIX_SHARD_RECORD`, with an event to free) or a notice about one
-shard (`FELIX_SHARD_LOST` with the error text, `FELIX_SHARD_RECOVERED`,
-`FELIX_SHARD_MOVED`, `FELIX_SHARD_STREAM_DELETED`). Order holds within a shard
-only. A caller that ignores `FELIX_SHARD_LOST` reads an incomplete stream
-without knowing it. `felix_sharded_positions` writes the last offset handed
-out per shard, never ahead of what the caller has been handed, and may be called while a
-read is pending; pass the result to `felix_client_resubscribe_sharded` to
-resume, where listed shards continue after their offset and the rest start at
-`start`.
+The client already retries what is safe to retry. [Status codes](https://docs.getfelix.dev/clients/c/#status-codes) lists them all, and [Errors across clients](https://docs.getfelix.dev/clients/errors/) maps them to the other clients' types.
 
-`felix_client_offset_for_time` finds the first offset on a shard at or after a
-time in microseconds, to subscribe from with `FELIX_START_OFFSET`. No offset
-means nothing is that recent: subscribe at `FELIX_START_LATEST`.
+## Supported platforms
 
-For a C# binding, the item callback's `FelixEvent *` is null unless the kind is
-`FELIX_SHARD_RECORD`, and its message is read only for `FELIX_SHARD_LOST`.
+Linux, macOS and Windows, each on x64 and arm64. The Linux library is built for glibc. Callbacks run on a library thread, so they must be short and must not unwind into the library.
 
-### Consumer groups
+## Documentation
 
-Every group call names one shard and goes to the broker that leads it,
-following a move. `felix_client_stream_shards` gives the shard count, so a
-caller runs one group per shard, or a `FelixShardedGroup` covers them all.
+- [C client guide](https://docs.getfelix.dev/clients/c/)
+- [Choosing a client](https://docs.getfelix.dev/clients/overview/)
+- [Delivery semantics](https://docs.getfelix.dev/architecture/semantics/)
 
-- `felix_client_group_create` and `felix_client_group_seek` take a
-  `FELIX_START_*` position and report where the group resumes. Create leaves
-  an existing group alone (`moved` false).
-- `felix_client_group_poll` returns up to `max_records` as `FelixGroupRecord`
-  values (offset, attempts, skipped-before, payload), valid only during the
-  callback. An empty poll is OK with a count of zero. `consumer` names the
-  member, `reclaim` takes back what that member held before a restart, and
-  `visibility_ms` of zero is the broker's timeout. A poll cancelled while it
-  waits completes with `FELIX_STATUS_CANCELLED`; records it claimed come back
-  after the visibility timeout.
-- Records are not handles. `felix_client_group_ack`, `_nack`, `_extend`,
-  `_dead_letter`, `_discard` and `_redrive` take the `offset`, and nack and
-  extend also the `attempts` the poll reported, which the broker checks: a
-  claim that lapsed or moved on is refused. Settles and creates are writes, so
-  a cancel after one may have been sent completes with
-  `FELIX_STATUS_OUTCOME_UNKNOWN`; reads (`_dead_letters`, `_describe`,
-  `felix_client_stream_shards`) report `FELIX_STATUS_CANCELLED`.
-- `felix_client_group_describe` fills a `FelixGroupInfo`, and
-  `felix_client_group_delete` says whether the group existed.
-- `felix_client_group_sharded` opens a `FelixShardedGroup` over every shard of
-  a stream (`felix_sharded_group_shards`, `felix_sharded_group_free`).
-  `felix_sharded_group_poll` visits the shards in turn and returns the first
-  non-empty batch as `FelixShardedGroupRecord` values: a `shard` and a borrowed
-  `FelixGroupRecord`. Order holds within a shard only, and a shard that cannot
-  be polled fails the poll. Settle a record with the per-shard calls above,
-  passing its `shard`. The poll is a read: cancelled, or with the group freed,
-  it completes with `FELIX_STATUS_CANCELLED`, and what it claimed comes back
-  after the visibility timeout.
-- `felix_client_group_create_stream`, `_seek_stream`, `_describe_stream` and
-  `_delete_stream` run the admin call on every shard, in shard order, and report
-  one `FelixGroupPosition` or `FelixGroupInfo` per shard. It is one request per
-  shard, so a failure partway leaves the earlier shards changed; each call is
-  safe to repeat. An offset start is refused for a stream with more than one
-  shard. The first two and the delete are writes, the describe a read.
+## Building and testing
 
-### Publisher and timestamp
+`include/felix.h` is generated by cbindgen and checked in. After changing an exported function, run `task capi:header` and commit the result. `task capi:test` compiles `tests/c/pubsub.c` against the header and runs it against the shared and static libraries; `task capi:test -- fixture` also runs the broker scenarios against `felix-cluster client-fixture`.
 
-`felix_client_connect_with` takes a `FelixConnectOptions` (`size` set to
-`sizeof`, then `publishers` and `timestamps`); a field is read only when `size`
-covers it, so a caller built against an older header keeps working. With the
-flags set, `felix_event_publisher` and `felix_event_timestamp` read an event's
-principal and append time, and a `FelixGroupRecord` carries `publisher`,
-`publisher_len`, `has_timestamp` and `timestamp_micros`. A broker that does not
-negotiate them leaves them absent, never an error.
+## License
 
-A broker without claim control refuses a delayed nack, an extend and a
-visibility override with the same error the Rust client raises. The status is
-the broker's error class; a `stale_claim` refusal is `FELIX_STATUS_ERROR` with
-the reason in the message.
-
-Creating, seeking and deleting a group, and discarding or redriving a dead
-letter, need the `group.manage` permission; polling, settling, extending,
-listing dead letters and describing need only consumer access. The C test
-uses a second client with the fixture's group operator token for the former.
-
-For a C# binding, copy the poll's records inside the callback and keep
-`(offset, attempts)` as a plain struct to settle with.
-
-### Refreshing a token
-
-`FelixConnectOptions` also takes `token_fetch`, `token_user_data` and
-`token_release`. The library calls `token_fetch(user_data, reply)` on one of its
-threads when a stream needs a token, and the app completes `reply` once, from
-any thread, with `felix_token_reply_ok` or `felix_token_reply_err`. The Rust
-client's `RefreshingToken` does the timing: refresh at two thirds of a token's
-life, keep the old token if a fetch fails or a caller has waited 30 s, retry a refused
-token once. The `token` argument to connect may be `NULL` (or empty) when a
-fetch is set. Answer every reply, even late and even after the client is freed: `token_release` waits for the last one, and an app that never answers leaks its `user_data`. It runs on whichever thread gets there last, inside `felix_client_free` or inside the answering reply call, so don't hold a lock it takes while answering.
-
-The first reply call that is not refused for a bad argument consumes the reply,
-including an answer that arrives after the 30 s timeout (it returns
-`FELIX_STATUS_OK` and the token is used; the library does not call the fetch
-again while a reply is outstanding). Using the reply again is
-undefined behaviour. `token_release`: if `felix_client_connect_with` returns
-anything but `FELIX_STATUS_OK` it never runs and the caller keeps
-`token_user_data`; if it returns `FELIX_STATUS_OK` it runs exactly once later,
-after the client is freed and the last reply is answered, including when the
-connect then fails through `on_connect`. See `docs-site/src/content/docs/clients/c.md`.
-
-### Caches, counters and watches
-
-Keys and filters are UTF-8 C strings; values are a pointer and a length, copied
-before the call returns (null with length zero is the empty value). Values
-handed to a callback are valid only while it runs. Any broker serves a cache
-request, forwarding it to the key's owner, so there is no shard to name.
-
-- `felix_client_cache_put` takes a `ttl_ms` (zero is no expiry).
-  `felix_client_cache_get` and `_delete` report `found` and the value (for a
-  delete, the one removed); `felix_client_cache_get_versioned` adds the entry's
-  version.
-- `felix_client_cache_put_if` takes `FELIX_IF_ABSENT`, or `FELIX_IF_VERSION`
-  with a version from a versioned get; `felix_client_cache_delete_if` takes a
-  version. A condition that does not hold is `FELIX_STATUS_OK` with `applied`
-  false, not an error.
-- `felix_client_counter_add` returns the new value; `felix_client_counter_get`
-  reports `has_value` false for a counter that does not exist. An add that is
-  cancelled after it may have been sent is `FELIX_STATUS_OUTCOME_UNKNOWN`:
-  read the counter before repeating it.
-- Puts, deletes and adds are writes (`FELIX_STATUS_OUTCOME_UNKNOWN` on a late
-  cancel); gets report `FELIX_STATUS_CANCELLED`.
-
-A watch is one handle, `FelixCacheWatch`, read with `felix_cache_watch_next`
-like a subscription: one read pending at a time, a timeout that leaves it
-usable, a cancelled read that loses nothing, and a free that cancels a pending
-read. `felix_client_watch_cache` watches a key or prefix on one shard (a key is
-routed to its own shard, a prefix reads one, so use it on a single-shard cache).
-`felix_client_watch_cache_sharded` watches a prefix on every shard and fails
-rather than cover fewer shards than the cache has. Both take `retained` to
-deliver the stored entries first; it cannot be combined with an offset to
-resume from.
-
-A `FelixWatchItem` is borrowed for the callback and its `kind` says what it is:
-`FELIX_WATCH_CHANGE` (a deleted key has `has_value` false; `expires_at_millis`
-is zero for never), `FELIX_WATCH_LAGGED` (the broker ended the watch;
-`resume_from` is where a new one continues; a single watch's next read is
-`FELIX_STATUS_CLOSED`, while a sharded watch loses only that shard), `FELIX_WATCH_SHARD_MOVED` (followed automatically),
-`FELIX_WATCH_STATE_COMPLETE` (every shard's stored state delivered, sharded
-retained only) and `FELIX_WATCH_SHARD_CLOSED`. Keys are not NUL-terminated;
-use `key_len`. `felix_cache_watch_resume_offsets` writes each shard's offset for
-a sharded watch, never ahead of what reads have handed out, and
-`felix_cache_watch_retained_count` reports how many entries a retained watch
-started from.
-
-For a C# binding, copy the key and value inside the item callback, and treat an
-unknown `kind` as skip-and-read-again so a newer library does not break an older
-binding. After `FELIX_WATCH_LAGGED` on a sharded watch the other shards keep
-delivering; to get the lagged shard back, reopen with the offsets from
-`felix_cache_watch_resume_offsets`, which already account for the lag.
-
-### Atomic commits
-
-A commit is an array of `FelixCommitOp` (`FELIX_COMMIT_PUBLISH`,
-`FELIX_COMMIT_ENQUEUE`, `FELIX_COMMIT_PUT`, `FELIX_COMMIT_DELETE`) written as one
-record on the shard that owns an entity: every reader sees the event at the
-commit's offset and the state it wrote at the same version. It must hold exactly
-one event and every operation must name that event's stream. Anything else is
-`FELIX_STATUS_INVALID_ARGUMENT` at the call, with the callback never run. An
-operation's `key` is read only for a put or delete, and its `data` only for a
-publish, enqueue or put. Everything is copied before the call returns.
-
-- `felix_client_commit` routes by `entity_key`; `felix_client_commit_on_shard`
-  names the shard. The callback gets the commit's `offset`.
-- `felix_client_commit_if`, `_commit_if_on_shard`, `felix_client_publish_if` and
-  `_publish_if_on_shard` write only if the shard's next offset is
-  `expected_offset`. A refusal is an answer: `FELIX_STATUS_OK`, `written` false,
-  and the shard's tail in `offset`. A conditional publish takes the payload
-  arrays of `felix_client_publish_batch` and at least one record.
-- `felix_client_state_get` and `_state_get_on_shard` fill a borrowed
-  `FelixStateValue`: `has_value` is false for a key never written or deleted,
-  `version` is the offset of the commit that wrote it, and `as_of` the last
-  commit the answer reflects. `felix_client_state_get` takes the `entity_key`
-  the commits were routed by.
-- Commits are writes: `FELIX_STATUS_OUTCOME_UNKNOWN` on a late cancel, and not
-  sent again. `FELIX_STATUS_UNSUPPORTED` means the broker does not advertise
-  commits; nothing was sent.
-- `felix_client_trim_before` hides a durable shard's records below `before`, only if
-  the shard's next offset is `expected_offset`. It fills a borrowed
-  `FelixTrimOutcome`; a stale tail is an answer (`trimmed` false, the shard's
-  `tail`). `FELIX_STATUS_UNSUPPORTED` means the broker does not advertise head
-  trims and nothing was sent; `FELIX_STATUS_OUTCOME_UNKNOWN` means a timed-out or
-  late-cancelled trim may have landed.
-
-For a C# binding, build the `FelixCommitOp` array in pinned memory for the call
-only, since the library copies it, and copy the state's value inside the
-callback.
-
-### Idempotent producers
-
-`felix_client_idempotent_producer` asks the broker for a producer id and hands
-back a `FelixProducer`. Its batches are numbered per shard and the shard's leader
-answers a number it already holds without appending again, so a batch that got
-no answer can be sent again and cannot land twice, across a reconnection or a
-leader change. Calls on one producer are handed to it in the order the C
-calls returned, so they take sequences in that order, and they do not wait for
-each other's answers.
-
-- `felix_producer_publish` sends a batch of one or more records as one
-  sequence, to shard 0 or, with a `key`, to the key's shard. It takes the
-  payload arrays of `felix_client_publish_batch` and reports the batch's first
-  offset. `felix_producer_publish_batches` takes several batches in one call,
-  split by `batch_sizes`, each at least one record and summing to the record
-  count, and reports only success.
-- A failure other than a broker refusal leaves the batch in doubt: the
-  sequence has not advanced and the batch may have landed. Call again with the
-  same payloads and key to settle it; a different batch is refused without
-  being sent until then. A cancel after the batch was handed over reports
-  `FELIX_STATUS_OUTCOME_UNKNOWN` and the batch is still sent, so settle it the
-  same way rather than treating it as lost.
-- A refusal (for example, the shard forgot the producer) ends the producer on
-  that stream, and its message says why. `felix_producer_abandon_in_doubt`
-  numbers the stream afresh under a new id, and a batch given up that way may
-  land twice.
-- `felix_producer_id` and `felix_producer_id_for` read the id a producer, or one
-  stream of it, sends under.
-- `felix_producer_close` waits for what was handed over, then stops the
-  producer; a non-negative `timeout_ms` bounds the wait. After it, async calls
-  on the handle complete with `FELIX_STATUS_CLOSED` and the id calls return it.
-  `felix_producer_free` drops what is left without waiting; use close to drain.
-
-For a C# binding, keep one producer per logical writer and start its calls from
-one thread or under a lock: the order is the order the C calls return, so
-calls racing on several threads have no order of their own. Retry a failed
-publish with the same buffers rather than building a new batch.
-
-### Why callbacks, and why pull
-
-A pollable completion handle would still need a notification to complete a
-`Task` without a parked thread, so it is a callback with more steps.
-Temporal's sdk-core C bridge does the same under its .NET SDK: each async
-call takes a callback, `user_data` and a native cancellation token, and the
-callback completes a `TaskCompletionSource`.
-A C caller that wants a poll loop can signal an eventfd or pipe from the
-callback.
-
-Subscriptions are pulled, not pushed. A pushed event has to be buffered
-somewhere when the caller is slow; a pull gives the broker-side queue and
-its overflow policy the only buffer, the same as the Rust client. Re-arming
-the next read from inside the callback is the expected pattern.
-
-There are no blocking variants. Blocking on a callback is a few lines over a
-mutex and condition variable, as [`tests/c/pubsub.c`](tests/c/pubsub.c)
-shows, and one surface keeps every later operation to one function.
-
-This binds connect, keyed, batched and named-shard publishes, idempotent
-producers, subscribing to one shard or to all of them, groups on a shard,
-caches, counters and cache watches, and atomic commits with conditional
-publishes, the sharded group, the group `*_stream` admin calls, and the event
-publisher and timestamp fields.
-
-## The header
-
-`include/felix.h` is generated by cbindgen and checked in. After changing an
-exported function, run `task capi:header` and commit the result; the `header`
-test fails while the two differ.
-
-## Tests
-
-`task capi:test` compiles [`tests/c/pubsub.c`](tests/c/pubsub.c) against the
-header, links it against both the shared and the static library, and runs the
-checks that need no broker. `task capi:test -- fixture` also runs the publish,
-batch, subscribe, group, cache and commit scenarios against `felix-cluster client-fixture`, which CI does
-on every pull request.
-
-The fixture run is also the C conformance harness. `pubsub.c` tags each
-catalogue scenario in `felix-conformance` with `SCENARIO_BEGIN` and
-`SCENARIO_END` (a scenario passes when no check inside it failed) and records
-`SKIP` with a reason for the ones it does not run yet. `run.sh` merges the
-shared and static builds, the worst outcome winning, and writes the results
-document to `$FELIX_CONFORMANCE_RESULTS` when that is set:
-
-```bash
-FELIX_CONFORMANCE_RESULTS=c-conformance.json crates/sdk/felix-capi/tests/c/run.sh fixture
-cargo run -p felix-conformance -- verify c-conformance.json
-```
-
-The connection-fault scenarios drive the fixture's `/link` interposer. The ones
-that kill a broker (`reconnect.survives_broker_loss` and
-`sharded.a_lost_shard_is_surfaced`) get a fixture of their own per build, which
-`run.sh` starts and stops, and kill one broker through
-[`tests/c/kill-broker.sh`](tests/c/kill-broker.sh) (it needs `lsof` and kills
-only the process listening on the broker's port). The shard-move and
-lost-quorum scenarios use the fixture's `/fence`, `/partition` and `/heal`
-endpoints, so they need `curl`.
+Apache-2.0.
