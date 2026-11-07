@@ -676,7 +676,7 @@ fn decide_replaced(existing: ShardAssignment, reports: &Replaced) -> Decision {
 /// (seed 2 of the simulator, events/1). Its copy counts toward neither set
 /// until it is re-admitted, and the leader ships only to the new set, so the
 /// old set's majority of three cannot form. The change is dropped at once,
-/// not after the timeout, and the member is re-admitted on the next pass.
+/// not after the timeout; the write then holds the member as a learner.
 #[test]
 fn a_pending_set_is_dropped_when_a_member_comes_back_on_new_storage() {
     assert_eq!(
@@ -697,19 +697,4 @@ fn a_pending_set_is_dropped_when_a_member_comes_back_on_new_storage() {
     assert_eq!(dropped.pending_set, None);
     assert_eq!(dropped.leader, "broker-b");
     assert_eq!(dropped.replicas, cut_over_pending().replicas);
-
-    let after = ShardAssignment {
-        generation: 5,
-        ..dropped
-    };
-    let readmit = decide_replaced(
-        after,
-        &Replaced {
-            replaced: Some("broker-c"),
-        },
-    );
-    assert!(
-        matches!(&readmit, Decision::Move(MoveStep::Readmit { node }, _) if node == "broker-c"),
-        "{readmit:?}"
-    );
 }

@@ -105,8 +105,8 @@ pub enum MoveStep {
     PendingSetTimedOut,
     /// The leader reported `node`, a member of the set being left, caught up
     /// under a new storage identity before the joint start: the change is
-    /// dropped and the control plane's own set stays, at a new generation, so
-    /// `node` can be re-admitted.
+    /// dropped and the control plane's own set stays, at a new generation,
+    /// which names `node` by its new storage and holds it as a learner.
     PendingSetMemberReplaced { node: String },
     /// The leader reported that it refused to open its generation, having
     /// promised it to a node whose election the control plane recorded

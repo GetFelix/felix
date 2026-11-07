@@ -1578,14 +1578,21 @@ leader never reporting, would otherwise hold the shard's set for good), the
 shard no longer elects, as when its consistency changes to `Leader`
 (`pending_set_dropped`), an operator cancels it (`pending_set_cancelled`), or
 the leader reports a member of the set back on new storage and caught up
-(`pending_set_member_replaced`). That last one comes from a broker that
-restarted after an unclean stop: its copy counts toward neither set until it
-is re-admitted, and re-admission waits for the change to end. After a move
-the new set is the old one less a copy, so a majority of the old set needs
-every member of the new one. Without the drop, the shard would take no
-acknowledged writes until the timeout. The member is re-admitted on the next
-pass ([Re-admitting a replaced copy](#re-admitting-a-replaced-copy)).
-The timeout clock is the instance's own and starts again when the lease
+(`pending_set_member_replaced`).
+
+That last ending exists because of brokers that restart after an unclean
+stop. Such a broker comes back on new storage, and its copy counts toward
+neither set until it is re-admitted. No re-admission is written while a change
+is pending. After a move the new set is the old one less a copy, so a majority
+of the old set needs every member of the new one. Take a move from a to b with
+c the other follower: the old set {a, b, c, d} needs 3 of 4, and the leader b
+ships only to the new set {b, a, c}. If c comes back on new storage, only b and
+a count, and the shard takes no acknowledged writes until the timeout. The
+drop's write names c by its new storage and holds it as a learner, as a
+re-admission does ([Re-admitting a replaced copy](#re-admitting-a-replaced-copy)),
+and it counts against the same per-pass limit.
+
+The pending-set timeout clock is the instance's own and starts again when the lease
 changes hands. Follower replacement, top-up and trim wait only until then.
 A cut-over that keeps the set,
 and every cut-over without `replica_election`, writes what it always has,
