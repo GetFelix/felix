@@ -56,8 +56,10 @@ pub const FELIX_SUPPORTS_SHARD_OWNERS: u32 = 1 << 5;
 
 /// Called once when `felix_client_inspect_shard`, `felix_client_topology` or
 /// `felix_client_shard_owners` finishes. On `FELIX_STATUS_OK`, `json` is a
-/// NUL-terminated JSON value with the wire's field names, valid only while
-/// the callback runs; null on failure.
+/// NUL-terminated JSON value with the wire's field names; null on failure.
+/// The string is borrowed: it is valid only while the callback runs, so copy
+/// what you keep. A newer library may add fields, so a parser must ignore the
+/// ones it does not know.
 pub type FelixJsonCallback = Option<
     unsafe extern "C" fn(
         user_data: *mut c_void,
@@ -72,7 +74,8 @@ pub type FelixJsonCallback = Option<
 /// `{"node_id", "subscriptions", "next_cursor"}`, and `next_cursor` is the
 /// cursor of the next page as a JSON string to pass back to
 /// `felix_client_list_subscriptions`, or null on the last page. Both strings
-/// are valid only while the callback runs; both are null on failure.
+/// are valid only while the callback runs; both are null on failure. As for
+/// `FelixJsonCallback`, a parser must ignore fields it does not know.
 pub type FelixSubscriptionsCallback = Option<
     unsafe extern "C" fn(
         user_data: *mut c_void,

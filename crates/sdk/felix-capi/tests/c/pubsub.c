@@ -6244,6 +6244,8 @@ static void parity_questions(const struct fixture *f, FelixClient *client) {
 }
 
 static void parity_inspector(const struct fixture *f, FelixClient *client) {
+  /* The client fixture always hands out an inspector token. */
+  CHECK(f->inspector_token[0], "the fixture file has no inspector_token");
   if (!f->inspector_token[0]) {
     return;
   }
@@ -6273,7 +6275,14 @@ static void parity_inspector(const struct fixture *f, FelixClient *client) {
   /* Three subscribers on the owner, paged two at a time. */
   FelixClient *holder = NULL;
   FelixSubscription *held[3] = {NULL, NULL, NULL};
-  if (connect_sync(owner, f->tenant, f->token, f->ca_file, &holder) == FELIX_STATUS_OK) {
+  FelixStatus connected = connect_sync(owner, f->tenant, f->token, f->ca_file, &holder);
+  CHECK(connected == FELIX_STATUS_OK, "the subscriber could not connect to the owner: %d",
+        (int)connected);
+  if (connected != FELIX_STATUS_OK) {
+    felix_client_free(ops);
+    return;
+  }
+  {
     for (int i = 0; i < 3; i++) {
       CHECK(subscribe(holder, f, FELIX_START_LATEST, 0, &held[i]) == FELIX_STATUS_OK,
             "subscriber %d was refused", i);

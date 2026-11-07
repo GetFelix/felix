@@ -624,13 +624,7 @@ pub unsafe extern "C" fn felix_client_connect_with(
                 optional_str(options.client_key_file, "client_key_file")?,
             )
         };
-        let mut config = tls_config(ca_file, cert_file, key_file)?;
-        config.auth_tenant_id = Some(tenant_id.to_string());
-        config.auth_token = token.map(str::to_string);
-        config.publishers = options.publishers;
-        config.timestamps = options.timestamps;
-        config.record_headers = !options.disable_record_headers;
-        options.tuning.apply(&mut config);
+        let mut config = connect_config(&options, tenant_id, token, ca_file, cert_file, key_file)?;
         // SAFETY: null or a live token, per the contract above.
         let user = unsafe { user_token(cancel) };
 
@@ -682,6 +676,26 @@ pub unsafe extern "C" fn felix_client_connect_with(
         });
         Ok(FELIX_STATUS_OK)
     })
+}
+
+/// The client config a connect builds: TLS, credentials, the protocol features
+/// the caller asked for, and the queue and transport tuning.
+fn connect_config(
+    options: &ConnectOptions,
+    tenant_id: &str,
+    token: Option<&str>,
+    ca_file: Option<&str>,
+    cert_file: Option<&str>,
+    key_file: Option<&str>,
+) -> Result<ClientConfig, Failure> {
+    let mut config = tls_config(ca_file, cert_file, key_file)?;
+    config.auth_tenant_id = Some(tenant_id.to_string());
+    config.auth_token = token.map(str::to_string);
+    config.publishers = options.publishers;
+    config.timestamps = options.timestamps;
+    config.record_headers = !options.disable_record_headers;
+    options.tuning.apply(&mut config);
+    Ok(config)
 }
 
 /// The QUIC config for a connect: the CA to trust, and the client certificate

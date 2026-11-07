@@ -37,9 +37,12 @@ internal static unsafe partial class Callbacks
         {
             if (status == 0 && state.Token.IsCancellationRequested)
             {
-                // The call finished as the caller cancelled: hand out nothing. The batch is sent regardless.
+                // The batch is with the producer and is sent regardless. Reporting a plain cancel would
+                // invite a retry that sends it twice, so say the outcome is unknown.
                 TryFree(() => NativeMethods.felix_handed_free(handed));
-                state.Fail(new OperationCanceledException(state.Token));
+                state.Fail(new FelixException(
+                    FelixStatus.OutcomeUnknown,
+                    "the hand-off was cancelled after the batch was handed over; it is still sent"));
             }
             else if (status == 0)
             {

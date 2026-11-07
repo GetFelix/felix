@@ -196,12 +196,13 @@ public class ParityMoreFixtureTests
         foreach (var h in handed)
         {
             var offset = await h.OffsetAsync();
-            if (offset is { } now && previous is { } before)
+            Assert.NotNull(offset);
+            if (previous is { } before)
             {
-                Assert.True(now > before, $"offset {now} did not follow {before}");
+                Assert.True(offset > before, $"offset {offset} did not follow {before}");
             }
 
-            previous = offset ?? previous;
+            previous = offset;
             Assert.Throws<InvalidOperationException>(() => { _ = h.OffsetAsync(); });
             Assert.Throws<InvalidOperationException>(() => { _ = h.DoneAsync(); });
             h.Dispose();

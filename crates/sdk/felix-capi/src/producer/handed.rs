@@ -42,8 +42,8 @@ pub type FelixHandedCallback = Option<
 /// Freeing the handle does not stop the call.
 pub struct FelixHanded {
     answer: Once<Handed>,
-    /// Cancelled when the producer's runtime is going away or the owning
-    /// producer is freed, which ends a pending wait.
+    /// A child of the client's shared token: cancelled when that token is, or
+    /// when this handle is freed. Either ends a pending wait.
     cancel: CancellationToken,
     shared: Arc<Shared>,
 }

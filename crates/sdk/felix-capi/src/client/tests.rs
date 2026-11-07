@@ -734,6 +734,50 @@ fn record_headers_are_on_unless_the_caller_turns_them_off() {
     assert!(!read(&options).disable_record_headers);
 }
 
+/// The config `felix_client_connect_with` hands the client carries the caller's
+/// features and tuning.
+#[test]
+fn the_connect_config_applies_features_and_tuning() {
+    use super::connect_config;
+    let mut options = FelixConnectOptions::zeroed();
+    options.publishers = true;
+    options.disable_record_headers = true;
+    options.max_frame_bytes = 4096;
+    options.publish_conn_pool = 3;
+    options.client_sub_queue_policy = crate::tuning::FELIX_QUEUE_BLOCK;
+    options.ack_on_commit = true;
+    options.connect_timeout_ms = 2500;
+    // SAFETY: `options` is live and its size covers it.
+    let read = unsafe { ConnectOptions::read(&options) }.expect("read");
+    let config = connect_config(&read, "t1", Some("tok"), None, None, None).expect("config");
+    assert_eq!(config.auth_tenant_id.as_deref(), Some("t1"));
+    assert_eq!(config.auth_token.as_deref(), Some("tok"));
+    assert!(config.publishers && !config.timestamps && !config.record_headers);
+    assert_eq!(config.max_frame_bytes, 4096);
+    assert_eq!(config.publish_conn_pool, 3);
+    assert_eq!(
+        config.client_sub_queue_policy,
+        felix_client::ClientSubQueuePolicy::Block
+    );
+    assert!(config.ack_on_commit);
+    assert_eq!(
+        config.connect_timeout,
+        std::time::Duration::from_millis(2500)
+    );
+
+    let plain = connect_config(
+        &unsafe { ConnectOptions::read(std::ptr::null()) }.expect("defaults"),
+        "t1",
+        None,
+        None,
+        None,
+        None,
+    )
+    .expect("config");
+    assert!(plain.record_headers);
+    assert_eq!(plain.max_frame_bytes, 16 * 1024 * 1024);
+}
+
 #[test]
 fn connect_options_carry_the_tuning_and_refuse_a_bad_value() {
     let mut options = FelixConnectOptions::zeroed();

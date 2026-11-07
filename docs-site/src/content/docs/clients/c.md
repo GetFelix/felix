@@ -1663,7 +1663,9 @@ to ask.
 
 The structured answers (shard owners, topology, an inspection, a page of subscriptions) arrive as one
 NUL-terminated JSON string with the wire's field names, valid only while the callback runs, so parse what you need
-and copy it. A field a broker leaves out is absent from the JSON. The scalar answers are plain arguments.
+and copy it. The field names are the wire's. A newer library or broker may add fields, so a parser must ignore the
+ones it does not know, and a field a broker leaves out is absent from the JSON. The scalar answers are plain
+arguments.
 
 ```c
 static void on_supports(void *user_data, FelixStatus status, const char *message, uint32_t flags) {

@@ -427,6 +427,25 @@ public class ParityMoreTests
         Assert.Equal(FelixStatus.Closed, (await Assert.ThrowsAsync<FelixException>(() => handed.Task)).Status);
     }
 
+    // The batch was handed over before the token fired, so it is sent: a plain cancel would invite a retry
+    // that sends it twice.
+    [NativeFact]
+    public async Task AHandOffThatCompletesAfterTheTokenFiredReportsAnUnknownOutcome()
+    {
+        using var source = new CancellationTokenSource();
+        var state = new CallState<FelixHandedHandle>(source.Token);
+        source.Cancel();
+        unsafe
+        {
+            // A zero handle is ignored by the library's free.
+            ((delegate* unmanaged[Cdecl]<nint, int, byte*, nint, void>)&Callbacks.OnHanded)(state.Pin(), 0, null, 0);
+        }
+
+        var error = await Assert.ThrowsAsync<FelixException>(() => state.Task);
+        Assert.Equal(FelixStatus.OutcomeUnknown, error.Status);
+        Assert.True(error.OutcomeUnknown);
+    }
+
     [Fact]
     public async Task ArgumentsAreCheckedBeforeAnyNativeCall()
     {
