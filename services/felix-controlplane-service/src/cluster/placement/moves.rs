@@ -815,6 +815,10 @@ pub(super) fn move_step<'a>(
             );
         }
         if moves.ready_to_fence(caught_up, key, successor) {
+            // The fence is a new generation under the leader.
+            if departed {
+                return Decision::Waiting(Blocked::LeaderDeparted);
+            }
             return Decision::Move(
                 MoveStep::Fence,
                 ShardAssignment {
@@ -908,6 +912,14 @@ pub(super) fn move_step<'a>(
         )
     {
         return decision;
+    }
+
+    // A move's first step fences or stages under the leader at a new
+    // generation, which a departed leader never serves. Its shard fails over
+    // at the lease instead, where a fenced move would have kept its caught-up
+    // destination from being promoted.
+    if departed {
+        return Decision::Waiting(Blocked::LeaderDeparted);
     }
 
     // Should a move start?

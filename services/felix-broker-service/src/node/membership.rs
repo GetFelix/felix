@@ -81,7 +81,7 @@ pub(super) fn spawn<L: ControlPlaneLink + Clone>(
     storage_id: felix_storage::StorageId,
     data_dir: Option<&std::path::Path>,
     view: Option<crate::cluster::controlplane_view::ViewFile>,
-    restore_check: Option<CancellationToken>,
+    restore_check: Option<membership::DeferredCheck>,
     sync_shutdown: &CancellationToken,
 ) -> Option<MembershipTask> {
     match (&config.membership, link) {
@@ -253,6 +253,21 @@ pub(super) async fn keep_view_if_opened_under(
     super::storage::note_lost_copy(root, Some(&view.storage_id), restored, registered.as_ref())?;
     let replaced = super::storage::note_replaced(root, storage_id, registered.as_ref())?;
     Ok((None, replaced))
+}
+
+/// The restore check a start from the view deferred: once it passes, `attest`
+/// is told what a start that asked first would attest as kept from
+/// `own_kept`, the run's own [`super::storage::Kept`], and `checked` is
+/// cancelled. A failed check tells it nothing, so the copy never attests.
+pub(super) fn deferred_check(
+    checked: &CancellationToken,
+    own_kept: super::storage::Kept,
+    attest: impl FnOnce(bool) + Send + 'static,
+) -> membership::DeferredCheck {
+    membership::DeferredCheck {
+        checked: checked.clone(),
+        passed: Box::new(move |registered| attest(own_kept.checked(registered))),
+    }
 }
 
 /// What client service and the control-plane sync wait on.
