@@ -118,6 +118,11 @@ const REFUSED_BALLOT_LEVEL: u16 = 28;
 /// next one replaced (#2024).
 const PREVIOUS_GENERATION_LEVEL: u16 = 29;
 
+/// The metadata level whose members record the replaced copies a leader's
+/// report shows caught up on a set that names them
+/// (`ShardAssignment::readmitted`).
+const READMITTED_LEVEL: u16 = 30;
+
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
     MetaCommand, MetaError, MetaResponse, decode_result, encode_command,
@@ -207,6 +212,25 @@ impl RaftStore {
         // Store-owned: the apply decides it, and a value copied from the
         // assignment being replaced would only raise the entry's level.
         assignment.previous_generation = None;
+        assignment.readmitted.clear();
+    }
+
+    /// Whether `report` shows caught up a learner the local assignment holds
+    /// no [`crate::model::Readmitted`] entry for.
+    async fn may_readmit(&self, report: &ReplicaReport) -> bool {
+        let Ok(assignment) = self.local().get_shard_assignment(&report.key).await else {
+            return false;
+        };
+        assignment
+            .learners
+            .iter()
+            .filter(|node| report.caught_up.contains(*node))
+            .any(|node| {
+                !assignment.readmitted.iter().any(|held| {
+                    held.node == *node
+                        && assignment.member_storage_ids.get(node) == Some(&held.storage_id)
+                })
+            })
     }
 
     /// Whether the fleet has finalized `joint_fence`.
@@ -1142,6 +1166,7 @@ impl ControlPlaneStore for RaftStore {
                 ..report.clone()
             },
             leader: None,
+            readmit: false,
         }
         .version();
         if report.by_round && self.handle.cluster_version().await < by_round_level {
@@ -1157,6 +1182,7 @@ impl ControlPlaneStore for RaftStore {
                 ..report.clone()
             },
             leader: None,
+            readmit: false,
         }
         .version();
         if !report.counter_offsets.is_empty()
@@ -1167,6 +1193,7 @@ impl ControlPlaneStore for RaftStore {
         let halts_level = MetaCommand::RecordReplicaReport {
             report: report.clone(),
             leader: None,
+            readmit: false,
         }
         .version();
         if !report.halted.is_empty() && self.handle.cluster_version().await < halts_level {
@@ -1175,6 +1202,7 @@ impl ControlPlaneStore for RaftStore {
         let mut command = MetaCommand::RecordReplicaReport {
             report,
             leader: Some(leader.to_string()),
+            readmit: false,
         };
         // A member that predates the leadership check would apply the report
         // unchecked while the others refuse it. Until every member has it,
@@ -1183,6 +1211,22 @@ impl ControlPlaneStore for RaftStore {
             && let MetaCommand::RecordReplicaReport { leader, .. } = &mut command
         {
             *leader = None;
+        }
+        // Set last, so the levels above are measured without it, and only
+        // when the local copy says the report may record something: the flag
+        // raises the entry's level, and so the group's join floor. A lagging
+        // copy only delays the record to a later report. Below the level
+        // nothing is recorded, and a fence trusts a replaced copy only on
+        // what the copy itself says.
+        if let MetaCommand::RecordReplicaReport {
+            report,
+            leader: Some(_),
+            readmit,
+        } = &mut command
+            && self.may_readmit(report).await
+            && self.group_level().await >= READMITTED_LEVEL
+        {
+            *readmit = true;
         }
         match self.propose(command).await? {
             MetaResponse::Unit => Ok(ReportWrite::Stored),

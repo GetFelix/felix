@@ -201,10 +201,14 @@ Later control-plane changes are on `main`:
   for the skipped generation, as before.
 - Postgres refuses a mount on a non-durable stream in the schema itself:
   migration `0044`, with no Raft level.
+- When the leader of a set that re-admitted a replaced copy reports it caught
+  up, the control plane records that on the assignment (`readmitted`):
+  migration `0046`, level 30. Below level 30 nothing is recorded. No broker
+  reads it yet.
 
-In short, Postgres runs migrations `0037` to `0045` on start (`0039` to
-`0045` are on `main` only), and under Raft these features wait for metadata
-levels 20 to 29. Upgrade every control-plane member before the brokers.
+In short, Postgres runs migrations `0037` to `0046` on start (`0039` to
+`0046` are on `main` only), and under Raft these features wait for metadata
+levels 20 to 30. Upgrade every control-plane member before the brokers.
 
 ## Turning on failover without the control plane
 
