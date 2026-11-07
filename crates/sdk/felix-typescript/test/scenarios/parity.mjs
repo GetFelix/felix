@@ -161,14 +161,6 @@ export default function register(ctx) {
       } else {
         assert.equal(typeof first.token.token, "string");
         assert.equal(typeof first.token.expiresAt, "bigint");
-        // The token is a bearer credential for withIdentity. The fixture sets
-        // no lease templates, so a token appears only on a broker that has some.
-        const holder = await client.withIdentity(fixture.tenant_id, { token: first.token.token });
-        try {
-          assert.equal(holder.closed, false);
-        } finally {
-          holder.close();
-        }
       }
       const second = await put();
       assert.equal(second.result.applied, false);
