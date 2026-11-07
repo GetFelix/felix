@@ -240,9 +240,9 @@ the same instant:
 The run state still says the broker was running, so the restart reads the
 stop as a crash. Under `OnCommit` it still keeps its storage id and does not
 run `UncleanStart`, because nothing it acknowledged was unsynced. Its
-copy is trusted, so the power loss does not count towards the shards
-`ElectionSettles` exempts after unclean kills. If a restart after a power
-loss did run `UncleanStart`, the copy would count like a killed one.
+copy stays trusted, so the power loss does not count towards the shards
+`ElectionSettles` exempts. If a restart after a power loss did run
+`UncleanStart`, the copy would attest untrusted like a killed one.
 
 Recovery must then repair the torn append. The storage records each segment
 whose torn tail it repairs, or that it removes as unfinished, under a
@@ -289,17 +289,37 @@ the window for two promotions to land on a shard whose seat is being replaced.
 The stops follow the crash rule: never more than a minority down. Each fault
 logs every request and its answer, refusals included, in the fault timeline.
 
-Placement faults change what the double-kill exemption of `ElectionSettles`
-has to read. A kill counts against the set and term the shard had at that
-instant:
+The shards `ElectionSettles` exempts are the ones the broker holds on
+purpose. A promoted leader needs its trusted copies to meet every majority of
+the set: a copy holds everything its seat acknowledged only if its broker
+started clean, or a leader has shipped it level since an unclean restart. A
+learner waiting for readmission is never trusted. So the check reads, for each
+shard nobody serves, what every broker attests of its copy, as it would answer
+a fence. The shard is exempt when the untrusted copies are a majority of the
+set, the leader and a joining follower included.
 
-- A broker named or promoted leader that had not opened the shard
-  acknowledged nothing there as leader, so its kill does not count as the
-  leader's.
-- A follower being copied in is in the set, so a seat replacement in flight
-  needs a majority of the wider set.
-- An abandoned log ends the hold. A later pair of kills can hold the shard
-  again.
+The attestation alone could hide a bug: a broker that never vouches a copy it
+could have vouched would make its own exemption. So an untrusted copy counts
+only when no leader had the chance to vouch it:
+
+- its broker is down after an unclean kill, so its next start distrusts the
+  copy whatever came before, or
+- its broker is up, and no broker served the shard while it was up since its
+  last unclean start.
+
+The sim notes every second, and before each fault, which brokers are up while
+some broker serves each shard. A copy still untrusted after a broker served
+beside it is vouchable. Its shard is not exempt and fails the check, marked
+`vouchable` in the stuck list, and the run prints those shards on their own
+line. A broker down after a clean stop, or one with no copy, counts as
+trusted, so the rule errs towards exempting less. Reading the attestations
+rather than kill timing covers every order: a follower killed after the leader
+in the same term, or one restarted and still a learner when the leader died.
+
+A shard with a majority of trusted copies and no leader is not exempt. An
+elected leader that names a follower with an empty storage id, or a joint
+fence that cannot reach the old set's majority, still fails the check. An
+abandoned log ends the hold until a member is stopped uncleanly again.
 
 An abandoned shard loses what it acknowledged by design. Appends
 acknowledged before the abandon count as unknown (they may or may not be on
@@ -351,7 +371,7 @@ A cluster checker runs at up to three kinds of point:
 | --- | --- | --- |
 | Streams (history rules 1-19) | End | A read is not a prefix of one order of the stream, an acknowledged record is lost, a record shows up twice or was never written, or reads and writes form a cycle (G0, G1c, G-single, G2). See [history-checker.md](history-checker.md). |
 | Cache (history rule 20) | End | A cache key's puts and gets cannot be put in one order that respects real time, as one variable would. Unknown puts may or may not have happened. A key too tangled to decide within the search budget is reported as undecided and fails the seed, with the key and the number of steps tried. |
-| `ElectionSettles` | Healed | Some shard is not served by exactly one broker 60 virtual seconds after the faults heal. A shard the broker holds on purpose is left out: its leader was killed uncleanly and, with the members killed uncleanly before it that were still down, makes up a majority of the set. The broker waits for `felixctl placement abandon`. The run prints how many shards that is. The report prints a census for each stuck shard: what every broker and the control plane think of it. |
+| `ElectionSettles` | Healed | Some shard is not served by exactly one broker 60 virtual seconds after the faults heal. A shard the broker holds on purpose is left out: nobody serves it and a majority of the set are copies attested untrusted that no leader could have vouched (see Placement faults above). A shard with a copy still untrusted after a broker served beside it is reported and marked `vouchable`. The broker waits for `felixctl placement abandon`. The run prints how many shards that is. The report prints a census for each stuck shard: what every broker and the control plane think of it. |
 | `OneLeaderPerGeneration` | every second, Healed, End | Two brokers had the same shard open for writes in the same generation, at any time in the run. A broker that restarts and opens a generation again is one leader. |
 | `AtMostOneServing` | every second, Healed, End | Two brokers would take a write for one shard at the same instant. The brokers are read in one step, so none moves between two reads. It covers shards protected by the lease only. The model asserts it for those, and for a shard acknowledged by a majority of followers it asserts `AckedHeldByLeader` instead: a deposed leader may keep serving there until it learns of the newer generation, because it cannot collect a majority once its successor has fenced one. Each broker says which kind a shard is from its own write gate, so a shard opened before election was finalized stays checked. Once election is finalized that is every stream shard. A run does not finalize `fenced_caches`, so its cache shards stay on the lease and are the ones checked. |
 | `AckedHeldByLeader` | every second, Healed, End | A broker serving a shard does not hold, at the offset the client was told, an append that was acknowledged before the sample. A broker at the newest generation any broker knows must hold all of them. A deposed one still serving is held only to the offsets below its quorum mark at its own generation. Past that mark its log may hold records no majority took, at offsets where its successor has since acknowledged others. Below it, a hole or a different record is a lost acknowledgement. After the heal, a shard served by nobody at the newest generation is looked at again until the settle deadline, and at the end its server is held to every acknowledged append. The record is read from the broker's log whether or not a quorum has committed it. A shard with no server is left to `ElectionSettles`. |

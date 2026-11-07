@@ -254,7 +254,8 @@ impl Digest {
 ///
 /// A shard held after unclean kills is left out:
 /// the broker holds it on purpose until an operator abandons a member (see
-/// [`SimCluster::held_shards`]). Only this check skips it; the history checks
+/// [`SimCluster::held_shards`]). One with a copy still untrusted although a
+/// leader served beside it is not held, and is marked `vouchable`. Only this check skips it; the history checks
 /// and the other cluster checks still cover it.
 pub struct ElectionSettles {
     /// How many stuck shards to print a census for.
@@ -279,22 +280,48 @@ impl Checker for ElectionSettles {
         }
         let cluster = &ctx.cluster;
         let deadline = ctx.healed_at + cluster.config.settle_within;
-        let held = cluster.held_shards().await;
-        println!(
-            "election-settles: {} of {} shards exempt, held on purpose after unclean kills",
-            held.len(),
-            cluster.shard_keys().count(),
-        );
+        let report = |holds: &crate::cluster::Holds| {
+            println!(
+                "election-settles: {} of {} shards exempt, held on purpose after unclean kills",
+                holds.held.len(),
+                cluster.shard_keys().count(),
+            );
+            if !holds.vouchable.is_empty() {
+                println!(
+                    "election-settles: {} unserved shards have a copy still untrusted after a leader served beside it: {}",
+                    holds.vouchable.len(),
+                    holds
+                        .vouchable
+                        .iter()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                );
+            }
+        };
         loop {
-            let stuck = without_held(cluster.unserved().await, &held);
+            // Read again each pass: a copy a leader vouches meanwhile is
+            // trusted again, and its shard stops being exempt.
+            let holds = cluster.holds().await;
+            let stuck = without_held(cluster.unserved().await, &holds.held);
             if stuck.is_empty() {
+                report(&holds);
                 return Vec::new();
             }
             if cluster.elapsed() >= deadline {
+                report(&holds);
                 let names: Vec<String> = stuck
                     .iter()
                     .take(12)
-                    .map(|(key, serving)| format!("{} ({} serving)", describe(key), serving.len()))
+                    .map(|(key, serving)| {
+                        let shard = describe(key);
+                        let vouchable = if holds.vouchable.contains(&shard) {
+                            ", vouchable"
+                        } else {
+                            ""
+                        };
+                        format!("{shard} ({} serving{vouchable})", serving.len())
+                    })
                     .collect();
                 let mut finding = Finding::new(
                     self.name(),

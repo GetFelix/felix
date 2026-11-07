@@ -16,6 +16,7 @@ use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use super::census::NodeView;
+use super::kills;
 use super::{NodeHandles, SimConfig};
 use crate::clock::{self, Owner};
 use crate::controlplane::SimControlPlane;
@@ -88,6 +89,9 @@ pub(crate) struct Node {
     pub(crate) cut: Cut,
     state: Mutex<State>,
     index: usize,
+    /// Killed uncleanly and not up since: the next start distrusts every
+    /// copy, so until it is up the sim reads its copies as doubted.
+    left_unclean: std::sync::atomic::AtomicBool,
 }
 
 impl Node {
@@ -99,6 +103,7 @@ impl Node {
             cut: Cut::new(),
             state: Mutex::new(State::Down),
             index,
+            left_unclean: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -223,6 +228,8 @@ impl Node {
             }
         });
         *self.state.lock() = State::Up(Running { handles, broker });
+        self.left_unclean
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
 
@@ -325,6 +332,8 @@ impl Node {
                 tracing::error!(node = %self.id, error = %err, "could not record the kill as unsafe");
                 return false;
             }
+            self.left_unclean
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             return true;
         }
         if let Err(err) = felix_storage::run_state::mark_clean(self.dir.path(), id) {
@@ -351,6 +360,22 @@ impl Node {
                 );
                 Ok::<Bytes, anyhow::Error>(response.body)
             })
+        })
+    }
+
+    /// What this broker attests of its copy of `key` to a unified fence.
+    /// `None` when that is not known: the broker is down after a clean stop or
+    /// starting, or holds no copy.
+    pub(crate) async fn copy_trust(&self, key: &ShardKey) -> Option<kills::Copy> {
+        let Some(broker) = self.broker() else {
+            let killed = self.left_unclean.load(std::sync::atomic::Ordering::SeqCst);
+            return killed.then_some(kills::Copy::DownAfterKill);
+        };
+        let trusted = broker.copy_attestation(key).await?.trusted;
+        Some(if trusted {
+            kills::Copy::Trusted
+        } else {
+            kills::Copy::Untrusted
         })
     }
 

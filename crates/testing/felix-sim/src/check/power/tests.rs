@@ -12,7 +12,6 @@ fn loss(node: usize, at: u64, torn: Option<&str>, repaired_before: usize) -> Pow
         at: Duration::from_secs(at),
         torn: torn.map(PathBuf::from),
         repaired_before,
-        view: Default::default(),
         restarted_at: Some(Duration::from_secs(at + 5)),
     }
 }
