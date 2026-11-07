@@ -257,3 +257,39 @@ async fn a_power_cut_during_an_append_is_repaired_on_the_restart() {
     assert_eq!(losses.len(), 1);
     assert!(losses[0].restarted_at.is_some());
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_copy_on_disk_but_not_open_after_a_kill_is_untrusted() {
+    log();
+    let cluster = Arc::new(SimCluster::start(1, small()).await.unwrap());
+    cluster.kill(0).await;
+    cluster.restart(0);
+    while !cluster.is_running(0) {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(cluster.started_unclean(0), Some(true));
+
+    let broker = cluster.handles(0).expect("running").broker;
+    let mut unopened = 0;
+    for key in cluster.shard_keys() {
+        let storage = broker.durable_storage().expect("durable storage");
+        let on_disk = key.kind == ShardKind::Stream
+            && storage.stream_on_disk(&key.tenant_id, &key.namespace, &key.stream, key.shard);
+        let open = on_disk
+            && storage
+                .opened_stream(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+                .is_some();
+        if on_disk && !open {
+            unopened += 1;
+            assert!(
+                matches!(
+                    cluster.nodes[0].copy_trust(&key).await,
+                    Some(kills::Copy::Untrusted)
+                ),
+                "{} is on disk but not open, and a fence would find it untrusted",
+                describe(&key),
+            );
+        }
+    }
+    assert!(unopened > 0, "no copy was left unopened by the restart");
+}

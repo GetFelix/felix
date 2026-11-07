@@ -377,6 +377,29 @@ impl Broker {
         }
     }
 
+    /// Whether a stream or cache shard has a copy on disk that is not open
+    /// yet. Reads the directory only; opens and recovers nothing.
+    pub fn copy_on_disk(
+        &self,
+        kind: LogKind,
+        tenant_id: &str,
+        namespace: &str,
+        name: &str,
+        shard: u32,
+    ) -> bool {
+        match kind {
+            LogKind::Stream => self
+                .durable_storage
+                .as_ref()
+                .is_some_and(|storage| storage.stream_on_disk(tenant_id, namespace, name, shard)),
+            LogKind::Cache => self
+                .cache
+                .as_log_cache()
+                .is_some_and(|cache| cache.on_disk(tenant_id, namespace, name, shard)),
+            _ => false,
+        }
+    }
+
     /// What [`Broker::shard_log_for`] would return, when the log is open
     /// already; `None` without opening anything otherwise.
     pub async fn opened_log(

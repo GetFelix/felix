@@ -671,6 +671,22 @@ impl LogCache {
             .await)
     }
 
+    /// Whether the shard has a directory on disk at its current incarnation,
+    /// open or not. Nothing is created or recovered.
+    pub fn on_disk(&self, tenant: &str, namespace: &str, cache: &str, shard: u32) -> bool {
+        let key = ShardKey {
+            tenant: tenant.to_string(),
+            namespace: namespace.to_string(),
+            stream: cache.to_string(),
+            shard,
+        };
+        self.incarnations
+            .resolve(tenant, namespace, cache)
+            .is_some_and(|incarnation| {
+                crate::fs::is_dir(layout::incarnation_dir(&self.root, &key, incarnation))
+            })
+    }
+
     /// What [`LogCache::shard_log_for`] would return, when the shard is open
     /// already; `None` without creating or recovering anything otherwise.
     /// `None` for `incarnation` checks nothing, as [`LogCache::shard_log`] does.
