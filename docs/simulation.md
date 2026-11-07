@@ -380,10 +380,12 @@ that added them. None breaks a history rule or a cluster check other than
 | 3, 4 | Most shards are served by nobody after the heal: all 178 on seed 3, where the control plane keeps a failed leader with a move to `b2` that never ends, and 103 on seed 4. | not filed yet |
 
 Seed 33, which `seed_33_abandoning_held_shards_replays_the_same_twice` pins,
-stops `b5` at 58 s to abandon the 17 shards it holds after unclean kills. Nine
-are abandoned. The control plane refuses the other eight (`not_stranded`) for
-the 30 s `b5` stays down, so those stay unserved. Some of the nine
-abandoned shards (`stream/14`, `stream/18`) are not served again either.
+stops `b3` at 58 s, the broker the control plane has promoted for the two
+held shards `stream/12` and `stream/35`. The control plane refuses the abandon
+(`not_stranded`) at first and accepts it once `b3` has been down long
+enough; both are abandoned at 78 s. The seed still fails `ElectionSettles`:
+about 48 of 156 shards are served by nobody after the heal, with the control
+plane naming a leader in `Assigning` that never opens.
 
 Any change to the code a run executes can move a seed from one row to
 another, because the run takes a different path from the first difference
