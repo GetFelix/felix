@@ -211,6 +211,7 @@ async fn a_restored_machine_can_fail_over_on_the_leaders_reports() {
         .dispatch(MetaCommand::RecordReplicaReport {
             report: report.clone(),
             leader: Some("broker-0".to_string()),
+            readmit: false,
         })
         .await
         .expect("report");
@@ -400,6 +401,7 @@ async fn a_report_by_round_raises_the_mark_to_11() {
     let plain = MetaCommand::RecordReplicaReport {
         report: replica_report("acme", "ns", "orders", 1),
         leader: None,
+        readmit: false,
     };
     assert!(plain.version() < 11);
     original.apply(&encode_command(&plain)).await;
@@ -413,6 +415,7 @@ async fn a_report_by_round_raises_the_mark_to_11() {
             ..replica_report("acme", "ns", "orders", 2)
         },
         leader: None,
+        readmit: false,
     };
     assert_eq!(by_round.version(), 11);
     original.apply(&encode_command(&by_round)).await;
@@ -476,6 +479,7 @@ async fn storage_identities_apply_identically() {
                 ..report.clone()
             },
             leader: Some("broker-0".to_string()),
+            readmit: false,
         };
         assert_eq!(command.version(), 12);
         machine.apply(&encode_command(&command)).await;

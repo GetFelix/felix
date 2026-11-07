@@ -412,8 +412,12 @@ impl MetadataStateMachine {
                     taken: lease.taken,
                 })
             }
-            MetaCommand::RecordReplicaReport { report, leader } => store
-                .apply_replica_report(report, leader.as_deref())
+            MetaCommand::RecordReplicaReport {
+                report,
+                leader,
+                readmit,
+            } => store
+                .apply_replica_report(report, leader.as_deref(), readmit)
                 .await
                 .map(|written| match written {
                     crate::store::ReportWrite::Stored => MetaResponse::Unit,

@@ -24,6 +24,7 @@ fn assignment() -> ShardAssignment {
         learners: Default::default(),
         pending_set: None,
         previous_generation: None,
+        readmitted: Default::default(),
     }
 }
 
@@ -836,4 +837,154 @@ fn its_own_leader_elected_on_another_set_is_reissued() {
             ..named_c.clone()
         }
     );
+}
+
+const LOST: &str = "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a";
+const NEW: &str = "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b";
+
+/// broker-c's storage was replaced and the assignment names its new copy,
+/// holding it as a learner.
+fn readmitting() -> ShardAssignment {
+    ShardAssignment {
+        member_storage_ids: [("broker-c".to_string(), NEW.to_string())].into(),
+        learners: ["broker-c".to_string()].into(),
+        ..assignment()
+    }
+}
+
+/// broker-a, the leader, shows broker-c's new copy caught up at `generation`.
+fn caught_up_at(generation: u64) -> ReplicaReport {
+    ReplicaReport {
+        leader: Some("broker-a".to_string()),
+        caught_up: ["broker-c".to_string()].into(),
+        offsets: [("broker-c".to_string(), 40)].into(),
+        follower_storage: [("broker-c".to_string(), NEW.to_string())].into(),
+        node_incarnations: [("broker-c".to_string(), 3)].into(),
+        ..report_at(generation, 0)
+    }
+}
+
+fn registered(node: &str) -> Option<(String, u64)> {
+    (node == "broker-c").then(|| (NEW.to_string(), 3))
+}
+
+#[test]
+fn the_leader_of_a_set_naming_a_new_copy_readmits_it() {
+    assert_eq!(
+        readmitting().readmitted_by(&caught_up_at(7), &registered),
+        vec![Readmitted {
+            node: "broker-c".to_string(),
+            storage_id: NEW.to_string(),
+            generation: 7,
+            offset: 40,
+        }]
+    );
+}
+
+/// A report from before the set naming the new copy, here generation 6,
+/// readmits nothing: its set was introduced before the loss.
+#[test]
+fn a_report_of_an_earlier_generation_readmits_nothing() {
+    assert!(
+        readmitting()
+            .readmitted_by(&caught_up_at(6), &registered)
+            .is_empty()
+    );
+}
+
+#[test]
+fn only_the_copy_the_set_names_and_registered_is_readmitted() {
+    let named_lost = ShardAssignment {
+        member_storage_ids: [("broker-c".to_string(), LOST.to_string())].into(),
+        ..readmitting()
+    };
+    assert!(
+        named_lost
+            .readmitted_by(&caught_up_at(7), &registered)
+            .is_empty(),
+        "the set names the lost copy"
+    );
+    let not_learner = ShardAssignment {
+        learners: Default::default(),
+        ..readmitting()
+    };
+    assert!(
+        not_learner
+            .readmitted_by(&caught_up_at(7), &registered)
+            .is_empty(),
+        "a copy that was never replaced"
+    );
+    let other_copy = ReplicaReport {
+        follower_storage: [("broker-c".to_string(), LOST.to_string())].into(),
+        ..caught_up_at(7)
+    };
+    assert!(
+        readmitting()
+            .readmitted_by(&other_copy, &registered)
+            .is_empty(),
+        "the leader saw another copy"
+    );
+    let restarted = ReplicaReport {
+        node_incarnations: [("broker-c".to_string(), 2)].into(),
+        ..caught_up_at(7)
+    };
+    assert!(
+        readmitting()
+            .readmitted_by(&restarted, &registered)
+            .is_empty(),
+        "taken at an earlier incarnation"
+    );
+    let unstamped = ReplicaReport {
+        leader: None,
+        ..caught_up_at(7)
+    };
+    assert!(
+        readmitting()
+            .readmitted_by(&unstamped, &registered)
+            .is_empty(),
+        "not known to be the leader's"
+    );
+    assert!(
+        readmitting()
+            .readmitted_by(&caught_up_at(7), &|_| None)
+            .is_empty(),
+        "no longer registered with it"
+    );
+}
+
+#[test]
+fn a_readmitted_copy_keeps_its_first_entry_and_leaves_with_its_identity() {
+    let mut held = readmitting();
+    let first = held.readmitted_by(&caught_up_at(7), &registered);
+    held.readmit(first.clone());
+    assert!(
+        held.readmitted_by(&caught_up_at(7), &registered).is_empty(),
+        "already held"
+    );
+
+    let mut next = readmitting();
+    next.carry_readmitted(&held.readmitted);
+    assert_eq!(next.readmitted, first, "carried by a write naming it alike");
+
+    let mut renamed = ShardAssignment {
+        member_storage_ids: [("broker-c".to_string(), LOST.to_string())].into(),
+        ..readmitting()
+    };
+    renamed.carry_readmitted(&held.readmitted);
+    assert!(renamed.readmitted.is_empty(), "named by another identity");
+
+    let mut dropped = ShardAssignment {
+        replicas: vec!["broker-b".to_string()],
+        ..readmitting()
+    };
+    dropped.carry_readmitted(&held.readmitted);
+    assert!(dropped.readmitted.is_empty(), "no longer in the set");
+}
+
+/// An assignment without entries serializes as it did before them, so an
+/// old peer reads and writes the same bytes.
+#[test]
+fn no_readmitted_entries_leave_the_assignment_unchanged_on_the_wire() {
+    let json = serde_json::to_value(assignment()).expect("serialize");
+    assert!(json.get("readmitted").is_none());
 }

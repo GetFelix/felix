@@ -1626,6 +1626,7 @@ async fn an_instance_before_incarnations_assigns_the_live_incarnation() -> anyho
         learners: Default::default(),
         pending_set: None,
         previous_generation: None,
+        readmitted: Default::default(),
     };
     // Its write path: the row with no incarnation, then the change.
     let mut tx = pool.begin().await?;
@@ -1832,6 +1833,7 @@ async fn an_instance_before_cache_incarnations_assigns_the_live_incarnation() ->
         learners: Default::default(),
         pending_set: None,
         previous_generation: None,
+        readmitted: Default::default(),
     };
     let mut tx = pool.begin().await?;
     sqlx::query(
@@ -1911,6 +1913,7 @@ async fn an_instance_before_cache_incarnations_keeps_the_incarnation_on_update()
         learners: Default::default(),
         pending_set: None,
         previous_generation: None,
+        readmitted: Default::default(),
     };
     let held = store.put_shard_assignment(first.clone()).await?;
     assert_eq!(held.incarnation, created.incarnation);
