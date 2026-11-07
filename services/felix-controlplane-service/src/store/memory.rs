@@ -763,6 +763,10 @@ impl ControlPlaneStore for InMemoryStore {
         shards::list_replica_reports(self).await
     }
 
+    async fn get_replica_report(&self, key: &ShardKey) -> StoreResult<Option<ReplicaReport>> {
+        Ok(self.replica_reports.read().await.get(key).cloned())
+    }
+
     async fn record_suspicion(&self, suspicion: crate::model::NodeSuspicion) -> StoreResult<()> {
         self.suspicions
             .write()

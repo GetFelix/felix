@@ -459,6 +459,14 @@ pub trait ControlPlaneStore: Send + Sync {
     ) -> StoreResult<ReportWrite>;
     /// Every report held, fresh or not; the reader judges freshness.
     async fn list_replica_reports(&self) -> StoreResult<Vec<ReplicaReport>>;
+    /// The report held for `key`, if any.
+    async fn get_replica_report(&self, key: &ShardKey) -> StoreResult<Option<ReplicaReport>> {
+        Ok(self
+            .list_replica_reports()
+            .await?
+            .into_iter()
+            .find(|report| report.key == *key))
+    }
 
     /// Keep what a broker's heartbeat said about the leaders it cannot reach,
     /// replacing what it said before. Stamp it with

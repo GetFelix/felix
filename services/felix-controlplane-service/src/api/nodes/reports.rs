@@ -364,7 +364,7 @@ async fn record_one(
         shard,
         state.placement_wakes.fence_max_lag_records(),
     );
-    let report = crate::model::ReplicaReport {
+    let mut report = crate::model::ReplicaReport {
         key,
         generation: shard.generation,
         caught_up: shard.caught_up.iter().cloned().collect(),
@@ -421,6 +421,7 @@ async fn record_one(
         refused: shard.refused.clone(),
         holds_start: shard.holds_start.clone(),
     };
+    inherit_from_held(state, &assignment, node_id, &mut report).await?;
     // The store checks leadership again as it writes: the checks above read
     // an assignment a promotion may have replaced since.
     match state.store.record_replica_report(report, node_id).await {
@@ -439,6 +440,55 @@ async fn record_one(
         Err(StoreError::NotFound(_)) => Ok(ReportOutcome::Unassigned),
         Err(ref err) => Err(api_internal("record replica report", err)),
     }
+}
+
+/// Name each member `report` names no identity for, and inherits none for,
+/// by the one the shard's previous report named it by.
+///
+/// Any leader's report gets this, but it matters for one that stood for
+/// election: its route names no identities, so it inherits none. A member
+/// the reporting leader has not reached yet acknowledged nothing at its
+/// generation, so every acknowledgement it gave went to an earlier leader,
+/// from the copy that leader's report named or one before it. Identities
+/// never repeat, so a copy answering under that identity holds them; one
+/// that lost any answers under another and still does not count. Without
+/// this the next failover names the member by none and no answer from it
+/// counts, which strands a shard whose elected leader crashed.
+async fn inherit_from_held(
+    state: &AppState,
+    assignment: &crate::model::ShardAssignment,
+    node_id: &str,
+    report: &mut crate::model::ReplicaReport,
+) -> Result<(), ApiError> {
+    let unnamed: Vec<&String> = assignment
+        .nodes()
+        .filter(|member| {
+            member.as_str() != node_id
+                && !report.follower_storage.contains_key(*member)
+                && !report.inherited_storage.contains_key(*member)
+        })
+        .collect();
+    if unnamed.is_empty() {
+        return Ok(());
+    }
+    let held = match state.store.get_replica_report(&report.key).await {
+        Ok(held) => held,
+        Err(ref err) => return Err(api_internal("read replica report", err)),
+    };
+    // A newer report is one this cannot replace anyway.
+    let Some(held) = held.filter(|held| held.generation <= report.generation) else {
+        return Ok(());
+    };
+    for member in unnamed {
+        let named = held
+            .follower_storage
+            .get(member)
+            .or_else(|| held.inherited_storage.get(member));
+        if let Some(id) = named {
+            report.inherited_storage.insert(member.clone(), id.clone());
+        }
+    }
+    Ok(())
 }
 
 /// Adopt the reporting broker as the shard's leader if it elected itself

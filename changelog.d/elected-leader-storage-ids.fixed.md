@@ -1,0 +1,1 @@
+A failover after an elected leader crashed no longer names the followers that leader had not reached with an empty storage identity. The control plane names them by the identity the shard's previous report named them by, so their fence answers count and the shard can open again.

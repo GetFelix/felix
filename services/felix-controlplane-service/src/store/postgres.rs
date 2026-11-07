@@ -564,6 +564,10 @@ impl ControlPlaneStore for PostgresStore {
         shards::list_replica_reports(self).await
     }
 
+    async fn get_replica_report(&self, key: &ShardKey) -> StoreResult<Option<ReplicaReport>> {
+        shards::get_replica_report(self, key).await
+    }
+
     async fn record_suspicion(&self, suspicion: crate::model::NodeSuspicion) -> StoreResult<()> {
         nodes::record_suspicion(self, suspicion).await
     }

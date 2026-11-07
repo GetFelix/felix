@@ -993,6 +993,35 @@ pub(super) async fn list_replica_reports(store: &PostgresStore) -> StoreResult<V
     .collect()
 }
 
+pub(super) async fn get_replica_report(
+    store: &PostgresStore,
+    key: &ShardKey,
+) -> StoreResult<Option<ReplicaReport>> {
+    // The columns of `list_replica_reports`.
+    sqlx::query_as::<_, DbReplicaReport>(
+        r#"SELECT tenant_id, namespace, stream, shard, kind, generation, caught_up, offsets,
+                      reported_at_millis, drained, leader_offset, halted, counter_offsets,
+                      by_round, leader_incarnation, by_round_at,
+                      follower_storage, follower_storage_at,
+                      leader, node_incarnations, stamped_at, given_up, given_up_at,
+                      inherited_storage, inherited_storage_at,
+                      joint_start_acked, joint_start_acked_at, holds_start, holds_start_at,
+                      refused_generation, refused_to, refused_at,
+                      refused_ballot, refused_ballot_at
+               FROM replica_reports
+               WHERE tenant_id = $1 AND namespace = $2 AND stream = $3 AND shard = $4 AND kind = $5"#,
+    )
+    .bind(&key.tenant_id)
+    .bind(&key.namespace)
+    .bind(&key.stream)
+    .bind(key.shard as i32)
+    .bind(key.kind.as_str())
+    .fetch_optional(&store.pool)
+    .await?
+    .map(replica_report_from_db)
+    .transpose()
+}
+
 fn shard_from_db(row: DbShardAssignment) -> StoreResult<ShardAssignment> {
     Ok(ShardAssignment {
         key: ShardKey {
