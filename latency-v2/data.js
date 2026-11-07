@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794086678709,
+  "lastUpdate": 1794087052479,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -62766,6 +62766,72 @@ window.BENCHMARK_DATA = {
             "range": "827.55",
             "unit": "us",
             "extra": "trials: 5\nmedian: 366.00\nmean: 726.80\nstdev: 827.55\ncv: 113.86%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "12bb7dea735e2cb18e0c45a1aebe98f9dd10f230",
+          "message": "fix(replication): keep a confirmed answer fresh after an answered request (#2113)\n\n* fix(replication): keep a confirmed answer fresh after an answered request\n\nA copy with no promise kept the control plane's confirmed answer fresh for\nthe leader's retry only after it refused one. An answered request cleared\nthat, so under elections a leader retrying every 2 s found every other\nanswer stale and was refused StaleRoute every other round.\n\nSpec-Unaffected: only how long the background read keeps refreshing an\nanswer changes; the freshness an answer must have to be used does not.\n\n* fix(replication): grow the confirmed read's wait only while a retry is owed\n\nReview: a late retry once seen would otherwise keep every later answered\nrequest's shard reading for up to 60 s.",
+          "timestamp": "2026-11-07T21:25:27Z",
+          "tree_id": "ec1cbfd675f3bc1094d418b97e1677f389c2a90b",
+          "url": "https://github.com/GetFelix/felix/commit/12bb7dea735e2cb18e0c45a1aebe98f9dd10f230"
+        },
+        "date": 1794087043833,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 150,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 150.00\nmean: 149.80\nstdev: 0.45\ncv: 0.30%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 208,
+            "range": "8.46",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 208.00\nmean: 209.00\nstdev: 8.46\ncv: 4.05%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 267,
+            "range": "723.66",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 267.00\nmean: 778.60\nstdev: 723.66\ncv: 92.94%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 197,
+            "range": "2.19",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 197.00\nmean: 195.40\nstdev: 2.19\ncv: 1.12%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 385,
+            "range": "4.24",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 385.00\nmean: 385.00\nstdev: 4.24\ncv: 1.10%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 544,
+            "range": "34.31",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 544.00\nmean: 545.40\nstdev: 34.31\ncv: 6.29%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
