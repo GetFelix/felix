@@ -212,7 +212,18 @@ a broker running with `FELIX_TLS_REQUIRE_ALPN=true` insists on. It is off by
 default because a broker older than ALPN support refuses a client that offers
 it.
 
-Client certificates (mutual TLS) are Rust only: this client trusts the broker's certificate but cannot present one of its own. [Auth and TLS](/clients/auth-and-tls/) compares the options across clients.
+A broker started with `FELIX_TLS_CLIENT_CA` refuses a client that does not present a certificate from that CA (mutual TLS). Pass the certificate and its key as PEM files with `clientCertFile` and `clientKeyFile`. The certificate file holds the leaf first and then any intermediates, and the key file holds one PKCS#8, PKCS#1 or SEC1 key:
+
+```ts
+await using client = await Client.connect("felix-0:5000", "t1", {
+  token,
+  caFile: "ca.pem",
+  clientCertFile: "client.pem",
+  clientKeyFile: "client.key",
+});
+```
+
+Give both or neither. A missing file, a file that is not PEM, a key that does not match the certificate, or only one of the two rejects with `InvalidArgumentError` naming the problem. [Auth and TLS](/clients/auth-and-tls/) compares the options across clients.
 
 ```ts
 await using client = await Client.connect(addrs, "t1", { token, caFile, offerAlpn: true });

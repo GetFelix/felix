@@ -93,6 +93,21 @@ fn a_broker_outside_the_set_does_not_count() {
 }
 
 #[test]
+fn a_power_loss_the_restart_doubted_counts_like_a_kill() {
+    let mut log = KillLog::default();
+    log.kill("b2", secs(10), view("b1", 1, &THREE));
+    log.doubted("b1", secs(15), secs(20), view("b1", 1, &THREE));
+    assert_eq!(held(&log), ["stream/0"]);
+
+    // Doubted only after b2 was back: the windows do not overlap.
+    let mut log = KillLog::default();
+    log.kill("b2", secs(10), view("b1", 1, &THREE));
+    log.restart("b2", secs(12));
+    log.doubted("b1", secs(15), secs(20), view("b1", 1, &THREE));
+    assert!(held(&log).is_empty());
+}
+
+#[test]
 fn the_leader_counts_in_the_set_when_the_view_leaves_it_out() {
     // The control plane's replicas never name the leader.
     let mut log = KillLog::default();

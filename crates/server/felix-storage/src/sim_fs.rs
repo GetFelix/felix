@@ -42,12 +42,83 @@ pub fn unregister_root(root: &Path) {
 /// # Errors
 /// `NotFound` when `root` was not registered.
 pub fn crash(root: &Path, seed: u64) -> io::Result<()> {
-    let tree = crate::fs::tree_at(root).ok_or_else(|| {
+    tree(root)?.crash(seed, Writeback::AnySubset);
+    Ok(())
+}
+
+/// Cut the power under `root` during the next append to a log segment, then
+/// call `on_cut` with that segment's path below `root` and the offset the
+/// append started at.
+///
+/// Every file and directory keeps what [`crash`] with `seed` would leave,
+/// and the append in flight is then forced to come back short or torn: its
+/// size reached the disk in full or in part, and each sector of its data
+/// arrived or did not, at least one not. Recovery has to repair that tail.
+/// The device's contents are fixed at the cut; whatever the process writes
+/// after it is lost at [`reboot`].
+///
+/// `on_cut` runs on the writing thread, inside the write, so it must not
+/// touch the filesystem. It is the moment to stop the process.
+///
+/// # Errors
+/// `NotFound` when `root` was not registered.
+pub fn arm_power_cut(
+    root: &Path,
+    seed: u64,
+    on_cut: impl FnOnce(&Path, u64) + Send + 'static,
+) -> io::Result<()> {
+    tree(root)?.arm(seed, Box::new(on_cut));
+    Ok(())
+}
+
+/// Cut the power under `root` now, unless an armed cut already went off.
+/// The device keeps what [`crash`] with `seed` would leave at this instant,
+/// and [`reboot`] puts it in place.
+///
+/// # Errors
+/// `NotFound` when `root` was not registered.
+pub fn cut_power(root: &Path, seed: u64) -> io::Result<()> {
+    tree(root)?.cut(seed);
+    Ok(())
+}
+
+/// Replace the tree under `root` with what the device held when the power
+/// was cut. Returns whether it had been: `false` changes nothing.
+///
+/// # Errors
+/// `NotFound` when `root` was not registered.
+pub fn reboot(root: &Path) -> io::Result<bool> {
+    Ok(tree(root)?.reboot())
+}
+
+/// The segments, as paths below `root`, whose torn tails recovery has
+/// repaired or which it removed as unfinished, in order and across reboots.
+///
+/// # Errors
+/// `NotFound` when `root` was not registered.
+pub fn torn_tails_repaired(root: &Path) -> io::Result<Vec<std::path::PathBuf>> {
+    Ok(tree(root)?.torn_tails())
+}
+
+fn tree(root: &Path) -> io::Result<std::sync::Arc<crate::fs::Tree>> {
+    crate::fs::tree_at(root).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
             "no simulated filesystem at this root",
         )
-    })?;
-    tree.crash(seed, Writeback::AnySubset);
-    Ok(())
+    })
+}
+
+/// The length of the file at `path` below `root`, or `None` when there is
+/// none.
+///
+/// # Errors
+/// `NotFound` when `root` was not registered.
+pub fn file_len(root: &Path, path: &Path) -> io::Result<Option<u64>> {
+    let tree = tree(root)?;
+    match tree.len_of(path) {
+        Ok(len) => Ok(Some(len)),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err),
+    }
 }

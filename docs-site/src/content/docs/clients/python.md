@@ -262,6 +262,8 @@ felix.Client(
     token=tok,                # or token_provider=fn; see above
     server_name="localhost",  # the name the broker's certificate carries
     ca_file=None,             # trust a specific CA; omit for the system store
+    client_cert_file=None,    # present a client certificate; needs client_key_file
+    client_key_file=None,     # the private key for client_cert_file
     offer_alpn=False,         # offer the felix/1 ALPN
     reconnect_attempts=None,      # None keeps the default, 5
     reconnect_deadline=None,      # seconds across all attempts; None is no ceiling
@@ -292,7 +294,23 @@ turn a secure deployment insecure, and a CA file covers development without it.
 running with `FELIX_TLS_REQUIRE_ALPN=true` insists on. It is off by default
 because a broker older than ALPN support refuses a client that offers it.
 
-Client certificates (mutual TLS) are Rust only: this client trusts the broker's certificate but cannot present one of its own. [Auth and TLS](/clients/auth-and-tls/) compares the options across clients.
+A broker started with `FELIX_TLS_CLIENT_CA` refuses a client that does not present a certificate from that CA (mutual TLS). Pass the certificate and its key as PEM files. The certificate file holds the leaf first and then any intermediates, and the key file holds one PKCS#8, PKCS#1 or SEC1 key:
+
+```python
+import felix
+
+with felix.Client(
+    "felix-0:5000",
+    tenant_id="t1",
+    token=tok,
+    ca_file="ca.pem",
+    client_cert_file="client.pem",
+    client_key_file="client.key",
+) as client:
+    client.publish("t1", "app", "events", b"hello")
+```
+
+Give both or neither. A missing file, a file that is not PEM, a key that does not match the certificate, or only one of the two raises `ValueError` naming the problem. `AsyncClient.connect` takes the same two options. [Auth and TLS](/clients/auth-and-tls/) compares the options across clients.
 
 ### Acting for many users
 

@@ -285,6 +285,14 @@ pub struct FelixConnectOptions {
     /// 2000. Every wait is capped at it, even when the backoff is larger.
     /// Both backoff fields count anything past a year as a year.
     pub reconnect_max_backoff_ms: u64,
+    /// A PEM file holding the client certificate, leaf first and then any
+    /// intermediates, to present to a broker started with
+    /// `FELIX_TLS_CLIENT_CA`. Null presents none. Needs `client_key_file`.
+    /// Read during `felix_client_connect_with`; the string is not kept.
+    pub client_cert_file: *const c_char,
+    /// A PEM file holding the private key of `client_cert_file`: PKCS#8,
+    /// PKCS#1 or SEC1. Null presents no certificate. Needs `client_cert_file`.
+    pub client_key_file: *const c_char,
 }
 
 /// The options a connect applies, read out of [`FelixConnectOptions`].
@@ -299,6 +307,8 @@ struct ConnectOptions {
     reconnect_deadline: Option<Duration>,
     reconnect_backoff: Option<Duration>,
     reconnect_max_backoff: Option<Duration>,
+    client_cert_file: *const c_char,
+    client_key_file: *const c_char,
 }
 
 impl ConnectOptions {
@@ -333,6 +343,8 @@ impl Default for ConnectOptions {
             reconnect_deadline: None,
             reconnect_backoff: None,
             reconnect_max_backoff: None,
+            client_cert_file: ptr::null(),
+            client_key_file: ptr::null(),
         }
     }
 }
@@ -370,6 +382,8 @@ impl ConnectOptions {
         let deadline = std::mem::offset_of!(FelixConnectOptions, reconnect_deadline_ms);
         let backoff = std::mem::offset_of!(FelixConnectOptions, reconnect_backoff_ms);
         let max_backoff = std::mem::offset_of!(FelixConnectOptions, reconnect_max_backoff_ms);
+        let cert_file = std::mem::offset_of!(FelixConnectOptions, client_cert_file);
+        let key_file = std::mem::offset_of!(FelixConnectOptions, client_key_file);
         Ok(Self {
             publishers: flag(std::mem::offset_of!(FelixConnectOptions, publishers)),
             timestamps: flag(std::mem::offset_of!(FelixConnectOptions, timestamps)),
@@ -399,6 +413,14 @@ impl ConnectOptions {
                 .map(|p| unsafe { p.cast::<u64>().read_unaligned() })
                 .filter(|&ms| ms != 0)
                 .map(Duration::from_millis),
+            client_cert_file: at(cert_file, size_of::<*const c_char>())
+                .map_or(ptr::null(), |p| unsafe {
+                    p.cast::<*const c_char>().read_unaligned()
+                }),
+            client_key_file: at(key_file, size_of::<*const c_char>())
+                .map_or(ptr::null(), |p| unsafe {
+                    p.cast::<*const c_char>().read_unaligned()
+                }),
         })
     }
 }
@@ -464,14 +486,14 @@ pub unsafe extern "C" fn felix_client_connect_with(
         let seeds = parse_addrs(addrs)?;
         let server_name = server_name.to_string();
 
-        let roots = match ca_file {
-            Some(path) => Some(Arc::new(
-                felix_client::root_store_from_pem_file(path).map_err(invalid)?,
-            )),
-            None => None,
+        // SAFETY: null or NUL-terminated strings, per the contract above.
+        let (cert_file, key_file) = unsafe {
+            (
+                optional_str(options.client_cert_file, "client_cert_file")?,
+                optional_str(options.client_key_file, "client_key_file")?,
+            )
         };
-        let quinn = felix_client::quic_client_config(roots, false).map_err(invalid)?;
-        let mut config = ClientConfig::optimized_defaults(quinn);
+        let mut config = tls_config(ca_file, cert_file, key_file)?;
         config.auth_tenant_id = Some(tenant_id.to_string());
         config.auth_token = token.map(str::to_string);
         config.publishers = options.publishers;
@@ -527,6 +549,36 @@ pub unsafe extern "C" fn felix_client_connect_with(
         });
         Ok(FELIX_STATUS_OK)
     })
+}
+
+/// The QUIC config for a connect: the CA to trust, and the client certificate
+/// to present when both files are given.
+fn tls_config(
+    ca_file: Option<&str>,
+    cert_file: Option<&str>,
+    key_file: Option<&str>,
+) -> Result<ClientConfig, Failure> {
+    let roots = match ca_file {
+        Some(path) => Some(Arc::new(
+            felix_client::root_store_from_pem_file(path).map_err(invalid)?,
+        )),
+        None => None,
+    };
+    let quinn = match (cert_file, key_file) {
+        (None, None) => felix_client::quic_client_config(roots, false).map_err(invalid)?,
+        (Some(cert), Some(key)) => {
+            let identity =
+                felix_client::ClientIdentity::from_pem_files(cert, key).map_err(invalid)?;
+            felix_client::quic_client_config_with_identity(roots, identity, false)
+                .map_err(invalid)?
+        }
+        _ => {
+            return Err(Failure::invalid(
+                "client_cert_file and client_key_file must be given together",
+            ));
+        }
+    };
+    Ok(ClientConfig::optimized_defaults(quinn))
 }
 
 /// Connect to a Felix cluster with the default options: the same as

@@ -3694,8 +3694,16 @@ follower is behind it:
   own (so it replaces the report its previous process made), its own
   position beside every follower's, each
   under the storage identity and incarnation it gave on that connection. It
-  reports only when every follower answered: one not heard from may hold what
-  this broker lost. Copies are compared by (last generation, end). When the
+  reports once every follower has answered, or sooner when the answers in
+  hand already hold the shard: one not heard from may hold what this broker
+  lost, so silence alone never decides. A follower that answers but does not
+  vote (a learner, or a copy replaced and not yet re-admitted; it refuses with
+  `RefusalReason::NotVoter`) has no position, and its offset and identity are
+  left out. Unless the followers that do have one meet every majority of the
+  replicas (twice their count is at least the replicas, the given-up leader
+  included) and of the set a pending change leaves, the report is **held**: nobody is named caught up and the copy is
+  not reclaimable, because the missing copy may hold a record the others
+  lack. Copies are compared by (last generation, end). When the
   furthest follower is level with this broker or ahead, the followers at that
   position are reported caught up; every copy is accounted for, so they hold
   whatever any copy holds. For a cache, a follower furthest on both its logs
@@ -3724,8 +3732,8 @@ follower is behind it:
   names caught up that placement cannot promote, such as one marked down,
   keeps the shard waiting rather than reclaimed. Otherwise it writes nothing,
   and no new generation names the leader. The broker leads a reclaimed copy only at a
-  generation newer than the one it gave up, and only once its own probe found
-  no follower ahead. A report from an older broker names no leader identity
+  generation newer than the one its probe ran at, which can be past the one it
+  gave up, and only once that probe found no follower ahead. A report from an older broker names no leader identity
   and is read as before.
 - **In the successor's fence.** The crashed leader answers no promotion fence
   from that copy until a newer leader has shipped to it, since counted in the
@@ -3812,7 +3820,9 @@ frozen as for any dead leader. The probe reports afresh each tick. The shard
 waits as `NoCaughtUpReplica` when the probe cannot reach every follower and
 no follower is caught up in a report placement still believes, or when a
 follower is ahead but was measured under an old identity. It waits until the
-follower answers. An operator who accepts losing what only such a follower
+follower answers. A held report is different: it names no follower, so
+placement plans `NoCaughtUpReplica` at once and `abandon` is accepted, which
+is the way out when the followers that could vote are gone. An operator who accepts losing what only such a follower
 holds stops the leader, abandons the log (`felixctl placement abandon`), and
 starts it again; it rejoins as a follower. A `Leader` stream promoted this way
 loses what its leader acknowledged after its last report, the window `Leader`
