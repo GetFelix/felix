@@ -57,12 +57,23 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
     // mid-move, one whose writes need a majority.
     const MOVABLE_STREAM: &str = "conformance-movable";
     const QUORUM_STREAM: &str = "conformance-quorum";
+    // Lease tokens: the cache the brokers mint for, and one output stream per
+    // key a client suite may claim. The template slot is the cache's name.
+    const LEASE_CACHE: &str = "leases";
+    const LEASE_KEYS: [&str; 4] = ["c", "c2", "cs", "cs2"];
+    // A fixed key is fine: the brokers live as long as this process and trust
+    // nothing outside it. Thirty-two bytes, base64.
+    const LEASE_KEY: &str = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=";
     // One shard, so its owner is one broker the link interposer can sit in
     // front of.
     const LINK_STREAM: &str = "conformance-link";
     // Head trims are refused on a stream that has commits, so the suites trim
     // one nothing else writes to.
     const TRIM_STREAM: &str = "conformance-trim";
+
+    let lease_key_file = format!("{ca_file}.lease-key");
+    std::fs::write(&lease_key_file, format!("{LEASE_KEY}\n"))
+        .with_context(|| format!("write the lease key to {lease_key_file}"))?;
 
     eprintln!("starting a {node_count}-node cluster for a client conformance suite...");
     let cluster = Cluster::start(ClusterConfig {
@@ -82,18 +93,31 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
             StreamSpec::quorum(QUORUM_STREAM, 1, node_count as u32),
             StreamSpec::replicated(LINK_STREAM, 1, node_count as u32),
             StreamSpec::quorum(TRIM_STREAM, 1, node_count as u32),
-        ],
+        ]
+        .into_iter()
+        .chain(
+            LEASE_KEYS
+                .iter()
+                .map(|key| StreamSpec::replicated(format!("wl.{key}.out"), 1, node_count as u32)),
+        )
+        .collect(),
         caches: vec![
             CacheSpec::replicated(CACHE, 4, node_count as u32),
             CacheSpec::replicated(SINGLE_SHARD_CACHE, 1, node_count as u32),
+            CacheSpec::replicated(LEASE_CACHE, 1, node_count as u32),
         ],
+        broker_env: vec![(
+            "FELIX_LEASE_TOKEN_KEY_FILE".to_string(),
+            lease_key_file.clone(),
+        )],
         inherit_output: std::env::var("FELIX_CLUSTER_VERBOSE").is_ok(),
         ..Default::default()
     })
     .await?;
-    // Commits and trims are refused until the fleet finalizes the feature, and a record
-    // carries its publisher or headers only once it finalizes the opt-in
-    // `publisher_principal` or `record_headers`, as in any real cluster.
+    // Commits and trims are refused until the fleet finalizes the feature, a record
+    // carries its publisher only once it finalizes the opt-in
+    // `publisher_principal`, and a record takes headers only once it finalizes
+    // `record_headers`, as in any real cluster.
     cluster
         .finalize_fleet_features(
             &[
@@ -190,6 +214,9 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
         inspector_token: Some(cluster.inspector_token()),
         trimmer_token: Some(cluster.trimmer_token()),
         trim_stream: Some(TRIM_STREAM.to_string()),
+        lease_cache: Some(LEASE_CACHE.to_string()),
+        lease_node_token: Some(cluster.lease_node_token(&cluster.namespace, LEASE_CACHE)),
+        lease_keys: LEASE_KEYS.iter().map(ToString::to_string).collect(),
         records_publishers: true,
         no_commit_addrs: vec![bare.addr.to_string()],
         mtls_addr: Some(mtls.addr.to_string()),

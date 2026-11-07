@@ -294,10 +294,60 @@ def test_the_async_subscription_reports_its_counters(fixture, key):
 # ---------------------------------------------------------------------------
 # Lease writes
 # ---------------------------------------------------------------------------
-#
-# The fixture's brokers carry no lease templates, so none mints a token and a
-# broker-backed test could not prove one. LeaseToken's redaction and the
-# conversion are covered by the binding's Rust tests; here only the argument.
+
+
+def test_a_lease_token_acts_for_its_own_output_until_it_expires(fixture):
+    if not fixture.get("lease_node_token"):
+        pytest.skip("this fixture mints no lease tokens")
+    key, other = "c", "c2"
+    assert key in fixture["lease_keys"] and other in fixture["lease_keys"]
+    tenant, namespace, cache = fixture["tenant_id"], fixture["namespace"], fixture["lease_cache"]
+    output = f"wl.{key}.out"
+    with felix.Client(
+        fixture["addrs"],
+        tenant_id=tenant,
+        token=fixture["lease_node_token"],
+        ca_file=fixture["ca_file"],
+    ) as node:
+        # The node's own token may not publish to the output; only a lease token can.
+        with pytest.raises(felix.FelixError):
+            node.publish(tenant, namespace, output, b"denied")
+
+        lease = node.cache_put_if_lease(
+            tenant, namespace, cache, key, b"node", felix.CacheCondition.absent(), ttl=2.0
+        )
+        assert lease.result.applied
+        assert lease.token is not None and lease.token.expires_at > 0
+        assert lease.token.token not in repr(lease)
+
+        with node.with_identity(tenant, lease.token.token) as holder:
+            assert holder.publish(tenant, namespace, output, b"held") is not None
+
+            # A second claim loses the write and gets no token.
+            lost = node.cache_put_if_lease(
+                tenant, namespace, cache, key, b"node", felix.CacheCondition.absent(), ttl=2.0
+            )
+            assert not lost.result.applied and lost.token is None
+
+            # The token names this key's output and no other.
+            with node.with_identity(tenant, lease.token.token) as wrong:
+                with pytest.raises(felix.FelixError):
+                    wrong.publish(tenant, namespace, f"wl.{other}.out", b"other")
+
+            # Once the token expires, the identity it opened stops being served.
+            ended = False
+            for _ in range(80):
+                try:
+                    holder.publish(tenant, namespace, output, b"late")
+                except felix.FelixError:
+                    ended = True
+                    break
+                time.sleep(0.1)
+            assert ended, "a stale lease token kept publishing"
+
+        # And a new identity cannot be opened with it.
+        with pytest.raises(felix.FelixError):
+            node.with_identity(tenant, lease.token.token)
 
 
 @pytest.mark.parametrize("ttl", [-1.0, float("nan"), float("inf")])

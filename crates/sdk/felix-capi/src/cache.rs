@@ -13,12 +13,12 @@ use std::ptr;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use felix_client::{CacheCondition, CacheConditionResult, Client, VersionedValue};
+use felix_client::{CacheCondition, CacheConditionResult, Client, LeaseWrite, VersionedValue};
 
 use crate::boundary::{Failure, guard, required_str};
 use crate::cancel::{FelixCancelToken, user_token};
 use crate::client::FelixClient;
-use crate::completion::{Completion, Deliver};
+use crate::completion::{Completion, Deliver, c_message};
 use crate::groups::{Done, FelixDoneCallback, spawn_read};
 use crate::publish::{bytes, spawn_publish};
 use crate::status::{FELIX_STATUS_OK, FelixStatus};
@@ -75,6 +75,29 @@ pub type FelixConditionCallback = Option<
         applied: bool,
         has_version: bool,
         version: u64,
+    ),
+>;
+
+/// Called once when `felix_client_cache_put_if_lease` finishes. The first
+/// fields are those of `FelixConditionCallback`.
+///
+/// `token` is a NUL-terminated lease token when the write applied and the
+/// broker minted one, else null; it expires at `expires_at`, in seconds since
+/// the Unix epoch. Pass it to `felix_client_with_identity` to act as the lease
+/// holder. It is a bearer secret. `token_refused` says why an applied write
+/// came back without a token (the write stands), else null. Both strings are
+/// valid only while the callback runs.
+pub type FelixLeaseCallback = Option<
+    unsafe extern "C" fn(
+        user_data: *mut c_void,
+        status: FelixStatus,
+        message: *const c_char,
+        applied: bool,
+        has_version: bool,
+        version: u64,
+        token: *const c_char,
+        expires_at: u64,
+        token_refused: *const c_char,
     ),
 >;
 
@@ -189,6 +212,53 @@ impl Deliver for Condition {
     }
 }
 
+pub(crate) struct Lease(LeaseWrite);
+
+impl Deliver for Lease {
+    type Callback = FelixLeaseCallback;
+
+    fn is_null(callback: Self::Callback) -> bool {
+        callback.is_none()
+    }
+
+    unsafe fn deliver(
+        callback: Self::Callback,
+        user_data: *mut c_void,
+        status: FelixStatus,
+        message: *const c_char,
+        value: Option<Self>,
+    ) {
+        if let Some(callback) = callback {
+            let write = value.map(|value| value.0);
+            let applied = write.as_ref().is_some_and(|w| w.result.applied);
+            let version = write.as_ref().and_then(|w| w.result.version);
+            let token = write
+                .as_ref()
+                .and_then(|w| w.token.as_ref())
+                .map(|t| (c_message(t.token.clone()), t.expires_at));
+            let refused = write
+                .as_ref()
+                .and_then(|w| w.token_refused.clone())
+                .map(c_message);
+            // SAFETY: the callback's contract is the header's; the strings
+            // live until it returns.
+            unsafe {
+                callback(
+                    user_data,
+                    status,
+                    message,
+                    applied,
+                    version.is_some(),
+                    version.unwrap_or(0),
+                    token.as_ref().map_or(ptr::null(), |(t, _)| t.as_ptr()),
+                    token.as_ref().map_or(0, |(_, at)| *at),
+                    refused.as_ref().map_or(ptr::null(), |r| r.as_ptr()),
+                );
+            }
+        }
+    }
+}
+
 pub(crate) struct Counter(Option<i64>);
 
 impl Deliver for Counter {
@@ -255,7 +325,7 @@ pub(crate) unsafe fn cache_names<'a>(
         )
     };
     let names = Names {
-        inner: Arc::clone(client.shared.client()),
+        inner: Arc::clone(client.cluster()),
         tenant_id,
         ns,
         cache,
@@ -509,6 +579,57 @@ pub unsafe extern "C" fn felix_client_cache_put_if(
         };
         spawn_publish(client, user, done, ask, |done, outcome| {
             done.result(outcome.map(Condition).map_err(Failure::from));
+        });
+        Ok(FELIX_STATUS_OK)
+    })
+}
+
+/// `felix_client_cache_put_if` that also asks for a lease token for the
+/// writer. Use it to take a lock-like entry and hand the holder a token that
+/// grants what the caller's lease templates name for the key.
+///
+/// Callback and cancellation as for `felix_client_cache_put_if`, with the
+/// token in `FelixLeaseCallback`. A broker that mints no token still applies
+/// the write and says why in `token_refused`.
+///
+/// # Safety
+///
+/// As for `felix_client_cache_put_if`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn felix_client_cache_put_if_lease(
+    client: *const FelixClient,
+    tenant_id: *const c_char,
+    ns: *const c_char,
+    cache: *const c_char,
+    key: *const c_char,
+    value: *const u8,
+    len: usize,
+    ttl_ms: u64,
+    kind: FelixCacheCondition,
+    version: u64,
+    cancel: *const FelixCancelToken,
+    callback: FelixLeaseCallback,
+    user_data: *mut c_void,
+) -> FelixStatus {
+    guard(|| {
+        // SAFETY: the pointers meet the contract above.
+        let (client, target) = unsafe { key_target(client, tenant_id, ns, cache, key) }?;
+        // SAFETY: as above.
+        let value = unsafe { copy_value(value, len) }?;
+        let condition = condition(kind, version)?;
+        // SAFETY: null or a live token, per the contract above.
+        let user = unsafe { user_token(cancel) };
+        let done = Completion::<Lease>::new(callback, user_data)?;
+        let ask = async move {
+            let Target { names, key } = target;
+            let (t, n, c) = (&names.tenant_id, &names.ns, &names.cache);
+            names
+                .inner
+                .cache_put_if_lease(t, n, c, &key, value, ttl(ttl_ms), condition)
+                .await
+        };
+        spawn_publish(client, user, done, ask, |done, outcome| {
+            done.result(outcome.map(Lease).map_err(Failure::from));
         });
         Ok(FELIX_STATUS_OK)
     })

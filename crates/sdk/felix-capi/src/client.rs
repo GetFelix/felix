@@ -62,18 +62,56 @@ pub struct FelixClient {
     pub(crate) shared: Arc<Shared>,
     /// Cancelled when this handle is freed, which ends its pending calls.
     pub(crate) cancel: CancellationToken,
+    /// The client acting as another principal, for a handle made by
+    /// `felix_client_with_identity`. Absent for the connected client itself.
+    identity: Option<Arc<Client>>,
+    /// The identity's own token fetch, failed when this handle is freed so a
+    /// fetch waiting on the app does not outlive it.
+    tokens: Option<Arc<TokenSource>>,
 }
 
 impl FelixClient {
     fn new(shared: Arc<Shared>) -> Self {
         let cancel = shared.cancel.child_token();
-        Self { shared, cancel }
+        Self {
+            shared,
+            cancel,
+            identity: None,
+            tokens: None,
+        }
+    }
+
+    /// A handle on `shared`'s runtime and connections that acts as `identity`.
+    pub(crate) fn acting_as(
+        shared: Arc<Shared>,
+        identity: Client,
+        tokens: Option<Arc<TokenSource>>,
+    ) -> Self {
+        Self {
+            cancel: shared.cancel.child_token(),
+            shared,
+            identity: Some(Arc::new(identity)),
+            tokens,
+        }
+    }
+
+    /// The cluster client every call on this handle goes through.
+    pub(crate) fn cluster(&self) -> &Arc<Client> {
+        self.identity
+            .as_ref()
+            .unwrap_or_else(|| self.shared.client())
     }
 }
 
 impl Drop for FelixClient {
     fn drop(&mut self) {
         self.cancel.cancel();
+        if let Some(tokens) = &self.tokens {
+            tokens.close();
+        }
+        // A client dropped outside the runtime closes its streams without one.
+        let _enter = self.shared.handle().enter();
+        drop(self.identity.take());
     }
 }
 
@@ -293,6 +331,11 @@ pub struct FelixConnectOptions {
     /// A PEM file holding the private key of `client_cert_file`: PKCS#8,
     /// PKCS#1 or SEC1. Null presents no certificate. Needs `client_cert_file`.
     pub client_key_file: *const c_char,
+    /// Do not offer record headers to brokers. Off, the default, offers them,
+    /// so `felix_event_key` and `felix_event_header` work against a broker
+    /// that takes them; on, `felix_client_publish_with_headers` fails with
+    /// `FELIX_STATUS_UNSUPPORTED` and events carry no headers.
+    pub disable_record_headers: bool,
 }
 
 /// The options a connect applies, read out of [`FelixConnectOptions`].
@@ -309,6 +352,7 @@ struct ConnectOptions {
     reconnect_max_backoff: Option<Duration>,
     client_cert_file: *const c_char,
     client_key_file: *const c_char,
+    disable_record_headers: bool,
 }
 
 impl ConnectOptions {
@@ -345,6 +389,7 @@ impl Default for ConnectOptions {
             reconnect_max_backoff: None,
             client_cert_file: ptr::null(),
             client_key_file: ptr::null(),
+            disable_record_headers: false,
         }
     }
 }
@@ -421,6 +466,10 @@ impl ConnectOptions {
                 .map_or(ptr::null(), |p| unsafe {
                     p.cast::<*const c_char>().read_unaligned()
                 }),
+            disable_record_headers: flag(std::mem::offset_of!(
+                FelixConnectOptions,
+                disable_record_headers
+            )),
         })
     }
 }
@@ -498,6 +547,7 @@ pub unsafe extern "C" fn felix_client_connect_with(
         config.auth_token = token.map(str::to_string);
         config.publishers = options.publishers;
         config.timestamps = options.timestamps;
+        config.record_headers = !options.disable_record_headers;
         // SAFETY: null or a live token, per the contract above.
         let user = unsafe { user_token(cancel) };
 
@@ -711,7 +761,7 @@ pub unsafe extern "C" fn felix_client_endpoints(
         // SAFETY: null or a live token, per the contract above.
         let user = unsafe { user_token(cancel) };
         let done = Completion::<Endpoints>::new(callback, user_data)?;
-        let cluster = Arc::clone(client.shared.client());
+        let cluster = Arc::clone(client.cluster());
         let ask = async move {
             Ok(cluster
                 .endpoints()

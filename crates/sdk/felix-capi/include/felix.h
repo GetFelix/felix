@@ -115,6 +115,25 @@ typedef void (*FelixConditionCallback)(void *user_data,
                                        bool has_version,
                                        uint64_t version);
 
+// Called once when `felix_client_cache_put_if_lease` finishes. The first
+// fields are those of `FelixConditionCallback`.
+//
+// `token` is a NUL-terminated lease token when the write applied and the
+// broker minted one, else null; it expires at `expires_at`, in seconds since
+// the Unix epoch. Pass it to `felix_client_with_identity` to act as the lease
+// holder. It is a bearer secret. `token_refused` says why an applied write
+// came back without a token (the write stands), else null. Both strings are
+// valid only while the callback runs.
+typedef void (*FelixLeaseCallback)(void *user_data,
+                                   FelixStatus status,
+                                   const char *message,
+                                   bool applied,
+                                   bool has_version,
+                                   uint64_t version,
+                                   const char *token,
+                                   uint64_t expires_at,
+                                   const char *token_refused);
+
 // Called once when `felix_client_counter_add` or `felix_client_counter_get`
 // finishes. `has_value` is false for a counter that does not exist, which
 // only a get can report; an add always has the new value.
@@ -250,6 +269,11 @@ typedef struct FelixConnectOptions {
   // A PEM file holding the private key of `client_cert_file`: PKCS#8,
   // PKCS#1 or SEC1. Null presents no certificate. Needs `client_cert_file`.
   const char *client_key_file;
+  // Do not offer record headers to brokers. Off, the default, offers them,
+  // so `felix_event_key` and `felix_event_header` work against a broker
+  // that takes them; on, `felix_client_publish_with_headers` fails with
+  // `FELIX_STATUS_UNSUPPORTED` and events carry no headers.
+  bool disable_record_headers;
 } FelixConnectOptions;
 
 // Called once when `felix_client_connect` or `felix_client_connect_with`
@@ -520,13 +544,42 @@ typedef void (*FelixGroupInfosCallback)(void *user_data,
                                         const struct FelixGroupInfo *infos,
                                         size_t count);
 
-// Called once when `felix_client_idempotent_producer` finishes. On
-// `FELIX_STATUS_OK`, `producer` is a new producer the callee owns and frees
-// with `felix_producer_free`; otherwise it is null.
-typedef void (*FelixProducerCallback)(void *user_data,
-                                      FelixStatus status,
-                                      const char *message,
-                                      struct FelixProducer *producer);
+// One header: a name and a value, both byte strings.
+//
+// The name is UTF-8, not NUL terminated, non-empty, and must not start with
+// `felix.`, which the broker keeps for itself. The value may be empty. A name
+// may repeat within a record; order is kept.
+typedef struct FelixHeader {
+  const uint8_t *name;
+  size_t name_len;
+  const uint8_t *value;
+  size_t value_len;
+} FelixHeader;
+
+// A record to publish with headers.
+//
+// Set `size` to `sizeof(FelixRecord)`. A function that takes an array of
+// records steps through it by the first record's `size`, so a caller built
+// against an older header keeps working when fields are added.
+typedef struct FelixRecord {
+  // `sizeof(FelixRecord)` as the caller compiled it.
+  size_t size;
+  // The record's bytes, `payload_len` of them. May be null when the length
+  // is zero.
+  const uint8_t *payload;
+  size_t payload_len;
+  // The record's own key, stored with it and read back by `felix_event_key`.
+  // It does not choose the shard. Null with length zero is no key.
+  const uint8_t *key;
+  size_t key_len;
+  // `header_count` headers. May be null when the count is zero. A record
+  // with no key and no headers is published plain.
+  const struct FelixHeader *headers;
+  size_t header_count;
+} FelixRecord;
+
+// What the broker must have done before a publish completes.
+typedef int32_t FelixAckMode;
 
 // Called once when `felix_client_publish` finishes. On `FELIX_STATUS_OK`,
 // `has_offset` says whether the broker reported the record's log offset,
@@ -536,13 +589,6 @@ typedef void (*FelixPublishCallback)(void *user_data,
                                      const char *message,
                                      bool has_offset,
                                      uint64_t offset);
-
-// What the broker must have done before a publish completes.
-typedef int32_t FelixAckMode;
-
-// What a publish does when the connection is lost after the record may have
-// been written.
-typedef int32_t FelixDelivery;
 
 // How one record of a batch fared.
 typedef struct FelixRecordResult {
@@ -572,6 +618,50 @@ typedef void (*FelixBatchCallback)(void *user_data,
                                    const char *message,
                                    const struct FelixRecordResult *results,
                                    size_t count);
+
+// Called once when `felix_client_idempotent_producer` finishes. On
+// `FELIX_STATUS_OK`, `producer` is a new producer the callee owns and frees
+// with `felix_producer_free`; otherwise it is null.
+typedef void (*FelixProducerCallback)(void *user_data,
+                                      FelixStatus status,
+                                      const char *message,
+                                      struct FelixProducer *producer);
+
+// What a publish does when the connection is lost after the record may have
+// been written.
+typedef int32_t FelixDelivery;
+
+// One committed record from `felix_client_read`.
+typedef struct FelixStreamRecord {
+  uint64_t offset;
+  // The record's bytes, `payload_len` of them. Valid only while the
+  // callback runs; may be null when the length is zero.
+  const uint8_t *payload;
+  size_t payload_len;
+  // The principal that published the record, `publisher_len` bytes of
+  // UTF-8 that are not NUL terminated, or null when the broker recorded
+  // none. Valid only while the callback runs.
+  const char *publisher;
+  size_t publisher_len;
+  // When the broker appended the record, in microseconds since the Unix
+  // epoch.
+  uint64_t timestamp_micros;
+} FelixStreamRecord;
+
+// Called once when `felix_client_read` finishes.
+//
+// `records` holds `count` entries and is valid, with every payload in it,
+// only while the callback runs; copy what you keep. Read the next page from
+// `next_offset`: offsets that hold no record are passed over, so it is not
+// always the last offset plus one. A page that reaches what is committed
+// comes back short or empty rather than waiting. `records` is null and
+// `next_offset` zero on failure.
+typedef void (*FelixPageCallback)(void *user_data,
+                                  FelixStatus status,
+                                  const char *message,
+                                  const struct FelixStreamRecord *records,
+                                  size_t count,
+                                  uint64_t next_offset);
 
 // Called once when a sharded subscribe finishes. On `FELIX_STATUS_OK`,
 // `subscription` is a new subscription the callee owns; otherwise it is
@@ -624,6 +714,26 @@ typedef void (*FelixOffsetCallback)(void *user_data,
                                     const char *message,
                                     bool has_offset,
                                     uint64_t offset);
+
+// Called once when `felix_client_refresh_topology` finishes. On
+// `FELIX_STATUS_OK`, `count` is how many brokers the cluster named; zero is a
+// legitimate answer for a broker with no cluster behind it. Zero on failure.
+typedef void (*FelixCountCallback)(void *user_data,
+                                   FelixStatus status,
+                                   const char *message,
+                                   size_t count);
+
+// Called once when `felix_client_connections_per_node` finishes. On
+// `FELIX_STATUS_OK`, `addrs[i]` is a NUL-terminated `host:port` and
+// `counts[i]` is the live connections to it, for `len` brokers. Both arrays
+// and the strings are valid only while the callback runs; both are null on
+// failure or when there are none.
+typedef void (*FelixConnectionsCallback)(void *user_data,
+                                         FelixStatus status,
+                                         const char *message,
+                                         const char *const *addrs,
+                                         const size_t *counts,
+                                         size_t len);
 
 // What a trim did. Valid only while the callback runs.
 typedef struct FelixTrimOutcome {
@@ -914,6 +1024,31 @@ FelixStatus felix_client_cache_put_if(const struct FelixClient *client,
                                       const struct FelixCancelToken *cancel,
                                       FelixConditionCallback callback,
                                       void *user_data);
+
+// `felix_client_cache_put_if` that also asks for a lease token for the
+// writer. Use it to take a lock-like entry and hand the holder a token that
+// grants what the caller's lease templates name for the key.
+//
+// Callback and cancellation as for `felix_client_cache_put_if`, with the
+// token in `FelixLeaseCallback`. A broker that mints no token still applies
+// the write and says why in `token_refused`.
+//
+// # Safety
+//
+// As for `felix_client_cache_put_if`.
+FelixStatus felix_client_cache_put_if_lease(const struct FelixClient *client,
+                                            const char *tenant_id,
+                                            const char *ns,
+                                            const char *cache,
+                                            const char *key,
+                                            const uint8_t *value,
+                                            size_t len,
+                                            uint64_t ttl_ms,
+                                            FelixCacheCondition kind,
+                                            uint64_t version,
+                                            const struct FelixCancelToken *cancel,
+                                            FelixLeaseCallback callback,
+                                            void *user_data);
 
 // Remove `key` only if its entry has exactly `version`.
 //
@@ -1479,6 +1614,45 @@ FelixStatus felix_event_timestamp(const struct FelixEvent *event,
                                   uint64_t *out_micros,
                                   bool *out_has);
 
+// The record's key, as the publisher gave it in `FelixRecord.key`. This is
+// the key stored with the record, which does not route.
+//
+// Absent (`*out_data` null, `*out_len` zero) unless the publisher set one
+// and the client kept record headers on (`FelixConnectOptions.disable_record_headers`
+// off). An empty key is also reported as absent. `*out_data` stays valid until
+// the event is freed.
+//
+// # Safety
+//
+// `event` is a live event, and both out-pointers are writable.
+FelixStatus felix_event_key(const struct FelixEvent *event,
+                            const uint8_t **out_data,
+                            size_t *out_len);
+
+// How many headers the record carries, in the order the publisher sent them.
+// Zero for a plain record, and when record headers were not negotiated.
+//
+// # Safety
+//
+// `event` is a live event, and `out_count` is writable.
+FelixStatus felix_event_header_count(const struct FelixEvent *event, size_t *out_count);
+
+// One header of the record: its name (UTF-8, not NUL terminated) and value.
+//
+// `index` is below `felix_event_header_count`. A name may repeat. A value may
+// be empty, which reads as null with length zero. The pointers stay valid
+// until the event is freed.
+//
+// # Safety
+//
+// `event` is a live event, and the out-pointers are writable.
+FelixStatus felix_event_header(const struct FelixEvent *event,
+                               size_t index,
+                               const uint8_t **out_name,
+                               size_t *out_name_len,
+                               const uint8_t **out_value,
+                               size_t *out_value_len);
+
 // Free an event and its payload. Null is ignored.
 //
 // # Safety
@@ -1896,6 +2070,115 @@ FelixStatus felix_client_group_delete_stream(const struct FelixClient *client,
                                              FelixDeletedCallback callback,
                                              void *user_data);
 
+// Publish one record with a key and headers.
+//
+// The key does not route; the record goes where `felix_client_publish`
+// without a key sends it. Returns the record's log offset when there is one.
+// Fails with `FELIX_STATUS_INVALID_ARGUMENT` and sends nothing when a header
+// name is empty or starts with `felix.`, and with `FELIX_STATUS_UNSUPPORTED`
+// when the broker did not accept record headers or the client was connected
+// with `FelixConnectOptions.disable_record_headers`.
+//
+// # Safety
+//
+// `client` is a live client, the strings are NUL-terminated, `record` is
+// readable up to its `size` and its pointers are valid, `cancel` is null or a
+// live token, and `callback` is safe to call with `user_data` from any
+// thread.
+FelixStatus felix_client_publish_with_headers(const struct FelixClient *client,
+                                              const char *tenant_id,
+                                              const char *ns,
+                                              const char *stream,
+                                              const struct FelixRecord *record,
+                                              FelixAckMode ack,
+                                              const struct FelixCancelToken *cancel,
+                                              FelixPublishCallback callback,
+                                              void *user_data);
+
+// Publish a batch whose records carry keys and headers.
+//
+// `records` is `count` records in an array; the stride is the first
+// record's `size`. The batch goes to shard 0's owner as one frame, as
+// `felix_client_publish_batch` without a key does. A record with neither key
+// nor headers is published plain. A `count` of zero is
+// `FELIX_STATUS_INVALID_ARGUMENT`, as the C# client's empty batch is. Errors
+// are those of `felix_client_publish_with_headers`, and a refused header
+// fails the whole batch before anything is sent.
+//
+// # Safety
+//
+// As for `felix_client_publish_with_headers`, with `records` valid for
+// `count` records of that stride.
+FelixStatus felix_client_publish_batch_with_headers(const struct FelixClient *client,
+                                                    const char *tenant_id,
+                                                    const char *ns,
+                                                    const char *stream,
+                                                    const struct FelixRecord *records,
+                                                    size_t count,
+                                                    FelixAckMode ack,
+                                                    const struct FelixCancelToken *cancel,
+                                                    FelixBatchCallback callback,
+                                                    void *user_data);
+
+// A new client that acts as `tenant_id` with `token` over `client`'s
+// connections, for a gateway serving many principals from one pool.
+//
+// The new client follows shards and failovers as `client` does, but its
+// requests are checked against `token`'s grants alone. It is a full client:
+// free it with `felix_client_free`. It shares `client`'s runtime and
+// connections, so freeing `client` first does not stop it, and freeing it
+// closes only its own streams. Keep it alive while subscriptions made from
+// it are in use. A refused token completes with `FELIX_STATUS_AUTH`.
+//
+// `token` is fixed for the new client's life; make another client when it
+// expires, or use `felix_client_with_identity_provider`. A lease token from
+// `felix_client_cache_put_if_lease` is a valid `token`. `callback` runs once
+// with the new client, unless this returns something other than
+// `FELIX_STATUS_OK`; `FelixConnectCallback` describes it.
+//
+// # Safety
+//
+// `client` is a live client, the strings are NUL-terminated, `cancel` is null
+// or a live token, and `callback` is safe to call with `user_data` from any
+// thread.
+FelixStatus felix_client_with_identity(const struct FelixClient *client,
+                                       const char *tenant_id,
+                                       const char *token,
+                                       const struct FelixCancelToken *cancel,
+                                       FelixConnectCallback callback,
+                                       void *user_data);
+
+// `felix_client_with_identity` for a token that expires: the new client asks
+// `token_fetch` for a fresh one when it needs it, as a client connected with
+// `FelixConnectOptions.token_fetch` does.
+//
+// `token` is the first token and may be null, in which case the first
+// authentication calls `token_fetch`. An empty `token` counts as none. Return
+// values, `callback` and the free rules are those of
+// `felix_client_with_identity`.
+//
+// `token_fetch` is described by `FelixTokenFetch`; answer each reply with
+// `felix_token_reply_ok` or `felix_token_reply_err`. When this returns
+// `FELIX_STATUS_OK`, `token_release` runs exactly once later, after the new
+// client is freed (or the call fails or is cancelled) and every reply has
+// been answered. When it returns anything else `token_release` never runs and
+// `token_user_data` is still the caller's. `token_fetch` is required.
+//
+// # Safety
+//
+// As for `felix_client_with_identity`, with `token` null or NUL-terminated,
+// and `token_fetch`, `token_release` and `token_user_data` as
+// `FelixConnectOptions` documents them.
+FelixStatus felix_client_with_identity_provider(const struct FelixClient *client,
+                                                const char *tenant_id,
+                                                const char *token,
+                                                FelixTokenFetch token_fetch,
+                                                void *token_user_data,
+                                                FelixTokenRelease token_release,
+                                                const struct FelixCancelToken *cancel,
+                                                FelixConnectCallback callback,
+                                                void *user_data);
+
 // Ask the broker for a producer id and make a producer under it.
 //
 // A producer sends its batches under that id, numbered per shard, so the
@@ -2215,6 +2498,35 @@ FelixStatus felix_client_publish_records(const struct FelixClient *client,
                                          FelixBatchCallback callback,
                                          void *user_data);
 
+// Read one page of a durable stream shard's committed records, from `from`
+// and stopping before `end` when `has_end` is set, without subscribing.
+//
+// `max_records` of zero takes the broker's cap, and the broker also caps a
+// page's size. A `from` below what retention kept, or past the tail,
+// completes with `FELIX_STATUS_CURSOR` and details in
+// `felix_last_cursor_error`. Needs the stream's subscribe permission, and
+// only the shard's leader answers; the client follows it.
+//
+// A read leaves nothing behind when cancelled.
+//
+// # Safety
+//
+// `client` is a live client, the strings are NUL-terminated, `cancel` is null
+// or a live token, and `callback` is safe to call with `user_data` from any
+// thread.
+FelixStatus felix_client_read(const struct FelixClient *client,
+                              const char *tenant_id,
+                              const char *ns,
+                              const char *stream,
+                              uint32_t shard,
+                              uint64_t from,
+                              bool has_end,
+                              uint64_t end,
+                              uint32_t max_records,
+                              const struct FelixCancelToken *cancel,
+                              FelixPageCallback callback,
+                              void *user_data);
+
 // Subscribe to every shard of a stream.
 //
 // The shard count is asked of the broker. The call fails, and no
@@ -2399,6 +2711,23 @@ FelixStatus felix_subscription_start_offset(const struct FelixSubscription *subs
                                             uint64_t *out_offset,
                                             bool *out_has);
 
+// The stream's tail when the subscription was registered: an event below it
+// was already in the stream, and one at or past it was written after, with
+// none skipped in between. Generation-start records at the end of the log are
+// left out, so a reader that reaches it has caught up. From
+// `FELIX_START_LATEST` it equals the start offset.
+//
+// `*out_has` is false on a stream without a log, and from a broker that did
+// not negotiate offsets. Either out-pointer may be null.
+//
+// # Safety
+//
+// `subscription` is a live subscription, and the out-pointers are null or
+// writable.
+FelixStatus felix_subscription_live_offset(const struct FelixSubscription *subscription,
+                                           uint64_t *out_offset,
+                                           bool *out_has);
+
 // The first offset on one shard whose record was appended at or after
 // `at_micros` (microseconds since the Unix epoch), as the leading broker's
 // clock saw it. Subscribe with `FELIX_START_OFFSET` at it to replay from a
@@ -2466,6 +2795,34 @@ FelixStatus felix_token_reply_ok(const struct FelixTokenReply *reply, const char
 //
 // As for `felix_token_reply_ok`, with `message` null or NUL-terminated.
 FelixStatus felix_token_reply_err(const struct FelixTokenReply *reply, const char *message);
+
+// Ask a broker which brokers a client may connect to and add them to the
+// endpoints this client tries. Configured seeds are kept whatever the answer
+// was; a broker that has left the cluster stops being tried.
+//
+// A broker that predates discovery completes with an error, not a count of
+// zero.
+//
+// # Safety
+//
+// `client` is a live client, `cancel` is null or a live token, and
+// `callback` is safe to call with `user_data` from any thread.
+FelixStatus felix_client_refresh_topology(const struct FelixClient *client,
+                                          const struct FelixCancelToken *cancel,
+                                          FelixCountCallback callback,
+                                          void *user_data);
+
+// List the live connections the client holds to each broker. A broker starts
+// at one connection, shared by all traffic, and gains more only when its
+// streams are saturated.
+//
+// # Safety
+//
+// As for `felix_client_refresh_topology`.
+FelixStatus felix_client_connections_per_node(const struct FelixClient *client,
+                                              const struct FelixCancelToken *cancel,
+                                              FelixConnectionsCallback callback,
+                                              void *user_data);
 
 // Hide the records of `shard` below `before`, only if the shard's next offset
 // is exactly `expected_offset`. Reads below the floor are then refused as

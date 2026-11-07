@@ -27,6 +27,16 @@ public sealed class FelixSubscription : IAsyncEnumerable<FelixEvent>, IAsyncDisp
         }
 
         StartOffset = has != 0 ? unchecked((long)offset) : null;
+
+        status = NativeMethods.felix_subscription_live_offset(call.Pointer, &offset, &has);
+        if (status != 0)
+        {
+            var message = NativeMethods.LastError();
+            handle.Dispose();
+            throw FelixException.FromStatus(status, message);
+        }
+
+        LiveOffset = has != 0 ? unchecked((long)offset) : null;
     }
 
     /// <summary>
@@ -35,6 +45,14 @@ public sealed class FelixSubscription : IAsyncEnumerable<FelixEvent>, IAsyncDisp
     /// <c>offset - StartOffset - SkippedBefore</c>.
     /// </summary>
     public long? StartOffset { get; }
+
+    /// <summary>
+    /// The stream's tail when the subscription was registered. An event below it was already in the
+    /// stream; one at or past it was written after, with none skipped in between. A reader that reaches
+    /// it has caught up. Equals <see cref="StartOffset"/> from <see cref="StartPosition.Latest"/>. Null on a
+    /// stream without a log.
+    /// </summary>
+    public long? LiveOffset { get; }
 
     /// <summary>Why the subscription ended, or <see cref="Felix.CloseReason.Open"/> while it is live.</summary>
     public CloseReason CloseReason

@@ -40,6 +40,9 @@ stops and reports a `stalled` finding. That means some broker task never
 waits on a timer, which holds the paused clock still; the finding says so and
 prints no census, since the busy task would hold that up too.
 
+`FELIX_SIM_POWER_LOSS=1` turns on power cuts ([Power loss](#power-loss)) the
+same way.
+
 `FELIX_SIM_PLACEMENT=1` turns on placement faults (below) for `seeds`,
 `replay` and `each_seed_runs_the_same_twice`:
 
@@ -171,8 +174,9 @@ cargo test -p felix-cluster --lib history::
    starts its shard tasks. Once every broker has registered, the run finalizes
    replica election, so brokers elect a new leader themselves when one is lost.
 2. **Faults.** For the first 90 seconds a schedule drawn from the seed crashes
-   and kills brokers and restarts them, partitions them, freezes them, drops one direction of
-   a link, and makes the control plane slow, paused or down. Faults may
+   and kills brokers or cuts their power and restarts them, partitions them,
+   freezes them, drops one direction of a link, and makes the control plane
+   slow, paused or down. Faults may
    overlap. Eight steps in a hundred pause the control plane and, a second or
    two later, crash the broker that leads the most shards, which is the case
    election has to get right when nobody can say who leads. The step is drawn
@@ -192,8 +196,9 @@ cargo test -p felix-cluster --lib history::
    history and the brokers' state.
 
 A crash drops a broker's process state and reopens its data directory, so it
-also tests recovery. It is a process crash, not a power cut: the kernel keeps
-what the broker wrote, so nothing unsynced is lost.
+also tests recovery. Most crashes are process crashes: the kernel keeps what
+the broker wrote, so nothing unsynced is lost. A power cut, in the runs that
+have one, is the exception (see [Power loss](#power-loss)).
 
 The seed draws each crash as one of two kinds, half and half. A clean crash
 records the stop as clean in the broker's run state, so the restart keeps its
@@ -202,9 +207,58 @@ storage id. A kill leaves the run state as a kill after a failed fsync does
 a new storage id and starts with `UncleanStart`, so it leads no shard from a
 copy it led before until a leader has shipped it. The choice comes from its own
 random stream, so a seed keeps the same faults at the same times; only what a
-crash leaves behind changed, which changes the trace after the first kill. A
-run that fsyncs on commit cannot be left that way, so a kill there is the same
-as a clean crash.
+crash leaves behind changed, which changes the trace after the first kill.
+
+### Power loss
+
+With power loss on (`SimConfig::with_power_loss`, or `FELIX_SIM_POWER_LOSS=1`
+for the seed tests), the brokers run with `FsyncMode::OnCommit`, so a record
+is synced before it is acknowledged, and each crash that would be a kill cuts
+the power instead. It is off by default, and turning it on keeps every fault
+of a seed at the same time. A kill there would mean nothing: the run state of
+an `OnCommit` broker never says it acknowledged unsynced records.
+
+A cut at a random instant would almost never find an append in flight, because
+a simulated sync takes no time. So the cut is armed and lands inside the next
+append to one of the broker's log segments, or after two virtual seconds with
+no append in flight. Earlier batches in that segment may still be unsynced, as
+under group commit, and the segment may be new, with its header unsynced. In
+the same instant:
+
+1. The device keeps what a power loss would leave
+   ([The filesystem](#the-filesystem)), and the append in flight never comes
+   back whole. Its size reached the disk in full or only in part, but at
+   least one byte past where it began, and each 512 B sector of its data
+   arrived or did not, at least one not when the size is whole. A missing
+   sector can sit before one that arrived, which is where recovery has to
+   tell a torn tail from corruption inside the log.
+2. The broker stops. Clients waiting on it get no answer, and peers lose it.
+   Anything it writes after the cut is lost.
+3. The data directory becomes what the device held, and the broker restarts
+   on it later, as after any crash.
+
+The run state still says the broker was running, so the restart reads the
+stop as a crash. Under `OnCommit` it still keeps its storage id and does not
+run `UncleanStart`, because nothing it acknowledged was unsynced. Its
+copy is trusted, so the power loss does not count towards the shards
+`ElectionSettles` exempts after unclean kills. If a restart after a power
+loss did run `UncleanStart`, the copy would count like a killed one.
+
+Recovery must then repair the torn append. The storage records each segment
+whose torn tail it repairs, or that it removes as unfinished, under a
+simulated directory. The `TornTailRepaired` checker fails the seed when the
+segment a cut tore is not among them on that broker before its next power
+loss or the end of the run. A segment that came back without its name, or
+with nothing past where the append began, has nothing to repair and is not
+held to it.
+
+Clients in these seeds pad each record to between 1 and 4 KiB, so an append
+spans several sectors. A read checks the padding, so a record with damaged
+bytes shows up in the history as one nobody wrote.
+Under a simulator every sync runs on the run's own runtime, so what the
+device holds at the cut does not depend on thread timing and a seed replays
+exactly. The faults list says, for each cut, whether it landed in an
+append.
 
 ### Placement faults
 
@@ -302,6 +356,7 @@ A cluster checker runs at up to three kinds of point:
 | `AtMostOneServing` | every second, Healed, End | Two brokers would take a write for one shard at the same instant. The brokers are read in one step, so none moves between two reads. It covers shards protected by the lease only. The model asserts it for those, and for a shard acknowledged by a majority of followers it asserts `AckedHeldByLeader` instead: a deposed leader may keep serving there until it learns of the newer generation, because it cannot collect a majority once its successor has fenced one. Each broker says which kind a shard is from its own write gate, so a shard opened before election was finalized stays checked. Once election is finalized that is every stream shard. A run does not finalize `fenced_caches`, so its cache shards stay on the lease and are the ones checked. |
 | `AckedHeldByLeader` | every second, Healed, End | A broker serving a shard does not hold, at the offset the client was told, an append that was acknowledged before the sample. A broker at the newest generation any broker knows must hold all of them. A deposed one still serving is held only to the offsets below its quorum mark at its own generation. Past that mark its log may hold records no majority took, at offsets where its successor has since acknowledged others. Below it, a hole or a different record is a lost acknowledgement. After the heal, a shard served by nobody at the newest generation is looked at again until the settle deadline, and at the end its server is held to every acknowledged append. The record is read from the broker's log whether or not a quorum has committed it. A shard with no server is left to `ElectionSettles`. |
 | `AdoptedMatchesOpened` | every second, Healed, End | A broker that serves a shard at generation `g` does not route the shard to itself at `g`, or its lifecycle did not open `g`. The model's version of this also compares the replica set with the control plane's; the simulator does not read the set. |
+| `TornTailRepaired` | End | A power cut landed inside an append, and the broker's recovery did not repair that segment's torn tail before its next power loss or the end of the run. |
 | `GenerationBurn` | End | A warning, never a failure. A shard went through more generations than `2 * faults + 2`, counting the faults in the plan that could have cost its leader: a crash, freeze or isolation of a broker that has led it, a split with a former leader in the minority, a dropped link to one, a paused or downed control plane, or the pause-then-crash fault. Many elections for few faults often means candidates deposing each other. |
 
 A violation that lasts is reported once, with a census of the shard. After three
@@ -368,6 +423,10 @@ Seeds 1 to 20, built with the flag, as of the change that made replay exact:
 | 7, 8, 10, 12, 15, 16, 17, 18, 20 | After the heal some shards are served by nobody (`ElectionSettles`), so they cannot be read (`final-reads`). The census shows the control plane still naming the old leader while the brokers route to an elected one. | not filed yet |
 | 2, 11 | A shard cannot be read to its tail after the heal (`final-reads`). | not filed yet |
 | 9 | The history checker finds a read that misses an append acknowledged before it began (rule 16, G-single-realtime). | not filed yet |
+
+With power loss on, seed 1 cuts the power during an append, and
+`seed_1_power_cuts_run_the_same_twice_and_are_repaired` checks that it replays
+the same and that recovery repairs the torn tail.
 
 Seeds 1 to 8 with placement faults on, built with the flag, as of the change
 that added them. None breaks a history rule or a cluster check other than
@@ -457,6 +516,14 @@ observer used by the storage tests (`io/power_loss.rs`):
   metadata in order, so the model can leave states those filesystems would not.
 - A tree where everything was synced comes back unchanged.
 
+`sim_fs::arm_power_cut(root, seed, on_cut)` is the version the nemesis uses.
+It waits for the next append to a log segment, tears that append as described
+under [Power loss](#power-loss), and fixes what the device holds at that
+moment. `on_cut` runs inside the write, to stop the broker, and is told which
+segment it tore. `sim_fs::reboot(root)` then puts the device's contents in
+place. `sim_fs::cut_power` cuts at once instead, and
+`sim_fs::torn_tails_repaired` lists the segments recovery repaired.
+
 The same seed gives the same result: listings are in name order and the model
 uses no clock and no OS randomness. Handles opened before a crash are cut off
 from the new tree, as they would be from a rebooted disk.
@@ -469,9 +536,10 @@ What it leaves out:
 - Flushes are exact. Real storage can also complete a write that was in
   flight when the flush started; the observer's "adversarial capture" has no
   counterpart here because a simulated flush is instant.
-- The nemesis does not cut the power yet. Today a crash is a process crash,
-  clean or a kill that leaves the run state unclean. `sim_fs::crash` is there
-  for a power-loss fault to call.
+- The machine does not reboot. The run state records the boot a run started
+  in, and a restart after a real power loss sees a new one. The simulator
+  cannot fake that, so it cuts the power only under `OnCommit`, where the boot
+  does not matter.
 
 ### The peer network
 
