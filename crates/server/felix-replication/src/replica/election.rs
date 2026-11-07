@@ -13,11 +13,11 @@
 use felix_storage::disk_log::{Membership, ReplicaSet, SetCheck};
 use felix_wire::internal::{
     ErrorCode, Fence, FenceElection, InternalMessage, PreVote, PreVoteAnswer, PreVoteRefusal,
-    ReplicaSetView,
+    RefusalReason, ReplicaSetView,
 };
 use tokio::time::Instant;
 
-use super::{ReplicaHandler, refused};
+use super::{ReplicaHandler, refused, refused_for};
 use crate::peer::metrics;
 
 impl ReplicaHandler {
@@ -463,11 +463,10 @@ impl ReplicaHandler {
             "refusing a fence: this copy is not a voter until it catches up with a set naming it",
         );
         metrics::record_replicated(metrics::OUTCOME_REFUSED);
-        Some(refused(
+        Some(refused_for(
             correlation_id,
             ErrorCode::Unauthorized,
-            0,
-            "this broker does not vote until a set change re-admits it".to_string(),
+            RefusalReason::NotVoter,
         ))
     }
 

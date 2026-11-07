@@ -26,6 +26,8 @@ internal struct NativeConnectOptions
     public ulong ReconnectDeadlineMs;
     public ulong ReconnectBackoffMs;
     public ulong ReconnectMaxBackoffMs;
+    public nint ClientCertFile;
+    public nint ClientKeyFile;
 }
 
 /// <summary><c>FelixGroupRecord</c>, borrowed for the length of a callback.</summary>

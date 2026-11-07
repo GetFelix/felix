@@ -652,6 +652,14 @@ impl SimBroker {
     /// token fires and may outlive this call by a poll; a requester that
     /// refuses their requests, as the simulated network does, is enough.
     pub fn crash(self) {
+        self.halt();
+    }
+
+    /// Stop every task as [`SimBroker::crash`] does, without giving up the
+    /// broker, for a caller that holds only a reference at the moment the
+    /// process dies, such as a power cut inside a write. A task that is
+    /// running finishes its current poll.
+    pub fn halt(&self) {
         self.shutdown.cancel();
         if let Some(membership) = &self.membership {
             membership.handle.abort();
