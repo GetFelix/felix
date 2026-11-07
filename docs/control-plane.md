@@ -1576,7 +1576,15 @@ the instance running placement has watched it pending for
 counted in `felix_shard_moves_timed_out_total`; both new members dying, or the
 leader never reporting, would otherwise hold the shard's set for good), the
 shard no longer elects, as when its consistency changes to `Leader`
-(`pending_set_dropped`), or an operator cancels it (`pending_set_cancelled`).
+(`pending_set_dropped`), an operator cancels it (`pending_set_cancelled`), or
+the leader reports a member of the set back on new storage and caught up
+(`pending_set_member_replaced`). That last one comes from a broker that
+restarted after an unclean stop: its copy counts toward neither set until it
+is re-admitted, and re-admission waits for the change to end. After a move
+the new set is the old one less a copy, so a majority of the old set needs
+every member of the new one. Without the drop, the shard would take no
+acknowledged writes until the timeout. The member is re-admitted on the next
+pass ([Re-admitting a replaced copy](#re-admitting-a-replaced-copy)).
 The timeout clock is the instance's own and starts again when the lease
 changes hands. Follower replacement, top-up and trim wait only until then.
 A cut-over that keeps the set,
@@ -2056,7 +2064,7 @@ after the fence.
 
 | Metric | Meaning |
 | --- | --- |
-| `felix_shard_move_steps_total{step}` | move steps written: `stage`, `fence`, `cut_over`, `abandon`, `halted` (the destination halted), `timed_out`, `stalled` (a restore's copy stopped moving), `reseat`, `restore`, `seat`, `take_pending_set` (a pending replica set taken on the leader's report), `pending_set_timed_out`, `pending_set_dropped`, `pending_set_cancelled` (one dropped), `readmit` (a replaced copy named by its new storage id and held as a learner), `election_refused` (a leader named again above a generation promised to an elected broker), `set_unknown` (a leader named again above a generation whose set before it could not learn, or that a newer ballot holds), and an operator's `cancel`, `retake` and `discard` |
+| `felix_shard_move_steps_total{step}` | move steps written: `stage`, `fence`, `cut_over`, `abandon`, `halted` (the destination halted), `timed_out`, `stalled` (a restore's copy stopped moving), `reseat`, `restore`, `seat`, `take_pending_set` (a pending replica set taken on the leader's report), `pending_set_timed_out`, `pending_set_dropped`, `pending_set_cancelled`, `pending_set_member_replaced` (one dropped), `readmit` (a replaced copy named by its new storage id and held as a learner), `election_refused` (a leader named again above a generation promised to an elected broker), `set_unknown` (a leader named again above a generation whose set before it could not learn, or that a newer ballot holds), and an operator's `cancel`, `retake` and `discard` |
 | `felix_shards_under_replicated` | shards with fewer copies on serving brokers than their replication factor; non-zero for longer than the restore delay plus a copy means no broker can take the copy, or placement is paused |
 | `felix_shard_replicas_missing` | the copies those shards are missing between them |
 | `felix_shard_replicas_halted` | copies whose leader reports it has stopped shipping to them; counted as missing, kept out of placement, and replaced after the restore delay |

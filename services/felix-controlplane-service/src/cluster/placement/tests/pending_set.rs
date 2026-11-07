@@ -608,3 +608,108 @@ fn an_instance_dates_a_pending_set_from_when_it_first_saw_it() {
         Some(&990)
     );
 }
+
+/// Every copy level, and `replaced`, if any, caught up under a new storage
+/// identity at generation 5. The leader never reports the joint start.
+struct Replaced {
+    replaced: Option<&'static str>,
+}
+
+impl CaughtUp for Replaced {
+    fn is_caught_up(&self, _key: &ShardKey, _node_id: &str) -> bool {
+        true
+    }
+
+    fn reported_generation(&self, _key: &ShardKey) -> Option<u64> {
+        Some(5)
+    }
+
+    fn as_of_millis(&self) -> Option<u64> {
+        Some(NOW)
+    }
+
+    fn pending_since_millis(&self, _key: &ShardKey, generation: u64) -> Option<u64> {
+        Some(NOW).filter(|_| generation == 5)
+    }
+
+    fn readmittable(&self, _key: &ShardKey, generation: u64, leader: &str) -> Option<String> {
+        self.replaced
+            .filter(|_| generation == 5 && leader == "broker-b")
+            .map(str::to_string)
+    }
+}
+
+/// A move from a to b cut over at generation 5: the set {a, b, c, d} the
+/// staged move made becomes {b, a, c}, pending.
+fn cut_over_pending() -> ShardAssignment {
+    ShardAssignment {
+        state: ShardState::Assigning,
+        generation: 5,
+        pending_set: Some(PendingSet {
+            replicas: vec!["broker-a".to_string(), "broker-c".to_string()],
+            generation: 5,
+        }),
+        ..assigned("orders", "broker-b", &["broker-a", "broker-c", "broker-d"])
+    }
+}
+
+fn decide_replaced(existing: ShardAssignment, reports: &Replaced) -> Decision {
+    let streams = [Stream {
+        consistency: ConsistencyLevel::Quorum,
+        ..replicated_stream("orders", 1, 3)
+    }];
+    let nodes: Vec<Node> = ["broker-a", "broker-b", "broker-c", "broker-d"]
+        .into_iter()
+        .map(|id| node(id, NodeLifecycle::Live, None))
+        .collect();
+    let policy = MovePolicy {
+        joint_fence: true,
+        ..electing()
+    };
+    plan_with(&streams, &[], &nodes, &[existing], reports, policy)
+        .shards
+        .remove(0)
+        .decision
+}
+
+/// A member of the new set came back on new storage after the cut-over
+/// (seed 2 of the simulator, events/1). Its copy counts toward neither set
+/// until it is re-admitted, and the leader ships only to the new set, so the
+/// old set's majority of three cannot form. The change is dropped at once,
+/// not after the timeout, and the member is re-admitted on the next pass.
+#[test]
+fn a_pending_set_is_dropped_when_a_member_comes_back_on_new_storage() {
+    assert_eq!(
+        decide_replaced(cut_over_pending(), &Replaced { replaced: None }),
+        Decision::Waiting(Blocked::SetChangePending)
+    );
+
+    let decision = decide_replaced(
+        cut_over_pending(),
+        &Replaced {
+            replaced: Some("broker-c"),
+        },
+    );
+    let Decision::Move(MoveStep::PendingSetMemberReplaced { node }, dropped) = decision else {
+        panic!("expected the change to be dropped, got {decision:?}");
+    };
+    assert_eq!(node, "broker-c");
+    assert_eq!(dropped.pending_set, None);
+    assert_eq!(dropped.leader, "broker-b");
+    assert_eq!(dropped.replicas, cut_over_pending().replicas);
+
+    let after = ShardAssignment {
+        generation: 5,
+        ..dropped
+    };
+    let readmit = decide_replaced(
+        after,
+        &Replaced {
+            replaced: Some("broker-c"),
+        },
+    );
+    assert!(
+        matches!(&readmit, Decision::Move(MoveStep::Readmit { node }, _) if node == "broker-c"),
+        "{readmit:?}"
+    );
+}
