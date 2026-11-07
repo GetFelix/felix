@@ -1264,6 +1264,7 @@ copy_trust
 distrusted
 trusted <key in lowercase hex>
 doubted <key in lowercase hex>
+unkept <key in lowercase hex>
 ```
 
 The first line is fixed. `distrusted` appears once a start rotated the
@@ -1277,8 +1278,11 @@ level through the leader's generation start and the batch's commit offset,
 above zero (`docs/replication-design.md`, "One fence rule for every change of
 leader"). A `doubted` line names a copy this broker led before such a crash,
 written before the copy takes a newer leader's ballot, and removed when a
-newer leader ships it level with its generation start. A rotation keeps
-`doubted` lines.
+newer leader ships it level with its generation start. An `unkept` line
+names a copy that took a ballot while its promises counted for nothing, as a
+learner answering a unified fence does, written before that ballot and
+removed when the copy is readmitted. Such a ballot is no kept promise, even
+after a crash that keeps it. A rotation keeps `doubted` and `unkept` lines.
 
 A key is the shard's replication key (tenant, namespace, stream, shard and
 kind) as JSON. Lines are sorted. A file that does not decode trusts no copy

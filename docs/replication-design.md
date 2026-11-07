@@ -705,7 +705,11 @@ synced, before the copy attests trusted (`docs/storage-format.md`). A later
 clean start reads the file, and only the next rotation clears it again. The
 same file names the copies this broker led before the crash, written before
 such a copy takes a newer leader's ballot, so the refusal in "A leader's own
-crash" also survives that ballot and a clean restart. A memory-only broker has
+crash" also survives that ballot and a clean restart. It also names a copy that took a
+ballot while its promises counted for nothing, such as a learner answering a
+unified fence. Until it is readmitted that copy attests no kept ballot, and an
+older caller continuing from that ballot is refused as before, even after a
+crash that kept the ballot. A memory-only broker has
 no file and attests no kept ballot, so it never attests trusted.
 
 The sets a fence must cover are its own and the set of every start from an

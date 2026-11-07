@@ -12,7 +12,9 @@
 //! The file also names the copies this broker led before such a crash
 //! ([`CopyTrust::doubt`]) until a newer leader ships to them. The copy's
 //! ballot says so only until it takes a newer leader's, and a clean restart
-//! has nothing else. See `docs/storage-format.md`, "Copy trust".
+//! has nothing else. And it names the copies that took a ballot while their
+//! promises counted for nothing ([`CopyTrust::unkeep`]) until they are
+//! readmitted, since that ballot looks like any other after a restart. See `docs/storage-format.md`, "Copy trust".
 
 use std::path::{Path, PathBuf};
 
@@ -29,6 +31,7 @@ const HEADER: &str = "copy_trust\n";
 const DISTRUSTED: &str = "distrusted";
 const TRUSTED: &str = "trusted ";
 const DOUBTED: &str = "doubted ";
+const UNKEPT: &str = "unkept ";
 
 /// What the file records.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -37,11 +40,12 @@ struct State {
     distrusted: bool,
     trusted: HashSet<Vec<u8>>,
     doubted: HashSet<Vec<u8>>,
+    unkept: HashSet<Vec<u8>>,
 }
 
 /// Record, durably, that every copy on `root` may have lost acknowledged
 /// records: no copy is trusted until [`CopyTrust::trust`] names it again.
-/// Doubted copies stay doubted.
+/// Doubted and unkept copies stay so.
 pub(crate) fn distrust_all(root: &Path) -> Result<()> {
     let mut state = read(root)?;
     state.distrusted = true;
@@ -119,6 +123,26 @@ impl CopyTrust {
         self.update(|state| state.doubted.remove(key))
     }
 
+    /// Whether [`Self::unkeep`] named `key` and [`Self::clear_unkept`] has
+    /// not since.
+    pub fn unkept(&self, key: &[u8]) -> bool {
+        self.state.lock().unkept.contains(key)
+    }
+
+    /// Record, durably, that the copy named `key` is about to take a ballot
+    /// while its promises count for nothing, as a learner does. That ballot
+    /// is no kept promise, even after a crash that keeps it. Call before the
+    /// ballot is written. Blocks on the sync.
+    pub fn unkeep(&self, key: &[u8]) -> Result<()> {
+        self.update(|state| state.unkept.insert(key.to_vec()))
+    }
+
+    /// Record, durably, that the copy named `key` was readmitted: its
+    /// promises count again. Blocks on the sync.
+    pub fn clear_unkept(&self, key: &[u8]) -> Result<()> {
+        self.update(|state| state.unkept.remove(key))
+    }
+
     /// Apply `change` and write the result, if it changed anything, before
     /// any reader sees it. Held under the lock so writes do not cross.
     fn update(&self, change: impl FnOnce(&mut State) -> bool) -> Result<()> {
@@ -143,7 +167,11 @@ fn encode(state: &State) -> Vec<u8> {
         out.push_str(DISTRUSTED);
         out.push('\n');
     }
-    for (prefix, keys) in [(TRUSTED, &state.trusted), (DOUBTED, &state.doubted)] {
+    for (prefix, keys) in [
+        (TRUSTED, &state.trusted),
+        (DOUBTED, &state.doubted),
+        (UNKEPT, &state.unkept),
+    ] {
         let mut keys: Vec<&Vec<u8>> = keys.iter().collect();
         keys.sort_unstable();
         for key in keys {
@@ -165,8 +193,10 @@ fn decode(bytes: &[u8]) -> Option<State> {
             state.distrusted = true;
         } else if let Some(hex) = line.strip_prefix(TRUSTED) {
             state.trusted.insert(unhex(hex)?);
+        } else if let Some(hex) = line.strip_prefix(DOUBTED) {
+            state.doubted.insert(unhex(hex)?);
         } else {
-            state.doubted.insert(unhex(line.strip_prefix(DOUBTED)?)?);
+            state.unkept.insert(unhex(line.strip_prefix(UNKEPT)?)?);
         }
     }
     Some(state)

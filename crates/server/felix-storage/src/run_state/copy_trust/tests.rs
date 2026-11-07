@@ -106,12 +106,38 @@ fn a_doubt_outlives_restarts_until_cleared() {
     assert!(!CopyTrust::open(root).expect("open").doubted(A));
 }
 
+/// **An unkept copy stays unkept, on a directory that never rotated too,
+/// through restarts and rotations until it is readmitted.**
+#[test]
+fn an_unkept_copy_outlives_restarts_until_readmitted() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let mut fresh = counter();
+    let begun = start(root, 1, &mut fresh);
+    CopyTrust::open(root)
+        .expect("open")
+        .unkeep(A)
+        .expect("unkeep");
+    let trust = CopyTrust::open(root).expect("open");
+    assert!(trust.unkept(A) && !trust.unkept(B));
+    assert!(trust.trusted(B), "naming an unkept copy distrusts no other");
+    mark_clean(root, begun.id).expect("clean stop");
+    start(root, 1, &mut fresh);
+    assert!(CopyTrust::open(root).expect("open").unkept(A));
+    start(root, 2, &mut fresh);
+    let trust = CopyTrust::open(root).expect("open");
+    assert!(trust.unkept(A), "a rotation keeps it");
+    trust.clear_unkept(A).expect("clear");
+    assert!(!CopyTrust::open(root).expect("open").unkept(A));
+}
+
 #[test]
 fn records_round_trip_and_a_damaged_one_trusts_nothing() {
     let state = State {
         distrusted: true,
         trusted: [A.to_vec(), vec![0, 255]].into_iter().collect(),
         doubted: [B.to_vec()].into_iter().collect(),
+        unkept: [A.to_vec()].into_iter().collect(),
     };
     assert_eq!(decode(&encode(&state)), Some(state));
     assert_eq!(decode(HEADER.as_bytes()), Some(State::default()));

@@ -1089,6 +1089,10 @@ impl ReplicaHandler {
                     );
                 }
                 let learner = self.admit_when_caught_up(&key, log_kind, &log).await;
+                if !learner && own_kind(log_kind).is_none() {
+                    self.record_readmitted(&crate::driver::watch_key(&key))
+                        .await;
+                }
                 metrics::record_replicated(metrics::OUTCOME_OK);
                 InternalMessage::ReplicateOk(ReplicateOk {
                     correlation_id,
@@ -1372,7 +1376,7 @@ impl ReplicaHandler {
         let confirming = log.accepted_generation() == generation;
         // Read before the ballot moves to this generation: a continuing
         // leader counts a rotated copy only on this (#2047).
-        let kept_ballot = self.continues_from(&log, generation, sender);
+        let kept_ballot = self.continues_from(&key, &log, generation, sender);
         if let Some(refusal) = accept_sender(&log, correlation_id, &key, generation, sender).await {
             return refusal;
         }
@@ -1438,7 +1442,8 @@ impl ReplicaHandler {
         let kept = self
             .fleet
             .as_ref()
-            .is_some_and(|fleet| fleet.kept_ballots());
+            .is_some_and(|fleet| fleet.kept_ballots())
+            && !self.unkept(key);
         let shard = crate::driver::watch_key(key);
         let trusted = kept
             && !(self.poisoned)()
@@ -1457,6 +1462,60 @@ impl ReplicaHandler {
 
     fn copy_trust(&self) -> Option<&Arc<felix_storage::run_state::copy_trust::CopyTrust>> {
         self.fleet.as_ref().and_then(|fleet| fleet.copy_trust())
+    }
+
+    /// Whether `key`'s copy took a ballot while its promises counted for
+    /// nothing and has not been readmitted since ([`Self::unkeep`]).
+    fn unkept(&self, key: &felix_router::ShardKey) -> bool {
+        self.copy_trust().is_some_and(|trust| {
+            trust.unkept(&crate::unclean::copy_key(&crate::driver::watch_key(key)))
+        })
+    }
+
+    /// Record, durably, that `key`'s copy is about to take a ballot while its
+    /// promises count for nothing, as a learner answering a unified fence
+    /// does. Call before the ballot is written. Afterwards the ballot reads
+    /// as a promise kept through any crash, so without this record an older
+    /// caller's fence would count it ([`Self::continues_from`]). An error
+    /// means the ballot must not be taken.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) async fn unkeep(
+        &self,
+        key: &felix_router::ShardKey,
+    ) -> Result<(), felix_storage::StorageError> {
+        let Some(trust) = self.copy_trust() else {
+            return Ok(());
+        };
+        let name = crate::unclean::copy_key(&crate::driver::watch_key(key));
+        if trust.unkept(&name) {
+            return Ok(());
+        }
+        let trust = Arc::clone(trust);
+        tokio::task::spawn_blocking(move || trust.unkeep(&name))
+            .await
+            .unwrap_or_else(|err| Err(felix_storage::StorageError::Io(std::io::Error::other(err))))
+    }
+
+    /// The copy of `shard` is no learner after a batch: readmitted, its
+    /// promises count again.
+    async fn record_readmitted(&self, shard: &crate::ShardKey) {
+        let Some(trust) = self.copy_trust() else {
+            return;
+        };
+        let name = crate::unclean::copy_key(shard);
+        if !trust.unkept(&name) {
+            return;
+        }
+        let trust = Arc::clone(trust);
+        if let Ok(Err(err)) = tokio::task::spawn_blocking(move || trust.clear_unkept(&name)).await {
+            tracing::warn!(
+                stream = %shard.stream,
+                shard = shard.shard,
+                error = %err,
+                "could not record that this copy was readmitted; its promises count for nothing \
+                 until the next batch records it",
+            );
+        }
     }
 
     /// Record in the directory's copy-trust record that a leader shipped
@@ -1736,7 +1795,7 @@ impl ReplicaHandler {
         };
         // The leader this copy promised the generation before, moving on to
         // the next: it holds what this copy might have lost (#2047).
-        if self.continues_from(log, generation, sender) {
+        if self.continues_from(key, log, generation, sender) {
             return None;
         }
         let shard = crate::driver::watch_key(key);
@@ -2111,8 +2170,13 @@ impl ReplicaHandler {
     /// as it would. Lets a doubted copy promise, never vouch: it stays
     /// doubted. The fence answer says it held ([`FenceOk::kept_ballot`]), and
     /// only that lets a continuing leader count the copy (#2047).
+    ///
+    /// Nor when the copy took its ballot while its promises counted for
+    /// nothing ([`Self::unkeep`]): that ballot looks like any other after a
+    /// restart.
     fn continues_from(
         &self,
+        key: &felix_router::ShardKey,
         log: &felix_broker::StreamLog,
         generation: u64,
         sender: Option<&str>,
@@ -2120,7 +2184,8 @@ impl ReplicaHandler {
         let kept = self
             .unclean
             .as_ref()
-            .is_some_and(|unclean| unclean.kept_promises());
+            .is_some_and(|unclean| unclean.kept_promises())
+            && !self.unkept(key);
         kept && sender.is_some_and(|sender| {
             sender != self.router.local_node_id()
                 && (generation.checked_sub(1) == Some(log.accepted_generation())
