@@ -1,4 +1,4 @@
-name: Perf scratch (#2069 RF 3 A/B)
+name: Perf scratch (#2069 burst 1024 rerun)
 
 # Temporary: RF 3 steady + promotion-burst A/B. m = main, f = branch (#2069).
 
@@ -58,7 +58,7 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4, 5, 6]
-        payload: [1024, 65536]
+        payload: [1024]
     env:
       ROUNDS: "5"
       BENCH_PAYLOAD: ${{ matrix.payload }}
@@ -103,6 +103,7 @@ jobs:
                 cat $(find $logs -name '*.log') | grep -E ' (WARN|ERROR) ' | sed -E 's/^.*(WARN|ERROR) //; s/bulk-[0-9]+/S/g; s/[0-9]+/N/g' \
                   | cut -c1-160 | sort | uniq -c | sort -rn | head -25
               } > $s 2>&1 || true
+              grep -h "BENCH_JSON " $p/out/cluster-$r-$side.log | grep -q "\"failed\":[1-9]" && tar czf $p/out/logs-$r-$side.tgz -C $logs . || true
               rm -rf $logs
               echo "::endgroup::"
             done
