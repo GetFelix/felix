@@ -226,6 +226,7 @@ where
         membership::Start::FromView(view) => (None, Some(*view)),
     };
     let mut stored = startup::open_storage(&config, durable_config, registered.as_ref())?;
+    stored.kept.ballots = stored.kept.attested(view.is_some());
     let storage_id = stored.storage_id;
     // Beginning the run may have rotated the id the view was registered
     // under, and a new id registers before it acts: wait for the control

@@ -88,6 +88,9 @@ pub struct ReplicaHandler {
     /// The generation each log last took a fence at, which a read round's
     /// fence repeats. Only paces fences; the ballot decides every one.
     fenced_at: parking_lot::Mutex<HashMap<(felix_router::ShardKey, felix_broker::LogKind), u64>>,
+    /// Whether a log in this process is poisoned. A test stands in for the
+    /// process-wide flag, which never clears.
+    poisoned: fn() -> bool,
     /// Run after an incarnation check passes, to change the catalog between
     /// the check and the open.
     #[cfg(test)]
@@ -151,6 +154,7 @@ impl ReplicaHandler {
             replaced_storage: false,
             fence_turns: parking_lot::Mutex::new(HashMap::default()),
             fenced_at: parking_lot::Mutex::new(HashMap::default()),
+            poisoned: felix_storage::disk_log::any_log_poisoned,
             #[cfg(test)]
             incarnation_checked: parking_lot::Mutex::new(None),
         }
@@ -1003,6 +1007,16 @@ impl ReplicaHandler {
                     && reaches_own
                 {
                     unclean.vouch(&crate::driver::watch_key(&key));
+                    // The commit offset is the quorum offset at the sender's
+                    // generation, so level through it and through the start
+                    // the copy holds what the sender acknowledged. Zero is a
+                    // mark carried only to pick the frame layout.
+                    if batch
+                        .commit_offset
+                        .is_some_and(|mark| mark > 0 && mark <= applied.durable_offset)
+                    {
+                        unclean.trust(&crate::driver::watch_key(&key));
+                    }
                 }
                 // Until the sender's own generation is recorded here, the
                 // newest one recorded is older, and `unverified_from` would
@@ -1401,8 +1415,38 @@ impl ReplicaHandler {
             commit_offset: log.commit_offset(),
             last_generation: last_generation(&log.generations(), log_end),
             kept_ballot,
-            attestation: None,
+            attestation: own_kind(log_kind).is_none().then(|| self.attestation(&key)),
         })
+    }
+
+    /// What this replica attests about its copy of `key`'s log in a fence
+    /// answer. It travels only to a caller that offered
+    /// [`PeerCapabilities::UNIFIED_FENCE`].
+    ///
+    /// Its promises count from set generation 0 when the directory kept every
+    /// ballot, and for no set otherwise; a readmission's lower bound is not
+    /// tracked yet. The copy is trusted when the directory kept its ballots,
+    /// no log in this process is poisoned (a failed flush may have dropped
+    /// acknowledged pages), and the process started clean or a leader has
+    /// since shipped it level through that leader's mark
+    /// ([`crate::unclean::UncleanStart::trust`]).
+    ///
+    /// [`PeerCapabilities::UNIFIED_FENCE`]: felix_wire::internal::PeerCapabilities::UNIFIED_FENCE
+    fn attestation(&self, key: &felix_router::ShardKey) -> felix_wire::internal::FenceAttestation {
+        let kept = self
+            .fleet
+            .as_ref()
+            .is_some_and(|fleet| fleet.kept_ballots());
+        let trusted = kept
+            && !(self.poisoned)()
+            && self
+                .unclean
+                .as_ref()
+                .is_none_or(|unclean| unclean.trusted(&crate::driver::watch_key(key)));
+        felix_wire::internal::FenceAttestation {
+            kept_from: if kept { 0 } else { u64::MAX },
+            trusted,
+        }
     }
 
     /// Serve the leader that fenced this replica its copy of the shard's log

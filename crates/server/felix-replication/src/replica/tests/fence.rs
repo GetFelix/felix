@@ -2346,3 +2346,134 @@ async fn ship_to_a_crashed_leaders_copy(start_record: bool) -> (u64, bool) {
         !start.unvouched(&crate::driver::watch_key(&key()), &log, 7),
     )
 }
+
+fn kept_marks() -> Arc<crate::quorum::QuorumMarks> {
+    let marks = Arc::new(crate::quorum::QuorumMarks::new());
+    marks.set_kept_ballots(true);
+    marks
+}
+
+fn attested(kept_from: u64, trusted: bool) -> Option<felix_wire::internal::FenceAttestation> {
+    Some(felix_wire::internal::FenceAttestation { kept_from, trusted })
+}
+
+/// **A clean start attests kept ballots and a trusted copy, and only a
+/// directory that kept its ballots does.** Without the record a broker
+/// counts for no set and covers nothing (`CountNonKept`, `TrustsRegistered`
+/// in `docs/formal/FelixShardUnified.tla`). A group log carries no
+/// attestation: nothing vouches for it apart from the shard's own log.
+#[tokio::test]
+async fn a_fence_answer_attests_what_the_directory_kept() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let broker = broker_on(dir.path());
+    let kept =
+        ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4)).with_fleet(kept_marks());
+    kept.apply(SENDER, batch(4, 0, &["a"]), felix_broker::LogKind::Stream)
+        .await;
+    assert_eq!(
+        taken(&kept.fence(SENDER, fence(5)).await).attestation,
+        attested(0, true)
+    );
+
+    let lost = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 6))
+        .with_fleet(Arc::new(crate::quorum::QuorumMarks::new()));
+    assert_eq!(
+        taken(&lost.fence(SENDER, fence(6)).await).attestation,
+        attested(u64::MAX, false)
+    );
+}
+
+/// **A poisoned log takes the trust away at once.** A failed flush may have
+/// dropped acknowledged pages in this process, and the next start only marks
+/// the directory unclean. The ballots are synced apart from the log, so the
+/// copy still promises.
+#[tokio::test]
+async fn a_poisoned_log_attests_no_trusted_copy() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let broker = broker_on(dir.path());
+    let mut handler =
+        ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4)).with_fleet(kept_marks());
+    handler.poisoned = || true;
+    handler
+        .apply(SENDER, batch(4, 0, &["a"]), felix_broker::LogKind::Stream)
+        .await;
+    assert_eq!(
+        taken(&handler.fence(SENDER, fence(5)).await).attestation,
+        attested(0, false)
+    );
+}
+
+/// **After an unclean start a copy is trusted only once a batch leaves it
+/// level through both the shipping leader's start and the commit offset it
+/// carries, above zero.** The mark alone can sit below records an earlier
+/// generation acknowledged (`VouchBelowStart`), the start alone is short of
+/// what the leader acknowledged since (`StandInNoCatchUp`), and a commit
+/// offset of zero only picks a frame layout. The copy is vouched for as
+/// before at the start; trust is the stricter of the two.
+#[tokio::test]
+async fn an_unclean_copy_is_trusted_only_level_through_the_start_and_the_mark() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    led_before_a_crash(dir.path()).await;
+    let broker = broker_on(dir.path());
+    let start = unclean();
+    let leader = ReplicaHandler::new(
+        Arc::clone(&broker),
+        router_led_by("broker-c", &[LOCAL, "broker-a"], 6),
+    )
+    .with_fleet(kept_marks())
+    .with_unclean_start(Arc::clone(&start));
+    let log = broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    let shard = crate::driver::watch_key(&key());
+    let ship = |records: ReplicateRecords| {
+        let leader = &leader;
+        async move {
+            let answer = leader
+                .apply(Some("broker-c"), records, felix_broker::LogKind::Stream)
+                .await;
+            assert!(
+                matches!(answer, InternalMessage::ReplicateOk(_)),
+                "{answer:?}"
+            );
+        }
+    };
+    let from_six = |first_offset: u64, values: &[&str], commit: Option<u64>| ReplicateRecords {
+        commit_offset: commit,
+        generations: Some(vec![felix_wire::internal::GenerationStart {
+            generation: 6,
+            start_offset: 1,
+        }]),
+        ..batch(6, first_offset, values)
+    };
+    assert_eq!(
+        leader.attestation(&key()),
+        attested(0, false).expect("some")
+    );
+
+    // Level through the mark, short of where generation 6 starts.
+    ship(ReplicateRecords {
+        commit_offset: Some(1),
+        ..labelled(6, 4, 0, &["a"])
+    })
+    .await;
+    assert!(!start.trusted(&shard), "below the start record");
+
+    // Level through the start with a mark of zero.
+    ship(from_six(1, &["start"], Some(0))).await;
+    assert!(
+        !start.unvouched(&shard, &log, 7),
+        "vouched for at the start"
+    );
+    assert!(!start.trusted(&shard), "a mark of zero vouches for nothing");
+
+    // Through the start, short of the mark.
+    ship(from_six(2, &["w"], Some(4))).await;
+    assert!(!start.trusted(&shard), "short of the mark");
+
+    // Through both.
+    ship(from_six(3, &["x"], Some(4))).await;
+    assert!(start.trusted(&shard));
+    assert_eq!(leader.attestation(&key()), attested(0, true).expect("some"));
+}

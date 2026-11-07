@@ -22,6 +22,10 @@ pub struct UncleanStart {
     /// Shards a leader has shipped to this process: their copies have been
     /// compared with a leader's since the crash.
     vouched: parking_lot::Mutex<HashSet<ShardKey>>,
+    /// Shards whose copy a leader has shipped level through both its
+    /// generation's start and the commit offset it carried: the copy holds
+    /// everything that leader acknowledged ([`Self::trust`]).
+    trusted: parking_lot::Mutex<HashSet<ShardKey>>,
     /// Copies this broker led before the crash that took a newer leader's
     /// ballot from a batch, which has not yet brought them a record of that
     /// leader's generation: the ballot no longer says what they lost.
@@ -53,6 +57,7 @@ impl UncleanStart {
             node_id: node_id.into(),
             led: parking_lot::Mutex::new(HashMap::default()),
             vouched: parking_lot::Mutex::new(HashSet::default()),
+            trusted: parking_lot::Mutex::new(HashSet::default()),
             stood: parking_lot::Mutex::new(HashMap::default()),
             doubted: parking_lot::Mutex::new(HashSet::default()),
             kept_promises: false,
@@ -79,6 +84,22 @@ impl UncleanStart {
     pub fn vouch(&self, key: &ShardKey) {
         self.doubted.lock().remove(key);
         self.vouched.lock().insert(key.clone());
+    }
+
+    /// A leader shipped `key` a batch that left this copy level through both
+    /// the start of the leader's generation and the batch's commit offset,
+    /// which is above zero. Stricter than [`Self::vouch`]: right after an open
+    /// the commit offset can sit below records an earlier generation
+    /// acknowledged, and the start alone is short of what the leader
+    /// acknowledged since (`VouchBelowStart`, `StandInNoCatchUp` in
+    /// `docs/formal/FelixShardUnified.tla`).
+    pub(crate) fn trust(&self, key: &ShardKey) {
+        self.trusted.lock().insert(key.clone());
+    }
+
+    /// Whether [`Self::trust`] has been called for `key` in this process.
+    pub(crate) fn trusted(&self, key: &ShardKey) -> bool {
+        self.trusted.lock().contains(key)
     }
 
     /// `log`, `key`'s copy, is about to take a leader's ballot at
