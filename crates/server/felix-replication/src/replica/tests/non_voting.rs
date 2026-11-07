@@ -778,6 +778,9 @@ async fn a_wiped_copy_refuses_before_the_gate_is_adopted() {
 
     let answer = settled(|| handler.fence(SENDER, fence_with(6, set(5, OLD), None, false))).await;
     assert_eq!(refusal(&answer).code, ErrorCode::Unavailable);
+    // A caller that counts by attestation waits for the gate too.
+    let answer = settled(|| unified(&handler, fence_with(6, set(5, OLD), None, false))).await;
+    assert_eq!(refusal(&answer).code, ErrorCode::Unavailable);
     let log = log_of(&broker).await;
     assert_eq!(log.set_generation(), 0, "wrote before the gate was read");
     assert_eq!(log.accepted_generation(), 0);
@@ -1456,4 +1459,80 @@ async fn a_learner_without_the_leaders_ballot_still_refuses_its_next_generation(
         );
         assert_ne!(log.accepted_generation(), 6, "{ballot:?} {kept}");
     }
+}
+
+/// Marks under `joint_fence` for a directory that kept every ballot.
+fn kept_marks() -> Arc<QuorumMarks> {
+    let marks = marks(true);
+    marks.set_kept_ballots(true);
+    marks
+}
+
+fn unified(
+    handler: &ReplicaHandler,
+    fence: Fence,
+) -> impl std::future::Future<Output = InternalMessage> + '_ {
+    handler.fence_from(SENDER, PeerCapabilities::UNIFIED_FENCE, fence)
+}
+
+fn no_promise() -> Option<felix_wire::internal::FenceAttestation> {
+    Some(felix_wire::internal::FenceAttestation {
+        kept_from: u64::MAX,
+        trusted: false,
+    })
+}
+
+/// **To a caller that counts by attestation a wiped copy answers, and its
+/// promise counts for nothing.** It takes the ballot, which only refuses
+/// more, and stays a learner. Without the bit it refuses as before. The set
+/// check still refuses an older set, and the ballot an older generation.
+#[tokio::test]
+async fn a_wiped_copy_answers_a_unified_fence_with_no_promise() {
+    let (broker, _dir) = broker_with_storage().await;
+    let handler = handler(&broker, 6, OWN).with_fleet(kept_marks());
+    for candidate in [false, true] {
+        let answer =
+            settled(|| handler.fence(SENDER, fence_with(6, set(5, OLD), None, candidate))).await;
+        assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
+    }
+
+    let answer = settled(|| unified(&handler, fence_with(6, set(5, OLD), None, false))).await;
+    let InternalMessage::FenceOk(ok) = answer else {
+        panic!("expected the fence to be taken, got {answer:?}");
+    };
+    assert_eq!(ok.attestation, no_promise());
+    let log = log_of(&broker).await;
+    assert_eq!(log.accepted_generation(), 6);
+    assert_eq!(log.member_is_learner(LOCAL), Some(true));
+
+    let answer = settled(|| unified(&handler, fence_with(6, set(4, OLD), None, false))).await;
+    assert_eq!(refusal(&answer).code, ErrorCode::StaleSet);
+    let answer = settled(|| unified(&handler, fence_with(5, set(5, OLD), None, false))).await;
+    assert_eq!(refusal(&answer).code, ErrorCode::FencedEpoch);
+}
+
+/// **A copy the fence's set lists only as a learner answers a unified
+/// fence with no promise**, where it refuses an older caller as no voter in
+/// that set. A broker the set does not list refuses either way.
+#[tokio::test]
+async fn a_copy_listed_as_a_learner_answers_a_unified_fence_with_no_promise() {
+    let (broker, _dir) = broker_with_storage().await;
+    let handler = handler(&broker, 6, OWN).with_fleet(kept_marks());
+    let mut listed = set(5, OWN);
+    for member in &mut listed.members {
+        member.learner = member.node_id == LOCAL;
+    }
+    let answer =
+        settled(|| handler.fence(SENDER, fence_with(6, listed.clone(), None, false))).await;
+    assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
+
+    let answer = settled(|| unified(&handler, fence_with(6, listed.clone(), None, false))).await;
+    let InternalMessage::FenceOk(ok) = answer else {
+        panic!("expected the fence to be taken, got {answer:?}");
+    };
+    assert_eq!(ok.attestation, no_promise());
+
+    listed.members.retain(|member| member.node_id != LOCAL);
+    let answer = settled(|| unified(&handler, fence_with(6, listed.clone(), None, false))).await;
+    assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
 }

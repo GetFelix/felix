@@ -651,9 +651,10 @@ sees, so its deposed leader is kept out by the lease alone either way.
 
 #### One fence rule for every change of leader
 
-This is the rule the broker is moving to. Only the replica's side of the
-attestation is in the code so far, and no leader reads it: today each kind of
-change (failover, election, rename, set change, readmission, a continuing
+This is the rule the broker is moving to. Only the replica's side is in the
+code so far: the attestation, and the answer in place of a refusal described
+below. No leader offers `UNIFIED_FENCE` or reads the attestation yet, so today
+each kind of change (failover, election, rename, set change, readmission, a continuing
 leader) has its own counting, with special cases for copies doubted after an
 unclean crash. `docs/formal/FelixShardUnified.tla` checks the rule.
 
@@ -707,6 +708,17 @@ is doubted, led before or a learner answers, and says in the answer whether it
 kept its ballots and whether it is trusted. The leader decides what the answer
 counts for. An answer from a peer that predates the rule counts as it does
 today.
+
+In the code the replica answers this way only to a caller that offered
+`UNIFIED_FENCE`, since only such a caller gets the attestation, and only for
+the shard's own log (`ReplicaHandler::fence_from`). A learner, or a copy the
+fence's set lists only as a learner, answers with `kept_from` = `u64::MAX`, so
+its promise counts for nothing. A copy this broker led before an unclean crash
+answers untrusted, and keeps that doubt in the process after it takes the new
+ballot, so an older leader's fence is still refused. A copy given up on disk
+before a clean restart still refuses: that mark is the only record of its
+doubt, and taking the ballot would erase it. Group and counter logs carry no
+attestation and refuse as before. Every other caller gets today's refusals.
 
 What this replaces: the short-copy refusal, the two-member acknowledgement
 check, the learner's refusal, the continuing leader's ballot window and the

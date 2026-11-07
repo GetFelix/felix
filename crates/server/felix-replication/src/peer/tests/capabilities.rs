@@ -1005,3 +1005,29 @@ fn record_headers_are_offered_with_the_labels_and_times_they_ride_on() {
         assert!(offered.contains(PeerCapabilities::RECORD_TIMES));
     }
 }
+
+/// **No broker offers `UNIFIED_FENCE` yet**, as a listener or a dialler,
+/// whatever it runs. A replica answers that caller where it would refuse,
+/// which is safe only once the leader counts the answer by its attestation.
+#[test]
+fn no_broker_offers_the_unified_fence() {
+    for fence in [false, true] {
+        for election in [false, true] {
+            let config = PeerTransportConfig {
+                fence,
+                election,
+                ..PeerTransportConfig::default()
+            };
+            assert!(
+                !config
+                    .capabilities()
+                    .contains(PeerCapabilities::UNIFIED_FENCE)
+            );
+            assert!(
+                !config
+                    .outgoing_capabilities()
+                    .contains(PeerCapabilities::UNIFIED_FENCE)
+            );
+        }
+    }
+}

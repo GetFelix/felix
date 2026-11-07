@@ -26,8 +26,8 @@ use felix_broker::replication::{self, Divergence};
 use felix_router::{ReplicaRole, ShardRouter};
 use felix_storage::disk_log::GenerationCheck;
 use felix_wire::internal::{
-    ErrorCode, Fence, FenceOk, GenerationStart, InternalMessage, RefusalReason, ReplicaLog,
-    ReplicateBootstrap, ReplicateError, ReplicateFetch, ReplicateOk, ReplicateRebuild,
+    ErrorCode, Fence, FenceOk, GenerationStart, InternalMessage, PeerCapabilities, RefusalReason,
+    ReplicaLog, ReplicateBootstrap, ReplicateError, ReplicateFetch, ReplicateOk, ReplicateRebuild,
     ReplicateRecords,
 };
 use tokio::time::Instant;
@@ -1131,7 +1131,28 @@ impl ReplicaHandler {
     /// writes nothing and skips the queue, so it does not wait behind a
     /// promotion's (#1796). That is known from what this broker last
     /// answered, so after a restart a log's first read round queues once.
+    ///
+    /// Answered as to a caller that offered no capabilities; see
+    /// [`Self::fence_from`].
     pub async fn fence(&self, sender: Option<&str>, request: Fence) -> InternalMessage {
+        self.fence_from(sender, PeerCapabilities::NONE, request)
+            .await
+    }
+
+    /// [`Self::fence`] from a caller that offered `caller` in its `Hello`.
+    ///
+    /// To a caller that offered [`PeerCapabilities::UNIFIED_FENCE`], the
+    /// shard's own log answers where it would refuse a copy that is a
+    /// learner, or the one this broker led before a crash: such a leader
+    /// counts the answer by its attestation, which says the copy's promises
+    /// or its log count for nothing. Every ballot and set refusal stands.
+    /// Group and counter logs carry no attestation and refuse as before.
+    pub async fn fence_from(
+        &self,
+        sender: Option<&str>,
+        caller: PeerCapabilities,
+        request: Fence,
+    ) -> InternalMessage {
         // A candidate's fence on the shard's own log, from a sender that names
         // itself: once taken, this replica routes the shard to it, so its
         // batches pass the role check and clients are sent to it (rule 9).
@@ -1165,7 +1186,8 @@ impl ReplicaHandler {
         } else {
             self.fence_turn(sender).await
         };
-        let answer = self.fence_in_turn(sender, request).await;
+        let unified = caller.contains(PeerCapabilities::UNIFIED_FENCE);
+        let answer = self.fence_in_turn(sender, unified, request).await;
         if matches!(answer, InternalMessage::FenceOk(_)) {
             let mut fenced_at = self.fenced_at.lock();
             // Forgetting only sends a read round's fence through the queue.
@@ -1201,11 +1223,19 @@ impl ReplicaHandler {
             .ok()
     }
 
-    async fn fence_in_turn(&self, sender: Option<&str>, request: Fence) -> InternalMessage {
+    async fn fence_in_turn(
+        &self,
+        sender: Option<&str>,
+        unified: bool,
+        request: Fence,
+    ) -> InternalMessage {
         let correlation_id = request.correlation_id;
         let generation = request.shard.generation;
         let log_kind = log_kind(request.log);
         let key = shard_key(&request.shard, log_kind);
+        // Only the shard's own log carries the attestation that makes an
+        // answer in place of a refusal safe to count.
+        let attested = unified && own_kind(log_kind).is_none();
         // The fence comes with a promotion, usually before this broker's
         // routing view has the new generation. Behind is the normal case here,
         // not a reason to make the new leader wait for the watch.
@@ -1326,23 +1356,38 @@ impl ReplicaHandler {
                 );
             }
         }
-        if let Some(refusal) = self
-            .refuse_non_voter_fence(correlation_id, &key, log_kind, &log, &request, sender)
-            .await
-        {
-            return refusal;
-        }
-        if let Some(refusal) = self
-            .refuse_short_copy(
-                correlation_id,
-                &key,
-                log_kind,
-                &log,
-                generation,
-                sender,
-                request.shard.incarnation,
-            )
-            .await
+        let voter = if attested {
+            match self.fences_as_non_voter(correlation_id, &key, &log, &request) {
+                Ok(non_voter) => !non_voter,
+                Err(refusal) => return *refusal,
+            }
+        } else {
+            if let Some(refusal) = self
+                .refuse_non_voter_fence(correlation_id, &key, log_kind, &log, &request, sender)
+                .await
+            {
+                return refusal;
+            }
+            true
+        };
+        // A copy led before the crash answers, untrusted, only while this
+        // process tracks that: the ballot it takes would erase the given-up
+        // mark, the one record of it a clean restart has.
+        let tracked = attested.then_some(self.unclean.as_ref()).flatten();
+        // Read before the ballot replaces it.
+        let given_up = log.gave_up();
+        if tracked.is_none()
+            && let Some(refusal) = self
+                .refuse_short_copy(
+                    correlation_id,
+                    &key,
+                    log_kind,
+                    &log,
+                    generation,
+                    sender,
+                    request.shard.incarnation,
+                )
+                .await
         {
             return refusal;
         }
@@ -1364,8 +1409,14 @@ impl ReplicaHandler {
         // is the leader confirming it still leads, once per read round. From
         // any other node it is refused below, by the ballot.
         if let Some(election) = &request.election
-            && let Some(refusal) =
-                self.check_fence_set(correlation_id, &key, &log, election, generation, sender)
+            && let Some(refusal) = self.check_fence_set(
+                correlation_id,
+                &key,
+                &log,
+                election,
+                (generation, sender),
+                attested,
+            )
         {
             return refusal;
         }
@@ -1373,6 +1424,10 @@ impl ReplicaHandler {
         // Read before the ballot moves to this generation: a continuing
         // leader counts a rotated copy only on this (#2047).
         let kept_ballot = self.continues_from(&log, generation, sender);
+        // So a later fence from an older leader still finds it led before.
+        if let Some(unclean) = tracked {
+            unclean.accepting(&crate::driver::watch_key(&key), &log, generation);
+        }
         if let Some(refusal) = accept_sender(&log, correlation_id, &key, generation, sender).await {
             return refusal;
         }
@@ -1415,7 +1470,9 @@ impl ReplicaHandler {
             commit_offset: log.commit_offset(),
             last_generation: last_generation(&log.generations(), log_end),
             kept_ballot,
-            attestation: own_kind(log_kind).is_none().then(|| self.attestation(&key)),
+            attestation: own_kind(log_kind)
+                .is_none()
+                .then(|| self.attestation(&key, voter, given_up)),
         })
     }
 
@@ -1424,20 +1481,26 @@ impl ReplicaHandler {
     /// [`PeerCapabilities::UNIFIED_FENCE`].
     ///
     /// Its promises count from set generation 0 when the directory kept every
-    /// ballot, and for no set otherwise; a readmission's lower bound is not
-    /// tracked yet. The copy is trusted when the directory kept its ballots,
-    /// no log in this process is poisoned (a failed flush may have dropped
-    /// acknowledged pages), and the process started clean or a leader has
-    /// since shipped it level through that leader's mark
+    /// ballot and the copy votes, and for no set otherwise; a readmission's
+    /// lower bound is not tracked yet. The copy is trusted when its promises
+    /// count, it was not `given_up` (a crashed leader's copy, marked on
+    /// disk), no log in this process is poisoned (a failed flush may have
+    /// dropped acknowledged pages), and the process started clean or a
+    /// leader has since shipped it level through that leader's mark
     /// ([`crate::unclean::UncleanStart::trust`]).
-    ///
-    /// [`PeerCapabilities::UNIFIED_FENCE`]: felix_wire::internal::PeerCapabilities::UNIFIED_FENCE
-    fn attestation(&self, key: &felix_router::ShardKey) -> felix_wire::internal::FenceAttestation {
-        let kept = self
-            .fleet
-            .as_ref()
-            .is_some_and(|fleet| fleet.kept_ballots());
+    fn attestation(
+        &self,
+        key: &felix_router::ShardKey,
+        voter: bool,
+        given_up: bool,
+    ) -> felix_wire::internal::FenceAttestation {
+        let kept = voter
+            && self
+                .fleet
+                .as_ref()
+                .is_some_and(|fleet| fleet.kept_ballots());
         let trusted = kept
+            && !given_up
             && !(self.poisoned)()
             && self
                 .unclean
