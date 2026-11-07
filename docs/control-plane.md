@@ -1089,7 +1089,12 @@ member by another id or leaves it out. Recording an entry does not change
 the generation and writes no change: brokers see it in the next assignment
 write or a snapshot. Postgres stores it from migration `0046`; under Raft it
 is recorded only once every member is at metadata level 30, and below that
-nothing is written. No broker reads it yet.
+nothing is written. A report from a leader that elected itself records
+nothing: it may have opened before the copy was replaced, at a generation
+adopted later for a set naming the new id. The copy itself reads the
+entries when it answers a fence, and only while the fleet has not
+finalized `replica_election`: see `docs/replication-design.md`, "One fence rule for
+every change of leader" and "Readmission and elections".
 
 Every placement write works out `learners` from the assignment it replaces:
 a member that assignment named under another id than the one registered now,
@@ -1270,7 +1275,9 @@ generation, the identity it inherited for it: the one the failover that
 promoted it named, or after a set change that kept it as leader, the one it
 named the follower by at its previous generation
 (`inherited_storage_ids`, stored as `inherited_storage`; a malformed one is
-dropped). The next failover names such a follower by it in the assignment's
+dropped). A leader that stood for election inherits none, so for a member
+the report names no identity for and inherits none for, the control plane
+stores the one the shard's previous report named it by. The next failover names such a follower by it in the assignment's
 `fence_storage_ids` instead of by an empty identity, so its fence answer can
 count (#1574, #1922). It never makes a follower caught up. Under Postgres its marker
 is `inherited_storage_at` (migration 0037); under Raft it needs metadata

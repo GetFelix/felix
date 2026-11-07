@@ -36,6 +36,7 @@ fn assignment(key: ShardKey, leader: &str, replicas: &[&str]) -> ShardAssignment
         member_storage_ids: [("broker-a".to_owned(), "aa".to_owned())].into(),
         pending_set: None,
         previous_generation: None,
+        readmitted: Default::default(),
     }
 }
 

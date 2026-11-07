@@ -456,9 +456,31 @@ pub trait ControlPlaneStore: Send + Sync {
         &self,
         report: ReplicaReport,
         leader: &str,
+    ) -> StoreResult<ReportWrite> {
+        self.record_replica_report_with(report, leader, true).await
+    }
+    /// [`Self::record_replica_report`], recording no
+    /// [`ShardAssignment::readmitted`](crate::model::ShardAssignment::readmitted)
+    /// entry unless `readmits`. A leader that elected itself may have opened
+    /// before a copy was replaced, at a generation the control plane later
+    /// adopted for a set naming the new copy, so its report is no evidence
+    /// the copy holds what the old one acknowledged.
+    async fn record_replica_report_with(
+        &self,
+        report: ReplicaReport,
+        leader: &str,
+        readmits: bool,
     ) -> StoreResult<ReportWrite>;
     /// Every report held, fresh or not; the reader judges freshness.
     async fn list_replica_reports(&self) -> StoreResult<Vec<ReplicaReport>>;
+    /// The report held for `key`, if any.
+    async fn get_replica_report(&self, key: &ShardKey) -> StoreResult<Option<ReplicaReport>> {
+        Ok(self
+            .list_replica_reports()
+            .await?
+            .into_iter()
+            .find(|report| report.key == *key))
+    }
 
     /// Keep what a broker's heartbeat said about the leaders it cannot reach,
     /// replacing what it said before. Stamp it with

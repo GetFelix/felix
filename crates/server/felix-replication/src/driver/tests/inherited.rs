@@ -45,6 +45,7 @@ fn promote(router: &ShardRouter, generation: u64, ids: &[(&str, StorageId)]) {
                 .collect(),
             member_storage_ids: Default::default(),
             pending: None,
+            readmitted: Default::default(),
         }],
         &nodes,
     );

@@ -232,9 +232,19 @@ async fn post_report(
     keys: &crate::auth::felix_token::TenantSigningKeys,
     shards: serde_json::Value,
 ) -> (StatusCode, felix_common::membership::ReplicaStatusResponse) {
+    post_report_as(state, keys, "broker-x", shards).await
+}
+
+/// [`post_report`] from `node`.
+async fn post_report_as(
+    state: crate::api::AppState,
+    keys: &crate::auth::felix_token::TenantSigningKeys,
+    node: &str,
+    shards: serde_json::Value,
+) -> (StatusCode, felix_common::membership::ReplicaStatusResponse) {
     let request = Request::builder()
         .method("POST")
-        .uri("/v1/nodes/broker-x/replica-status")
+        .uri(format!("/v1/nodes/{node}/replica-status"))
         .header(
             "authorization",
             format!("Bearer {}", token(keys, &["node.manage:cluster:*"])),
@@ -1173,5 +1183,67 @@ async fn its_own_leader_elected_on_its_set_is_left_alone() {
             .await
             .expect("get"),
         named_x
+    );
+}
+
+/// **A member a leader has not reached keeps the identity the previous report
+/// named it by.** broker-x leads next, as an election's adoption writes it,
+/// and has reached broker-z but not broker-y. Its route named no identities,
+/// so it inherits none for broker-y, and the next failover would name
+/// broker-y by none: no answer from it would count, and with broker-x gone
+/// the shard waits for good. broker-y acknowledged nothing at broker-x's
+/// generation, so the identity broker-y's own report named it by still covers
+/// everything it acknowledged. A member the new report names keeps that name.
+#[tokio::test]
+async fn a_member_the_new_leader_has_not_reached_keeps_the_previous_reports_identity() {
+    const Y: &str = "11111111111111111111111111111111";
+    const X: &str = "22222222222222222222222222222222";
+    const Z: &str = "33333333333333333333333333333333";
+    const Z_AGAIN: &str = "44444444444444444444444444444444";
+    let (store, keys) = one_shard_cluster().await;
+    let mut z = store.get_node("broker-x").await.expect("node");
+    z.node_id = "broker-z".to_string();
+    z.spec.advertise_addr = "10.0.0.4:7102".to_string();
+    store.register_node(z).await.expect("register broker-z");
+    let state = app_state_ready(Arc::clone(&store) as _);
+    let mut led = ShardAssignment {
+        key: shard_zero(),
+        leader: "broker-y".to_string(),
+        replicas: vec!["broker-x".to_string(), "broker-z".to_string()],
+        ..assignment(ShardState::Active, None)
+    };
+    led.generation = 0;
+    let led_by_y = store.put_shard_assignment(led).await.expect("assign");
+    let mut by_y = shard_json(0, led_by_y.generation, 10, &["broker-x"]);
+    by_y["replica_storage_ids"] =
+        serde_json::json!({ "broker-y": Y, "broker-x": X, "broker-z": Z });
+    let (status, answer) =
+        post_report_as(state.clone(), &keys, "broker-y", serde_json::json!([by_y])).await;
+    assert_eq!(status, StatusCode::OK, "{answer:?}");
+
+    let led_by_x = store
+        .put_shard_assignment(ShardAssignment {
+            leader: "broker-x".to_string(),
+            replicas: vec!["broker-y".to_string(), "broker-z".to_string()],
+            ..led_by_y.clone()
+        })
+        .await
+        .expect("assign");
+    assert!(led_by_x.generation > led_by_y.generation);
+    let mut by_x = shard_json(0, led_by_x.generation, 10, &["broker-z"]);
+    by_x["replica_storage_ids"] = serde_json::json!({ "broker-x": X, "broker-z": Z_AGAIN });
+    let (status, answer) = post_report(state, &keys, serde_json::json!([by_x])).await;
+    assert_eq!(status, StatusCode::OK, "{answer:?}");
+
+    let report = store
+        .get_replica_report(&shard_zero())
+        .await
+        .expect("get")
+        .expect("a report");
+    assert_eq!(report.generation, led_by_x.generation);
+    assert_eq!(
+        report.inherited_storage,
+        [("broker-y".to_string(), Y.to_string())].into(),
+        "broker-y is named by none, and broker-z by an identity it no longer has"
     );
 }
