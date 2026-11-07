@@ -2551,7 +2551,7 @@ async fn an_unclean_copy_level_with_an_idle_leader_is_trusted_by_its_last_record
         assert_eq!(start.trusted(&shard), trusted, "a mark of {commit}");
     }
     assert_eq!(
-        leader.attestation(&key(), true, false),
+        leader.attestation(&key(), true, false, false),
         attested(0, true).expect("some")
     );
 }
