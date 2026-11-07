@@ -121,6 +121,14 @@ felix.Client(addr, tenant_id=..., token=..., ca_file="/path/to/ca.pem")
 A development broker generates a self-signed certificate at startup; set
 `FELIX_TLS_CERT_EXPORT=/path/ca.pem` on the broker and point `ca_file` at it.
 
+A broker started with `FELIX_TLS_CLIENT_CA` also wants a client certificate.
+Pass its PEM file and the key's, both or neither:
+
+```python
+felix.Client(addr, tenant_id=..., token=..., ca_file="ca.pem",
+             client_cert_file="client.pem", client_key_file="client.key")
+```
+
 ## Building
 
 ```bash

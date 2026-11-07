@@ -51,6 +51,13 @@ public sealed partial class FelixClient : IAsyncDisposable, IDisposable
 
         Arg.OptionalText(options.ServerName, nameof(options.ServerName));
         Arg.OptionalText(options.CaFile, nameof(options.CaFile));
+        Arg.OptionalText(options.ClientCertFile, nameof(options.ClientCertFile));
+        Arg.OptionalText(options.ClientKeyFile, nameof(options.ClientKeyFile));
+        if ((options.ClientCertFile is null) != (options.ClientKeyFile is null))
+        {
+            throw new ArgumentException("ClientCertFile and ClientKeyFile must be given together", nameof(options));
+        }
+
         foreach (var addr in options.Addrs)
         {
             Arg.Text(addr, nameof(options.Addrs));
@@ -88,11 +95,22 @@ public sealed partial class FelixClient : IAsyncDisposable, IDisposable
         var tokens = options.TokenProvider is { } provider ? new TokenSource(provider) : null;
         int status;
         string? error;
+        // The library reads these during the connect call and keeps neither.
+        nint certFile = 0;
+        nint keyFile = 0;
         try
         {
             var userData = state.Pin();
             // The library reads the struct during the call; its size says which fields we know.
             var native = NativeOptionsOf(options);
+            if (options.ClientCertFile is not null && options.ClientKeyFile is not null)
+            {
+                certFile = Marshal.StringToCoTaskMemUTF8(options.ClientCertFile);
+                keyFile = Marshal.StringToCoTaskMemUTF8(options.ClientKeyFile);
+                native.ClientCertFile = certFile;
+                native.ClientKeyFile = keyFile;
+            }
+
             if (tokens is not null)
             {
                 native.TokenFetch = (nint)(delegate* unmanaged[Cdecl]<nint, nint, void>)&Callbacks.OnTokenFetch;
@@ -108,7 +126,8 @@ public sealed partial class FelixClient : IAsyncDisposable, IDisposable
                 options.CaFile,
                 options.Publishers || options.Timestamps || tokens is not null
                     || options.ReconnectAttempts is not null || options.ReconnectDeadline is not null
-                    || options.ReconnectBackoff is not null || options.ReconnectMaxBackoff is not null ? &native : null,
+                    || options.ReconnectBackoff is not null || options.ReconnectMaxBackoff is not null
+                    || certFile != 0 ? &native : null,
                 state.Cancel.Pointer,
                 &Callbacks.OnConnect,
                 userData);
@@ -120,6 +139,11 @@ public sealed partial class FelixClient : IAsyncDisposable, IDisposable
             tokens?.Abandon();
             state.Abandon();
             throw;
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(certFile);
+            Marshal.FreeCoTaskMem(keyFile);
         }
 
         if (status != 0)

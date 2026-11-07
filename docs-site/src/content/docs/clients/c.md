@@ -577,7 +577,27 @@ TLS is always on. `server_name` is the name the broker's certificate carries
 (`"localhost"` when null), and `ca_file` is a PEM file of CAs to trust, or null
 for the system store. `addrs` is a `host:port` string.
 
-Client certificates (mutual TLS) are Rust only: this library trusts the broker's certificate but cannot present one of its own. [Auth and TLS](/clients/auth-and-tls/) compares the options across clients.
+A broker started with `FELIX_TLS_CLIENT_CA` refuses a client that does not present a certificate from that CA (mutual TLS). Set `client_cert_file` and `client_key_file` in `FelixConnectOptions` to PEM files holding the certificate and its key. The certificate file holds the leaf first and then any intermediates, and the key file holds one PKCS#8, PKCS#1 or SEC1 key. Both fields follow `reconnect_max_backoff_ms` in the struct, so a caller built against an older header presents none. The library reads the two paths during the call and keeps neither:
+
+```c
+static bool connect_with_certificate(void) {
+  FelixConnectOptions options = {
+      .size = sizeof options,
+      .client_cert_file = "client.pem",
+      .client_key_file = "client.key",
+  };
+  FelixStatus status = felix_client_connect_with(
+      "felix-0:5000", "t1", "my-token", "localhost", "ca.pem", &options, NULL,
+      on_connect, NULL);
+  if (status != FELIX_STATUS_OK) {
+    fprintf(stderr, "connect refused: %s\n", felix_last_error_message());
+    return false;
+  }
+  return true;
+}
+```
+
+Give both or neither. A missing file, a file that is not PEM, a key that does not match the certificate, or only one of the two returns `FELIX_STATUS_INVALID_ARGUMENT` with a message naming the problem. [Auth and TLS](/clients/auth-and-tls/) compares the options across clients.
 
 ## Publishing
 

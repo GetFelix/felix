@@ -137,6 +137,9 @@ development broker needs). There is deliberately no "skip verification" switch
 — it is the one setting that silently turns a secure deployment insecure, and a
 CA file covers the development case without it.
 
+A broker started with `FELIX_TLS_CLIENT_CA` also wants a client certificate.
+Pass `clientCertFile` and `clientKeyFile`, both PEM files, or neither.
+
 ### At-least-once publishing duplicates, and says so
 
 By default a publish whose outcome was ambiguous — the broker may or may not
