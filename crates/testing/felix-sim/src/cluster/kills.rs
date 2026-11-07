@@ -57,15 +57,67 @@ pub(crate) fn leave_out_unopened(view: &mut Views, node: &str, unopened: &BTreeS
     view.retain(|shard, v| v.leader != node || !unopened.contains(shard));
 }
 
+/// The last set a leader opened a shard for, and which members an opened
+/// leader has shipped to since they restarted.
+#[derive(Debug, Clone)]
+struct Opened {
+    leader: String,
+    generation: u64,
+    members: BTreeSet<String>,
+    at: Duration,
+    /// When an opened leader was last seen with the member up.
+    shipped: BTreeMap<String, Duration>,
+}
+
 /// Unclean kills so far. A clean stop never enters it.
 #[derive(Debug, Default)]
 pub(crate) struct KillLog {
     windows: Vec<Window>,
     /// When an operator last abandoned each shard's log.
     abandoned: BTreeMap<String, Duration>,
+    opened: BTreeMap<String, Opened>,
 }
 
 impl KillLog {
+    /// `shard` is open at `view.generation` under `view.leader` at `at`. A
+    /// newer generation than the one recorded starts a new set to read the
+    /// kills against.
+    pub(crate) fn opened(&mut self, shard: &str, view: &ShardView, at: Duration) {
+        if self
+            .opened
+            .get(shard)
+            .is_some_and(|o| o.generation >= view.generation)
+        {
+            return;
+        }
+        let mut members = view.members.clone();
+        members.insert(view.leader.clone());
+        self.opened.insert(
+            shard.to_string(),
+            Opened {
+                leader: view.leader.clone(),
+                generation: view.generation,
+                members,
+                at,
+                shipped: BTreeMap::new(),
+            },
+        );
+    }
+
+    /// The leader and generation `shard` was last opened at.
+    pub(crate) fn last_open(&self, shard: &str) -> Option<(String, u64)> {
+        let open = self.opened.get(shard)?;
+        Some((open.leader.clone(), open.generation))
+    }
+
+    /// The opened leader of `shard` is up and so is `member`, so it has been
+    /// shipping to the copy since the member's restart.
+    pub(crate) fn shipped(&mut self, shard: &str, member: &str, at: Duration) {
+        if let Some(opened) = self.opened.get_mut(shard) {
+            opened.shipped.insert(member.to_string(), at);
+        }
+    }
+
     pub(crate) fn kill(&mut self, node: &str, at: Duration, view: Views) {
         self.windows.push(Window {
             node: node.to_string(),
@@ -116,7 +168,7 @@ impl KillLog {
     /// that came back and had not yet reported is treated as healthy: the rule
     /// errs towards holding fewer shards.
     pub(crate) fn held(&self) -> BTreeSet<String> {
-        let mut held = BTreeSet::new();
+        let mut held = self.held_by_open_set();
         for leader in &self.windows {
             for (shard, view) in &leader.view {
                 if view.leader != leader.node
@@ -146,6 +198,41 @@ impl KillLog {
                 if doubted.len() > set.len() / 2 {
                     held.insert(shard.clone());
                 }
+            }
+        }
+        held
+    }
+}
+
+impl KillLog {
+    /// Shards whose last opened set has a majority of doubted copies. A copy
+    /// is doubted when its broker was killed uncleanly after the open and no
+    /// opened leader has shipped to it since it restarted. A named leader
+    /// killed before it opened counts as a doubted follower, since its kill
+    /// is in the log either way. Shards whose copies are trusted but whose
+    /// fence cannot open are not held, so they still fail the check.
+    fn held_by_open_set(&self) -> BTreeSet<String> {
+        let mut held = BTreeSet::new();
+        for (shard, open) in &self.opened {
+            if self.abandoned.get(shard).is_some_and(|at| *at > open.at) {
+                continue;
+            }
+            let doubted = open
+                .members
+                .iter()
+                .filter(|member| {
+                    self.windows.iter().any(|w| {
+                        w.node == **member
+                            && w.from >= open.at
+                            && match (w.until, open.shipped.get(*member)) {
+                                (None, _) | (Some(_), None) => true,
+                                (Some(until), Some(shipped)) => *shipped < until,
+                            }
+                    })
+                })
+                .count();
+            if doubted > open.members.len() / 2 {
+                held.insert(shard.clone());
             }
         }
         held

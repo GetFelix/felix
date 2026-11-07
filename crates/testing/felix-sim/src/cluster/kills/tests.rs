@@ -167,3 +167,53 @@ fn an_opened_leader_or_another_shard_stays_in_the_view() {
     leave_out_unopened(&mut views, "b2", &BTreeSet::from(["stream/0".to_string()]));
     assert_eq!(views.len(), 1);
 }
+
+fn opened(log: &mut KillLog, leader: &str, generation: u64) {
+    let v = view(leader, generation, &THREE);
+    log.opened("stream/0", &v["stream/0"], secs(1));
+}
+
+#[test]
+fn a_majority_of_doubted_copies_in_the_opened_set_is_held() {
+    // b1 opened; b1 and b2 were killed and nothing opened since. b2 comes
+    // back but no opened leader has shipped to it.
+    let mut log = KillLog::default();
+    opened(&mut log, "b1", 1);
+    log.kill("b1", secs(5), view("b1", 1, &THREE));
+    log.kill("b2", secs(20), view("b1", 2, &THREE));
+    log.restart("b2", secs(30));
+    assert_eq!(held(&log), ["stream/0"]);
+}
+
+#[test]
+fn a_shipped_copy_is_trusted_so_a_stuck_fence_is_not_held() {
+    // The J shape: b2 restarted and b1 shipped to it, so only b1 is doubted
+    // once it is killed. The shard is stuck, not held.
+    let mut log = KillLog::default();
+    opened(&mut log, "b1", 1);
+    log.kill("b2", secs(5), view("b1", 1, &THREE));
+    log.restart("b2", secs(10));
+    log.shipped("stream/0", "b2", secs(12));
+    log.kill("b1", secs(20), view("b1", 1, &THREE));
+    assert!(held(&log).is_empty());
+}
+
+#[test]
+fn a_single_doubted_copy_is_not_held() {
+    let mut log = KillLog::default();
+    opened(&mut log, "b1", 1);
+    log.kill("b3", secs(5), view("b1", 1, &THREE));
+    assert!(held(&log).is_empty());
+}
+
+#[test]
+fn a_newer_open_starts_the_set_over() {
+    let mut log = KillLog::default();
+    opened(&mut log, "b1", 1);
+    log.kill("b1", secs(5), view("b1", 1, &THREE));
+    log.kill("b2", secs(6), view("b1", 1, &THREE));
+    assert_eq!(held(&log), ["stream/0"]);
+    let v = view("b3", 2, &THREE);
+    log.opened("stream/0", &v["stream/0"], secs(40));
+    assert!(held(&log).is_empty());
+}

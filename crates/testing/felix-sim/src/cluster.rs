@@ -423,6 +423,7 @@ impl SimCluster {
     /// still starting, and record the stop as clean. A no-op on one that is
     /// down.
     pub async fn crash(&self, index: usize) {
+        self.note_opens().await;
         self.nodes[index].crash(&self.net, Stop::Clean).await;
     }
 
@@ -431,6 +432,7 @@ impl SimCluster {
     /// takes a new storage id and runs its unclean-start handling. Only a
     /// run that does not fsync on commit (the default) can be left that way.
     pub async fn kill(&self, index: usize) {
+        self.note_opens().await;
         let at = self.elapsed();
         // Read from the store before the stop, so the view is the one the
         // broker died under.
@@ -460,6 +462,7 @@ impl SimCluster {
         if self.nodes[index].is_down() {
             return false;
         }
+        self.note_opens().await;
         let at = self.elapsed();
         let view = self.cp.shard_views().await.unwrap_or_default();
         let node = &self.nodes[index];
@@ -521,7 +524,48 @@ impl SimCluster {
     /// until an operator abandons a member, so they are not expected to be
     /// served. See `kills.rs` for the rule.
     pub async fn held_shards(&self) -> std::collections::BTreeSet<String> {
+        self.note_opens().await;
         self.kills.lock().held()
+    }
+
+    /// Record which shards are open and which copies their opened leader can
+    /// ship to now, so the kill log reads each kill against the last opened
+    /// set. Called before anything that stops a broker.
+    pub(crate) async fn note_opens(&self) {
+        let Ok(views) = self.cp.shard_views().await else {
+            return;
+        };
+        let at = self.elapsed();
+        let mut kills = self.kills.lock();
+        for key in self.shard_keys() {
+            let shard = describe(&key);
+            if let Some(view) = views.get(&shard)
+                && let Some(leader) = self.nodes.iter().find(|n| n.id == view.leader)
+                && leader
+                    .stand(&key)
+                    .is_some_and(|stand| stand.opened_generation == Some(view.generation))
+            {
+                kills.opened(&shard, view, at);
+            }
+            // The leader keeps its open generation while a fence for the next
+            // one is running, so read it against the recorded open.
+            let Some((leader, generation)) = kills.last_open(&shard) else {
+                continue;
+            };
+            let leads = self.nodes.iter().any(|n| {
+                n.id == leader
+                    && n.stand(&key)
+                        .is_some_and(|stand| stand.opened_generation == Some(generation))
+            });
+            if !leads {
+                continue;
+            }
+            for node in &self.nodes {
+                if node.id != leader && node.stand(&key).is_some() {
+                    kills.shipped(&shard, &node.id, at);
+                }
+            }
+        }
     }
 
     /// Abandon `key`'s log through the operator API. On success the shard is

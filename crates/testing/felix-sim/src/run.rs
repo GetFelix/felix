@@ -347,6 +347,20 @@ async fn drive(
         .map(|checker| Arc::new(tokio::sync::Mutex::new(checker)))
         .collect();
     let sampled = Arc::new(Mutex::new(Vec::new()));
+    // The kill log reads each kill against what was open and shipped to, so it
+    // needs to see opens as they come, not only at a kill.
+    tokio::spawn({
+        let (cluster, stop) = (cluster.clone(), stop.clone());
+        async move {
+            loop {
+                tokio::select! {
+                    () = stop.cancelled() => return,
+                    () = tokio::time::sleep(SAMPLE_EVERY) => {}
+                }
+                cluster.note_opens().await;
+            }
+        }
+    });
     let sampler = tokio::spawn({
         let (checkers, sampled, stop) = (checkers.clone(), sampled.clone(), stop.clone());
         let (context, recorder) = (context.clone(), recorder.clone());
