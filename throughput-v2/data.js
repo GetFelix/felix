@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794079969870,
+  "lastUpdate": 1794084813984,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -49348,6 +49348,58 @@ window.BENCHMARK_DATA = {
             "range": "78098.11",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1225065.41\nmean: 1190233.54\nstdev: 78098.11\ncv: 6.56%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c17a094d58b7e4b4b13442d7ba728c0bf2f28286",
+          "message": "fix(placement): drop a pending set change when a member comes back on new storage (#2110)\n\nA cut-over can leave a pending set change; if a member of it then comes back on new storage, its copy counts toward neither set until it is readmitted, and placement never readmitted a shard with a pending set, so acks could never reach a majority and the control plane waited for its 10-minute pending-set timeout. When the leader reports such a member caught up on new storage, placement now drops the pending change at once (capped by the per-pass readmission limit) and readmits it on the next pass. Model: CpDropChange under DropsChange; FelixShardElectSwapDrop2DropsChange and Keep2DropsChange pass. felix-sim seed 2: events/1 stalled 4/4 with the drop disabled, 0/4 with it.\n\nSpec-Unaffected: placement implements the model's new CpDropChange step; the specs pass.",
+          "timestamp": "2026-11-07T20:42:44Z",
+          "tree_id": "21fd6d01106d1351668f092fbe9f963129fb547f",
+          "url": "https://github.com/GetFelix/felix/commit/c17a094d58b7e4b4b13442d7ba728c0bf2f28286"
+        },
+        "date": 1794084813268,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 360831.72,
+            "range": "18690.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 360831.72\nmean: 355382.11\nstdev: 18690.38\ncv: 5.26%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 360831.72,
+            "range": "18690.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 360831.72\nmean: 355382.11\nstdev: 18690.38\ncv: 5.26%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 78776.71,
+            "range": "3910.39",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 78776.71\nmean: 77949.48\nstdev: 3910.39\ncv: 5.02%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 787767.11,
+            "range": "39103.90",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 787767.11\nmean: 779494.85\nstdev: 39103.90\ncv: 5.02%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
