@@ -1958,6 +1958,11 @@ so one copy that keeps failing cannot hold up the rest of a drain. Set the
 timeout well above the time the largest shard takes to copy at the
 bandwidth limit below.
 
+A destination that goes down or halts before the fence ends the move at once
+(`abandon` or `halted`) with the same write. The set goes back to what it was
+before the move: a destination the move added is dropped, and one that was
+already a follower stays, since its copy may be the only full one.
+
 A move that has been fenced is not timed out. The leader has stopped
 serving; going back means a new generation and every client following the
 shard twice, while going on waits for at most the lag bound's worth of copy.

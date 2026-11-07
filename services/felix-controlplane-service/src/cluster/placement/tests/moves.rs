@@ -354,6 +354,58 @@ fn a_lost_destination_abandons_the_move() {
     }
 }
 
+/// A destination that was already a follower when the move staged it stays
+/// one when the move is given up: it may hold the only copy (#2088).
+#[test]
+fn a_lost_destination_that_was_a_member_stays_in_the_set() {
+    let streams = vec![replicated_stream("orders", 1, 3)];
+    let nodes = vec![
+        node("broker-a", NodeLifecycle::Live, None),
+        node("broker-b", NodeLifecycle::Live, None),
+        node("broker-c", NodeLifecycle::Down, None),
+    ];
+    let mut staged = one_shard("broker-a", &["broker-b", "broker-c"]);
+    staged.successor = Some("broker-c".to_string());
+
+    let plan = plan(&streams, &[], &nodes, &[staged], &NothingCaughtUp);
+
+    match only_decision(&plan) {
+        Decision::Move(MoveStep::Abandon { successor }, next) => {
+            assert_eq!(successor, "broker-c");
+            assert_eq!(next.leader, "broker-a");
+            assert_eq!(next.replicas, ["broker-b", "broker-c"]);
+            assert_eq!(next.successor, None);
+            assert_eq!(next.move_started_at_millis, None);
+        }
+        other => panic!("expected the move to be abandoned, got {other:?}"),
+    }
+}
+
+/// A destination the move added is dropped again when the move is given up.
+#[test]
+fn a_lost_destination_the_move_added_leaves_the_set() {
+    let streams = vec![replicated_stream("orders", 1, 3)];
+    let nodes = vec![
+        node("broker-a", NodeLifecycle::Live, None),
+        node("broker-b", NodeLifecycle::Live, None),
+        node("broker-c", NodeLifecycle::Live, None),
+        node("broker-d", NodeLifecycle::Down, None),
+    ];
+    let mut staged = one_shard("broker-a", &["broker-b", "broker-c", "broker-d"]);
+    staged.successor = Some("broker-d".to_string());
+
+    let plan = plan(&streams, &[], &nodes, &[staged], &NothingCaughtUp);
+
+    match only_decision(&plan) {
+        Decision::Move(MoveStep::Abandon { successor }, next) => {
+            assert_eq!(successor, "broker-d");
+            assert_eq!(next.replicas, ["broker-b", "broker-c"]);
+            assert_eq!(next.successor, None);
+        }
+        other => panic!("expected the move to be abandoned, got {other:?}"),
+    }
+}
+
 /// A destination that dies between the fence and the cut-over does not
 /// take the shard. Nothing else holds the log, so the old leader takes
 /// it back at a new generation and the move is chosen again.
