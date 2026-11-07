@@ -89,8 +89,11 @@ jobs:
               echo "not a positive number: $value"; exit 1
             fi
           done
+          # More jobs than seeds would leave empty ones: use one seed per job.
           if [ "$SHARDS" -gt "$SEEDS" ]; then
-            echo "shards must be at most the seed count"; exit 1
+            echo "Shards lowered from $SHARDS to $SEEDS, the seed count." >> "$GITHUB_STEP_SUMMARY"
+            echo >> "$GITHUB_STEP_SUMMARY"
+            SHARDS=$SEEDS
           fi
           if ! [[ "$PARALLEL" =~ ^[0-9]+$ ]] || [ "$PARALLEL" -lt 1 ] || [ "$PARALLEL" -gt 20 ]; then
             echo "parallel must be a number from 1 to 20"; exit 1
