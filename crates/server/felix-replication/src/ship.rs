@@ -91,6 +91,44 @@ pub(crate) async fn ship_once_stamped<R: PeerRequester>(
         commit_offset,
         None,
         set_stamp,
+        false,
+    )
+    .await
+}
+
+/// Send a follower of a log that has never held a record one empty batch,
+/// labelled with this leader's start at offset 0 and carrying `commit_offset`
+/// (0). With no record the mark never rises above 0, so no other batch can
+/// vouch for a copy back from an unclean restart (replica.rs, the vouch).
+/// Records written since are shipped as [`ship_once_stamped`] would.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn vouch_empty<R: PeerRequester>(
+    requester: &R,
+    log: &StreamLog,
+    shard: &ShardRef,
+    log_kind: felix_broker::LogKind,
+    cursor: &mut FollowerCursor,
+    max_batch_bytes: usize,
+    rebuilds: &Rebuilds,
+    commit_offset: Option<u64>,
+    set_stamp: Option<u64>,
+) -> Progress {
+    // Neither is level, and a halted cursor would be offered a rebuild.
+    if cursor.halted.is_some() || cursor.rebuilding {
+        return Progress::Retry;
+    }
+    ship_batch(
+        requester,
+        log,
+        shard,
+        log_kind,
+        cursor,
+        max_batch_bytes,
+        rebuilds,
+        commit_offset,
+        None,
+        set_stamp,
+        true,
     )
     .await
 }
@@ -119,6 +157,7 @@ pub(crate) async fn ship_once_until<R: PeerRequester>(
         None,
         Some(end),
         None,
+        false,
     )
     .await
 }
@@ -135,6 +174,7 @@ async fn ship_batch<R: PeerRequester>(
     commit_offset: Option<u64>,
     end: Option<u64>,
     set_stamp: Option<u64>,
+    empty_vouch: bool,
 ) -> Progress {
     // Set again only by the follower's answer to this batch.
     cursor.refused = false;
@@ -259,7 +299,9 @@ async fn ship_batch<R: PeerRequester>(
         if cursor.next_offset == 0 {
             cursor.stalled = false;
         }
-        return Progress::UpToDate;
+        if !empty_vouch || cursor.next_offset != 0 || log.physical_base() != 0 {
+            return Progress::UpToDate;
+        }
     }
 
     // On first contact nothing is recorded until the connection's handshake,
@@ -272,6 +314,21 @@ async fn ship_batch<R: PeerRequester>(
             .ok(),
         recorded => recorded,
     };
+    let history = log.generations();
+    if records.is_empty() {
+        // Only a batch the follower reads as labelled, carrying a mark, with
+        // this leader's start at 0 can vouch. A follower that will never be
+        // sent one is not owed it.
+        let labelled = !cursor.legacy_frames
+            && offered.is_some_and(|offered| offered.contains(labels_needed(log_kind)));
+        let starts_empty = history
+            .iter()
+            .any(|epoch| epoch.generation == shard.generation && epoch.start_offset == 0);
+        if !labelled || commit_offset.is_none() || !starts_empty {
+            cursor.mark_carried |= offered.is_some() || cursor.legacy_frames;
+            return Progress::UpToDate;
+        }
+    }
     // Headers ride the timed layout, so a follower that refused the committed
     // kinds cannot be sent them either.
     let carries_headers = !cursor.legacy_frames
@@ -306,7 +363,9 @@ async fn ship_batch<R: PeerRequester>(
         }
     }
 
-    let first_offset = records[0].offset;
+    let first_offset = records
+        .first()
+        .map_or(cursor.next_offset, |record| record.offset);
     // Marks go only when there are any: an unmarked batch is byte for byte
     // what a follower that predates them reads.
     let marks: Vec<ProducerMark> = if records.iter().any(|r| r.mark != RecordMark::None) {
@@ -332,7 +391,6 @@ async fn ship_batch<R: PeerRequester>(
     let payloads: Vec<Bytes> = records.into_iter().map(|record| record.payload).collect();
     let batch_end = first_offset + payloads.len() as u64;
     let batch_bytes: usize = payloads.iter().map(Bytes::len).sum();
-    let history = log.generations();
     let mut batch = ReplicateRecords {
         // The pool assigns the real id; it owns the connection this lands on.
         correlation_id: 0,
@@ -372,12 +430,16 @@ async fn ship_batch<R: PeerRequester>(
     // vouches, so such a follower is not owed another one.
     let carries_mark = match batch.generations.as_deref() {
         Some(starts) => {
-            batch
+            let own_start = starts
+                .iter()
+                .find(|start| start.generation == shard.generation)
+                .map(|start| start.start_offset);
+            let through_mark = batch
                 .commit_offset
                 .is_some_and(|mark| mark > 0 && mark <= batch_end)
-                && starts.iter().any(|start| {
-                    start.generation == shard.generation && start.start_offset <= batch_end
-                })
+                && own_start.is_some_and(|start| start <= batch_end);
+            let empty = batch_end == 0 && batch.commit_offset == Some(0) && own_start == Some(0);
+            through_mark || empty
         }
         None => offered.is_some_and(|offered| !offered.contains(labels_needed(log_kind))),
     } || !history
@@ -482,7 +544,11 @@ async fn ship_batch<R: PeerRequester>(
             // means resuming past records neither side has checked.
             cursor.next_offset = durable_offset.min(batch_end);
             cursor.confirmed = cursor.next_offset;
-            if durable_offset == batch_end && (carries_mark || cursor.legacy_frames) {
+            // An empty batch goes once: a follower that answered past it
+            // holds records this leader never had, which it cannot vouch for.
+            if (durable_offset == batch_end || batch_end == 0)
+                && (carries_mark || cursor.legacy_frames)
+            {
                 cursor.mark_carried = true;
             }
             cursor.shipped_bytes += batch_bytes as u64;

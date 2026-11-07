@@ -981,11 +981,16 @@ impl ReplicaHandler {
                     );
                 }
                 // Past the durable offset nothing has been compared, so what
-                // this follower holds there keeps its labels until it has.
-                let level = log
-                    .tail_offset()
-                    .await
-                    .is_ok_and(|tail| applied.durable_offset >= tail);
+                // this follower holds there keeps its labels until it has. An
+                // empty batch compares nothing: it is level only with a copy
+                // that holds nothing either.
+                let compared =
+                    !batch.payloads.is_empty() || applied.durable_offset == batch.first_offset;
+                let level = compared
+                    && log
+                        .tail_offset()
+                        .await
+                        .is_ok_and(|tail| applied.durable_offset >= tail);
                 if level
                     && let Err(err) = label_appended(
                         &log,
@@ -1024,9 +1029,18 @@ impl ReplicaHandler {
                     // generation, so level through it and through the start
                     // the copy holds what the sender acknowledged. Zero is a
                     // mark carried only to pick the frame layout.
-                    let trusts = batch
-                        .commit_offset
-                        .is_some_and(|mark| mark > 0 && mark <= applied.durable_offset);
+                    // A sender whose generation starts at 0 with no record
+                    // was never acknowledged anything, so an empty copy
+                    // holds it all. Its mark stays 0 until a record lands,
+                    // and this is how its empty followers are trusted.
+                    let empty = batch.payloads.is_empty()
+                        && batch.first_offset == 0
+                        && applied.durable_offset == 0
+                        && batch.commit_offset == Some(0);
+                    let trusts = empty
+                        || batch
+                            .commit_offset
+                            .is_some_and(|mark| mark > 0 && mark <= applied.durable_offset);
                     if trusts && let Some(unclean) = &self.unclean {
                         unclean.trust(&shard);
                     }
@@ -1041,9 +1055,12 @@ impl ReplicaHandler {
                     .generations()
                     .last()
                     .is_some_and(|newest| newest.generation >= batch.shard.generation);
+                // An empty batch that compared nothing must not count this
+                // copy's own records as the sender's, or a later conflict on
+                // them would not be repaired as a dead leader's suffix.
                 if caught_up {
                     self.verified.lock().remove(&key);
-                } else {
+                } else if compared {
                     self.verified.lock().insert(
                         key.clone(),
                         Verified {

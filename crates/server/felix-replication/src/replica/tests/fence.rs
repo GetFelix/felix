@@ -2556,6 +2556,123 @@ async fn an_unclean_copy_level_with_an_idle_leader_is_trusted_by_its_last_record
     );
 }
 
+/// An empty batch from generation 6 at offset 0 carrying the mark 0, labelled
+/// with `starts`: what a leader of a log that never held a record sends.
+fn empty_vouch(starts: &[(u64, u64)]) -> ReplicateRecords {
+    ReplicateRecords {
+        commit_offset: Some(0),
+        generations: Some(
+            starts
+                .iter()
+                .map(
+                    |&(generation, start_offset)| felix_wire::internal::GenerationStart {
+                        generation,
+                        start_offset,
+                    },
+                )
+                .collect(),
+        ),
+        ..batch(6, 0, &[])
+    }
+}
+
+/// An unclean copy of the shard in `dir`, followed under broker-c at 6.
+fn unclean_follower(dir: &std::path::Path) -> (ReplicaHandler, Arc<crate::unclean::UncleanStart>) {
+    let start = unclean();
+    let handler = ReplicaHandler::new(
+        broker_on(dir),
+        router_led_by("broker-c", &[LOCAL, "broker-a"], 6),
+    )
+    .with_fleet(kept_marks())
+    .with_unclean_start(Arc::clone(&start));
+    (handler, start)
+}
+
+/// **An empty unclean copy is trusted by an empty batch from a leader whose
+/// generation starts at 0.** Such a leader holds no record, so nothing was
+/// ever acknowledged and the empty copy holds all of it. Its mark stays 0,
+/// and no batch through a mark above zero can ever come
+/// (`FelixShardUnifiedVouchEmptyLegacy`).
+#[tokio::test]
+async fn an_empty_unclean_copy_is_trusted_by_an_empty_leaders_batch() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (handler, start) = unclean_follower(dir.path());
+    let answer = handler
+        .apply(
+            Some("broker-c"),
+            empty_vouch(&[(6, 0)]),
+            felix_broker::LogKind::Stream,
+        )
+        .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(ref ok) if ok.durable_offset == 0),
+        "{answer:?}"
+    );
+    assert!(start.trusted(&crate::driver::watch_key(&key())));
+    assert_eq!(
+        handler.attestation(&key(), true, false, false),
+        attested(0, true).expect("some")
+    );
+}
+
+/// **Nothing else empty or unmarked trusts an unclean copy.** Not an empty
+/// batch to a copy that holds records, which it compares with nothing; not
+/// a batch of records with a mark of zero; not an empty batch from a leader
+/// whose generation does not start at 0, or that names no start of its own.
+#[tokio::test]
+async fn an_empty_batch_trusts_only_an_empty_copy_of_an_empty_leader() {
+    let holding = tempfile::tempdir().expect("tempdir");
+    led_before_a_crash(holding.path()).await;
+    let records = || {
+        let mut batch = empty_vouch(&[(6, 0)]);
+        let payloads = vec![Bytes::from_static(b"a")];
+        batch.checksum = batch_checksum(&payloads, &[], &[], &[]);
+        batch.payloads = payloads;
+        batch
+    };
+    let cases: [(&str, Option<&std::path::Path>, ReplicateRecords); 4] = [
+        (
+            "a copy holding records",
+            Some(holding.path()),
+            empty_vouch(&[(6, 0)]),
+        ),
+        ("records with a mark of zero", None, records()),
+        ("a start past 0", None, empty_vouch(&[(5, 0), (6, 1)])),
+        ("no start of its own", None, empty_vouch(&[(5, 0)])),
+    ];
+    for (case, dir, batch) in cases {
+        let empty = tempfile::tempdir().expect("tempdir");
+        let (handler, start) = unclean_follower(dir.unwrap_or(empty.path()));
+        let answer = handler
+            .apply(Some("broker-c"), batch, felix_broker::LogKind::Stream)
+            .await;
+        assert!(
+            matches!(answer, InternalMessage::ReplicateOk(_)),
+            "{case}: {answer:?}"
+        );
+        assert!(!start.trusted(&crate::driver::watch_key(&key())), "{case}");
+    }
+
+    // The copy holding records still drops them as a dead leader's suffix
+    // when the empty leader's first record arrives.
+    let (handler, _) = unclean_follower(holding.path());
+    for batch in [empty_vouch(&[(6, 0)]), labelled(6, 6, 0, &["b"])] {
+        let answer = handler
+            .apply(Some("broker-c"), batch, felix_broker::LogKind::Stream)
+            .await;
+        assert!(
+            matches!(answer, InternalMessage::ReplicateOk(_)),
+            "{answer:?}"
+        );
+    }
+    let log = handler
+        .broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    assert_eq!(log.tail_offset().await.expect("tail"), 1);
+}
+
 /// A fence from a caller that offered `UNIFIED_FENCE`.
 async fn unified_fence(
     handler: &ReplicaHandler,
