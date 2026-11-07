@@ -1200,7 +1200,16 @@ impl ReplicaHandler {
             let at = fenced_at.entry(key).or_insert(generation);
             *at = (*at).max(generation);
         }
-        if let (Some((elections, key, elected)), InternalMessage::FenceOk(_)) = (candidate, &answer)
+        // A unified answer that keeps no promise did nothing to elect the
+        // candidate, so it routes nothing to it: the same as the refusal an
+        // older caller gets from this copy.
+        if let (Some((elections, key, elected)), InternalMessage::FenceOk(ok)) =
+            (candidate, &answer)
+            && !(unified
+                && ok
+                    .attestation
+                    .as_ref()
+                    .is_some_and(|a| a.kept_from == u64::MAX))
         {
             elections.record(key, elected);
         }
@@ -1358,7 +1367,12 @@ impl ReplicaHandler {
         }
         let voter = if attested {
             match self.fences_as_non_voter(correlation_id, &key, &log, &request) {
-                Ok(non_voter) => !non_voter,
+                // A learner whose crash kept its ballot, continuing from the
+                // leader that ballot names, promises as it does to an older
+                // caller: its directory never lost a ballot, so its promise is
+                // kept, and only its log is doubted (design-unified-fence.md
+                // section 1, "kept").
+                Ok(non_voter) => !non_voter || self.continues_from(&log, generation, sender),
                 Err(refusal) => return *refusal,
             }
         } else {

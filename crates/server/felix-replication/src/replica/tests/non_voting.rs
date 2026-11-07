@@ -1536,3 +1536,71 @@ async fn a_copy_listed_as_a_learner_answers_a_unified_fence_with_no_promise() {
     let answer = settled(|| unified(&handler, fence_with(6, listed.clone(), None, false))).await;
     assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
 }
+
+/// **A learner continuing from its leader promises a unified caller, as it
+/// does an older one.** Its crash kept its ballot, which names broker-a at
+/// generation 5, so its directory never lost a promise and the promise to
+/// broker-a's next generation counts. Only its log is doubted, so it is not
+/// trusted. Without the ballot it keeps no promise.
+#[tokio::test]
+async fn a_continuing_learner_promises_a_unified_fence_untrusted() {
+    for (ballot, kept_from) in [("broker-a", 0), ("broker-c", u64::MAX)] {
+        let (broker, _dir) = broker_with_storage().await;
+        let handler = handler(&broker, 6, OWN)
+            .with_fleet(kept_marks())
+            .with_unclean_start(Arc::new(
+                crate::unclean::UncleanStart::new(LOCAL).with_kept_promises(true),
+            ));
+        wiped_at_5(&handler).await;
+        log_of(&broker)
+            .await
+            .accept_generation(5, Some(ballot))
+            .await
+            .expect("ballot");
+
+        let answer = settled(|| unified(&handler, readmission(6, OWN))).await;
+        let InternalMessage::FenceOk(ok) = answer else {
+            panic!("expected the fence to be taken, got {answer:?}");
+        };
+        assert_eq!(
+            ok.attestation,
+            Some(felix_wire::internal::FenceAttestation {
+                kept_from,
+                trusted: false,
+            }),
+            "{ballot}"
+        );
+    }
+}
+
+/// **A unified answer that keeps no promise routes nothing to the
+/// candidate**, as the refusal an older caller gets routes nothing. A
+/// voter's answer still does.
+#[tokio::test]
+async fn a_learners_unified_answer_does_not_record_the_candidate() {
+    let key = felix_router::ShardKey {
+        tenant_id: TENANT.into(),
+        namespace: NAMESPACE.into(),
+        stream: STREAM.into(),
+        shard: 0,
+        kind: felix_router::ShardKind::Stream,
+    };
+    for learner in [true, false] {
+        let (broker, _dir) = broker_with_storage().await;
+        let marks = kept_marks();
+        let elections = Arc::new(crate::election::Elections::new(
+            LOCAL,
+            Arc::new(tokio::sync::Notify::new()),
+        ));
+        marks.set_elections(Arc::clone(&elections));
+        let handler = handler(&broker, 6, OWN).with_fleet(marks);
+        let mut listed = set(5, OWN);
+        for member in &mut listed.members {
+            member.learner = learner && member.node_id == LOCAL;
+        }
+
+        let answer = settled(|| unified(&handler, fence_with(6, listed.clone(), None, true))).await;
+        assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
+        assert_eq!(elections.get(&key).is_some(), !learner, "learner {learner}");
+    }
+}

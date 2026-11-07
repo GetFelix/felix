@@ -2645,3 +2645,35 @@ async fn over_the_wire_a_crashed_leaders_copy_still_refuses() {
     assert_eq!(refusal(&answer).code, ErrorCode::Unavailable, "{answer:?}");
     shutdown.cancel();
 }
+
+/// **A unified fence the ballot refuses leaves the crashed leader's copy as
+/// it was.** The doubt is noted before the ballot is taken; a refused ballot
+/// must not move the copy or what it attests.
+#[tokio::test]
+async fn a_refused_unified_fence_leaves_a_crashed_leaders_copy_unchanged() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    led_before_a_crash(dir.path()).await;
+    let broker = broker_on(dir.path());
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL, "broker-c"], 6))
+        .with_fleet(kept_marks())
+        .with_unclean_start(unclean());
+    taken(&unified_fence(&handler, SENDER, fence(6)).await);
+
+    assert_eq!(
+        refusal(&unified_fence(&handler, Some("broker-c"), fence(6)).await).code,
+        ErrorCode::FencedEpoch
+    );
+    let log = broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    assert_eq!(log.accepted_generation(), 6);
+    assert_eq!(log.accepted_leader().as_deref(), SENDER);
+    assert_eq!(
+        refusal(&handler.fence(SENDER, fence(7)).await).code,
+        ErrorCode::Unavailable,
+        "still the copy led before"
+    );
+    let ok = taken(&unified_fence(&handler, SENDER, fence(7)).await);
+    assert_eq!(ok.attestation, attested(0, false));
+}

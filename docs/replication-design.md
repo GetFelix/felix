@@ -713,7 +713,9 @@ In the code the replica answers this way only to a caller that offered
 `UNIFIED_FENCE`, since only such a caller gets the attestation, and only for
 the shard's own log (`ReplicaHandler::fence_from`). A learner, or a copy the
 fence's set lists only as a learner, answers with `kept_from` = `u64::MAX`, so
-its promise counts for nothing. A copy this broker led before an unclean crash
+its promise counts for nothing. The exception is a learner whose crash kept
+its ballot and whose ballot names the fencing leader at the generation before:
+it never lost a promise, so it answers `kept_from` = 0, untrusted. A copy this broker led before an unclean crash
 answers untrusted, and keeps that doubt in the process after it takes the new
 ballot, so an older leader's fence is still refused. A copy given up on disk
 before a clean restart still refuses: that mark is the only record of its
