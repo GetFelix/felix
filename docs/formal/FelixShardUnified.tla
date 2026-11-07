@@ -167,7 +167,9 @@ vars == <<ballot, log, trusted, keptFrom, lostAt, batchSince, setGen, openAt,
 
 NoFence == [g |-> 0, i |-> 0, cont |-> FALSE]
 NoAns == [n \in Nodes |-> [none |-> TRUE]]
-Answered(f, m) == ~("none" \in DOMAIN ans[f][m])
+Answered(f, m) == ~("none" \in DOMAIN ans[f][m]) /\ ~("refused" \in DOMAIN ans[f][m])
+\* Answered, or refused: a refusal takes no ballot but shows the copy it came from.
+Heard(f, m) == ~("none" \in DOMAIN ans[f][m])
 Snapshot(m) == [log |-> log[m], tr |-> trusted[m], kf |-> keptFrom[m],
                 lost |-> lostAt[m], bb |-> batchSince[m], prior |-> ballot[m],
                 rot |-> rotAt[m]]
@@ -259,7 +261,7 @@ LegacyRefuses(f, m) ==
     /\ ~(fence[f].cont /\ ballot[m].l = f /\ ballot[m].g >= fence[f].g - 1 /\ keptFrom[m] = 0)
 
 Answer(f, m) ==
-    /\ m /= f /\ fence[f].g > 0 /\ ~Answered(f, m)
+    /\ m /= f /\ fence[f].g > 0 /\ ~Heard(f, m)
     /\ ballot[m].g < fence[f].g \/ ballot[m] = [g |-> fence[f].g, l |-> f]
     /\ setGen[m] <= StartOf(f).sg
     /\ ~LegacyRefuses(f, m)
@@ -270,6 +272,18 @@ Answer(f, m) ==
     /\ openIdx' = [openIdx EXCEPT ![m] = 0]
     /\ UNCHANGED <<log, trusted, keptFrom, lostAt, batchSince, fence, starts, opened,
                    served, acked, ackedAt, rotAt, note, writes, budget>>
+
+\* With `ReplacedBlocking`, a copy that lost its ballots or rotated its id may
+\* refuse a fence for any reason (promised elsewhere, not a voter yet). The
+\* refusal takes no ballot, but the fence hears which copy sent it. Safety
+\* runs only: a refusal is never forced.
+Refuse(f, m) ==
+    /\ ReplacedBlocking /\ ~LiveCp
+    /\ m /= f /\ fence[f].g > 0 /\ ~Heard(f, m)
+    /\ lostAt[m] > 0 \/ rotAt[m] > 0
+    /\ ans' = [ans EXCEPT ![f][m] = [refused |-> TRUE, lost |-> lostAt[m], rot |-> rotAt[m]]]
+    /\ UNCHANGED <<ballot, log, trusted, keptFrom, lostAt, batchSince, setGen, openAt,
+                   openIdx, fence, starts, opened, served, acked, ackedAt, rotAt, note, writes, budget>>
 
 Retry(f) ==
     /\ FaultsAllowed /\ fence[f].g > 0 /\ budget.retries > 0
@@ -332,12 +346,14 @@ Required(f, anchor) ==
         /\ anchor <= st.g /\ st.g < fence[f].g
         /\ ~(st.g > anchor /\ (Evidenced(f, st) \/ Silent(f, st)))}
 
-\* Seats of `V` that answered this fence from a copy lost since `R` was
-\* introduced: the copy `R` names for them is gone. Evidence only: a silent
-\* seat is never taken for replaced.
+\* Seats of `V` heard by this fence (an answer or a refusal) from another copy
+\* than `R` names: one lost since `R` was introduced, or one whose id rotated
+\* on an unclean crash, which keeps its ballots. Rotation is taken whenever it
+\* happened, a superset of the code's "another id than the set names".
+\* Evidence only: a silent seat is never taken for replaced.
 Replaced(f, R, V) ==
     IF ReplacedBlocking /\ R.si /= StartOf(f).si
-    THEN {m \in V : Answered(f, m) /\ ans[f][m].lost >= R.si}
+    THEN {m \in V \ {f} : Heard(f, m) /\ (ans[f][m].lost >= R.si \/ ans[f][m].rot > 0)}
     ELSE {}
 
 \* A set fenced as `V`: its voters, or its voters and learners together.
@@ -518,7 +534,7 @@ Restore(n) ==
 
 Next ==
     \/ \E f \in Nodes : Start(f) \/ CpStart(f) \/ Retry(f) \/ Open(f)
-    \/ \E f, m \in Nodes : Answer(f, m) \/ Ship(f, m)
+    \/ \E f, m \in Nodes : Answer(f, m) \/ Refuse(f, m) \/ Ship(f, m)
     \/ \E l \in Nodes : Write(l) \/ Ack(l)
     \/ \E n \in Nodes : UncleanCrash(n) \/ Wipe(n) \/ Restore(n)
 
