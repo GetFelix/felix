@@ -1275,7 +1275,8 @@ directory's own copy, so it is no evidence of a wipe, while the directory
 still keeps every ballot (`docs/replication-design.md`, "One fence rule for
 every change of leader"). A missing file, or one that does not decode, names
 no id, so such a set reads as naming a lost copy, which only costs a
-readmission. An older release neither reads nor writes the file.
+readmission. So does a crash after the id rotated but before the old id was
+recorded. An older release neither reads nor writes the file.
 
 ## `copy-trust`: which copies hold what they acknowledged
 

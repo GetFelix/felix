@@ -458,6 +458,7 @@ expectations=(
   "FelixShardUnifiedLearnerBlockingTwo pass"
   "FelixShardUnifiedLearnerVariantDropped violates AckedHeldByLeader"
   "FelixShardUnifiedTwoRotated pass"
+  "FelixShardUnifiedTwoRotatedForgets violates OneLeaderPerGeneration"
   "FelixShardUnifiedCpLiveMoveRotated pass"
   "FelixShardUnifiedCpLiveMoveRotatedLegacy violates liveness"
 )

@@ -261,3 +261,6 @@ pub(super) fn bind_read_check<R: PeerRequester + Send + Sync + 'static>(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

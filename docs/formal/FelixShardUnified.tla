@@ -79,6 +79,10 @@ MoveFirst == FALSE
 \* every fence as a non-voter. The code did this for a fence carrying a set
 \* that names its old id; this is the coarse form.
 RotatedRefuses == FALSE
+\* `RotatedForgets`: an unclean crash also loses the copy's ballot, yet the
+\* copy still answers as the voter its old id named. The code counts a rotated
+\* copy only while its directory kept every ballot.
+RotatedForgets == FALSE
 \* `DropEvidenced`: a set started between the anchor and the fence is not
 \* fenced when its leader answers with a kept ballot above it and a trusted
 \* log holding no record of it: it never opened and never will.
@@ -467,9 +471,10 @@ UncleanCrash(n) ==
     /\ \E j \in 0..Len(log[n]) : log' = [log EXCEPT ![n] = Prefix(@, j)]
     /\ trusted' = [trusted EXCEPT ![n] = FALSE]
     /\ rotAt' = [rotAt EXCEPT ![n] = ballot[n].g]
+    /\ ballot' = IF RotatedForgets THEN [ballot EXCEPT ![n] = NoBallot] ELSE ballot
     /\ Stop(n)
     /\ budget' = [budget EXCEPT !.unclean = @ - 1]
-    /\ UNCHANGED <<ballot, keptFrom, lostAt, batchSince, setGen, starts, opened, served,
+    /\ UNCHANGED <<keptFrom, lostAt, batchSince, setGen, starts, opened, served,
                    acked, ackedAt, note, writes>>
 
 Lose(n) ==

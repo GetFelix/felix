@@ -313,7 +313,7 @@ impl QuorumMarks {
     /// copy from before a crash rotated its id, whose ballots it still holds:
     /// no evidence of a wipe. Never while the start has not said its
     /// directory kept every ballot, which a later restore or wipe undoes.
-    pub(crate) fn rotated_own_copy(&self, id: felix_storage::StorageId) -> bool {
+    pub fn rotated_own_copy(&self, id: felix_storage::StorageId) -> bool {
         self.kept_ballots()
             && self
                 .rotated_storage
