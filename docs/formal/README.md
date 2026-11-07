@@ -2078,10 +2078,10 @@ runs only when `docs/formal/`, `scripts/check_tla.sh` or that workflow
 changes. A pull request checks the registered configurations that take ten
 minutes or less (`TLA_QUICK=1`), plus `FelixShard.cfg`, the base
 configuration, whatever its time, and any whose own `.cfg` it changes. A
-changed configuration of 30 minutes or less runs in the ten shards with the
+changed configuration of 30 minutes or less runs in the ten shards (sixteen on main) with the
 quick ones. A heavier one runs in a job of its own (`formal-heavy`): the
 `formal-heavy-plan` job lists them with `scripts/check_tla.sh --plan-heavy`. A push
-to main checks every registered configuration. The shards are ten jobs,
+to main checks every registered configuration. The shards are ten jobs on a pull request and sixteen on main,
 filled by each configuration's measured time. Main's shards share a
 concurrency group per shard: one run proceeds and only the newest later push
 waits, so a burst of merges does not queue hours of runner time. A slow configuration that a
