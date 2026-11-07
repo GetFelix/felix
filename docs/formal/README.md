@@ -2059,7 +2059,8 @@ let a lost promise make a second leader. `CoverFromDoubted`, `TrustsRegistered` 
 `CountsForgotten` and `TrustsRegistered` are why a broker started without the control plane attests nothing. Until
 the restore check against the control plane has run, a restored directory looks like one that kept its ballots
 and its log. Counted as kept, its forgotten promise makes a second leader (`CountsForgotten`). Counted as trusted,
-its short log loses an acknowledged write (`TrustsRegistered`).
+its short log loses an acknowledged write (`TrustsRegistered`). Once the check has passed, the broker attests as a
+start that asked the control plane first would.
 
 A batch vouches for a copy only when it leaves it level through both the leader's start record and the mark it
 carries. The mark is the code's quorum offset, which right after an open can sit below the start record:

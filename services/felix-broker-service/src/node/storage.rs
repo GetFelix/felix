@@ -237,6 +237,7 @@ fn start_run(
             && !lost
             && (!begun.rotated || own_id)
             && registered.is_none_or(|r| r.storage_id.is_some()),
+        deferred: false,
     };
     let replaced = note_replaced(root, begun.id, registered)?;
     Ok((begun.id, begun.rotated, replaced, kept))
@@ -254,6 +255,10 @@ pub(crate) struct Kept {
     /// rotation the control plane's record names the id it had before. What
     /// a fence answer attests as kept.
     pub(crate) ballots: bool,
+    /// A start from the view that kept it: what a fence answer attests is
+    /// decided by the deferred restore check ([`Self::checked`]), and is
+    /// nothing until then.
+    pub(crate) deferred: bool,
 }
 
 impl Kept {
@@ -263,6 +268,17 @@ impl Kept {
     /// `docs/formal/FelixShardUnified.tla`), so such a run attests nothing.
     pub(crate) fn attested(self, from_view: bool) -> bool {
         self.ballots && !from_view
+    }
+
+    /// What a start from the view attests as kept once its deferred restore
+    /// check found the directory current against `registered`: what a start
+    /// that asked first would have. `self` is the run's own, not
+    /// [`Self::attested`]. The check stops the broker on a restored or
+    /// replaced directory, and the view is kept only by a run that did not
+    /// rotate the id, so of [`start_run`]'s conditions only the record's
+    /// storage id is left to apply.
+    pub(crate) fn checked(self, registered: Option<&Registered>) -> bool {
+        self.ballots && registered.is_none_or(|r| r.storage_id.is_some())
     }
 }
 

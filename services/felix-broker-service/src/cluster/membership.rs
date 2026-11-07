@@ -650,6 +650,27 @@ pub struct MembershipTask {
     pub fleet: Arc<FleetGate>,
 }
 
+/// The restore check a start from the control-plane view deferred until the
+/// control plane answers. Membership runs it before anything else.
+pub struct DeferredCheck {
+    /// Cancelled once the check passes. Never cancelled if it fails: the
+    /// broker stops instead.
+    pub checked: CancellationToken,
+    /// Called once, when the check passes and before `checked` is cancelled,
+    /// with the control plane's record of this node.
+    pub passed: Box<dyn FnOnce(Option<&Registered>) + Send>,
+}
+
+impl DeferredCheck {
+    /// A check that releases only `checked`.
+    pub fn releasing(checked: CancellationToken) -> Self {
+        Self {
+            checked,
+            passed: Box::new(|_| {}),
+        }
+    }
+}
+
 /// Register once the broker can serve, then report health until shutdown.
 ///
 /// `serving` gates registration: advertising a node before it can answer means
@@ -673,7 +694,7 @@ pub fn spawn(
     registered: tokio::sync::watch::Sender<Option<u64>>,
     storage_id: Option<StorageId>,
     record_in: Option<std::path::PathBuf>,
-    restore_check: Option<CancellationToken>,
+    restore_check: Option<DeferredCheck>,
 ) -> MembershipTask {
     spawn_with(
         link,
@@ -712,7 +733,7 @@ pub(crate) fn spawn_with(
     storage_id: Option<StorageId>,
     record_in: Option<std::path::PathBuf>,
     view: Option<crate::cluster::controlplane_view::ViewFile>,
-    restore_check: Option<CancellationToken>,
+    restore_check: Option<DeferredCheck>,
     own_thread: bool,
 ) -> MembershipTask {
     let fatal = CancellationToken::new();
@@ -729,7 +750,7 @@ pub(crate) fn spawn_with(
             // A start from the control-plane view skipped the restore check
             // (#1334), so it runs first, before anything else the control
             // plane says is applied or this node registers.
-            if let Some(checked) = restore_check {
+            if let Some(check) = restore_check {
                 match deferred_restore_check(
                     &link,
                     &config.node_id,
@@ -741,8 +762,11 @@ pub(crate) fn spawn_with(
                 )
                 .await
                 {
-                    Some(true) => checked.cancel(),
-                    Some(false) => {
+                    Some(Ok(registered)) => {
+                        (check.passed)(registered.as_ref());
+                        check.checked.cancel();
+                    }
+                    Some(Err(())) => {
                         mm::record_membership_live(false);
                         forget_view(view.as_ref()).await;
                         fatal.cancel();
@@ -926,8 +950,8 @@ pub(crate) fn judge_directory(
 }
 
 /// Ask for this node's registration until the control plane answers, then
-/// [`judge_directory`]. Returns whether the node may register, or `None` if
-/// the broker stopped first.
+/// [`judge_directory`]. Returns the control plane's record when the node may
+/// register, an error when it must stop, or `None` if the broker stopped first.
 async fn deferred_restore_check(
     link: &impl ControlPlaneLink,
     node_id: &str,
@@ -936,7 +960,7 @@ async fn deferred_restore_check(
     storage_id: Option<StorageId>,
     view: Option<&crate::cluster::controlplane_view::ViewFile>,
     shutdown: &CancellationToken,
-) -> Option<bool> {
+) -> Option<Result<Option<Registered>, ()>> {
     let mut attempt = 0u64;
     let answer = loop {
         let asked = tokio::select! {
@@ -947,7 +971,7 @@ async fn deferred_restore_check(
             Ok(answer) => break answer,
             Err(LookupFailure::Rejected(message)) => {
                 tracing::error!(node_id, error = %message, "the control plane refused to look up this node");
-                return Some(false);
+                return Some(Err(()));
             }
             // Up but refusing is not an outage an operator can wait out
             // unseen: a credential or version problem needs fixing.
@@ -969,12 +993,13 @@ async fn deferred_restore_check(
         }
     };
     let (Some(root), Some(id)) = (root, storage_id) else {
-        return Some(true);
+        return Some(Ok(answer));
     };
     let root = root.to_path_buf();
     let view = view.cloned();
+    let record = answer.clone();
     let judged = felix_common::blocking::spawn(move || {
-        judge_directory(&root, id, answer.as_ref(), view.as_ref())
+        judge_directory(&root, id, record.as_ref(), view.as_ref())
     })
     .await
     .map_err(anyhow::Error::from)
@@ -985,7 +1010,7 @@ async fn deferred_restore_check(
                 node_id,
                 "the control plane answered; this data directory is the one it registered"
             );
-            Some(true)
+            Some(Ok(answer))
         }
         Ok(Directory::Restored { rotated }) => {
             mm::record_restored_directory();
@@ -999,7 +1024,7 @@ async fn deferred_restore_check(
                  copy peers rebuild. A restore must delete storage-id or use \
                  `felix-broker restore-point`"
             );
-            Some(false)
+            Some(Err(()))
         }
         Ok(Directory::Replaced) => {
             tracing::error!(
@@ -1008,11 +1033,11 @@ async fn deferred_restore_check(
                 "the control plane last registered this node under another storage id; \
                  stopping so the next start joins as a replaced directory"
             );
-            Some(false)
+            Some(Err(()))
         }
         Err(err) => {
             tracing::error!(node_id, error = %err, "could not check this data directory against the control plane; stopping");
-            Some(false)
+            Some(Err(()))
         }
     }
 }

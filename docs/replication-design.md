@@ -1495,7 +1495,9 @@ on it starts from what the control plane last told it and takes part again;
 see [Rejoining without the control plane](#rejoining-without-the-control-plane).
 With the unified fence on, the default, that broker does not vote or count
 toward a promotion until it reaches the control plane, so a failover that
-needs its vote waits for the control plane. `FELIX_UNIFIED_FENCE=0` restores
+needs its vote waits for the control plane. Once the control plane answers
+and the restore check finds the directory is the one it registered, the
+broker attests its copies as a start that asked first would. `FELIX_UNIFIED_FENCE=0` restores
 the pin-based rule, under which its vote counts.
 
 **Which shards.** The ones failover on the followers' word already covers: a
