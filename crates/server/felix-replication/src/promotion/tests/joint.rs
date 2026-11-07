@@ -2222,8 +2222,8 @@ async fn a_move_off_two_voters_opens_on_one_trusted_copy() {
 /// broker-a's fence at `PROMOTED` after serving 4 on {broker-a, broker-b,
 /// broker-c}, counted by attestation. Both followers are doubted, as after
 /// a crash that may have cost them acknowledged records. broker-a's own
-/// ballot names `holder` at 4.
-async fn fence_past_doubted(continuing: bool, holder: &str) -> Outcome {
+/// ballot names `holder` at `at`.
+async fn fence_past_doubted(continuing: bool, holder: &str, at: u64) -> Outcome {
     use super::unified::{DOUBTED, fence_unified, unified};
     let mut replicas = replicas_with(&[]);
     for id in ["broker-b", "broker-c"] {
@@ -2234,7 +2234,7 @@ async fn fence_past_doubted(continuing: bool, holder: &str) -> Outcome {
         .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
         .await
         .expect("log");
-    log.accept_generation(4, Some(holder))
+    log.accept_generation(at, Some(holder))
         .await
         .expect("ballot");
     log.accept_set(ReplicaSet {
@@ -2257,13 +2257,13 @@ async fn fence_past_doubted(continuing: bool, holder: &str) -> Outcome {
 #[tokio::test]
 async fn a_continuing_leader_opens_past_two_doubted_copies() {
     assert_eq!(
-        fence_past_doubted(true, LEADER).await,
+        fence_past_doubted(true, LEADER, 4).await,
         Outcome::Fenced {
             caught_up_from: None
         }
     );
     for (continuing, holder) in [(false, LEADER), (true, "broker-x")] {
-        let outcome = fence_past_doubted(continuing, holder).await;
+        let outcome = fence_past_doubted(continuing, holder, 4).await;
         assert!(
             matches!(&outcome, Outcome::Pending { why, .. } if why.contains("1 of 3 copies attest")),
             "continuing {continuing}, ballot for {holder}: {outcome:?}"
@@ -2317,4 +2317,59 @@ async fn the_sets_a_failover_fences_are_the_unopened_chain() {
         let expected = if opened { vec![4] } else { chain };
         assert_eq!(required, expected, "opened {opened}");
     }
+}
+
+/// **A retried continuing fence, whose own ballot already names this broker
+/// at the generation it fences, still skips coverage.** The first round took
+/// its own ballot at 5 before the answers were lost.
+#[tokio::test]
+async fn a_continuing_leader_balloted_at_its_generation_skips_coverage() {
+    assert_eq!(
+        fence_past_doubted(true, LEADER, PROMOTED).await,
+        Outcome::Fenced {
+            caught_up_from: None
+        }
+    );
+}
+
+/// broker-a continuing generation 4 into a joint fence at `PROMOTED`, on
+/// {broker-a, broker-x, broker-z}, leaving {broker-x, broker-b, broker-c},
+/// counted by attestation. Every follower is doubted, and the ones in `down`
+/// do not answer.
+async fn fence_continuing_across(down: &[&str]) -> Outcome {
+    use super::unified::{DOUBTED, fence_unified, unified};
+    let mut replicas = replicas_with(&["broker-x", "broker-z"]);
+    for id in ["broker-x", "broker-z", "broker-b", "broker-c"] {
+        let replica = replicas.get_mut(id);
+        replica.attests = Some(DOUBTED);
+        replica.reachable = !down.contains(&id);
+    }
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+    kept_under(
+        &leader,
+        LEADER,
+        &["broker-x", "broker-b", "broker-c"],
+        &[],
+        &[],
+        &[],
+    )
+    .await;
+    let addr_of = addr_of;
+    let joint = Joint::new(&addr_of, None).with_continuing(true);
+    fence_unified(&replicas, &leader, &swapped(), Some(&joint), &unified(true)).await
+}
+
+/// **A continuing joint fence skips coverage but not exclusion.** With every
+/// follower doubted it opens on promises alone. With broker-b and broker-c
+/// down, the set being left has one promise of three and the fence waits.
+#[tokio::test]
+async fn a_continuing_joint_fence_skips_coverage_but_not_exclusion() {
+    let outcome = fence_continuing_across(&[]).await;
+    assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
+
+    let outcome = fence_continuing_across(&["broker-b", "broker-c"]).await;
+    let Outcome::Pending { why, .. } = &outcome else {
+        panic!("opened without a majority of the set being left: {outcome:?}");
+    };
+    assert!(why.contains("1 of 3 voters of the set being left"), "{why}");
 }

@@ -826,13 +826,24 @@ async fn fence_log<R: PeerRequester>(
             continuing && matches!(&answer, Ok(InternalMessage::FenceOk(ok)) if ok.kept_ballot);
         match answer {
             Ok(InternalMessage::FenceOk(ok)) if ok.attestation.is_some() => {
+                // An answer given in place of a refusal counts only for a
+                // leader that counts by attestation; to any other it is
+                // neither a promise nor coverage.
+                let attested = if own.attested {
+                    ok.attestation
+                } else {
+                    Some(FenceAttestation {
+                        kept_from: u64::MAX,
+                        trusted: false,
+                    })
+                };
                 // Its ballot still refuses an older leader, and its log may
                 // still be the one taken, but a copy whose promises count for
                 // no set here is one a later generation might count.
-                if !Counted::of(ok.attestation).promises(set_generation) {
+                if !Counted::of(attested).promises(set_generation) {
                     declined += 1;
                 }
-                seen.push((node_id.clone(), identity, false, ok.attestation));
+                seen.push((node_id.clone(), identity, false, attested));
                 answered.push((node_id, addr, ok));
             }
             Ok(InternalMessage::FenceOk(_))

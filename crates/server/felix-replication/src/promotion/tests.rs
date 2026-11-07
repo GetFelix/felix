@@ -182,6 +182,9 @@ struct Replica {
     /// What its fence answers attest, as a replica answering a leader that
     /// offered `UNIFIED_FENCE` does.
     attests: Option<FenceAttestation>,
+    /// Whether its fences come from a caller that offered `UNIFIED_FENCE`,
+    /// so the handler answers as it does to one.
+    unified: bool,
     _dir: TempDir,
 }
 
@@ -202,6 +205,7 @@ impl Replica {
             refuses_with: ErrorCode::Unavailable,
             recorded: true,
             attests: None,
+            unified: false,
             _dir: dir,
         }
     }
@@ -343,9 +347,14 @@ impl PeerRequester for Replicas {
         }
         match message {
             InternalMessage::Fence(fence) => {
+                let caller = if replica.unified {
+                    PeerCapabilities::UNIFIED_FENCE
+                } else {
+                    PeerCapabilities::NONE
+                };
                 let answer = replica
                     .handler
-                    .fence(self.ballots.then_some(LEADER), fence)
+                    .fence_from(self.ballots.then_some(LEADER), caller, fence)
                     .await;
                 Ok(match answer {
                     InternalMessage::FenceOk(ok) if replica.attests.is_some() => {

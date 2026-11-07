@@ -213,3 +213,112 @@ async fn an_unkept_own_copy_needs_a_majority_without_it() {
     let outcome = fence_unified(&replicas, &leader, &route(), None, &marks).await;
     assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
 }
+
+/// **A leader that does not count by attestation counts an attested answer
+/// for nothing.** Such an answer may stand in place of a refusal the leader's
+/// counting relies on, so broker-b's answer, with broker-c down, leaves the
+/// fence pending rather than open on it.
+#[tokio::test]
+async fn a_leader_counting_without_attestations_counts_an_attested_answer_for_nothing() {
+    let mut replicas = Replicas::new();
+    replicas.get_mut("broker-b").attests = Some(TRUSTED);
+    replicas.get_mut("broker-c").reachable = false;
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route(), false, None).await;
+
+    assert!(
+        matches!(outcome, Outcome::Pending { .. }),
+        "counted an attested answer under the older rules: {outcome:?}"
+    );
+}
+
+/// The handler for `node_id`, whose directory kept its ballots.
+fn kept_handler(broker: &Arc<Broker>, node_id: &str) -> ReplicaHandler {
+    ReplicaHandler::new(Arc::clone(broker), router_for(node_id, 4))
+        .with_fleet(Arc::new(unified(true)))
+}
+
+/// **A copy its broker led before an unclean crash answers a unified fence,
+/// untrusted, and the fence opens only once coverage is met.** broker-b led
+/// generation 4 and crashed; it refuses an older caller but answers this
+/// leader, which counts its promise and not its log. With broker-c down, this
+/// broker alone covers one of three and the fence waits; once broker-c
+/// answers, trusted, it opens.
+#[tokio::test]
+async fn a_crashed_leaders_copy_answers_untrusted_and_the_fence_waits_for_coverage() {
+    let mut replicas = Replicas::new();
+    replicas
+        .get("broker-b")
+        .holds("broker-b", 3, 0, &["a"])
+        .await;
+    let crashed = Arc::clone(&replicas.get("broker-b").broker);
+    crashed
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log")
+        .accept_generation(4, Some("broker-b"))
+        .await
+        .expect("lead");
+    for id in ["broker-b", "broker-c"] {
+        let replica = replicas.get_mut(id);
+        replica.unified = true;
+        replica.handler = kept_handler(&replica.broker, id);
+    }
+    let replica = replicas.get_mut("broker-b");
+    replica.handler = kept_handler(&crashed, "broker-b")
+        .with_unclean_start(Arc::new(crate::unclean::UncleanStart::new("broker-b")));
+    replicas.get_mut("broker-c").reachable = false;
+    let (leader, _dir) = leader_holding(3, &["a"]).await;
+    let marks = unified(true);
+
+    let outcome = fence_unified(&replicas, &leader, &route(), None, &marks).await;
+    let Outcome::Pending { why, took } = &outcome else {
+        panic!("opened with one covering copy of three: {outcome:?}");
+    };
+    assert_eq!(took, &vec!["broker-b".to_string()], "{why}");
+    assert!(why.contains("1 of 3 copies attest"), "{why}");
+
+    replicas.get_mut("broker-c").reachable = true;
+    let outcome = fence_unified(&replicas, &leader, &route(), None, &marks).await;
+    assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
+}
+
+/// **This broker's copy counts no promise while its kept set lists it as a
+/// learner.** broker-b's promise and this broker's would be a majority of
+/// three; without this broker's, broker-b alone is not, and the fence waits.
+#[tokio::test]
+async fn a_learner_own_copy_counts_no_promise() {
+    use felix_storage::disk_log::{Member, Membership, ReplicaSet};
+    let mut replicas = Replicas::new();
+    replicas.get_mut("broker-b").attests = Some(TRUSTED);
+    replicas.get_mut("broker-c").reachable = false;
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+    let member = |node: &str| Member {
+        node: node.to_string(),
+        storage: None,
+        learner: node == LEADER,
+        wiped: false,
+    };
+    leader
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log")
+        .accept_set(ReplicaSet {
+            current: Membership {
+                generation: 4,
+                members: [LEADER, "broker-b", "broker-c"].map(member).to_vec(),
+            },
+            leaving: None,
+            earlier: Vec::new(),
+        })
+        .await
+        .expect("keep the set");
+
+    let outcome = fence_unified(&replicas, &leader, &route(), None, &unified(true)).await;
+
+    assert!(
+        matches!(outcome, Outcome::Pending { .. }),
+        "counted a learner's promise: {outcome:?}"
+    );
+}
