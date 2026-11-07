@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794074975109,
+  "lastUpdate": 1794075265090,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -49244,6 +49244,58 @@ window.BENCHMARK_DATA = {
             "range": "43523.31",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1644540.29\nmean: 1621293.83\nstdev: 43523.31\ncv: 2.68%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "87afa408cee9d9c3688bfad54e4a6494c75c58f6",
+          "message": "fix(replication): an idle shard's follower is sent the mark so it can be trusted (#2109)\n\n* fix(replication): an idle shard's follower is sent the mark so it can be trusted\n\nA follower back from an unclean restart is trusted again only by a batch\nthat leaves it level through the leader's start and a commit offset above\nzero. The batch that catches it up goes before its own answer raises the\nmark, so it carries zero, and a level follower of an idle shard is sent\nnothing more. The copy stayed untrusted, and one more failure left fences\nthat could never cover (felix-sim seed 3: 65 stalled shards).\n\nThe leader now sends a level follower its last record again with the\ncurrent mark until one stored batch carried a mark above zero\n(FollowerCursor::mark_carried), and again for each new process on the\nfollower. The replica's vouch rule is unchanged.\n\nModel: FelixShardUnified gains the IdleVouch knob (default on: Ship\nalready allowed a batch to a level follower), ShipSpec and the liveness\nproperty FollowerTrusted. FelixShardUnifiedIdleVouch passes and its\nLegacy twin violates FollowerTrusted.\n\n* fix(replication): review fixes for the idle-shard mark resend\n\nA batch unlabelled only because the follower's offer was unknown no longer\ncounts as carrying the mark. A leader with no start for its own generation\nowes nobody a resend, and the resend runs apart from the counter ping so\none that cannot land holds that ping back no longer.\n\n* fix(replication): resend the mark only to a follower at the tail\n\nA follower still catching up gets the mark with its next batch, paced\nlike the rest, so the resend no longer adds an unthrottled batch to a\npaced move or a cut catch-up. The generation history is read once per\nbatch.\n\n* test(replication): pass the record flag main added to attestation\n\nSpec-Unaffected: test call only.",
+          "timestamp": "2026-11-07T10:09:32-08:00",
+          "tree_id": "0d7044ed750dc06e5bf370b09fdeea0e00996259",
+          "url": "https://github.com/GetFelix/felix/commit/87afa408cee9d9c3688bfad54e4a6494c75c58f6"
+        },
+        "date": 1794075264125,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 361989.57,
+            "range": "9173.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 361989.57\nmean: 361992.76\nstdev: 9173.05\ncv: 2.53%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 361989.57,
+            "range": "9173.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 361989.57\nmean: 361992.76\nstdev: 9173.05\ncv: 2.53%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81948.58,
+            "range": "591.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81948.58\nmean: 81999.74\nstdev: 591.05\ncv: 0.72%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 819485.79,
+            "range": "5910.51",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 819485.79\nmean: 819997.43\nstdev: 5910.51\ncv: 0.72%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
