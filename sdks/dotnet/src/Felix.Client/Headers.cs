@@ -23,7 +23,7 @@ public sealed record HeaderedRecord(
     IReadOnlyList<Header>? Headers = null);
 
 /// <summary>A lease token, granting what the caller's lease templates name for the key. A bearer secret.</summary>
-/// <param name="Value">The token; present it to <see cref="FelixClient.WithIdentityAsync"/>.</param>
+/// <param name="Value">The token; present it to <see cref="FelixClient.WithIdentityAsync(string, string, CancellationToken)"/>.</param>
 /// <param name="ExpiresAtSeconds">When it stops working, in seconds since the Unix epoch.</param>
 public sealed record LeaseToken(string Value, long ExpiresAtSeconds)
 {

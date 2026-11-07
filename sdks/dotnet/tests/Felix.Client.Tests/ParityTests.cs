@@ -238,6 +238,7 @@ public class ParityTests
             client.PublishWithHeadersAsync("t", "n", "s", record),
             client.PublishBatchWithHeadersAsync("t", "n", "s", [record, record]),
             client.WithIdentityAsync("t", "token"),
+            client.WithIdentityAsync("t", _ => ValueTask.FromResult("token")),
             client.ReadRangeAsync("t", "n", "s", 0, 1, 5, 2),
             client.RefreshTopologyAsync(),
             client.GetConnectionsPerNodeAsync(),
@@ -250,6 +251,40 @@ public class ParityTests
             Assert.Equal(FelixStatus.InvalidArgument, error.Status);
             Assert.Contains("client", error.Message);
         }
+    }
+
+    [Fact]
+    public void AnIdentityKeepsTheParentsTokenSourceAliveUntilItIsDisposed()
+    {
+        var source = new TokenSource(_ => ValueTask.FromResult("token"));
+        var parent = new FelixClient(new FelixClientHandle(0), source);
+        var identity = new FelixClient(new FelixClientHandle(0), parent.ShareTokens());
+
+        parent.Dispose();
+        Assert.False(source.IsCancelled);
+        Assert.Same(source, identity.Tokens);
+
+        identity.Dispose();
+        Assert.True(source.IsCancelled);
+        source.Abandon();
+    }
+
+    [NativeFact]
+    public async Task ARefusedIdentityLeavesTheTokenSourcesAsItFoundThem()
+    {
+        var live = TokenSource.Live;
+        var source = new TokenSource(_ => ValueTask.FromResult("token"));
+        using var client = new FelixClient(new FelixClientHandle(0), source);
+
+        var error = await Assert.ThrowsAsync<FelixException>(() => client.WithIdentityAsync("t", "token"));
+        Assert.Equal(FelixStatus.InvalidArgument, error.Status);
+        Assert.Equal(1, source.Holders);
+
+        // The refused provider form never keeps its source, so token_release never runs for it.
+        await Assert.ThrowsAsync<FelixException>(() =>
+            client.WithIdentityAsync("t", _ => ValueTask.FromResult("token")));
+        Assert.Equal(live + 1, TokenSource.Live);
+        source.Abandon();
     }
 
     [Fact]

@@ -654,8 +654,14 @@ stands). The token is a bearer secret, so its `ToString` leaves it out.
 it was made from. A gateway serving many principals needs no pool of its own: each identity is its own client with
 its own routing state, and the requests it makes are checked against its token's grants alone. Dispose it like any
 client; that closes only its own streams. It shares the runtime with its parent, so disposing the parent first does
-not stop it. Keep it alive while subscriptions made from it are in use. A refused token fails with `Auth`, and the
-token is fixed for the new client, so make another when it expires.
+not stop it. Keep it alive while subscriptions made from it are in use. A refused token fails with `Auth`.
+
+The identity also holds on to the parent's `TokenProvider`, so a parent that is disposed first does not cancel a
+fetch the identity or its subscriptions are waiting on. A token passed as a string is fixed for the new client, so
+make another when it expires, or pass a provider instead:
+`WithIdentityAsync(tenant, provider, initialToken)` takes a `Func<CancellationToken, ValueTask<string>>` that
+behaves as `FelixClientOptions.TokenProvider` does and runs until the identity and everything made from it are
+disposed. `initialToken` may be null.
 
 ```csharp
 LeaseWrite lease = await cache.PutIfAbsentLeaseAsync(
@@ -846,6 +852,7 @@ foreach (var handed in pending)
 A record can carry its own key and named byte values next to its payload. They are stored with the
 record and come back on the delivered event. `PublishWithHeadersAsync` sends one `HeaderedRecord`, and
 `PublishBatchWithHeadersAsync` sends several to shard 0's owner as one frame and returns each record's offset.
+A batch needs at least one record; an empty one throws `ArgumentException`, as the C call refuses a count of zero.
 
 ```csharp
 await using var sub = await client.SubscribeAsync(

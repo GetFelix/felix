@@ -66,6 +66,9 @@ pub struct FelixClient {
     /// The client acting as another principal, for a handle made by
     /// `felix_client_with_identity`. Absent for the connected client itself.
     identity: Option<Arc<Client>>,
+    /// The identity's own token fetch, failed when this handle is freed so a
+    /// fetch waiting on the app does not outlive it.
+    tokens: Option<Arc<TokenSource>>,
 }
 
 impl FelixClient {
@@ -75,15 +78,21 @@ impl FelixClient {
             shared,
             cancel,
             identity: None,
+            tokens: None,
         }
     }
 
     /// A handle on `shared`'s runtime and connections that acts as `identity`.
-    pub(crate) fn acting_as(shared: Arc<Shared>, identity: Client) -> Self {
+    pub(crate) fn acting_as(
+        shared: Arc<Shared>,
+        identity: Client,
+        tokens: Option<Arc<TokenSource>>,
+    ) -> Self {
         Self {
             cancel: shared.cancel.child_token(),
             shared,
             identity: Some(Arc::new(identity)),
+            tokens,
         }
     }
 
@@ -98,6 +107,9 @@ impl FelixClient {
 impl Drop for FelixClient {
     fn drop(&mut self) {
         self.cancel.cancel();
+        if let Some(tokens) = &self.tokens {
+            tokens.close();
+        }
         // A client dropped outside the runtime closes its streams without one.
         let _enter = self.shared.handle().enter();
         drop(self.identity.take());

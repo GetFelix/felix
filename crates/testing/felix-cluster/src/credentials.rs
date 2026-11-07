@@ -196,6 +196,22 @@ impl Credentials {
         )
     }
 
+    /// What a node that claims leases holds: the lease cache `cache`, and a
+    /// template for the output stream of whichever key it holds. Nothing names
+    /// an output directly, so only a lease token can publish to one.
+    pub fn lease_node_token(&self, cache: &str) -> String {
+        let tenant_id = &self.tenant_id;
+        self.mint(
+            "p:harness-lease-node",
+            vec![
+                format!("cache.write:cache:{tenant_id}/*/{cache}"),
+                format!("cache.read:cache:{tenant_id}/*/{cache}"),
+                format!("stream.publish:stream:{tenant_id}/*/wl.{{{cache}}}.out"),
+            ],
+            BROKER_AUDIENCE,
+        )
+    }
+
     /// May subscribe, may not publish. For asserting that a forwarded publish
     /// is still authorized at the owner.
     pub fn subscribe_only_token(&self) -> String {

@@ -2445,9 +2445,10 @@ FelixStatus felix_client_publish_with_headers(const struct FelixClient *client,
 // `records` is `count` records in an array; the stride is the first
 // record's `size`. The batch goes to shard 0's owner as one frame, as
 // `felix_client_publish_batch` without a key does. A record with neither key
-// nor headers is published plain. Errors are those of
-// `felix_client_publish_with_headers`, and a refused header fails the whole
-// batch before anything is sent.
+// nor headers is published plain. A `count` of zero is
+// `FELIX_STATUS_INVALID_ARGUMENT`, as the C# client's empty batch is. Errors
+// are those of `felix_client_publish_with_headers`, and a refused header
+// fails the whole batch before anything is sent.
 //
 // # Safety
 //
@@ -2475,9 +2476,10 @@ FelixStatus felix_client_publish_batch_with_headers(const struct FelixClient *cl
 // it are in use. A refused token completes with `FELIX_STATUS_AUTH`.
 //
 // `token` is fixed for the new client's life; make another client when it
-// expires. A lease token from `felix_client_cache_put_if_lease` is a valid
-// `token`. `callback` runs once with the new client, unless this returns
-// something other than `FELIX_STATUS_OK`; `FelixConnectCallback` describes it.
+// expires, or use `felix_client_with_identity_provider`. A lease token from
+// `felix_client_cache_put_if_lease` is a valid `token`. `callback` runs once
+// with the new client, unless this returns something other than
+// `FELIX_STATUS_OK`; `FelixConnectCallback` describes it.
 //
 // # Safety
 //
@@ -2490,6 +2492,37 @@ FelixStatus felix_client_with_identity(const struct FelixClient *client,
                                        const struct FelixCancelToken *cancel,
                                        FelixConnectCallback callback,
                                        void *user_data);
+
+// `felix_client_with_identity` for a token that expires: the new client asks
+// `token_fetch` for a fresh one when it needs it, as a client connected with
+// `FelixConnectOptions.token_fetch` does.
+//
+// `token` is the first token and may be null, in which case the first
+// authentication calls `token_fetch`. An empty `token` counts as none. Return
+// values, `callback` and the free rules are those of
+// `felix_client_with_identity`.
+//
+// `token_fetch` is described by `FelixTokenFetch`; answer each reply with
+// `felix_token_reply_ok` or `felix_token_reply_err`. When this returns
+// `FELIX_STATUS_OK`, `token_release` runs exactly once later, after the new
+// client is freed (or the call fails or is cancelled) and every reply has
+// been answered. When it returns anything else `token_release` never runs and
+// `token_user_data` is still the caller's. `token_fetch` is required.
+//
+// # Safety
+//
+// As for `felix_client_with_identity`, with `token` null or NUL-terminated,
+// and `token_fetch`, `token_release` and `token_user_data` as
+// `FelixConnectOptions` documents them.
+FelixStatus felix_client_with_identity_provider(const struct FelixClient *client,
+                                                const char *tenant_id,
+                                                const char *token,
+                                                FelixTokenFetch token_fetch,
+                                                void *token_user_data,
+                                                FelixTokenRelease token_release,
+                                                const struct FelixCancelToken *cancel,
+                                                FelixConnectCallback callback,
+                                                void *user_data);
 
 // Ask the broker for a producer id and make a producer under it.
 //

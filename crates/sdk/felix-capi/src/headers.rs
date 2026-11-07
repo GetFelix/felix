@@ -134,10 +134,10 @@ unsafe fn parse_batch(
     records: *const FelixRecord,
     count: usize,
 ) -> Result<Vec<(RecordHeaders, Vec<u8>)>, Failure> {
-    let mut batch = Vec::new();
     if count == 0 {
-        return Ok(batch);
+        return Err(Failure::invalid("a batch needs at least one record"));
     }
+    let mut batch = Vec::new();
     if records.is_null() {
         return Err(Failure::invalid("records is null but count is not zero"));
     }
@@ -236,9 +236,10 @@ pub unsafe extern "C" fn felix_client_publish_with_headers(
 /// `records` is `count` records in an array; the stride is the first
 /// record's `size`. The batch goes to shard 0's owner as one frame, as
 /// `felix_client_publish_batch` without a key does. A record with neither key
-/// nor headers is published plain. Errors are those of
-/// `felix_client_publish_with_headers`, and a refused header fails the whole
-/// batch before anything is sent.
+/// nor headers is published plain. A `count` of zero is
+/// `FELIX_STATUS_INVALID_ARGUMENT`, as the C# client's empty batch is. Errors
+/// are those of `felix_client_publish_with_headers`, and a refused header
+/// fails the whole batch before anything is sent.
 ///
 /// # Safety
 ///

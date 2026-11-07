@@ -41,6 +41,7 @@ public sealed partial class FelixClient
     /// Publishes a batch of records with keys and headers to shard 0's owner as one frame. Returns each
     /// record's offset, in order, null where the broker reported none. Errors are those of
     /// <see cref="PublishWithHeadersAsync"/>; a refused header fails the whole batch before anything is sent.
+    /// An empty batch throws <see cref="ArgumentException"/>, as the C call refuses a count of zero.
     /// </summary>
     public Task<long?[]> PublishBatchWithHeadersAsync(
         string tenant,
@@ -77,22 +78,98 @@ public sealed partial class FelixClient
     /// connections, so disposing this one first does not stop it.
     /// </summary>
     /// <remarks>
-    /// The token is fixed for the new client's life; make another when it expires. A
-    /// <see cref="LeaseToken"/> from <see cref="FelixCache.PutIfAbsentLeaseAsync"/> is a valid token. Keep the
-    /// new client alive while subscriptions made from it are in use. A refused token fails with
-    /// <see cref="FelixStatus.Auth"/>.
+    /// The token is fixed for the new client's life; use the overload that takes a provider for one that
+    /// expires. A <see cref="LeaseToken"/> from <see cref="FelixCache.PutIfAbsentLeaseAsync"/> is a valid
+    /// token. The new client keeps this client's <see cref="FelixClientOptions.TokenProvider"/> running
+    /// until it and everything made from it are disposed. Keep it alive while subscriptions made from it
+    /// are in use. A refused token fails with <see cref="FelixStatus.Auth"/>.
     /// </remarks>
     public async Task<FelixClient> WithIdentityAsync(string tenant, string token, CancellationToken cancellationToken = default)
     {
         Arg.Text(tenant);
         Arg.Text(token);
-        var native = await StartIdentity(tenant, token, cancellationToken).ConfigureAwait(false);
-        return new FelixClient(native);
+        // Taken before the call, so disposing this client meanwhile cannot cancel a fetch the new one needs.
+        var held = ShareTokens();
+        try
+        {
+            var native = await StartIdentity(tenant, token, cancellationToken).ConfigureAwait(false);
+            return new FelixClient(native, held);
+        }
+        catch
+        {
+            held?.ReleaseHolder();
+            throw;
+        }
     }
+
+    /// <summary>
+    /// As <see cref="WithIdentityAsync(string, string, CancellationToken)"/>, for a token that expires.
+    /// <paramref name="tokenProvider"/> behaves as <see cref="FelixClientOptions.TokenProvider"/> does, and
+    /// runs until the new client and everything made from it are disposed.
+    /// </summary>
+    /// <param name="initialToken">The first token, or null to call the provider before the first request.</param>
+    public async Task<FelixClient> WithIdentityAsync(
+        string tenant,
+        Func<CancellationToken, ValueTask<string>> tokenProvider,
+        string? initialToken = null,
+        CancellationToken cancellationToken = default)
+    {
+        Arg.Text(tenant);
+        ArgumentNullException.ThrowIfNull(tokenProvider);
+        Arg.OptionalText(initialToken);
+        var source = new TokenSource(tokenProvider);
+        try
+        {
+            var native = await StartIdentityProvider(tenant, initialToken, source, cancellationToken).ConfigureAwait(false);
+            return new FelixClient(native, source);
+        }
+        catch
+        {
+            // No client will be handed out, so a provider still running has no one to serve.
+            source.Cancel();
+            throw;
+        }
+    }
+
+    /// <summary>A reference on this client's token source for a client that outlives it; null without a provider.</summary>
+    internal TokenSource? ShareTokens() => tokens?.Retain() == true ? tokens : null;
 
     private unsafe Task<FelixClientHandle> StartIdentity(string tenant, string token, CancellationToken cancellationToken) =>
         Call<FelixClientHandle>(cancellationToken, (client, cancel, userData) =>
             NativeMethods.felix_client_with_identity(client, tenant, token, cancel, &Callbacks.OnConnect, userData));
+
+    private unsafe Task<FelixClientHandle> StartIdentityProvider(
+        string tenant, string? initialToken, TokenSource source, CancellationToken cancellationToken) =>
+        Call<FelixClientHandle>(cancellationToken, (client, cancel, userData) =>
+        {
+            int status;
+            try
+            {
+                status = NativeMethods.felix_client_with_identity_provider(
+                    client,
+                    tenant,
+                    initialToken,
+                    (nint)(delegate* unmanaged[Cdecl]<nint, nint, void>)&Callbacks.OnTokenFetch,
+                    source.Pin(),
+                    (nint)(delegate* unmanaged[Cdecl]<nint, void>)&Callbacks.OnTokenRelease,
+                    cancel,
+                    &Callbacks.OnConnect,
+                    userData);
+            }
+            catch
+            {
+                source.Abandon();
+                throw;
+            }
+
+            if (status != 0)
+            {
+                // Not OK: the library did not keep the source, so token_release never runs.
+                source.Abandon();
+            }
+
+            return status;
+        });
 
     /// <summary>
     /// Reads one page of a durable stream shard's committed records, from <paramref name="from"/> and stopping

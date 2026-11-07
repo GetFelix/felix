@@ -113,7 +113,7 @@ pub use headers::{
     FelixHeader, FelixRecord, felix_client_publish_batch_with_headers,
     felix_client_publish_with_headers,
 };
-pub use identity::felix_client_with_identity;
+pub use identity::{felix_client_with_identity, felix_client_with_identity_provider};
 pub use producer::{
     FelixHanded, FelixHandedCallback, FelixProducer, FelixProducerCallback,
     felix_client_idempotent_producer, felix_handed_done, felix_handed_free, felix_handed_offset,
