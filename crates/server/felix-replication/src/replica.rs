@@ -2349,6 +2349,19 @@ pub(crate) fn promised_to(err: &ReplicateError, generation: u64) -> Option<&str>
 /// generation does not name it a follower; [`refuses_leader`] reads it back.
 pub(crate) const NOT_A_REPLICA: &str = "this broker is not a replica of that shard";
 
+/// What a replica answers a fence while it does not vote; [`not_a_voter`]
+/// reads it back.
+pub(crate) const NOT_A_VOTER: &str = "this broker does not vote until a set change re-admits it";
+
+/// Whether a refusal says its sender holds no vote, so the position it would
+/// have reported counts for nothing.
+pub(crate) fn not_a_voter(err: &ReplicateError) -> bool {
+    match &err.reason {
+        Some(reason) => *reason == RefusalReason::NotVoter,
+        None => err.detail == NOT_A_VOTER,
+    }
+}
+
 /// Whether a follower's refusal of a leader at `generation` says its copy
 /// does not follow that leader there: its route names it outside the set,
 /// as the leader the control plane named, or its ballot holds the
@@ -2445,6 +2458,7 @@ fn detail_of(reason: &RefusalReason) -> String {
         RefusalReason::View { have, sender } => view_detail(*have, *sender),
         RefusalReason::Assigned { assigned, sender } => assigned_detail(*assigned, *sender),
         RefusalReason::NotAReplica => NOT_A_REPLICA.to_string(),
+        RefusalReason::NotVoter => NOT_A_VOTER.to_string(),
     }
 }
 

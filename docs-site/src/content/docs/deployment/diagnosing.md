@@ -147,7 +147,11 @@ felixctl inspect shard orders --shard 2
 
 The control plane promotes only a follower its leader last reported as holding
 the whole log. Promoting one that was behind would lose acknowledged records,
-so when no follower was reported caught up, the shard waits. A report older
+so when no follower was reported caught up, the shard waits. A follower that is a learner, or a replaced copy that has not been re-admitted,
+has no vote, so a leader that restarted after a crash and gave its own copy up
+cannot name the other followers caught up unless the followers that do vote
+make up at least half of the set. The shard then waits as above and `abandon` is
+accepted. A report older
 than its freshness window counts as no report. `inspect shard` shows each
 replica's own tail and accepted generation, which tells you how far each got.
 
