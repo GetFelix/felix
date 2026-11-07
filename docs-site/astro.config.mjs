@@ -205,6 +205,7 @@ export default defineConfig({
           items: [
             { label: 'QUIC Transport', slug: 'features/quic-transport' },
             { label: 'Pub/Sub Streaming', slug: 'features/pubsub' },
+            { label: 'Sharding', slug: 'features/sharding' },
             { label: 'Queues and Consumer Groups', slug: 'features/queues' },
             { label: 'Atomic Commits', slug: 'features/atomic-commits' },
             { label: 'Distributed Cache', slug: 'features/cache' },

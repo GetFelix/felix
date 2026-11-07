@@ -108,6 +108,12 @@ pub(crate) fn spawn_broker(
             "RUST_LOG",
             std::env::var("RUST_LOG").as_deref().unwrap_or("info"),
         );
+    let mut tcp_ports = Vec::new();
+    for (env_var, template) in &config.tcp_listeners {
+        let port = ports::free_tcp()?.port();
+        command.env(env_var, template.replace("{port}", &port.to_string()));
+        tcp_ports.push((env_var.clone(), port));
+    }
     let kafka_addr = if config.kafka {
         let port = ports::free_tcp_except(|port| port == metrics_addr.port())?.port();
         let advertise = format!("{}:{port}", crate::container::host());
@@ -159,6 +165,7 @@ pub(crate) fn spawn_broker(
         metrics_addr,
         kafka_addr,
         data_dir,
+        tcp_ports,
         process: Some(process),
     })
 }

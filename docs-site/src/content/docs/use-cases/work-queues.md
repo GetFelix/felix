@@ -218,7 +218,8 @@ a log that can be replayed.
 ### How Felix differs
 
 SQS is the simplest to run on AWS and scales without a shard count to choose.
-Felix needs brokers and a shard count at creation. In exchange a failed job is
+Felix needs brokers and a shard count at creation (see
+[choosing a shard count](/features/sharding/#choosing-a-key-and-a-shard-count)). In exchange a failed job is
 still readable in the log, a dead letter is a pointer and not a second queue
 to drain, and one stream can feed both a worker pool and a subscriber. SQS FIFO
 queues order within a message group and deduplicate by deduplication ID. Felix

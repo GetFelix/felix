@@ -92,6 +92,11 @@ DropEvidenced == FALSE
 \* vouched without a write. FALSE is a leader that ships only what a
 \* follower lacks: nothing on an idle shard.
 IdleVouch == TRUE
+\* `VouchEmpty`: a batch to a follower holding no client record vouches when
+\* the leader holds none either. The code's log has no start records, so
+\* there its mark stays 0 on such a shard and the mark rule never fires.
+\* FALSE is a leader that vouches only through a mark covering a write.
+VouchEmpty == TRUE
 
 \* Learners: a set change may stage members that are not voters yet (a move's
 \* successor). `LearnerChoices` is the learner sets a set change may name.
@@ -411,9 +416,15 @@ Readmits(l, m) == m \in LeadStart(l).S /\ LeadStart(l).si > lostAt[m]
 \* A batch vouches when it leaves the copy level through both the leader's
 \* start record and the mark it carries. The mark alone can sit below the
 \* start record right after an open (VouchBelowStart), and a batch carrying
-\* no mark (commit_offset 0) vouches for nothing.
-Vouches(l, k) ==
-    \/ CarriedMark(l) > 0 /\ k >= CarriedMark(l) /\ (k >= StartPos(l) \/ VouchBelowStart)
+\* no mark (commit_offset 0) vouches for nothing. The code's offsets count
+\* client records only, so on a log of start records alone its mark is 0
+\* for good; there the mark never vouches and `VouchEmpty` does: nothing
+\* was ever acknowledged, so a follower holding no write holds all of it.
+Writes(s) == {i \in DOMAIN s : s[i].w > 0}
+Vouches(l, m, k) ==
+    \/ /\ CarriedMark(l) > 0 /\ Writes(log[l]) /= {}
+       /\ k >= CarriedMark(l) /\ (k >= StartPos(l) \/ VouchBelowStart)
+    \/ VouchEmpty /\ Writes(log[l]) = {} /\ Writes(log[m]) = {} /\ k = Len(log[l])
     \/ VouchAtStart /\ k >= StartPos(l)
 
 \* A batch: the leader's log from where the two agree to some later point,
@@ -428,7 +439,7 @@ Ship(l, m) ==
         /\ k > Common(log[m], log[l]) \/ (IdleVouch /\ k = Len(log[l]))
         /\ log' = [log EXCEPT ![m] = Prefix(log[l], k)]
         /\ trusted' = [trusted EXCEPT ![m] =
-                         @ \/ (Vouches(l, k) /\ (Readmits(l, m) \/ keptFrom[m] < Inf))]
+                         @ \/ (Vouches(l, m, k) /\ (Readmits(l, m) \/ keptFrom[m] < Inf))]
     /\ ballot' = [ballot EXCEPT ![m] = ballot[l]]
     /\ batchSince' = [batchSince EXCEPT ![m] = @ \/ (keptFrom[m] = Inf /\ ballot[m] /= ballot[l])]
     /\ keptFrom' = [keptFrom EXCEPT ![m] =

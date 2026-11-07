@@ -95,9 +95,10 @@ pub struct FollowerCursor {
     pub(crate) refuses_leader: bool,
     /// This copy stored a batch that left it level through the batch's end,
     /// this leader's start and a commit offset above zero: what a follower
-    /// back from an unclean restart needs to be trusted again. Until then a
-    /// level follower is sent its last record again with the mark, since on
-    /// an idle shard nothing else would reach it.
+    /// back from an unclean restart needs to be trusted again, or answered
+    /// the one empty batch a log that never held a record sends instead.
+    /// Until then a level follower is sent its last record again with the
+    /// mark, since on an idle shard nothing else would reach it.
     pub(crate) mark_carried: bool,
 }
 

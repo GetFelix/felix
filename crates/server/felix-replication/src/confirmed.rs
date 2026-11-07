@@ -75,10 +75,10 @@ pub(crate) const FRESH_UNDER_ELECTIONS: Duration = Duration::from_millis(500);
 /// control plane is upgraded.
 pub(crate) const FRESH: Duration = Duration::from_secs(10);
 
-/// How long after a refused request its shard's answer is kept fresh for
-/// the retry, at least. Longer than a leader's longest wait between fence
-/// attempts (`FENCE_RETRY_MAX`, 2 s), so a retry spaced out by backoff finds
-/// a fresh answer instead of being refused again. A leader that retries on
+/// How long after a request its shard's answer is kept fresh for the
+/// leader's retry, at least. Longer than a leader's longest wait between
+/// fence attempts (`FENCE_RETRY_MAX`, 2 s), so a retry spaced out by backoff
+/// finds a fresh answer instead of being refused again. A leader that retries on
 /// its driver tick waits longer; see [`ConfirmedReads::new`].
 const WANTED_FOR: Duration = Duration::from_secs(5);
 
@@ -123,7 +123,7 @@ pub(crate) struct ConfirmedReads {
     unbatched_at: Arc<AtomicU64>,
     /// What the slots' timestamps count from.
     epoch: Instant,
-    /// How long a refused request's retry is waited for, in nanoseconds.
+    /// How long a request's retry is waited for, in nanoseconds.
     owed_for: u64,
 }
 
@@ -152,13 +152,11 @@ struct Slot {
     wanted: AtomicU64,
     /// The freshness the last request needed, in nanoseconds.
     fresh: AtomicU64,
-    /// Whether the last request found no fresh answer, so its retry is
-    /// owed one.
+    /// Whether the last request found no fresh answer.
     owed: AtomicBool,
     /// The longest gap seen between a request found owed and the request
     /// before it, in nanoseconds, so a retry that came late once is waited
-    /// for longer next time. Kept across answers: it only lengthens the wait
-    /// while a retry is owed.
+    /// for longer next time. Kept across answers.
     late: AtomicU64,
     /// Whether a routing change asked for the read and no request has come
     /// yet. Such a slot is kept fresh only for [`WANTED_FOR`], so reads for
@@ -178,9 +176,9 @@ struct Answer {
 impl ConfirmedReads {
     /// Reads for a broker whose leaders retry a refused copy up to `retry`
     /// apart: the driver's tick, which is the control-plane sync interval.
-    /// A refused shard's answer is kept fresh for two of those, so the retry
-    /// finds it instead of being refused and starting another read, every
-    /// time (#1791).
+    /// A shard's answer is kept fresh for two of those after each request,
+    /// so the retry finds it instead of being refused and starting another
+    /// read, every time (#1791).
     pub(crate) fn new(retry: Duration) -> Self {
         Self {
             slots: ArcSwap::from_pointee(HashMap::with_hasher(felix_common::random::hash_state())),
@@ -268,11 +266,10 @@ impl ConfirmedReads {
             .filter(|slot| slot.incarnation == incarnation)
         {
             Some(slot) => {
-                // A reader waiting out a refused request's retry keeps its
-                // longer window. An owed slot with no reader either outwaited
-                // its retry or got no answer; the early window is no worse
-                // for either.
-                if !(slot.owed.load(Ordering::Relaxed) && slot.reading.load(Ordering::Acquire)) {
+                // A reader waiting for a leader's retry keeps its longer
+                // window. A slot with no reader either outwaited its retry or
+                // got no answer; the early window is no worse for either.
+                if !slot.reading.load(Ordering::Acquire) {
                     slot.early.store(true, Ordering::Relaxed);
                 }
                 slot.owed.store(true, Ordering::Relaxed);
@@ -438,9 +435,12 @@ impl ConfirmedReads {
                     // what this read took, permit wait included, so a queue
                     // of reads widens the margin instead of letting answers
                     // lapse. Only while the shard is still asked about: a
-                    // request since the last half of the answer's life, or a
-                    // refused one whose retry has not come yet, waited for
-                    // up to `owed_for`, or longer once a retry came late.
+                    // request within `owed_for`, or longer while a retry that
+                    // came late once is owed an answer. Answered requests
+                    // count too: a leader whose round failed on another
+                    // copy, or a learner's next batch, comes back like a
+                    // refused one, and under elections a 2 s retry would
+                    // find every other answer stale.
                     // A request needing a shorter freshness (elections
                     // turned on) wakes the wait to recompute it.
                     loop {
@@ -468,7 +468,9 @@ impl ConfirmedReads {
                             .max(late.min(nanos(MAX_OWED_FOR)))
                             .max(fresh / 2)
                     } else {
-                        fresh / 2
+                        // Not the grown wait: that is for retries that came
+                        // late, and would keep every answered shard reading.
+                        self.owed_for.max(fresh / 2)
                     };
                     let now = self.now();
                     if now.saturating_sub(slot.wanted.load(Ordering::Relaxed)) < asked_within {

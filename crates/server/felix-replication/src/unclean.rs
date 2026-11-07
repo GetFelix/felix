@@ -102,7 +102,8 @@ impl UncleanStart {
 
     /// A leader shipped `key` a batch that left this copy level through both
     /// the start of the leader's generation and the batch's commit offset,
-    /// which is above zero. Stricter than [`Self::vouch`]: right after an open
+    /// which is above zero, or an empty batch from a leader whose generation
+    /// starts at 0 left it still empty. Stricter than [`Self::vouch`]: right after an open
     /// the commit offset can sit below records an earlier generation
     /// acknowledged, and the start alone is short of what the leader
     /// acknowledged since (`VouchBelowStart`, `StandInNoCatchUp` in

@@ -1405,6 +1405,108 @@ async fn an_idle_follower_is_sent_the_mark_once_per_process() {
     }
 }
 
+/// **A follower of a shard that never held a record is sent one empty
+/// labelled batch, once per process.** With no record the mark stays 0, so
+/// no batch carrying it can vouch for a copy back from an unclean restart,
+/// and the shard's next fence could never cover (`FelixShardUnifiedIdleVouch`,
+/// `FelixShardUnifiedVouchEmptyLegacy`).
+#[tokio::test]
+async fn an_empty_shards_follower_is_sent_one_empty_vouch_per_process() {
+    let (broker, _dir) = quorum_leader(0, 4).await;
+    let router = router(LOCAL, &["broker-b", "broker-c"], 4);
+    let follower = LabelledFollower {
+        identity: Mutex::new(crate::peer::PeerIdentity::storage(
+            felix_storage::StorageId::from_bytes([1; 16]),
+        )),
+        ..LabelledFollower::default()
+    };
+    let marks = QuorumMarks::new();
+    let (mut cursors, mut group, mut dead, mut counters) = (
+        HashMap::default(),
+        HashMap::default(),
+        HashMap::default(),
+        HashMap::default(),
+    );
+    let mut passes = async |count: usize| {
+        for _ in 0..count {
+            replicate_once(
+                &follower,
+                &broker,
+                &router,
+                &marks,
+                None,
+                &mut cursors,
+                &mut group,
+                &mut dead,
+                &mut counters,
+            )
+            .await;
+        }
+    };
+    let vouches = |node: &str| {
+        follower
+            .inner
+            .sent
+            .lock()
+            .expect("lock")
+            .iter()
+            .filter(|(to, batch)| {
+                to == node
+                    && batch.first_offset == 0
+                    && batch.payloads.is_empty()
+                    && batch.commit_offset == Some(0)
+                    && batch.generations.as_deref().is_some_and(|starts| {
+                        starts
+                            .iter()
+                            .any(|start| start.generation == 4 && start.start_offset == 0)
+                    })
+            })
+            .count()
+    };
+
+    passes(4).await;
+    for node in ["broker-b", "broker-c"] {
+        assert_eq!(vouches(node), 1, "{node}");
+    }
+    follower.identity.lock().expect("lock").incarnation = crate::peer::Incarnation::At(2);
+    passes(3).await;
+    for node in ["broker-b", "broker-c"] {
+        assert_eq!(vouches(node), 2, "{node}");
+    }
+}
+
+/// **An empty shard's follower that takes no labels is sent nothing.** The
+/// empty batch only vouches labelled, and a peer that predates labels has
+/// never been sent an empty batch.
+#[tokio::test]
+async fn an_empty_shards_unlabelled_follower_is_sent_no_empty_batch() {
+    let (broker, _dir) = quorum_leader(0, 4).await;
+    let router = router(LOCAL, &["broker-b", "broker-c"], 4);
+    let follower = AcceptingFollower::default();
+    let marks = QuorumMarks::new();
+    let (mut cursors, mut group, mut dead, mut counters) = (
+        HashMap::default(),
+        HashMap::default(),
+        HashMap::default(),
+        HashMap::default(),
+    );
+    for _ in 0..3 {
+        replicate_once(
+            &follower,
+            &broker,
+            &router,
+            &marks,
+            None,
+            &mut cursors,
+            &mut group,
+            &mut dead,
+            &mut counters,
+        )
+        .await;
+    }
+    assert_eq!(follower.batches(), Vec::new());
+}
+
 /// **A follower sent an unlabelled batch only because what it offers was
 /// unknown is still owed the mark.** It took the batch, but without labels
 /// the replica cannot vouch, so once the handshake says it takes them it is

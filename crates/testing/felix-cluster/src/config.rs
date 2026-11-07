@@ -38,6 +38,12 @@ pub struct ClusterConfig {
     /// `broker_env`. A broker past the end of the list gets none: how a test
     /// builds a fleet whose brokers are not all configured alike.
     pub node_env: Vec<Vec<(String, String)>>,
+    /// Extra TCP listeners every broker binds, as `(env var, value template)`;
+    /// `{port}` in the template becomes a port the harness picks. Picked afresh
+    /// on every spawn, so a broker that loses the port to another process is
+    /// started again on a different one. Read it back with
+    /// [`BrokerNode::tcp_port`](crate::BrokerNode::tcp_port). Empty by default.
+    pub tcp_listeners: Vec<(String, String)>,
     /// Give every broker a plaintext Kafka listener. Off by default. It binds
     /// every interface and advertises the address a kcat container reaches
     /// the host by, since the tests drive it from Docker or Podman.
@@ -83,6 +89,7 @@ impl Default for ClusterConfig {
             zones: Vec::new(),
             broker_env: Vec::new(),
             node_env: Vec::new(),
+            tcp_listeners: Vec::new(),
             kafka: false,
             proxy_links: false,
             power_loss: false,

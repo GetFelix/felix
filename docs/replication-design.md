@@ -726,6 +726,14 @@ start record alone is short of what the leader acknowledged since
 (`StandInNoCatchUp`). For a copy that lost its ballots, only a leader that
 readmits it may vouch for it.
 
+A shard that has never held a record is the one exception. Its mark is 0 and
+stays 0 until the first write, so no batch can carry a commit offset above
+zero. Nothing was ever acknowledged there either, so an empty copy already
+holds everything. A batch with no records at offset 0, carrying a commit
+offset of 0 and labels that put the leader's generation start at 0, trusts a
+copy that is still empty after it. It trusts nothing else: a copy holding
+records compares none of them against an empty batch.
+
 On an idle shard nothing would vouch. The batch that brings a follower level
 goes out before the follower's own answer raises the mark, so it carries a
 commit offset of zero, and a level follower is sent nothing else. The copy
@@ -739,10 +747,14 @@ again, since it may not have the old process's trust. A follower that does
 not take generation labels is never owed one: without labels no batch can
 vouch for it. The batch holds only records the follower already has, so
 the vouch is the same as for any other batch: level through the start record
-and through the mark. `FelixShardUnifiedIdleVouch` checks that such a
-follower is trusted again while its leader serves, with no writes. Its
-`Legacy` twin, a leader that sends a level follower nothing, leaves it
-untrusted.
+and through the mark. On a log that never held a record there is no last
+record, so the leader sends that follower one empty batch instead, again
+once per follower process. `FelixShardUnifiedIdleVouch` checks that such a
+follower is trusted again while its leader serves, with no writes, and
+`FelixShardUnifiedIdleVouchWrite` the same with one write. Its `Legacy` twin,
+a leader that sends a level follower nothing, leaves it untrusted, and so
+does `FelixShardUnifiedVouchEmptyLegacy`, an empty shard whose followers are
+trusted only through a mark above zero.
 
 The control plane keeps a durable form of a readmitting leader's vouch:
 when the leader of a set that names a replaced copy by its new storage id
@@ -1202,12 +1214,17 @@ A failed read or an unassigned shard
 clears the answer and is not retried on its own: the next request starts
 another read.
 
-After a refusal the task keeps the answer fresh until the leader's retry
-comes. A leader retries a copy that refused it on its driver tick, the
-control-plane sync interval (`FELIX_CONTROLPLANE_SYNC_INTERVAL_MS`), so
+After each request the task keeps the answer fresh until the leader's
+next one comes. A leader retries a copy that refused it on its driver tick,
+the control-plane sync interval (`FELIX_CONTROLPLANE_SYNC_INTERVAL_MS`), so
 the answer is kept for twice that interval, and at least 5 s. Kept any
 shorter, a retry would find a stale answer, be refused again and start
-another read, every time, and a move onto the copy would never finish.
+another read, every time, and a move onto the copy would never finish. An
+answered request counts the same as a refused one: a leader also comes
+back when its fence round failed on another copy, and a learner checks
+every batch. If only refusals kept the answer, a leader retrying every 2 s
+under elections would be refused every other round, and two copies refused
+in alternate rounds would never take one fence together.
 A retry can still come later than that, for example when the leader's
 fences queue behind others during a bulk failover. If a refused retry is
 refused again, later waits for that shard grow to twice the longest such
@@ -1253,6 +1270,7 @@ Evidence (`replica/tests/fence.rs`):
 `a_shorter_freshness_wakes_the_refresh`,
 `a_retry_a_driver_tick_later_is_answered`,
 `a_retry_that_came_late_is_waited_for_longer`,
+`an_answered_retry_keeps_the_answer_fresh`,
 `a_prefetch_keeps_a_refused_retrys_window`,
 `a_prefetched_copy_answers_the_first_request`,
 `early_reads_are_bounded_per_change`, `an_unasked_early_read_stops` and
