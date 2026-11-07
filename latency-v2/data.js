@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794049299108,
+  "lastUpdate": 1794049803646,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -61842,6 +61842,72 @@ window.BENCHMARK_DATA = {
             "range": "123.65",
             "unit": "us",
             "extra": "trials: 5\nmedian: 315.00\nmean: 373.20\nstdev: 123.65\ncv: 33.13%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8b65dddc7f3a850b51a10eba4f4f7c3abc21c655",
+          "message": "fix(storage): read the storage id through the fs seam so the simulator keeps it across restarts (#2097)\n\nstorage_identity::load and the replaced-marker read used std::fs, so under the sim feature they never saw the in-memory data directory: every restarted broker was marked lost and every copy read as untrusted. Production is unchanged (crate::fs is std::fs there).\n\nSpec-Unaffected: simulator I/O seam only.",
+          "timestamp": "2026-11-07T11:05:23Z",
+          "tree_id": "d11ddc3daaafd1e7e044e89d8d4b96dd2df557aa",
+          "url": "https://github.com/GetFelix/felix/commit/8b65dddc7f3a850b51a10eba4f4f7c3abc21c655"
+        },
+        "date": 1794049794991,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 149,
+            "range": "1.48",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 149.00\nmean: 148.80\nstdev: 1.48\ncv: 1.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 203,
+            "range": "4.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 203.00\nmean: 200.80\nstdev: 4.92\ncv: 2.45%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 256,
+            "range": "80.25",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 256.00\nmean: 288.80\nstdev: 80.25\ncv: 27.79%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 194,
+            "range": "1.82",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 194.00\nmean: 194.40\nstdev: 1.82\ncv: 0.93%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 386,
+            "range": "21.01",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 386.00\nmean: 392.00\nstdev: 21.01\ncv: 5.36%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 512,
+            "range": "500.37",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 512.00\nmean: 740.20\nstdev: 500.37\ncv: 67.60%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
