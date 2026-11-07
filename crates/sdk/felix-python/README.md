@@ -65,7 +65,7 @@ async def main() -> None:
 - Idempotent producers
 - Token refresh, cluster discovery, failover and following a shard that moves
 
-Record headers and client certificates (mutual TLS) are available in the Rust client only. A publish without `key=` puts every record on shard 0.
+Record headers are available in the Rust client only. A publish without `key=` puts every record on shard 0.
 
 ## Configuration
 
@@ -79,9 +79,10 @@ Record headers and client certificates (mutual TLS) are available in the Rust cl
 | `token_provider` | A function that returns a fresh token. `Client` takes a plain function or an `async def`; `AsyncClient` takes an `async def`. `token` is then optional. |
 | `ca_file` | A PEM file of CAs to trust. The system store when omitted. |
 | `server_name` | The name the broker's certificate carries. Default `localhost`. |
+| `client_cert_file`, `client_key_file` | The client certificate and its key, as PEM files. |
 | `reconnect_attempts`, `reconnect_deadline`, `reconnect_backoff`, `reconnect_max_backoff` | Retry policy. Times are in seconds. |
 
-TLS is always on, and there is no switch to skip verification. A development broker with a self-signed certificate needs its CA file: set `FELIX_TLS_CERT_EXPORT=/path/ca.pem` on the broker and pass that path as `ca_file`.
+TLS is always on, and there is no switch to skip verification. A development broker with a self-signed certificate needs its CA file: set `FELIX_TLS_CERT_EXPORT=/path/ca.pem` on the broker and pass that path as `ca_file`. A broker started with `FELIX_TLS_CLIENT_CA` also requires a client certificate. Give the certificate and its key as two PEM files, both or neither.
 
 A token lasts 15 minutes by default. A process that runs longer passes `token_provider` so the client can fetch a new one. [Auth and TLS](https://docs.getfelix.dev/clients/auth-and-tls/) lists the same options for every client.
 

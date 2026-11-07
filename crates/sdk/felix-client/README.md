@@ -61,7 +61,7 @@ To run it you need a running broker, a token for tenant `t1`, and the stream `t1
 - Idempotent producers
 - Token refresh, cluster discovery, failover and following a shard that moves
 
-Record headers and client certificates (mutual TLS) are available in the Rust client only.
+Record headers are available in the Rust client only.
 
 ## Configuration
 
@@ -73,7 +73,7 @@ Record headers and client certificates (mutual TLS) are available in the Rust cl
 | Token provider | `ClientConfig::token_provider`, usually a `RefreshingToken`. It overrides `auth_token`. |
 | CA file | `root_store_from_pem_file`, passed to `quic_client_config` |
 | Server name | the `server_name` argument of `Client::connect` |
-| Client certificate | `ClientIdentity` with `quic_client_config_with_identity` |
+| Client certificate | `ClientIdentity::from_pem_files(cert, key)`, passed to `quic_client_config_with_identity` |
 | Reconnect policy | `Client::connect_with_policy` and `ReconnectPolicy`. Times are `Duration`s. |
 
 TLS is always on, and there is no switch to skip verification. With no CA file the client trusts the operating system's roots. A development broker with a self-signed certificate needs its CA file:
@@ -85,6 +85,18 @@ use felix_client::{quic_client_config, root_store_from_pem_file};
 
 let roots = Arc::new(root_store_from_pem_file("ca.pem")?);
 let quinn = quic_client_config(Some(roots), false)?;
+```
+
+A broker started with `FELIX_TLS_CLIENT_CA` also requires a client certificate. Give the certificate and its key as two PEM files, both or neither:
+
+```rust
+use std::sync::Arc;
+
+use felix_client::{ClientIdentity, quic_client_config_with_identity, root_store_from_pem_file};
+
+let roots = Arc::new(root_store_from_pem_file("ca.pem")?);
+let identity = ClientIdentity::from_pem_files("client.pem", "client.key")?;
+let quinn = quic_client_config_with_identity(Some(roots), identity, false)?;
 ```
 
 A token lasts 15 minutes by default. A process that runs longer sets `token_provider` so the client can fetch a new one. [Auth and TLS](https://docs.getfelix.dev/clients/auth-and-tls/) lists the same options for every client.

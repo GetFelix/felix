@@ -48,7 +48,7 @@ Every handle has an idempotent `close()` and implements `Symbol.asyncDispose`, s
 - Idempotent producers
 - Token refresh, cluster discovery, failover and following a shard that moves
 
-Record headers and client certificates (mutual TLS) are available in the Rust client only. A publish without a key puts every record on shard 0. `atLeastOnce` publishing resends after an ambiguous failure and can write a record twice; an idempotent producer (`client.producer()`) resends without the duplicate.
+Record headers are available in the Rust client only. A publish without a key puts every record on shard 0. `atLeastOnce` publishing resends after an ambiguous failure and can write a record twice; an idempotent producer (`client.producer()`) resends without the duplicate.
 
 ## Configuration
 
@@ -62,9 +62,10 @@ Record headers and client certificates (mutual TLS) are available in the Rust cl
 | `tokenProvider` | A function that returns a fresh token, or a promise of one. It receives an `AbortSignal`. `token` is then optional. |
 | `caFile` | A PEM file of CAs to trust. The system store when omitted. |
 | `serverName` | The name the broker's certificate carries. Default `localhost`. |
+| `clientCertFile`, `clientKeyFile` | The client certificate and its key, as PEM files. |
 | `reconnectAttempts`, `reconnectDeadline`, `reconnectBackoff`, `reconnectMaxBackoff` | Retry policy. Times are in milliseconds. |
 
-TLS is always on, and there is no switch to skip verification. A development broker with a self-signed certificate needs its CA file.
+TLS is always on, and there is no switch to skip verification. A development broker with a self-signed certificate needs its CA file. A broker started with `FELIX_TLS_CLIENT_CA` also requires a client certificate. Give the certificate and its key as two PEM files, both or neither.
 
 A token lasts 15 minutes by default. A process that runs longer passes `tokenProvider` so the client can fetch a new one. [Auth and TLS](https://docs.getfelix.dev/clients/auth-and-tls/) lists the same options for every client.
 

@@ -181,7 +181,7 @@ To run it you need a running broker, a token for tenant `t1`, and the stream `t1
 - Idempotent producers
 - Token refresh, cluster discovery, failover and following a shard that moves
 
-Record headers and client certificates (mutual TLS) are available in the Rust client only. A publish with a null key puts every record on shard 0.
+Record headers are available in the Rust client only. A publish with a null key puts every record on shard 0.
 
 ## Configuration
 
@@ -195,9 +195,10 @@ Record headers and client certificates (mutual TLS) are available in the Rust cl
 | Token provider | `token_fetch`, `token_user_data` and `token_release` in `FelixConnectOptions`. `token` is then optional. |
 | CA file | `ca_file`: a PEM file of CAs to trust. The system store when null. |
 | Server name | `server_name`: the name the broker's certificate carries. `localhost` when null. |
+| Client certificate | `client_cert_file` and `client_key_file` in `FelixConnectOptions`: PEM files. |
 | Reconnect policy | `reconnect_attempts`, `reconnect_deadline_ms`, `reconnect_backoff_ms` and `reconnect_max_backoff_ms` in `FelixConnectOptions`. Times are in milliseconds. Zero is the default. |
 
-TLS is always on, and there is no switch to skip verification.
+TLS is always on, and there is no switch to skip verification. A broker started with `FELIX_TLS_CLIENT_CA` also requires a client certificate. Give the certificate and its key as two PEM files, both or neither.
 
 A token lasts 15 minutes by default. A process that runs longer sets `token_fetch` so the client can get a new one. [Auth and TLS](https://docs.getfelix.dev/clients/auth-and-tls/) lists the same options for every client.
 
