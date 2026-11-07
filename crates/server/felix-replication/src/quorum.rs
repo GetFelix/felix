@@ -53,6 +53,9 @@ pub struct QuorumMarks {
     /// Whether this broker's directory kept every ballot it took, as the
     /// fence answer attests it. Unset reads as not kept.
     kept_ballots: std::sync::OnceLock<bool>,
+    /// The directory's record of which copies are trusted and doubted
+    /// across restarts. Unset on a broker without a durable directory.
+    copy_trust: std::sync::OnceLock<Arc<felix_storage::run_state::copy_trust::CopyTrust>>,
     /// Leaderships the replicas elected, set where this broker may stand.
     elections: std::sync::OnceLock<Arc<crate::election::Elections>>,
     /// When each shard's timeout was last logged.
@@ -286,6 +289,18 @@ impl QuorumMarks {
 
     pub(crate) fn kept_ballots(&self) -> bool {
         self.kept_ballots.get().copied().unwrap_or(false)
+    }
+
+    /// Bind the durable directory's record of trusted and doubted copies.
+    /// Call before this broker answers anything. Only the first call counts.
+    pub fn set_copy_trust(&self, trust: Arc<felix_storage::run_state::copy_trust::CopyTrust>) {
+        let _ = self.copy_trust.set(trust);
+    }
+
+    pub(crate) fn copy_trust(
+        &self,
+    ) -> Option<&Arc<felix_storage::run_state::copy_trust::CopyTrust>> {
+        self.copy_trust.get()
     }
 
     /// Whether the control plane last registered this node under another

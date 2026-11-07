@@ -30,10 +30,15 @@
 //! this node under another storage id, so this directory may lack copies the
 //! node held. See [`record_replaced`].
 //!
+//! `<durable root>/copy-trust` names the copies a leader has vouched for
+//! since the last rotation, and the copies this broker led before a crash.
+//! See [`copy_trust`].
+//!
 //! `<durable root>/run-token` pairs the directory with a witness outside it,
 //! which a restore cannot bring back. See [`witness`].
 
 mod boot;
+pub mod copy_trust;
 pub mod witness;
 
 use std::path::{Path, PathBuf};
@@ -183,6 +188,9 @@ pub fn begin(
         };
     let rotate = restored || crashed;
     let id = if rotate {
+        // Before the new id: a crash in between must not leave a rotated
+        // directory whose copies a later clean start still trusts.
+        copy_trust::distrust_all(root)?;
         let id = storage_identity::replace(root, fresh())?;
         if restored {
             tracing::warn!(

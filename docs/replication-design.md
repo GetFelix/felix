@@ -696,6 +696,18 @@ record names the storage id it had before (`Kept` in
 start is `UncleanStart::trust`, set where a replicated batch is applied, and the
 answer is `ReplicaHandler::attestation`.
 
+Trust has to outlive the process. A copy that crashed uncleanly, answered a
+fence and then restarted cleanly looks like any clean copy: the ballot it took
+replaced whatever said it was short, and a clean start has no unclean record.
+So a start that rotates the storage id first writes `copy-trust` at the
+durable root saying no copy is trusted, and each vouch adds the copy to it,
+synced, before the copy attests trusted (`docs/storage-format.md`). A later
+clean start reads the file, and only the next rotation clears it again. The
+same file names the copies this broker led before the crash, written before
+such a copy takes a newer leader's ballot, so the refusal in "A leader's own
+crash" also survives that ballot and a clean restart. A memory-only broker has
+no file and attests no kept ballot, so it never attests trusted.
+
 The sets a fence must cover are its own and the set of every start from an
 **anchor** up to G. The anchor is a generation with evidence it opened: its
 start record reached a majority, or a trusted answer holds a record of it. A set
