@@ -372,10 +372,21 @@ impl Node {
             return killed.then_some(kills::Copy::DownAfterKill);
         };
         let attest = clock::on(self.owner(), broker.copy_attestation(key));
-        let trusted = tokio::time::timeout(SNAPSHOT_WITHIN, attest)
-            .await
-            .ok()??
-            .trusted;
+        let attested = match tokio::time::timeout(SNAPSHOT_WITHIN, attest).await {
+            Ok(attested) => attested,
+            Err(_) => {
+                tracing::warn!(node = %self.id, shard = %key.shard, "copy attestation timed out");
+                return None;
+            }
+        };
+        let Some(attested) = attested else {
+            // A fence would open this copy to answer. After an unclean start
+            // nothing is trusted until a leader vouches (`attest_copy`), so an
+            // unopened copy there is untrusted rather than absent.
+            let unopened = broker.holds_unopened_copy(key) && broker.started_unclean();
+            return unopened.then_some(kills::Copy::Untrusted);
+        };
+        let trusted = attested.trusted;
         Some(if trusted {
             kills::Copy::Trusted
         } else {
@@ -392,7 +403,13 @@ impl Node {
     pub(crate) async fn snapshot(&self, key: &ShardKey) -> Option<ShardSnapshot> {
         let broker = self.broker()?;
         let snapshot = clock::on(self.owner(), broker.shard_snapshot(key));
-        tokio::time::timeout(SNAPSHOT_WITHIN, snapshot).await.ok()
+        match tokio::time::timeout(SNAPSHOT_WITHIN, snapshot).await {
+            Ok(snapshot) => Some(snapshot),
+            Err(_) => {
+                tracing::warn!(node = %self.id, shard = %key.shard, "snapshot timed out");
+                None
+            }
+        }
     }
 
     /// Everything a census prints about this broker for `key`.

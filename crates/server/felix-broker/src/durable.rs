@@ -304,6 +304,18 @@ impl DurableStorage {
         Some(StreamLog { log })
     }
 
+    /// Whether the stream shard has a directory on disk, open or not. Never
+    /// opens or recovers anything.
+    pub fn stream_on_disk(&self, tenant: &str, namespace: &str, stream: &str, shard: u32) -> bool {
+        let key = ShardKey {
+            tenant: tenant.to_string(),
+            namespace: namespace.to_string(),
+            stream: stream.to_string(),
+            shard,
+        };
+        self.provider.on_disk(&key)
+    }
+
     /// What [`DurableStorage::open_stream_for`] would return (or
     /// [`DurableStorage::open_stream`] with `None`), when the log is open
     /// already; `None` without creating or recovering anything otherwise.

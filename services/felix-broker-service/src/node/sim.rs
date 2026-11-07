@@ -619,6 +619,17 @@ impl SimBroker {
         )
     }
 
+    /// Whether `key` has a copy on disk this broker has not opened. A fence
+    /// would open it to answer; asking here does not.
+    pub fn holds_unopened_copy(&self, key: &ShardKey) -> bool {
+        let kind = match key.kind {
+            ShardKind::Stream => LogKind::Stream,
+            ShardKind::Cache => LogKind::Cache,
+        };
+        self.broker
+            .copy_on_disk(kind, &key.tenant_id, &key.namespace, &key.stream, key.shard)
+    }
+
     /// The membership task, `None` only if the config named no cluster.
     pub fn membership(&self) -> Option<&MembershipTask> {
         self.membership.as_ref()
