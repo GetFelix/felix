@@ -221,9 +221,9 @@ fn start_run(
         .with_context(|| format!("write the run witness for {}", root.display()))?;
     let restored = begun.origin == felix_storage::storage_identity::Origin::Loaded
         && begun.recorded.behind(registered.map(|r| r.incarnation));
-    let before = before
-        .filter(|_| begun.origin == felix_storage::storage_identity::Origin::Loaded)
-        .map(|id| id.to_hex());
+    let before_id =
+        before.filter(|_| begun.origin == felix_storage::storage_identity::Origin::Loaded);
+    let before = before_id.map(|id| id.to_hex());
     // Before `note_replaced`, which may write its marker for this crash.
     let lost = note_lost_copy(root, before.as_deref(), restored, registered)?;
     let own_id = registered
@@ -243,6 +243,14 @@ fn start_run(
         minted: begun.rotated || begun.origin != felix_storage::storage_identity::Origin::Loaded,
         deferred: false,
     };
+    // Before the new id registers: a set written since names that one, and
+    // one written before names this, still the directory's own copy.
+    if kept.promises
+        && let Some(before) = before_id
+    {
+        felix_storage::run_state::record_rotated_id(root, before)
+            .with_context(|| format!("record the rotated storage id under {}", root.display()))?;
+    }
     let replaced = note_replaced(root, begun.id, registered)?;
     Ok((begun.id, begun.rotated, replaced, kept))
 }

@@ -457,6 +457,9 @@ expectations=(
   "FelixShardUnifiedLearnerBlocking pass"
   "FelixShardUnifiedLearnerBlockingTwo pass"
   "FelixShardUnifiedLearnerVariantDropped violates AckedHeldByLeader"
+  "FelixShardUnifiedTwoRotated pass"
+  "FelixShardUnifiedCpLiveMoveRotated pass"
+  "FelixShardUnifiedCpLiveMoveRotatedLegacy violates liveness"
 )
 
 # The long random walks, for `--simulate`: one pass configuration per family

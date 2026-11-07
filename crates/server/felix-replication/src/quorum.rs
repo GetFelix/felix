@@ -53,6 +53,9 @@ pub struct QuorumMarks {
     /// Whether this broker's directory kept every ballot it took, as the
     /// fence answer attests it. Unset reads as not kept.
     kept_ballots: std::sync::OnceLock<bool>,
+    /// The ids this directory had before a crash rotated them away while it
+    /// kept every ballot.
+    rotated_storage: std::sync::OnceLock<Vec<felix_storage::StorageId>>,
     readmits: std::sync::OnceLock<bool>,
     minted_storage: std::sync::OnceLock<bool>,
     /// The directory's record of which copies are trusted and doubted
@@ -297,6 +300,25 @@ impl QuorumMarks {
 
     pub(crate) fn kept_ballots(&self) -> bool {
         self.kept_ballots.get().copied().unwrap_or(false)
+    }
+
+    /// Record the ids this directory had before crashes rotated them while
+    /// it kept every ballot (`run_state::record_rotated_id`). Only the first
+    /// call counts.
+    pub fn set_rotated_storage(&self, ids: Vec<felix_storage::StorageId>) {
+        let _ = self.rotated_storage.set(ids);
+    }
+
+    /// Whether a set naming this broker under `id` names this directory's own
+    /// copy from before a crash rotated its id, whose ballots it still holds:
+    /// no evidence of a wipe. Never while the start has not said its
+    /// directory kept every ballot, which a later restore or wipe undoes.
+    pub(crate) fn rotated_own_copy(&self, id: felix_storage::StorageId) -> bool {
+        self.kept_ballots()
+            && self
+                .rotated_storage
+                .get()
+                .is_some_and(|ids| ids.contains(&id))
     }
 
     /// Whether the start has said what its directory kept yet. A start from

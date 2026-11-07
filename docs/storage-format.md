@@ -59,6 +59,7 @@ a segment, should be rejected on its first four bytes rather than misparsed.
   controlplane.view                          ← what the control plane last said about this node's shards
   replaced-storage                           ← the node was once registered under another storage id
   lost-copy                                  ← whether this directory ever replaced a copy the node lost
+  rotated-ids                                ← ids a crash rotated away while every ballot was kept
   copy-trust                                 ← which copies a leader vouched for since the id last rotated
   copy-trust-kept                            ← a release that keeps copy-trust ran here
   run-token                                  ← this run's token, which the run witness outside the directory names
@@ -1253,6 +1254,28 @@ After an unclean crash, a broker attests a kept ballot to a continuing
 leader (`FenceKeptOk`, `docs/internal-protocol.md`) only when this file says
 `kept` and the control plane's record names the id from before the crash.
 An older release neither reads nor writes the file.
+
+## `rotated-ids`: ids a crash rotated away on this directory
+
+One text file at the durable root, written at a start before the node
+registers, through `rotated-ids.tmp`, synced, renamed and the directory
+synced.
+
+```text
+rotated_ids
+<storage id, 32 hex digits>
+```
+
+The first line is fixed. Each later line names an id this directory had until
+an unclean crash rotated it, at a start that found every ballot kept: the
+lost-copy marker says `kept`, and the control plane's record names that id.
+Newest first, at most 16. A restore or a replacement for a lost copy adds
+nothing. A set that names this node under one of these ids names this
+directory's own copy, so it is no evidence of a wipe, while the directory
+still keeps every ballot (`docs/replication-design.md`, "One fence rule for
+every change of leader"). A missing file, or one that does not decode, names
+no id, so such a set reads as naming a lost copy, which only costs a
+readmission. An older release neither reads nor writes the file.
 
 ## `copy-trust`: which copies hold what they acknowledged
 

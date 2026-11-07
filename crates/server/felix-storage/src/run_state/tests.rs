@@ -625,3 +625,35 @@ fn recording_a_replacement_removes_the_view_written_before_it() {
     record_replaced(dir.path(), StorageId::from_bytes([7; 16]), 1).unwrap();
     assert_eq!(crate::controlplane_view::read(dir.path()), None);
 }
+
+#[test]
+fn rotated_ids_are_kept_newest_first_and_bounded() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    assert!(rotated_ids(dir.path()).expect("read").is_empty());
+    let id = |n: u8| StorageId::from_bytes([n; 16]);
+    for n in 0..20 {
+        record_rotated_id(dir.path(), id(n)).expect("record");
+    }
+    record_rotated_id(dir.path(), id(15)).expect("record again");
+    let ids = rotated_ids(dir.path()).expect("read");
+    assert_eq!(ids.len(), ROTATED_IDS_KEPT);
+    assert_eq!(ids[0], id(15));
+    assert_eq!(ids[1], id(19));
+    assert!(!ids.contains(&id(3)), "the oldest are dropped");
+}
+
+#[test]
+fn an_unreadable_rotated_ids_record_claims_no_id() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    for body in [
+        &b"rotated_ids\nnot-an-id\n"[..],
+        b"something else\n",
+        b"\xff",
+    ] {
+        std::fs::write(dir.path().join(ROTATED_IDS_FILE_NAME), body).expect("write");
+        assert!(
+            rotated_ids(dir.path()).expect("read").is_empty(),
+            "{body:?}"
+        );
+    }
+}
