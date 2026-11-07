@@ -1682,6 +1682,15 @@ impl ReplicaHandler {
         let Some(trust) = self.copy_trust() else {
             return;
         };
+        // Until the start says what it kept, a lost copy reads as kept, and
+        // clearing its floor now would leave nothing to readmit it from.
+        if self
+            .fleet
+            .as_ref()
+            .is_some_and(|fleet| !fleet.knows_kept_ballots())
+        {
+            return;
+        }
         let shard = crate::driver::watch_key(key);
         let name = crate::unclean::copy_key(&shard);
         let lost = self.fleet.as_ref().is_some_and(|fleet| {

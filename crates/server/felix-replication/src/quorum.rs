@@ -299,6 +299,12 @@ impl QuorumMarks {
         self.kept_ballots.get().copied().unwrap_or(false)
     }
 
+    /// Whether the start has said what its directory kept yet. A start from
+    /// the control-plane view says nothing until its restore check passes.
+    pub(crate) fn knows_kept_ballots(&self) -> bool {
+        self.kept_ballots.get().is_some()
+    }
+
     /// Record whether a copy on this broker's directory, when it did not keep
     /// every ballot, counts again once readmitted: the start checked the
     /// directory against a control plane record with a storage id. Only the

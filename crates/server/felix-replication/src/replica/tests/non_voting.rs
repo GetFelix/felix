@@ -1549,6 +1549,19 @@ fn handler_with_trust(
     let trust =
         Arc::new(felix_storage::run_state::copy_trust::CopyTrust::open(trust_dir).expect("open"));
     let marks = marks(true);
+    marks.set_kept_ballots(false);
+    handler_with_trust_on(broker, generation, trust, marks)
+}
+
+fn handler_with_trust_on(
+    broker: &Arc<Broker>,
+    generation: u64,
+    trust: Arc<felix_storage::run_state::copy_trust::CopyTrust>,
+    marks: Arc<QuorumMarks>,
+) -> (
+    ReplicaHandler,
+    Arc<felix_storage::run_state::copy_trust::CopyTrust>,
+) {
     marks.set_copy_trust(Arc::clone(&trust));
     let handler = ReplicaHandler::new(Arc::clone(broker), router_with(&[LOCAL], generation))
         .with_fleet(marks)
@@ -1613,6 +1626,54 @@ async fn only_a_newer_sets_readmission_ends_an_unkept_ballot() {
             "unkept since {since}"
         );
     }
+}
+
+/// **A readmission waits for the start to say what it kept.** A start from
+/// the control-plane view says nothing until its restore check passes; a
+/// batch before then must leave the copy's floor for the readmission after.
+#[tokio::test]
+async fn a_readmission_waits_until_the_start_says_what_it_kept() {
+    let name = crate::unclean::copy_key(&crate::driver::watch_key(&key()));
+    let (broker, _dir) = broker_with_storage().await;
+    let trust_dir = tempfile::tempdir().expect("tempdir");
+    let trust = Arc::new(
+        felix_storage::run_state::copy_trust::CopyTrust::open(trust_dir.path()).expect("open"),
+    );
+    let marks = marks(true);
+    let (copy, trust) = handler_with_trust_on(&broker, 6, trust, Arc::clone(&marks));
+    wiped_at_5(&copy).await;
+    copy.unkeep(&key(), 5).await.expect("unkeep");
+    let answer = settled(|| copy.fence(SENDER, readmission(6, OWN))).await;
+    assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
+    let first = || copy.apply(SENDER, stamped(6, 0, &["a"]), felix_broker::LogKind::Stream);
+    let answer = settled(first).await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    assert_eq!(
+        trust.unkept(&name),
+        Some(felix_storage::run_state::copy_trust::Since::At(5)),
+        "before the start says what it kept"
+    );
+
+    marks.set_kept_ballots(false);
+    let answer = settled(|| {
+        copy.apply(
+            SENDER,
+            ReplicateRecords {
+                set_generation: Some(6),
+                ..batch(6, 1, &["b"])
+            },
+            felix_broker::LogKind::Stream,
+        )
+    })
+    .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    assert!(trust.unkept(&name).is_none(), "readmitted once it has");
 }
 
 /// **A copy unkept since a generation the record lost is unkept since at
