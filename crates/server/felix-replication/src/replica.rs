@@ -2955,10 +2955,6 @@ fn divergence_outcome(divergence: &Divergence) -> &'static str {
     }
 }
 
-/// The placement a log's ownership is checked against. The cursor and
-/// dead-letter logs belong to their stream's shard and the counter log to
-/// its cache's, rather than having placements of their own.
-
 /// What a copy of `key`'s log attests in a fence answer, for this broker's
 /// copy whether it answers as a replica or fences as a promoted leader. See
 /// [`ReplicaHandler::attestation`].
@@ -2975,7 +2971,7 @@ pub(crate) fn attest_copy(
     let trust = fleet.and_then(crate::quorum::QuorumMarks::copy_trust);
     let kept = voter
         && fleet.is_some_and(crate::quorum::QuorumMarks::kept_ballots)
-        && !trust.is_some_and(|trust| trust.unkept(&name));
+        && !trust.is_some_and(|trust| trust.unkept(&name).is_some());
     let trusted = kept
         && !given_up
         && !trust.is_some_and(|trust| trust.doubted(&name))
@@ -2988,6 +2984,9 @@ pub(crate) fn attest_copy(
     }
 }
 
+/// The placement a log's ownership is checked against. The cursor and
+/// dead-letter logs belong to their stream's shard and the counter log to
+/// its cache's, rather than having placements of their own.
 fn shard_key(
     shard: &felix_wire::internal::ShardRef,
     log_kind: felix_broker::LogKind,
