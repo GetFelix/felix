@@ -1531,7 +1531,11 @@ async fn only_a_newer_sets_readmission_ends_an_unkept_ballot() {
         matches!(answer, InternalMessage::ReplicateOk(_)),
         "{answer:?}"
     );
-    assert_eq!(trust.unkept(&name), Some(5), "a batch alone");
+    assert_eq!(
+        trust.unkept(&name),
+        Some(felix_storage::run_state::copy_trust::Since::At(5)),
+        "a batch alone"
+    );
 
     // Readmitted into the set of 6.
     for (since, cleared) in [(6, false), (5, true)] {
@@ -1556,6 +1560,44 @@ async fn only_a_newer_sets_readmission_ends_an_unkept_ballot() {
             "unkept since {since}"
         );
     }
+}
+
+/// **A copy unkept since a generation the record lost is unkept since at
+/// least the ballot it holds.** The record did not decode; the copy holds
+/// broker-a's ballot at 6, maybe an unkept one, so a readmission into the set
+/// of 6 does not end it.
+#[tokio::test]
+async fn an_unknown_unkept_generation_is_floored_at_the_ballot() {
+    use felix_storage::run_state::copy_trust::Since;
+    let name = crate::unclean::copy_key(&crate::driver::watch_key(&key()));
+    let (broker, _dir) = broker_with_storage().await;
+    let trust_dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        trust_dir
+            .path()
+            .join(felix_storage::run_state::copy_trust::FILE_NAME),
+        b"junk",
+    )
+    .expect("write");
+    let (copy, trust) = handler_with_trust(&broker, 6, trust_dir.path());
+    wiped_at_5(&copy).await;
+    log_of(&broker)
+        .await
+        .accept_generation(6, Some("broker-a"))
+        .await
+        .expect("ballot");
+    assert_eq!(trust.unkept(&name), Some(Since::Unknown));
+
+    let answer = settled(|| copy.fence(SENDER, readmission(6, OWN))).await;
+    assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
+    let answer =
+        settled(|| copy.apply(SENDER, stamped(6, 0, &["a"]), felix_broker::LogKind::Stream)).await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    assert_eq!(log_of(&broker).await.member_is_learner(LOCAL), Some(false));
+    assert_eq!(trust.unkept(&name), Some(Since::At(6)));
 }
 
 /// **A copy whose ballot did not survive still refuses.** Wiped, it names no

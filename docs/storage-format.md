@@ -1304,9 +1304,12 @@ JSON, in lowercase hex. Lines are sorted.
 A rotation keeps `doubted` and `unkept`. A file that does not decode reads as
 every mark on every copy, and the next write keeps that, so each copy clears
 only by the rules above. A directory that ran before without the file, such
-as one an older release ran on, starts with `untrusted all` and `unkept all`
-but doubts nothing: nothing says which copy it led, and doubting all of them
-would refuse an older caller's fence on every idle shard. An older release
+as one an older release ran on, starts with `untrusted all` only. It doubts
+nothing, since nothing says which copy it led and doubting all of them would
+refuse an older caller's fence on every idle shard, and it marks nothing
+unkept, since an older release never gave a learner a ballot. When the file
+does not say since when a copy is unkept, the broker writes its current
+ballot's generation as `unkept_since` before the copy takes a newer ballot. An older release
 neither reads nor writes the file.
 
 ## `run-token`: the run the witness names

@@ -411,7 +411,8 @@ pub(crate) fn rotate_storage_id_after(
 ) -> Result<StorageId> {
     let fresh = fresh_storage_id();
     before(StorageId::from_bytes(fresh))?;
-    felix_storage::storage_identity::replace(root, fresh)
+    // Through copy-trust, so every copy on the directory is distrusted first.
+    felix_storage::run_state::copy_trust::rotate_storage_id(root, fresh)
         .with_context(|| format!("write a new storage id under {}", root.display()))
 }
 

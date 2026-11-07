@@ -50,11 +50,10 @@ pub(super) fn open_storage(
     let (broker, durable_storage, storage_id, unclean, replaced_storage, kept) =
         storage::open_with(config, durable, registered)?;
     // Read after the run began, which distrusts every copy when it rotated
-    // the id.
+    // the id. Live, so a rotation later in the run distrusts them here too.
     let copy_trust = root
-        .map(|root| felix_storage::run_state::copy_trust::CopyTrust::open(&root))
-        .transpose()?
-        .map(Arc::new);
+        .map(|root| felix_storage::run_state::copy_trust::CopyTrust::open_live(&root))
+        .transpose()?;
     Ok(Stored {
         broker,
         durable_storage,

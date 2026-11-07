@@ -25,6 +25,7 @@ use felix_broker::Broker;
 use felix_broker::replication::{self, Divergence};
 use felix_router::{ReplicaRole, ShardRouter};
 use felix_storage::disk_log::GenerationCheck;
+use felix_storage::run_state::copy_trust::Since;
 use felix_wire::internal::{
     ErrorCode, Fence, FenceOk, GenerationStart, InternalMessage, RefusalReason, ReplicaLog,
     ReplicateBootstrap, ReplicateError, ReplicateFetch, ReplicateOk, ReplicateRebuild,
@@ -735,7 +736,8 @@ impl ReplicaHandler {
                 stream = %key.stream,
                 shard = key.shard,
                 error = %err,
-                "could not record that this copy is the one this broker led before its crash; \
+                "could not record what this copy may have lost before taking a newer ballot \
+                 (that this broker led it before a crash, or since when it is unkept); \
                  refusing the batch rather than take its ballot",
             );
             metrics::record_replicated(metrics::OUTCOME_REFUSED);
@@ -743,7 +745,8 @@ impl ReplicaHandler {
                 correlation_id,
                 ErrorCode::Unavailable,
                 0,
-                "this broker could not record that it led this copy before a crash".to_string(),
+                "this broker could not record what its copy may have lost before taking the ballot"
+                    .to_string(),
             );
         }
         if let Some(refusal) =
@@ -1489,6 +1492,7 @@ impl ReplicaHandler {
         generation: u64,
     ) -> Result<(), felix_storage::StorageError> {
         let shard = crate::driver::watch_key(key);
+        self.pin_unkept_floor(&shard, log).await?;
         if let Some(unclean) = &self.unclean {
             return unclean.accepting(&shard, log, generation).await;
         }
@@ -1501,6 +1505,29 @@ impl ReplicaHandler {
         }
         let trust = Arc::clone(trust);
         tokio::task::spawn_blocking(move || trust.doubt(&name))
+            .await
+            .unwrap_or_else(|err| Err(felix_storage::StorageError::Io(std::io::Error::other(err))))
+    }
+
+    /// A copy unkept since a generation the record does not know (it did not
+    /// decode, or named another storage id) is unkept since at least the
+    /// ballot it holds now. Recorded before a newer ballot replaces that, so
+    /// only a set newer than it readmits the copy.
+    async fn pin_unkept_floor(
+        &self,
+        shard: &crate::ShardKey,
+        log: &felix_broker::StreamLog,
+    ) -> Result<(), felix_storage::StorageError> {
+        let Some(trust) = self.copy_trust() else {
+            return Ok(());
+        };
+        let name = crate::unclean::copy_key(shard);
+        if trust.unkept(&name) != Some(Since::Unknown) {
+            return Ok(());
+        }
+        let trust = Arc::clone(trust);
+        let floor = log.accepted_generation();
+        tokio::task::spawn_blocking(move || trust.unkeep(&name, floor))
             .await
             .unwrap_or_else(|err| Err(felix_storage::StorageError::Io(std::io::Error::other(err))))
     }
@@ -1532,7 +1559,7 @@ impl ReplicaHandler {
             return Ok(());
         };
         let name = crate::unclean::copy_key(&crate::driver::watch_key(key));
-        if trust.unkept(&name).is_some_and(|since| since >= generation) {
+        if matches!(trust.unkept(&name), Some(Since::At(since)) if since >= generation) {
             return Ok(());
         }
         let trust = Arc::clone(trust);
@@ -1556,7 +1583,9 @@ impl ReplicaHandler {
         };
         let shard = crate::driver::watch_key(key);
         let name = crate::unclean::copy_key(&shard);
-        let Some(since) = trust.unkept(&name) else {
+        // An unknown floor is pinned before the batch's ballot; if that did
+        // not happen, nothing says which set is newer.
+        let Some(Since::At(since)) = trust.unkept(&name) else {
             return;
         };
         if !self.readmitted_since(log, since, sent_at).await {

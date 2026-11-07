@@ -98,10 +98,11 @@ impl State {
 /// Make sure `root` has the file before anything reads it: a fresh one on a
 /// new directory (`created`), and on a directory that ran before without it
 /// (an older release's, or one whose file was removed) one that marks every
-/// copy untrusted and unkept. Not doubted: nothing says which copy this
-/// broker led before a crash, doubting every one would refuse every older
-/// caller's fence on an idle shard, and the ballots still say what they said
-/// before the file existed.
+/// copy untrusted. Not doubted: nothing says which copy this broker led
+/// before a crash, doubting every one would refuse every older caller's
+/// fence on an idle shard, and the ballots still say what they said before
+/// the file existed. Not unkept: an older release never gave a learner a
+/// ballot, so every ballot it left is one its refusals allowed.
 ///
 /// A file written under another storage id than the directory's now reads as
 /// unknown, and is rewritten so under the current id, so its marks stay on
@@ -117,13 +118,11 @@ pub(crate) fn ensure(root: &Path, created: bool) -> Result<()> {
         tracing::warn!(
             root = %root.display(),
             "this data directory has no copy-trust record, as one an older release ran on \
-             has not; taking every copy as untrusted and unkept until a leader vouches for it"
+             has not; taking every copy as untrusted until a leader vouches for it"
         );
         State {
             untrusted: Marks::everyone(),
-            doubted: Marks::default(),
-            unkept: Marks::everyone(),
-            unkept_since: HashMap::default(),
+            ..State::default()
         }
     };
     super::write_atomically(root, FILE_NAME, &encode(&state, id), true)
@@ -184,8 +183,9 @@ fn read(root: &Path) -> Result<State> {
 #[derive(Debug)]
 pub struct CopyTrust {
     root: PathBuf,
-    /// The directory's storage id, which every write names.
-    id: Option<StorageId>,
+    /// The directory's storage id, which every write names. Changes only
+    /// through [`rotate_storage_id`].
+    id: Mutex<Option<StorageId>>,
     /// What is on disk. Readers see only this.
     durable: Mutex<State>,
     /// Every change made, with the count of changes so far.
@@ -197,12 +197,23 @@ pub struct CopyTrust {
 }
 
 impl CopyTrust {
+    /// Read the record under `root` for the run on it: a rotation of its
+    /// storage id while the run goes on ([`rotate_storage_id`]) distrusts
+    /// every copy here too.
+    pub fn open_live(root: &Path) -> Result<std::sync::Arc<Self>> {
+        let trust = std::sync::Arc::new(Self::open(root)?);
+        let mut live = LIVE.lock();
+        live.retain(|weak| weak.strong_count() > 0);
+        live.push(std::sync::Arc::downgrade(&trust));
+        Ok(trust)
+    }
+
     /// Read the record under `root`.
     pub fn open(root: &Path) -> Result<Self> {
         let state = read(root)?;
         Ok(Self {
             root: root.to_path_buf(),
-            id: storage_identity::load(root)?,
+            id: Mutex::new(storage_identity::load(root)?),
             durable: Mutex::new(state.clone()),
             wanted: Mutex::new((state, 0)),
             writer: Mutex::new(0),
@@ -224,14 +235,16 @@ impl CopyTrust {
     }
 
     /// Whether the copy named `key` took a ballot while its promises counted
-    /// for nothing and has not been readmitted since: the newest generation
-    /// it took one at, or 0 when that is not known.
-    pub fn unkept(&self, key: &[u8]) -> Option<u64> {
+    /// for nothing and has not been readmitted since, and since when.
+    pub fn unkept(&self, key: &[u8]) -> Option<Since> {
         let state = self.durable.lock();
         state
             .unkept
             .marked(key)
-            .then(|| state.unkept_since.get(key).copied().unwrap_or(0))
+            .then(|| match state.unkept_since.get(key) {
+                Some(&generation) => Since::At(generation),
+                None => Since::Unknown,
+            })
     }
 
     /// Record, durably, that a newer leader shipped the copy named `key`
@@ -261,10 +274,11 @@ impl CopyTrust {
     pub fn unkeep(&self, key: &[u8], generation: u64) -> Result<()> {
         self.update(|state| {
             let marked = state.unkept.set(key, true);
+            let known = state.unkept_since.contains_key(key);
             let since = state.unkept_since.entry(key.to_vec()).or_insert(0);
             let raised = generation > *since;
             *since = (*since).max(generation);
-            marked || raised
+            marked || raised || !known
         })
     }
 
@@ -294,10 +308,61 @@ impl CopyTrust {
             return Ok(());
         }
         let (state, count) = self.wanted.lock().clone();
-        super::write_atomically(&self.root, FILE_NAME, &encode(&state, self.id), true)?;
+        let id = *self.id.lock();
+        super::write_atomically(&self.root, FILE_NAME, &encode(&state, id), true)?;
         #[cfg(test)]
         self.writes
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        *self.durable.lock() = state;
+        *written = count;
+        Ok(())
+    }
+}
+
+/// Since when a copy is unkept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Since {
+    /// It took an unkept ballot at this generation, the newest such.
+    At(u64),
+    /// The record does not say: it did not decode, or named another id.
+    Unknown,
+}
+
+/// The records open for a running broker, so a rotation reaches them.
+static LIVE: Mutex<Vec<std::sync::Weak<CopyTrust>>> = Mutex::new(Vec::new());
+
+/// Give the directory at `root` the storage id `fresh`, the one way every
+/// rotation takes: first every copy is distrusted, synced, under the new id
+/// (in the record a running broker holds too, so its readers see it at once),
+/// then the id is written. A crash between the two leaves a record naming
+/// another id than the directory's, which reads as unknown.
+pub fn rotate_storage_id(root: &Path, fresh: [u8; 16]) -> Result<StorageId> {
+    let next = StorageId::from_bytes(fresh);
+    let live = LIVE
+        .lock()
+        .iter()
+        .filter_map(std::sync::Weak::upgrade)
+        .find(|trust| trust.root == root);
+    match live {
+        Some(trust) => trust.distrust_all(next)?,
+        None => distrust_all(root, next)?,
+    }
+    storage_identity::replace(root, fresh)
+}
+
+impl CopyTrust {
+    /// [`distrust_all`] on the live record, under the writer's lock so no
+    /// write in flight puts an older trust back.
+    fn distrust_all(&self, next: StorageId) -> Result<()> {
+        let mut written = self.writer.lock();
+        let (state, count) = {
+            let mut wanted = self.wanted.lock();
+            wanted.0.untrusted = Marks::everyone();
+            wanted.1 += 1;
+            wanted.clone()
+        };
+        super::write_atomically(&self.root, FILE_NAME, &encode(&state, Some(next)), true)?;
+        *self.id.lock() = Some(next);
         *self.durable.lock() = state;
         *written = count;
         Ok(())

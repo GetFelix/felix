@@ -106,7 +106,7 @@ fn doubts_and_unkept_ballots_outlive_restarts_until_cleared() {
     let trust = CopyTrust::open(root).expect("open");
     assert_eq!(marks(&trust, A), (true, true, false));
     assert_eq!(marks(&trust, B), (true, false, true));
-    assert_eq!(trust.unkept(B), Some(6), "the newest ballot");
+    assert_eq!(trust.unkept(B), Some(Since::At(6)), "the newest ballot");
     start(root, 2, &mut fresh);
     let trust = CopyTrust::open(root).expect("open");
     assert_eq!(
@@ -141,9 +141,10 @@ fn a_damaged_record_marks_every_copy_until_each_clears() {
 }
 
 /// **A directory that ran before without the record, as an older release's,
-/// starts with every copy untrusted and unkept.** A new one starts clean.
+/// starts with every copy untrusted.** Not unkept: an older release gave no
+/// learner a ballot. A new directory starts clean.
 #[test]
-fn a_directory_that_ran_without_the_record_starts_untrusted_and_unkept() {
+fn a_directory_that_ran_without_the_record_starts_untrusted() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut fresh = counter();
     let begun = start(dir.path(), 1, &mut fresh);
@@ -157,7 +158,46 @@ fn a_directory_that_ran_without_the_record_starts_untrusted_and_unkept() {
     assert!(!begun.rotated);
     assert_eq!(
         marks(&CopyTrust::open(dir.path()).expect("open"), A),
-        (false, false, true)
+        (false, false, false)
+    );
+}
+
+/// **A rotation while the broker runs distrusts every copy in the record it
+/// holds, at once, and on disk under the new id.** Every rotation takes this
+/// path: one that skipped it would leave a copy trusted on a directory a
+/// restore just cut back.
+#[test]
+fn a_rotation_while_running_distrusts_every_copy_at_once() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let mut fresh = counter();
+    let begun = start(root, 1, &mut fresh);
+    let trust = CopyTrust::open_live(root).expect("open");
+    assert!(trust.trusted(A));
+
+    let id = rotate_storage_id(root, [42; 16]).expect("rotate");
+    assert_ne!(id, begun.id);
+    assert!(!trust.trusted(A), "the running broker's readers");
+    trust.vouch(B, true).expect("vouch");
+    let reopened = CopyTrust::open(root).expect("open");
+    assert!(!reopened.trusted(A), "on disk");
+    assert!(reopened.trusted(B), "written under the new id");
+}
+
+/// **An unkept copy whose generation the record lost is pinned at the first
+/// ballot it holds.** Only a set newer than that readmits it.
+#[test]
+fn an_unknown_unkept_generation_is_pinned_once() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join(FILE_NAME), b"junk").expect("write");
+    let trust = CopyTrust::open(dir.path()).expect("open");
+    assert_eq!(trust.unkept(A), Some(Since::Unknown));
+    trust.unkeep(A, 0).expect("pin");
+    assert_eq!(trust.unkept(A), Some(Since::At(0)));
+    trust.unkeep(A, 7).expect("pin");
+    assert_eq!(
+        CopyTrust::open(dir.path()).expect("open").unkept(A),
+        Some(Since::At(7))
     );
 }
 

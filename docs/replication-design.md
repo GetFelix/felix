@@ -710,7 +710,15 @@ ballot while its promises counted for nothing, such as a learner answering a
 unified fence. Until a set newer than that ballot readmits it, that copy
 attests no kept ballot, and an
 older caller continuing from that ballot is refused as before, even after a
-crash that kept the ballot. A memory-only broker has
+crash that kept the ballot. A record that does not decode, or names
+another storage id than the directory's (an older release may have rotated
+it), marks every copy all three ways. Only a leader's batch clears a doubt,
+so while such a copy's leader is down an older caller's fence passes only by
+the set-of-two exception (`acknowledged_by_two`) or a continuing leader.
+Every rotation of the storage id, at startup, by a restore, or by the
+deferred restore check while the broker runs, goes through
+`copy_trust::rotate_storage_id`, which distrusts every copy, the running
+broker's record included, before the new id is written. A memory-only broker has
 no file and attests no kept ballot, so it never attests trusted.
 
 The sets a fence must cover are its own and the set of every start from an
