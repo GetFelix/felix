@@ -1486,8 +1486,9 @@ reports `holds_start` from its probe instead (see "The probe" under
 [A leader's own crash](#a-leaders-own-crash)): without it, a learner whose
 leader crashed before a pass named it would stay a learner for good.
 
-A learner can finish catching up on an exchange that outlives its pass. The next pass then finds it holding everything the
-leader has and would send it nothing, and on a shard with no further writes
+A learner can finish catching up on an exchange that outlives its pass. The
+next pass then finds it holding everything the leader has and would send it
+nothing, and on a shard with no further writes
 nothing would ever name it. So each pass sends such a learner its last record
 again, and its answer puts it in the report. This stops once the copy is
 re-admitted and answers as a voter.
@@ -4038,7 +4039,12 @@ follower is behind it:
   everything, is never promoted and the shard waits as `NoCaughtUpReplica`
   for good. The probe counts from the generation's first start record, not
   from the last one its leader wrote there: after a crash that is not known.
-  Without elections nothing lies between the two that the learner needs. A
+  Without elections nothing lies between the two that the learner needs.
+  With elections the probe could admit a copy missing records an elected
+  stint acknowledged between them, and no model checks that case. In a fleet
+  that may elect, a re-admitted copy attests it keeps no promise until its
+  readmission is recorded, so the probe leaves it out and the shard waits as
+  before. Elections are opt-in, so neither case arises by default. A
   `Quorum` cache is not fenced on promotion (`suspects` in
   `placement/replica_positions.rs` is for streams only), so a promoted
   follower behind on the counter log can lose counter records a majority
