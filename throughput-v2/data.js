@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794087056527,
+  "lastUpdate": 1794087823930,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -49504,6 +49504,58 @@ window.BENCHMARK_DATA = {
             "range": "4587.00",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 818180.63\nmean: 818349.63\nstdev: 4587.00\ncv: 0.56%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c69881d36b854ec7933cabecba6a3c67b8b98efd",
+          "message": "fix(replication): an empty shard's follower is vouched for by an empty batch (#2114)\n\n* fix(replication): an empty shard's follower is vouched for by an empty batch\n\nA follower back from an unclean restart is trusted again only by a batch\nthat leaves it level through the leader's start and a commit offset above\nzero. On a shard that never held a record the mark stays 0, the leader\nships nothing, and the idle resend has no last record to send again. The\ncopy stayed untrusted, so one more failure left a fence that could never\ncover although nothing was ever acknowledged (felix-sim seed 3,\nstream/139).\n\nThe leader of a Quorum shard whose log never held a record now sends each\nlabelled follower one empty batch at offset 0 with its start at 0 and the\nmark 0, once per follower process. The replica trusts its copy on such a\nbatch only when the copy is still empty after it. An empty batch no longer\ncounts as level for a copy that holds records, so it neither labels nor\nvouches for records it compared with nothing.\n\nModel: FelixShardUnified gains the VouchEmpty knob. The mark rule needs a\nclient record in the leader's log, as the code's offsets do, and on a log\nof start records alone VouchEmpty vouches instead. IdleVouch now checks the\nempty shard, IdleVouchWrite the same with one write, and VouchEmptyLegacy\nviolates FollowerTrusted.\n\n* fix(replication): an empty batch leaves a copy holding records unverified\n\nThe empty batch answers with the follower's tail, so a follower holding\nrecords its empty leader never had was remembered as verified through\nthem. The next conflict at offset 0 was then not repaired as a dead\nleader's suffix and halted replication. Such an answer now changes\nnothing the replica remembers.",
+          "timestamp": "2026-11-07T13:38:57-08:00",
+          "tree_id": "ea00cf92cc816e4b511aece6dfbc7e6e00ede0e8",
+          "url": "https://github.com/GetFelix/felix/commit/c69881d36b854ec7933cabecba6a3c67b8b98efd"
+        },
+        "date": 1794087823283,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 469307,
+            "range": "41404.91",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 469307.00\nmean: 493529.30\nstdev: 41404.91\ncv: 8.39%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 469307,
+            "range": "41404.91",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 469307.00\nmean: 493529.30\nstdev: 41404.91\ncv: 8.39%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 118573.63,
+            "range": "2357.09",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 118573.63\nmean: 117842.68\nstdev: 2357.09\ncv: 2.00%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1185736.3,
+            "range": "23570.90",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1185736.30\nmean: 1178426.78\nstdev: 23570.90\ncv: 2.00%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
