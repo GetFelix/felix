@@ -26,11 +26,23 @@ pub struct BrokerNode {
     /// started with [`ClusterConfig::kafka`](crate::ClusterConfig::kafka).
     pub kafka_addr: Option<String>,
     pub data_dir: PathBuf,
+    /// The ports picked for [`ClusterConfig::tcp_listeners`](crate::ClusterConfig::tcp_listeners),
+    /// by env var name.
+    tcp_ports: Vec<(String, u16)>,
     /// `None` once the node has been stopped.
     process: Option<Child>,
 }
 
 impl BrokerNode {
+    /// The port this broker was given for the listener named by `env_var` in
+    /// [`ClusterConfig::tcp_listeners`](crate::ClusterConfig::tcp_listeners).
+    pub fn tcp_port(&self, env_var: &str) -> Option<u16> {
+        self.tcp_ports
+            .iter()
+            .find(|(name, _)| name == env_var)
+            .map(|(_, port)| *port)
+    }
+
     /// This broker's process id, while it is running.
     ///
     /// For measurement: attributing CPU to the broker rather than to the
