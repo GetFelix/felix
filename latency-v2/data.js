@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794074090637,
+  "lastUpdate": 1794074972595,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -62436,6 +62436,72 @@ window.BENCHMARK_DATA = {
             "range": "865.06",
             "unit": "us",
             "extra": "trials: 5\nmedian: 387.00\nmean: 769.20\nstdev: 865.06\ncv: 112.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6e355b44f2245b394bc6af2957c13c5b04574c93",
+          "message": "fix(replication): a joint fence needs only half of a set with its learners (#2108)\n\n* fix(replication): a joint fence needs only half of a set with its learners\n\nA joint fence counts each set it leaves with its learners and without, and\nneeded a majority of both. A staged learner the route no longer names always\nrefuses, so one voter that cannot answer stalled the fence for good (seed 2\nevents/3). A leader that counts by attestation now needs a majority of the\nvoters and half of the set with its learners, which still meets every\nmajority an acknowledgement on that set could use, and it no longer asks\nsuch a learner. With FELIX_UNIFIED_FENCE=0 the fence counts as before.\n\nSpec: FelixShardUnified.tla models staged learners (LearnerChoices,\nLearnerBlocking, LearnerDropped), with FelixShardUnifiedLearnerBlocking,\nFelixShardUnifiedLearnerBlockingTwo (pass) and\nFelixShardUnifiedLearnerVariantDropped (violates AckedHeldByLeader).\n\n* spec(shard): size the one-learner blocking config to fit the checker and fill in its weight\n\nSpec-Unaffected: the model is unchanged; only a config constant, its evidence line and the weight table move.",
+          "timestamp": "2026-11-07T10:05:57-08:00",
+          "tree_id": "a3be30d757fcf9f6a952dc783aa43f1682c59103",
+          "url": "https://github.com/GetFelix/felix/commit/6e355b44f2245b394bc6af2957c13c5b04574c93"
+        },
+        "date": 1794074966881,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 66,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 66.00\nmean: 66.60\nstdev: 0.89\ncv: 1.34%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 90,
+            "range": "119.53",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 90.00\nmean: 142.20\nstdev: 119.53\ncv: 84.06%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 145,
+            "range": "194.21",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 145.00\nmean: 237.60\nstdev: 194.21\ncv: 81.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 84,
+            "range": "3.05",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 84.00\nmean: 85.60\nstdev: 3.05\ncv: 3.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 177,
+            "range": "28.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 177.00\nmean: 191.00\nstdev: 28.07\ncv: 14.70%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 278,
+            "range": "323.63",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 278.00\nmean: 471.80\nstdev: 323.63\ncv: 68.59%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
