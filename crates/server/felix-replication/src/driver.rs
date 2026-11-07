@@ -245,6 +245,9 @@ pub fn spawn<R: PeerRequester + Send + Sync + 'static>(
             };
             match event {
                 Event::Wake(kind) => {
+                    if matches!(kind, WakeKind::Tick) {
+                        shards.note_released().await;
+                    }
                     shards.scan(kind);
                     seen.send_modify(|seen| seen.scan = shards.scan);
                 }

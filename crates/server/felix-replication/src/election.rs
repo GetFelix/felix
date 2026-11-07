@@ -85,6 +85,8 @@ pub struct Elected {
 pub struct Recorded {
     /// The generation the control plane named.
     pub generation: u64,
+    /// The leader the control plane named at it.
+    pub leader: String,
     /// Each member, with the storage id the route names for it, in hex.
     pub members: BTreeMap<String, Option<String>>,
     /// A set change is pending.
@@ -95,6 +97,7 @@ impl Recorded {
     pub(crate) fn of_route(route: &felix_router::Route) -> Self {
         Self {
             generation: route.generation,
+            leader: route.leader.node_id.to_string(),
             members: crate::replica_set::view(route, None)
                 .members
                 .into_iter()
