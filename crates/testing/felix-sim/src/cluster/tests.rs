@@ -263,6 +263,12 @@ async fn a_copy_on_disk_but_not_open_after_a_kill_is_untrusted() {
     log();
     let cluster = Arc::new(SimCluster::start(1, small()).await.unwrap());
     cluster.kill(0).await;
+    // Cut off from its peers, no leader can ship a copy back open or trust it.
+    for other in 1..cluster.broker_count() {
+        cluster
+            .net()
+            .partition(cluster.node_id(0), cluster.node_id(other));
+    }
     cluster.restart(0);
     while !cluster.is_running(0) {
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -270,9 +276,18 @@ async fn a_copy_on_disk_but_not_open_after_a_kill_is_untrusted() {
     assert_eq!(cluster.started_unclean(0), Some(true));
 
     let broker = cluster.handles(0).expect("running").broker;
+    let storage = broker.durable_storage().expect("durable storage");
+    // Whatever start-up opened, leave every copy on disk and closed.
+    for key in cluster.shard_keys() {
+        if key.kind == ShardKind::Stream {
+            storage
+                .close_stream(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+                .await
+                .unwrap();
+        }
+    }
     let mut unopened = 0;
     for key in cluster.shard_keys() {
-        let storage = broker.durable_storage().expect("durable storage");
         let on_disk = key.kind == ShardKind::Stream
             && storage.stream_on_disk(&key.tenant_id, &key.namespace, &key.stream, key.shard);
         let open = on_disk
@@ -291,5 +306,5 @@ async fn a_copy_on_disk_but_not_open_after_a_kill_is_untrusted() {
             );
         }
     }
-    assert!(unopened > 0, "no copy was left unopened by the restart");
+    assert!(unopened > 0, "no copy was on disk and closed");
 }
