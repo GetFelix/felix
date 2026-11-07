@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794068127644,
+  "lastUpdate": 1794071780557,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -49088,6 +49088,58 @@ window.BENCHMARK_DATA = {
             "range": "14699.46",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1657265.54\nmean: 1658650.46\nstdev: 14699.46\ncv: 0.89%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d8a20450d55b58d89eb834c4126ac2829274d7ff",
+          "message": "fix(controlplane): name a member an elected leader has not reached by the previous report's storage id (#2104)\n\nA self-elected leader's report names a follower it has not reached with an empty storage id. The next failover then pinned that follower to \"\", so its clean answer never counted and the shard stalled. The control plane now fills such a member from the shard's previous report when it stores the report (before the Raft proposal, behind the existing metadata level gate). A stale id can only stop a copy counting, never make another copy count.\n\nSpec-Unaffected: the model names inherited storage ids with Elections = 0; this keeps a real report's names for members an elected leader did not reach.",
+          "timestamp": "2026-11-07T17:11:13Z",
+          "tree_id": "f1dbaf83a35d3be85ec58436c25ad47210c972b4",
+          "url": "https://github.com/GetFelix/felix/commit/d8a20450d55b58d89eb834c4126ac2829274d7ff"
+        },
+        "date": 1794071779749,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 719863.87,
+            "range": "70930.16",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 719863.87\nmean: 703518.82\nstdev: 70930.16\ncv: 10.08%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 719863.87,
+            "range": "70930.16",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 719863.87\nmean: 703518.82\nstdev: 70930.16\ncv: 10.08%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 158741.56,
+            "range": "7498.11",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 158741.56\nmean: 155622.85\nstdev: 7498.11\ncv: 4.82%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1587415.63,
+            "range": "74981.17",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1587415.63\nmean: 1556228.47\nstdev: 74981.17\ncv: 4.82%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
