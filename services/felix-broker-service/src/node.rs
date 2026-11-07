@@ -205,10 +205,12 @@ where
         )
     });
     let mut shutdown = Box::pin(shutdown);
+    let witnesses = storage::witness_dir();
     let start = tokio::select! {
         start = membership::start(
             &config,
             durable_root.as_deref(),
+            witnesses.as_deref(),
             &link,
             &credential,
         ) => start?,

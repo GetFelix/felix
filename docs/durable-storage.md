@@ -1332,11 +1332,12 @@ control-plane view can tell a view registered since from an older one.
   answers `503` with the reason, so a liveness probe does not restart a
   broker that is waiting. The full server takes over the same socket once
   the broker is built. With `FELIX_START_WITHOUT_CONTROLPLANE` on, a
-  directory that qualifies starts from its control-plane view instead, and
-  this check runs once the control plane answers, before the broker
-  registers: a directory found behind is marked replaced, gets a new id and
-  the broker stops (`docs/control-plane.md`, "Starting while the control
-  plane is down").
+  directory that qualifies starts from its control-plane view instead. It
+  qualifies only with a run witness (see "The run witness" below), which a
+  restored directory does not have. This check still runs once the control
+  plane answers, before the broker registers: a directory found behind is
+  marked replaced, gets a new id and the broker stops
+  (`docs/control-plane.md`, "Starting while the control plane is down").
 - **No evidence keeps the id:** no record (a new directory, or the first start
   on a release that writes one), a node the control plane has never
   registered, or a control plane behind the record, which was itself restored
@@ -1426,10 +1427,9 @@ It is read at startup only with `FELIX_START_WITHOUT_CONTROLPLANE` on, and
 only when the startup lookup found the control plane down. A broker uses it
 only if it names this node, the storage id on disk is the one it was
 registered under, it was registered after any `replaced-storage` marker on
-the directory, its fleet
-finalized `replica_election`, and this build
-reports every feature it lists; otherwise the broker waits for the control
-plane. See `docs/control-plane.md`, "Starting while the control plane is
+the directory, the run witness names the directory (see "The run witness"),
+its fleet finalized `replica_election`, and this build reports every feature
+it lists; otherwise the broker waits for the control plane. See `docs/control-plane.md`, "Starting while the control plane is
 down".
 
 A background task builds the view from what the broker holds in memory and
@@ -1460,6 +1460,39 @@ its view; elections stay safe on any past view (`docs/replication-design.md`,
 A file that is damaged, cut short, from another format version, or another
 node's reads as absent, and the broker then waits for the control plane as
 before. The format is in `docs/storage-format.md`, "`controlplane.view`".
+
+### The run witness
+
+A start from the control-plane view needs to know the directory was not put
+back from an older copy, and nothing in the directory can show that: a
+restore brings back every file, the view and the storage id included. With
+the control plane up, the node's registrations show it. Without it, the
+broker looks outside the directory
+([#2071](https://github.com/GetFelix/felix/issues/2071)).
+
+Every start, with the control plane or without it, writes a new random token
+to `<root>/run-token` and the same token to a **run witness** in `/dev/shm`,
+with the machine's boot id and the directory's path. `/dev/shm` is memory: a
+restore of the directory or a rollback of the disk does not bring an old
+witness back, and a reboot clears it. The start removes the old witness first
+and fails if it cannot, so no witness ever names a token older than the
+directory's last start.
+
+A start from the view goes ahead only when the witness names this directory,
+this boot and the token on disk. So:
+
+- **A process or container restart on the same machine** finds the witness
+  its last run wrote and starts from the view.
+- **A copy put back from before the last start** holds an older token, and the
+  broker waits for the control plane.
+- **After a reboot, on a new machine or pod, or at another path,** there is no
+  witness, and the broker waits. Nothing local can tell a restore apart then.
+- **Platforms without `/dev/shm`**, macOS included, never start from the view.
+
+A copy taken during the last run and put back before the next start holds
+the current token. The control plane's check cannot see that case either,
+since the copy recorded the incarnation the control plane still holds; such a
+restore needs `storage-id` deleted, or `felix-broker restore-point`.
 
 ## Restoring to a backup point
 

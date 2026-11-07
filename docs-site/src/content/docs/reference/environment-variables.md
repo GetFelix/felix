@@ -309,9 +309,10 @@ and follows its shards' leaders, but stands for election and serves clients
 only once it registers. Used
 only when the startup lookup found the control plane down (no answer or a
 5xx, never a 401 or another 4xx) and the directory qualifies; otherwise the
-broker waits for the control plane as it does with the switch off. A data
-directory restored without deleting `storage-id` is then caught only once
-the control plane answers. See
+broker waits for the control plane as it does with the switch off. The
+directory qualifies only after a restart on the same machine in the same
+boot (Linux only): a reboot, a new machine or pod, or a directory restored
+from a copy waits. See
 [Starting while the control plane is down](https://github.com/GetFelix/felix/blob/main/docs/control-plane.md#starting-while-the-control-plane-is-down).
 
 **Type**: Boolean (`true`, `1`, `yes` or `on`)

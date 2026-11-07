@@ -194,15 +194,14 @@ is still required in every other case:
 Deleting the file is always safe. It costs one full copy of each shard the
 broker follows. When in doubt, delete it.
 
-With `FELIX_START_WITHOUT_CONTROLPLANE` on, the check against the control
-plane can come late. A broker that starts while the control plane is down
-runs from the control-plane view in its data directory, and a restored copy
-that kept its `storage-id` votes on its old ballots until the control plane
-answers. It then gets a new id and stops before it registers, and
-`felix_restored_directory_total` counts it, but it may already have voted.
-Delete `storage-id`, or use `felix-broker restore-point`, before you start a
-restored broker; with this switch on that is the only check that comes in
-time. See [Starting while the control plane is down](https://github.com/GetFelix/felix/blob/main/docs/control-plane.md#starting-while-the-control-plane-is-down) for what a start
+With `FELIX_START_WITHOUT_CONTROLPLANE` on, a broker that starts while the
+control plane is down runs from the control-plane view in its data directory
+only if a file the last start on that machine left in `/dev/shm` names the
+directory as that start left it. A copy put back from before that start does
+not match, so a restored broker waits for the control plane and gets the
+check above. A copy taken during the broker's last run and put back before
+its next start does match, just as it passes the control plane's check, so
+delete `storage-id` or use `felix-broker restore-point` in every case. See [Starting while the control plane is down](https://github.com/GetFelix/felix/blob/main/docs/control-plane.md#starting-while-the-control-plane-is-down) for what a start
 from the view does.
 
 Stopping every broker is also what makes generations safe across a restore.
