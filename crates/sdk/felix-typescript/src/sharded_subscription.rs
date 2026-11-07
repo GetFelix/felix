@@ -7,7 +7,7 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use tokio::sync::{Mutex, watch};
 
-use crate::types::{Event, ShardEvent, or_null};
+use crate::types::ShardEvent;
 
 /// A subscription across every shard of a stream.
 #[napi]
@@ -104,14 +104,7 @@ fn shard_event(item: felix_client::ShardEvent) -> Option<ShardEvent> {
     Some(match item {
         felix_client::ShardEvent::Record { shard, event } => ShardEvent {
             shard,
-            event: Either::A(Event {
-                tenant_id: event.tenant_id.to_string(),
-                namespace: event.namespace.to_string(),
-                stream: event.stream.to_string(),
-                payload: event.payload.to_vec().into(),
-                offset: or_null(event.offset.map(BigInt::from)),
-                skipped_before: BigInt::from(event.skipped_before),
-            }),
+            event: Either::A(event.into()),
             lost_error: Either::B(Null),
             recovered: Either::B(Null),
             shard_moved: Either::B(Null),

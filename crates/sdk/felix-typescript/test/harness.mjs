@@ -174,7 +174,7 @@ export function reader(handle, method = "nextEvent") {
 // napi leaves an absent `Option` field `undefined`, and a caller that follows
 // the typings with `!== null` then misreads every item, so each one is checked.
 const NULLABLE_FIELDS = {
-  Event: ["offset"],
+  Event: ["offset", "publisher", "timestampMicros", "headers"],
   ShardEvent: ["event", "lostError", "recovered", "shardMoved"],
   ShardMoved: ["resumeFrom", "nodeId", "addr"],
   CacheWatchItem: ["change", "laggedResumeFrom", "shardMoved"],

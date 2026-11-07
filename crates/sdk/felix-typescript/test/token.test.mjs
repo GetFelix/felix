@@ -59,11 +59,13 @@ test("connect options become the addon's positional arguments", async () => {
   const args = connectArgs(["h:1", "t1", { token: "tok", serverName: "s", caFile: "ca", offerAlpn: true, tokenProvider: provider }]);
   assert.deepEqual(args.slice(0, 6), ["h:1", "t1", "tok", "s", "ca", true]);
   assert.equal(await args[6](1), "t");
-  assert.deepEqual(connectArgs(["h:1", "t1"]), ["h:1", "t1", ...Array(11).fill(undefined)]);
+  assert.deepEqual(connectArgs(["h:1", "t1"]), ["h:1", "t1", ...Array(12).fill(undefined)]);
   const tuned = connectArgs(["h:1", "t1", { token: "tok", reconnectAttempts: 3, reconnectDeadline: 1500, reconnectBackoff: 50, reconnectMaxBackoff: 400 }]);
   assert.deepEqual(tuned.slice(7, 11), [3, 1500, 50, 400]);
   const mutual = connectArgs(["h:1", "t1", { token: "tok", clientCertFile: "c.pem", clientKeyFile: "k.pem" }]);
-  assert.deepEqual(mutual.slice(11), ["c.pem", "k.pem"]);
+  assert.deepEqual(mutual.slice(11, 13), ["c.pem", "k.pem"]);
+  const knobs = connectArgs(["h:1", "t1", { token: "tok", publishers: true, maxFrameBytes: 1 << 20 }]);
+  assert.deepEqual(knobs[13], { publishers: true, maxFrameBytes: 1 << 20 });
   assert.deepEqual(withIdentityArgs(["t1", { token: "tok" }]), ["t1", "tok", undefined]);
 });
 
