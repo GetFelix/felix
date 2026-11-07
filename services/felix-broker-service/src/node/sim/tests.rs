@@ -139,3 +139,31 @@ async fn attesting_a_copy_does_not_open_a_log() {
     assert!(open.is_none(), "the attestation opened the log");
     broker.crash();
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_snapshot_does_not_open_a_log() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = SimBrokerConfig::new("sim-a", dir.path());
+    let up = Arc::new(AtomicBool::new(true));
+    let paths = Arc::new(Mutex::new(Vec::new()));
+    let broker = SimBroker::open(config, link(), catalog(up, paths))
+        .await
+        .unwrap()
+        .run(Arc::new(NoPeers));
+    settle().await;
+
+    let key = ShardKey {
+        tenant_id: "t".into(),
+        namespace: "n".into(),
+        stream: "s".into(),
+        shard: 0,
+        kind: ShardKind::Stream,
+    };
+    assert_eq!(broker.shard_snapshot(&key).await.log_tail, None);
+    let open = broker
+        .broker()
+        .opened_log(LogKind::Stream, "t", "n", "s", 0, None)
+        .await;
+    assert!(open.is_none(), "the snapshot opened the log");
+    broker.crash();
+}

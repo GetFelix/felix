@@ -228,7 +228,8 @@ pub struct ShardSnapshot {
     pub opened_generation: Option<u64>,
     /// See [`ShardStand::acks_by_followers`].
     pub acks_by_followers: bool,
-    /// One past the last record in this broker's copy of the log, if it has one.
+    /// One past the last record in this broker's copy of the log, `None` when
+    /// it holds no copy or the copy is not open.
     pub log_tail: Option<u64>,
     /// How far a majority of the replica set has the log, when this broker
     /// tracks it (a leader does).
@@ -671,9 +672,17 @@ impl SimBroker {
             ShardKind::Stream => LogKind::Stream,
             ShardKind::Cache => LogKind::Cache,
         };
+        // Read-only: a census must not open or recover a log it is observing.
         let log_tail = match self
             .broker
-            .shard_log(kind, &key.tenant_id, &key.namespace, &key.stream, key.shard)
+            .opened_log(
+                kind,
+                &key.tenant_id,
+                &key.namespace,
+                &key.stream,
+                key.shard,
+                None,
+            )
             .await
         {
             Some(log) => log.tail_offset().await.ok(),
