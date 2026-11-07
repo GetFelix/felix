@@ -8,6 +8,9 @@ The argument checks need no cluster; the rest run against the shared fixture.
 from __future__ import annotations
 
 import asyncio
+import json
+import time
+import urllib.request
 
 import pytest
 
@@ -134,14 +137,14 @@ def test_a_client_that_asks_gets_the_timestamp_and_publisher(fixture, key):
             event = find(events, payload)
     assert event is not None
     assert event.timestamp_micros is not None and event.timestamp_micros > 0
-    assert event.publisher is None or isinstance(event.publisher, str)
+    assert isinstance(event.publisher, str) and event.publisher
 
 
-def test_a_group_record_carries_the_timestamp_when_asked(fixture, key):
+def test_a_group_record_carries_the_publisher_and_timestamp_when_asked(fixture, key):
     group = f"stamped-{key}"
     tenant, namespace, stream = scope(fixture)
     payload = key.encode()
-    with connect(fixture, timestamps=True) as stamped:
+    with connect(fixture, publishers=True, timestamps=True) as stamped:
         stamped.publish(tenant, namespace, stream, payload)
         mine = []
         for _ in range(10):
@@ -155,6 +158,7 @@ def test_a_group_record_carries_the_timestamp_when_asked(fixture, key):
                 break
     assert mine, "the group never handed out the record"
     assert mine[0].timestamp_micros is not None and mine[0].timestamp_micros > 0
+    assert isinstance(mine[0].publisher, str) and mine[0].publisher
 
 
 # ---------------------------------------------------------------------------
@@ -199,14 +203,71 @@ def test_a_tuned_client_publishes_and_reads_back(fixture, key):
 # ---------------------------------------------------------------------------
 
 
-def test_a_subscription_reports_its_counters(client, fixture, key):
+def test_a_fresh_subscription_has_not_moved_and_asked_for_no_queue(client, fixture, key):
     payload = f"counters-{key}".encode()
     with client.subscribe(*scope(fixture)) as events:
         assert (events.moves, events.reconnects, events.stream_deleted) == (0, 0, False)
+        assert events.queue_capacity is None
         client.publish(*scope(fixture), payload)
         assert find(events, payload) is not None
-        assert events.moves == 0 and events.reconnects == 0
-        assert events.queue_capacity is None or events.queue_capacity > 0
+        assert (events.moves, events.reconnects) == (0, 0)
+
+
+def test_the_broker_grants_the_queue_a_client_asked_for(fixture, key):
+    payload = f"queue-{key}".encode()
+    with connect(fixture, tuning=felix.ClientTuning(broker_sub_queue_capacity=8)) as sized:
+        with sized.subscribe(*scope(fixture)) as events:
+            assert events.queue_capacity == 8
+            sized.publish(*scope(fixture), payload)
+            assert find(events, payload) is not None
+            assert events.queue_capacity == 8
+
+
+def _post(fixture, path, body=None):
+    request = urllib.request.Request(
+        fixture["control_url"] + path,
+        data=json.dumps(body or {}).encode(),
+        method="POST",
+        headers={"content-type": "application/json"},
+    )
+    with urllib.request.urlopen(request, timeout=120) as response:
+        response.read()
+
+
+def test_a_reconnect_advances_the_counters_and_keeps_the_queue(fixture, key):
+    steps = {fault["id"]: fault for fault in fixture.get("faults", [])}
+    step = steps.get("fault.subscription_through_a_reset_link")
+    if step is None or not fixture.get("link_addr"):
+        pytest.skip("this fixture has no link interposer")
+    tenant, namespace = fixture["tenant_id"], fixture["namespace"]
+    stream = fixture["link_stream"]
+    before, after = f"{key}-before".encode(), f"{key}-after".encode()
+    tuning = felix.ClientTuning(broker_sub_queue_capacity=8)
+    try:
+        with felix.Client(
+            [fixture["link_addr"]],
+            tenant_id=tenant,
+            token=fixture["token"],
+            ca_file=fixture["ca_file"],
+            tuning=tuning,
+        ) as linked, connect(fixture) as direct:
+            with linked.subscribe(tenant, namespace, stream) as events:
+                direct.publish(tenant, namespace, stream, before)
+                assert find(events, before) is not None
+                assert events.reconnects == 0 and events.queue_capacity == 8
+                _post(fixture, "/link", {"fault": step["fault"], "hold_ms": step["hold_ms"]})
+                direct.publish(tenant, namespace, stream, after)
+                deadline = time.monotonic() + 60
+                got = None
+                while got is None and time.monotonic() < deadline:
+                    event = events.next_event(timeout=0.5)
+                    if event is not None and event.payload == after:
+                        got = event
+                assert got is not None, "the subscription never resumed after the reset"
+                assert events.reconnects + events.moves >= 1
+                assert events.queue_capacity == 8
+    finally:
+        _post(fixture, "/heal")
 
 
 def test_the_async_subscription_reports_its_counters(fixture, key):
@@ -218,55 +279,49 @@ def test_the_async_subscription_reports_its_counters(fixture, key):
             tenant_id=fixture["tenant_id"],
             token=fixture["token"],
             ca_file=fixture["ca_file"],
+            tuning=felix.ClientTuning(broker_sub_queue_capacity=8),
         ) as client:
             async with await client.subscribe(*scope(fixture)) as events:
                 await client.publish(*scope(fixture), payload)
                 event = await events.next_event(timeout=TIMEOUT)
-                return event, events.moves, events.reconnects, events.stream_deleted
+                return event, events.moves, events.reconnects, events.stream_deleted, events.queue_capacity
 
-    event, moves, reconnects, deleted = asyncio.run(run())
+    event, moves, reconnects, deleted, capacity = asyncio.run(run())
     assert event is not None
-    assert (moves, reconnects, deleted) == (0, 0, False)
+    assert (moves, reconnects, deleted, capacity) == (0, 0, False, 8)
 
 
 # ---------------------------------------------------------------------------
 # Lease writes
 # ---------------------------------------------------------------------------
+#
+# The fixture's brokers carry no lease templates, so none mints a token and a
+# broker-backed test could not prove one. LeaseToken's redaction and the
+# conversion are covered by the binding's Rust tests; here only the argument.
 
 
-def test_a_lease_write_claims_a_key_once(client, fixture, key):
+@pytest.mark.parametrize("ttl", [-1.0, float("nan"), float("inf")])
+def test_a_lease_ttl_must_be_a_time(client, fixture, key, ttl):
     cache = (fixture["tenant_id"], fixture["namespace"], fixture["cache"])
-    first = client.cache_put_if_lease(*cache, key, b"holder-a", felix.CacheCondition.absent())
-    assert first.result.applied and first.result.version is not None
-    assert first.token is None or isinstance(first.token, felix.LeaseToken)
-    if first.token is not None:
-        assert first.token.token not in repr(first) and first.token.token not in repr(first.token)
-
-    second = client.cache_put_if_lease(*cache, key, b"holder-b", felix.CacheCondition.absent())
-    assert not second.result.applied
-    assert second.token is None
-    assert client.cache_get(*cache, key) == b"holder-a"
-
-
-def test_the_async_client_writes_a_lease_too(fixture, key):
-    async def run():
-        async with await felix.AsyncClient.connect(
-            fixture["addrs"],
-            tenant_id=fixture["tenant_id"],
-            token=fixture["token"],
-            ca_file=fixture["ca_file"],
-        ) as client:
-            cache = (fixture["tenant_id"], fixture["namespace"], fixture["cache"])
-            return await client.cache_put_if_lease(
-                *cache, key, b"v", felix.CacheCondition.absent()
-            )
-
-    assert asyncio.run(run()).result.applied
+    with pytest.raises(ValueError, match="ttl"):
+        client.cache_put_if_lease(*cache, key, b"v", felix.CacheCondition.absent(), ttl=ttl)
 
 
 # ---------------------------------------------------------------------------
 # Inspection
 # ---------------------------------------------------------------------------
+
+
+def inspector(fixture, addr=None):
+    token = fixture.get("inspector_token")
+    if not token:
+        pytest.skip("this fixture has no inspector token")
+    return felix.Client(
+        addr or fixture["addrs"],
+        tenant_id=fixture["tenant_id"],
+        token=token,
+        ca_file=fixture["ca_file"],
+    )
 
 
 def test_supports_names_every_question(client):
@@ -310,6 +365,57 @@ def test_a_tenant_token_may_not_inspect(client, fixture):
 def test_a_cursor_must_be_the_dict_a_page_returned(client):
     with pytest.raises(ValueError, match="cursor"):
         client.list_subscriptions(cursor={"tenant_id": "t"})
+
+
+def test_an_inspector_sees_the_leaders_view_of_a_shard(client, fixture):
+    tenant, namespace, stream = scope(fixture)
+    owner = client.shard_owners("stream", tenant, namespace, stream)[0]
+    with inspector(fixture, owner["addr"]) as ops:
+        view = ops.inspect_shard("stream", tenant, namespace, stream, owner["shard"])
+    assert view["node_id"] == owner["node_id"]
+    assert view["shards"] == client.stream_shards(tenant, namespace, stream)
+    assert view["role"] == "leader" and view["serving"] is True
+    assert view["phase"] == "active"
+    assert view["tail"] >= 0
+
+
+def test_an_inspector_pages_through_a_brokers_subscriptions(client, fixture):
+    tenant, namespace, stream = scope(fixture)
+    owner = client.shard_owners("stream", tenant, namespace, stream)[0]
+    with felix.Client(
+        owner["addr"], tenant_id=tenant, token=fixture["token"], ca_file=fixture["ca_file"]
+    ) as subscriber, inspector(fixture, owner["addr"]) as ops:
+        held = [
+            subscriber.subscribe(tenant, namespace, stream, shard=owner["shard"])
+            for _ in range(3)
+        ]
+        try:
+            seen, cursor, pages = [], None, 0
+            while True:
+                page = ops.list_subscriptions(
+                    tenant_id=tenant,
+                    namespace=namespace,
+                    stream=stream,
+                    shard=owner["shard"],
+                    limit=2,
+                    cursor=cursor,
+                )
+                pages += 1
+                assert page["node_id"] == owner["node_id"]
+                assert len(page["subscriptions"]) <= 2
+                seen.extend(sub["subscriber_id"] for sub in page["subscriptions"])
+                cursor = page["next_cursor"]
+                if cursor is None:
+                    break
+                assert pages < 50, "the cursor never ended the listing"
+            assert len(seen) == len(set(seen)), "a subscription was listed twice"
+            assert len(seen) >= 3 and pages >= 2
+            first = ops.list_subscriptions(stream=stream, shard=owner["shard"], limit=1)
+            assert first["next_cursor"] is not None
+            assert {"policy", "depth", "capacity", "dropped"} <= set(first["subscriptions"][0])
+        finally:
+            for subscription in held:
+                subscription.close()
 
 
 def test_the_async_client_asks_the_same_questions(fixture):

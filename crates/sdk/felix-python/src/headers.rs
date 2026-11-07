@@ -164,3 +164,6 @@ pub(crate) fn extract_batch(
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests;

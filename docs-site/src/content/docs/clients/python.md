@@ -383,7 +383,7 @@ The groups, and the arguments in each:
   `ack_on_commit` (ask the broker to answer after the write; slower),
   `connect_timeout` and `finish_timeout` (seconds).
 
-A count or size below 1 raises `ValueError`, except `publish_shard_streams`,
+Durations (`connect_timeout`, `finish_timeout`) are in seconds, and must be positive. A count or size below 1 raises `ValueError`, except `publish_shard_streams`,
 where 0 puts every publish on the pool.
 
 ### Acting for many users
@@ -1163,7 +1163,7 @@ else:
     print("lease taken without a token:", write.token_refused)
 ```
 
-`token_refused` says why an applied write came back without a token; the write stands. A `LeaseToken` is a bearer secret, so its `repr` leaves the token out, and `expires_at` is when it stops working, in seconds since the Unix epoch.
+`ttl` is in seconds; a negative or non-finite one raises `ValueError` before anything is sent. `token_refused` says why an applied write came back without a token; the write stands. A `LeaseToken` is a bearer secret, so its `repr` leaves the token out, and `expires_at` is when it stops working, in seconds since the Unix epoch.
 
 For a read-modify-write, read the version, write with `CacheCondition.version`,
 and read again if the write was refused:

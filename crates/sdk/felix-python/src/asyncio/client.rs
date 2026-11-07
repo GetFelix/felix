@@ -505,7 +505,7 @@ impl AsyncClient {
         let (tenant_id, namespace, cache, key) = owned4(tenant_id, namespace, cache, key);
         let value = Bytes::copy_from_slice(value);
         let condition = condition.inner;
-        let ttl_ms = ttl.map(|seconds| (seconds.max(0.0) * 1000.0) as u64);
+        let ttl_ms = crate::args::ttl_millis(ttl)?;
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             inner
                 .cache_put_if_lease(

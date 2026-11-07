@@ -182,6 +182,7 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
         link_addr: Some(link.addr().to_string()),
         link_stream: Some(LINK_STREAM.to_string()),
         group_operator_token: Some(cluster.group_operator_token()),
+        inspector_token: Some(cluster.inspector_token()),
         trimmer_token: Some(cluster.trimmer_token()),
         trim_stream: Some(TRIM_STREAM.to_string()),
         records_publishers: true,

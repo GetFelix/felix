@@ -68,15 +68,22 @@ impl SubscriptionProgress {
     }
 
     pub(crate) fn record(&self, subscription: &felix_client::ClusterSubscription) {
-        self.moves.store(subscription.moves(), Ordering::Release);
-        self.reconnects
-            .store(subscription.reconnects(), Ordering::Release);
-        self.stream_deleted
-            .store(subscription.stream_deleted(), Ordering::Release);
-        self.queue_capacity.store(
-            subscription.queue_capacity().map_or(u64::MAX, u64::from),
-            Ordering::Release,
+        self.store(
+            subscription.moves(),
+            subscription.reconnects(),
+            subscription.stream_deleted(),
+            subscription.queue_capacity(),
         );
+    }
+
+    /// Replaces every value, the capacity too: a resubscribe is granted its
+    /// own, so the old one must not outlive it.
+    fn store(&self, moves: u64, reconnects: u64, deleted: bool, capacity: Option<u32>) {
+        self.moves.store(moves, Ordering::Release);
+        self.reconnects.store(reconnects, Ordering::Release);
+        self.stream_deleted.store(deleted, Ordering::Release);
+        self.queue_capacity
+            .store(capacity.map_or(u64::MAX, u64::from), Ordering::Release);
     }
 
     pub(crate) fn moves(&self) -> u64 {
@@ -95,3 +102,6 @@ impl SubscriptionProgress {
         u32::try_from(self.queue_capacity.load(Ordering::Acquire)).ok()
     }
 }
+
+#[cfg(test)]
+mod tests;

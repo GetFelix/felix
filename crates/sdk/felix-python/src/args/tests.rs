@@ -1,6 +1,8 @@
 use std::time::Duration;
 
-use super::{check_sharded_watch, non_negative_duration, positive_duration, reconnect_policy};
+use super::{
+    check_sharded_watch, non_negative_duration, positive_duration, reconnect_policy, ttl_millis,
+};
 
 const YEAR: f64 = 365.0 * 24.0 * 3600.0;
 
@@ -70,5 +72,15 @@ fn a_backoff_must_be_above_zero_and_at_most_a_year() {
             reconnect_policy(None, None, None, Some(bad)).is_err(),
             "{bad}"
         );
+    }
+}
+
+#[test]
+fn a_ttl_is_milliseconds_and_refuses_what_is_not_a_time() {
+    assert_eq!(ttl_millis(None).unwrap(), None);
+    assert_eq!(ttl_millis(Some(0.0)).unwrap(), Some(0));
+    assert_eq!(ttl_millis(Some(1.5)).unwrap(), Some(1500));
+    for bad in [-0.001, f64::NAN, f64::INFINITY, YEAR + 1.0] {
+        assert!(ttl_millis(Some(bad)).is_err(), "{bad}");
     }
 }
