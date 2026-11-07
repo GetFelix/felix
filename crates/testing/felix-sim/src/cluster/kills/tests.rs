@@ -116,8 +116,8 @@ fn a_copy_up_while_a_leader_served_and_still_untrusted_is_a_stall() {
     let mut log = KillLog::default();
     log.started_unclean("b2", secs(10));
     log.started_unclean("b3", secs(12));
-    log.served("stream/0", "b2", secs(20));
-    log.served("stream/0", "b3", secs(20));
+    log.served("stream/0", "b2", secs(20), 7, 7);
+    log.served("stream/0", "b3", secs(20), 7, 7);
     let mut copies = trust(&[("b2", false), ("b3", false)]);
     copies.insert(("stream/0".into(), "b1".into()), Copy::DownAfterKill);
     let views = view("b1", &THREE);
@@ -139,8 +139,8 @@ fn a_copy_down_after_a_kill_counts_untrusted_though_a_leader_served_it_before() 
     // leader b1 were killed. b2's next start distrusts the copy anyway.
     let mut log = KillLog::default();
     log.started_unclean("b2", secs(10));
-    log.served("stream/0", "b1", secs(20));
-    log.served("stream/0", "b2", secs(20));
+    log.served("stream/0", "b1", secs(20), 7, 7);
+    log.served("stream/0", "b2", secs(20), 7, 7);
     log.kill("b2", secs(25));
     log.kill("b1", secs(30));
     let copies = Trust::from([
@@ -149,4 +149,30 @@ fn a_copy_down_after_a_kill_counts_untrusted_though_a_leader_served_it_before() 
         (("stream/0".into(), "b3".into()), Copy::Trusted),
     ]);
     assert_eq!(held(&log, &view("b1", &THREE), &copies), ["stream/0"]);
+}
+
+#[test]
+fn a_leader_the_copy_already_refuses_could_not_vouch_it() {
+    // b3 restarted unclean and took generation 8 while b2 served generation
+    // 7: b2 was superseded at b3, so it could not vouch it. The shard is
+    // held, not a stall.
+    let mut log = KillLog::default();
+    log.started_unclean("b3", secs(10));
+    log.served("stream/0", "b3", secs(20), 7, 8);
+    let copies = Trust::from([
+        (("stream/0".into(), "b1".into()), Copy::DownAfterKill),
+        (("stream/0".into(), "b2".into()), Copy::DownAfterKill),
+        (("stream/0".into(), "b3".into()), Copy::Untrusted),
+    ]);
+    let views = view("b2", &THREE);
+    assert!(log.vouchable_untrusted(&views, &copies).is_empty());
+    assert_eq!(held(&log, &views, &copies), ["stream/0"]);
+    // A current leader served it later: that one could have.
+    log.served("stream/0", "b3", secs(30), 8, 8);
+    assert_eq!(
+        log.vouchable_untrusted(&views, &copies)
+            .into_iter()
+            .collect::<Vec<_>>(),
+        ["stream/0"]
+    );
 }

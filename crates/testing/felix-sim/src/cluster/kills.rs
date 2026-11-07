@@ -18,10 +18,12 @@
 //! - it is down after an unclean kill, so its next start distrusts it
 //!   whatever happened before, or
 //! - it is up, and no broker served the shard while it was up since its last
-//!   unclean restart.
+//!   unclean restart. A broker counts only while the copy still accepts its
+//!   generation: a copy that took a newer leader's fence refuses an older
+//!   leader, so that leader could not have vouched it.
 //!
-//! An up copy that is still untrusted after a broker served the shard beside
-//! it is vouchable: its shard stays a stall. A broker down after a clean stop,
+//! An up copy that is still untrusted after a current broker served the shard
+//! beside it is vouchable: its shard stays a stall. A broker down after a clean stop,
 //! or a copy that does not exist, counts as trusted, and so does a shard with
 //! trusted copies and no leader: the rule errs towards holding fewer shards.
 //!
@@ -92,10 +94,21 @@ impl KillLog {
         self.unclean_starts.insert(node.to_string(), at);
     }
 
-    /// `node` was up at `at` while some broker served `shard`.
-    pub(crate) fn served(&mut self, shard: &str, node: &str, at: Duration) {
-        self.served
-            .insert((shard.to_string(), node.to_string()), at);
+    /// `node` was up at `at` while a broker served `shard` at `serving`, and
+    /// its copy had accepted generation `accepted`. A copy that already
+    /// accepted a newer leader refuses this one, so it could not vouch.
+    pub(crate) fn served(
+        &mut self,
+        shard: &str,
+        node: &str,
+        at: Duration,
+        serving: u64,
+        accepted: u64,
+    ) {
+        if accepted <= serving {
+            self.served
+                .insert((shard.to_string(), node.to_string()), at);
+        }
     }
 
     /// Whether a leader had the chance to vouch `node`'s copy of `shard`:

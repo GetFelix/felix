@@ -610,6 +610,20 @@ impl SimBroker {
         )
     }
 
+    /// The generation of the newest leader this broker's copy of `key` has
+    /// accepted. `None` when it holds no copy.
+    pub async fn accepted_generation(&self, key: &ShardKey) -> Option<u64> {
+        let kind = match key.kind {
+            ShardKind::Stream => LogKind::Stream,
+            ShardKind::Cache => LogKind::Cache,
+        };
+        let log = self
+            .broker
+            .shard_log(kind, &key.tenant_id, &key.namespace, &key.stream, key.shard)
+            .await?;
+        Some(log.accepted_generation())
+    }
+
     /// The membership task, `None` only if the config named no cluster.
     pub fn membership(&self) -> Option<&MembershipTask> {
         self.membership.as_ref()

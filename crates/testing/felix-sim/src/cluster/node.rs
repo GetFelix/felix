@@ -379,6 +379,12 @@ impl Node {
         })
     }
 
+    /// The generation of the newest leader this broker's copy of `key` has
+    /// accepted. `None` when the broker is down or holds no copy.
+    pub(crate) async fn accepted_generation(&self, key: &ShardKey) -> Option<u64> {
+        self.broker()?.accepted_generation(key).await
+    }
+
     /// What the running broker believes about `key`, read at one instant.
     pub(crate) fn stand(&self, key: &ShardKey) -> Option<ShardStand> {
         let broker = self.broker()?;

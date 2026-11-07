@@ -424,7 +424,7 @@ impl SimCluster {
     /// still starting, and record the stop as clean. A no-op on one that is
     /// down.
     pub async fn crash(&self, index: usize) {
-        self.note_serving();
+        self.note_serving().await;
         self.nodes[index].crash(&self.net, Stop::Clean).await;
     }
 
@@ -433,7 +433,7 @@ impl SimCluster {
     /// takes a new storage id and runs its unclean-start handling. Only a
     /// run that does not fsync on commit (the default) can be left that way.
     pub async fn kill(&self, index: usize) {
-        self.note_serving();
+        self.note_serving().await;
         let at = self.elapsed();
         if self.nodes[index].crash(&self.net, Stop::Kill).await {
             self.kills.lock().kill(&self.nodes[index].id, at);
@@ -449,7 +449,7 @@ impl SimCluster {
         if self.nodes[index].is_down() {
             return false;
         }
-        self.note_serving();
+        self.note_serving().await;
         let at = self.elapsed();
         let node = &self.nodes[index];
         let seed = self.seed ^ self.power.lock().next_seed();
@@ -515,7 +515,7 @@ impl SimCluster {
     /// The held shards, and the unserved ones with a copy still untrusted
     /// although a broker served the shard while it was up.
     pub(crate) async fn holds(&self) -> Holds {
-        self.note_serving();
+        self.note_serving().await;
         let Ok(mut views) = self.cp.shard_views().await else {
             return Holds::default();
         };
@@ -545,18 +545,35 @@ impl SimCluster {
 
     /// Record which running brokers are up beside a broker serving each
     /// shard, so the hold rule knows which copies a leader could have
-    /// vouched. Reads without awaiting, so it sees one instant.
-    pub(crate) fn note_serving(&self) {
+    /// vouched. Who serves is read without awaiting, so it sees one instant;
+    /// the copies' accepted generations are read after it, which can only
+    /// make a copy look newer than the leader and count less.
+    pub(crate) async fn note_serving(&self) {
         let at = self.elapsed();
-        let mut kills = self.kills.lock();
+        let mut seen = Vec::new();
         for key in self.shard_keys() {
             let stands = self.stands(&key);
-            if !stands.iter().any(|(_, stand)| stand.serving) {
-                continue;
+            let serving = stands
+                .iter()
+                .filter(|(_, stand)| stand.serving)
+                .filter_map(|(_, stand)| stand.generation)
+                .max();
+            if let Some(serving) = serving {
+                let nodes: Vec<usize> = stands.iter().map(|(index, _)| *index).collect();
+                seen.push((key, serving, nodes));
             }
+        }
+        for (key, serving, nodes) in seen {
             let shard = describe(&key);
-            for (index, _) in &stands {
-                kills.served(&shard, &self.nodes[*index].id, at);
+            for index in nodes {
+                let accepted = self.nodes[index].accepted_generation(&key).await;
+                self.kills.lock().served(
+                    &shard,
+                    &self.nodes[index].id,
+                    at,
+                    serving,
+                    accepted.unwrap_or(0),
+                );
             }
         }
     }
