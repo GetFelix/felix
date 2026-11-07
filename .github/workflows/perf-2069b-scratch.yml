@@ -4,7 +4,7 @@ name: Perf scratch (#2069 burst 1024 rerun)
 
 on:
   push:
-    branches: [scratch/perf-2069]
+    branches: [scratch/perf-2069b]
 
 permissions:
   contents: read
