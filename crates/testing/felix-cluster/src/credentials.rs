@@ -198,15 +198,16 @@ impl Credentials {
 
     /// What a node that claims leases holds: the lease cache `cache`, and a
     /// template for the output stream of whichever key it holds. Nothing names
-    /// an output directly, so only a lease token can publish to one.
-    pub fn lease_node_token(&self, cache: &str) -> String {
+    /// an output directly, so only a lease token can publish to one. A lease
+    /// template names its namespace exactly, so `namespace` is required.
+    pub fn lease_node_token(&self, namespace: &str, cache: &str) -> String {
         let tenant_id = &self.tenant_id;
         self.mint(
             "p:harness-lease-node",
             vec![
-                format!("cache.write:cache:{tenant_id}/*/{cache}"),
-                format!("cache.read:cache:{tenant_id}/*/{cache}"),
-                format!("stream.publish:stream:{tenant_id}/*/wl.{{{cache}}}.out"),
+                format!("cache.write:cache:{tenant_id}/{namespace}/{cache}"),
+                format!("cache.read:cache:{tenant_id}/{namespace}/{cache}"),
+                format!("stream.publish:stream:{tenant_id}/{namespace}/wl.{{{cache}}}.out"),
             ],
             BROKER_AUDIENCE,
         )
