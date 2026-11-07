@@ -504,7 +504,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardUnifiedReadmitFull.cfg` | the same with one write | pass, nightly |
 | `FelixShardUnifiedDropEvidenced.cfg` | a set between the anchor and the fence left out when its own leader's trusted answer shows it never opened, no writes | pass (50.6M distinct states, 14 min with four workers) |
 | `FelixShardUnifiedDropEvidencedFull.cfg` | the same with one write | pass, nightly |
-| `FelixShardUnifiedVouch.cfg` | two writes, two unclean crashes: a copy is trusted again only when a batch leaves it level with the leader's mark | pass |
+| `FelixShardUnifiedVouch.cfg` | two writes, two unclean crashes: a copy is trusted again only when a batch leaves it level through max(start record, quorum mark) | pass |
 | `FelixShardUnifiedVouchMark.cfg` | the vouch at the code's quorum mark, held to the start record too | pass |
 | `FelixShardUnifiedVouchBelowStart.cfg` | the same vouch without the start record: the mark can sit below it right after an open | violate `AckedHeldByLeader` |
 | `FelixShardUnifiedStandInNoCatchUp.cfg` | a copy trusted once a batch reaches the start record, short of the mark | violate `AckedHeldByLeader` |
@@ -513,14 +513,14 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardUnifiedSkipCoverage.cfg` | a leader that is not continuing opens on its own log | violate `AckedHeldByLeader` |
 | `FelixShardUnifiedDropUnopenedLeaving.cfg` | a set being left is dropped on silence | violate `AckedHeldByLeader` |
 | `FelixShardUnifiedCountNonKept.cfg` | a promise counts from a copy that lost its ballots | violate `OneLeaderPerGeneration` |
-| `FelixShardUnifiedCountsWiped.cfg` | a readmission counts the wiped seat in the set it leaves too (#1331) | violate `OneLeaderPerGeneration` |
+| `FelixShardUnifiedCountsWiped.cfg` | a fence counts a wiped seat's fresh promise in its own new set (#1331) | violate `OneLeaderPerGeneration` |
 | `FelixShardUnifiedAnyCopy.cfg` | a continuing fence counts every answer, a lost copy's included | violate `OneLeaderPerGeneration` |
 | `FelixShardUnifiedBatchBallot.cfg` | a lost copy's ballot taken from a batch since the wipe counts as kept | violate `OneLeaderPerGeneration` |
 | `FelixShardUnifiedCountsForgotten.cfg` | a restore goes unnoticed and the copy claims kept ballots | violate `OneLeaderPerGeneration` |
 | `FelixShardUnifiedNamesByRegistration.cfg` | a wiped copy counted as the copy it replaced, by registered storage id (#1335) | violate `OneLeaderPerGeneration` |
 | `FelixShardUnifiedContinuingDoubted.cfg` | a continuing fence counts a crashed copy whose ballot names another leader | violate `NoContinuingOnForeignBallot`: the shape is reachable under the rule, and it is safe |
 | `FelixShardUnifiedContinuingDoubtedLegacy.cfg` | the same under today's rules | pass `NoContinuingOnForeignBallot`: today's window never counts that copy |
-| `FelixShardUnifiedCpLiveElectedFailover.cfg` | an elected leader crashes uncleanly and the control plane fails over | pass `EventuallyServes` |
+| `FelixShardUnifiedCpLiveElectedFailover.cfg` | an election past the old leader, then a voter crashes uncleanly | pass `EventuallyServes` |
 | `FelixShardUnifiedCpLiveElectedFailoverLegacy.cfg` | the same under today's rules | violate `EventuallyServes` |
 | `FelixShardUnifiedCpLiveReadmitUnopened.cfg` | a readmission whose leader crashes uncleanly before it opens | pass `EventuallyServes` |
 | `FelixShardUnifiedCpLiveReadmitUnopenedLegacy.cfg` | the same under today's rules | violate `EventuallyServes` |
@@ -2032,15 +2032,24 @@ election, rename, skip, set change, readmission and a continuing leader. It spli
   An unclean crash keeps ballots. A wipe or a restore loses them until a set introduced after the loss readmits
   the copy.
 - **Coverage**: a continuing leader has it already. Any other leader needs trusted answers (a clean start, or
-  vouched up to the leader's acknowledged mark) that meet every majority of each such set, and takes the log
-  furthest ahead.
+  vouched by a batch that left the copy level through max(the leader's start record, the quorum mark it carries))
+  that meet every majority of each such set, and takes the log furthest ahead.
 
-`UnifiedFence = No` gives today's rules in outline, and the `Legacy` configurations show the stalls the simulator
-sweep found (an elected leader killed, a readmission whose leader crashed, a continuing leader past two doubted
-copies). Each shortcut configuration breaks one part of the rule and must fail: `CountNonKept`, `CountsWiped`
-(#1331), `AnyCopy`, `BatchBallot`, `CountsForgotten` and `NamesByRegistration` let a lost promise make a second
-leader. `CoverFromDoubted`, `TrustsRegistered` (#1335), `StandInNoCatchUp`, `VouchBelowStart`, `SkipCoverage`
-and `DropUnopenedLeaving` let a leader open without an acknowledged record.
+`docs/replication-design.md`, "One fence rule for every change of leader", states the rule in full.
+
+`UnifiedFence = No` gives today's rules in outline. `CpLiveElectedFailoverLegacy` and `CpLiveReadmitUnopenedLegacy`
+show two stalls the simulator sweep found: an election past the old leader followed by an unclean crash, and a
+readmission whose leader crashed before it opened. `ContinuingDoubtedLegacy` is not a stall. It passes, showing that
+today's window never lets a continuing fence count a doubted copy whose ballot names another leader, which
+`ContinuingDoubted` shows the rule does, safely. Each shortcut configuration breaks one part of the rule and must
+fail: `CountNonKept`, `CountsWiped` (#1331), `AnyCopy`, `BatchBallot`, `CountsForgotten` and `NamesByRegistration`
+let a lost promise make a second leader. `CoverFromDoubted`, `TrustsRegistered` (#1335), `StandInNoCatchUp`,
+`VouchBelowStart`, `SkipCoverage` and `DropUnopenedLeaving` let a leader open without an acknowledged record.
+
+`CountsForgotten` and `TrustsRegistered` are why a broker started without the control plane attests nothing. Until
+the restore check against the control plane has run, a restored directory looks like one that kept its ballots
+and its log. Counted as kept, its forgotten promise makes a second leader (`CountsForgotten`). Counted as trusted,
+its short log loses an acknowledged write (`TrustsRegistered`).
 
 A batch vouches for a copy only when it leaves it level through both the leader's start record and the mark it
 carries. The mark is the code's quorum offset, which right after an open can sit below the start record:
