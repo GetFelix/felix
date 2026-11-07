@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794037085722,
+  "lastUpdate": 1794037397434,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -48464,6 +48464,58 @@ window.BENCHMARK_DATA = {
             "range": "3496.34",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 943060.00\nmean: 942395.56\nstdev: 3496.34\ncv: 0.37%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "76655ba67855654d3d589c614e5dd43c1bb2d870",
+          "message": "fix(placement): giving up a staged move keeps a destination that was already a member (#2090)\n\nA staged move whose destination went down or halted dropped the destination\nfrom the set even when it was a follower before the stage, which could take\nthe shard's only full copy out of its set. The give-up now uses undo_staged,\nas the timeout and recovery abandon paths do, so the set returns to what it\nwas before the stage.\n\nSpec-Unaffected: FelixShard.tla stages only a destination new to the set and has no give-up of a staged move; CpSet after this write is the set before the stage, as for the timeout path.\n\nFixes #2088",
+          "timestamp": "2026-11-07T07:36:40Z",
+          "tree_id": "1c41c4eca04cba1edcbf17f7f11f3a3bac0182d6",
+          "url": "https://github.com/GetFelix/felix/commit/76655ba67855654d3d589c614e5dd43c1bb2d870"
+        },
+        "date": 1794037396841,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 358648.95,
+            "range": "20471.25",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 358648.95\nmean: 358784.80\nstdev: 20471.25\ncv: 5.71%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 358648.95,
+            "range": "20471.25",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 358648.95\nmean: 358784.80\nstdev: 20471.25\ncv: 5.71%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81148.56,
+            "range": "447.16",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81148.56\nmean: 81075.55\nstdev: 447.16\ncv: 0.55%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 811485.63,
+            "range": "4471.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 811485.63\nmean: 810755.54\nstdev: 4471.58\ncv: 0.55%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
