@@ -1374,9 +1374,12 @@ jobs:
     timeout-minutes: 5
     steps:
       - env:
-          RESULTS: ${{ toJSON(needs.*.result) }}
+          NEEDS: ${{ toJSON(needs) }}
           DRAFT: ${{ github.event.pull_request.draft }}
+          ON_MAIN: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         run: |
+          # Main's superseded TLA+ shards are cancelled by design (see formal), so only there a cancelled formal is fine.
+          RESULTS=$(jq -c --arg main "$ON_MAIN" '[to_entries[] | select(.key != "formal" or $main != "true" or .value.result != "cancelled") | .value.result]' <<< "$NEEDS")
           echo "$RESULTS"
           # A draft skips the heavy jobs, so a pass here would sit on the SHA
           # until the ready run replaces it. Fail instead; a draft cannot merge.
