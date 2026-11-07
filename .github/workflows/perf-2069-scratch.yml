@@ -1,17 +1,17 @@
-name: Perf scratch (#2056 RF 3 A/B)
+name: Perf scratch (#2069 RF 3 A/B)
 
-# Temporary: RF 3 steady + promotion-burst A/B. m = main, f = branch (#2056).
+# Temporary: RF 3 steady + promotion-burst A/B. m = main, f = branch (#2069).
 
 on:
   push:
-    branches: [scratch/perf-2056]
+    branches: [scratch/perf-2069]
 
 permissions:
   contents: read
 
 env:
   CARGO_TERM_COLOR: always
-  M_SHA: 4d49948fff4c896689659bd263127c80ee1b02a3
+  M_SHA: 67392f9e039e6b3b1f1b41decb47034da411ff1d
   BENCH_STEADY_SECS: "40"
 
 jobs:
@@ -36,7 +36,7 @@ jobs:
           cargo test --release -p felix-cluster --test replicated_bench --no-run --message-format=json \
             | jq -r 'select(.profile.test == true and .executable != null) | .executable' | tail -1 > /tmp/exe
           cp "$(cat /tmp/exe)" $out/replicated_bench
-          f_sha=afb886b56ff434fa904e290fd02d6652aa5bac50
+          f_sha=dcc2f4742c8b410a8103175860ae749f96bb126a
           for side in m f; do
             case $side in m) sha=$M_SHA;; f) sha=$f_sha;; esac
             git checkout --detach -q "$sha"
