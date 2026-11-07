@@ -168,6 +168,7 @@ fn apply_step(dir: &Path, label: &str, step: Step) -> Result<()> {
                     "removing a segment below a gap the offload manifest covers"
                 ),
             }
+            crate::fs::note_torn_tail(&dir.join(segment_file_name(id)));
             remove_segment_files(dir, id)
         }
         Step::SyncDir => Ok(sync_dir(dir)?),
@@ -193,7 +194,9 @@ fn apply_step(dir: &Path, label: &str, step: Step) -> Result<()> {
                 kept_next_segment = drop_next.is_none(),
                 "repairing the torn tail of a segment whose seal never finished",
             );
+            crate::fs::note_torn_tail(&dir.join(segment_file_name(id)));
             if let Some(next) = drop_next {
+                crate::fs::note_torn_tail(&dir.join(segment_file_name(next)));
                 remove_segment_files(dir, next)?;
                 sync_dir(dir)?;
             }
@@ -228,6 +231,7 @@ fn resume_active(dir: &Path, label: &str, config: &LogConfig, resume: Resume) ->
             cause = %tail.cause,
             "repaired a torn tail in the active segment"
         );
+        crate::fs::note_torn_tail(&dir.join(segment_file_name(active_id)));
     }
 
     let active_marks = std::mem::take(&mut outcome.marks);

@@ -23,7 +23,7 @@ fn placement_steps_are_a_function_of_the_seed() {
 #[test]
 fn adding_placement_faults_keeps_every_step_the_seed_had() {
     for seed in 0..30 {
-        let base = Plan::generate(seed, 4, WINDOW);
+        let base = Plan::generate(seed, 4, WINDOW, false);
         let both = base.clone().with_placement(seed, 4, WINDOW);
         let kept: Vec<&Step> = both
             .steps

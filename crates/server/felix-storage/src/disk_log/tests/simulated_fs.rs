@@ -159,3 +159,62 @@ async fn an_unsynced_tail_is_repaired_and_the_synced_prefix_survives() {
     assert!(short > 0, "no crash ever lost the unsynced tail");
     let _ = whole;
 }
+
+/// A power cut inside an append under `OnCommit` leaves that append short or
+/// torn, after earlier batches the group commit had not synced yet; recovery
+/// repairs that segment's tail and keeps everything acknowledged.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_power_cut_during_an_append_is_repaired() {
+    for seed in 0..32 {
+        let sim = Sim::new(2_000 + seed);
+        let log = DiskLog::open(sim.log_dir(), KEY, config(FsyncMode::OnCommit)).expect("open");
+        append(&log, 0, 20).await;
+        let acknowledged = log.durable_offset();
+        let torn = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let slot = std::sync::Arc::clone(&torn);
+        sim_fs::arm_power_cut(&sim.0, seed, move |path, _| {
+            *slot.lock().unwrap() = Some(path.to_path_buf());
+        })
+        .expect("arm");
+        // The process outlives the cut here, so this append may even say it
+        // was synced; the device kept what it held at the cut.
+        let _ = log.append(&[record(20)]).await;
+        assert!(
+            sim_fs::reboot(&sim.0).expect("reboot"),
+            "seed {seed}: no cut"
+        );
+        let torn = torn.lock().unwrap().clone().expect("the torn segment");
+        let before = sim_fs::torn_tails_repaired(&sim.0).expect("repairs").len();
+        let kept = recover(&sim.log_dir(), FsyncMode::OnCommit, acknowledged, 20).await;
+        assert_eq!(kept, 20, "seed {seed}");
+        let repaired = sim_fs::torn_tails_repaired(&sim.0).expect("repairs");
+        assert_eq!(
+            &repaired[before..],
+            [torn],
+            "seed {seed}: the torn append was not repaired"
+        );
+        log.shutdown().await.expect("shutdown the cut-off log");
+    }
+}
+
+/// A segment recovery removes as unfinished counts as dealt with, as a
+/// repaired one does: a power cut can leave the segment it tore that way.
+#[tokio::test]
+async fn a_segment_recovery_removes_is_recorded() {
+    let sim = Sim::new(3_000);
+    let dir = sim.log_dir();
+    crate::fs::create_dir_all(&dir).expect("dir");
+    let blank = dir.join(crate::segment::segment_file_name(0));
+    crate::fs::write(
+        &blank,
+        vec![0u8; crate::segment::SEGMENT_HEADER_LEN as usize],
+    )
+    .expect("blank segment");
+    let log = DiskLog::open(&dir, KEY, config(FsyncMode::OnCommit)).expect("open");
+    let repaired = sim_fs::torn_tails_repaired(&sim.0).expect("repairs");
+    assert_eq!(
+        repaired,
+        [PathBuf::from("log").join(crate::segment::segment_file_name(0))]
+    );
+    log.shutdown().await.expect("shutdown");
+}

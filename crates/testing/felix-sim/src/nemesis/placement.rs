@@ -20,7 +20,7 @@ use felix_controlplane_service::model::ShardKind as CpShardKind;
 use felix_controlplane_service::store::ControlPlaneStore;
 use tokio::time::Instant;
 
-use super::{Fault, Nemesis, Plan, Step};
+use super::{Fault, Nemesis, Plan, Step, Stop};
 use crate::cluster::describe;
 
 /// How often the promotion watch looks. Opening a shard takes a fence round
@@ -415,7 +415,8 @@ impl Nemesis {
             leader + 1
         ));
         let this = Arc::clone(self);
-        tokio::spawn(async move { this.crash_for(leader, down_for, kill).await });
+        let stop = Stop::of_kill(kill, self.cluster.config.power_loss);
+        tokio::spawn(async move { this.crash_for(leader, down_for, stop).await });
         if !self
             .kill_next_promoted(Some(&key), SECOND_PROMOTION_WITHIN, down_for, kill)
             .await
@@ -554,13 +555,14 @@ impl Nemesis {
                 if !unopened || !self.may_crash(index) {
                     continue;
                 }
+                let stop = Stop::of_kill(kill, self.cluster.config.power_loss);
                 self.recorder.fault(format!(
                     "{} b{}, {how} leader of {shard} at generation {generation}, before it opens",
-                    if kill { "kill" } else { "crash" },
+                    stop.verb(),
                     index + 1,
                 ));
                 let this = Arc::clone(self);
-                tokio::spawn(async move { this.crash_for(index, down_for, kill).await });
+                tokio::spawn(async move { this.crash_for(index, down_for, stop).await });
                 return true;
             }
         }
