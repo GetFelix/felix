@@ -280,6 +280,13 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardCpLiveNoHaltReported.cfg` | without `HaltReported` | violate `CpLeaderServes`: an open leader whose followers took a withdrawn candidate's higher fence halts on their refusals, and the halt is never reported (1.54M distinct states, 2 min locally) |
 | `FelixShardCpLiveNoStandBehindBallot.cfg` | without `StandBehindBallot` | violate `CpLeaderServes`; not registered: no violation yet in 3.9M distinct states and 26 minutes in a pull request's CI |
 | `FelixShardCpLiveNoAboveReported.cfg` | without `AboveReported`, as the code is | violate `CpLeaderServes` (#1951): the open leader answers a candidate's higher fence and stops serving, the candidate withdraws, and the leader reports nothing (895K distinct states, 3 min locally) |
+| `FelixShardCpLiveRefusals.cfg` | the rules adopted for #2046 under `CpLiveSpec`: no restarts, generation 3, the leader starting on a failover's pins (`FailoverStart`), two copies changing one after the other and admitted again by a joint fence (`CopyPins`), a set lost after an open (`SetLossAfterOpen`), candidates standing above the control plane's generation from a route up to one generation old with at most two standings (`StandsAboveCp`, `StaleStandRoute`, `MaxStandings`); pins kept on a rename until the leader's first fenced open and dropped on admission, a promise away beside another copy refused, and lost-set and ahead refusals carrying their ballot | pass `CpLeaderServes`; not registered: no violation in 5.28M distinct states (15 min locally), unfinished |
+| `FelixShardCpLiveRefusalsCopyExcluded.cfg` | the same keeping the other-copies exclusion (`OtherCopiesExcluded`) | violate `CpLeaderServes`: the #2046 stall, a renamed leader still on its failover's pins with one member promised to a withdrawn candidate and one answering from another copy (498K distinct states, 1 min locally) |
+| `FelixShardCpLiveRefusalsPinsForever.cfg` | the same keeping the pins for good | violate `CpLeaderServes`: a copy changed while the leader fenced is re-admitted at a generation another member promised away, and its pin keeps it from counting (504K distinct states, 1 min locally) |
+| `FelixShardCpLiveRefusalsUnknownNoBallot.cfg` | the same with a lost set's refusal carrying no ballot | not registered: no violation in 3.56M distinct states (10 min locally). The set is lost only after an open, which drops the pins, so the third member counts |
+| `FelixShardElectRefusals.cfg` | the same rules for safety: one write, elections to generation 2 with no pre-vote, one failover on the followers' word (`Suspicions = 1`, `Promotion = "any"`), one copy changing and losing what it had not synced | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `NoTruncationBelowHwm`, `AdoptedMatchesOpened`, `SetChangesJoint` (2.37M distinct states, depth 29, 2 min on four workers) |
+| `FelixShardElectRefusalsPinsCleared.cfg` | the same with a rename dropping the pins, as the code did | violate `AckedHeldByLeader`: b stands and withdraws, its copy changes and loses the write, the failover to c is refused on b's promise and a's silence, and c opens at 3 on b's empty copy. Keeping the other-copies exclusion fails the same way (143K distinct states, depth 13) |
+| `FelixShardElectRenameMinorityDrop.cfg` | `FelixShardElectRename.cfg` with a joint fence refused on one promise away (`JointMinorityRefused`) and a rename naming the pending set alone (`RenameDropsChange`) | violate `OneLeaderPerGeneration`: c's joint fence is refused on a's promise to b and renamed on the new set alone, and the old set elects a at the same generation (41K distinct states, depth 12). `RenameDropsChange` alone fails the same way; `JointMinorityRefused` alone found nothing in 3.3M distinct states (4 min, unfinished) |
 | `FelixShardCpDown.cfg` | `FelixShardCpLive.cfg` with the control plane stopping for good (`CpStops`), suspicion per broker and per shard (a broker named the leader included, `SelfSuspicion`), a pre-vote refusal bounded by the fence it waits on (`PreVoteBounded`), a promise freed once its candidate no longer stands and held at most a bound (`StandBehindBounded`), and a candidate withdrawing only once its fence cannot complete (`WithdrawsStuck`), under `CpDownSpec` | not registered: no violation of `CpDownServesInBound` in 56.8M distinct states and five hours in CI, with the queue still growing |
 | `FelixShardCpDownNoSelfSuspicion.cfg` | the same without `SelfSuspicion`: a broker named the leader never stands for its shard, as in the code | violate `CpDownServesInBound`: a leader elected above its assignment restarts with the control plane down, its open is refused for its own ballot, and only it could win a pre-vote (2.5M distinct states, 12 min in CI) |
 | `FelixShardCpDownBrokerSuspicion.cfg` | the same with suspicion per broker only, as the code has it | violate `CpDownServesInBound`: a restarted leader fences at a generation its followers promised past, and nobody suspects a live broker |
@@ -1042,6 +1049,32 @@ refused, and `FelixShardCpLiveNoAboveReported.cfg` is that fix's twin.
 Both reports carry the ballot the generation was lost to, and placement
 renames the leader one generation above it (`RenamePastBallot`) rather than
 one above its own, which would take a report per generation in between.
+
+#2046 is a shard that stayed stuck with the control plane up. A candidate
+stood one generation up and withdrew. Placement then renamed the leader one
+up, onto the candidate's withdrawn ballot. The leader's fence there had one
+member promised to that candidate and one answering from a copy its
+failover's pins (`fence_storage_ids`) did not name, so it neither opened nor
+reported a refusal. `FelixShardCpLiveRefusals.cfg` models the rules adopted
+for it. Copies may change and be admitted again (`CopyPins`). Pins survive a
+rename until the leader's first fenced open and drop for a copy once it is
+admitted. A fence with one promise away and the rest silent is refused even
+when another copy answered. A refusal for a lost set (`UnknownCarriesBallot`)
+or for a member that took a newer generation (`AheadRefused`) carries the
+ballot, and placement renames above it. Candidates stand above the control
+plane's generation as well as their own promise (`StandsAboveCp`), and the
+backoff is a bound on standings (`MaxStandings`). Each rule has a twin
+with it off. With the exclusion kept, TLC finds the #2046 stall. With the
+pins kept for good, a re-admitted copy never counts again. Without the
+carried ballot no stall has turned up: the leader loses its set only after
+it opened, by which time its pins are gone. `FelixShardElectRefusals.cfg`
+checks the same rules for safety. Its twin, `FelixShardElectRefusalsPinsCleared.cfg`,
+drops the pins at a rename, as the code did. TLC then finds a record lost
+whether or not the exclusion is kept: the refusal comes from a promise away
+and a silent member before any other copy answers.
+`FelixShardElectRenameMinorityDrop.cfg` refuses a joint fence on one
+promise away and has the rename drop the set being left, and TLC finds two
+leaders at one generation.
 
 `FelixShardCpDown.cfg` checks what happens when the control plane stops for
 good partway through (`CpStops`). Elections alone must then get a leader

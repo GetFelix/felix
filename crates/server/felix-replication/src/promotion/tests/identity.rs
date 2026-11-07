@@ -202,13 +202,14 @@ async fn a_fence_without_reported_ids_counts_every_answer() {
     assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
 }
 
-/// **A promise away is not blamed when another copy answered.** Of five, b
-/// promised the generation to another node, c answered from a copy the
-/// report did not name, and d and e are down. c's answer is what kept the
-/// majority out, and a rename would reset the copies the next fence checks,
-/// so the fence waits instead of reporting a refusal.
+/// **A promise away is blamed when another copy the route pins answered.**
+/// Of five, b promised the generation to another node, c answered from a
+/// copy the report did not name, and d and e are down. Placement keeps the
+/// pins across renames until a fenced open, so c counts no more one
+/// generation up, and the promise is reported as with the rest silent
+/// (#2046).
 #[tokio::test]
-async fn a_promise_away_beside_another_copy_stays_pending() {
+async fn a_promise_away_beside_a_pinned_out_copy_is_refused() {
     let mut replicas = super::groups::group_replicas(5, REQUIRED);
     replicas.ballots = true;
     for id in ["broker-b", "broker-c"] {
@@ -237,10 +238,10 @@ async fn a_promise_away_beside_another_copy_stays_pending() {
 
     let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route, true, None).await;
 
-    let Outcome::Pending { why, .. } = outcome else {
+    let Outcome::Refused { promised_to, .. } = outcome else {
         panic!("{outcome:?}");
     };
-    assert!(why.contains("another copy"), "{why}");
+    assert_eq!(promised_to, "broker-x");
 }
 
 /// **A promise away is not blamed when another replica refused for its own

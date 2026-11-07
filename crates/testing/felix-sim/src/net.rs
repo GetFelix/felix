@@ -416,6 +416,15 @@ struct Delivery {
     frame: InternalMessage,
 }
 
+/// `handling`, run as the broker `to`'s code, so it reads that broker's
+/// clocks rather than the sender's.
+async fn handle_as<F: std::future::Future>(to: &str, handling: F) -> F::Output {
+    match crate::clock::Owner::of_node(to) {
+        Some(owner) => crate::clock::on(owner, handling).await,
+        None => handling.await,
+    }
+}
+
 /// Carry `delivery` to its target, run its handler, and carry the answer back.
 ///
 /// Sends `None` for a message lost on either leg, and drops `answered`
@@ -476,7 +485,7 @@ async fn deliver(
             // A crash ends the handler with its process; the caller sees the
             // connection drop rather than waiting on an answer.
             let handled = tokio::select! {
-                answer = handler.handle_from(peer, request) => Some(answer),
+                answer = handle_as(&to, handler.handle_from(peer, request)) => Some(answer),
                 _ = died.wait_for(|died| *died) => None,
             };
             let Some(answer) = handled else {

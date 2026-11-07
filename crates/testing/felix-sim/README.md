@@ -21,6 +21,40 @@ The nemesis (`src/nemesis.rs`, `Fault`) draws these from the seed:
 - `PausedThenCrash`: the control plane pauses, then a broker that leads shards
   crashes.
 
+Clock skew is a separate schedule, off by default. With
+`FELIX_SIM_CLOCKS=bounded`, each broker and the control plane gets its own
+lease clock (0.8x to 1.2x true speed) and wall clock (within 1 second), and the
+nemesis steps or re-skews one every few seconds. `unbounded` goes past those
+bounds (0.25x to 4x, 30 seconds) to show what breaks there. Skew needs the
+`tokio_unstable` build, so use it through `task sim:replay`. See "Clock skew"
+in `docs/simulation.md`.
+
+With placement faults on (`FELIX_SIM_PLACEMENT=1`, or
+`SimConfig::with_placement_faults`), the nemesis also acts as an operator. It
+calls the control plane's operator API, the one `felixctl` uses, so placement
+runs its real move, drain, replacement and abandon paths:
+
+- `Move`: a shard's leadership moves to another broker, and the move is
+  sometimes cancelled.
+- `Drain`: a broker is drained, then put back. Its leaderships move away and,
+  with four or more brokers, its follower seats are replaced.
+- `Remove`: a broker is drained, stopped and deregistered, and its record is
+  deleted once no shard names it. It comes back later as a new registration.
+- `Abandon`: for the stream shards the broker holds after unclean kills, the
+  broker they are assigned to is stopped, their logs are abandoned (as
+  `felixctl placement abandon` does) and the broker is started again, the
+  procedure `docs/replication-design.md` gives.
+- `KillBeforeOpen`: the next broker named or elected leader of a shard is
+  stopped before it opens the shard.
+- `SeatRace`: a broker is drained so a follower seat is being replaced, the
+  shard's leader is stopped, then the leader named next is stopped before it
+  opens. This is the seat replacement plus two promotions behind #1922 and
+  #1929.
+
+Placement faults draw from a stream of their own, so turning them on adds steps
+to a seed's schedule and keeps the ones it had. They are off by default for
+now, which keeps the seeds pinned in `tests/seeds.rs` on the run they pin.
+
 ## Checks
 
 A seed fails when any check reports a problem, except a warning.
@@ -38,7 +72,14 @@ A seed fails when any check reports a problem, except a warning.
   majority of the set with it. The broker waits for `felixctl placement
   abandon`. Every other check still covers the shard. If its final read cannot
   be taken, only the lost-write rule is skipped and a warning names it. The run
-  prints how many shards were exempt.
+  prints how many shards were exempt. A kill counts against the set and term
+  the shard had at that instant: a broker killed before it opened a shard it
+  was named to lead is not counted as its leader, a follower being copied in
+  counts in the set, and an abandoned log ends the hold.
+- A shard whose log an operator abandoned loses what it acknowledged by
+  design. Appends acknowledged before the abandon count as unknown and reads
+  started before it are dropped; everything after it is checked as usual. A
+  warning names the shard.
 - A run that stops making progress ends with a `stalled` finding instead of
   hanging.
 
@@ -58,12 +99,20 @@ FELIX_SIM_SEED_START=100 FELIX_SIM_SEEDS=10 \
   cargo test -p felix-sim --test seeds -- --ignored --exact seeds --nocapture
 ```
 
+Run one seed with skewed clocks:
+
+```bash
+FELIX_SIM_SEED=<n> FELIX_SIM_CLOCKS=bounded task sim:replay
+```
+
+Add `FELIX_SIM_PLACEMENT=1` to any of these commands to turn placement faults on.
 A failing seed prints the command that replays it. `FELIX_SIM_HISTORY=<file>`
 writes the run's history to a file so two runs can be diffed.
 
 `seeds` is `#[ignore]`, so `cargo test --workspace` skips it. It runs in the
 non-blocking `sim-seeds` job in CI, which does not gate merges while its known
-liveness stalls are open. One seed takes a few seconds in a debug build and the
+liveness stalls are open. That job builds with `--cfg tokio_unstable` and runs
+seeds 1 and 2 without clock skew and seeds 3 and 4 with `bounded` skew. One seed takes a few seconds in a debug build and the
 default batch of four takes a few minutes, so run batches one at a time on a
 busy machine.
 

@@ -91,3 +91,64 @@ fn a_broker_outside_the_set_does_not_count() {
     log.kill("b1", secs(15), view("b1", 1, &THREE));
     assert!(held(&log).is_empty());
 }
+
+#[test]
+fn the_leader_counts_in_the_set_when_the_view_leaves_it_out() {
+    // The control plane's replicas never name the leader.
+    let mut log = KillLog::default();
+    log.kill("b2", secs(10), view("b1", 1, &["b2", "b3"]));
+    log.kill("b1", secs(15), view("b1", 1, &["b2", "b3"]));
+    assert_eq!(held(&log), ["stream/0"]);
+}
+
+#[test]
+fn a_seat_replacement_in_flight_needs_a_majority_of_the_wider_set() {
+    // b4 is joining in place of b3: four copies, so two doubted are not enough.
+    let four = ["b2", "b3", "b4"];
+    let mut log = KillLog::default();
+    log.kill("b2", secs(10), view("b1", 1, &four));
+    log.kill("b1", secs(15), view("b1", 1, &four));
+    assert!(held(&log).is_empty());
+    log.kill("b3", secs(12), view("b1", 1, &four));
+    assert_eq!(held(&log), ["stream/0"]);
+}
+
+#[test]
+fn abandoning_the_log_ends_the_hold_until_the_next_kills() {
+    let mut log = KillLog::default();
+    log.kill("b2", secs(10), view("b1", 1, &THREE));
+    log.kill("b1", secs(15), view("b1", 1, &THREE));
+    log.abandon("stream/0", secs(20));
+    assert!(held(&log).is_empty());
+
+    log.restart("b1", secs(25));
+    log.restart("b2", secs(25));
+    log.kill("b3", secs(30), view("b2", 3, &THREE));
+    log.kill("b2", secs(35), view("b2", 3, &THREE));
+    assert_eq!(held(&log), ["stream/0"]);
+}
+
+#[test]
+fn a_leader_killed_before_it_opened_does_not_hold_the_shard() {
+    // b2 dies under b1's move to b3; b3 is named at generation 2 and killed
+    // before it opens, so nothing was acknowledged at generation 2.
+    let mut log = KillLog::default();
+    log.kill("b2", secs(10), view("b3", 2, &THREE));
+    let mut died_under = view("b3", 2, &THREE);
+    leave_out_unopened(
+        &mut died_under,
+        "b3",
+        &BTreeSet::from(["stream/0".to_string()]),
+    );
+    log.kill("b3", secs(12), died_under);
+    assert!(held(&log).is_empty());
+}
+
+#[test]
+fn an_opened_leader_or_another_shard_stays_in_the_view() {
+    let mut views = view("b1", 1, &THREE);
+    leave_out_unopened(&mut views, "b1", &BTreeSet::new());
+    assert_eq!(views.len(), 1);
+    leave_out_unopened(&mut views, "b2", &BTreeSet::from(["stream/0".to_string()]));
+    assert_eq!(views.len(), 1);
+}
