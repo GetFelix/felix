@@ -140,6 +140,14 @@ public sealed class FelixClientOptions
     /// one. Every wait is capped at it, even when the backoff is larger.
     /// </summary>
     public TimeSpan? ReconnectMaxBackoff { get; init; }
+
+    /// <summary>
+    /// Do not offer record headers to brokers. Off, the default, offers them, so
+    /// <see cref="FelixEvent.Headers"/> is filled and <see cref="FelixClient.PublishWithHeadersAsync"/> works against a
+    /// broker that takes them. On, a publish with headers fails with <see cref="FelixStatus.Unsupported"/>
+    /// and events carry none.
+    /// </summary>
+    public bool DisableRecordHeaders { get; init; }
 }
 
 /// <summary>One record delivered to a subscription, copied out of the native event.</summary>
@@ -158,12 +166,19 @@ public sealed class FelixClientOptions
 /// the broker that led the shard. Null unless the client was connected with
 /// <see cref="FelixClientOptions.Timestamps"/> and the broker supplied one.
 /// </param>
+/// <param name="Key">
+/// The key the publisher stored with the record (see <see cref="HeaderedRecord.Key"/>). Null when it
+/// set none, and unless the broker took record headers.
+/// </param>
+/// <param name="Headers">The headers the publisher gave the record, in order; null or empty for a plain record.</param>
 public sealed record FelixEvent(
     ReadOnlyMemory<byte> Payload,
     long? Offset,
     long SkippedBefore,
     string? Publisher = null,
-    long? TimestampMicros = null)
+    long? TimestampMicros = null,
+    ReadOnlyMemory<byte>? Key = null,
+    IReadOnlyList<Header>? Headers = null)
 {
     /// <summary><see cref="TimestampMicros"/> as a time; null when it is absent or out of range.</summary>
     public DateTimeOffset? Timestamp => Time.FromMicros(TimestampMicros);

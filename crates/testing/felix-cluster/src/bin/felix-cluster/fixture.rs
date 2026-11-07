@@ -91,12 +91,18 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
         ..Default::default()
     })
     .await?;
-    // Commits and trims are refused until the fleet finalizes the feature, and a record
+    // Commits and trims are refused until the fleet finalizes the feature, a record
     // carries its publisher only once it finalizes the opt-in
-    // `publisher_principal`, as in any real cluster.
+    // `publisher_principal`, and a record takes headers only once it finalizes
+    // `record_headers`, as in any real cluster.
     cluster
         .finalize_fleet_features(
-            &["atomic_commit", "publisher_principal", "head_trim"],
+            &[
+                "atomic_commit",
+                "publisher_principal",
+                "head_trim",
+                "record_headers",
+            ],
             Duration::from_secs(30),
         )
         .await?;

@@ -125,17 +125,33 @@ fn a_larger_record_than_this_library_knows_still_reads() {
             extra: 9,
         },
     ];
-    let status = std::sync::Mutex::new(Vec::new());
-    // The batch is checked before it is sent, so read it as the call does.
-    let stride = rows[0].base.size;
-    for index in 0..rows.len() {
-        // SAFETY: two records of this stride.
-        let at = unsafe { ptr::from_ref(&rows).cast::<u8>().add(index * stride) }.cast();
-        // SAFETY: as above.
-        let parsed = unsafe { parse_record(at, stride) }.expect("parsed");
-        status.lock().unwrap().push(parsed.payload);
-    }
-    assert_eq!(*status.lock().unwrap(), [b"one".to_vec(), b"two".to_vec()]);
+    // SAFETY: two records of this stride, whose pointers are live.
+    let batch = unsafe { parse_batch(ptr::from_ref(&rows).cast(), 2) }.expect("parsed");
+    let payloads: Vec<_> = batch.into_iter().map(|(_, payload)| payload).collect();
+    assert_eq!(payloads, [b"one".to_vec(), b"two".to_vec()]);
+}
+
+#[test]
+fn a_batch_is_checked_before_it_is_read() {
+    // SAFETY: nothing is read for a count of zero.
+    assert!(unsafe { parse_batch(ptr::null(), 0) }.unwrap().is_empty());
+    // SAFETY: a null array with a count is the case.
+    let failure = unsafe { parse_batch(ptr::null(), 2) }.err().unwrap();
+    assert_eq!(failure.status, FELIX_STATUS_INVALID_ARGUMENT);
+    let mut small = record(b"x", b"", &[]);
+    small.size = 8;
+    // SAFETY: a record whose size is below the first version is the case.
+    let failure = unsafe { parse_batch(&small, 1) }.err().unwrap();
+    assert_eq!(failure.status, FELIX_STATUS_INVALID_ARGUMENT);
+}
+
+#[test]
+fn the_record_layout_is_the_headers() {
+    assert_eq!(size_of::<FelixHeader>(), 32);
+    assert_eq!(size_of::<FelixRecord>(), 56);
+    assert_eq!(offset_of!(FelixRecord, key), 24);
+    assert_eq!(offset_of!(FelixRecord, headers), 40);
+    assert_eq!(offset_of!(FelixRecord, header_count), 48);
 }
 
 #[test]

@@ -125,6 +125,46 @@ unsafe fn parse_record(record: *const FelixRecord, size: usize) -> Result<Parsed
     })
 }
 
+/// `count` records at `records`, stepped by the first record's `size`.
+///
+/// # Safety
+///
+/// `records` is null or valid for `count` records of that stride.
+unsafe fn parse_batch(
+    records: *const FelixRecord,
+    count: usize,
+) -> Result<Vec<(RecordHeaders, Vec<u8>)>, Failure> {
+    let mut batch = Vec::new();
+    if count == 0 {
+        return Ok(batch);
+    }
+    if records.is_null() {
+        return Err(Failure::invalid("records is null but count is not zero"));
+    }
+    // SAFETY: non-null and readable up to its `size`, which starts it.
+    let stride = unsafe { ptr::addr_of!((*records).size).read_unaligned() };
+    if stride < MIN_RECORD_SIZE {
+        return Err(Failure::invalid(
+            "record.size is smaller than the first version of FelixRecord",
+        ));
+    }
+    // The array must fit the address space for the stride to step it.
+    if stride
+        .checked_mul(count)
+        .is_none_or(|total| total > isize::MAX as usize)
+    {
+        return Err(Failure::invalid("count is too large"));
+    }
+    for index in 0..count {
+        // SAFETY: the caller promises `count` records of this stride.
+        let record = unsafe { records.cast::<u8>().add(index * stride) }.cast();
+        // SAFETY: as above.
+        let parsed = unsafe { parse_record(record, stride) }?;
+        batch.push((parsed.headers, parsed.payload));
+    }
+    Ok(batch)
+}
+
 /// Publish one record with a key and headers.
 ///
 /// The key does not route; the record goes where `felix_client_publish`
@@ -220,33 +260,8 @@ pub unsafe extern "C" fn felix_client_publish_batch_with_headers(
     guard(|| {
         // SAFETY: the pointers meet the contract above.
         let (client, target) = unsafe { target(client, tenant_id, ns, stream) }?;
-        let mut batch = Vec::new();
-        if count > 0 {
-            if records.is_null() {
-                return Err(Failure::invalid("records is null but count is not zero"));
-            }
-            // SAFETY: non-null and readable up to its `size`, which starts it.
-            let stride = unsafe { ptr::addr_of!((*records).size).read_unaligned() };
-            if stride < MIN_RECORD_SIZE {
-                return Err(Failure::invalid(
-                    "record.size is smaller than the first version of FelixRecord",
-                ));
-            }
-            // The array must fit the address space for the stride to step it.
-            if stride
-                .checked_mul(count)
-                .is_none_or(|total| total > isize::MAX as usize)
-            {
-                return Err(Failure::invalid("count is too large"));
-            }
-            for index in 0..count {
-                // SAFETY: the caller promises `count` records of this stride.
-                let record = unsafe { records.cast::<u8>().add(index * stride) }.cast();
-                // SAFETY: as above.
-                let parsed = unsafe { parse_record(record, stride) }?;
-                batch.push((parsed.headers, parsed.payload));
-            }
-        }
+        // SAFETY: the caller's contract, passed through.
+        let batch = unsafe { parse_batch(records, count) }?;
         let ack = parse_ack(ack)?;
         // SAFETY: null or a live token, per the contract above.
         let user = unsafe { user_token(cancel) };

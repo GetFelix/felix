@@ -41,7 +41,7 @@ shard and `felix_client_subscribe_sharded` for all of them),
 `felix_client_offset_for_time`, the group calls (`felix_client_group_*` and
 `felix_client_stream_shards`), and the cache calls (`felix_client_cache_*`,
 `felix_client_counter_*`, `felix_client_watch_cache*` and `felix_cache_watch_*`), the commit calls (`felix_client_commit*`,
-`felix_client_publish_if*` and `felix_client_state_get*`), `felix_client_trim_before`, and the producer calls
+`felix_client_publish_if*` and `felix_client_state_get*`), `felix_client_trim_before`, record headers (`felix_client_publish_with_headers`, `felix_client_publish_batch_with_headers` and `felix_event_key` / `felix_event_header`), `felix_client_read` (a page by offset range), `felix_client_cache_put_if_lease` and `felix_client_with_identity` (act as another principal over the same connections), `felix_client_refresh_topology` and `felix_client_connections_per_node`, and the producer calls
 (`felix_client_idempotent_producer` and `felix_producer_*`). Each takes a callback, a `void *user_data`
 passed back to it untouched, and an optional `FelixCancelToken`.
 

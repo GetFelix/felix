@@ -5826,6 +5826,254 @@ static void token_scenarios(const struct fixture *f) {
   SCENARIO_END("token.timeout_joins");
 }
 
+/* Record headers, stream reads, identities, topology and the live offset. */
+struct read_page {
+  struct waiter w;
+  size_t count;
+  uint64_t next_offset, first_offset;
+  char first[64];
+};
+
+static void on_page(void *user_data, FelixStatus status, const char *message,
+                    const FelixStreamRecord *records, size_t count,
+                    uint64_t next_offset) {
+  struct read_page *p = user_data;
+  p->count = count;
+  p->next_offset = next_offset;
+  if (count > 0) {
+    p->first_offset = records[0].offset;
+    size_t len = records[0].payload_len < sizeof p->first - 1
+                     ? records[0].payload_len
+                     : sizeof p->first - 1;
+    memcpy(p->first, records[0].payload, len);
+    p->first[len] = '\0';
+  }
+  finish(&p->w, status, message, NULL);
+}
+
+struct connections {
+  struct waiter w;
+  size_t len, total;
+};
+
+static void on_connections(void *user_data, FelixStatus status,
+                           const char *message, const char *const *addrs,
+                           const size_t *counts, size_t len) {
+  struct connections *c = user_data;
+  c->len = len;
+  c->total = 0;
+  for (size_t i = 0; i < len; i++) {
+    c->total += addrs[i] && counts[i];
+  }
+  finish(&c->w, status, message, NULL);
+}
+
+static void on_count(void *user_data, FelixStatus status, const char *message,
+                     size_t count) {
+  struct connections *c = user_data;
+  c->len = count;
+  finish(&c->w, status, message, NULL);
+}
+
+static void on_headered_event(void *user_data, FelixStatus status,
+                              const char *message, FelixEvent *event) {
+  finish(user_data, status, message, event);
+}
+
+static void parity(const struct fixture *f, const char *run) {
+  FelixClient *client = NULL;
+  REQUIRE_OK(connect_sync(f->addrs, f->tenant, f->token, f->ca_file, &client));
+
+  FelixSubscription *sub = NULL;
+  REQUIRE_OK(subscribe(client, f, FELIX_START_LATEST, 0, &sub));
+
+  /* The live offset is the tail at registration, which from Latest is the
+     start offset. */
+  uint64_t start = 0, live = 0;
+  bool has_start = false, has_live = false;
+  felix_subscription_start_offset(sub, &start, &has_start);
+  CHECK(felix_subscription_live_offset(sub, &live, &has_live) ==
+            FELIX_STATUS_OK,
+        "live_offset failed");
+  CHECK(has_live == has_start && live == start,
+        "live offset %" PRIu64 " is not the start %" PRIu64, live, start);
+
+  /* A record with a key and headers, back with them on the event. */
+  char body[64];
+  snprintf(body, sizeof body, "c-%s-headered", run);
+  static const uint8_t trace[] = "t-1", kind[] = "order";
+  FelixHeader headers[3] = {
+      {(const uint8_t *)"trace", 5, trace, 3},
+      {(const uint8_t *)"trace", 5, NULL, 0},
+      {(const uint8_t *)"kind", 4, kind, 5},
+  };
+  FelixRecord record;
+  memset(&record, 0, sizeof record);
+  record.size = sizeof record;
+  record.payload = (const uint8_t *)body;
+  record.payload_len = strlen(body);
+  record.key = (const uint8_t *)"k-1";
+  record.key_len = 3;
+  record.headers = headers;
+  record.header_count = 3;
+
+  struct waiter w;
+  waiter_init(&w);
+  FelixStatus status = felix_client_publish_with_headers(
+      client, f->tenant, f->ns, f->stream, &record, FELIX_ACK_PER_MESSAGE,
+      NULL, on_publish, &w);
+  CHECK(status == FELIX_STATUS_OK, "publish_with_headers was refused: %d",
+        (int)status);
+  status = wait_for(&w, WAIT_MS);
+  CHECK(status == FELIX_STATUS_OK, "publish_with_headers gave %d (%s)",
+        (int)status, w.message);
+  uint64_t offset = w.offset;
+  CHECK(w.has_offset, "a headered publish reported no offset");
+  waiter_destroy(&w);
+
+  waiter_init(&w);
+  status = felix_subscription_next(sub, WAIT_MS, NULL, on_headered_event, &w);
+  CHECK(status == FELIX_STATUS_OK, "next was refused: %d", (int)status);
+  status = wait_for(&w, WAIT_MS * 2);
+  CHECK(status == FELIX_STATUS_OK && w.handle, "no headered event: %d",
+        (int)status);
+  if (status == FELIX_STATUS_OK && w.handle) {
+    FelixEvent *event = w.handle;
+    const uint8_t *data = NULL;
+    size_t len = 0, count = 0;
+    felix_event_key(event, &data, &len);
+    CHECK(len == 3 && memcmp(data, "k-1", 3) == 0, "the key came back as %zu bytes", len);
+    felix_event_header_count(event, &count);
+    CHECK(count == 3, "%zu headers came back", count);
+    const uint8_t *name = NULL, *value = NULL;
+    size_t name_len = 0, value_len = 0;
+    CHECK(felix_event_header(event, 0, &name, &name_len, &value, &value_len) ==
+                  FELIX_STATUS_OK &&
+              name_len == 5 && memcmp(name, "trace", 5) == 0 &&
+              value_len == 3 && memcmp(value, "t-1", 3) == 0,
+          "the first header is wrong");
+    CHECK(felix_event_header(event, 1, &name, &name_len, &value, &value_len) ==
+                  FELIX_STATUS_OK &&
+              name_len == 5 && value == NULL && value_len == 0,
+          "the repeated empty header is wrong");
+    CHECK(felix_event_header(event, 3, &name, &name_len, &value, &value_len) ==
+              FELIX_STATUS_INVALID_ARGUMENT,
+          "an index past the end was not refused");
+    felix_event_free(event);
+  }
+  waiter_destroy(&w);
+
+  /* A header the broker reserves is refused before anything is sent. */
+  FelixHeader reserved = {(const uint8_t *)"felix.x", 7, NULL, 0};
+  record.headers = &reserved;
+  record.header_count = 1;
+  waiter_init(&w);
+  status = felix_client_publish_with_headers(client, f->tenant, f->ns,
+                                             f->stream, &record,
+                                             FELIX_ACK_PER_MESSAGE, NULL,
+                                             on_publish, &w);
+  if (status == FELIX_STATUS_OK) {
+    status = wait_for(&w, WAIT_MS);
+  }
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "a reserved header gave %d",
+        (int)status);
+  waiter_destroy(&w);
+  felix_subscription_free(sub);
+
+  /* A batch of two headered records takes consecutive offsets. */
+  FelixRecord batch[2];
+  memset(batch, 0, sizeof batch);
+  for (int i = 0; i < 2; i++) {
+    batch[i].size = sizeof batch[i];
+    batch[i].payload = (const uint8_t *)body;
+    batch[i].payload_len = strlen(body);
+    batch[i].headers = headers;
+    batch[i].header_count = 1;
+  }
+  struct batch_waiter b;
+  batch_init(&b);
+  status = felix_client_publish_batch_with_headers(
+      client, f->tenant, f->ns, f->stream, batch, 2, FELIX_ACK_PER_BATCH, NULL,
+      on_batch, &b);
+  CHECK(status == FELIX_STATUS_OK, "batch with headers was refused: %d",
+        (int)status);
+  status = batch_wait(&b, status);
+  CHECK(status == FELIX_STATUS_OK && all_offsets(&b, 2),
+        "batch with headers gave %d", (int)status);
+  waiter_destroy(&b.w);
+
+  /* Read the first record back by offset, without subscribing. */
+  struct read_page page;
+  memset(&page, 0, sizeof page);
+  waiter_init(&page.w);
+  status = felix_client_read(client, f->tenant, f->ns, f->stream, 0, offset,
+                             false, 0, 1, NULL, on_page, &page);
+  CHECK(status == FELIX_STATUS_OK, "read was refused: %d", (int)status);
+  status = wait_for(&page.w, WAIT_MS);
+  CHECK(status == FELIX_STATUS_OK, "read gave %d (%s)", (int)status,
+        page.w.message);
+  CHECK(page.count == 1 && page.first_offset == offset &&
+            strcmp(page.first, body) == 0,
+        "the page held %zu records, first at %" PRIu64 " (%s)", page.count,
+        page.first_offset, page.first);
+  CHECK(page.next_offset == offset + 1, "next offset was %" PRIu64,
+        page.next_offset);
+  waiter_destroy(&page.w);
+
+  /* The cluster names its brokers, and the client holds connections to them. */
+  struct connections c;
+  memset(&c, 0, sizeof c);
+  waiter_init(&c.w);
+  status = felix_client_refresh_topology(client, NULL, on_count, &c);
+  CHECK(status == FELIX_STATUS_OK, "refresh_topology was refused: %d",
+        (int)status);
+  status = wait_for(&c.w, WAIT_MS);
+  CHECK(status == FELIX_STATUS_OK && c.len >= 1, "refresh_topology gave %d, %zu brokers (%s)",
+        (int)status, c.len, c.w.message);
+  waiter_destroy(&c.w);
+  memset(&c, 0, sizeof c);
+  waiter_init(&c.w);
+  status = felix_client_connections_per_node(client, NULL, on_connections, &c);
+  CHECK(status == FELIX_STATUS_OK, "connections_per_node was refused: %d",
+        (int)status);
+  status = wait_for(&c.w, WAIT_MS);
+  CHECK(status == FELIX_STATUS_OK && c.len >= 1 && c.total >= 1,
+        "connections_per_node gave %d with %zu brokers", (int)status, c.len);
+  waiter_destroy(&c.w);
+
+  /* An identity on the same connections publishes, and outlives its parent. */
+  FelixClient *identity = NULL;
+  waiter_init(&w);
+  status = felix_client_with_identity(client, f->tenant, f->token, NULL,
+                                      on_connect, &w);
+  CHECK(status == FELIX_STATUS_OK, "with_identity was refused: %d", (int)status);
+  status = wait_for(&w, WAIT_MS);
+  CHECK(status == FELIX_STATUS_OK && w.handle, "with_identity gave %d (%s)",
+        (int)status, w.message);
+  identity = w.handle;
+  waiter_destroy(&w);
+  felix_client_free(client);
+  if (identity) {
+    snprintf(body, sizeof body, "c-%s-identity", run);
+    status = publish(identity, f, f->stream, body, NULL, NULL, 0);
+    CHECK(status == FELIX_STATUS_OK, "an identity publish gave %d", (int)status);
+    felix_client_free(identity);
+  }
+
+  /* A token the broker does not know is refused when the identity is made. */
+  REQUIRE_OK(connect_sync(f->addrs, f->tenant, f->token, f->ca_file, &client));
+  waiter_init(&w);
+  status = felix_client_with_identity(client, f->tenant, "not-a-token", NULL,
+                                      on_connect, &w);
+  if (status == FELIX_STATUS_OK) {
+    status = wait_for(&w, WAIT_MS);
+  }
+  CHECK(status != FELIX_STATUS_OK, "a bad identity token was accepted");
+  CHECK(w.handle == NULL, "a refused identity produced a client");
+  waiter_destroy(&w);
+  felix_client_free(client);
+}
+
 int main(int argc, char **argv) {
   if (argc == 2 && strcmp(argv[1], "offline") == 0) {
     offline();
@@ -5843,6 +6091,7 @@ int main(int argc, char **argv) {
     snprintf(run, sizeof run, "%ld-%09ld", (long)ts.tv_sec, (long)ts.tv_nsec);
     pubsub(&f, run);
     batches(&f, run);
+    parity(&f, run);
     subscriptions(&f, run);
     groups(&f, run);
     connect_options(&f, run);

@@ -279,7 +279,52 @@ shard does not stop the others, so it returns a `PublishResult` per record with 
 in doubt is sent again, which can write it twice.
 
 `GetEndpointsAsync` lists the brokers the client would try, the seeds and the ones it learned
-from them; a client given one seed that lists more has discovered the cluster.
+from them; a client given one seed that lists more has discovered the cluster. `RefreshTopologyAsync`
+asks a broker which brokers a client may connect to and adds them to that list, returning how many the
+cluster named (zero is a legitimate answer for a broker with no cluster behind it; a broker that predates
+discovery fails the call). The configured seeds stay whatever the answer was, and a broker that has left
+the cluster stops being tried. `GetConnectionsPerNodeAsync` lists the live connections the client holds to
+each broker: one to start with, shared by all traffic, and more only when its streams are saturated.
+
+```csharp
+int named = await client.RefreshTopologyAsync();
+foreach (var node in await client.GetConnectionsPerNodeAsync())
+{
+    Console.WriteLine($"{node.Addr}: {node.Connections} connection(s) of {named} brokers");
+}
+```
+
+### Read a range without subscribing
+
+`ReadRangeAsync` returns one `StreamPage` of a durable shard's committed records, from an offset and stopping
+before `end` when it is given. It never waits for new records: a page that reaches what is committed comes back
+short or empty. Read the next page from `NextOffset`, which is not always the last offset plus one, since offsets
+that hold no record are passed over. A `maxRecords` of zero takes the broker's cap. A start below what retention
+kept, or past the tail, fails with `Cursor`.
+
+```csharp
+long next = 0;
+while (true)
+{
+    StreamPage page = await client.ReadRangeAsync(
+        "t1", "default", "events", shard: 0, from: next, maxRecords: 100);
+    foreach (var record in page.Records)
+    {
+        Console.WriteLine($"{record.Offset}: {record.Payload.Length} bytes by {record.Publisher}");
+    }
+
+    if (page.Records.Count == 0)
+    {
+        break;
+    }
+
+    next = page.NextOffset;
+}
+```
+
+This is not `FelixSubscription.ReadAsync`, which waits for the next live event. `FelixSubscription.LiveOffset` is
+the stream's tail when the subscription was registered: an event below it was already in the stream, and one at or
+past it was written after. A reader that reaches it has caught up. From `StartPosition.Latest` it equals `StartOffset`.
 
 ### Replay from an offset or a time
 
@@ -414,6 +459,23 @@ foreach (var record in await group.PollAsync(maxRecords: 32, wait: TimeSpan.From
   `ShardUnavailable` failure that still comes back, as a new `Quorum` leader answers until it
   has a committed tail, changed nothing and is safe to retry (`IsRetryable` is true).
 
+A worker that names itself and reclaims its claims after a restart, with a claim that lasts a minute:
+
+```csharp
+var group = client.JoinGroup("t1", "default", "orders", shard: 0, group: "billing", consumer: "worker-7");
+
+// reclaim takes back what worker-7 held before it restarted, then polls as usual.
+GroupRecord[] records = await group.PollAsync(
+    maxRecords: 10,
+    wait: TimeSpan.FromSeconds(2),
+    visibility: TimeSpan.FromMinutes(1),
+    reclaim: true);
+foreach (var record in records)
+{
+    await group.AckAsync(record);
+}
+```
+
 Creating, seeking and deleting a group, and discarding or redriving a dead letter, need the
 `group.manage` permission; polling, settling, listing and describing need only consumer access.
 
@@ -507,6 +569,36 @@ await foreach (var item in watch)
   `resume: watch.ResumeOffsets()`, which lists every shard (in ascending order) at an offset never ahead of
   what reads have handed out. `ResumeOffsets` fails with `InvalidArgument` on a single watch, and a
   retained watch takes no offsets.
+
+### Lease tokens and other identities
+
+A lease cache hands the writer that wins a key a token, so the holder can act with the access its lease templates
+name for the key. `PutIfAbsentLeaseAsync` and `PutIfVersionLeaseAsync` are the conditional puts that ask for one; a
+renewal (a put at the held version) gets a fresh token. The `LeaseWrite` holds the usual `Result`, the `Token` when
+the write applied and the broker minted one, and `TokenRefused` saying why when an applied write has none (the write
+stands). The token is a bearer secret, so its `ToString` leaves it out.
+
+`WithIdentityAsync` makes a new `FelixClient` that acts as a tenant with a token, over the connections of the client
+it was made from. A gateway serving many principals needs no pool of its own: each identity is its own client with
+its own routing state, and the requests it makes are checked against its token's grants alone. Dispose it like any
+client; that closes only its own streams. It shares the runtime with its parent, so disposing the parent first does
+not stop it. Keep it alive while subscriptions made from it are in use. A refused token fails with `Auth`, and the
+token is fixed for the new client, so make another when it expires.
+
+```csharp
+LeaseWrite lease = await cache.PutIfAbsentLeaseAsync(
+    "report", "worker-7"u8.ToArray(), ttl: TimeSpan.FromSeconds(30));
+
+if (lease.Token is { } token)
+{
+    await using var holder = await client.WithIdentityAsync("t1", token.Value);
+    await holder.PublishAsync("t1", "default", "events", "locked"u8.ToArray());
+}
+else if (lease.Result.Applied)
+{
+    Console.Error.WriteLine($"no token: {lease.TokenRefused}");
+}
+```
 
 ## Atomic commits and conditional writes
 
@@ -635,7 +727,42 @@ await producer.PublishBatchesAsync("t1", "default", "orders", [[payloadA, payloa
 
 ## Record headers
 
-Record headers, the named byte values a record can carry next to its payload, are Rust only. This binding publishes the payload and a routing `key`; a `FelixEvent` has no headers. Use the [Rust client](/clients/rust/publishing/#keys-and-headers) when you need them.
+A record can carry its own key and named byte values next to its payload. They are stored with the
+record and come back on the delivered event. `PublishWithHeadersAsync` sends one `HeaderedRecord`, and
+`PublishBatchWithHeadersAsync` sends several to shard 0's owner as one frame and returns each record's offset.
+
+```csharp
+await using var sub = await client.SubscribeAsync(
+    "t1", "default", "events", shard: 0, StartPosition.Latest);
+
+long? stored = await client.PublishWithHeadersAsync(
+    "t1", "default", "events",
+    new HeaderedRecord(
+        "order 17 shipped"u8.ToArray(),
+        Key: "order-17"u8.ToArray(),
+        Headers:
+        [
+            new Header("trace", "t-1"u8.ToArray()),
+            new Header("kind", "order"u8.ToArray()),
+        ]));
+
+if (await sub.ReadAsync(TimeSpan.FromSeconds(10)) is { } ev)
+{
+    Console.WriteLine($"{ev.Offset}: key {ev.Key?.Length} bytes");
+    foreach (var header in ev.Headers ?? [])
+    {
+        Console.WriteLine($"{header.Name} = {header.Value.Length} bytes");
+    }
+}
+```
+
+The key stored with a record does not route it; the record goes where an unkeyed `PublishAsync` goes. A header
+name is UTF-8, not empty, and must not start with `felix.`, which the broker keeps for itself; one that does
+fails with `InvalidArgument` and nothing is sent. A name may repeat, and order is kept. A record with no key and
+no headers is published plain. A broker that did not accept record headers, or a client connected with
+`DisableRecordHeaders`, fails with `Unsupported`: the headers are never dropped quietly. `FelixEvent.Key` and
+`FelixEvent.Headers` are copies, and are null or empty on a plain record. Headers reach a durable stream's
+subscribers, not group records.
 
 ## Publisher and timestamp
 
@@ -654,6 +781,20 @@ await using var client = await FelixClient.ConnectAsync(new FelixClientOptions
 principal to every event batch and timestamps add eight bytes per event. A broker that does not
 negotiate either, or an in-memory stream that stores no time, leaves them null; that is never an
 error.
+
+## What is not wrapped
+
+The [Rust client](/clients/rust/) has more than this binding wraps. What is left out:
+
+- **Inspection and admin calls**: `inspect_shard`, `list_subscriptions`, `topology`, `stream_routing`,
+  `shard_owners`, `cache_shards` and the `supports_*` checks. The library runs the feature checks itself.
+- **Subscription counters**: `moves`, `reconnects`, `stream_deleted` and `queue_capacity`. Only `CloseReason` is here.
+- **Queue and transport tuning** in `ClientConfig`: the subscription queue policy and capacities, pool sizes,
+  windows, `max_frame_bytes`, timeouts, publish sharding and `ack_on_commit`.
+- **`hand_off_*` and `Handed` on the idempotent producer.** `PublishBatchesAsync` is the equivalent.
+- **`publish_json` and `publish_batch_json`.** Serialize the value yourself and publish the bytes.
+- **The custom QUIC transport** (`connect_with_policy`, a caller-built `quinn` configuration,
+  `connect_any_with_transport`), which is Rust only.
 
 ## Conformance
 

@@ -16,8 +16,9 @@ It binds every function in `felix.h`: connect (with a token provider that renews
 every shard, with the stream-wide admin calls), caches, counters and cache watches (single and
 sharded, retained, resumable), atomic commits with state reads and conditional publishes
 (`CommitAsync`, `CommitIfAsync`, `PublishIfAsync`, `GetStateAsync`, `TrimBeforeAsync`), idempotent producers
-(`CreateProducerAsync`), endpoints, offset lookup by time, and the publisher and timestamp
-metadata. `python3 scripts/check_csharp_bindings.py` fails if an export of `felix.h` is not bound.
+(`CreateProducerAsync`), endpoints and topology refresh, offset lookup by time, page reads
+(`ReadRangeAsync`), record headers (`PublishWithHeadersAsync`), lease-token writes and per-principal identities
+(`PutIfAbsentLeaseAsync`, `WithIdentityAsync`), and the publisher and timestamp metadata. `python3 scripts/check_csharp_bindings.py` fails if an export of `felix.h` is not bound.
 See [the C# page](https://docs.getfelix.dev/clients/csharp/).
 
 ```csharp
