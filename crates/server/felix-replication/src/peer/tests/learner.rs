@@ -104,6 +104,7 @@ fn an_attestation_reaches_only_a_caller_that_reads_it() {
         attestation: Some(FenceAttestation {
             kept_from: 2,
             trusted: true,
+            by_record: false,
         }),
     });
     let kind = |offered| {
@@ -126,6 +127,7 @@ fn an_attestation_reaches_only_a_caller_that_reads_it() {
                 Some(FenceAttestation {
                     kept_from: 2,
                     trusted: true,
+                    by_record: false,
                 })
             );
         }
@@ -164,10 +166,12 @@ fn an_older_callers_fence_answer_is_unchanged_by_the_attestation() {
             FenceAttestation {
                 kept_from: 0,
                 trusted: true,
+                by_record: false,
             },
             FenceAttestation {
                 kept_from: u64::MAX,
                 trusted: false,
+                by_record: false,
             },
         ] {
             assert_eq!(bytes(Some(attestation), offered), plain, "{offered:?}");

@@ -751,16 +751,21 @@ impl ControlPlaneStore for InMemoryStore {
         shards::shard_assignment_changes(self, since).await
     }
 
-    async fn record_replica_report(
+    async fn record_replica_report_with(
         &self,
         report: ReplicaReport,
         leader: &str,
+        readmits: bool,
     ) -> StoreResult<ReportWrite> {
-        shards::record_replica_report(self, report, Some(leader), true).await
+        shards::record_replica_report(self, report, Some(leader), readmits).await
     }
 
     async fn list_replica_reports(&self) -> StoreResult<Vec<ReplicaReport>> {
         shards::list_replica_reports(self).await
+    }
+
+    async fn get_replica_report(&self, key: &ShardKey) -> StoreResult<Option<ReplicaReport>> {
+        Ok(self.replica_reports.read().await.get(key).cloned())
     }
 
     async fn record_suspicion(&self, suspicion: crate::model::NodeSuspicion) -> StoreResult<()> {

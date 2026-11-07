@@ -163,6 +163,7 @@ fn router_at(incarnation: u64) -> Arc<ShardRouter> {
             fence_storage_ids: Default::default(),
             member_storage_ids: Default::default(),
             pending: None,
+            readmitted: Default::default(),
         }),
         &nodes,
     );

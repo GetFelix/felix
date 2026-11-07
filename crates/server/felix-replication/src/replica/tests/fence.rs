@@ -989,6 +989,7 @@ fn failover_router(members: &[&str], generation: u64, acknowledged: &[&str]) -> 
                 .collect(),
             member_storage_ids: Default::default(),
             pending: None,
+            readmitted: Default::default(),
         }],
         &nodes,
     );
@@ -1833,6 +1834,7 @@ fn router_naming(generation: u64, incarnation: u64, local_id: [u8; 16]) -> Arc<S
             ]
             .into(),
             pending: None,
+            readmitted: Default::default(),
         }],
         &nodes,
     );
@@ -2364,7 +2366,11 @@ pub(super) fn attested(
     kept_from: u64,
     trusted: bool,
 ) -> Option<felix_wire::internal::FenceAttestation> {
-    Some(felix_wire::internal::FenceAttestation { kept_from, trusted })
+    Some(felix_wire::internal::FenceAttestation {
+        kept_from,
+        trusted,
+        by_record: false,
+    })
 }
 
 /// **A clean start attests kept ballots and a trusted copy, and only a
@@ -2458,7 +2464,7 @@ async fn an_unclean_copy_is_trusted_only_level_through_the_start_and_the_mark() 
         ..batch(6, first_offset, values)
     };
     assert_eq!(
-        leader.attestation(&key(), true, false),
+        leader.attestation(&key(), true, false, false),
         attested(0, false).expect("some")
     );
 
@@ -2486,7 +2492,7 @@ async fn an_unclean_copy_is_trusted_only_level_through_the_start_and_the_mark() 
     ship(from_six(3, &["x"], Some(4))).await;
     assert!(start.trusted(&shard));
     assert_eq!(
-        leader.attestation(&key(), true, false),
+        leader.attestation(&key(), true, false, false),
         attested(0, true).expect("some")
     );
 }

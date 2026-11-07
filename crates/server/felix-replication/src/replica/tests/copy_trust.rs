@@ -128,7 +128,7 @@ async fn an_unclean_copy_stays_untrusted_across_clean_restarts_until_vouched_thr
         let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 9))
             .with_fleet(marks_on(trust_dir.path()));
         assert_eq!(
-            handler.attestation(&key(), true, false),
+            handler.attestation(&key(), true, false, false),
             attested(0, false).expect("some"),
             "a batch short of the mark vouches for nothing"
         );
@@ -211,7 +211,7 @@ async fn a_crashed_leaders_copy_stays_doubted_after_a_ballot_and_a_clean_restart
         ErrorCode::Unavailable
     );
     assert_eq!(
-        next.attestation(&key(), true, false),
+        next.attestation(&key(), true, false, false),
         attested(0, false).expect("some")
     );
 
@@ -276,7 +276,7 @@ async fn a_crashed_leaders_unified_answer_stays_untrusted_after_a_clean_restart(
     let next = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL, "broker-c"], 6))
         .with_fleet(marks_on(trust_dir.path()));
     assert_eq!(
-        next.attestation(&key(), true, false),
+        next.attestation(&key(), true, false, false),
         attested(0, false).expect("some")
     );
     assert_eq!(
@@ -362,4 +362,44 @@ async fn a_crashed_leaders_copy_takes_no_ballot_when_its_doubt_cannot_be_recorde
         .await
         .expect("log");
     assert_eq!(log.accepted_leader().as_deref(), Some(LOCAL));
+}
+
+/// **The control plane's `readmitted` record vouches for a kept copy the
+/// directory's record distrusts, and only while the fleet has not finalized
+/// `replica_election`.** Here the directory rotated its storage id, so no
+/// copy on it is trusted until a leader vouches; `recorded` stands for an
+/// entry that matches.
+#[tokio::test]
+async fn a_record_vouches_for_a_kept_copy_only_while_elections_are_off() {
+    use felix_common::fleet::{FleetGate, REPLICA_ELECTION};
+    for electing in [false, true] {
+        let (broker, _dir) = broker_with_storage().await;
+        let trust_dir = rotated_directory();
+        let marks = if electing {
+            let fleet = FleetGate::new([REPLICA_ELECTION.name()]);
+            fleet.restart([REPLICA_ELECTION.name()]);
+            crate::quorum::QuorumMarks::with_fleet(Arc::new(fleet))
+        } else {
+            crate::quorum::QuorumMarks::new()
+        };
+        marks.set_kept_ballots(true);
+        marks.set_copy_trust(Arc::new(CopyTrust::open(trust_dir.path()).expect("open")));
+        let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 6))
+            .with_fleet(Arc::new(marks));
+
+        assert_eq!(
+            handler.attestation(&key(), true, false, false),
+            attested(0, false).expect("some")
+        );
+        // A leader that knows elections can happen ignores trust that rests
+        // on the record, so the answer says when it does.
+        assert_eq!(
+            handler.attestation(&key(), true, false, true),
+            felix_wire::internal::FenceAttestation {
+                by_record: !electing,
+                ..attested(0, !electing).expect("some")
+            },
+            "electing {electing}"
+        );
+    }
 }

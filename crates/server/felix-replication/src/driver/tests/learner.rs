@@ -56,6 +56,7 @@ pub(super) fn publish_move(
             fence_storage_ids: Default::default(),
             member_storage_ids: Default::default(),
             pending: None,
+            readmitted: Default::default(),
         }],
         &nodes,
     );

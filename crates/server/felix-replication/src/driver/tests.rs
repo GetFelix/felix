@@ -201,6 +201,7 @@ fn draining_router(leader: &str, replicas: &[&str], generation: u64) -> Arc<Shar
             fence_storage_ids: Default::default(),
             member_storage_ids: Default::default(),
             pending: None,
+            readmitted: Default::default(),
         }],
         &nodes,
     );

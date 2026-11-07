@@ -87,6 +87,20 @@ pub struct ShardAssignment {
     /// every other assignment, and from a control plane that predates it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous_generation: Option<u64>,
+    /// Copies the control plane recorded as readmitted. Absent from every
+    /// other assignment, and from a control plane that predates it. See
+    /// [`felix_router::Route::readmitted`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub readmitted: Vec<Readmitted>,
+}
+
+/// One entry of [`ShardAssignment::readmitted`].
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct Readmitted {
+    pub node: String,
+    pub storage_id: String,
+    pub generation: u64,
+    pub offset: u64,
 }
 
 /// The set a cut-over is moving a shard to, and the generation that wrote it.
@@ -177,6 +191,7 @@ impl PreviousSet {
             member_storage_ids: self.member_storage_ids,
             pending_set: None,
             previous_generation: None,
+            readmitted: Default::default(),
         }
     }
 }

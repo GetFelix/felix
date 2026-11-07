@@ -229,6 +229,11 @@ pub struct FenceAttestation {
     /// or a leader has since shipped it a batch that left it level through
     /// that leader's acknowledged mark.
     pub trusted: bool,
+    /// `trusted` rests on the control plane's `readmitted` record alone, in
+    /// place of a vouch the copy's directory lost. A leader that does not
+    /// count readmissions reads the copy as untrusted. Means nothing without
+    /// `trusted`.
+    pub by_record: bool,
 }
 
 /// The leader that fenced a replica reads the replica's copy of the shard's
