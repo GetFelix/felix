@@ -25,6 +25,7 @@ use felix_broker::Broker;
 use felix_broker::replication::{self, Divergence};
 use felix_router::{ReplicaRole, ShardRouter};
 use felix_storage::disk_log::GenerationCheck;
+use felix_storage::run_state::copy_trust::Since;
 use felix_wire::internal::{
     ErrorCode, Fence, FenceOk, GenerationStart, InternalMessage, RefusalReason, ReplicaLog,
     ReplicateBootstrap, ReplicateError, ReplicateFetch, ReplicateOk, ReplicateRebuild,
@@ -726,13 +727,26 @@ impl ReplicaHandler {
         }
         // Before the ballot changes: it is the evidence of a copy this
         // broker led before an unclean start.
-        if let Some(unclean) = &self.unclean
-            && own_kind(log_kind).is_none()
+        if own_kind(log_kind).is_none()
+            && let Err(err) = self
+                .doubt_before_ballot(&key, &log, batch.shard.generation)
+                .await
         {
-            unclean.accepting(
-                &crate::driver::watch_key(&key),
-                &log,
-                batch.shard.generation,
+            tracing::error!(
+                stream = %key.stream,
+                shard = key.shard,
+                error = %err,
+                "could not record what this copy may have lost before taking a newer ballot \
+                 (that this broker led it before a crash, or since when it is unkept); \
+                 refusing the batch rather than take its ballot",
+            );
+            metrics::record_replicated(metrics::OUTCOME_REFUSED);
+            return refused(
+                correlation_id,
+                ErrorCode::Unavailable,
+                0,
+                "this broker could not record what its copy may have lost before taking the ballot"
+                    .to_string(),
             );
         }
         if let Some(refusal) =
@@ -1001,22 +1015,22 @@ impl ReplicaHandler {
                             && start.start_offset <= applied.durable_offset
                     })
                 });
-                if let Some(unclean) = &self.unclean
-                    && own_kind(log_kind).is_none()
-                    && level
-                    && reaches_own
-                {
-                    unclean.vouch(&crate::driver::watch_key(&key));
+                if own_kind(log_kind).is_none() && level && reaches_own {
+                    let shard = crate::driver::watch_key(&key);
+                    if let Some(unclean) = &self.unclean {
+                        unclean.vouch(&shard);
+                    }
                     // The commit offset is the quorum offset at the sender's
                     // generation, so level through it and through the start
                     // the copy holds what the sender acknowledged. Zero is a
                     // mark carried only to pick the frame layout.
-                    if batch
+                    let trusts = batch
                         .commit_offset
-                        .is_some_and(|mark| mark > 0 && mark <= applied.durable_offset)
-                    {
-                        unclean.trust(&crate::driver::watch_key(&key));
+                        .is_some_and(|mark| mark > 0 && mark <= applied.durable_offset);
+                    if trusts && let Some(unclean) = &self.unclean {
+                        unclean.trust(&shard);
                     }
+                    self.record_vouch(&shard, trusts).await;
                 }
                 // Until the sender's own generation is recorded here, the
                 // newest one recorded is older, and `unverified_from` would
@@ -1089,6 +1103,10 @@ impl ReplicaHandler {
                     );
                 }
                 let learner = self.admit_when_caught_up(&key, log_kind, &log).await;
+                if !learner && own_kind(log_kind).is_none() {
+                    self.record_readmitted(&key, &log, batch.shard.generation)
+                        .await;
+                }
                 metrics::record_replicated(metrics::OUTCOME_OK);
                 InternalMessage::ReplicateOk(ReplicateOk {
                     correlation_id,
@@ -1372,7 +1390,7 @@ impl ReplicaHandler {
         let confirming = log.accepted_generation() == generation;
         // Read before the ballot moves to this generation: a continuing
         // leader counts a rotated copy only on this (#2047).
-        let kept_ballot = self.continues_from(&log, generation, sender);
+        let kept_ballot = self.continues_from(&key, &log, generation, sender);
         if let Some(refusal) = accept_sender(&log, correlation_id, &key, generation, sender).await {
             return refusal;
         }
@@ -1429,23 +1447,185 @@ impl ReplicaHandler {
     /// no log in this process is poisoned (a failed flush may have dropped
     /// acknowledged pages), and the process started clean or a leader has
     /// since shipped it level through that leader's mark
-    /// ([`crate::unclean::UncleanStart::trust`]).
+    /// ([`crate::unclean::UncleanStart::trust`]). The directory's copy-trust
+    /// record keeps that last part across restarts: after any start that
+    /// rotated the storage id, a later clean start still waits for the vouch.
     ///
     /// [`PeerCapabilities::UNIFIED_FENCE`]: felix_wire::internal::PeerCapabilities::UNIFIED_FENCE
     fn attestation(&self, key: &felix_router::ShardKey) -> felix_wire::internal::FenceAttestation {
         let kept = self
             .fleet
             .as_ref()
-            .is_some_and(|fleet| fleet.kept_ballots());
+            .is_some_and(|fleet| fleet.kept_ballots())
+            && !self.unkept(key);
+        let shard = crate::driver::watch_key(key);
         let trusted = kept
             && !(self.poisoned)()
             && self
                 .unclean
                 .as_ref()
-                .is_none_or(|unclean| unclean.trusted(&crate::driver::watch_key(key)));
+                .is_none_or(|unclean| unclean.trusted(&shard))
+            && self
+                .copy_trust()
+                .is_none_or(|trust| trust.trusted(&crate::unclean::copy_key(&shard)));
         felix_wire::internal::FenceAttestation {
             kept_from: if kept { 0 } else { u64::MAX },
             trusted,
+        }
+    }
+
+    fn copy_trust(&self) -> Option<&Arc<felix_storage::run_state::copy_trust::CopyTrust>> {
+        self.fleet.as_ref().and_then(|fleet| fleet.copy_trust())
+    }
+
+    /// `log`, `key`'s own log, is about to take a newer leader's ballot at
+    /// `generation` from a batch. A copy this broker led before an unclean
+    /// start is recorded as doubted first ([`UncleanStart::accepting`]), and
+    /// so is one given up on disk after a clean restart, whose given-up
+    /// ballot the new one replaces. On an error the ballot must not be taken.
+    ///
+    /// [`UncleanStart::accepting`]: crate::unclean::UncleanStart::accepting
+    async fn doubt_before_ballot(
+        &self,
+        key: &felix_router::ShardKey,
+        log: &felix_broker::StreamLog,
+        generation: u64,
+    ) -> Result<(), felix_storage::StorageError> {
+        let shard = crate::driver::watch_key(key);
+        self.pin_unkept_floor(&shard, log).await?;
+        if let Some(unclean) = &self.unclean {
+            return unclean.accepting(&shard, log, generation).await;
+        }
+        let Some(trust) = self.copy_trust() else {
+            return Ok(());
+        };
+        let name = crate::unclean::copy_key(&shard);
+        if !log.gave_up() || generation < log.accepted_generation() || trust.doubted(&name) {
+            return Ok(());
+        }
+        let trust = Arc::clone(trust);
+        felix_common::blocking::spawn(move || trust.doubt(&name))
+            .await
+            .unwrap_or_else(|err| Err(felix_storage::StorageError::Io(std::io::Error::other(err))))
+    }
+
+    /// A copy unkept since a generation the record does not know (it did not
+    /// decode, or named another storage id) is unkept since at least the
+    /// ballot it holds now. Recorded before a newer ballot replaces that, so
+    /// only a set newer than it readmits the copy.
+    async fn pin_unkept_floor(
+        &self,
+        shard: &crate::ShardKey,
+        log: &felix_broker::StreamLog,
+    ) -> Result<(), felix_storage::StorageError> {
+        let Some(trust) = self.copy_trust() else {
+            return Ok(());
+        };
+        let name = crate::unclean::copy_key(shard);
+        if trust.unkept(&name) != Some(Since::Unknown) {
+            return Ok(());
+        }
+        let trust = Arc::clone(trust);
+        let floor = log.accepted_generation();
+        felix_common::blocking::spawn(move || trust.unkeep(&name, floor))
+            .await
+            .unwrap_or_else(|err| Err(felix_storage::StorageError::Io(std::io::Error::other(err))))
+    }
+
+    /// Whether `key`'s copy took a ballot while its promises counted for
+    /// nothing and has not been readmitted since ([`Self::unkeep`]).
+    fn unkept(&self, key: &felix_router::ShardKey) -> bool {
+        self.copy_trust().is_some_and(|trust| {
+            trust
+                .unkept(&crate::unclean::copy_key(&crate::driver::watch_key(key)))
+                .is_some()
+        })
+    }
+
+    /// Record, durably, that `key`'s copy is about to take a ballot while its
+    /// promises count for nothing, as a learner answering a unified fence
+    /// does. Call before the ballot is written. Afterwards the ballot reads
+    /// as a promise kept through any crash, so without this record an older
+    /// caller's fence would count it ([`Self::continues_from`]). An error
+    /// means the ballot must not be taken. `generation` is the ballot's: only
+    /// a set newer than it readmits the copy ([`Self::readmitted_since`]).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) async fn unkeep(
+        &self,
+        key: &felix_router::ShardKey,
+        generation: u64,
+    ) -> Result<(), felix_storage::StorageError> {
+        let Some(trust) = self.copy_trust() else {
+            return Ok(());
+        };
+        let name = crate::unclean::copy_key(&crate::driver::watch_key(key));
+        if matches!(trust.unkept(&name), Some(Since::At(since)) if since >= generation) {
+            return Ok(());
+        }
+        let trust = Arc::clone(trust);
+        felix_common::blocking::spawn(move || trust.unkeep(&name, generation))
+            .await
+            .unwrap_or_else(|err| Err(felix_storage::StorageError::Io(std::io::Error::other(err))))
+    }
+
+    /// After a batch from the leader of `sent_at`: an unkept copy that is now
+    /// readmitted, a voter in a set newer than its unkept ballot, counts its
+    /// promises again. A batch alone, or wipe evidence without a set, is no
+    /// readmission (the design's "Wipe" row).
+    async fn record_readmitted(
+        &self,
+        key: &felix_router::ShardKey,
+        log: &felix_broker::StreamLog,
+        sent_at: u64,
+    ) {
+        let Some(trust) = self.copy_trust() else {
+            return;
+        };
+        let shard = crate::driver::watch_key(key);
+        let name = crate::unclean::copy_key(&shard);
+        // An unknown floor is pinned before the batch's ballot; if that did
+        // not happen, nothing says which set is newer.
+        let Some(Since::At(since)) = trust.unkept(&name) else {
+            return;
+        };
+        if !self.readmitted_since(log, since, sent_at).await {
+            return;
+        }
+        let trust = Arc::clone(trust);
+        if let Ok(Err(err)) = felix_common::blocking::spawn(move || trust.clear_unkept(&name)).await
+        {
+            tracing::warn!(
+                stream = %key.stream,
+                shard = key.shard,
+                error = %err,
+                "could not record that this copy was readmitted; its promises count for nothing \
+                 until the next batch records it",
+            );
+        }
+    }
+
+    /// Record in the directory's copy-trust record that a leader shipped
+    /// `shard`'s copy level through its generation's start, which ends any
+    /// doubt, and, when `trusts`, through its mark too. Off the runtime: each
+    /// change is synced, once per copy after a crash.
+    async fn record_vouch(&self, shard: &crate::ShardKey, trusts: bool) {
+        let Some(trust) = self.copy_trust() else {
+            return;
+        };
+        let name = crate::unclean::copy_key(shard);
+        if !trust.doubted(&name) && (!trusts || trust.trusted(&name)) {
+            return;
+        }
+        let trust = Arc::clone(trust);
+        let recorded = felix_common::blocking::spawn(move || trust.vouch(&name, trusts)).await;
+        if let Ok(Err(err)) = recorded {
+            tracing::warn!(
+                stream = %shard.stream,
+                shard = shard.shard,
+                error = %err,
+                "could not record that a leader vouched for this copy; it stays untrusted \
+                 and is vouched for again by the next batch",
+            );
         }
     }
 
@@ -1694,12 +1874,20 @@ impl ReplicaHandler {
         };
         // The leader this copy promised the generation before, moving on to
         // the next: it holds what this copy might have lost (#2047).
-        if self.continues_from(log, generation, sender) {
+        if self.continues_from(key, log, generation, sender) {
             return None;
         }
-        let led_before = self.unclean.as_ref().is_some_and(|unclean| {
-            unclean.led_before(&crate::driver::watch_key(key), log, generation)
-        });
+        let shard = crate::driver::watch_key(key);
+        let led_before = self
+            .unclean
+            .as_ref()
+            .is_some_and(|unclean| unclean.led_before(&shard, log, generation));
+        // The ballot stops saying so once the copy takes a newer leader's,
+        // and a clean restart forgets the rest; this record does neither.
+        let doubted = self
+            .copy_trust()
+            .is_some_and(|trust| trust.doubted(&crate::unclean::copy_key(&shard)));
+        let led_before = led_before || doubted;
         if !log.gave_up() && !led_before {
             return None;
         }
@@ -1708,17 +1896,39 @@ impl ReplicaHandler {
         if self.acknowledged_by_two(key, log, generation, sender).await {
             return None;
         }
-        if led_before
-            && let Some(unclean) = &self.unclean
-            && log.accepted_leader().as_deref() == Some(unclean.node_id())
-            && let Err(err) = log.give_up_generation().await
-        {
-            tracing::warn!(
-                stream = %key.stream,
-                shard = key.shard,
-                error = %err,
-                "could not record giving up the generation this broker led before its crash",
-            );
+        let gives_up = led_before
+            && self
+                .unclean
+                .as_ref()
+                .is_some_and(|unclean| log.accepted_leader().as_deref() == Some(unclean.node_id()));
+        if gives_up {
+            // A batch after a clean restart replaces the given-up ballot
+            // without asking who led the copy, so record that apart first.
+            // This fence is refused either way, and the given-up ballot only
+            // adds to the record; a batch that would replace it tries again
+            // and is refused if it cannot (`doubt_before_ballot`).
+            if !doubted && let Some(trust) = self.copy_trust() {
+                let trust = Arc::clone(trust);
+                let name = crate::unclean::copy_key(&shard);
+                if let Ok(Err(err)) =
+                    felix_common::blocking::spawn(move || trust.doubt(&name)).await
+                {
+                    tracing::error!(
+                        stream = %key.stream,
+                        shard = key.shard,
+                        error = %err,
+                        "could not record that this broker led the copy before its crash",
+                    );
+                }
+            }
+            if let Err(err) = log.give_up_generation().await {
+                tracing::warn!(
+                    stream = %key.stream,
+                    shard = key.shard,
+                    error = %err,
+                    "could not record giving up the generation this broker led before its crash",
+                );
+            }
         }
         metrics::record_replicated(metrics::OUTCOME_REFUSED);
         let beyond = self
@@ -2043,8 +2253,13 @@ impl ReplicaHandler {
     /// as it would. Lets a doubted copy promise, never vouch: it stays
     /// doubted. The fence answer says it held ([`FenceOk::kept_ballot`]), and
     /// only that lets a continuing leader count the copy (#2047).
+    ///
+    /// Nor when the copy took its ballot while its promises counted for
+    /// nothing ([`Self::unkeep`]): that ballot looks like any other after a
+    /// restart.
     fn continues_from(
         &self,
+        key: &felix_router::ShardKey,
         log: &felix_broker::StreamLog,
         generation: u64,
         sender: Option<&str>,
@@ -2052,7 +2267,8 @@ impl ReplicaHandler {
         let kept = self
             .unclean
             .as_ref()
-            .is_some_and(|unclean| unclean.kept_promises());
+            .is_some_and(|unclean| unclean.kept_promises())
+            && !self.unkept(key);
         kept && sender.is_some_and(|sender| {
             sender != self.router.local_node_id()
                 && (generation.checked_sub(1) == Some(log.accepted_generation())

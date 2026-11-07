@@ -425,7 +425,7 @@ impl ReplicaHandler {
         // A learner's promise to the leader its ballot names at the
         // generation before is no vote for records it lacks: that leader
         // holds them. Group logs stay refused while wiped.
-        if !group && self.continues_from(own, request.shard.generation, sender) {
+        if !group && self.continues_from(key, own, request.shard.generation, sender) {
             return None;
         }
         let learner = self.is_learner(own) || (group && self.is_wiped(own));
@@ -570,6 +570,40 @@ impl ReplicaHandler {
             Ok(false) => {}
             Err(err) => tracing::warn!(error = %err, "could not record this copy's re-admission"),
         }
+    }
+
+    /// Whether `own`, a copy unkept since generation `since`, is readmitted:
+    /// its log counts a set newer than `since` that names this broker under
+    /// its own storage id as a voter, not wiped, and it holds that set's
+    /// generation start, shipped by that set's leader or a later one
+    /// (`sent_at`). Neither a batch alone nor a set that names no copy here
+    /// is one.
+    pub(super) async fn readmitted_since(
+        &self,
+        own: &felix_broker::StreamLog,
+        since: u64,
+        sent_at: u64,
+    ) -> bool {
+        let Some(own_id) = self.local_storage else {
+            return false;
+        };
+        let Some(set) = own.replica_set() else {
+            return false;
+        };
+        let generation = set.current.generation;
+        let local = self.router.local_node_id();
+        let voter = set.current.members.iter().any(|member| {
+            member.node == local
+                && member.storage == Some(own_id)
+                && !member.learner
+                && !member.wiped
+        });
+        generation > since
+            && sent_at >= generation
+            && voter
+            && !self.is_learner(own)
+            && !self.is_wiped(own)
+            && holds_start(own, generation).await
     }
 
     /// Whether a cache shard's counter log holds the start record of

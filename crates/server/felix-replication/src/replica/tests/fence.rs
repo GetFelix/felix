@@ -5,7 +5,7 @@ use felix_wire::internal::{Fence, FenceOk, ReplicaLog, ReplicateBootstrap, Repli
 
 use super::*;
 
-fn fence(generation: u64) -> Fence {
+pub(super) fn fence(generation: u64) -> Fence {
     Fence {
         correlation_id: 9,
         shard: batch(generation, 0, &[]).shard,
@@ -14,7 +14,7 @@ fn fence(generation: u64) -> Fence {
     }
 }
 
-fn taken(answer: &InternalMessage) -> FenceOk {
+pub(super) fn taken(answer: &InternalMessage) -> FenceOk {
     match answer {
         InternalMessage::FenceOk(ok) => *ok,
         other => panic!("expected the fence to be taken, got {other:?}"),
@@ -884,7 +884,7 @@ async fn the_ballot_names_the_peer_that_said_hello() {
 
 /// `LOCAL` as it led the shard at generation 5 before a crash: a record, and
 /// its own ballot.
-async fn led_before_a_crash(dir: &std::path::Path) {
+pub(super) async fn led_before_a_crash(dir: &std::path::Path) {
     let broker = broker_on(dir);
     let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
     handler
@@ -2029,7 +2029,12 @@ async fn a_copy_that_stood_after_an_unclean_start_takes_a_newer_fence() {
 
 /// A batch from `leader` at `generation` whose records are labelled as
 /// written at `written`.
-fn labelled(generation: u64, written: u64, first_offset: u64, values: &[&str]) -> ReplicateRecords {
+pub(super) fn labelled(
+    generation: u64,
+    written: u64,
+    first_offset: u64,
+    values: &[&str],
+) -> ReplicateRecords {
     ReplicateRecords {
         generations: Some(vec![felix_wire::internal::GenerationStart {
             generation: written,
@@ -2347,13 +2352,16 @@ async fn ship_to_a_crashed_leaders_copy(start_record: bool) -> (u64, bool) {
     )
 }
 
-fn kept_marks() -> Arc<crate::quorum::QuorumMarks> {
+pub(super) fn kept_marks() -> Arc<crate::quorum::QuorumMarks> {
     let marks = Arc::new(crate::quorum::QuorumMarks::new());
     marks.set_kept_ballots(true);
     marks
 }
 
-fn attested(kept_from: u64, trusted: bool) -> Option<felix_wire::internal::FenceAttestation> {
+pub(super) fn attested(
+    kept_from: u64,
+    trusted: bool,
+) -> Option<felix_wire::internal::FenceAttestation> {
     Some(felix_wire::internal::FenceAttestation { kept_from, trusted })
 }
 
