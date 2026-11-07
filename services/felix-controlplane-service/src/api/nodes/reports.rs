@@ -423,7 +423,14 @@ async fn record_one(
     };
     // The store checks leadership again as it writes: the checks above read
     // an assignment a promotion may have replaced since.
-    match state.store.record_replica_report(report, node_id).await {
+    // An elected leader's report readmits nothing: its generation may be one
+    // it opened before a copy here was replaced (`record_replica_report_with`).
+    let readmits = shard.elected.is_none();
+    match state
+        .store
+        .record_replica_report_with(report, node_id, readmits)
+        .await
+    {
         Ok(ReportWrite::Stored) => {
             // The next step of a move waits on exactly this report, so
             // placement runs now rather than at its next tick.

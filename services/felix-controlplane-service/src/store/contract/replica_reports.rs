@@ -649,6 +649,20 @@ pub(super) async fn readmitted_copies_are_recorded_from_a_set_naming_them(
     // Another copy than the one the set names says nothing about it.
     record(caught_up(readmitting.generation, 11, &"c".repeat(32))).await;
     assert!(readmitted().await.is_empty(), "another copy caught up");
+    // A leader that elected itself may have opened before the loss, at a
+    // generation adopted later for this set: its report readmits nothing.
+    assert_eq!(
+        store
+            .record_replica_report_with(
+                caught_up(readmitting.generation, 15, &replaced),
+                LEADER,
+                false
+            )
+            .await
+            .expect("record"),
+        ReportWrite::Stored
+    );
+    assert!(readmitted().await.is_empty(), "an elected leader's report");
 
     record(caught_up(readmitting.generation, 20, &replaced)).await;
     let entry = crate::model::Readmitted {

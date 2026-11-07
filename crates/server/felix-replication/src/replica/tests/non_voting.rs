@@ -832,6 +832,7 @@ async fn a_route_naming_member_ids_makes_a_wiped_copy_a_learner() {
             ]
             .into(),
             pending: None,
+            readmitted: Default::default(),
         }],
         &nodes,
     );
@@ -1814,4 +1815,102 @@ async fn a_learners_unified_answer_does_not_record_the_candidate() {
         assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
         assert_eq!(elections.get(&key).is_some(), !learner, "learner {learner}");
     }
+}
+
+/// A handler on `broker` whose directory lost its ballots: no copy here
+/// keeps a promise until a set readmits it, and only when `readmits` (the
+/// start was checked against a registration with a storage id).
+fn lost_handler(
+    broker: &Arc<Broker>,
+    generation: u64,
+    trust_dir: &std::path::Path,
+    readmits: bool,
+) -> (
+    ReplicaHandler,
+    Arc<felix_storage::run_state::copy_trust::CopyTrust>,
+) {
+    felix_storage::storage_identity::replace(trust_dir, OWN).expect("storage id");
+    let trust =
+        Arc::new(felix_storage::run_state::copy_trust::CopyTrust::open(trust_dir).expect("open"));
+    let marks = marks(true);
+    marks.set_kept_ballots(false);
+    marks.set_readmits(readmits);
+    marks.set_copy_trust(Arc::clone(&trust));
+    let handler = ReplicaHandler::new(Arc::clone(broker), router_with(&[LOCAL], generation))
+        .with_fleet(marks)
+        .with_local_storage(StorageId::from_bytes(OWN))
+        .with_stickiness(Duration::ZERO)
+        .with_confirmed_routes(ConfirmedAs::new(Confirmed::Assigned {
+            generation,
+            leader: "broker-a".to_string(),
+        }) as _);
+    (handler, trust)
+}
+
+/// What a copy attests to a unified fence at 7 over the set of 6.
+async fn kept_from_at_7(handler: &ReplicaHandler) -> u64 {
+    let answer = settled(|| unified(handler, fence_with(7, set(6, OWN), None, false))).await;
+    let InternalMessage::FenceOk(ok) = answer else {
+        panic!("expected the fence to be taken, got {answer:?}");
+    };
+    ok.attestation.expect("attested").kept_from
+}
+
+/// **A copy on a directory that once lost its ballots counts again from the
+/// set that readmitted it**, and that survives a restart. The directory's
+/// lost-copy marker never clears, so without the record the copy would
+/// attest no kept promise forever. A set naming it by another id, or a start
+/// whose restore check has not run, readmits nothing.
+#[tokio::test]
+async fn a_once_lost_copy_counts_from_the_set_that_readmitted_it() {
+    let name = crate::unclean::copy_key(&crate::driver::watch_key(&key()));
+    for (named, readmits, readmitted) in
+        [(OWN, true, Some(6)), (OLD, true, None), (OWN, false, None)]
+    {
+        let (broker, _dir) = broker_with_storage().await;
+        let trust_dir = tempfile::tempdir().expect("tempdir");
+        let (copy, trust) = lost_handler(&broker, 6, trust_dir.path(), readmits);
+        wiped_at_5(&copy).await;
+        let answer = settled(|| copy.fence(SENDER, readmission(6, named))).await;
+        assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
+        let answer =
+            settled(|| copy.apply(SENDER, stamped(6, 0, &["a"]), felix_broker::LogKind::Stream))
+                .await;
+        assert!(
+            matches!(answer, InternalMessage::ReplicateOk(_)),
+            "{answer:?}"
+        );
+        assert_eq!(trust.readmitted(&name), readmitted, "named {named:?}");
+        if readmitted.is_some() {
+            assert!(!trust.trusted(&name), "a vouch from before the readmission");
+            assert_eq!(kept_from_at_7(&copy).await, 6);
+            let reopened = felix_storage::run_state::copy_trust::CopyTrust::open(trust_dir.path())
+                .expect("open");
+            assert_eq!(reopened.readmitted(&name), Some(6), "after a restart");
+        }
+    }
+}
+
+/// **A leader of the set from before the loss readmits nothing**, even at
+/// a newer ballot, as a deposed leader re-shipping a wiped copy would: that
+/// set names the copy by the id it lost, so its leader may lack what the old
+/// copy acknowledged since (a TLC counterexample in the design).
+#[tokio::test]
+async fn a_deposed_leaders_batch_does_not_readmit_a_once_lost_copy() {
+    let name = crate::unclean::copy_key(&crate::driver::watch_key(&key()));
+    let (broker, _dir) = broker_with_storage().await;
+    let trust_dir = tempfile::tempdir().expect("tempdir");
+    let (copy, trust) = lost_handler(&broker, 6, trust_dir.path(), true);
+    wiped_at_5(&copy).await;
+    let deposed = ReplicateRecords {
+        set_generation: Some(5),
+        ..stamped(6, 0, &["a"])
+    };
+    let answer =
+        settled(|| copy.apply(SENDER, deposed.clone(), felix_broker::LogKind::Stream)).await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    assert_eq!(trust.readmitted(&name), None);
 }

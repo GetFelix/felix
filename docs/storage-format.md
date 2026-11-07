@@ -1269,6 +1269,7 @@ untrusted except <key>
 doubted <key>
 unkept <key>
 unkept_since <key> <generation>
+readmitted <key> <generation> <storage id, 32 hex digits>
 ```
 
 The first line is fixed. `storage_id` names the id the file was written
@@ -1302,7 +1303,18 @@ JSON, in lowercase hex. Lines are sorted.
   set's leader or a later one. A batch alone does not clear it. Such a ballot is no
   kept promise, even after a crash that keeps it.
 
-A rotation keeps `doubted` and `unkept`. A file that does not decode reads as
+A `readmitted` line is for a directory that lost its ballots (a wipe, a
+restore, or a replacement for a lost copy). Its lost-copy marker never
+clears, so on its own no copy there would keep a promise again. The line
+names a copy the same kind of readmission brought back, the generation of
+the set that did, and the storage id the copy had then. From then on the
+copy's promises count for that set and later ones. It counts only while the
+directory still has that storage id, so any rotation since, a restore among
+them, ends it. The first readmission under an id stands. Writing the line
+also marks the copy untrusted, so only a vouch from after the readmission
+trusts it.
+
+A rotation keeps `doubted`, `unkept` and the `readmitted` lines, which then no longer match the id. A file that does not decode reads as
 every mark on every copy, and the next write keeps that, so each copy clears
 only by the rules above. A directory that ran before without the file, such
 as one an older release ran on, starts with `untrusted all` only, and only
@@ -1312,7 +1324,8 @@ refuse an older caller's fence on every idle shard, and it marks nothing
 unkept, since an older release never gave a learner a ballot. When the file
 does not say since when a copy is unkept, the broker writes its current
 ballot's generation as `unkept_since` before the copy takes a newer ballot. An older release
-neither reads nor writes the file.
+neither reads nor writes the file. A release from before `readmitted` lines
+reads a file holding one as one that does not decode.
 
 ## `copy-trust-kept`: a release that keeps `copy-trust` ran here
 

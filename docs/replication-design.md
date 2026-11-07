@@ -706,16 +706,22 @@ start record alone is short of what the leader acknowledged since
 (`StandInNoCatchUp`). For a copy that lost its ballots, only a leader that
 readmits it may vouch for it.
 
-A vouch is held in the broker's process, so a clean restart loses it. The
-control plane keeps a durable form: when the leader of a set that names a
-replaced copy by its new storage id reports it caught up, the assignment
-records `readmitted {node, storage_id, generation, offset}` (see
-`docs/control-plane.md`, "Re-admitting a replaced copy"). An answer from that
-same copy is trusted when it shows a last generation of at least `generation`
-and a log end of at least `offset`. The generation clause is the commit-offset
-half above for this source: without it the offset alone could vouch for a copy
-missing records an earlier generation acknowledged. The control plane records
-this from metadata level 30; no fence reads it yet. A broker that starts without the control plane
+The control plane keeps a durable form of a readmitting leader's vouch:
+when the leader of a set that names a replaced copy by its new storage id
+reports it caught up, the assignment records `readmitted {node, storage_id,
+generation, offset}` (see `docs/control-plane.md`, "Re-admitting a replaced
+copy"). A fence counts an answer from that same copy as trusted when the
+copy's promises count for the fenced set, its handshake names that storage
+id, and it shows a last generation of at least `generation` and a log end of
+at least `offset`. The generation clause is the commit-offset half above for
+this source: without it the offset alone could vouch for a copy missing
+records an earlier generation acknowledged. The record never makes a copy's
+promises count. The control plane records it from metadata level 30, and not
+from a leader that elected itself: that leader may have opened before the
+copy was replaced, at a generation the control plane adopted later for a set
+naming the new id, so it does not hold what the old copy acknowledged at that
+generation. A control plane below level 30 sends no records, and the fence
+then trusts on the answer alone. A broker that starts without the control plane
 attests neither kept nor trusted until the restore check has run, because a
 restored directory looks clean until then (`CountsForgotten`,
 `TrustsRegistered`). For now that is the whole run. A failed flush poisons the
@@ -725,7 +731,16 @@ attests no trusted copy, without waiting for the next start.
 In the code a directory **kept** its ballots when it was never restored and
 never replaced a lost copy, and, after an unclean start, the control plane's
 record names the storage id it had before (`Kept` in
-`services/felix-broker-service/src/node/storage.rs`). Trust after an unclean
+`services/felix-broker-service/src/node/storage.rs`). A directory that lost
+them keeps that mark for good, so each of its copies counts again only once
+readmitted: the copy's log counts a set newer than any ballot it took
+unkept that names it under its storage id now, as a voter, and holds that
+set's generation start, shipped by that set's leader or a later one. Only a
+set written after the loss can name that id. The broker records the set's
+generation in the directory's `copy-trust` file (`docs/storage-format.md`)
+before the copy's promises count for that set and later ones, and marks the
+copy untrusted until a vouch after the readmission. The record holds until
+the storage id rotates. Trust after an unclean
 start is `UncleanStart::trust`, set where a replicated batch is applied, and the
 answer is `ReplicaHandler::attestation`.
 

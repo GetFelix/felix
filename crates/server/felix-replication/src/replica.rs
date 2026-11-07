@@ -1648,8 +1648,10 @@ impl ReplicaHandler {
 
     /// After a batch from the leader of `sent_at`: an unkept copy that is now
     /// readmitted, a voter in a set newer than its unkept ballot, counts its
-    /// promises again. A batch alone, or wipe evidence without a set, is no
-    /// readmission (the design's "Wipe" row).
+    /// promises again. So does a copy on a directory that lost its ballots,
+    /// from that set on: the set names the copy by its storage id now, which
+    /// only a set written after the loss can. A batch alone, or wipe evidence
+    /// without a set, is no readmission (the design's "Wipe" row).
     async fn record_readmitted(
         &self,
         key: &felix_router::ShardKey,
@@ -1661,17 +1663,35 @@ impl ReplicaHandler {
         };
         let shard = crate::driver::watch_key(key);
         let name = crate::unclean::copy_key(&shard);
+        let lost = self.fleet.as_ref().is_some_and(|fleet| {
+            !fleet.kept_ballots() && fleet.readmits() && trust.readmitted(&name).is_none()
+        });
         // An unknown floor is pinned before the batch's ballot; if that did
         // not happen, nothing says which set is newer.
-        let Some(Since::At(since)) = trust.unkept(&name) else {
+        let unkept = trust.unkept(&name);
+        let since = match unkept {
+            Some(Since::At(since)) => since,
+            None if lost => 0,
+            _ => return,
+        };
+        let (Some(generation), Some(own_id)) = (
+            self.readmitted_since(log, since, sent_at).await,
+            self.local_storage,
+        ) else {
             return;
         };
-        if !self.readmitted_since(log, since, sent_at).await {
-            return;
-        }
         let trust = Arc::clone(trust);
-        if let Ok(Err(err)) = felix_common::blocking::spawn(move || trust.clear_unkept(&name)).await
-        {
+        let recorded = felix_common::blocking::spawn(move || {
+            if lost {
+                trust.readmit(&name, generation, own_id)?;
+            }
+            if unkept.is_some() {
+                trust.clear_unkept(&name)?;
+            }
+            Ok::<_, felix_storage::StorageError>(())
+        })
+        .await;
+        if let Ok(Err(err)) = recorded {
             tracing::warn!(
                 stream = %key.stream,
                 shard = key.shard,
@@ -2971,9 +2991,17 @@ pub(crate) fn attest_copy(
     let shard = crate::driver::watch_key(key);
     let name = crate::unclean::copy_key(&shard);
     let trust = fleet.and_then(crate::quorum::QuorumMarks::copy_trust);
-    let kept = voter
-        && fleet.is_some_and(crate::quorum::QuorumMarks::kept_ballots)
-        && !trust.is_some_and(|trust| trust.unkept(&name).is_some());
+    // A directory that lost ballots keeps this copy's promises again only
+    // from the set that readmitted it ([`ReplicaHandler::record_readmitted`]).
+    let kept_from = if fleet.is_some_and(crate::quorum::QuorumMarks::kept_ballots) {
+        Some(0)
+    } else if fleet.is_some_and(crate::quorum::QuorumMarks::readmits) {
+        trust.and_then(|trust| trust.readmitted(&name))
+    } else {
+        None
+    };
+    let kept =
+        voter && kept_from.is_some() && !trust.is_some_and(|trust| trust.unkept(&name).is_some());
     let trusted = kept
         && !given_up
         && !trust.is_some_and(|trust| trust.doubted(&name))
@@ -2981,7 +3009,7 @@ pub(crate) fn attest_copy(
         && unclean.is_none_or(|unclean| unclean.trusted(&shard))
         && trust.is_none_or(|trust| trust.trusted(&name));
     felix_wire::internal::FenceAttestation {
-        kept_from: if kept { 0 } else { u64::MAX },
+        kept_from: kept_from.filter(|_| kept).unwrap_or(u64::MAX),
         trusted,
     }
 }

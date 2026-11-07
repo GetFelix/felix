@@ -745,6 +745,7 @@ pub(super) async fn record_replica_report(
     store: &PostgresStore,
     report: ReplicaReport,
     leader: &str,
+    readmits: bool,
 ) -> StoreResult<ReportWrite> {
     let mut tx = store.pool.begin().await?;
     // `FOR UPDATE` holds the assignment row until commit, so a promotion
@@ -897,7 +898,9 @@ pub(super) async fn record_replica_report(
     match result {
         Ok(done) if done.rows_affected() == 0 => Ok(ReportWrite::Stale),
         Ok(_) => {
-            record_readmitted(&mut tx, &report).await?;
+            if readmits {
+                record_readmitted(&mut tx, &report).await?;
+            }
             tx.commit().await?;
             Ok(ReportWrite::Stored)
         }

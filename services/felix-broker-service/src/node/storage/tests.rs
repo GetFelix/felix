@@ -337,18 +337,21 @@ fn only_a_directory_that_never_lost_a_ballot_attests_kept_ballots() {
     assert!(!kept, "a restored directory");
 }
 
-/// **A start from the view attests no kept ballot**, whatever the directory
-/// says. Its restore check waits for the control plane, and until then a
-/// restored directory reads as one that kept everything.
+/// **A start from the view attests no kept ballot and no readmission**,
+/// whatever the directory says. Its restore check waits for the control
+/// plane, and until then a restored directory reads as one that kept
+/// everything, its copy-trust record and the readmissions in it included.
 #[test]
 fn a_start_from_the_view_attests_no_kept_ballot() {
     let kept = Kept {
         promises: true,
         ballots: true,
+        readmits: true,
     };
-    assert!(kept.attested(false));
-    assert!(!kept.attested(true));
-    assert!(!Kept::default().attested(false));
+    assert!(kept.attested(false).ballots && kept.attested(false).readmits);
+    assert!(!kept.attested(true).ballots);
+    assert!(!kept.attested(true).readmits);
+    assert!(!Kept::default().attested(false).ballots);
 }
 
 /// **Every run witnesses its directory anew**, with the control plane's

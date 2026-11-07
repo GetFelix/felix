@@ -237,6 +237,9 @@ fn start_run(
             && !lost
             && (!begun.rotated || own_id)
             && registered.is_none_or(|r| r.storage_id.is_some()),
+        // A set names a copy by the id the control plane registered, so
+        // without one no set can readmit it.
+        readmits: registered.is_some_and(|r| r.storage_id.is_some()),
     };
     let replaced = note_replaced(root, begun.id, registered)?;
     Ok((begun.id, begun.rotated, replaced, kept))
@@ -254,15 +257,23 @@ pub(crate) struct Kept {
     /// rotation the control plane's record names the id it had before. What
     /// a fence answer attests as kept.
     pub(crate) ballots: bool,
+    /// When `ballots` is false, a copy here counts again once a set
+    /// introduced after the loss readmits it: the start was checked against
+    /// a control plane record with a storage id.
+    pub(crate) readmits: bool,
 }
 
 impl Kept {
-    /// What a fence answer may attest as kept. A start from the view has not
+    /// What a fence answer may attest as kept, or readmitted. A start from the view has not
     /// checked the directory against the control plane, and a restored one
     /// reads as kept until it has (`CountsForgotten`, `TrustsRegistered` in
     /// `docs/formal/FelixShardUnified.tla`), so such a run attests nothing.
-    pub(crate) fn attested(self, from_view: bool) -> bool {
-        self.ballots && !from_view
+    pub(crate) fn attested(self, from_view: bool) -> Self {
+        Self {
+            promises: self.promises,
+            ballots: self.ballots && !from_view,
+            readmits: self.readmits && !from_view,
+        }
     }
 }
 

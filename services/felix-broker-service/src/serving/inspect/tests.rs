@@ -27,6 +27,7 @@ fn route(leader: &str, generation: u64) -> Route {
         fence_storage_ids: None,
         member_storage_ids: None,
         pending: None,
+        readmitted: Default::default(),
     }
 }
 

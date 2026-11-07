@@ -989,6 +989,7 @@ fn failover_router(members: &[&str], generation: u64, acknowledged: &[&str]) -> 
                 .collect(),
             member_storage_ids: Default::default(),
             pending: None,
+            readmitted: Default::default(),
         }],
         &nodes,
     );
@@ -1833,6 +1834,7 @@ fn router_naming(generation: u64, incarnation: u64, local_id: [u8; 16]) -> Arc<S
             ]
             .into(),
             pending: None,
+            readmitted: Default::default(),
         }],
         &nodes,
     );

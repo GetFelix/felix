@@ -185,6 +185,7 @@ pub(super) fn ingress_with_routing(
                 member_storage_ids: Default::default(),
                 pending_set: None,
                 previous_generation: None,
+                readmitted: Default::default(),
             };
             (key, assignment)
         })

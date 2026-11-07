@@ -334,3 +334,60 @@ async fn a_learner_own_copy_counts_no_promise() {
         "a voter's own copy did not count: {outcome:?}"
     );
 }
+
+/// **The control plane's `readmitted` record restores trust a clean restart
+/// lost**, for the copy it names and only on an answer that reaches it.
+/// broker-b's promises count but it attests no trusted copy, as after a
+/// restart that dropped the vouch a readmitting leader gave it; broker-c is
+/// down. With an entry from the leader of 4 caught up to offset 1, its
+/// answer at generation 4 covers, and this broker opens. An entry from a
+/// later generation (the answer's log could be missing what that
+/// generation acknowledged), past the answer's end, for another copy, or
+/// for a copy whose promises count for nothing does not.
+#[tokio::test]
+async fn a_readmitted_record_covers_a_matching_answer() {
+    let entry = |generation, offset, storage_id: String| felix_router::Readmitted {
+        node: "broker-b".to_string(),
+        storage_id,
+        generation,
+        offset,
+    };
+    let own = storage_of("broker-b").to_hex();
+    let other = storage_of("broker-c").to_hex();
+    let cases = [
+        (None, DOUBTED, false),
+        (Some(entry(4, 1, own.clone())), DOUBTED, true),
+        (Some(entry(5, 1, own.clone())), DOUBTED, false),
+        (Some(entry(4, 100, own.clone())), DOUBTED, false),
+        (Some(entry(4, 1, other)), DOUBTED, false),
+        (
+            Some(entry(4, 1, own)),
+            FenceAttestation {
+                kept_from: u64::MAX,
+                trusted: false,
+            },
+            false,
+        ),
+    ];
+    for (readmitted, attests, opens) in cases {
+        let mut replicas = Replicas::new();
+        replicas.get_mut("broker-c").reachable = false;
+        replicas.get_mut("broker-b").attests = Some(attests);
+        replicas
+            .get("broker-b")
+            .holds("broker-b", 4, 0, &["a"])
+            .await;
+        let (leader, _dir) = leader_holding(4, &["a"]).await;
+        let mut route = route();
+        route.readmitted = readmitted.clone().map(|entry| Arc::new(vec![entry]));
+        let marks = unified(true);
+
+        let outcome = fence_unified(&replicas, &leader, &route, None, &marks).await;
+
+        assert_eq!(
+            matches!(outcome, Outcome::Fenced { .. }),
+            opens,
+            "{readmitted:?} {attests:?}: {outcome:?}"
+        );
+    }
+}

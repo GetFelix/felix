@@ -54,6 +54,7 @@ impl RoutingTable {
                     fence_storage_ids: BTreeMap::new(),
                     member_storage_ids: BTreeMap::new(),
                     pending: None,
+                    readmitted: Vec::new(),
                 }),
             nodes,
         )
@@ -78,6 +79,7 @@ impl RoutingTable {
             fence_storage_ids,
             member_storage_ids,
             pending,
+            readmitted,
         } in assignments
         {
             // The count is the highest shard index placed plus one, not the
@@ -128,6 +130,7 @@ impl RoutingTable {
                     member_storage_ids: (!member_storage_ids.is_empty())
                         .then(|| Arc::new(member_storage_ids)),
                     pending: pending.map(Arc::new),
+                    readmitted: (!readmitted.is_empty()).then(|| Arc::new(readmitted)),
                 },
             );
         }
@@ -320,6 +323,23 @@ pub struct Route {
     /// it is pending, `replicas` are the pending set's followers and this
     /// names the set being left.
     pub pending: Option<Arc<PendingChange>>,
+    /// Copies the control plane recorded as readmitted after their storage
+    /// was replaced (`readmitted` on the assignment). A fence trusts a
+    /// matching answer from one. `None` for none, and from a control plane
+    /// that sends none.
+    pub readmitted: Option<Arc<Vec<Readmitted>>>,
+}
+
+/// A copy the leader of `generation` showed caught up to `offset` under the
+/// storage identity `storage_id`, which a set written after the copy's
+/// storage was replaced names it by.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Readmitted {
+    pub node: String,
+    /// 32 lowercase hex.
+    pub storage_id: String,
+    pub generation: u64,
+    pub offset: u64,
 }
 
 /// A set change the control plane holds as pending (`pending_set` on the
@@ -376,6 +396,8 @@ pub struct Placed {
     pub member_storage_ids: BTreeMap<String, String>,
     /// See [`Route::pending`].
     pub pending: Option<PendingChange>,
+    /// See [`Route::readmitted`]; empty for none.
+    pub readmitted: Vec<Readmitted>,
 }
 
 /// How a stream was placed: how many shards it has and how keys map onto them.

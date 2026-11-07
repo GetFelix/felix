@@ -14,7 +14,8 @@ mod table;
 
 pub use router::{ReplicaRole, Resolution, Routes, ShardRouter, Unavailable};
 pub use table::{
-    NodeRef, PendingChange, Placed, PlacedSet, PriorSet, Route, RoutingTable, StreamPlacement,
+    NodeRef, PendingChange, Placed, PlacedSet, PriorSet, Readmitted, Route, RoutingTable,
+    StreamPlacement,
 };
 
 /// One shard of one stream or cache.

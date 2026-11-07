@@ -435,6 +435,11 @@ pub(crate) async fn fence_shard_as<R: PeerRequester>(
                 candidacy.is_some(),
                 continuing,
                 own,
+                // The control plane's offsets are of the shard's own log.
+                match kind {
+                    LogKind::Counters => &[],
+                    _ => route.readmitted.as_deref().map_or(&[], Vec::as_slice),
+                },
             )
             .await;
             caught_up_from = caught_up_from.or(fenced?);
@@ -681,6 +686,7 @@ async fn fence_log<R: PeerRequester>(
     candidate: bool,
     continuing: bool,
     own: Option<OwnCopy>,
+    readmitted: &[felix_router::Readmitted],
 ) -> Result<Option<String>, Outcome> {
     // Answers until a majority, this broker included, has taken the fence.
     // Later answers are not waited for: the model opens on the first majority.
@@ -699,7 +705,7 @@ async fn fence_log<R: PeerRequester>(
     let mut seen: Vec<Seen> = Vec::new();
     let settled = |seen: &[Seen]| match joint {
         None => {
-            let promised = usize::from(own.kept)
+            let promised = usize::from(own.promises(set_generation))
                 + seen
                     .iter()
                     .filter(|(.., attested)| Counted::of(*attested).promises(set_generation))
@@ -782,7 +788,10 @@ async fn fence_log<R: PeerRequester>(
                 addr,
                 shard,
                 crate::ship::replica_log(kind),
-                reported_ids.is_some() || joint.is_some_and(JointSets::names_copies),
+                // A readmitted record is matched by the copy's identity.
+                reported_ids.is_some()
+                    || !readmitted.is_empty()
+                    || joint.is_some_and(JointSets::names_copies),
                 election,
             )
             .await
@@ -830,7 +839,16 @@ async fn fence_log<R: PeerRequester>(
                 // leader that counts by attestation; to any other it is
                 // neither a promise nor coverage.
                 let attested = if own.attested {
-                    ok.attestation
+                    ok.attestation.map(|attested| {
+                        vouched_by_record(
+                            attested,
+                            readmitted,
+                            &node_id,
+                            identity,
+                            &ok,
+                            set_generation,
+                        )
+                    })
                 } else {
                     Some(FenceAttestation {
                         kept_from: u64::MAX,
@@ -999,8 +1017,10 @@ fn as_answered(seen: &Seen) -> joint::Answered<'_> {
 pub(crate) struct OwnCopy {
     /// Counted by attestation, rather than as a fence counted without one.
     pub(crate) attested: bool,
-    /// Its promises count: its directory kept every ballot it took.
-    pub(crate) kept: bool,
+    /// Its promises count for sets introduced at this generation or later:
+    /// 0 when its directory kept every ballot it took, the readmitting set's
+    /// after a loss, `u64::MAX` for none.
+    pub(crate) kept_from: u64,
     /// It holds everything its seat acknowledged.
     pub(crate) trusted: bool,
 }
@@ -1009,9 +1029,13 @@ impl OwnCopy {
     /// A leader that counts without attestations counts itself.
     pub(crate) const UNATTESTED: Self = Self {
         attested: false,
-        kept: true,
+        kept_from: 0,
         trusted: true,
     };
+
+    pub(crate) fn promises(self, set_generation: u64) -> bool {
+        self.kept_from <= set_generation
+    }
 }
 
 /// What this broker attests of its copy `log` of `key`, as it would answer
@@ -1033,8 +1057,42 @@ fn own_copy(
     );
     OwnCopy {
         attested: true,
-        kept: attested.kept_from == 0,
+        kept_from: attested.kept_from,
         trusted: attested.trusted,
+    }
+}
+
+/// `attested`, trusted too when the control plane's record shows its copy
+/// readmitted (`readmitted` on the route): the leader of `generation` caught
+/// that same copy, never rotated since, up to `offset`, and the answer shows
+/// a last generation of at least `generation` and a log end of at least
+/// `offset`. The generation clause keeps a copy missing records an earlier
+/// generation acknowledged from passing on its length alone. The record is
+/// the durable form of the vouch a clean restart loses, so it is read only
+/// for a copy whose promises count for `set_generation`: it does not make an
+/// unreadmitted copy count. See "Fencing a promotion" in
+/// `docs/replication-design.md`.
+fn vouched_by_record(
+    attested: FenceAttestation,
+    readmitted: &[felix_router::Readmitted],
+    node: &str,
+    identity: Option<StorageId>,
+    answer: &FenceOk,
+    set_generation: u64,
+) -> FenceAttestation {
+    let Some(identity) = identity.map(|id| id.to_hex()) else {
+        return attested;
+    };
+    let vouched = attested.kept_from <= set_generation
+        && readmitted.iter().any(|entry| {
+            entry.node == node
+                && entry.storage_id == identity
+                && answer.last_generation >= entry.generation
+                && answer.log_end >= entry.offset
+        });
+    FenceAttestation {
+        trusted: attested.trusted || vouched,
+        ..attested
     }
 }
 
