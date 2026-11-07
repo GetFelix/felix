@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794039528468,
+  "lastUpdate": 1794041557597,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -48568,6 +48568,58 @@ window.BENCHMARK_DATA = {
             "range": "13828.15",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1194807.65\nmean: 1189793.48\nstdev: 13828.15\ncv: 1.16%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "eca172b403a98909e19b5e56ebe38608e4f75f4c",
+          "message": "ci(formal): weigh the unified fence configurations by their measured times (#2096)\n\nMeasured times for FelixShardUnified{,Mixed,Readmit,Restore} and CpLiveReadmitUnopened replace the guesses, so no pull-request TLA shard passes its hour.\n\nSpec-Unaffected: CI shard weights only.",
+          "timestamp": "2026-11-07T08:47:34Z",
+          "tree_id": "521a0be9ae6674cee79a73059a5233222e0670e5",
+          "url": "https://github.com/GetFelix/felix/commit/eca172b403a98909e19b5e56ebe38608e4f75f4c"
+        },
+        "date": 1794041556839,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 390033.28,
+            "range": "24775.21",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 390033.28\nmean: 400619.50\nstdev: 24775.21\ncv: 6.18%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 390033.28,
+            "range": "24775.21",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 390033.28\nmean: 400619.50\nstdev: 24775.21\ncv: 6.18%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 96286.74,
+            "range": "6978.15",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 96286.74\nmean: 93390.05\nstdev: 6978.15\ncv: 7.47%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 962867.38,
+            "range": "69781.48",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 962867.38\nmean: 933900.54\nstdev: 69781.48\ncv: 7.47%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
