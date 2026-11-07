@@ -1,6 +1,6 @@
 ---
 title: "C# Client"
-description: "Using the Felix C# client: supported platforms, connecting, token refresh, publishing, subscribing, sharded subscriptions, consumer groups, caches, counters and watches, atomic commits, conditional publishes, idempotent producers, publisher and timestamp metadata, typed errors, cancellation and threading."
+description: "Using the Felix C# client: supported platforms, connecting, token refresh, queue and transport options, publishing, subscribing, sharded subscriptions, consumer groups, caches, counters and watches, atomic commits, conditional publishes, idempotent producers and hand-offs, inspecting shards and subscriptions, publisher and timestamp metadata, typed errors, cancellation and threading."
 ---
 
 `Felix.Client` is the C# client, in `sdks/dotnet`. It binds the [C ABI](/clients/c/)
@@ -10,8 +10,8 @@ publish or read.
 
 It binds every function in `felix.h`: connect (with a token provider that renews the token), publish (single, batch, keyed records and named-shard), subscribe to one shard or
 to all of them, consumer groups, caches, counters and cache watches, atomic commits and state
-reads, conditional publishes, idempotent producers, endpoints, offset lookup by time, and the
-publisher and timestamp fields. It ships on NuGet, the same name as on PyPI and npm.
+reads, conditional publishes, idempotent producers and their hand-offs, endpoints, offset lookup by time,
+inspection of shards and subscriptions, queue and transport options, and the publisher and timestamp fields. It ships on NuGet, the same name as on PyPI and npm.
 
 ## Supported platforms
 
@@ -342,6 +342,29 @@ await using var replay = await client.SubscribeAsync(
     from is { } offset ? StartPosition.FromOffset((ulong)offset) : StartPosition.Latest);
 ```
 
+### What a subscription reports about itself
+
+`Moves` counts how many times the subscription followed its shard to a new owner, and `Reconnects` how many
+times it resubscribed after losing its connection, resuming after the last event it delivered. `StreamDeleted` is
+true once a read has failed with `Closed` because the stream was deleted, the same fact as `CloseReason` being
+`StreamDeleted`. `QueueCapacity` is how many batches the broker's queue for this subscription holds, as the broker
+granted it, and is null from a broker that does not report it. The counters are read from the library on each
+access and are updated as reads return, so they can trail a read still pending. Against a single broker `Moves`
+stays 0 unless the shard changes owner, and `Reconnects` stays 0 unless the connection drops.
+
+```csharp
+await using var sub = await client.SubscribeAsync(
+    "t1", "default", "events", shard: 0, StartPosition.Latest);
+
+while (await sub.ReadAsync(TimeSpan.FromSeconds(10)) is { } ev)
+{
+    Console.WriteLine($"{ev.Offset}: followed {sub.Moves} move(s), resubscribed {sub.Reconnects} time(s)");
+    break;
+}
+
+Console.WriteLine($"broker queue: {sub.QueueCapacity?.ToString() ?? "not reported"} batches");
+```
+
 ## Connecting to a cluster
 
 See [Every client is a cluster client](/clients/overview/#every-client-is-a-cluster-client).
@@ -412,6 +435,55 @@ catch (FelixException e)
 A deadline shorter than one attempt's own timeout means no retry happens: the first attempt spends the whole budget and the call returns after trying once. Set it to cover at least one attempt plus the backoff you can afford, and leave it off if you would rather wait out a failover.
 
 The Rust page covers [clusters](/clients/rust/operations/#clusters) in full. [Building Resilient Clients](/clients/resilient-clients/) shows reconnection, token refresh, retries, resuming and shutdown side by side in every language.
+
+### Queue and transport options
+
+The Rust client's `ClientConfig` has more knobs than a program usually needs, and the defaults suit most.
+`FelixClientOptions` sets them when you must: every property is null (or `false`) by default, which keeps the
+Rust client's own value. A count or size below 1, a window past 2^62 - 1, or a timeout under one millisecond or
+over one year throws `ArgumentOutOfRangeException` before anything is started.
+
+| Option | Default | What it sets |
+| --- | --- | --- |
+| `ClientSubQueuePolicy` | `DropNew` | What a subscription does when its client-side queue is full: `Block` stops reading the event stream until your code catches up, `DropNew` drops the arriving item. `DropOld` is meant to drop the oldest queued item and currently behaves as `DropNew`. |
+| `ClientSubQueueCapacity` | 256 | Events each subscription's client-side queue holds. |
+| `BrokerSubQueueCapacity` | the stream's | Batches the broker's queue for each subscription should hold. The broker clamps it to its maximum, and `FelixSubscription.QueueCapacity` reports what was granted. |
+| `PublishConnPool`, `PublishStreamsPerConn`, `PublishQueueDepth` | 4, 2, 64 | Publish connections per client, publish streams per connection, and publishes queued per stream. |
+| `PublishInflightBytes` | 4 MiB | Bytes of publishes sent but not yet answered, across the client. |
+| `PublishSharding` | `HashStream` | How publishes spread over publish streams. `HashStream` keeps a stream's publishes in order; `RoundRobin` can reorder them. |
+| `PublishShardStreams` | 4 | Most publish streams opened per broker for one shard each. 0 puts every publish on the pool. |
+| `CacheConnPool`, `CacheStreamsPerConn` | 8, 4 | Cache connections per client, and streams per connection. |
+| `EventConnPool` | 8 | Connections that carry subscriptions and cache watches. |
+| `ClusterConnPool`, `ClusterStreamsPerConn` | 8, 1024 | Most connections opened to one broker, and the streams one carries before another is opened. |
+| `EventConnRecvWindow`, `EventStreamRecvWindow`, `EventSendWindow` | 256 MiB, 64 MiB, 256 MiB | QUIC windows for event connections and streams. |
+| `CacheConnRecvWindow`, `CacheStreamRecvWindow`, `CacheSendWindow` | 256 MiB, 64 MiB, 256 MiB | QUIC windows for cache connections and streams. |
+| `EventRouterMaxPending` | 16384 | Registrations and unclaimed event streams one event connection holds before refusing more. |
+| `MaxFrameBytes` | 16 MiB | Largest frame the client reads. A bigger one fails the stream. |
+| `AckOnCommit` | false | Ask brokers to answer acknowledged publishes after the write, with the offset. Slower per publish; `FelixSupports.AckOnCommit` says whether a broker honours it. |
+| `ConnectTimeout` | 10 s | Longest a connect to one broker may take. |
+| `FinishTimeout` | 60 s | Longest closing a producer waits for queued publishes to be acknowledged. |
+
+```csharp
+await using var client = await FelixClient.ConnectAsync(new FelixClientOptions
+{
+    Addrs = ["felix-0:5000", "felix-1:5000"],
+    TenantId = "t1",
+    Token = token,
+    ClientSubQueuePolicy = ClientSubQueuePolicy.Block,
+    ClientSubQueueCapacity = 1024,
+    BrokerSubQueueCapacity = 64,
+    PublishConnPool = 2,
+    MaxFrameBytes = 32 << 20,
+    ConnectTimeout = TimeSpan.FromSeconds(5),
+});
+
+await using var sub = await client.SubscribeAsync(
+    "t1", "default", "events", shard: 0, StartPosition.Latest);
+Console.WriteLine($"the broker queues {sub.QueueCapacity} batches for this subscription");
+```
+
+A subscription with `Block` never drops, but a consumer that stops reading stops the whole event connection it
+shares with the others, so pair it with a bounded read loop.
 
 ## Consumer groups
 
@@ -731,6 +803,50 @@ await producer.PublishBatchesAsync("t1", "default", "orders", [[payloadA, payloa
   not wait, pending calls fail as cancelled, and batches already handed over may still be sent. Both are
   safe to call more than once. A producer keeps working after its client is disposed, until it is disposed.
 
+### Hand-offs
+
+`PublishBatchAsync` completes when the leader answers. A caller that must keep calls in order but not wait
+for each answer uses `HandOffBatchAsync` instead: it completes once the producer's task has the batch, with a
+`Handed` whose `OffsetAsync` is the leader's answer. Calls handed off one after another are sent in that order,
+which concurrent `PublishBatchAsync` calls do not promise. `HandOffBatchesAsync` and `HandOffAbandonAsync` are
+`PublishBatchesAsync` and `AbandonInDoubtAsync` up to the hand-off, and their answer is `DoneAsync`.
+
+```csharp
+await using var producer = await client.CreateProducerAsync();
+
+// Queue four batches in order, then collect the answers.
+var pending = new List<Handed>();
+for (var i = 0; i < 4; i++)
+{
+    pending.Add(await producer.HandOffBatchAsync(
+        "t1", "default", "orders", [payloadA, payloadB], key: orderKey));
+}
+
+foreach (var handed in pending)
+{
+    using (handed)
+    {
+        try
+        {
+            long? first = await handed.OffsetAsync();
+            Console.WriteLine($"batch landed at {first}");
+        }
+        catch (FelixException e) when (e.OutcomeUnknown)
+        {
+            // The batch is in doubt: hand it off again with the same payloads and key to settle it.
+            Console.Error.WriteLine($"in doubt: {e.Message}");
+        }
+    }
+}
+```
+
+- The answer is read once, by `OffsetAsync` or `DoneAsync`; a second read throws `InvalidOperationException`.
+- The batch is sent whether or not the answer is read, and disposing the `Handed` does not stop it. A wait still
+  pending when the `Handed` is disposed fails with `OutcomeUnknown`.
+- A cancel before the producer's task has the batch stops it. After, the batch is still sent, and the call (or the
+  wait for its answer) fails with `OutcomeUnknown`: settle it as above.
+- A closed producer fails the hand-off with `Closed`.
+
 ## Record headers
 
 A record can carry its own key and named byte values next to its payload. They are stored with the
@@ -789,19 +905,86 @@ principal to every event batch and timestamps add eight bytes per event. A broke
 negotiate either, or an in-memory stream that stores no time, leaves them null; that is never an
 error.
 
+## Inspecting the cluster
+
+A client can ask the broker it is connected to what it supports and how it is laid out. Check
+`GetSupportsAsync` first: a call the broker does not answer fails without being sent, and this tells that apart
+from other failures. A tenant's token is enough for the layout questions. Inspecting a shard or a broker's
+subscriptions needs the `node.view:cluster:*` permission, which an operator's token has, and a broker answers for
+itself only: connect to the broker you want to ask.
+
+- `GetStreamRoutingAsync` returns a stream's shard count and `Routing` (`Modulo` or `JumpHash`). `GetCacheShardsAsync` returns a cache's.
+- `GetShardOwnersAsync` returns who owns each shard of a stream or a cache, as `ShardOwner`s in shard order, with the owner's `Addr` to connect to. A shard nobody can serve has no node and says why in `Unavailable`. It is a snapshot and can be stale.
+- `GetTopologyAsync` returns the brokers the connected broker names. `RefreshTopologyAsync` is what adds them to the endpoints the client tries.
+- `InspectShardAsync` returns the broker's own view of one shard: role, phase, generation, fence, lease, tail and, on a leader, every replica's position.
+- `ListSubscriptionsAsync` pages through the subscriptions a broker serves: each one's queue depth, capacity, overflow policy, records dropped, position against the tail, connection and principal. A `SubscriptionFilter` narrows the list, and `NextCursor` is passed back for the next page.
+
+```csharp
+FelixSupports supports = await client.GetSupportsAsync();
+if (supports is { StreamShards: true, ShardOwners: true })
+{
+    StreamRouting routing = await client.GetStreamRoutingAsync("t1", "default", "orders");
+    Console.WriteLine($"{routing.Shards} shards, {routing.Routing}");
+    foreach (var owner in await client.GetShardOwnersAsync(ShardKind.Stream, "t1", "default", "orders"))
+    {
+        Console.WriteLine($"shard {owner.Shard}: {owner.Addr ?? owner.Unavailable}");
+    }
+}
+
+if (supports.CacheShards)
+{
+    Console.WriteLine($"sessions has {await client.GetCacheShardsAsync("t1", "default", "sessions")} shards");
+}
+```
+
+To look inside one broker, connect to it with an operator's token, here the owner of shard 0, and ask it:
+
+```csharp
+var owner = (await client.GetShardOwnersAsync(ShardKind.Stream, "t1", "default", "orders"))
+    .First(o => o.Shard == 0);
+
+await using var ops = await FelixClient.ConnectAsync(new FelixClientOptions
+{
+    Addrs = [owner.Addr ?? throw new InvalidOperationException("shard 0 has no owner")],
+    TenantId = "t1",
+    Token = inspectorToken,
+});
+
+ShardInspection view = await ops.InspectShardAsync(ShardKind.Stream, "t1", "default", "orders", shard: 0);
+Console.WriteLine($"{view.NodeId} is {view.Role}, {view.Phase}, serving: {view.Serving}, tail {view.Tail}");
+foreach (var replica in view.Replicas)
+{
+    Console.WriteLine($"  {replica.NodeId}: {replica.State}, lag {replica.Lag}");
+}
+
+// Every subscription on this broker that has dropped records, a page at a time.
+var filter = new SubscriptionFilter { Stream = "orders", Dropping = true };
+SubscriptionCursor? cursor = null;
+do
+{
+    SubscriptionsPage page = await ops.ListSubscriptionsAsync(filter, limit: 100, cursor);
+    foreach (var s in page.Subscriptions)
+    {
+        Console.WriteLine($"{s.Principal} on shard {s.Shard}: {s.Dropped} dropped, {s.Depth}/{s.Capacity} queued");
+    }
+
+    cursor = page.NextCursor;
+}
+while (cursor is not null);
+```
+
+The answers are typed records with the wire's fields in PascalCase, parsed from JSON the library hands over. A
+field a broker leaves out is null, or an empty list.
+
 ## What is not wrapped
 
-The [Rust client](/clients/rust/) has more than this binding wraps. What is left out:
+The [Rust client](/clients/rust/) has two things this binding leaves out on purpose:
 
-- **Inspection and admin calls**: `inspect_shard`, `list_subscriptions`, `topology`, `stream_routing`,
-  `shard_owners`, `cache_shards` and the `supports_*` checks. The library runs the feature checks itself.
-- **Subscription counters**: `moves`, `reconnects`, `stream_deleted` and `queue_capacity`. Only `CloseReason` is here.
-- **Queue and transport tuning** in `ClientConfig`: the subscription queue policy and capacities, pool sizes,
-  windows, `max_frame_bytes`, timeouts, publish sharding and `ack_on_commit`.
-- **`hand_off_*` and `Handed` on the idempotent producer.** `PublishBatchesAsync` is the equivalent.
-- **`publish_json` and `publish_batch_json`.** Serialize the value yourself and publish the bytes.
-- **The custom QUIC transport** (`connect_with_policy`, a caller-built `quinn` configuration,
-  `connect_any_with_transport`), which is Rust only.
+- **`publish_json` and `publish_batch_json`.** C# serializes JSON itself: publish
+  `JsonSerializer.SerializeToUtf8Bytes(value)`.
+- **A custom `quinn` transport** (`connect_with_policy`, `connect_any_with_transport`). It is Rust-only by
+  design: it takes a Rust transport object a .NET program cannot build. TLS, the server name and client
+  certificates are options on `FelixClientOptions`.
 
 ## Conformance
 

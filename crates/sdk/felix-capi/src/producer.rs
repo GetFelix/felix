@@ -30,6 +30,14 @@ use crate::status::{
     FELIX_STATUS_TIMEOUT, FelixStatus,
 };
 
+mod handed;
+
+pub use handed::{
+    FelixHanded, FelixHandedCallback, felix_handed_done, felix_handed_free, felix_handed_offset,
+    felix_producer_hand_off_abandon, felix_producer_hand_off_batch,
+    felix_producer_hand_off_batches,
+};
+
 /// Called once when `felix_client_idempotent_producer` finishes. On
 /// `FELIX_STATUS_OK`, `producer` is a new producer the callee owns and frees
 /// with `felix_producer_free`; otherwise it is null.
@@ -732,11 +740,7 @@ async fn run_call<V, T, H, A, AF>(
         Ok(Err(failure)) => return done.fail(failure),
         Err(_) => return done.status(FELIX_STATUS_CANCELLED),
     };
-    tokio::select! {
-        biased;
-        () = cancelled(&handle, user.as_ref()) => done.fail(unknown()),
-        outcome = answer(handed) => report(done, outcome),
-    }
+    handed::await_answer(done, handed, handle, user, answer, report).await;
 }
 
 fn unknown() -> Failure {

@@ -31,6 +31,29 @@ public enum CloseReason
     StreamDeleted = 2,
 }
 
+/// <summary>What a subscription does when its client-side queue is full.</summary>
+public enum ClientSubQueuePolicy
+{
+    /// <summary>Stop reading the event stream until the application catches up.</summary>
+    Block = 1,
+    /// <summary>Drop the arriving item. The default.</summary>
+    DropNew = 2,
+    /// <summary>Meant to drop the oldest queued item. It currently drops the arriving one, exactly as <see cref="DropNew"/> does.</summary>
+    DropOld = 3,
+}
+
+/// <summary>How publishes are spread across the publish streams.</summary>
+public enum PublishSharding
+{
+    /// <summary>
+    /// Pick the stream by hashing the stream's name, so each stream's publishes share one writer and stay
+    /// in order. The default.
+    /// </summary>
+    HashStream = 1,
+    /// <summary>Rotate through the streams. Publishes to one stream can reach the broker out of order.</summary>
+    RoundRobin = 2,
+}
+
 /// <summary>Where a subscription starts reading.</summary>
 public readonly record struct StartPosition
 {
@@ -148,6 +171,184 @@ public sealed class FelixClientOptions
     /// and events carry none.
     /// </summary>
     public bool DisableRecordHeaders { get; init; }
+
+    /// <summary>
+    /// What a subscription does when its client-side queue is full. Null is the default,
+    /// <see cref="Felix.ClientSubQueuePolicy.DropNew"/>.
+    /// </summary>
+    public ClientSubQueuePolicy? ClientSubQueuePolicy { get; init; }
+
+    /// <summary>Events each subscription's client-side queue holds. Null is the default, 256. At least 1.</summary>
+    public int? ClientSubQueueCapacity { get; init; }
+
+    /// <summary>
+    /// Batches the broker's queue for each subscription should hold, instead of the stream's default. The
+    /// broker clamps it to its maximum; <see cref="FelixSubscription.QueueCapacity"/> reports what was
+    /// granted. When the queue is full the stream's policy applies, which by default drops. At least 1.
+    /// </summary>
+    public int? BrokerSubQueueCapacity { get; init; }
+
+    /// <summary>Publish connections per client. Null is the default, 4. At least 1.</summary>
+    public int? PublishConnPool { get; init; }
+
+    /// <summary>Publish streams per publish connection. Null is the default, 2. At least 1.</summary>
+    public int? PublishStreamsPerConn { get; init; }
+
+    /// <summary>Publishes queued per publish stream before the next waits for room. Null is the default, 64. At least 1.</summary>
+    public int? PublishQueueDepth { get; init; }
+
+    /// <summary>Bytes of publishes sent but not yet answered, across the client. Null is the default, 4 MiB. At least 1.</summary>
+    public long? PublishInflightBytes { get; init; }
+
+    /// <summary>
+    /// How publishes are spread across the publish streams. Null is the default,
+    /// <see cref="Felix.PublishSharding.HashStream"/>, which keeps a stream's publishes in order.
+    /// </summary>
+    public PublishSharding? PublishSharding { get; init; }
+
+    /// <summary>
+    /// Most publish streams opened per broker for one shard each, beside the pool. Null is the default, 4;
+    /// 0 puts every publish on the pool.
+    /// </summary>
+    public int? PublishShardStreams { get; init; }
+
+    /// <summary>Cache connections per client. Null is the default, 8. At least 1.</summary>
+    public int? CacheConnPool { get; init; }
+
+    /// <summary>Cache streams per cache connection. Null is the default, 4. At least 1.</summary>
+    public int? CacheStreamsPerConn { get; init; }
+
+    /// <summary>Connections that carry subscriptions and cache watches. Null is the default, 8. At least 1.</summary>
+    public int? EventConnPool { get; init; }
+
+    /// <summary>Most connections opened to one broker. Null is the default, 8. At least 1.</summary>
+    public int? ClusterConnPool { get; init; }
+
+    /// <summary>Streams one connection carries before another is opened beside it. Null is the default, 1024. At least 1.</summary>
+    public int? ClusterStreamsPerConn { get; init; }
+
+    /// <summary>QUIC receive window per event connection, in bytes. Null is the default, 256 MiB. Between 1 and 2^62 - 1, as are the five windows below.</summary>
+    public long? EventConnRecvWindow { get; init; }
+
+    /// <summary>QUIC receive window per event stream, in bytes. Null is the default, 64 MiB.</summary>
+    public long? EventStreamRecvWindow { get; init; }
+
+    /// <summary>QUIC send window per event connection, in bytes. Null is the default, 256 MiB.</summary>
+    public long? EventSendWindow { get; init; }
+
+    /// <summary>QUIC receive window per cache connection, in bytes. Null is the default, 256 MiB.</summary>
+    public long? CacheConnRecvWindow { get; init; }
+
+    /// <summary>QUIC receive window per cache stream, in bytes. Null is the default, 64 MiB.</summary>
+    public long? CacheStreamRecvWindow { get; init; }
+
+    /// <summary>QUIC send window per cache connection, in bytes. Null is the default, 256 MiB.</summary>
+    public long? CacheSendWindow { get; init; }
+
+    /// <summary>
+    /// Registrations and unclaimed event streams one event connection holds before refusing more. Null is
+    /// the default, 16384. At least 1.
+    /// </summary>
+    public int? EventRouterMaxPending { get; init; }
+
+    /// <summary>Largest frame the client will read; a bigger one fails the stream. Null is the default, 16 MiB. At least 1.</summary>
+    public long? MaxFrameBytes { get; init; }
+
+    /// <summary>
+    /// Ask brokers to answer acknowledged publishes after the write, with the offset, as the broker-wide
+    /// <c>FELIX_ACK_ON_COMMIT=true</c> does. Slower per publish. <see cref="FelixSupports.AckOnCommit"/>
+    /// says whether a broker honours it.
+    /// </summary>
+    public bool AckOnCommit { get; init; }
+
+    /// <summary>
+    /// Longest a connect to one broker may take, handshake included, before it fails. Null is the default,
+    /// 10 s. Whole milliseconds, between one and a year.
+    /// </summary>
+    public TimeSpan? ConnectTimeout { get; init; }
+
+    /// <summary>
+    /// Longest closing a producer waits for queued publishes to be written and acknowledged before it
+    /// aborts. Null is the default, 60 s. Whole milliseconds, between one and a year.
+    /// </summary>
+    public TimeSpan? FinishTimeout { get; init; }
+
+    /// <summary>Whether any queue or transport setting is set, so the connect passes the options struct.</summary>
+    internal bool HasTuning =>
+        ClientSubQueuePolicy is not null || ClientSubQueueCapacity is not null || BrokerSubQueueCapacity is not null
+        || PublishConnPool is not null || PublishStreamsPerConn is not null || PublishQueueDepth is not null
+        || PublishInflightBytes is not null || PublishSharding is not null || PublishShardStreams is not null
+        || CacheConnPool is not null || CacheStreamsPerConn is not null || EventConnPool is not null
+        || ClusterConnPool is not null || ClusterStreamsPerConn is not null
+        || EventConnRecvWindow is not null || EventStreamRecvWindow is not null || EventSendWindow is not null
+        || CacheConnRecvWindow is not null || CacheStreamRecvWindow is not null || CacheSendWindow is not null
+        || EventRouterMaxPending is not null || MaxFrameBytes is not null || AckOnCommit
+        || ConnectTimeout is not null || FinishTimeout is not null;
+
+    /// <summary>Refuses a tuning value the library would refuse, before anything is started.</summary>
+    internal void ValidateTuning()
+    {
+        static void AtLeastOne(long? value, string name)
+        {
+            if (value is < 1)
+            {
+                throw new ArgumentOutOfRangeException("options", $"{name} must be at least 1");
+            }
+        }
+
+        static void Window(long? value, string name)
+        {
+            // QUIC windows are variable-length integers, which top out below 2^62.
+            if (value is < 1 || value > (1L << 62) - 1)
+            {
+                throw new ArgumentOutOfRangeException("options", $"{name} must be between 1 and 2^62 - 1");
+            }
+        }
+
+        static void Timeout(TimeSpan? value, string name)
+        {
+            if (value is { } span && (span < TimeSpan.FromMilliseconds(1) || span > TimeSpan.FromDays(365)))
+            {
+                throw new ArgumentOutOfRangeException("options", $"{name} must be between 1 millisecond and one year");
+            }
+        }
+
+        AtLeastOne(ClientSubQueueCapacity, nameof(ClientSubQueueCapacity));
+        AtLeastOne(BrokerSubQueueCapacity, nameof(BrokerSubQueueCapacity));
+        AtLeastOne(PublishConnPool, nameof(PublishConnPool));
+        AtLeastOne(PublishStreamsPerConn, nameof(PublishStreamsPerConn));
+        AtLeastOne(PublishQueueDepth, nameof(PublishQueueDepth));
+        AtLeastOne(PublishInflightBytes, nameof(PublishInflightBytes));
+        if (PublishShardStreams is < 0)
+        {
+            throw new ArgumentOutOfRangeException("options", "PublishShardStreams must be at least 0");
+        }
+
+        AtLeastOne(CacheConnPool, nameof(CacheConnPool));
+        AtLeastOne(CacheStreamsPerConn, nameof(CacheStreamsPerConn));
+        AtLeastOne(EventConnPool, nameof(EventConnPool));
+        AtLeastOne(ClusterConnPool, nameof(ClusterConnPool));
+        AtLeastOne(ClusterStreamsPerConn, nameof(ClusterStreamsPerConn));
+        AtLeastOne(EventRouterMaxPending, nameof(EventRouterMaxPending));
+        AtLeastOne(MaxFrameBytes, nameof(MaxFrameBytes));
+        Window(EventConnRecvWindow, nameof(EventConnRecvWindow));
+        Window(EventStreamRecvWindow, nameof(EventStreamRecvWindow));
+        Window(EventSendWindow, nameof(EventSendWindow));
+        Window(CacheConnRecvWindow, nameof(CacheConnRecvWindow));
+        Window(CacheStreamRecvWindow, nameof(CacheStreamRecvWindow));
+        Window(CacheSendWindow, nameof(CacheSendWindow));
+        Timeout(ConnectTimeout, nameof(ConnectTimeout));
+        Timeout(FinishTimeout, nameof(FinishTimeout));
+        if (ClientSubQueuePolicy is { } policy && !Enum.IsDefined(policy))
+        {
+            throw new ArgumentOutOfRangeException("options", $"ClientSubQueuePolicy {policy} is not a defined value");
+        }
+
+        if (PublishSharding is { } sharding && !Enum.IsDefined(sharding))
+        {
+            throw new ArgumentOutOfRangeException("options", $"PublishSharding {sharding} is not a defined value");
+        }
+    }
 }
 
 /// <summary>One record delivered to a subscription, copied out of the native event.</summary>

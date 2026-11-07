@@ -20,7 +20,7 @@ public class GroupTests
             return;
         }
 
-        Assert.Equal(96, sizeof(NativeConnectOptions));
+        Assert.Equal(232, sizeof(NativeConnectOptions));
         Assert.Equal(8, (int)Marshal.OffsetOf<NativeConnectOptions>(nameof(NativeConnectOptions.Publishers)));
         Assert.Equal(16, (int)Marshal.OffsetOf<NativeConnectOptions>(nameof(NativeConnectOptions.TokenFetch)));
         Assert.Equal(24, (int)Marshal.OffsetOf<NativeConnectOptions>(nameof(NativeConnectOptions.TokenUserData)));

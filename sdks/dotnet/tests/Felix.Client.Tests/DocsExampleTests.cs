@@ -39,6 +39,7 @@ public class DocsExampleTests
         {
             public static string token => throw new NotImplementedException();
             public static string oidcToken => throw new NotImplementedException();
+            public static string inspectorToken => throw new NotImplementedException();
             public static FelixClient client => throw new NotImplementedException();
             public static FelixClient adminClient => throw new NotImplementedException();
             public static FelixShardedSubscription all => throw new NotImplementedException();

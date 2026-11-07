@@ -1,6 +1,7 @@
 //! Subscribing, and reading a subscription one event at a time.
 
 use std::ffi::{c_char, c_void};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -74,9 +75,61 @@ pub struct FelixSubscription {
     start_offset: Option<u64>,
     /// The stream's tail when the subscription was registered, kept from then.
     live_offset: Option<u64>,
+    /// What the Rust subscription reported when it was last handed back, since
+    /// it is not in the handle while a read has it.
+    stats: Arc<Stats>,
     /// Cancelled when this handle is freed, which ends a pending read.
     cancel: CancellationToken,
     shared: Arc<Shared>,
+}
+
+/// The counters a subscription reports about itself. They are copied out of
+/// the Rust subscription as each read returns, so they trail by at most the
+/// read in progress.
+#[derive(Debug)]
+struct Stats {
+    moves: AtomicU64,
+    reconnects: AtomicU64,
+    stream_deleted: AtomicBool,
+    /// [`NO_CAPACITY`] when the broker did not say.
+    queue_capacity: AtomicU64,
+}
+
+/// `queue_capacity` when the broker reported none; larger than any `u32`.
+const NO_CAPACITY: u64 = u64::MAX;
+
+impl Stats {
+    fn new(subscription: &ClusterSubscription) -> Arc<Self> {
+        let stats = Arc::new(Self {
+            moves: AtomicU64::new(0),
+            reconnects: AtomicU64::new(0),
+            stream_deleted: AtomicBool::new(false),
+            queue_capacity: AtomicU64::new(NO_CAPACITY),
+        });
+        stats.record(subscription);
+        stats
+    }
+
+    fn record(&self, subscription: &ClusterSubscription) {
+        self.set(
+            subscription.moves(),
+            subscription.reconnects(),
+            subscription.stream_deleted(),
+            subscription.queue_capacity(),
+        );
+    }
+
+    fn set(&self, moves: u64, reconnects: u64, stream_deleted: bool, capacity: Option<u32>) {
+        self.moves.store(moves, Ordering::Relaxed);
+        self.reconnects.store(reconnects, Ordering::Relaxed);
+        self.stream_deleted.store(stream_deleted, Ordering::Relaxed);
+        self.queue_capacity
+            .store(capacity.map_or(NO_CAPACITY, u64::from), Ordering::Relaxed);
+    }
+
+    fn capacity(&self) -> Option<u32> {
+        u32::try_from(self.queue_capacity.load(Ordering::Relaxed)).ok()
+    }
 }
 
 enum Slot {
@@ -273,6 +326,7 @@ pub unsafe extern "C" fn felix_client_subscribe(
                     done.ok(Box::new(FelixSubscription {
                         start_offset: subscription.start_offset(),
                         live_offset: subscription.live_offset(),
+                        stats: Stats::new(&subscription),
                         slot: Arc::new(Mutex::new(Slot::Idle(Box::new(subscription)))),
                         cancel,
                         shared,
@@ -320,6 +374,7 @@ pub unsafe extern "C" fn felix_subscription_next(
         let user = unsafe { user_token(cancel) };
         let wait = u64::try_from(timeout_ms).ok().map(Duration::from_millis);
         let handle = subscription.cancel.clone();
+        let stats = Arc::clone(&subscription.stats);
 
         let mut slot = lock(&subscription.slot);
         let lease = match std::mem::replace(&mut *slot, Slot::Reading) {
@@ -368,6 +423,9 @@ pub unsafe extern "C" fn felix_subscription_next(
                 next = inner.next_event() => Ok(next),
                 () = timeout => Err(FELIX_STATUS_TIMEOUT),
             };
+            // Whatever the read ended on, a follow or resubscribe inside it
+            // may have changed the counters.
+            stats.record(inner);
             let outcome = match next {
                 Ok(Ok(Some(event))) => Ok(Box::new(FelixEvent::from(event))),
                 Ok(Ok(None)) => {
@@ -477,6 +535,114 @@ pub unsafe extern "C" fn felix_subscription_live_offset(
         unsafe {
             write_optional(out_has, subscription.live_offset.is_some());
             write_optional(out_offset, subscription.live_offset.unwrap_or(0));
+        }
+        Ok(FELIX_STATUS_OK)
+    })
+}
+
+/// How many times the subscription followed its shard to a new owner. A
+/// shard that never changes owner leaves it at zero, which is the usual case
+/// on a single broker. Counted as reads return, so it can trail a read still
+/// pending.
+///
+/// # Safety
+///
+/// `subscription` is a live subscription and `out_moves` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn felix_subscription_moves(
+    subscription: *const FelixSubscription,
+    out_moves: *mut u64,
+) -> FelixStatus {
+    guard(|| {
+        if out_moves.is_null() {
+            return Err(Failure::invalid("out_moves is null"));
+        }
+        // SAFETY: null or a live subscription, per the contract above.
+        let subscription = unsafe { subscription.as_ref() }
+            .ok_or_else(|| Failure::invalid("subscription is null"))?;
+        // SAFETY: checked non-null; the caller promises it is writable.
+        unsafe { out_moves.write(subscription.stats.moves.load(Ordering::Relaxed)) };
+        Ok(FELIX_STATUS_OK)
+    })
+}
+
+/// How many times the subscription resubscribed after losing its connection,
+/// resuming after the last event it delivered. Zero until that happens. Counted
+/// as reads return, so it can trail a read still pending.
+///
+/// # Safety
+///
+/// `subscription` is a live subscription and `out_reconnects` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn felix_subscription_reconnects(
+    subscription: *const FelixSubscription,
+    out_reconnects: *mut u64,
+) -> FelixStatus {
+    guard(|| {
+        if out_reconnects.is_null() {
+            return Err(Failure::invalid("out_reconnects is null"));
+        }
+        // SAFETY: null or a live subscription, per the contract above.
+        let subscription = unsafe { subscription.as_ref() }
+            .ok_or_else(|| Failure::invalid("subscription is null"))?;
+        // SAFETY: checked non-null; the caller promises it is writable.
+        unsafe { out_reconnects.write(subscription.stats.reconnects.load(Ordering::Relaxed)) };
+        Ok(FELIX_STATUS_OK)
+    })
+}
+
+/// Whether the subscription ended because its stream was deleted. True only
+/// once a read has returned `FELIX_STATUS_CLOSED`; the same fact as
+/// `felix_subscription_close_reason` reporting `FELIX_CLOSE_STREAM_DELETED`.
+///
+/// # Safety
+///
+/// `subscription` is a live subscription and `out_deleted` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn felix_subscription_stream_deleted(
+    subscription: *const FelixSubscription,
+    out_deleted: *mut bool,
+) -> FelixStatus {
+    guard(|| {
+        if out_deleted.is_null() {
+            return Err(Failure::invalid("out_deleted is null"));
+        }
+        // SAFETY: null or a live subscription, per the contract above.
+        let subscription = unsafe { subscription.as_ref() }
+            .ok_or_else(|| Failure::invalid("subscription is null"))?;
+        // SAFETY: checked non-null; the caller promises it is writable.
+        unsafe { out_deleted.write(subscription.stats.stream_deleted.load(Ordering::Relaxed)) };
+        Ok(FELIX_STATUS_OK)
+    })
+}
+
+/// How many batches the broker's queue for this subscription holds, as the
+/// broker granted it: `FelixConnectOptions.broker_sub_queue_capacity` clamped
+/// to the broker's maximum, or the stream's default.
+///
+/// `*out_has` is false from a broker that does not report it. After a
+/// resubscribe the figure is the new subscription's. Either out-pointer may
+/// be null.
+///
+/// # Safety
+///
+/// `subscription` is a live subscription, and the out-pointers are null or
+/// writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn felix_subscription_queue_capacity(
+    subscription: *const FelixSubscription,
+    out_capacity: *mut u32,
+    out_has: *mut bool,
+) -> FelixStatus {
+    guard(|| {
+        // SAFETY: null or a live subscription, per the contract above.
+        let subscription = unsafe { subscription.as_ref() }
+            .ok_or_else(|| Failure::invalid("subscription is null"))?;
+        let capacity = subscription.stats.capacity();
+        // SAFETY: each is null or writable, per the contract above.
+        unsafe {
+            write_optional(out_has, capacity.is_some());
+            write_optional(out_capacity, capacity.unwrap_or(0));
         }
         Ok(FELIX_STATUS_OK)
     })

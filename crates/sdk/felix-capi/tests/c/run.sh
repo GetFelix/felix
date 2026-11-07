@@ -127,7 +127,7 @@ for key in ("tenant_id", "namespace", "token", "ca_file", "durable_stream",
             "cache", "single_shard_cache"):
     emit(key, f[key])
 for key in ("movable_stream", "quorum_stream", "control_url", "link_addr",
-            "link_stream", "trimmer_token", "trim_stream", "mtls_addr",
+            "link_stream", "trimmer_token", "trim_stream", "inspector_token", "mtls_addr",
             "client_cert_file", "client_key_file", "lease_cache",
             "lease_node_token"):
     if f.get(key):
