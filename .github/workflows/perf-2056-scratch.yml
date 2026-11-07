@@ -1,17 +1,17 @@
-name: Perf scratch (#2063 RF 3 A/B)
+name: Perf scratch (#2056 RF 3 A/B)
 
-# Temporary: RF 3 steady + promotion-burst A/B. m = main, f = branch (#2063).
+# Temporary: RF 3 steady + promotion-burst A/B. m = main, f = branch (#2056).
 
 on:
   push:
-    branches: [scratch/perf-2063]
+    branches: [scratch/perf-2056]
 
 permissions:
   contents: read
 
 env:
   CARGO_TERM_COLOR: always
-  M_SHA: 76d11560a59d54aa5bfc44d5773148b3bac6bd95
+  M_SHA: 4d49948fff4c896689659bd263127c80ee1b02a3
   BENCH_STEADY_SECS: "40"
 
 jobs:
@@ -36,7 +36,7 @@ jobs:
           cargo test --release -p felix-cluster --test replicated_bench --no-run --message-format=json \
             | jq -r 'select(.profile.test == true and .executable != null) | .executable' | tail -1 > /tmp/exe
           cp "$(cat /tmp/exe)" $out/replicated_bench
-          f_sha=e6368ff00622e18c63f107d9ea3e791105801281
+          f_sha=afb886b56ff434fa904e290fd02d6652aa5bac50
           for side in m f; do
             case $side in m) sha=$M_SHA;; f) sha=$f_sha;; esac
             git checkout --detach -q "$sha"
@@ -103,7 +103,6 @@ jobs:
                 cat $(find $logs -name '*.log') | grep -E ' (WARN|ERROR) ' | sed -E 's/^.*(WARN|ERROR) //; s/bulk-[0-9]+/S/g; s/[0-9]+/N/g' \
                   | cut -c1-160 | sort | uniq -c | sort -rn | head -25
               } > $s 2>&1 || true
-              tar czf $p/out/logs-$r-$side.tgz -C $logs . 
               rm -rf $logs
               echo "::endgroup::"
             done
