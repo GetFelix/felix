@@ -1017,6 +1017,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     let mark_now = marks
         .offset_at(mark_key, incarnation, route.generation)
         .unwrap_or(0);
+    let never_written = tail == 0 && log.physical_base() == 0;
     let counter_mark_now = marks
         .counters()
         .offset(mark_key, route.generation)
@@ -1048,8 +1049,10 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
             // ([`FollowerCursor::mark_carried`]). A level one is sent nothing
             // on an idle shard, and one missing trust there stalls the next
             // fence that needs it. Its last record goes again after the
-            // exchange.
-            let owes_mark = quorum_shard && leading && mark_now > 0 && !cursor.mark_carried;
+            // exchange. A log that never held a record keeps the mark at 0,
+            // so its followers are sent one empty batch instead.
+            let owes_mark =
+                quorum_shard && leading && (mark_now > 0 || never_written) && !cursor.mark_carried;
             let ping = successor
                 || unnamed_learner
                 || would_raise(
@@ -1269,17 +1272,32 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                     && !(quiet && ping)
                     && cursor.next_offset >= tail
                 {
-                    reship_last(
-                        requester,
-                        &log,
-                        &shard,
-                        log_kind,
-                        &mut cursor,
-                        rebuilds,
-                        Some(mark_now),
-                        set_stamp,
-                    )
-                    .await;
+                    if never_written {
+                        crate::ship::vouch_empty(
+                            requester,
+                            &log,
+                            &shard,
+                            log_kind,
+                            &mut cursor,
+                            MAX_BATCH_BYTES,
+                            rebuilds,
+                            Some(mark_now),
+                            set_stamp,
+                        )
+                        .await;
+                    } else {
+                        reship_last(
+                            requester,
+                            &log,
+                            &shard,
+                            log_kind,
+                            &mut cursor,
+                            rebuilds,
+                            Some(mark_now),
+                            set_stamp,
+                        )
+                        .await;
+                    }
                 }
                 // A batch on one log can re-admit the copy while another log
                 // still holds the learner answer it gave before, here or in

@@ -1287,7 +1287,9 @@ JSON, in lowercase hex. Lines are sorted.
   that rotates the storage id (`run-state`) writes `untrusted all` before it
   writes the new id, so a crash in between still distrusts every copy. A copy
   loses the mark when a leader ships it a batch that leaves it level through
-  the leader's generation start and the batch's commit offset, above zero
+  the leader's generation start and the batch's commit offset, above zero,
+  or, on a shard that never held a record, when an empty batch from a leader
+  whose generation starts at 0 finds the copy empty
   (`docs/replication-design.md`, "One fence rule for every change of
   leader"). The next rotation marks every copy again.
 - **doubted**: a copy this broker led before such a crash. Written before the

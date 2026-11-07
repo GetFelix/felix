@@ -726,6 +726,14 @@ start record alone is short of what the leader acknowledged since
 (`StandInNoCatchUp`). For a copy that lost its ballots, only a leader that
 readmits it may vouch for it.
 
+A shard that has never held a record is the one exception. Its mark is 0 and
+stays 0 until the first write, so no batch can carry a commit offset above
+zero. Nothing was ever acknowledged there either, so an empty copy already
+holds everything. A batch with no records at offset 0, carrying a commit
+offset of 0 and labels that put the leader's generation start at 0, trusts a
+copy that is still empty after it. It trusts nothing else: a copy holding
+records compares none of them against an empty batch.
+
 On an idle shard nothing would vouch. The batch that brings a follower level
 goes out before the follower's own answer raises the mark, so it carries a
 commit offset of zero, and a level follower is sent nothing else. The copy
@@ -739,10 +747,14 @@ again, since it may not have the old process's trust. A follower that does
 not take generation labels is never owed one: without labels no batch can
 vouch for it. The batch holds only records the follower already has, so
 the vouch is the same as for any other batch: level through the start record
-and through the mark. `FelixShardUnifiedIdleVouch` checks that such a
-follower is trusted again while its leader serves, with no writes. Its
-`Legacy` twin, a leader that sends a level follower nothing, leaves it
-untrusted.
+and through the mark. On a log that never held a record there is no last
+record, so the leader sends that follower one empty batch instead, again
+once per follower process. `FelixShardUnifiedIdleVouch` checks that such a
+follower is trusted again while its leader serves, with no writes, and
+`FelixShardUnifiedIdleVouchWrite` the same with one write. Its `Legacy` twin,
+a leader that sends a level follower nothing, leaves it untrusted, and so
+does `FelixShardUnifiedVouchEmptyLegacy`, an empty shard whose followers are
+trusted only through a mark above zero.
 
 The control plane keeps a durable form of a readmitting leader's vouch:
 when the leader of a set that names a replaced copy by its new storage id
