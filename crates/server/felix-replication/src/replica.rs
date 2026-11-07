@@ -726,13 +726,24 @@ impl ReplicaHandler {
         }
         // Before the ballot changes: it is the evidence of a copy this
         // broker led before an unclean start.
-        if let Some(unclean) = &self.unclean
-            && own_kind(log_kind).is_none()
+        if own_kind(log_kind).is_none()
+            && let Err(err) = self
+                .doubt_before_ballot(&key, &log, batch.shard.generation)
+                .await
         {
-            unclean.accepting(
-                &crate::driver::watch_key(&key),
-                &log,
-                batch.shard.generation,
+            tracing::error!(
+                stream = %key.stream,
+                shard = key.shard,
+                error = %err,
+                "could not record that this copy is the one this broker led before its crash; \
+                 refusing the batch rather than take its ballot",
+            );
+            metrics::record_replicated(metrics::OUTCOME_REFUSED);
+            return refused(
+                correlation_id,
+                ErrorCode::Unavailable,
+                0,
+                "this broker could not record that it led this copy before a crash".to_string(),
             );
         }
         if let Some(refusal) =
@@ -1464,6 +1475,36 @@ impl ReplicaHandler {
         self.fleet.as_ref().and_then(|fleet| fleet.copy_trust())
     }
 
+    /// `log`, `key`'s own log, is about to take a newer leader's ballot at
+    /// `generation` from a batch. A copy this broker led before an unclean
+    /// start is recorded as doubted first ([`UncleanStart::accepting`]), and
+    /// so is one given up on disk after a clean restart, whose given-up
+    /// ballot the new one replaces. On an error the ballot must not be taken.
+    ///
+    /// [`UncleanStart::accepting`]: crate::unclean::UncleanStart::accepting
+    async fn doubt_before_ballot(
+        &self,
+        key: &felix_router::ShardKey,
+        log: &felix_broker::StreamLog,
+        generation: u64,
+    ) -> Result<(), felix_storage::StorageError> {
+        let shard = crate::driver::watch_key(key);
+        if let Some(unclean) = &self.unclean {
+            return unclean.accepting(&shard, log, generation).await;
+        }
+        let Some(trust) = self.copy_trust() else {
+            return Ok(());
+        };
+        let name = crate::unclean::copy_key(&shard);
+        if !log.gave_up() || generation < log.accepted_generation() || trust.doubted(&name) {
+            return Ok(());
+        }
+        let trust = Arc::clone(trust);
+        tokio::task::spawn_blocking(move || trust.doubt(&name))
+            .await
+            .unwrap_or_else(|err| Err(felix_storage::StorageError::Io(std::io::Error::other(err))))
+    }
+
     /// Whether `key`'s copy took a ballot while its promises counted for
     /// nothing and has not been readmitted since ([`Self::unkeep`]).
     fn unkept(&self, key: &felix_router::ShardKey) -> bool {
@@ -1531,14 +1572,7 @@ impl ReplicaHandler {
             return;
         }
         let trust = Arc::clone(trust);
-        let recorded = tokio::task::spawn_blocking(move || {
-            trust.clear_doubt(&name)?;
-            if trusts {
-                trust.trust(&name)?;
-            }
-            Ok::<_, felix_storage::StorageError>(())
-        })
-        .await;
+        let recorded = tokio::task::spawn_blocking(move || trust.vouch(&name, trusts)).await;
         if let Ok(Err(err)) = recorded {
             tracing::warn!(
                 stream = %shard.stream,
@@ -1825,12 +1859,15 @@ impl ReplicaHandler {
         if gives_up {
             // A batch after a clean restart replaces the given-up ballot
             // without asking who led the copy, so record that apart first.
+            // This fence is refused either way, and the given-up ballot only
+            // adds to the record; a batch that would replace it tries again
+            // and is refused if it cannot (`doubt_before_ballot`).
             if !doubted && let Some(trust) = self.copy_trust() {
                 let trust = Arc::clone(trust);
                 let name = crate::unclean::copy_key(&shard);
                 if let Ok(Err(err)) = tokio::task::spawn_blocking(move || trust.doubt(&name)).await
                 {
-                    tracing::warn!(
+                    tracing::error!(
                         stream = %key.stream,
                         shard = key.shard,
                         error = %err,

@@ -171,6 +171,7 @@ pub fn begin(
     mut fresh: impl FnMut() -> [u8; 16],
 ) -> Result<Begun> {
     let (loaded, origin) = storage_identity::load_or_create(root, &mut fresh)?;
+    copy_trust::ensure(root, origin == Origin::Created)?;
     let last_run = read(root, loaded)?;
     let recorded = read_registration(root)?;
     let restored = origin == Origin::Loaded && recorded.behind(registered);

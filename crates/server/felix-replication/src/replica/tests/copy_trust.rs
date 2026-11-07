@@ -224,3 +224,41 @@ async fn a_crashed_leaders_copy_stays_doubted_after_a_ballot_and_a_clean_restart
     .with_fleet(marks_on(trust_dir.path()));
     taken(&next.fence(SENDER, fence(7)).await);
 }
+
+/// **A batch that would replace a crashed leader's ballot is refused when the
+/// doubt cannot be recorded.** Taken, its ballot would erase the only mark a
+/// clean restart has that the copy was led here.
+#[tokio::test]
+async fn a_crashed_leaders_copy_takes_no_ballot_when_its_doubt_cannot_be_recorded() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    led_before_a_crash(dir.path()).await;
+    let trust_dir = tempfile::tempdir().expect("tempdir");
+    let trust = Arc::new(CopyTrust::open(trust_dir.path()).expect("open"));
+    // Every write of the record now fails.
+    drop(trust_dir);
+
+    let broker = broker_on(dir.path());
+    let marks = kept_marks();
+    marks.set_copy_trust(Arc::clone(&trust));
+    let leader = ReplicaHandler::new(
+        Arc::clone(&broker),
+        router_led_by("broker-c", &[LOCAL, "broker-a"], 6),
+    )
+    .with_fleet(marks)
+    .with_unclean_start(Arc::new(
+        crate::unclean::UncleanStart::new(LOCAL).with_copy_trust(trust),
+    ));
+    let answer = leader
+        .apply(
+            Some("broker-c"),
+            labelled(6, 5, 0, &["a"]),
+            felix_broker::LogKind::Stream,
+        )
+        .await;
+    assert_eq!(refusal(&answer).code, ErrorCode::Unavailable);
+    let log = broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    assert_eq!(log.accepted_leader().as_deref(), Some(LOCAL));
+}

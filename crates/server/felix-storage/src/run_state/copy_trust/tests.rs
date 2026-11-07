@@ -1,5 +1,5 @@
-//! A rotation distrusts every copy until each is named again, and the record
-//! survives any number of clean restarts.
+//! A rotation distrusts every copy until each is vouched for again, every
+//! mark survives clean restarts, and a damaged or missing record fails safe.
 use super::*;
 use crate::run_state::{BootId, begin, mark_clean};
 
@@ -26,6 +26,10 @@ fn counter() -> impl FnMut() -> [u8; 16] {
     }
 }
 
+fn marks(trust: &CopyTrust, key: &[u8]) -> (bool, bool, bool) {
+    (trust.trusted(key), trust.doubted(key), trust.unkept(key))
+}
+
 #[test]
 fn a_directory_that_never_rotated_trusts_every_copy() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -33,16 +37,14 @@ fn a_directory_that_never_rotated_trusts_every_copy() {
     let begun = start(dir.path(), 1, &mut fresh);
     assert!(!begun.rotated);
     let trust = CopyTrust::open(dir.path()).expect("open");
-    assert!(trust.trusted(A));
-    trust.trust(A).expect("trust");
-    assert!(
-        !crate::fs::try_exists(dir.path().join(FILE_NAME)).expect("exists"),
-        "nothing to record"
-    );
+    assert_eq!(marks(&trust, A), (true, false, false));
+    trust.vouch(A, true).expect("vouch");
+    assert_eq!(trust.writes.load(std::sync::atomic::Ordering::Relaxed), 0);
 }
 
-/// **An unclean start distrusts every copy until a leader vouches for it,
-/// and only that clears it, durably, across clean restarts.**
+/// **An unclean start distrusts every copy until a leader vouches for it
+/// through its mark, and only that clears it, durably, across clean
+/// restarts.**
 #[test]
 fn an_unclean_start_distrusts_every_copy_until_it_is_vouched_for() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -65,10 +67,10 @@ fn an_unclean_start_distrusts_every_copy_until_it_is_vouched_for() {
         (id, trust) = clean_restart(id, &mut fresh);
         assert!(!trust.trusted(A), "a clean restart keeps the distrust");
     }
-    CopyTrust::open(root)
-        .expect("open")
-        .trust(A)
-        .expect("trust");
+    let trust = CopyTrust::open(root).expect("open");
+    trust.vouch(A, false).expect("vouch");
+    assert!(!trust.trusted(A), "level through the start only");
+    trust.vouch(A, true).expect("vouch");
     for _ in 0..3 {
         let trust;
         (id, trust) = clean_restart(id, &mut fresh);
@@ -82,75 +84,123 @@ fn an_unclean_start_distrusts_every_copy_until_it_is_vouched_for() {
     assert!(!CopyTrust::open(root).expect("open").trusted(A));
 }
 
-/// **A doubted copy stays doubted until cleared, through clean restarts and
-/// later rotations.**
+/// **A doubt and an unkept ballot outlive restarts and rotations until
+/// cleared.**
 #[test]
-fn a_doubt_outlives_restarts_until_cleared() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let root = dir.path();
-    let mut fresh = counter();
-    start(root, 1, &mut fresh);
-    let begun = start(root, 2, &mut fresh);
-    CopyTrust::open(root)
-        .expect("open")
-        .doubt(A)
-        .expect("doubt");
-    mark_clean(root, begun.id).expect("clean stop");
-    start(root, 2, &mut fresh);
-    let trust = CopyTrust::open(root).expect("open");
-    assert!(trust.doubted(A) && !trust.doubted(B));
-    start(root, 3, &mut fresh);
-    let trust = CopyTrust::open(root).expect("open");
-    assert!(trust.doubted(A), "a rotation keeps the doubt");
-    trust.clear_doubt(A).expect("clear");
-    assert!(!CopyTrust::open(root).expect("open").doubted(A));
-}
-
-/// **An unkept copy stays unkept, on a directory that never rotated too,
-/// through restarts and rotations until it is readmitted.**
-#[test]
-fn an_unkept_copy_outlives_restarts_until_readmitted() {
+fn doubts_and_unkept_ballots_outlive_restarts_until_cleared() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     let mut fresh = counter();
     let begun = start(root, 1, &mut fresh);
-    CopyTrust::open(root)
-        .expect("open")
-        .unkeep(A)
-        .expect("unkeep");
     let trust = CopyTrust::open(root).expect("open");
-    assert!(trust.unkept(A) && !trust.unkept(B));
-    assert!(trust.trusted(B), "naming an unkept copy distrusts no other");
+    trust.doubt(A).expect("doubt");
+    trust.unkeep(B).expect("unkeep");
     mark_clean(root, begun.id).expect("clean stop");
     start(root, 1, &mut fresh);
-    assert!(CopyTrust::open(root).expect("open").unkept(A));
+    let trust = CopyTrust::open(root).expect("open");
+    assert_eq!(marks(&trust, A), (true, true, false));
+    assert_eq!(marks(&trust, B), (true, false, true));
     start(root, 2, &mut fresh);
     let trust = CopyTrust::open(root).expect("open");
-    assert!(trust.unkept(A), "a rotation keeps it");
+    assert_eq!(
+        marks(&trust, A),
+        (false, true, false),
+        "a rotation keeps it"
+    );
+    trust.vouch(A, false).expect("vouch");
+    trust.clear_unkept(B).expect("clear");
+    let trust = CopyTrust::open(root).expect("open");
+    assert_eq!(marks(&trust, A), (false, false, false));
+    assert_eq!(marks(&trust, B), (false, false, false));
+}
+
+/// **A record that does not decode marks every copy every way, and keeps
+/// them so when it is next written.** Each copy clears by the usual rules.
+#[test]
+fn a_damaged_record_marks_every_copy_until_each_clears() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join(FILE_NAME), b"copy_trust\njunk\n").expect("write");
+    let trust = CopyTrust::open(dir.path()).expect("open");
+    assert_eq!(marks(&trust, A), (false, true, true));
+    trust.vouch(A, true).expect("vouch");
     trust.clear_unkept(A).expect("clear");
-    assert!(!CopyTrust::open(root).expect("open").unkept(A));
+    let trust = CopyTrust::open(dir.path()).expect("open");
+    assert_eq!(marks(&trust, A), (true, false, false));
+    assert_eq!(
+        marks(&trust, B),
+        (false, true, true),
+        "the rewrite kept the rest"
+    );
+}
+
+/// **A directory that ran before without the record, as an older release's,
+/// starts with every copy untrusted and unkept.** A new one starts clean.
+#[test]
+fn a_directory_that_ran_without_the_record_starts_untrusted_and_unkept() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut fresh = counter();
+    let begun = start(dir.path(), 1, &mut fresh);
+    assert_eq!(
+        marks(&CopyTrust::open(dir.path()).expect("open"), A),
+        (true, false, false)
+    );
+    mark_clean(dir.path(), begun.id).expect("clean stop");
+    std::fs::remove_file(dir.path().join(FILE_NAME)).expect("remove");
+    let begun = start(dir.path(), 1, &mut fresh);
+    assert!(!begun.rotated);
+    assert_eq!(
+        marks(&CopyTrust::open(dir.path()).expect("open"), A),
+        (false, false, true)
+    );
+}
+
+/// **Changes made while a write is in flight share the next one.**
+#[test]
+fn concurrent_vouches_share_writes() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join(FILE_NAME), b"copy_trust\nuntrusted all\n").expect("write");
+    let trust = std::sync::Arc::new(CopyTrust::open(dir.path()).expect("open"));
+    let held = trust.writer.lock();
+    let threads: Vec<_> = (0..32u8)
+        .map(|n| {
+            let trust = std::sync::Arc::clone(&trust);
+            std::thread::spawn(move || trust.vouch(&[n], true).expect("vouch"))
+        })
+        .collect();
+    while trust.wanted.lock().1 < 32 {
+        std::thread::yield_now();
+    }
+    drop(held);
+    for thread in threads {
+        thread.join().expect("join");
+    }
+    assert_eq!(trust.writes.load(std::sync::atomic::Ordering::Relaxed), 1);
+    let trust = CopyTrust::open(dir.path()).expect("open");
+    assert!((0..32u8).all(|n| trust.trusted(&[n])));
 }
 
 #[test]
-fn records_round_trip_and_a_damaged_one_trusts_nothing() {
+fn records_round_trip() {
     let state = State {
-        distrusted: true,
-        trusted: [A.to_vec(), vec![0, 255]].into_iter().collect(),
-        doubted: [B.to_vec()].into_iter().collect(),
-        unkept: [A.to_vec()].into_iter().collect(),
+        untrusted: Marks {
+            all: true,
+            except: [A.to_vec(), vec![0, 255]].into_iter().collect(),
+        },
+        doubted: Marks {
+            all: false,
+            except: [B.to_vec()].into_iter().collect(),
+        },
+        unkept: Marks::everyone(),
     };
     assert_eq!(decode(&encode(&state)), Some(state));
     assert_eq!(decode(HEADER.as_bytes()), Some(State::default()));
     for damaged in [
-        &b"copy_trust\ntrusted 0"[..],
-        b"copy_trust\nother\n",
+        &b"copy_trust\nuntrusted 0"[..],
+        b"copy_trust\nother all\n",
+        b"copy_trust\ndoubted except 00\n",
+        b"copy_trust\nuntrusted all\nuntrusted 00\n",
         b"junk",
     ] {
         assert_eq!(decode(damaged), None, "{damaged:?}");
     }
-
-    let dir = tempfile::tempdir().expect("tempdir");
-    std::fs::write(dir.path().join(FILE_NAME), b"junk").expect("write");
-    let trust = CopyTrust::open(dir.path()).expect("open");
-    assert!(!trust.trusted(A));
 }
