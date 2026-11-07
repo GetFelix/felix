@@ -193,7 +193,11 @@ the outage began.
 Set
 [`FELIX_START_WITHOUT_CONTROLPLANE=true`](/reference/environment-variables/#felix_start_without_controlplane)
 to let it rejoin. It then starts from what the control plane last told it,
-kept in its data directory, votes, and follows its shards' leaders. Until the
+kept in its data directory, votes, and follows its shards' leaders. With the unified fence on, the default, that vote does not
+count toward a promotion: the broker attests nothing until it reaches the
+control plane and its restore check has run. A failover that needs its vote
+waits for the control plane. `FELIX_UNIFIED_FENCE=0` restores the older rule,
+where the restarted broker's vote counts during the outage. Until the
 control plane is back and it registers, it serves no client and does not stand
 for election. It does not answer pings either, so followers of a shard it led
 treat it as down and elect one of themselves. It starts this way only if the

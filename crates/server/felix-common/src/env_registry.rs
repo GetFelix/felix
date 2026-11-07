@@ -352,6 +352,7 @@ pub const KNOWN_VARS: &[&str] = &[
     "FELIX_TOKEN",
     "FELIX_UDP_RECV_BUFFER",
     "FELIX_UDP_SEND_BUFFER",
+    "FELIX_UNIFIED_FENCE",
     "FELIX_WORKER_THREADS",
 ];
 

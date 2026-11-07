@@ -164,13 +164,22 @@ pub(super) struct JointSets {
     /// keep it either way, and a majority of each is needed.
     old_voters: Vec<OldVoters>,
     new_voters: BTreeSet<String>,
+    /// The generation of the set this leader fences on, which an attested
+    /// promise must count from.
+    new_generation: u64,
     local: String,
 }
 
-/// A fence answer: the node, the copy its handshake named, and whether it
+/// A fence answer: the node, the copy its handshake named, whether it
 /// attested a kept ballot to a continuing leader, which then counts it from
-/// any copy.
-pub(super) type Answered<'n> = (&'n str, Option<StorageId>, bool);
+/// any copy, and the attestation it carried, if any. An attested answer
+/// counts by that alone ([`super::Counted`]).
+pub(super) type Answered<'n> = (
+    &'n str,
+    Option<StorageId>,
+    bool,
+    Option<felix_wire::internal::FenceAttestation>,
+);
 
 /// The voters of one set being left, with the copy it names for each
 /// member, where it names one. An answer counts toward this set only from
@@ -180,6 +189,7 @@ pub(super) type Answered<'n> = (&'n str, Option<StorageId>, bool);
 struct OldVoters {
     voters: BTreeSet<String>,
     copies: std::collections::BTreeMap<String, StorageId>,
+    generation: u64,
 }
 
 impl OldVoters {
@@ -234,18 +244,22 @@ impl JointSets {
         self.old_voters.iter().any(|old| !old.copies.is_empty())
     }
 
-    /// Whether `answered`, each with the copy its handshake named and
-    /// whether a continuing leader counts it from any copy, is with this
-    /// broker a majority of the voters of every set. A learner is never a
-    /// voter, so it never counts.
-    pub(super) fn has_majorities<'n>(&self, answered: impl Iterator<Item = Answered<'n>>) -> bool {
+    /// Whether `answered` with this broker's `own` copy holds every set: a
+    /// majority of each set's voters promised (exclusion) and, unless
+    /// `continuing`, the answers that hold what they acknowledged meet every
+    /// majority of it (coverage). A learner is never a voter, so it never
+    /// counts. Without attestations both come to a majority that answered
+    /// from the copy each set names.
+    pub(super) fn has_majorities<'n>(
+        &self,
+        answered: impl Iterator<Item = Answered<'n>>,
+        own: super::OwnCopy,
+        continuing: bool,
+    ) -> bool {
         let answered: Vec<_> = answered.collect();
-        self.old_voters
-            .iter()
-            .all(|old| self.majority(&old.voters, |v| self.answered_for(old, &answered, v)))
-            && self.majority(&self.new_voters, |v| {
-                answered.iter().any(|(node, _, _)| *node == v)
-            })
+        self.tallies(&answered, own).iter().all(|tally| {
+            2 * tally.promised > tally.voters && (continuing || 2 * tally.covered >= tally.voters)
+        })
     }
 
     /// Whether `nodes` could still make every majority, whichever copies
@@ -256,47 +270,101 @@ impl JointSets {
             .iter()
             .map(|old| &old.voters)
             .chain(std::iter::once(&self.new_voters))
-            .all(|voters| self.majority(voters, |v| nodes.contains(v)))
+            .all(|voters| {
+                voters
+                    .iter()
+                    .filter(|v| **v == self.local || nodes.contains(v.as_str()))
+                    .count()
+                    * 2
+                    > voters.len()
+            })
     }
 
-    fn answered_for(&self, old: &OldVoters, answered: &[Answered<'_>], voter: &str) -> bool {
-        answered
+    /// Each set being left, then the new set: its voters, how many of them
+    /// promised, and how many hold what they acknowledged.
+    fn tallies(&self, answered: &[Answered<'_>], own: super::OwnCopy) -> Vec<Tally> {
+        let tally = |voters: &BTreeSet<String>,
+                     generation: u64,
+                     legacy: &dyn Fn(&str, Option<StorageId>, bool) -> bool| {
+            let mut promised = 0;
+            let mut covered = 0;
+            for voter in voters {
+                if *voter == self.local {
+                    promised += usize::from(own.kept);
+                    covered += usize::from(own.trusted);
+                    continue;
+                }
+                let from = answered.iter().filter(|(node, ..)| *node == voter.as_str());
+                let mut promises = false;
+                let mut covers = false;
+                for (node, identity, kept, attested) in from {
+                    let counted = super::Counted::of(*attested);
+                    let legacy = attested.is_some() || legacy(node, *identity, *kept);
+                    promises |= legacy && counted.promises(generation);
+                    covers |= legacy && counted.covers();
+                }
+                promised += usize::from(promises);
+                covered += usize::from(covers);
+            }
+            Tally {
+                voters: voters.len(),
+                promised,
+                covered,
+            }
+        };
+        self.old_voters
             .iter()
-            .any(|(node, identity, kept)| *node == voter && (*kept || old.counts(node, *identity)))
-    }
-
-    fn count(&self, voters: &BTreeSet<String>, answered: impl Fn(&str) -> bool) -> usize {
-        voters
-            .iter()
-            .filter(|v| *v == &self.local || answered(v))
-            .count()
-    }
-
-    fn majority(&self, voters: &BTreeSet<String>, answered: impl Fn(&str) -> bool) -> bool {
-        self.count(voters, answered) * 2 > voters.len()
+            .map(|old| {
+                tally(&old.voters, old.generation, &|node, identity, kept| {
+                    kept || old.counts(node, identity)
+                })
+            })
+            .chain(std::iter::once(tally(
+                &self.new_voters,
+                self.new_generation,
+                &|_, _, _| true,
+            )))
+            .collect()
     }
 
     /// How far the answers got, for a fence that stays pending.
-    pub(super) fn shortfall<'n>(&self, answered: impl Iterator<Item = Answered<'n>>) -> String {
+    pub(super) fn shortfall<'n>(
+        &self,
+        answered: impl Iterator<Item = Answered<'n>>,
+        own: super::OwnCopy,
+    ) -> String {
         let answered: Vec<_> = answered.collect();
-        let old = self
-            .old_voters
+        let tallies = self.tallies(&answered, own);
+        let (new, old) = tallies.split_last().expect("the new set is always tallied");
+        let old = old
             .iter()
-            .map(|old| {
-                let took = self.count(&old.voters, |v| self.answered_for(old, &answered, v));
-                format!("{took} of {}", old.voters.len())
-            })
+            .map(|tally| format!("{} of {}", tally.promised, tally.voters))
             .collect::<Vec<_>>()
             .join(" and ");
-        format!(
+        let mut why = format!(
             "{old} voters of the set being left and {} of {} of the new set took the fence, \
              a majority of each needed",
-            self.count(&self.new_voters, |v| answered
+            new.promised, new.voters,
+        );
+        if own.attested {
+            let covered = tallies
                 .iter()
-                .any(|(node, _, _)| *node == v)),
-            self.new_voters.len(),
-        )
+                .map(|tally| format!("{} of {}", tally.covered, tally.voters))
+                .collect::<Vec<_>>()
+                .join(" and ");
+            why.push_str(&format!(
+                "; {covered} attest they hold what they acknowledged, half of each needed"
+            ));
+        }
+        why
     }
+}
+
+/// One set's count in a fence.
+struct Tally {
+    voters: usize,
+    promised: usize,
+    covered: usize,
 }
 
 /// Why [`set_before`] has no set for a route.
@@ -702,6 +770,7 @@ pub(super) async fn across<R: PeerRequester>(
             let voters = OldVoters {
                 voters,
                 copies: copies.clone(),
+                generation: old.generation,
             };
             if !old_voters.contains(&voters) {
                 old_voters.push(voters);
@@ -772,6 +841,7 @@ pub(super) async fn across<R: PeerRequester>(
         besides: besides.iter().map(view).collect(),
         old_voters,
         new_voters,
+        new_generation: set.generation,
         local: local_node_id.to_string(),
     };
     Fenced {

@@ -133,6 +133,48 @@ fn an_attestation_reaches_only_a_caller_that_reads_it() {
     }
 }
 
+/// **To a caller without `UNIFIED_FENCE` a fence answer encodes byte for
+/// byte as it did before attestations**, whatever the replica attests.
+#[test]
+fn an_older_callers_fence_answer_is_unchanged_by_the_attestation() {
+    use felix_wire::internal::FenceAttestation;
+
+    let answer = |attestation| {
+        InternalMessage::FenceOk(felix_wire::internal::FenceOk {
+            correlation_id: 7,
+            log_end: 3,
+            commit_offset: 2,
+            last_generation: 4,
+            kept_ballot: true,
+            attestation,
+        })
+    };
+    let bytes = |attestation, offered| {
+        crate::peer::server::for_caller(answer(attestation), offered)
+            .encode()
+            .expect("encode")
+    };
+    for offered in [
+        PeerCapabilities::NONE,
+        PeerCapabilities::KEPT_BALLOTS,
+        PeerCapabilities::KEPT_BALLOTS.union(PeerCapabilities::LEARNER_ACKS),
+    ] {
+        let plain = bytes(None, offered);
+        for attestation in [
+            FenceAttestation {
+                kept_from: 0,
+                trusted: true,
+            },
+            FenceAttestation {
+                kept_from: u64::MAX,
+                trusted: false,
+            },
+        ] {
+            assert_eq!(bytes(Some(attestation), offered), plain, "{offered:?}");
+        }
+    }
+}
+
 /// **A refusal's reason goes only to a caller that offered
 /// `REFUSAL_REASONS`.** An older caller would reject the trailing fields as
 /// a malformed body; it reads the detail it always has.

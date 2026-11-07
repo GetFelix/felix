@@ -1067,6 +1067,27 @@ and placement treats it as one. With `joint_fence` finalized:
    start record. For a cache shard its counter log must hold the counter
    log's start record too. From then on placement counts the member again.
    The next placement write drops it from `learners`.
+4. **The report is recorded as evidence.** When the leader's report at that
+   generation shows the learner caught up under the id the assignment names
+   it by, at the incarnation it is registered at, the control plane adds a
+   `readmitted` entry to the assignment: `{node, storage_id, generation,
+   offset}`, where `offset` is where the report put the copy. The set naming
+   the new id was written after the id registered, so it was introduced after
+   the copy was lost, and its leader holds every record the old copy helped
+   acknowledge. A fence can later trust an answer from that same copy that
+   shows a last generation of at least `generation` and a log end of at least
+   `offset`, even after a restart that lost the broker's own record of it.
+   A report from the earlier generation, whose set still named the lost copy,
+   records nothing.
+
+The store owns `readmitted`. It keeps the first entry per member (a later
+report claims no less), carries entries to every later write while the
+member stays in the set under that id, and drops one once the set names the
+member by another id or leaves it out. Recording an entry does not change
+the generation and writes no change: brokers see it in the next assignment
+write or a snapshot. Postgres stores it from migration `0046`; under Raft it
+is recorded only once every member is at metadata level 30, and below that
+nothing is written. No broker reads it yet.
 
 Every placement write works out `learners` from the assignment it replaces:
 a member that assignment named under another id than the one registered now,
@@ -1957,6 +1978,11 @@ the assignment, which puts that shard behind every other waiting for a slot,
 so one copy that keeps failing cannot hold up the rest of a drain. Set the
 timeout well above the time the largest shard takes to copy at the
 bandwidth limit below.
+
+A destination that goes down or halts before the fence ends the move at once
+(`abandon` or `halted`) with the same write. The set goes back to what it was
+before the move: a destination the move added is dropped, and one that was
+already a follower stays, since its copy may be the only full one.
 
 A move that has been fenced is not timed out. The leader has stopped
 serving; going back means a new generation and every client following the

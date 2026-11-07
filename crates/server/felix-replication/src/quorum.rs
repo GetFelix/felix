@@ -50,6 +50,18 @@ pub struct QuorumMarks {
     status: std::sync::OnceLock<Arc<crate::status::ShardStatusBoard>>,
     /// The storage identity of this broker's directory, set once it is known.
     local_storage: std::sync::OnceLock<(felix_storage::StorageId, bool)>,
+    /// Whether this broker's directory kept every ballot it took, as the
+    /// fence answer attests it. Unset reads as not kept.
+    kept_ballots: std::sync::OnceLock<bool>,
+    /// The directory's record of which copies are trusted and doubted
+    /// across restarts. Unset on a broker without a durable directory.
+    copy_trust: std::sync::OnceLock<Arc<felix_storage::run_state::copy_trust::CopyTrust>>,
+    /// Whether this broker counts fence answers by attestation and answers
+    /// such a caller with its own ([`Self::set_unified_fence`]).
+    unified_fence: std::sync::OnceLock<bool>,
+    /// What this process knows of the copies a crash may have cut, on an
+    /// unclean start.
+    unclean: std::sync::OnceLock<Arc<crate::unclean::UncleanStart>>,
     /// Leaderships the replicas elected, set where this broker may stand.
     elections: std::sync::OnceLock<Arc<crate::election::Elections>>,
     /// When each shard's timeout was last logged.
@@ -272,6 +284,61 @@ impl QuorumMarks {
 
     pub(crate) fn local_storage(&self) -> Option<felix_storage::StorageId> {
         self.local_storage.get().map(|(storage, _)| *storage)
+    }
+
+    /// Record whether this broker's directory kept every ballot it took:
+    /// never wiped, restored or a replacement for a lost copy, and checked
+    /// against the control plane's record. Only the first call counts.
+    pub fn set_kept_ballots(&self, kept: bool) {
+        let _ = self.kept_ballots.set(kept);
+    }
+
+    pub(crate) fn kept_ballots(&self) -> bool {
+        self.kept_ballots.get().copied().unwrap_or(false)
+    }
+
+    /// Bind the durable directory's record of trusted and doubted copies.
+    /// Call before this broker answers anything. Only the first call counts.
+    pub fn set_copy_trust(&self, trust: Arc<felix_storage::run_state::copy_trust::CopyTrust>) {
+        let _ = self.copy_trust.set(trust);
+    }
+
+    pub(crate) fn copy_trust(
+        &self,
+    ) -> Option<&Arc<felix_storage::run_state::copy_trust::CopyTrust>> {
+        self.copy_trust.get()
+    }
+
+    /// Record whether this broker counts promotion fences by attestation
+    /// (`FELIX_UNIFIED_FENCE`, and a durable directory to attest from). Only
+    /// the first call counts.
+    pub fn set_unified_fence(&self, on: bool) {
+        let _ = self.unified_fence.set(on);
+    }
+
+    /// Whether a promotion counts its fence's answers by attestation. Unset
+    /// reads as off: the broker sets it at startup.
+    pub(crate) fn unified_fence(&self) -> bool {
+        self.unified_fence.get().copied().unwrap_or(false)
+    }
+
+    /// Whether this broker answers a caller that counts by attestation with
+    /// its own. Unset reads as on, which is safe: an attestation reads as no
+    /// promise and no coverage until [`Self::set_kept_ballots`] says the
+    /// directory kept its ballots.
+    pub(crate) fn attests(&self) -> bool {
+        self.unified_fence.get().copied().unwrap_or(true)
+    }
+
+    /// Bind what this process knows of its copies after an unclean start, so
+    /// a promotion attests its own copy as a replica would. Only the first
+    /// call counts.
+    pub fn set_unclean_start(&self, unclean: Arc<crate::unclean::UncleanStart>) {
+        let _ = self.unclean.set(unclean);
+    }
+
+    pub(crate) fn unclean_start(&self) -> Option<&Arc<crate::unclean::UncleanStart>> {
+        self.unclean.get()
     }
 
     /// Whether the control plane last registered this node under another

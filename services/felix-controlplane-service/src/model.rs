@@ -27,7 +27,7 @@ pub use node::{
     NodeStatus, NodeSuspicion, NodeValidationError,
 };
 pub use shard::{
-    ElectedLeader, HaltedCopy, MoveReason, PendingSet, ReplicaReport, ShardAssignment,
+    ElectedLeader, HaltedCopy, MoveReason, PendingSet, Readmitted, ReplicaReport, ShardAssignment,
     ShardAssignmentChange, ShardAssignmentChangeOp, ShardKey, ShardKind, ShardState,
     ShardValidationError,
 };

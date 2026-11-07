@@ -644,6 +644,7 @@ async fn fence_one<'a, R: PeerRequester>(
         lease_fallback,
         joint.as_ref(),
         candidacy.as_ref(),
+        marks.unified_fence().then_some(marks),
     )
     .await;
     // A fence taken on another incarnation's logs, which a recreate at the

@@ -180,6 +180,7 @@ async fn two_current_brokers_learn_each_others_capabilities() {
                 .union(PeerCapabilities::LEARNER_ACKS)
                 .union(PeerCapabilities::REFUSAL_REASONS)
                 .union(PeerCapabilities::KEPT_BALLOTS)
+                .union(PeerCapabilities::UNIFIED_FENCE)
         )
     );
 
@@ -1003,5 +1004,36 @@ fn record_headers_are_offered_with_the_labels_and_times_they_ride_on() {
         assert!(offered.contains(PeerCapabilities::SEQUENCED_FORWARDS));
         assert!(offered.contains(PeerCapabilities::GENERATION_LABELS));
         assert!(offered.contains(PeerCapabilities::RECORD_TIMES));
+    }
+}
+
+/// **A dialler offers `UNIFIED_FENCE` when the fence is on and
+/// `FELIX_UNIFIED_FENCE` is not `0`.** A listener never offers it, and the
+/// kill switch or no fence turns the dialler's offer off.
+#[test]
+fn only_a_fenced_dialler_with_the_switch_on_offers_the_unified_fence() {
+    for fence in [false, true] {
+        for election in [false, true] {
+            for unified_fence in [false, true] {
+                let config = PeerTransportConfig {
+                    fence,
+                    election,
+                    unified_fence,
+                    ..PeerTransportConfig::default()
+                };
+                assert!(
+                    !config
+                        .capabilities()
+                        .contains(PeerCapabilities::UNIFIED_FENCE)
+                );
+                assert_eq!(
+                    config
+                        .outgoing_capabilities()
+                        .contains(PeerCapabilities::UNIFIED_FENCE),
+                    fence && unified_fence,
+                    "fence {fence} election {election} unified_fence {unified_fence}"
+                );
+            }
+        }
     }
 }

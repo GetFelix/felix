@@ -55,6 +55,7 @@ pub(crate) fn assignment(shard: u32, leader: &str) -> ShardAssignment {
         learners: Default::default(),
         pending_set: None,
         previous_generation: None,
+        readmitted: Default::default(),
     }
 }
 
@@ -181,6 +182,7 @@ pub(crate) async fn run_shard_contract(store: Arc<dyn ControlPlaneStore>) {
     learners_are_persisted_until_the_next_write(store).await;
     a_pending_set_is_persisted_until_the_next_write(store).await;
     pausing_moves_is_persisted(store).await;
+    replica_reports::readmitted_copies_are_recorded_from_a_set_naming_them(store).await;
     super::adoption::run(store).await;
 }
 
@@ -211,6 +213,7 @@ fn cache_assignment(shard: u32, leader: &str) -> ShardAssignment {
         learners: Default::default(),
         pending_set: None,
         previous_generation: None,
+        readmitted: Default::default(),
     }
 }
 
@@ -328,6 +331,7 @@ pub(crate) async fn an_assignment_racing_a_recreate_names_the_stream_it_landed_o
         learners: Default::default(),
         pending_set: None,
         previous_generation: None,
+        readmitted: Default::default(),
     };
     store.create_stream(stream(1)).await.expect("create");
     for round in 0..50u64 {
@@ -1687,6 +1691,7 @@ async fn deleting_a_stream_or_cache_takes_its_shard_assignments_with_it(
         learners: Default::default(),
         pending_set: None,
         previous_generation: None,
+        readmitted: Default::default(),
     };
     for shard in 0..2 {
         store
@@ -1972,6 +1977,7 @@ pub(crate) async fn an_assignment_names_the_incarnation_it_was_written_for(
         learners: Default::default(),
         pending_set: None,
         previous_generation: None,
+        readmitted: Default::default(),
     };
     let key = StreamKey {
         tenant_id: TENANT.to_string(),
@@ -2087,6 +2093,7 @@ pub(crate) async fn a_recreated_stream_never_repeats_a_generation(store: &dyn Co
         learners: Default::default(),
         pending_set: None,
         previous_generation: None,
+        readmitted: Default::default(),
     };
     let key = StreamKey {
         tenant_id: TENANT.to_string(),

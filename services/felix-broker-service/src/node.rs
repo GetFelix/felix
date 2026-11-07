@@ -97,6 +97,15 @@ where
     // An in-memory broker has nothing to recover and keeps the old behaviour.
     // Parsed once: what readiness gates on is what storage opens.
     let durable_config = DurableStorageConfig::from_env()?;
+    // A broker in memory loses every ballot and record at a restart, so it
+    // has nothing to attest: it fences and answers as one that predates
+    // counting by attestation.
+    let mut config = config;
+    if durable_config.is_none()
+        && let Some(peer) = config.peer_transport.as_mut()
+    {
+        peer.unified_fence = false;
+    }
     let durable_root = durable_config.as_ref().map(|durable| durable.root.clone());
     let durable_storage_configured = durable_root.is_some();
     let gate_readiness_on_sync = durable_storage_configured && config.controlplane_url.is_some();
@@ -226,6 +235,7 @@ where
         membership::Start::FromView(view) => (None, Some(*view)),
     };
     let mut stored = startup::open_storage(&config, durable_config, registered.as_ref())?;
+    stored.kept.ballots = stored.kept.attested(view.is_some());
     let storage_id = stored.storage_id;
     // Beginning the run may have rotated the id the view was registered
     // under, and a new id registers before it acts: wait for the control
