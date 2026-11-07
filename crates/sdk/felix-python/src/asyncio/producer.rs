@@ -10,7 +10,7 @@ use bytes::Bytes;
 use pyo3::prelude::*;
 
 use crate::errors::to_py_err;
-use crate::handed::{Answer, AsyncHanded, Slot};
+use crate::handed::{AsyncHanded, Slot};
 use crate::producer::{Core, check_batches, check_payloads, timeout_of};
 
 /// A producer whose publishes land once, however many times they are sent.
@@ -76,7 +76,7 @@ impl AsyncProducer {
                 .hand_off_batch(&tenant_id, &namespace, &stream, key, payloads)
                 .await
                 .map_err(to_py_err)?;
-            Ok(AsyncHanded::new(Slot::new(handed, Answer::Offset)))
+            Ok(AsyncHanded::new(Slot::new(handed)))
         })
     }
 
@@ -100,7 +100,7 @@ impl AsyncProducer {
                 .hand_off_batches(&tenant_id, &namespace, &stream, batches)
                 .await
                 .map_err(to_py_err)?;
-            Ok(AsyncHanded::new(Slot::new(handed, Answer::Done)))
+            Ok(AsyncHanded::new(Slot::new(handed)))
         })
     }
 
@@ -122,7 +122,7 @@ impl AsyncProducer {
                 .hand_off_abandon(&tenant_id, &namespace, &stream)
                 .await
                 .map_err(to_py_err)?;
-            Ok(AsyncHanded::new(Slot::new(handed, Answer::Done)))
+            Ok(AsyncHanded::new(Slot::new(handed)))
         })
     }
 

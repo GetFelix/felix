@@ -1256,11 +1256,11 @@ impl AsyncClient {
     }
 
     /// Which questions the broker in use answers. See the synchronous
-    /// `Client.capabilities`.
-    fn capabilities<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    /// `Client.supports`.
+    fn supports<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            Ok(inspect::capabilities(&inner).await)
+            Ok(inspect::supports(&inner).await)
         })
     }
 

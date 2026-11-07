@@ -90,6 +90,18 @@ headers=None)` hides a durable shard's oldest records, only if the shard's next
 offset is `expected_offset`, and returns a `ConditionalTrim`. A broker without
 head trims raises `TrimError`.
 
+Records can carry named byte headers: `publish(headers=...)` and
+`publish_batch(headers=[...])` send them and `event.headers` reads them back.
+`Client(publishers=True, timestamps=True)` adds `event.publisher` and
+`event.timestamp_micros`, on group records too. `cache_put_if_lease` takes a
+lease and returns a `LeaseToken` for `with_identity`. A producer's
+`hand_off_batch` queues a batch and returns a `Handed` to read later, and a
+subscription reports `moves`, `reconnects`, `stream_deleted` and
+`queue_capacity`. `inspect_shard`, `list_subscriptions`, `topology`,
+`shard_owners`, `stream_routing`, `cache_shards` and `supports` ask the
+connected broker about itself, and `ClientTuning` sets pools, windows, queue
+sizes and timeouts.
+
 The [clients page](../../../docs-site/src/content/docs/clients/python.md) has the
 worked examples.
 
@@ -143,22 +155,12 @@ so `task python:check` is what builds it, not `task test`.
 
 ## What is not wrapped
 
-The Rust client has more than this binding wraps. What is left out, and why:
+Two things in the Rust client have no Python counterpart:
 
-- **Subscription counters.** `ClusterSubscription::moves`, `reconnects` and
-  `stream_deleted` have no accessor on a subscription, sharded or not. A read
-  in flight holds the handle, so these need their own shared state. A
-  follow-up is planned; a move still shows up as a `ShardMoved` item on a
-  sharded subscription. A cache watch does expose `moves`, `reconnects`, `error` and `resume_from`.
-- **The single-connection `Connection` and `Publisher` layer** (`topology`,
-  `stream_routing`, `shard_owners`, `inspect_shard`, `supports_*`,
-  `publish_batch_binary*`, `connect_with_transport`). The binding wraps
-  `Client`, which owns those connections and runs the feature checks
-  itself.
-- **`hand_off_*` and `Handed` on the idempotent producer.** They hand back raw
-  futures; `publish_batches` is the iterator-shaped equivalent.
-- **`ClientConfig` options** such as `publishers` and `timestamps`. They are
-  connection configuration, set once, not calls.
+- **`publish_json` and `publish_batch_json`.** Python serializes JSON itself.
+- **A custom `quinn` transport** (`connect_with_policy`,
+  `connect_any_with_transport`). The binding builds the QUIC configuration from
+  `ca_file`, the client certificate options and `offer_alpn`.
 
 ## Conformance
 

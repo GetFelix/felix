@@ -187,15 +187,19 @@ pub(crate) async fn cache_shards(
 }
 
 /// Which questions the broker in use answers, as `{name: bool}`.
-pub(crate) async fn capabilities(
+pub(crate) async fn supports(
     client: &felix_client::Client,
 ) -> std::collections::BTreeMap<&'static str, bool> {
     let broker = client.client().await;
     std::collections::BTreeMap::from([
         ("inspect", broker.supports_inspect()),
         ("topology", broker.supports_topology()),
+        ("ack_on_commit", broker.supports_ack_on_commit()),
         ("stream_shards", broker.supports_stream_shards()),
         ("cache_shards", broker.supports_cache_shards()),
         ("shard_owners", broker.supports_shard_owners()),
     ])
 }
+
+#[cfg(test)]
+mod tests;

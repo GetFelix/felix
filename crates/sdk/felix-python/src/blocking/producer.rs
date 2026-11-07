@@ -6,7 +6,7 @@ use bytes::Bytes;
 use pyo3::prelude::*;
 
 use crate::errors::to_py_err;
-use crate::handed::{Answer, Handed, Slot};
+use crate::handed::{Handed, Slot};
 use crate::producer::{Core, check_batches, check_payloads, timeout_of};
 use crate::runtime::block_on;
 
@@ -86,10 +86,10 @@ impl ProducerHandle {
     }
 
     /// Queue a batch and return once it is queued, without waiting for the
-    /// leader. Returns a `Handed`; `handed.wait()` gives what `publish_batch`
+    /// leader. Returns a `Handed`; `handed.offset()` gives what `publish_batch`
     /// returns. Calls handed off one after another are sent in that order,
     /// which concurrent `publish_batch` calls do not promise. The batch is
-    /// sent whether or not you wait, and a failure shows only in `wait()`.
+    /// sent whether or not you wait, and a failure shows only when you read the answer.
     #[pyo3(signature = (tenant_id, namespace, stream, payloads, *, key=None))]
     fn hand_off_batch(
         &self,
@@ -113,10 +113,10 @@ impl ProducerHandle {
                 .await
                 .map_err(to_py_err)
         })?;
-        Ok(Handed::new(Slot::new(handed, Answer::Offset)))
+        Ok(Handed::new(Slot::new(handed)))
     }
 
-    /// `publish_batches` up to the hand-off. `handed.wait()` returns `None`.
+    /// `publish_batches` up to the hand-off. `handed.done()` waits for success.
     fn hand_off_batches(
         &self,
         py: Python<'_>,
@@ -137,10 +137,10 @@ impl ProducerHandle {
                 .await
                 .map_err(to_py_err)
         })?;
-        Ok(Handed::new(Slot::new(handed, Answer::Done)))
+        Ok(Handed::new(Slot::new(handed)))
     }
 
-    /// `abandon_in_doubt` up to the hand-off. `handed.wait()` returns `None`.
+    /// `abandon_in_doubt` up to the hand-off. `handed.done()` waits for success.
     fn hand_off_abandon(
         &self,
         py: Python<'_>,
@@ -159,7 +159,7 @@ impl ProducerHandle {
                 .await
                 .map_err(to_py_err)
         })?;
-        Ok(Handed::new(Slot::new(handed, Answer::Done)))
+        Ok(Handed::new(Slot::new(handed)))
     }
 
     /// Publish several batches to shard 0, once each, under consecutive

@@ -1406,19 +1406,16 @@ impl Client {
     /// `inspect` (`inspect_shard` and `list_subscriptions`), `topology`,
     /// `stream_shards`, `cache_shards` and `shard_owners`. A broker older than
     /// a feature refuses its call; check here to tell that from a real failure.
-    fn capabilities(
-        &self,
-        py: Python<'_>,
-    ) -> PyResult<std::collections::BTreeMap<&'static str, bool>> {
+    fn supports(&self, py: Python<'_>) -> PyResult<std::collections::BTreeMap<&'static str, bool>> {
         let inner = Arc::clone(&self.inner);
-        block_on(py, async move { Ok(inspect::capabilities(&inner).await) })
+        block_on(py, async move { Ok(inspect::supports(&inner).await) })
     }
 
     /// The connected broker's own view of one shard, as a dict: its role and
     /// phase, whether it is serving and why not, its generation, fence, lease,
     /// tail and commit mark, and, on a leader, every replica's position.
     /// `kind` is `"stream"` or `"cache"`. Needs `node.view:cluster:*`, and
-    /// raises on a broker that does not advertise it (see `capabilities`).
+    /// raises on a broker that does not advertise it (see `supports`).
     /// Not forwarded: ask each broker for its own.
     fn inspect_shard(
         &self,

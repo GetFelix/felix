@@ -13,26 +13,15 @@ use pyo3::prelude::*;
 use crate::errors::to_py_err;
 use crate::runtime::block_on;
 
-/// What the answer to a call is.
-#[derive(Clone, Copy)]
-pub(crate) enum Answer {
-    /// The first record's log offset, or `None`.
-    Offset,
-    /// Success only; `wait` returns `None`.
-    Done,
-}
-
-/// The queued call, taken by the one `wait` that consumes it.
+/// The queued call, taken by the one read that consumes it.
 pub(crate) struct Slot {
     handed: Mutex<Option<felix_client::Handed>>,
-    answer: Answer,
 }
 
 impl Slot {
-    pub(crate) fn new(handed: felix_client::Handed, answer: Answer) -> Arc<Self> {
+    pub(crate) fn new(handed: felix_client::Handed) -> Arc<Self> {
         Arc::new(Self {
             handed: Mutex::new(Some(handed)),
-            answer,
         })
     }
 
@@ -42,23 +31,25 @@ impl Slot {
             .unwrap_or_else(|e| e.into_inner())
             .take()
             .ok_or_else(|| {
-                PyRuntimeError::new_err("this call's answer was already read; wait() works once")
+                PyRuntimeError::new_err(
+                    "this call's answer was already read; offset() and done() work once between them",
+                )
             })
     }
 
-    async fn wait(self: Arc<Self>) -> PyResult<Option<u64>> {
-        let handed = self.take()?;
-        match self.answer {
-            Answer::Offset => handed.offset().await.map_err(to_py_err),
-            Answer::Done => handed.done().await.map(|()| None).map_err(to_py_err),
-        }
+    async fn offset(self: Arc<Self>) -> PyResult<Option<u64>> {
+        self.take()?.offset().await.map_err(to_py_err)
+    }
+
+    async fn done(self: Arc<Self>) -> PyResult<()> {
+        self.take()?.done().await.map_err(to_py_err)
     }
 }
 
-/// A call handed to the producer and not yet answered. `wait()` returns the
-/// first record's log offset (`None` when the leader reported none, and for
-/// `hand_off_batches` and `hand_off_abandon`, which have no single offset) or
-/// raises what the call raised. It works once.
+/// A call handed to the producer and not yet answered. `offset()` returns the
+/// first record's log offset (`None` when the leader reported none) and
+/// `done()` only waits for success; either raises what the call raised. One
+/// of them works, once.
 #[pyclass(module = "felix", name = "Handed")]
 pub struct Handed {
     slot: Arc<Slot>,
@@ -72,9 +63,14 @@ impl Handed {
 
 #[pymethods]
 impl Handed {
-    fn wait(&self, py: Python<'_>) -> PyResult<Option<u64>> {
+    fn offset(&self, py: Python<'_>) -> PyResult<Option<u64>> {
         let slot = Arc::clone(&self.slot);
-        block_on(py, slot.wait())
+        block_on(py, slot.offset())
+    }
+
+    fn done(&self, py: Python<'_>) -> PyResult<()> {
+        let slot = Arc::clone(&self.slot);
+        block_on(py, slot.done())
     }
 
     fn __repr__(&self) -> String {
@@ -82,7 +78,7 @@ impl Handed {
     }
 }
 
-/// The asyncio form of [`Handed`]: `await handed.wait()`.
+/// The asyncio form of [`Handed`]: `await handed.offset()` or `await handed.done()`.
 #[pyclass(module = "felix", name = "AsyncHanded")]
 pub struct AsyncHanded {
     slot: Arc<Slot>,
@@ -96,9 +92,14 @@ impl AsyncHanded {
 
 #[pymethods]
 impl AsyncHanded {
-    fn wait<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    fn offset<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let slot = Arc::clone(&self.slot);
-        pyo3_async_runtimes::tokio::future_into_py(py, slot.wait())
+        pyo3_async_runtimes::tokio::future_into_py(py, slot.offset())
+    }
+
+    fn done<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let slot = Arc::clone(&self.slot);
+        pyo3_async_runtimes::tokio::future_into_py(py, slot.done())
     }
 
     fn __repr__(&self) -> String {
